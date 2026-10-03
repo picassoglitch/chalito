@@ -1,0 +1,126 @@
+# Chalito plan ladder (owner's ladder; brief §12). USD per month.
+# Do NOT add, change or invent any price or allowance here without the owner.
+# `mirror_matching_tier` = "mirror the matching tier's inclusions" on the owner's reference
+# ladder; it is filled in by the owner. Until then code treats it as UNSET and fails closed:
+# that tier's managed allowance is disabled in prod ("Disponible pronto"), BYO + free_min keep working.
+# Validated by PlansConfig in packages/protocol/src/plans.ts.
+
+schemaVersion: 1
+currency: USD
+interval: month
+
+tiers:
+  bundle_8:
+    displayName: Bundle (X-style)
+    priceUsd: 8
+    approx: true
+    line: bundle
+    efficiencyDefault: low
+    mirrors: lite              # owner decision #2 (default)
+    creditBucket: none
+    inclusions: mirror_matching_tier
+    sortOrder: 10
+
+  lite:
+    displayName: Lite
+    priceUsd: 10
+    line: solo
+    availableVia: [solo, chalyb]
+    efficiencyDefault: low
+    creditBucket:
+      priceUsd: 10
+      grants: matching_tier_managed_allowance_once
+    inclusions: &mirror_all
+      devices: mirror_matching_tier
+      concurrentSessions: mirror_matching_tier
+      voiceMinutes: mirror_matching_tier
+      calls: mirror_matching_tier
+      whatsapp: mirror_matching_tier
+      rooms: mirror_matching_tier
+      membersPerRoom: mirror_matching_tier
+      managedAllowance: mirror_matching_tier
+    sortOrder: 20
+
+  starter:
+    # The owner's "Grok Bot via Cursor Pro" equivalent tier.
+    displayName: Starter
+    priceUsd: 20
+    line: solo
+    availableVia: [solo, chalyb]
+    efficiencyDefault: standard
+    creditBucket:
+      priceUsd: 20
+      grants: matching_tier_managed_allowance_once
+    inclusions: *mirror_all
+    sortOrder: 30
+
+  standard:
+    displayName: Standard
+    priceUsd: 30
+    line: solo
+    availableVia: [solo, chalyb]
+    efficiencyDefault: standard
+    creditBucket:
+      priceUsd: 30
+      grants: matching_tier_managed_allowance_once
+    inclusions: *mirror_all
+    sortOrder: 40
+
+  bundle_40:
+    displayName: Bundle (X-style)
+    priceUsd: 40
+    approx: true
+    line: bundle
+    efficiencyDefault: standard
+    mirrors: standard          # owner decision #2 (default)
+    creditBucket: none
+    inclusions: mirror_matching_tier
+    sortOrder: 50
+
+  plus:
+    displayName: Plus
+    priceUsd: 100
+    line: solo
+    availableVia: [solo, chalyb]
+    efficiencyDefault: max
+    creditBucket:
+      priceUsd: 100
+      grants: matching_tier_managed_allowance_once
+    inclusions: *mirror_all
+    sortOrder: 60
+
+  heavy:
+    displayName: Heavy
+    priceUsd: 300
+    line: solo
+    availableVia: [solo, chalyb]
+    efficiencyDefault: max
+    creditBucket:
+      priceUsd: 300
+      grants: matching_tier_managed_allowance_once
+    inclusions: *mirror_all
+    sortOrder: 70
+
+trial:
+  length: P1M                  # 1 month free for beta users, from first sign-in
+  mirrors: starter             # owner decision #7 (default): Starter's platform features
+  managedAllowance: free_min   # managed tokens stay free_min unless a bucket is bought
+
+billing:
+  provider: stripe             # owner decision #9 (default)
+  stubs: [mercadopago]
+  freeMin:
+    priceUsd: 0
+    mode: deterministic        # owner decision #6 (default): no LLM brain calls
+  byo:
+    capped: false              # we never cap BYO usage
+    charged: false             # we never charge BYO usage
+
+credits:
+  expiry: none                 # owner decision #8 (default)
+
+features:
+  mcpGateway: all_tiers        # owner decision #4 (default)
+
+efficiency:
+  userMayPickCheaper: true     # owner decision #3: users may pick a cheaper profile than their tier's default
