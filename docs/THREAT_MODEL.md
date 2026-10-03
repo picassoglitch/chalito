@@ -2,7 +2,7 @@
 
 - Version: M0, 2026-10-03
 - Method: STRIDE per component, then cross-cutting scenarios
-- Related: ADR 0003 (E2E), 0006 (pairing), 0008 (policy + Developer mode), 0009 (MCP), 0010 (rooms), 0011 (comms), 0013 (ledger), 0014 (updates)
+- Related: ADR 0003 (E2E), 0006 (pairing), 0008 (policy + Developer mode), 0009 (MCP), 0010 (rooms), 0011 (comms), 0013 (entitlements + metering), 0014 (updates), 0016 (Chalyb engine)
 
 ## 1. Security goals and the key assumption
 
@@ -14,7 +14,7 @@
 | G2 | A cloud compromise **cannot add an approver** | The trusted-client list lives on the device, is signed by the agent key, and changes only through endorsement by an already-trusted key or local confirmation. |
 | G3 | A cloud compromise **cannot enable Developer mode** or any toggle, or loosen policy | No wire shape exists for "enable" or "loosen" (`CommandPayload`). Enabling requires local OS auth plus triple confirmation in the desktop app or CLI. |
 | G4 | **Private mode leaks no content** to the cloud at rest | E2E sealing (`SealedEnvelope`, `RoomSealed`). The only plaintext exceptions are explicit opt-ins (MCP card sharing, callLines) plus routing metadata. |
-| G5 | **Billing integrity**: no free grants, no double-spend, no pay-to-win | Verified webhooks only, idempotent ledger, transactional balance, cost guard, an entitlement function with no inventory input. |
+| G5 | **Billing integrity**: no free managed usage, no double-reporting, no pay-to-win | Payments and the ledger live in the Chalyb hub. Chalito admits before spending, reports idempotent usage events (outbox + unique `source_id`), and computes entitlements with no inventory input. |
 | G6 | **Comms channels can't approve** and don't leak content | No code path from WhatsApp/SMS/DTMF/speech/room/MCP to a `Decision`. Template variables are integers and enums only. |
 
 **Residual risk accepted for G1.** A compromised cloud can inject prompts on enabled unsigned origins (`mcp:*`, `call:*`) and make the agent run **LOW** actions: reading files in allowed folders and allowlisted test/lint/build commands. Results go back sealed to clients, so nothing leaks to the attacker. But two things remain:
@@ -32,10 +32,10 @@ Mitigations:
 - Approval authority (client private keys)
 - Session content: prompts, diffs, transcripts, cards
 - Room content and membership; companion identities
-- Account: Identity Platform session, 2FA, recovery code
+- Account: Chalyb hub session (SSO), Chalito passkey (second factor), recovery code
 - Phone number and contact channels
-- Billing: subscriptions, credits ledger, purchase records
-- Managed provider API keys (Anthropic/OpenAI/xAI/Vertex), Twilio/Meta/Stripe secrets
+- Billing state as reported by the hub (tier, balance); the engine admin token and SSO secret
+- Managed provider API keys (Anthropic/OpenAI/xAI/Vertex), Twilio/Meta secrets, `CHALITO_ADMIN_TOKEN`, `CHALITO_SSO_SECRET`
 - Release signing keys and the update channel
 - Liability acceptances and the audit log
 
@@ -43,7 +43,7 @@ Mitigations:
 1. **Device agent ⇄ cloud.** The agent connects outbound only, authenticated with a Firebase custom token. Inputs from the cloud are untrusted unless signed by a locally trusted client.
 2. **Client (PWA/desktop panel) ⇄ cloud.** The client holds signing keys; the cloud relays.
 3. **Agent ⇄ adapters** (Claude Code / Codex subprocess). The model output is untrusted, and every tool call passes through the policy hook.
-4. **Cloud ⇄ third parties** (LLM providers, Twilio, Meta, Stripe, OpenAI SIP). Webhooks are untrusted until their signature is verified.
+4. **Cloud ⇄ third parties** (LLM providers, Twilio, Meta, OpenAI SIP, the Chalyb hub). Webhooks are untrusted until their signature is verified.
 5. **MCP clients** (ChatGPT/Claude) ⇄ `mcp-gateway`. Reduced scopes; no signing authority.
 6. **Room members ⇄ each other.** Mutually untrusted users. Content is data, never instructions.
 7. **Desktop app ⇄ local agent** over IPC: a per-user socket or pipe with an ACL. Local-only security screens.
@@ -75,7 +75,7 @@ Mitigations:
 | Server compromise injects approver keys | G2: the agent ignores keys it hasn't trusted locally (M2 approver-injection test). |
 | Server forges decisions | It has no client keys, so it can't. |
 | Server enables Developer mode / loosens policy | G3: unrepresentable. Remote attempts are rejected and audited as `remote_enable.rejected`. |
-| Firestore rules bypass by a client | Rules tested in the emulator: server-only collections (`inventory`, `creditLedger`, `creditBalance`, `purchases`, `subscriptions`, `plans`, `cosmetics`); `devMode`/`policyHash` written only by the device's own token claim; membership checks for rooms. |
+| Firestore rules bypass by a client | Rules tested in the emulator: server-only collections (`inventory`, `usageOutbox`, `entitlements`, `plans`, `cosmetics`); `devMode`/`policyHash` written only by the device's own token claim; membership checks for rooms. |
 | Secret exfiltration | Secret Manager with one service account per service and least privilege (§8 of the brief). Only `notifier` reads Twilio/Meta; only `api` reads payment secrets and mints tokens. No JSON keys anywhere (WIF in CI). |
 | Insider/operator reads content | E2E (G4). Proxy-time plaintext for managed brains is transient and never persisted (residual, see 4.6). |
 
@@ -97,9 +97,9 @@ Mitigations:
 ### 4.5 Account takeover and recovery
 | Scenario | Mitigation |
 |---|---|
-| Password/session theft | 2FA mandatory (TOTP preferred; SMS allowed but SIM-swap-prone, documented). An Identity Platform session alone can't approve anything or add a client to an agent. |
-| Attacker triggers recovery | 2FA + recovery code (Argon2id hash) + **cool-down** (default 1 h) + alerts to every device. After recovery **each desktop must confirm the new phone locally**. Recovery alone can't approve anything. |
-| SIM swap → SMS 2FA + phone takeover | TOTP recommended in onboarding. A phone-number change triggers alerts plus a cool-down before calls/WhatsApp go to the new number. The number itself never grants approval authority. |
+| Password/session theft (hub account) | Every Chalito security action (pairing, endorsement, recovery, HIGH approval) needs the user's **Chalito passkey** (WebAuthn, origin-bound). A hub session alone can't approve anything or add a client to an agent. Recommend enabling the hub's own 2FA if it offers one (OPS). |
+| Attacker triggers recovery | Hub sign-in + recovery code (Argon2id hash) + **cool-down** (default 1 h) + alerts to every device. After recovery **each desktop must confirm the new phone locally**. Recovery alone can't approve anything. |
+| SIM swap → phone takeover | No SMS second factor is used. A phone-number change triggers alerts plus a cool-down before calls/WhatsApp go to the new number. The number itself never grants approval authority. |
 | Lost/stolen phone | Revoke from the desktop or another client. The agent drops the key immediately, interrupts sessions it started, rotates recipients and room epochs. |
 | Lost/stolen laptop (agent) | Revoke the device from the phone. The Firebase user is disabled and refresh tokens revoked; rules deny on the `revoked` flag immediately. The agent's keychain keys are protected by the OS login. Recommend full-disk encryption (onboarding checklist). |
 
@@ -147,9 +147,9 @@ Mitigations:
 ### 4.11 Payments
 | Threat | Mitigation |
 |---|---|
-| **Webhook forgery** | `Stripe-Signature` verified on the raw body with timestamp tolerance; Mercado Pago `x-signature` HMAC; unknown events ignored. Webhook endpoints are public but signature-gated (documented). |
-| **Ledger double-spend** / replay | `entryId = hash(type, idemKey)` with create-only writes. Balance updated in the same transaction, aborts below zero. Concurrent consumption emulator test. |
-| **Refund abuse** (buy credits, use, refund) | A refund writes a negative `refund` entry. If the balance is insufficient it goes into recoverable debt: managed usage paused, BYO and safety still work. Refund policy in the LEGAL_CHECKLIST; Stripe Radar defaults. |
+| **Payment webhook forgery** | Not on Chalito's surface. Mercado Pago webhooks terminate at the Chalyb hub, which already verifies them and gates prices. |
+| **Usage double-report / under-report** | Outbox written in the same Firestore transaction as the work. `(engine, source_id)` unique on the hub, so re-sends are safe. Dead rows alert, never drop. Admit before spend, so the hub refuses work the balance can't cover. |
+| **Refund abuse** | Handled by the hub (refunds, chargebacks, grace rules). Chalito follows the hub's tier, status and balance: paused or zero means `free_min` for managed features, while BYO and safety still work. |
 | Client-supplied prices | SKUs only; prices come from config; Checkout created server-side; currency-literal lint. |
 | Cost blow-up | The cost guard keeps provider cost ≤ amount paid; budgets; the GCP budget alert. |
 | Pay-to-win | `EntitlementInputs` has no inventory; property test. |
@@ -169,6 +169,15 @@ Mitigations:
 | CI compromise steals the signing key | Releases only from protected tags; environment protection rules require manual approval; the signing key is in a separate GitHub environment; key rotation documented in RUNBOOK. Future: move to a KMS-backed signer. |
 | Downgrade to a vulnerable version | The updater only moves forward (version compare); a minimum-supported version is enforced by `api` (the agent refuses to connect below it). |
 | Sidecar swapped on disk | OS code signing (macOS notarization, Windows signature). Same-user tampering is out of scope. |
+
+### 4.14 Chalyb hub integration
+| Threat | Mitigation |
+|---|---|
+| **SSO token forgery** | HMAC-SHA256 with `CHALITO_SSO_SECRET` (Secret Manager, `web` only), constant-time compare, 300 s TTL, single use (jti = sig hash cached until expiry), `next` must be relative and same-origin (no open redirect). |
+| **Hub compromise** (or SSO secret leak) | The attacker can sign in as any user in Chalito's cloud and read that user's metadata, the same as an account takeover (§4.5). They can't send client commands, because those need a client device signature. They can't approve on devices, add approvers or enable Developer mode (G1–G3). Content stays E2E-sealed. |
+| **Admin token leak** (`CHALITO_ADMIN_TOKEN`) | It allows creating or pausing tenants only. Pausing affects managed features, never safety features. Rotate through Secret Manager + Vercel env (RUNBOOK). |
+| **Usage-report tampering** (inflate someone's bill) | Only `orchestrator`/`notifier` service accounts hold the engine token used for `/usage`. Events carry provider cost from `prices.yaml` with the request ids that produced them (audit). |
+| **Hub outage** | Admit fails closed for managed spend; BYO, approvals and safety continue. The outbox retries usage reports. |
 
 ## 5. Privacy notes
 - Phone numbers are stored in E.164 and never logged in full (last 2 digits only).

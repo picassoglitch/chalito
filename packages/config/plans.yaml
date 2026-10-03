@@ -1,13 +1,43 @@
-# Chalito plan ladder (owner's ladder; brief §12). USD per month.
-# Do NOT add, change or invent any price or allowance here without the owner.
-# `mirror_matching_tier` = "mirror the matching tier's inclusions" on the owner's reference
-# ladder; it is filled in by the owner. Until then code treats it as UNSET and fails closed:
-# that tier's managed allowance is disabled in prod ("Disponible pronto"), BYO + free_min keep working.
-# Validated by PlansConfig in packages/protocol/src/plans.ts.
+# Chalito plans: what each plan unlocks inside Chalito.
+# Validated by PlansConfig (packages/protocol/src/plans.ts).
+#
+# Chalito is a Chalyb engine (ADR 0016). The Chalyb hub owns accounts, payments
+# (Mercado Pago), the trial and the token balance. Two purchase paths share
+# one engine:
+#   1. hub tiers: Chalyb Gratis / Pro / VIP include Chalito. Their prices live
+#      in Chalyb (src/config/pricing.ts), never here.
+#   2. Solo Chalito: the owner's USD ladder below (brief §12), sold through the
+#      hub's Mercado Pago checkout for people who want only the companion.
+#
+# Billing unit = the hub's billable token: real provider cost × (1 + margin),
+# with margin 160% by default and $4 per 1M billable tokens. Chalito reports
+# every cost to the hub (/usage). The hub admits or refuses work (/usage/admit).
+#
+# Allowances follow the hub's sizing rule: a fully spent month at billed prices
+# never exceeds the plan's list price before IVA. So allowance =
+# priceUsd / $4 per 1M (owner decision #7, "align with the Chalyb token standard").
+#
+# Feature access is progressive (owner decision #1): cheap resources from the
+# cheapest plan, expensive ones (premium models, calls, SMS, heavy voice) only
+# on top plans. Margin first, good service throughout.
 
-schemaVersion: 1
+schemaVersion: 2
 currency: USD
 interval: month
+
+billingUnit:
+  source: chalyb_hub
+  usdPerMillionBillable: 4
+
+# Price-free hub tiers: which Solo tier's access each one grants.
+# The token allowance comes from the hub's own balance.
+hubTiers:
+  gratis:
+    access: none             # BYO keys + free_min only
+  pro:
+    access: standard
+  vip:
+    access: plus
 
 tiers:
   bundle_8:
@@ -16,9 +46,9 @@ tiers:
     approx: true
     line: bundle
     efficiencyDefault: low
-    mirrors: lite              # owner decision #2 (default)
+    mirrors: lite              # owner decision #2
     creditBucket: none
-    inclusions: mirror_matching_tier
+    inclusions: mirror_matching_tier   # bundles take their mirrored tier's inclusions
     sortOrder: 10
 
   lite:
@@ -30,15 +60,18 @@ tiers:
     creditBucket:
       priceUsd: 10
       grants: matching_tier_managed_allowance_once
-    inclusions: &mirror_all
-      devices: mirror_matching_tier
-      concurrentSessions: mirror_matching_tier
-      voiceMinutes: mirror_matching_tier
-      calls: mirror_matching_tier
-      whatsapp: mirror_matching_tier
-      rooms: mirror_matching_tier
-      membersPerRoom: mirror_matching_tier
-      managedAllowance: mirror_matching_tier
+    inclusions:
+      devices: 2
+      concurrentSessions: 1
+      voiceMinutes: 0
+      calls: 0
+      whatsapp: 100
+      sms: 0
+      rooms: 1
+      membersPerRoom: 4
+      mesaBrains: 1
+      maxProfile: low
+      managedAllowance: { billableTokens: 2500000 }
     sortOrder: 20
 
   starter:
@@ -51,7 +84,18 @@ tiers:
     creditBucket:
       priceUsd: 20
       grants: matching_tier_managed_allowance_once
-    inclusions: *mirror_all
+    inclusions:
+      devices: 3
+      concurrentSessions: 2
+      voiceMinutes: 60
+      calls: 0
+      whatsapp: 300
+      sms: 0
+      rooms: 3
+      membersPerRoom: 6
+      mesaBrains: 2
+      maxProfile: standard
+      managedAllowance: { billableTokens: 5000000 }
     sortOrder: 30
 
   standard:
@@ -63,7 +107,18 @@ tiers:
     creditBucket:
       priceUsd: 30
       grants: matching_tier_managed_allowance_once
-    inclusions: *mirror_all
+    inclusions:
+      devices: 5
+      concurrentSessions: 3
+      voiceMinutes: 120
+      calls: 30
+      whatsapp: 300
+      sms: 0
+      rooms: 5
+      membersPerRoom: 8
+      mesaBrains: 3
+      maxProfile: standard
+      managedAllowance: { billableTokens: 7500000 }
     sortOrder: 40
 
   bundle_40:
@@ -72,7 +127,7 @@ tiers:
     approx: true
     line: bundle
     efficiencyDefault: standard
-    mirrors: standard          # owner decision #2 (default)
+    mirrors: standard          # owner decision #2
     creditBucket: none
     inclusions: mirror_matching_tier
     sortOrder: 50
@@ -86,7 +141,18 @@ tiers:
     creditBucket:
       priceUsd: 100
       grants: matching_tier_managed_allowance_once
-    inclusions: *mirror_all
+    inclusions:
+      devices: 10
+      concurrentSessions: 6
+      voiceMinutes: 600
+      calls: 90
+      whatsapp: 300
+      sms: 30
+      rooms: 10
+      membersPerRoom: 20
+      mesaBrains: 3
+      maxProfile: max
+      managedAllowance: { billableTokens: 25000000 }
     sortOrder: 60
 
   heavy:
@@ -98,29 +164,43 @@ tiers:
     creditBucket:
       priceUsd: 300
       grants: matching_tier_managed_allowance_once
-    inclusions: *mirror_all
+    inclusions:
+      devices: 20
+      concurrentSessions: 12
+      voiceMinutes: 2000
+      calls: 300
+      whatsapp: 600
+      sms: 100
+      rooms: 25
+      membersPerRoom: 50
+      mesaBrains: 3
+      maxProfile: max
+      managedAllowance: { billableTokens: 75000000 }
     sortOrder: 70
 
 trial:
-  length: P1M                  # 1 month free for beta users, from first sign-in
-  mirrors: starter             # owner decision #7 (default): Starter's platform features
-  managedAllowance: free_min   # managed tokens stay free_min unless a bucket is bought
+  source: chalyb_hub           # owner decision #7: the hub's trial rules apply, not the brief's P1M
+  mirrors: starter
+  managedAllowance: free_min
 
 billing:
-  provider: stripe             # owner decision #9 (default)
-  stubs: [mercadopago]
+  provider: chalyb_hub         # owner decision #9: hub Mercado Pago, as for ChalyClip. No Stripe.
+  checkoutCurrency: MXN        # Mercado Pago MX charges MXN
+  # Solo USD tiers need owner-set MXN charge amounts on the hub. Until then,
+  # Solo checkout shows "Disponible pronto" (decision #31).
+  soloMxnAmounts: unset
   freeMin:
     priceUsd: 0
-    mode: deterministic        # owner decision #6 (default): no LLM brain calls
+    mode: deterministic        # owner decision #6
   byo:
-    capped: false              # we never cap BYO usage
-    charged: false             # we never charge BYO usage
+    capped: false
+    charged: false
 
 credits:
-  expiry: none                 # owner decision #8 (default)
+  expiry: none                 # owner decision #8
 
 features:
-  mcpGateway: all_tiers        # owner decision #4 (default)
+  mcpGateway: all_tiers        # owner decision #4
 
 efficiency:
-  userMayPickCheaper: true     # owner decision #3: users may pick a cheaper profile than their tier's default
+  userMayPickCheaper: true     # owner decision #3

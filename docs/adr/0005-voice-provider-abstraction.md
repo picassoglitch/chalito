@@ -22,8 +22,8 @@
   - the briefing context: metadata plus callLines if enabled;
   - tools `answer_item(sessionRef, text)` (produces a `call:<CallSid>` RelayedCommand) and `push_approval(aid)`.
   - There is **no tool that produces a Decision.**
-- Usage (minutes/tokens) is metered into `usage_events` with `purpose=comms`.
+- Every voice session is admitted with the Chalyb hub first (`/usage/admit`, `class: "stream"` with heartbeats) and its cost reported as `voice.seconds` / `call.seconds` (ADR 0016). It is also logged locally into `usage_events` with `purpose=comms`.
 
 ## Consequences
 - The ephemeral key is the only credential the client ever sees. The standard key stays in Secret Manager (`OPENAI_API_KEY`, `api` and `notifier` only).
-- Voice is managed-only in beta (the brief has no BYO voice). It is metered against credits; on `free_min` voice is paused with an in-character line.
+- Voice is managed-only in beta (the brief has no BYO voice). It is available from the Starter tier up (progressive access, `plans.yaml`) and billed through the hub balance. On `free_min` voice is paused with an in-character line.

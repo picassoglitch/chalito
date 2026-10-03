@@ -15,7 +15,11 @@
    - We don't redistribute the binary in the beta. That keeps downloads small and keeps Claude Code unmodified and sourced from Anthropic.
    - Bundling is possible later under the Commercial Terms (owner decision #21).
    - Codex works the same way (`codex` CLI from OpenAI's installer).
-   - **Codex auth:** BYO **API key only** by default (`account/login/start {type:"apiKey"}`). OpenAI states that app-server auth "has never been permitted for commercial or hosted services". ChatGPT-plan usage needs Sign in with ChatGPT, which is waitlist-gated for paid apps. That path stays behind `providers.yaml: openai.subscriptionLocal: false` until OpenAI approves (owner decision #26).
+   - **Codex auth: ChatGPT plan via Sign in with ChatGPT (SIWC), plus API key** (owner decision #26, 2026-10-03: "we need to make it work").
+     - OpenAI states that Codex's built-in app-server login "has never been permitted for commercial or hosted services", so we don't use `account/login/start {type:"chatgpt"}`.
+     - We implement OpenAI's **official SIWC "ChatGPT plan usage" flow**: PKCE at `auth.openai.com`, loopback redirect, and the token handed to `codex app-server` through the `openai_chatgpt_plan` model provider. The agent refreshes the token and restarts app-server, then calls `thread/resume`.
+     - The UI follows OpenAI's SIWC rules: a "Continue with ChatGPT" button, "Using ChatGPT plan" + "Manage usage". Only Plus and Pro users are eligible.
+     - **Gate:** the self-serve client (`dynamic_agent_client`) is documented for open-source and locally hosted apps. Paid apps need OpenAI's SIWC partner approval. So the flow ships behind `providers.yaml: openai.subscriptionLocal` with three modes: `owner_only` (on for OWNER_UIDS and dev), `approved` (all users, once OpenAI approves), and `off`. Default: `owner_only`. **OPS:** the owner submits OpenAI's SIWC interest form.
    - `codex app-server` is labelled experimental ("not supported for production workloads"). The adapter pins a tested Codex version range and runs the conformance suite on upgrades.
 3. **Auth pinning:** the adapter passes `permissionMode: 'default'` explicitly. Since SDK 0.3.286 an omitted mode may resolve to `auto`.
    - The beta uses BYO **API key only** (VERIFIED_APIS §Anthropic; owner decision #19). The key comes from the OS keychain and is passed through `options.env.ANTHROPIC_API_KEY`, so the CLI never silently falls back to the user's claude.ai login.

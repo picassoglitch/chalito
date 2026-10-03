@@ -10,6 +10,7 @@ import {
   CompanionReply,
   DecisionBody,
   EntitlementInputs,
+  HubUsageEvent,
   OutboundTemplateVars,
   PlansConfig,
   RemotePermissionMode,
@@ -37,15 +38,30 @@ describe("plans.yaml", () => {
     expect(cfg.tiers.bundle_40?.approx).toBe(true);
   });
 
-  it("leaves every inclusion as mirror_matching_tier (owner fills them)", () => {
-    const text = readFileSync(plansPath, "utf8");
+  it("allowances follow the hub sizing rule and access is progressive", () => {
     const cfg = PlansConfig.parse(loadPlans());
-    for (const t of Object.values(cfg.tiers)) {
-      const inc = t.inclusions;
-      if (inc === "mirror_matching_tier") continue;
-      for (const v of Object.values(inc)) expect(v).toBe("mirror_matching_tier");
-    }
-    expect(text).not.toMatch(/MXN/);
+    const tok = (id: keyof typeof cfg.tiers) => {
+      const inc = cfg.tiers[id]!.inclusions;
+      if (inc === "mirror_matching_tier" || inc.managedAllowance === "mirror_matching_tier") throw new Error("unset");
+      return inc.managedAllowance.billableTokens;
+    };
+    // $4 per 1M billable: allowance = price / 4 (millions)
+    expect(tok("lite")).toBe(2_500_000);
+    expect(tok("heavy")).toBe(75_000_000);
+    expect(cfg.billing.provider).toBe("chalyb_hub");
+    expect(readFileSync(plansPath, "utf8")).not.toMatch(/provider:\s*stripe/i);
+  });
+
+  it("rejects a ladder that gets cheaper features on a pricier tier", () => {
+    const raw = loadPlans();
+    raw.tiers.plus.inclusions = { ...raw.tiers.plus.inclusions, devices: 1 };
+    expect(PlansConfig.safeParse(raw).success).toBe(false);
+  });
+
+  it("rejects an allowance that bills more than the price", () => {
+    const raw = loadPlans();
+    raw.tiers.lite.inclusions = { ...raw.tiers.lite.inclusions, managedAllowance: { billableTokens: 3_000_000 } };
+    expect(PlansConfig.safeParse(raw).success).toBe(false);
   });
 
   it("rejects a bucket price that differs from the ladder price", () => {
@@ -166,9 +182,26 @@ describe("companion + cards", () => {
   });
 });
 
+describe("hub contract", () => {
+  it("llm.tokens amount must equal the token split", () => {
+    const ev = {
+      source_id: "u1:turn:1",
+      kind: "llm.tokens",
+      provider: "anthropic",
+      external_user_id: "u1",
+      amount: 30,
+      cost_usd_micros: 12,
+      occurred_at: "2026-10-03T12:00:00Z",
+      metadata: { tokens: { input: 10, output: 10, cache_read: 5, cache_write: 5 } },
+    };
+    expect(HubUsageEvent.safeParse(ev).success).toBe(true);
+    expect(HubUsageEvent.safeParse({ ...ev, amount: 31 }).success).toBe(false);
+  });
+});
+
 describe("pay-to-dress, never pay-to-win", () => {
   it("entitlement inputs cannot include inventory", () => {
-    const input = { uid: "u1", subscription: null, trialEndsAt: null, creditBalance: { tokens: 0, voiceMin: 0, calls: 0, whatsapp: 0 }, now };
+    const input = { uid: "u1", hubTier: "pro", soloTier: null, hubTrialActive: false, hubBalanceRemaining: 0, comped: false, now };
     expect(EntitlementInputs.safeParse(input).success).toBe(true);
     expect(EntitlementInputs.safeParse({ ...input, inventory: ["viking_hat"] }).success).toBe(false);
   });

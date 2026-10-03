@@ -27,4 +27,4 @@
 - **Scene:**
   - Choreography is deterministic and client-side: seeded wander (roomId + companionId + time bucket) plus room events. **Zero position writes.** Viewers can't control anyone.
   - Quality levels `auto|bajo|medio|alto` come from `render.yaml`.
-- **Limits:** rooms per user and members per room come from tier inclusions (`mirror_matching_tier` until set). While unset, they are **not enforced**. We invent no caps; only rate limits guard against abuse (see D-009). The owner fills them in under decision #1.
+- **Limits:** rooms per user and members per room come from tier inclusions (`mirror_matching_tier` until set). Values are progressive per tier in `plans.yaml` (owner decision #1).

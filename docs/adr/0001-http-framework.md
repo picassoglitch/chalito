@@ -8,7 +8,7 @@
 
 ## Decision: Hono on `@hono/node-server`
 - **Web-standard Request/Response.** Handlers are unit-tested with `app.request()`, with no server and no port. The same code runs in emulator integration tests.
-- **Raw body for webhooks** via `c.req.arrayBuffer()`. Stripe, Twilio, Meta and Mercado Pago signatures need the unmodified body.
+- **Raw body for webhooks** via `c.req.arrayBuffer()`. Twilio, Meta and OpenAI SIP signatures and the hub SSO HMAC need the unmodified input.
 - **Small footprint and fast cold start** for min-instances-0 services.
 - **Official MCP TS SDK v2 adapter** (`@modelcontextprotocol/hono`) for `mcp-gateway`.
 - zod schemas from `packages/protocol` plug straight into `zValidator`.

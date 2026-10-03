@@ -1,93 +1,181 @@
 import { z } from "zod";
-import { EfficiencyProfile, EpochMs, Id, Uid, Units } from "./common.js";
-import { TierId } from "./plans.js";
-
-export const BillingProviderId = z.enum(["stripe", "mercadopago", "chalyb_handoff"]);
-
-/** `purchases/{purchaseId}`: server-written from verified provider webhooks only. */
-export const Purchase = z.object({
-  v: z.literal(1),
-  purchaseId: Id,
-  uid: Uid,
-  kind: z.enum(["subscription", "credits", "cosmetic"]),
-  /** SKU from plans.yaml / catalog.yaml; never a client-supplied price. */
-  sku: z.string().max(64),
-  /** Minor units as reported by the provider (e.g. cents). */
-  amount: z.number().int().nonnegative(),
-  currency: z.string().regex(/^[A-Z]{3}$/),
-  provider: BillingProviderId,
-  providerRef: z.string().max(255),
-  status: z.enum(["pending", "paid", "refunded", "failed"]),
-  createdAt: EpochMs,
-});
-export type Purchase = z.infer<typeof Purchase>;
-
-export const LedgerType = z.enum(["trial", "purchase", "grant", "consume", "refund", "adjust"]);
+import { EfficiencyProfile, EpochMs, Uid } from "./common.js";
+import { HubTierId, TierId } from "./plans.js";
 
 /**
- * `users/{uid}/creditLedger/{entryId}`: append-only, server-only.
- * `idemKey` = provider event id (purchase/refund) or usage event id (consume); the
- * entry id is derived from it so a replay can never double-grant or double-charge.
+ * Chalito is a Chalyb engine (ADR 0016). The hub owns payments (Mercado Pago),
+ * the trial, the billable-token balance and the ledger. Chalito keeps no payment
+ * records of its own. These schemas mirror the hub's engine contract
+ * (Chalyb docs/engines/consumption-contract.md + src/lib/engines/integrations/factory.ts,
+ * read 2026-10-03 at 4ed57c9). If the hub contract changes, these change with it.
  */
-export const LedgerEntry = z
+
+// ---- SSO + provisioning (hub → Chalito) -------------------------------------
+
+/** Payload of the hub's launch token: base64url(JSON) + "." + HMAC-SHA256(base64url). TTL 300 s. */
+export const HubSsoPayload = z.object({
+  user_id: z.string().min(1),
+  email: z.string().email(),
+  tenant_id: z.string().min(1),
+  tier: z.string().min(1),
+  exp: z.number().int().positive(),
+});
+export type HubSsoPayload = z.infer<typeof HubSsoPayload>;
+
+/** `POST {admin_api_base}/tenants` (Bearer CHALITO_ADMIN_TOKEN). A 409 duplicate is success. */
+export const HubTenantCreate = z.object({
+  external_user_id: z.string().min(1),
+  email: z.string().email(),
+  display_name: z.string().max(200).nullable().optional(),
+  tier: z.string().min(1),
+});
+export const HubTenantCreated = z.object({ tenant_id: z.string().min(1), api_token: z.string().min(1) });
+export const HubTenantStatus = z.object({ status: z.enum(["active", "paused"]) });
+
+// ---- Consumption (Chalito → hub) ----------------------------------------------
+
+export const HubAdmitRequest = z.object({
+  external_user_id: z.string().min(1),
+  /** Re-admitting the same id returns (and updates) the same reservation. */
+  external_job_id: z.string().min(1).max(200),
+  class: z.enum(["job", "stream"]),
+  /** e.g. `companion.turn`, `mesa.turn`, `voice.session`, `call.briefing`, `room.notify`. */
+  operation: z.string().min(1).max(64),
+  est_tokens: z.number().int().nonnegative(),
+  upload_mb: z.number().nonnegative().default(0),
+  source_minutes: z.number().nonnegative().default(0),
+  storage_mb_after: z.number().nonnegative().default(0),
+  boost: z.boolean().nullable().default(null),
+  ttl_seconds: z.number().int().positive().optional(),
+});
+export type HubAdmitRequest = z.infer<typeof HubAdmitRequest>;
+
+export const HubRefusalReason = z.enum([
+  "upload_too_large",
+  "video_too_long",
+  "storage_full",
+  "minutes_cap",
+  "jobs_cap",
+  "concurrency",
+  "streams_cap",
+  "no_tokens",
+  "boost_unavailable",
+]);
+
+export const HubAdmitResponse = z.discriminatedUnion("allowed", [
+  z.object({
+    ok: z.literal(true),
+    allowed: z.literal(true),
+    reservation_id: z.string().uuid(),
+    lane: z.enum(["standard", "boost"]),
+    boost_fee_tokens: z.number().int().nonnegative(),
+    limits: z.record(z.string(), z.unknown()),
+    balance: z.object({ remaining: z.number(), reserved: z.number() }).passthrough(),
+  }),
+  z.object({ ok: z.literal(true), allowed: z.literal(false), reason: HubRefusalReason }),
+]);
+export type HubAdmitResponse = z.infer<typeof HubAdmitResponse>;
+
+/** Meter kinds Chalito sends. The hub adds `transcription.seconds` etc. for other engines. */
+export const HubUsageKind = z.enum([
+  "llm.tokens",
+  "voice.seconds",
+  "call.seconds",
+  "whatsapp.messages",
+  "sms.segments",
+  "compute.seconds",
+  "storage.gb_month",
+  "store.purchase",
+]);
+
+export const HubUsageEvent = z
   .object({
-    v: z.literal(1),
-    entryId: Id,
-    uid: Uid,
-    type: LedgerType,
-    tierId: TierId.nullable(),
-    /** Signed deltas: grants positive, consumption negative. */
-    units: Units,
-    /** Provider cost estimate (from prices.yaml) for consume entries; amount paid for purchases. */
-    costUsdEst: z.number().nonnegative(),
-    balanceAfter: Units,
-    idemKey: z.string().min(1).max(255),
-    usageEventRef: z.string().max(255).optional(),
-    t: EpochMs,
+    /** Idempotency: (engine, source_id) is unique on the hub. Written to a local outbox first. */
+    source_id: z.string().min(1).max(200),
+    kind: HubUsageKind,
+    provider: z.string().min(1).max(40),
+    external_user_id: z.string().min(1),
+    amount: z.number().int().min(0).max(1e12),
+    /** Exact provider cost from prices.yaml, incl. cache reads/writes, retries and failed attempts. */
+    cost_usd_micros: z.number().int().min(0).max(1e9),
+    occurred_at: z.string().datetime({ offset: true }),
+    reservation_id: z.string().uuid().optional(),
+    metadata: z
+      .object({
+        tokens: z
+          .object({
+            input: z.number().int().nonnegative(),
+            output: z.number().int().nonnegative(),
+            cache_read: z.number().int().nonnegative(),
+            cache_write: z.number().int().nonnegative(),
+          })
+          .optional(),
+        model: z.string().max(80).optional(),
+        purpose: z.enum(["comms", "work"]).optional(),
+      })
+      .passthrough()
+      .optional(),
   })
-  .refine((e) => Object.values(e.balanceAfter).every((n) => n >= 0), { message: "balance can never go negative" })
-  .refine((e) => e.type !== "consume" || Object.values(e.units).every((n) => n <= 0), {
-    message: "consume entries must not add units",
-  });
-export type LedgerEntry = z.infer<typeof LedgerEntry>;
+  .refine(
+    (e) =>
+      e.kind !== "llm.tokens" ||
+      !e.metadata?.tokens ||
+      e.metadata.tokens.input + e.metadata.tokens.output + e.metadata.tokens.cache_read + e.metadata.tokens.cache_write ===
+        e.amount,
+    { message: "llm.tokens amount must equal the sum of the token split" },
+  );
+export type HubUsageEvent = z.infer<typeof HubUsageEvent>;
+
+/** At most 100 events per POST /usage. */
+export const HubUsageBatch = z.object({ events: z.array(HubUsageEvent).min(1).max(100) });
+
+export const HubSettle = z.object({
+  reservation_id: z.string().uuid(),
+  outcome: z.enum(["succeeded", "failed", "cancelled", "heartbeat"]),
+});
+
+// ---- Entitlements (computed in Chalito from hub state) -----------------------
 
 export const ManagedAllowance = z.discriminatedUnion("status", [
-  z.object({ status: z.literal("enabled"), monthly: Units }),
-  /** Owner hasn't filled the tier's allowance (`mirror_matching_tier`): fail closed, UI shows "Disponible pronto". */
+  /** The hub balance can pay for managed brains. */
+  z.object({ status: z.literal("enabled"), remainingBillable: z.number().nonnegative() }),
+  /** Owner hasn't set the value (`mirror_matching_tier` / unset): fail closed, UI shows "Disponible pronto". */
   z.object({ status: z.literal("disabled_unset") }),
+  /** Balance is 0 or no paid access: deterministic free_min + in-character recharge line. */
   z.object({ status: z.literal("free_min") }),
 ]);
 
 export const Limit = z.union([z.number().int().nonnegative(), z.literal("unset")]);
 
 /**
- * Entitlements = f(subscription tier, trial, credit balance). Inventory/cosmetics are
- * deliberately NOT an input (pay-to-dress, never pay-to-win); the property test in M8/M12
- * asserts equality for users who differ only in inventory.
+ * Entitlements = f(hub tier or Solo tier, hub trial, hub balance). Inventory and
+ * cosmetics are deliberately NOT an input (pay-to-dress, never pay-to-win).
  */
 export const Entitlements = z.object({
-  v: z.literal(1),
+  v: z.literal(2),
   uid: Uid,
-  source: z.enum(["subscription", "trial", "comped", "none"]),
-  tierId: TierId.nullable(),
-  /** The default profile for the tier; the user may pick a cheaper one. */
+  source: z.enum(["hub_tier", "solo", "trial", "comped", "none"]),
+  hubTier: HubTierId.nullable(),
+  /** The ladder tier whose access applies (a hub tier maps to one via plans.yaml `hubTiers`). */
+  accessTier: TierId.nullable(),
   efficiencyDefault: EfficiencyProfile,
   efficiencyCurrent: EfficiencyProfile,
+  maxProfile: EfficiencyProfile,
   managedAllowance: ManagedAllowance,
-  creditBalance: Units,
   limits: z.object({
     devices: Limit,
     concurrentSessions: Limit,
     voiceMinutes: Limit,
     calls: Limit,
     whatsapp: Limit,
+    sms: Limit,
     rooms: Limit,
     membersPerRoom: Limit,
+    mesaBrains: Limit,
   }),
   features: z.object({ mcpGateway: z.boolean() }),
   /** Always true regardless of plan state: sign-in, approvals, revocation, Developer-mode off, export. */
   safetyFeatures: z.literal(true),
-  trialEndsAt: EpochMs.nullable(),
   computedAt: EpochMs,
 });
 export type Entitlements = z.infer<typeof Entitlements>;
@@ -96,16 +184,11 @@ export type Entitlements = z.infer<typeof Entitlements>;
 export const EntitlementInputs = z
   .object({
     uid: Uid,
-    subscription: z
-      .object({
-        tierId: TierId,
-        status: z.enum(["trialing", "active", "past_due", "canceled"]),
-        periodEnd: EpochMs,
-        comped: z.boolean(),
-      })
-      .nullable(),
-    trialEndsAt: EpochMs.nullable(),
-    creditBalance: Units,
+    hubTier: HubTierId.nullable(),
+    soloTier: TierId.nullable(),
+    hubTrialActive: z.boolean(),
+    hubBalanceRemaining: z.number().nonnegative(),
+    comped: z.boolean(),
     chosenEfficiency: EfficiencyProfile.optional(),
     now: EpochMs,
   })

@@ -2,10 +2,10 @@ import { z } from "zod";
 import { EfficiencyProfile } from "./common.js";
 
 /**
- * Schema for packages/config/plans.yaml (the owner's ladder, §12 of the brief).
- * Prices and allowances are config, never code. `mirror_matching_tier` means
- * "the owner fills this in from the matching tier on the reference ladder"; code
- * must treat it as UNSET and fail closed (e.g. managed allowance disabled in prod).
+ * Schema for packages/config/plans.yaml: the owner's Solo ladder (brief §12) plus
+ * the Chalito access each Chalyb hub tier grants. Prices and allowances are
+ * config, never code. `mirror_matching_tier` on a bundle means "use the mirrored
+ * tier's inclusions"; anywhere else code treats it as UNSET and fails closed.
  */
 export const MIRROR = "mirror_matching_tier" as const;
 export const Mirror = z.literal(MIRROR);
@@ -20,20 +20,17 @@ export const InclusionValue = z.union([z.number().nonnegative(), Mirror]);
 export const Inclusions = z.object({
   devices: InclusionValue,
   concurrentSessions: InclusionValue,
+  /** Monthly safety caps. Usage still draws on the billable-token balance. */
   voiceMinutes: InclusionValue,
   calls: InclusionValue,
   whatsapp: InclusionValue,
+  sms: InclusionValue,
   rooms: InclusionValue,
   membersPerRoom: InclusionValue,
-  managedAllowance: z.union([
-    z.object({
-      tokens: InclusionValue,
-      voiceMin: InclusionValue,
-      calls: InclusionValue,
-      whatsapp: InclusionValue,
-    }),
-    Mirror,
-  ]),
+  mesaBrains: InclusionValue,
+  /** Most expensive efficiency profile this tier may use (progressive access). */
+  maxProfile: EfficiencyProfile.exclude(["free_min"]),
+  managedAllowance: z.union([z.object({ billableTokens: InclusionValue }), Mirror]),
 });
 export type Inclusions = z.infer<typeof Inclusions>;
 
@@ -42,7 +39,7 @@ const Tier = z.object({
   priceUsd: z.number().positive(),
   approx: z.boolean().default(false),
   line: z.enum(["solo", "bundle"]),
-  /** Purchase paths. Ladder tiers are sold on the Solo site and through the Chalyb hand-off. */
+  /** Purchase paths. Ladder tiers are sold on the Solo site and through the Chalyb hub. */
   availableVia: z.array(z.enum(["solo", "chalyb"])).optional(),
   efficiencyDefault: EfficiencyProfile.exclude(["free_min"]),
   /** Bundles grant a ladder tier's entitlements. */
@@ -56,20 +53,29 @@ const Tier = z.object({
 });
 export type Tier = z.infer<typeof Tier>;
 
+/** Chalyb hub tiers. Their prices live in Chalyb; here only the Chalito access they grant. */
+export const HubTierId = z.enum(["gratis", "pro", "vip"]);
+export type HubTierId = z.infer<typeof HubTierId>;
+
+const PROFILE_RANK = { low: 0, standard: 1, max: 2 } as const;
+
 export const PlansConfig = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     currency: z.literal("USD"),
     interval: z.literal("month"),
+    billingUnit: z.object({ source: z.literal("chalyb_hub"), usdPerMillionBillable: z.number().positive() }),
+    hubTiers: z.record(HubTierId, z.object({ access: z.union([LadderTierId, z.literal("none")]) })),
     tiers: z.record(TierId, Tier),
     trial: z.object({
-      length: z.literal("P1M"),
+      source: z.literal("chalyb_hub"),
       mirrors: LadderTierId,
       managedAllowance: z.literal("free_min"),
     }),
     billing: z.object({
-      provider: z.enum(["stripe", "mercadopago"]),
-      stubs: z.array(z.enum(["stripe", "mercadopago"])).default([]),
+      provider: z.literal("chalyb_hub"),
+      checkoutCurrency: z.literal("MXN"),
+      soloMxnAmounts: z.union([z.literal("unset"), z.record(TierId, z.number().int().positive())]),
       freeMin: z.object({ priceUsd: z.literal(0), mode: z.enum(["deterministic", "cheap_llm"]) }),
       byo: z.object({ capped: z.literal(false), charged: z.literal(false) }),
     }),
@@ -78,17 +84,49 @@ export const PlansConfig = z
     efficiency: z.object({ userMayPickCheaper: z.boolean() }),
   })
   .superRefine((cfg, ctx) => {
-    const ids = TierId.options;
-    for (const id of ids) {
+    for (const id of TierId.options) {
       if (!cfg.tiers[id]) ctx.addIssue({ code: "custom", message: `missing tier ${id}`, path: ["tiers", id] });
     }
+    for (const id of HubTierId.options) {
+      if (!cfg.hubTiers[id]) ctx.addIssue({ code: "custom", message: `missing hub tier ${id}`, path: ["hubTiers", id] });
+    }
     for (const [id, t] of Object.entries(cfg.tiers)) {
+      const path = ["tiers", id];
       if (t.line === "bundle") {
-        if (!t.mirrors) ctx.addIssue({ code: "custom", message: "bundle must declare mirrors", path: ["tiers", id] });
-        if (t.creditBucket !== "none")
-          ctx.addIssue({ code: "custom", message: "bundles have no credit bucket", path: ["tiers", id] });
-      } else if (t.creditBucket !== "none" && t.creditBucket.priceUsd !== t.priceUsd) {
-        ctx.addIssue({ code: "custom", message: "bucket price must equal the tier's ladder price", path: ["tiers", id] });
+        if (!t.mirrors) ctx.addIssue({ code: "custom", message: "bundle must declare mirrors", path });
+        if (t.creditBucket !== "none") ctx.addIssue({ code: "custom", message: "bundles have no credit bucket", path });
+        continue;
+      }
+      if (t.creditBucket !== "none" && t.creditBucket.priceUsd !== t.priceUsd) {
+        ctx.addIssue({ code: "custom", message: "bucket price must equal the tier's ladder price", path });
+      }
+      if (t.inclusions === MIRROR) continue;
+      const inc = t.inclusions;
+      // The default profile can't be pricier than the tier's ceiling.
+      if (PROFILE_RANK[t.efficiencyDefault] > PROFILE_RANK[inc.maxProfile]) {
+        ctx.addIssue({ code: "custom", message: "efficiencyDefault exceeds maxProfile", path });
+      }
+      // Hub sizing rule: a fully spent allowance at billed prices never exceeds the price.
+      if (inc.managedAllowance !== MIRROR && isSet(inc.managedAllowance.billableTokens)) {
+        const billedUsd = (inc.managedAllowance.billableTokens / 1_000_000) * cfg.billingUnit.usdPerMillionBillable;
+        if (billedUsd > t.priceUsd) {
+          ctx.addIssue({ code: "custom", message: `allowance bills $${billedUsd} > price $${t.priceUsd}`, path });
+        }
+      }
+    }
+    // Progressive: ordering by price never decreases any numeric inclusion.
+    const ladder = Object.values(cfg.tiers)
+      .filter((t) => t.line === "solo" && t.inclusions !== MIRROR)
+      .sort((a, b) => a.priceUsd - b.priceUsd);
+    for (let i = 1; i < ladder.length; i++) {
+      const prev = ladder[i - 1]!.inclusions as Inclusions;
+      const cur = ladder[i]!.inclusions as Inclusions;
+      for (const k of Object.keys(cur) as (keyof Inclusions)[]) {
+        const a = prev[k];
+        const b = cur[k];
+        if (typeof a === "number" && typeof b === "number" && b < a) {
+          ctx.addIssue({ code: "custom", message: `${k} decreases from a cheaper tier`, path: ["tiers", ladder[i]!.displayName] });
+        }
       }
     }
   });

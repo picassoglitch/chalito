@@ -13,7 +13,7 @@
 - The TS SDK v2 (`@modelcontextprotocol/server` 2.3 + `@modelcontextprotocol/hono`) implements 2026-07-28. v1 (`@modelcontextprotocol/sdk`) is legacy.
 
 ## Decision
-- **Authorization server = Chalito's own OAuth endpoints on `api`.** They front Identity Platform sign-in, with 2FA required.
+- **Authorization server = Chalito's own OAuth endpoints on `api`.** Sign-in goes through the Chalyb hub SSO plus the user's Chalito passkey (ADR 0016).
   - Supported metadata: CIMD (`client_id_metadata_document_supported: true`, `token_endpoint_auth_methods_supported: ["none"]`) plus DCR for backward compatibility.
   - The consent screen lists scopes in Spanish/English.
   - Access tokens last 15 min. Refresh tokens rotate. The token audience is pinned to the `mcp-gateway` resource URL.

@@ -6,7 +6,8 @@
 **The phone is trusted client #1.** Pairing is a two-way, key-bound ceremony.
 
 1. **Phone enrolment.**
-   - The user signs in on the PWA with Identity Platform and **2FA required** (TOTP preferred, SMS allowed; see VERIFIED_APIS §GCP).
+   - The user signs in through the **Chalyb hub** (SSO launch to `chalito.chalyb.com/auth/sso`, ADR 0016). The PWA gets a Firebase custom token.
+   - The user enrols a **WebAuthn passkey** in Chalito. This is the second factor for every security action (pairing, endorsement, recovery, HIGH approvals), and its credential public key is later recorded by each agent during the reverse check (D-019, D-027).
    - The phone generates Ed25519 + X25519 keys in secure storage (ADR 0003) and registers `devices/{phoneId}` with its public keys.
    - It shows a **recovery code** (128-bit, Crockford base32). `api` stores only an Argon2id hash in `private/recovery`.
 2. **Agent request.**
@@ -35,7 +36,7 @@
 - `api` disables the device's Firebase user, revokes its refresh tokens, and flips `revoked` (rules deny).
 
 ## Recovery (only client lost)
-- Requires 2FA + recovery code + a **cool-down** (`security.recoveryCooldown`, default PT1H; owner decision #20).
+- Requires a hub sign-in + recovery code + a **cool-down** (`security.recoveryCooldown`, default PT1H; owner decision #20).
 - During the cool-down every device is alerted. After it, a new phone can enrol, but **each desktop must still confirm it locally**. Recovery alone can never approve anything.
 
 ## Why this order

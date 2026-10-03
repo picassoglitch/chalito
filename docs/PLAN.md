@@ -2,14 +2,18 @@
 
 - Owner: Aldo (picassoglitch)
 - Written: M0, 2026-10-03
-- Status: **awaiting owner "go"**
+- Status: **awaiting owner "go"** (revised 2026-10-03 after the owner's answers: Chalito is a Chalyb engine)
 
 This is the build plan for the Chalito beta. It is the milestone list from the brief, adjusted to the APIs verified on 2026-10-03 (`docs/VERIFIED_APIS.md`), with risks per milestone. Where the plan differs from the brief, the reason is in `/DEVIATIONS.md`. Design decisions are in `docs/adr/`. Security invariants are in `docs/THREAT_MODEL.md`.
 
 ## Ground rules carried into every milestone
+- **Chalito is a Chalyb engine** (ADR 0016).
+  - Accounts come through hub SSO. Payments (Mercado Pago), the trial, packs and the billable-token balance are the hub's.
+  - Chalito admits work before spending, reports every cost, and settles.
+  - It's still its own repo. Chalyb-side changes go in Chalyb's own PRs, with the owner's go.
 - **Official interfaces only.**
   - Claude Code via the Agent SDK, unmodified, under the user's own **API key** (D-002).
-  - Codex via `codex app-server`, under the user's own **API key** (D-003).
+  - Codex via `codex app-server`, under the user's own API key **or ChatGPT plan through official Sign in with ChatGPT** (D-003).
   - Brains via provider APIs. MCP connectors via their official features.
   - We never scrape or drive consumer UIs. We never touch claude.ai or ChatGPT credentials.
 - **The device is the root of trust.** Local policy is the ceiling. The local trusted-client list decides who can approve. Developer mode turns on only locally.
@@ -28,7 +32,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 ### M0: Planning (this commit)
 - **Delivered:**
   - `docs/VERIFIED_APIS.md`, this plan, 16 ADRs, `docs/THREAT_MODEL.md`, `DEVIATIONS.md`.
-  - `packages/protocol` zod schemas plus 15 schema tests: typecheck clean, tests green in an isolated scratch install.
+  - `packages/protocol` zod schemas plus 18 schema tests: typecheck clean, tests green in an isolated scratch install.
   - `packages/config/plans.yaml`, validated by `PlansConfig`.
 - **Review asks:** the protocol shapes below, `plans.yaml`, and the owner decisions at the end.
 
@@ -39,16 +43,19 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - `packages/crypto`: libsodium-wrappers — Ed25519, X25519 sealed boxes, `SealedEnvelope`, room keys with epochs, JCS canonicalization, nonce store interface.
   - `packages/brand`.
   - `packages/config` loaders (`plans.yaml` + stubs for `models.yaml`, `prices.yaml`, `catalog.yaml`, `rooms.yaml`, `render.yaml`, `providers.yaml`).
-  - Terraform `envs/dev` skeleton: project services, Artifact Registry, state bucket bootstrap doc, budget alert, service accounts. CI runs `fmt`/`validate`/`tflint`/`checkov`, and `plan` via WIF (no apply).
+  - `infra/terraform` for **Chalito-only resources in Chalyb's GCP project**: named Firestore database `chalito`, Pub/Sub, Cloud Tasks, KMS, buckets, BigQuery `chalito`, extra Cloud Run services and service accounts, with its own state. CI runs `fmt`/`validate`/`tflint`/`checkov`. No apply without the owner's go.
+  - The engine entry itself (SA, secrets, `api` service, domain mapping) goes in Chalyb's tfvars at M2.
 - **Done when:** CI green, `plans.yaml` validates, crypto and brand tests pass.
 - **Risks:**
   - The JCS implementation must match across runtimes (Node, bun, browser). Mitigation: shared test vectors.
-  - `terraform plan` needs a GCP project + WIF. Until OPS creates them, CI runs `validate` only.
+  - Chalyb's Terraform state is local on the owner's machine. Chalito keeps separate state so the two never collide.
 
 ### M2: Control plane + pairing (Chalito Glyph)
 - **Scope:**
-  - Terraform modules: Firestore in `us-central1` plus TTL fields, Pub/Sub plus DLQs, Cloud Tasks, Identity Platform with **MFA MANDATORY (TOTP + SMS)**, secret containers, KMS, Cloud Run services, BigQuery plus Pub/Sub→BQ subscriptions.
-  - `api` on Hono: auth middleware, phone-first pairing (ADR 0006), custom tokens, signed refresh challenge, endorsement, revocation, recovery with cool-down.
+  - Terraform modules: named Firestore database `chalito` in `us-central1` plus TTL fields, Pub/Sub plus DLQs, Cloud Tasks, secret containers, KMS, Cloud Run services, BigQuery plus Pub/Sub→BQ subscriptions.
+  - **Engine contract:** `/tenants` + `/tenants/{id}/status` on `api`, and `/auth/sso` on `web` (HMAC verify, relative `next`).
+  - Chalyb-side PR: definitions entry + `register_chalito_engine` migration (`coming_soon`) + tfvars + Vercel env. **Needs the owner's go.**
+  - `api` on Hono: Firebase custom tokens after SSO, passkey enrolment (second factor), phone-first pairing (ADR 0006), signed refresh challenge, endorsement, revocation, recovery with cool-down.
   - `packages/glyph`: ring encoder/decoder with RS + fountain coding and the short-code fallback.
   - `firestore.rules` + emulator tests.
   - WebAuthn credential registration bound to the reverse check (D-019).
@@ -62,7 +69,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - Approver-injection test.
   - Post-revocation sealing excludes the revoked key.
 - **Risks:**
-  - Identity Platform `MANDATORY` MFA enrolment UX is unverified (test in the dev tenant).
+  - The hub SSO secret becomes a high-value secret (THREAT_MODEL §4.14).
   - Firebase custom token TTL is fixed at 1 h, so the refresh loop must be robust offline.
   - Glyph camera decoding across phone cameras and screen refresh rates. Mitigation: tune symbol count and frame rate with real devices; the short code is always available.
   - Cloud Run domain mapping is Preview.
@@ -94,15 +101,18 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - `codex app-server` over stdio JSONL (D-021): `initialize`/`initialized`, `thread/start|resume`, `turn/start|interrupt`.
   - Approval requests → Approvals, answered with `accept|decline|cancel`.
   - Deltas coalesced into AgentEvents.
-  - API-key login only (D-003).
-  - Stretch: generic ACP adapter tested with `grok agent stdio` using `XAI_API_KEY` (D-022).
+  - Auth: API key, or **Sign in with ChatGPT** (official SIWC flow: PKCE + loopback, token handed to app-server via the `openai_chatgpt_plan` provider, refresh + restart + `thread/resume`). Gated `owner_only` until OpenAI approves (D-003).
+  - Stretch: generic ACP adapter tested with `grok agent stdio`, using the user's Grok Build login or `XAI_API_KEY` (D-022).
 - **AC:** contract tests on a recorded transcript; both adapters pass the shared `SessionAdapter` conformance suite.
 - **Risks:**
   - app-server is "experimental, not for production" and its protocol may change. Pin the Codex version range and generate types with `codex app-server generate-ts` into fixtures.
+  - OpenAI may not approve SIWC for a paid app, in which case public users stay on API keys.
+  - SIWC preview limits apply (`store:false`, no hosted tools).
+  - xAI has published no terms for third-party embedding of Grok Build logins.
 
 ### M5: Web/PWA + onboarding + in-app config
 - **Scope:**
-  - Next.js 16 (App Router, `proxy.ts`), next-intl 4 (`as-needed`, `localeDetection:false`), Tailwind, Firebase JS SDK, libsodium.
+  - Next.js 16 on **Vercel** at `chalito.chalyb.com` (App Router, `proxy.ts`), next-intl 4 (`as-needed`, `localeDetection:false`), Tailwind, Firebase JS SDK, libsodium.
   - WebAuthn step-up. FCM `register()` (D-015).
   - Inbox with countdown. Approve/deny with local signing.
   - Onboarding (7 steps, including the "Saltar" avatar step).
@@ -149,7 +159,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - `avatar-jobs`: validation, re-encode, image → 2.5D card, thumbnails.
   - Free roster: bear, animals, a few characters. **Source art via AI Studio**, rigged and exported to VRM, with provenance in `ASSET_PROVENANCE.md`.
   - Cosmetics slots/anchors, `catalog.yaml` (seed items `free: true`), store UI.
-  - Purchases via `BillingProvider` in a sandbox.
+  - Purchases paid from the hub balance (`store.purchase`; hub change D-030).
 - **AC:** brief M8, including the pay-to-win property test.
 - **Risks:**
   - Turning AI images into rigged VRMs takes manual or tooling effort. Budget time; the image-card avatar is the fallback.
@@ -187,16 +197,23 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - Listener read cost in busy rooms. Mitigation: addressed fan-out, TTL, load test in M15.
   - Firestore TTL lag (≤24 h typical), so a client-side filter is mandatory.
 
-### M12: Billing
+### M12: Hub billing integration
 - **Scope:**
-  - `BillingProvider` with the Stripe implementation (sandbox) and a Mercado Pago stub.
-  - Chalito-side trial (D-016). Entitlements (fail-closed allowance, unset counts not enforced: D-009).
-  - Ledger + balance transactions. Cost guard.
-  - Efficiency profiles. In-character out-of-energy flow. Solo line. OWNER_UIDS comped.
-- **AC:** brief M12.
+  - `packages/billing`: hub client (admit / usage / settle / balance), Firestore usage outbox + drainer, entitlements (hub tier or Solo tier → access row; progressive limits; `maxProfile`).
+  - Efficiency profiles. In-character out-of-energy flow. `/creditos` shows the hub balance and links to hub plans and packs.
+  - Solo line through the hub checkout ("Disponible pronto" until MXN amounts exist, D-031).
+  - OWNER_UIDS comped. Chalyb-side meter kinds (D-030).
+- **AC:**
+  - Every managed spend is admitted first; refused admits do no work.
+  - Usage events are idempotent across restarts (outbox test).
+  - BYO and Claude Code/Codex never produce billable events.
+  - Pay-to-win property.
+  - Out-of-energy e2e: no `role=dialog`, chip routes to `/creditos`.
+  - Hub outage: managed fails closed, approvals still work.
+  - Every price shown equals config.
 - **Risks:**
-  - Stripe entity (MX vs US) changes currency presentment (decision #23).
-  - CFDI invoicing for MX (OPS / accountant).
+  - Depends on hub uptime and contract stability.
+  - Meter kinds must be accepted by the hub.
 
 ### M13: Solo landing (real renders)
 - **Scope:** `scripts/render-showcase.ts` (Playwright + WebGL) exports real renders into `public/showcase/` with a manifest. Animated ES/EN landing. Plans section rendered from `plans.yaml`. Reduced-motion posters.
@@ -207,7 +224,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 - **Scope:**
   - Tauri bundles: AppImage/deb/rpm, NSIS, universal DMG.
   - Signing: Azure Artifact Signing, Developer ID + notarization with App Store Connect API keys (D-011).
-  - Updater with signed `latest.json` behind signed URLs. CI matrix producing **draft** releases. `/descargar`.
+  - Updater with signed `latest.json` behind signed URLs from a private bucket in Chalyb's project. CI matrix producing **draft** releases. `/descargar`.
 - **AC:** brief M14. **Publishing requires the owner's go**, and needs the Apple Developer account, Azure Artifact Signing, and the updater key (OPS).
 - **Risks:**
   - SmartScreen reputation ramp.
@@ -234,41 +251,43 @@ Everything is in `packages/protocol/src`, and every wire object has `v: 1`:
 | `room.ts` | `Room`, `RoomMember`, `RoomEvent`, `RoomEventBody` (data-only kinds), `RoomInvite` |
 | `glyph.ts` | `GlyphPayload` (signed; pairing ≤5 min), `PairingCode`, `ShortCode` |
 | `companion.ts` | `Companion`, `CompanionReply` (emotion mandatory; chips, never modals) |
-| `plans.ts` | `PlansConfig` for `plans.yaml`, with `mirror_matching_tier` sentinel and bucket = ladder price check |
-| `billing.ts` | `Purchase`, `LedgerEntry` (no negative balance; consume never adds), `Entitlements` (`safetyFeatures: true`), `EntitlementInputs` (`.strict()`, no inventory) |
+| `plans.ts` | `PlansConfig` for `plans.yaml`: Solo ladder + hub-tier access map; enforces bucket = ladder price, the hub sizing rule (allowance never bills more than the price) and monotonic progressive access |
+| `billing.ts` | Hub contract mirrors: `HubSsoPayload`, `HubTenantCreate`, `HubAdmitRequest/Response`, `HubUsageEvent` (token split must sum), `HubSettle`; `Entitlements` (`safetyFeatures: true`), `EntitlementInputs` (`.strict()`, no inventory) |
 
 ## Owner decisions
 See the end of the M0 hand-off message. The same list is mirrored here for the record.
 
-| # | Decision | Default shipped (config key) |
+| # | Decision | Status (2026-10-03) |
 |---|---|---|
-| 1 | Inclusions per tier (devices, sessions, voice min, calls, WhatsApp, rooms, members, managed allowance) | `mirror_matching_tier`. Managed allowance disabled until filled; count inclusions not enforced until filled (D-009) |
-| 2 | Which ladder tier each X-style bundle mirrors | `bundle_8` → Lite, `bundle_40` → Standard |
-| 3 | Efficiency ↔ tier mapping | Lite/bundle_8 `low`; Starter/Standard/bundle_40 `standard`; Plus/Heavy `max`; users may pick cheaper |
-| 4 | Solo includes `mcp-gateway`? | Yes, all tiers (`features.mcpGateway: all_tiers`) |
-| 5 | Efficiency tiers apply to Solo? | Yes |
-| 6 | `free_min` behaviour | Deterministic-only (`billing.freeMin.mode: deterministic`) |
-| 7 | Trial inclusions | Mirror Starter; managed `free_min` |
-| 8 | Credit expiry | Never (`credits.expiry: none`) |
-| 9 | Payments provider | Stripe + Mercado Pago stub |
-| 10 | Call briefing with plaintext lines | On for new users, with disclosure (`callBriefing.defaultEnabled: true`) |
-| 11 | Spanish credit line | Exact "powered by Chalito Bot" |
-| 12 | Room retention default | 24 h ephemeral, keep promoted |
-| 13 | "¿Lo agendo?" target | Chalito reminder + `.ics` |
-| 14 | Native phone apps | PWA in beta |
-| 15 | Urgency sharing in rooms | Off per member |
-| 16 | Cosmetic prices | Seed items free |
-| 17 | Twilio calling number | US local ($1.15/mo) |
-| 18 | Chalyb hand-off live | Off |
-| 19 | Claude Code BYO via subscription login | **Resolved by verification: API key only** unless Anthropic approves in writing (D-002) |
-| 20 | Recovery cool-down | 1 h |
-| 21 | **New:** Bundle the `claude` binary vs use the user's install | Use the user's install (D-008) |
-| 22 | **New:** Domain | Owner registers it; docs placeholder `chalito.app` |
-| 23 | **New:** Stripe entity (US vs MX) | Undecided; code is entity-agnostic; USD prices; sandbox only |
-| 24 | **New:** Windows signing | Azure Artifact Signing |
-| 25 | **New:** Front door | Firebase Hosting (+ domain mapping for `api.`/`mcp.`); ALB later |
-| 26 | **New:** Codex ChatGPT-plan login | Off; API key only until OpenAI approves (D-003) |
-| 27 | **New:** Grok Build subscription login over ACP | Off; `XAI_API_KEY` (D-022) |
-| 28 | **New:** Unsigned prompt origins (`mcp:*`, `call:*`) default | On (brief), tightenable; alternative: off by default |
-| 29 | **New:** Spoken PIN before callLines on calls | Off |
-| 30 | **New:** Firestore location | `us-central1` (alternative `nam5`) |
+| 1 | Inclusions per tier | **Owner: progressive, margin first.** Filled in `plans.yaml` (D-009); review the numbers. |
+| 2 | Bundle → tier mirror | Default accepted: `bundle_8` → Lite, `bundle_40` → Standard |
+| 3 | Efficiency ↔ tier | Accepted |
+| 4 | Solo includes MCP gateway | Accepted: all tiers |
+| 5 | Efficiency on Solo | Accepted |
+| 6 | `free_min` behaviour | Accepted: deterministic-only |
+| 7 | Trial | **Owner: align with the Chalyb standard.** The hub's trial rules (D-026). |
+| 8 | Credit expiry | Accepted: never |
+| 9 | Payments | **Owner: the Chalyb hub (Mercado Pago), as for ChalyClip.** No Stripe (ADR 0012/0016). |
+| 10 | Call briefing lines | Accepted: on, with disclosure |
+| 11 | Credit line language | **Owner: follow the user's language** (D-028) |
+| 12 | Room retention | Accepted: 24 h, keep promoted |
+| 13 | "¿Lo agendo?" target | Accepted: reminder + `.ics` |
+| 14 | Native phone apps | **Pending** (PWA meanwhile) |
+| 15 | Room urgency sharing | Accepted: off |
+| 16 | Cosmetic prices | Accepted: seed items free |
+| 17 | Twilio number | **Pending** (US local assumed in docs) |
+| 18 | Chalyb integration live | **Owner: on.** Chalito is a Chalyb engine (D-025). |
+| 19 | Claude Code via subscription login | API key only unless Anthropic approves; owner may ask Anthropic |
+| 20 | Recovery cool-down | Accepted: 1 h |
+| 21 | Bundle `claude` binary | Accepted: use the user's install |
+| 22 | Domain | **Owner: `chalito.chalyb.com`**; owner is checking own Chalito domains |
+| 23 | Stripe entity | **Owner: no Stripe** (moot) |
+| 24 | Windows signing | **Pending** |
+| 25 | Front door | **Owner: Vercel** (ADR 0015) |
+| 26 | Codex ChatGPT plan | **Owner: make it work.** Official SIWC, `owner_only` until OpenAI approves (D-003) |
+| 27 | Grok Build login | **Owner: on** (D-022) |
+| 28 | Unsigned origins default | Accepted: on, tightenable |
+| 29 | Spoken PIN on calls | **Owner: feature toggle, default off** |
+| 30 | Firestore location | Accepted: `us-central1` (named database `chalito`) |
+| 31 | **New:** MXN charge amounts for the Solo USD ladder on the hub | Unset; Solo checkout "Disponible pronto" until set |
+| 32 | **New:** Hub changes for Chalito meter kinds + `store.purchase` | Proposed for the Chalyb PR at M2/M12 (D-030) |

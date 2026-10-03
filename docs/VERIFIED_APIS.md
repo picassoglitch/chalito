@@ -9,21 +9,22 @@ Checked on **2026-10-03** against official docs, package type definitions (`npm 
 | Claude Code BYO | The Agent SDK docs say: "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK." | Claude Code BYO is **API key only** (decision #19 resolves to the safe default). The env is pinned so the CLI never falls back to `/login`. |
 | Agent SDK | 6 permission modes (`default, acceptEdits, bypassPermissions, plan, dontAsk, auto`). Omitting `permissionMode` may resolve to `auto` (≥0.3.286). `canUseTool` never fires for auto-approved calls; PreToolUse runs on every call (600 s default timeout). | The adapter always passes `'default'`. The policy gate is a PreToolUse hook with timeout > 10 min. Remote modes are limited to `default/plan/acceptEdits`. |
 | Agent SDK packaging | No `cli.js`; it spawns a ~245 MB native `claude` binary. | The agent uses the user's installed Claude Code (`pathToClaudeCodeExecutable`), see ADR 0004. |
-| Codex BYO | "App-server authentication has never been permitted for commercial or hosted services." Sign in with ChatGPT for paid apps is waitlist-gated. app-server is "experimental". | Codex BYO is **API key only** until OpenAI approves (new decision #26). Version pinning plus a conformance suite. |
+| Codex BYO | "App-server authentication has never been permitted for commercial or hosted services." Sign in with ChatGPT for paid apps is waitlist-gated. app-server is "experimental". | Codex uses the official SIWC flow (owner: "make it work"), `owner_only` until OpenAI approves, plus API key (D-003). Version pinning plus a conformance suite. |
 | Codex protocol | JSONL, no `jsonrpc` field. `item/commandExecution/requestApproval` / `item/fileChange/requestApproval` → `{decision: accept\|acceptForSession\|decline\|cancel}`. Sandbox `read-only\|workspace-write\|danger-full-access`. | `RemoteCodexSandbox` = `read-only\|workspace-write`. |
-| Grok Build | Exists; `grok agent stdio` speaks ACP. A Grok Build login draws on the user's Grok subscription. No terms for third-party embedding. | ACP adapter (stretch) uses the API key by default (new decision #27). |
+| Grok Build | Exists; `grok agent stdio` speaks ACP. A Grok Build login draws on the user's Grok subscription. No terms for third-party embedding. | Owner: Grok Build login on, plus API key (D-022). |
 | Realtime | `gpt-realtime-2.1-mini` exists ($10/$20 per 1M audio tokens). `client_secrets`, `/v1/realtime/calls`, SIP and `realtime.call.incoming` all confirmed. GPT-Live is OpenAI's new lead voice product. | As specified. GPT-Live noted as a future adapter. |
 | Twilio → OpenAI SIP | Programmable Voice `<Dial><Sip>` works without Elastic SIP Trunking (Twilio tutorial). OpenAI requires TLS + SRTP. | `;transport=tls;secure=true`. Media Streams fallback kept. |
 | WhatsApp | Graph **v26.0**. Since **2026-10-01** utility messages are billed even inside the 24 h window (MX USD 0.0085). Unverified businesses are limited to 250 recipients/day. | Cost model updated. Business verification is an early OPS task. |
 | Twilio voices | No Google es-MX voices; use `Polly.Mia-Neural`. Gather's `phone_call` model lacks es-MX. | Config defaults set accordingly. |
 | FCM | `getToken()` deprecated → `register()`/`onRegistered()` with Firebase Installation IDs. | Web push uses the new API. |
 | Firestore TTL | Typically deleted **within 24 h**. TTL deletes are billed. | Clients filter `expireAt`. |
-| Region | Cloud Tasks and Vertex gen-AI are not in `northamerica-south1`. Cloud Run domain mapping is Preview, us-central1 yes / us-south1 no. | **us-central1**. Firebase Hosting front door (ADR 0015). |
+| Region | Cloud Tasks and Vertex gen-AI are not in `northamerica-south1`. Cloud Run domain mapping is Preview, us-central1 yes / us-south1 no. | **us-central1** in Chalyb's project. Web on Vercel (ADR 0015). |
 | Cheap model | `gemini-2.5-flash-lite` retires 2026-10-20. `gemini-3.1-flash-lite` ($0.25/$1.50) is global/multi-region only. Regional +10% applies to Gemini 3+. Haiku 4.5 may retire after 2026-10-15. | `models.yaml` router = `gemini-3.1-flash-lite@global`, fallback `gpt-6-luna`. Haiku 4.5 is not a hard dependency. |
-| Stripe | Trial Offer API not supported in Checkout (legacy `trial_end` still is). An MX account settles MXN only, and Adaptive Pricing needs the price currency to be a settlement currency. OXXO/SPEI can't do subscriptions. Sandboxes over test mode. | Chalito-side trial. Entity decision #23. |
+| Stripe | Trial Offer API not supported in Checkout (legacy `trial_end` still is). An MX account settles MXN only, and Adaptive Pricing needs the price currency to be a settlement currency. OXXO/SPEI can't do subscriptions. Sandboxes over test mode. | **Moot:** the owner chose the Chalyb hub (Mercado Pago), no Stripe (ADR 0012). Kept for reference. |
 | MCP | Spec **2026-07-28**: CIMD SHOULD, DCR deprecated, RFC 9728/8707/9207. TS SDK v2 split packages. Claude connectors work on Free (1). ChatGPT Developer mode: Plus/Pro/Business/Enterprise/Edu; "Apps" are now "Plugins". | ADR 0009. |
-| Identity Platform | MFA = SMS + TOTP, `MANDATORY` state exists. **No native passkeys.** | WebAuthn step-up implemented by us (verified on the device via a signed assertion claim; see THREAT_MODEL). |
+| Identity Platform | MFA = SMS + TOTP, `MANDATORY` state exists. **No native passkeys.** | Moot for sign-in: accounts come through Chalyb hub SSO. The second factor is a Chalito WebAuthn passkey verified by the device (D-019, D-027). |
 | Tauri | 2.12.1. `macOSPrivateApi` no-op. No per-pixel hit-test; `cursorPosition()` returns (0,0) on native Wayland. EV no longer bypasses SmartScreen. Artifact Signing (ex-Trusted Signing). `APPLE_PASSWORD` (not `APPLE_APP_SPECIFIC_PASSWORD`). | ADR 0014, D-006, D-011. |
+| Chalyb hub (internal) | Engine contract: HMAC-SHA256 SSO launch token (300 s), `POST /tenants` (409 = success), `/usage/admit` → reservation + lane, `/usage` (≤100 events, `cost_usd_micros` required, idempotent `source_id`), `/usage/settle`. Billable = cost × (1 + margin 160%) at $4/1M. | Chalito integrates as engine `chalito` (ADR 0016). |
 | Agent packaging | Node 22 SEA experimental and CJS-only; keytar archived; a Windows Service can't read user credentials. | bun `--compile`, `@napi-rs/keyring`, per-user Scheduled Task (ADR 0004). |
 
 
@@ -1124,3 +1125,32 @@ Note: Google Cloud docs moved from `cloud.google.com/.../docs` to `docs.cloud.go
 - Whether `iam.serviceAccountTokenCreator` on the Pub/Sub service agent is still needed for new projects: the docs say it is. Not re-tested.
 - Hono vs Fastify performance on Cloud Run: no official benchmark consulted.
 - Native passkey support in Identity Platform: no official statement either way (treat as unavailable).
+
+---
+
+## Chalyb hub engine contract (internal)
+
+Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landing-clip-images` (`4ed57c9`, the branch on prod): `docs/engines/consumption-contract.md`, `docs/infra/adding-an-engine.md`, `src/lib/engines/integrations/factory.ts`, `src/app/auth/launch/[slug]/route.ts`, `src/config/pricing.ts`.
+
+- **Provisioning:**
+  - `POST {admin_api_base}/tenants` with `Authorization: Bearer <SLUG>_ADMIN_TOKEN`, body `{external_user_id, email, display_name, tier}`. Returns `{tenant_id, api_token}` (200/201). A 409 `{error:'duplicate', tenant_id, api_token}` counts as success.
+  - `POST /tenants/{tenant_id}/status {status:'active'|'paused'}` → 200/204.
+- **SSO:** `GET {external_url}/auth/sso?token=<hmac>&next=<relative>`.
+  - Token = `base64url(JSON{user_id,email,tenant_id,tier,exp}) + "." + base64url(HMAC-SHA256(secret, body))`. The default TTL is 300 s, and the secret is `<SLUG>_SSO_SECRET`.
+  - `next` must be rejected if absolute or off-origin.
+  - The hub only launches to `active` engines. New engines ship `coming_soon` via a migration.
+- **Consumption** (`{CHALYB_BASE_URL}/api/engines/{slug}`, engine bearer):
+  - `POST /usage/admit` takes `{external_user_id, external_job_id, class: job|stream, operation, est_tokens, upload_mb, source_minutes, storage_mb_after, boost, ttl_seconds}` and returns `{allowed, reservation_id, lane: standard|boost, boost_fee_tokens, limits, balance}`. A refusal returns `{allowed:false, reason}`, where `reason` is one of `upload_too_large`, `video_too_long`, `storage_full`, `minutes_cap`, `jobs_cap`, `concurrency`, `streams_cap`, `no_tokens` or `boost_unavailable`. Re-admitting the same `external_job_id` updates the reservation. Reservations expire (TTL, default 3 h); `heartbeat` extends them.
+  - `POST /usage`:
+    - At most 100 events. `amount` is an integer from 0 to 10^12. `cost_usd_micros` is an integer from 0 to 10^9 and is **required on every event**.
+    - `occurred_at` must be within the last 7 days and no more than 5 min in the future.
+    - Optional `reservation_id`. For `llm.tokens`, `metadata.tokens {input, output, cache_read, cache_write}` must sum to `amount`.
+    - Idempotent on `(engine, source_id)`. A 4xx other than 408/429 is permanent (mark dead and alert).
+  - `POST /usage/settle {reservation_id, outcome: succeeded|failed|cancelled|heartbeat}`. Settling twice is a no-op.
+  - Billing: `billable_tokens = max(1, ceil(cost_usd_micros × (1 + margin) / 4))`. The margin is `app_settings.usage_margin_percent`, default 160%, and is frozen per event. 4 micros = $4 per 1M billable tokens. `boost.fee` events are already a price: `ceil(cost/4)`.
+  - Meter kinds documented today: `llm.tokens`, `transcription.seconds`, `compute.seconds`, `storage.gb_month`, `stream.minutes`, `engine.base`. **Chalito's `voice.seconds`, `call.seconds`, `whatsapp.messages`, `sms.segments` and `store.purchase` must be confirmed or added on the hub (D-030).**
+  - `compute.seconds` list rates (us-central1): standard 4 vCPU/8 GiB = 88 µ$/s, boost 8 vCPU/32 GiB = 208 µ$/s.
+- **Infra:**
+  - A new engine = one `engines` map entry in Chalyb's `infra/terraform/terraform.tfvars`: SA, 3 secrets, public scale-to-zero Cloud Run, bucket access, domain mapping `<slug>.chalyb.com`.
+  - Workers need `cpu_idle = false`. Scheduled jobs default to paused.
+- **Hub pricing (MXN, before 16% IVA):** Pro $749/mo, $7,490/yr; VIP $2,499/mo; packs 100k $149, 500k $599, 2M $1,999. The trial and its rules live in `PRICING.trial`; Chalito follows them (D-026).

@@ -2,6 +2,8 @@
 
 An animated, lifelike AI companion. It runs your AI team (Claude Code, Codex, API brains), talks to you by voice, escalates urgent things to push, WhatsApp and phone calls, and meets other people's companions in shared rooms.
 
+Chalito is a [Chalyb](https://www.chalyb.com) engine: accounts, plans and payments come from the Chalyb hub.
+
 **Status: M0, planning.** No product code yet.
 
 - Plan and milestones: [`docs/PLAN.md`](docs/PLAN.md)
