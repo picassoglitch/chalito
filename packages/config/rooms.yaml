@@ -1,0 +1,10 @@
+schemaVersion: 1
+defaults:
+  ephemeralTtl: PT24H # decision #12
+  keepPromoted: true
+allowedEphemeralTtl: [PT1H, PT24H, P7D, P30D, until_dissolved]
+invites:
+  ttl: P7D
+  maxUses: 1
+shareUrgencyDefault: false # decision #15
+scheduleTarget: internal_ics # decision #13

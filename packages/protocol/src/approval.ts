@@ -1,16 +1,5 @@
 import { z } from "zod";
-import {
-  ApprovalId,
-  b64url,
-  DeviceId,
-  EpochMs,
-  Id,
-  Origin,
-  ReplayNonce,
-  RiskTier,
-  SessionId,
-  Uid,
-} from "./common.js";
+import { ApprovalId, b64url, DeviceId, EpochMs, Id, Origin, ReplayNonce, RiskTier, SessionId, Uid } from "./common.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 
 /** Approvals expire 10 minutes after creation; an unanswered approval is a deny. */

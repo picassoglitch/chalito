@@ -120,7 +120,10 @@ export const HubUsageEvent = z
     (e) =>
       e.kind !== "llm.tokens" ||
       !e.metadata?.tokens ||
-      e.metadata.tokens.input + e.metadata.tokens.output + e.metadata.tokens.cache_read + e.metadata.tokens.cache_write ===
+      e.metadata.tokens.input +
+        e.metadata.tokens.output +
+        e.metadata.tokens.cache_read +
+        e.metadata.tokens.cache_write ===
         e.amount,
     { message: "llm.tokens amount must equal the sum of the token split" },
   );

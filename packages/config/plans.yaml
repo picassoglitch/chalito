@@ -33,7 +33,7 @@ billingUnit:
 # The token allowance comes from the hub's own balance.
 hubTiers:
   gratis:
-    access: none             # BYO keys + free_min only
+    access: none # BYO keys + free_min only
   pro:
     access: standard
   vip:
@@ -46,9 +46,9 @@ tiers:
     approx: true
     line: bundle
     efficiencyDefault: low
-    mirrors: lite              # owner decision #2
+    mirrors: lite # owner decision #2
     creditBucket: none
-    inclusions: mirror_matching_tier   # bundles take their mirrored tier's inclusions
+    inclusions: mirror_matching_tier # bundles take their mirrored tier's inclusions
     sortOrder: 10
 
   lite:
@@ -127,7 +127,7 @@ tiers:
     approx: true
     line: bundle
     efficiencyDefault: standard
-    mirrors: standard          # owner decision #2
+    mirrors: standard # owner decision #2
     creditBucket: none
     inclusions: mirror_matching_tier
     sortOrder: 50
@@ -179,28 +179,28 @@ tiers:
     sortOrder: 70
 
 trial:
-  source: chalyb_hub           # owner decision #7: the hub's trial rules apply, not the brief's P1M
+  source: chalyb_hub # owner decision #7: the hub's trial rules apply, not the brief's P1M
   mirrors: starter
   managedAllowance: free_min
 
 billing:
-  provider: chalyb_hub         # owner decision #9: hub Mercado Pago, as for ChalyClip. No Stripe.
-  checkoutCurrency: MXN        # Mercado Pago MX charges MXN
+  provider: chalyb_hub # owner decision #9: hub Mercado Pago, as for ChalyClip. No Stripe.
+  checkoutCurrency: MXN # Mercado Pago MX charges MXN
   # Solo USD tiers need owner-set MXN charge amounts on the hub. Until then,
   # Solo checkout shows "Disponible pronto" (decision #31).
   soloMxnAmounts: unset
   freeMin:
     priceUsd: 0
-    mode: deterministic        # owner decision #6
+    mode: deterministic # owner decision #6
   byo:
     capped: false
     charged: false
 
 credits:
-  expiry: none                 # owner decision #8
+  expiry: none # owner decision #8
 
 features:
-  mcpGateway: all_tiers        # owner decision #4
+  mcpGateway: all_tiers # owner decision #4
 
 efficiency:
-  userMayPickCheaper: true     # owner decision #3
+  userMayPickCheaper: true # owner decision #3

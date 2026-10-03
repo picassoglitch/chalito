@@ -88,7 +88,8 @@ export const PlansConfig = z
       if (!cfg.tiers[id]) ctx.addIssue({ code: "custom", message: `missing tier ${id}`, path: ["tiers", id] });
     }
     for (const id of HubTierId.options) {
-      if (!cfg.hubTiers[id]) ctx.addIssue({ code: "custom", message: `missing hub tier ${id}`, path: ["hubTiers", id] });
+      if (!cfg.hubTiers[id])
+        ctx.addIssue({ code: "custom", message: `missing hub tier ${id}`, path: ["hubTiers", id] });
     }
     for (const [id, t] of Object.entries(cfg.tiers)) {
       const path = ["tiers", id];
@@ -125,7 +126,11 @@ export const PlansConfig = z
         const a = prev[k];
         const b = cur[k];
         if (typeof a === "number" && typeof b === "number" && b < a) {
-          ctx.addIssue({ code: "custom", message: `${k} decreases from a cheaper tier`, path: ["tiers", ladder[i]!.displayName] });
+          ctx.addIssue({
+            code: "custom",
+            message: `${k} decreases from a cheaper tier`,
+            path: ["tiers", ladder[i]!.displayName],
+          });
         }
       }
     }

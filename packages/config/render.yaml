@@ -1,0 +1,9 @@
+schemaVersion: 1
+default: auto
+levels:
+  bajo: { fpsCap: 30, shadows: false, impostors: true, pixelRatioMax: 1.0 }
+  medio: { fpsCap: 45, shadows: false, impostors: false, pixelRatioMax: 1.5 }
+  alto: { fpsCap: 60, shadows: true, impostors: false, pixelRatioMax: 2.0 }
+auto:
+  probeSeconds: 3
+  downgradeBelowFps: 40

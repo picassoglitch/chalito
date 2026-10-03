@@ -1,0 +1,3 @@
+# Copy to backend.hcl (git-ignored).
+bucket = ""
+prefix = "chalito/dev"
