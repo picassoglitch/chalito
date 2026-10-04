@@ -56,6 +56,18 @@ export interface ApiRepo {
   // ---- notifications ----
   createNotification(owner: string, nid: string, doc: Record<string, unknown>): Promise<void>;
 
+  // ---- WebAuthn passkeys (D-019/D-034) ----
+  /** Stores the pending challenge for one device and purpose, replacing any earlier one. */
+  putWebAuthnChallenge(c: WebAuthnChallenge): Promise<void>;
+  /**
+   * Atomic and single-use: returns the device's pending challenge for `purpose` and deletes it;
+   * null if there is none or it expired by `now`.
+   */
+  takeWebAuthnChallenge(owner: string, deviceId: string, purpose: WebAuthnPurpose, now: number): Promise<string | null>;
+  /** Records the device's passkey on its device record; false if the device doesn't exist. */
+  setDeviceWebAuthn(owner: string, deviceId: string, cred: StoredWebAuthnCredential): Promise<boolean>;
+  getDeviceWebAuthn(owner: string, deviceId: string): Promise<StoredWebAuthnCredential | null>;
+
   // ---- pairing ----
   /** "exists" if the code id was already published. */
   createPairingCode(doc: PairingCodeDoc): Promise<"created" | "exists">;
@@ -83,6 +95,27 @@ export interface ApiRepo {
   ): Promise<
     { ok: true; agentDeviceId: string } | { ok: false; reason: "not_found" | "already_claimed" | "device_exists" }
   >;
+}
+
+export type WebAuthnPurpose = "register" | "assert";
+
+export interface WebAuthnChallenge {
+  owner: string;
+  deviceId: string;
+  purpose: WebAuthnPurpose;
+  /** base64url, as @simplewebauthn/server issues it. */
+  challenge: string;
+  expiresAt: number;
+}
+
+/** A device's passkey. `publicKey` is the base64url COSE key agents verify step-ups against. */
+export interface StoredWebAuthnCredential {
+  credentialId: string;
+  publicKey: string;
+  rpId: string;
+  counter: number;
+  transports: string[];
+  createdAt: number;
 }
 
 export type TenantStatus = z.infer<typeof HubTenantStatus>["status"];

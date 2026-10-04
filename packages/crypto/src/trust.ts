@@ -2,6 +2,7 @@ import type { Endorsement } from "@chalito/protocol";
 import { fromB64url } from "./encoding.js";
 import type { NonceStore } from "./nonce.js";
 import { verifyEnvelope, type SignedEnvelope } from "./sign.js";
+import type { WebAuthnCredentialRef } from "./webauthn.js";
 
 export interface TrustedClient {
   deviceId: string;
@@ -10,6 +11,11 @@ export interface TrustedClient {
   /** How the device learned to trust this key. Never "server". */
   via: "local_confirmation" | "endorsement";
   addedAt: number;
+  /**
+   * The client's passkey, recorded on this device at the local reverse check (D-019). HIGH and
+   * CRITICAL approvals from this client need an assertion verified against it.
+   */
+  webauthn?: WebAuthnCredentialRef;
 }
 
 export type DecisionCheck =
@@ -65,9 +71,25 @@ export class TrustedClientList {
     return Object.fromEntries([...this.#clients.values()].map((c) => [c.deviceId, c.pubBox]));
   }
 
-  /** After the user confirmed the client's fingerprint on this device. */
+  /** After the user confirmed the client's fingerprint (and, if shown, its passkey) on this device. */
   async addConfirmed(c: Omit<TrustedClient, "via" | "addedAt">, now: number): Promise<void> {
     await this.#put({ ...c, via: "local_confirmation", addedAt: now });
+  }
+
+  /** The passkey recorded for a trusted client, if any. */
+  webauthnFor(deviceId: string): WebAuthnCredentialRef | undefined {
+    return this.#clients.get(deviceId)?.webauthn;
+  }
+
+  /**
+   * Records (or replaces) a trusted client's passkey. Call it only after a local confirmation on
+   * this device, never because the cloud said so. False if the client isn't trusted here.
+   */
+  setWebAuthn(deviceId: string, credential: WebAuthnCredentialRef): boolean {
+    const c = this.#clients.get(deviceId);
+    if (!c) return false;
+    this.#clients.set(deviceId, { ...c, webauthn: credential });
+    return true;
   }
 
   /** A new client vouched for by a client already in this list. */
