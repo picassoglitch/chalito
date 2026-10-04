@@ -74,6 +74,25 @@ describe("commands", () => {
     await assertFails(setDoc(doc(as("user", U), `users/${U}/devices/agent1/commands/c2`), cmd()));
     await assertFails(setDoc(doc(as("agent", U, "agent1"), `users/${U}/devices/agent1/commands/c2`), cmd("agent1")));
   });
+  it("a client can't write an unsigned relayed command or a non-command envelope", async () => {
+    const at = doc(as("client", U, "phone1"), `users/${U}/devices/agent1/commands/c2`);
+    await assertFails(
+      setDoc(at, {
+        env: { relayedBy: "mcp-gateway", body: { origin: "mcp:claude" } },
+        createdAt: 2,
+        fromDeviceId: "phone1",
+      }),
+    );
+    await assertFails(
+      setDoc(at, {
+        env: { ctx: "chalito.command.v1", relayedBy: "mcp-gateway" },
+        createdAt: 2,
+        fromDeviceId: "phone1",
+      }),
+    );
+    await assertFails(setDoc(at, { env: { ctx: "chalito.decision.v1" }, createdAt: 2, fromDeviceId: "phone1" }));
+    await assertFails(setDoc(at, { env: {}, createdAt: 2, fromDeviceId: "phone1" }));
+  });
   it("a client can't spoof the sender", async () => {
     await assertFails(
       setDoc(doc(as("client", U, "phone1"), `users/${U}/devices/agent1/commands/c2`), cmd("someoneelse")),
@@ -83,6 +102,28 @@ describe("commands", () => {
     await assertSucceeds(getDoc(doc(as("agent", U, "agent1"), `users/${U}/devices/agent1/commands/c1`)));
     await assertFails(getDoc(doc(as("client", U, "phone1"), `users/${U}/devices/agent1/commands/c1`)));
     await assertFails(getDoc(doc(as("agent", U, "oldagent"), `users/${U}/devices/agent1/commands/c1`)));
+  });
+});
+
+describe("audit trail", () => {
+  const entry = (deviceId = "agent1") => ({ t: 1, type: "command.rejected", meta: {}, source: "agent", deviceId });
+  const at = (role: string, dev: string, path = "agent1/audit/e1") =>
+    doc(as(role, U, dev), `users/${U}/devices/${path}`);
+  it("the active agent appends entries about itself; members read them", async () => {
+    await assertSucceeds(setDoc(at("agent", "agent1"), entry()));
+    await assertSucceeds(getDoc(doc(as("client", U, "phone1"), `users/${U}/devices/agent1/audit/e1`)));
+  });
+  it("entries can't be updated or deleted, even by the agent", async () => {
+    await assertSucceeds(setDoc(at("agent", "agent1"), entry()));
+    await assertFails(updateDoc(at("agent", "agent1"), { type: "x" }));
+    await assertFails(deleteDoc(at("agent", "agent1")));
+  });
+  it("no one else writes a device's audit: other agents, revoked agents, clients, extra fields", async () => {
+    await assertFails(setDoc(at("agent", "oldagent", "oldagent/audit/e1"), entry("oldagent")));
+    await assertFails(setDoc(at("client", "phone1"), entry()));
+    await assertFails(setDoc(at("agent", "agent1"), entry("phone1")));
+    await assertFails(setDoc(at("agent", "agent1"), { ...entry(), extra: true }));
+    await assertFails(getDoc(doc(as("client", "someone-else", "phoneX"), `users/${U}/devices/agent1/audit/e1`)));
   });
 });
 

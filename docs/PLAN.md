@@ -2,7 +2,7 @@
 
 - Owner: Aldo (picassoglitch)
 - Written: M0, 2026-10-03
-- Status: **awaiting owner "go"** (revised 2026-10-03 after the owner's answers: Chalito is a Chalyb engine)
+- Status: **M0–M2 done; M3 in progress** (updated 2026-10-03). Revised 2026-10-03 after the owner's answers: Chalito is a Chalyb engine.
 
 This is the build plan for the Chalito beta. It is the milestone list from the brief, adjusted to the APIs verified on 2026-10-03 (`docs/VERIFIED_APIS.md`), with risks per milestone. Where the plan differs from the brief, the reason is in `/DEVIATIONS.md`. Design decisions are in `docs/adr/`. Security invariants are in `docs/THREAT_MODEL.md`.
 
@@ -30,6 +30,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 ## Milestones
 
 ### M0: Planning (this commit)
+- **Status:** done. The first commit on `main`.
 - **Delivered:**
   - `docs/VERIFIED_APIS.md`, this plan, 16 ADRs, `docs/THREAT_MODEL.md`, `DEVIATIONS.md`.
   - `packages/protocol` zod schemas plus 18 schema tests: typecheck clean, tests green in an isolated scratch install.
@@ -37,6 +38,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 - **Review asks:** the protocol shapes below, `plans.yaml`, and the owner decisions at the end.
 
 ### M1: Foundations + brand
+- **Status:** done. PR #1 (`m1-foundations`), CI green, waiting for the owner's merge.
 - **Scope:**
   - Root `package.json`, `pnpm-workspace.yaml`, `turbo.json`, TS strict presets, ESLint + Prettier, Vitest.
   - CI (GitHub Actions): lint, typecheck, test, gitleaks, `lint:brand`, currency-literal lint.
@@ -51,6 +53,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - Chalyb's Terraform state is local on the owner's machine. Chalito keeps separate state so the two never collide.
 
 ### M2: Control plane + pairing (Chalito Glyph)
+- **Status:** done. PR #2 (`m2-control-plane`, stacked on #1), CI green including the emulator job, waiting for the owner's merge. Nothing applied to live cloud. WebAuthn registration moved to M5 (D-034).
 - **Scope:**
   - Terraform modules: named Firestore database `chalito` in `us-central1` plus TTL fields, Pub/Sub plus DLQs, Cloud Tasks, secret containers, KMS, Cloud Run services, BigQuery plus Pub/Sub→BQ subscriptions.
   - **Engine contract:** `/tenants` + `/tenants/{id}/status` on `api`, and `/auth/sso` on `web` (HMAC verify, relative `next`).
@@ -75,6 +78,10 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - Cloud Run domain mapping is Preview.
 
 ### M3: Device agent + Claude Code adapter + signed approvals
+- **Status:** in progress on `m3-agent` (stacked on M2).
+  - Done: policy engine and classifier, Developer mode, signed trust store, approvals, Claude Code adapter with the fake Claude Code tests, Firestore store, service definitions.
+  - In progress: the `chalito` CLI and daemon (`m3-cli`), the compiled-binary build (`m3-build`), and the classifier hardening from the security review (`m3-classify`; see `docs/reviews/m3-security-review.md`).
+  - Still to do: the real run in `scripts/e2e-claude.md`.
 - **Scope:**
   - `chalito-agent`, built with bun `--compile` and checked by a smoke test that `@napi-rs/keyring` loads.
   - Keychain keys, signed trusted-client list, `policy.yaml` with tiers and `policyHash`, Developer mode (local OS auth + triple confirm + liability record), origins policy.

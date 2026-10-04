@@ -24,3 +24,23 @@ export const loadProviders = (dir?: string) => load(ProvidersConfig, "providers.
 export const loadRooms = (dir?: string) => load(RoomsConfig, "rooms.yaml", dir);
 export const loadRender = (dir?: string) => load(RenderConfig, "render.yaml", dir);
 export const loadCatalog = (dir?: string) => load(CatalogConfig, "catalog.yaml", dir);
+
+export interface LiabilityText {
+  locale: "es" | "en";
+  version: number;
+  /** Phrase the user must type to accept. */
+  phrase: string;
+  text: string;
+}
+
+/** Developer-mode liability clause (brief §5 M3). Its version must match the ToS clause (M15). */
+export const loadLiabilityText = (locale: "es" | "en", dir = CONFIG_DIR): LiabilityText => {
+  const raw = readFileSync(
+    new URL(`legal/devmode-liability.${locale}.md`, `file://${dir.endsWith("/") ? dir : `${dir}/`}`),
+    "utf8",
+  );
+  const match = /^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/.exec(raw);
+  if (!match) throw new Error(`devmode-liability.${locale}.md: missing front matter`);
+  const meta = parse(match[1]!) as { version: number; toggle_phrase: string };
+  return { locale, version: meta.version, phrase: meta.toggle_phrase, text: match[2]!.trim() };
+};

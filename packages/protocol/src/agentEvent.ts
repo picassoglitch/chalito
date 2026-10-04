@@ -41,6 +41,8 @@ export const ToolCategory = z.enum([
   "other",
 ]);
 
+export type ToolCategory = z.infer<typeof ToolCategory>;
+
 const base = {
   v: z.literal(1),
   eid: Id,
@@ -143,6 +145,27 @@ export const DeviceEvent = z.discriminatedUnion("type", [
     deviceId: DeviceId,
     attempted: z.string().max(64),
     origin: Origin,
+    t: EpochMs,
+  }),
+  /** Local Developer-mode files failed verification; the device forced Developer mode off. */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("devmode.tampered"),
+    deviceId: DeviceId,
+    reason: z.enum(["state_signature", "audit_chain", "stale_state", "toggle_unbacked", "rollback"]),
+    t: EpochMs,
+  }),
+  /** policy.yaml was edited without the signed lock; the edit was refused and the signed policy stays. */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("policy.tampered"),
+    deviceId: DeviceId,
+    /** Hash of the refused file, or null when it didn't parse. */
+    fileHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    inForceHash: z.string().regex(/^[0-9a-f]{64}$/),
     t: EpochMs,
   }),
 ]);

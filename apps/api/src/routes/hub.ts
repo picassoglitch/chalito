@@ -29,23 +29,15 @@ export const hubRoutes = (deps: Deps) => {
     if (!body.success) return fail(400, "bad_request");
     const id = body.data.external_user_id;
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) fail(400, "bad_tenant_id");
-    const ref = deps.db.doc(`users/${id}`);
     const tokenOut = { tenant_id: id, api_token: tenantApiToken(deps.config.adminToken, id) };
-    try {
-      await ref.create({
-        v: 1,
-        tenantId: id,
-        email: body.data.email,
-        displayName: body.data.display_name ?? null,
-        tier: body.data.tier,
-        status: "active",
-        locale: "es",
-        createdAt: deps.now(),
-      });
-    } catch (err) {
-      if ((err as { code?: number }).code === 6) return c.json({ error: "duplicate", ...tokenOut }, 409);
-      throw err;
-    }
+    const res = await deps.repo.createTenant({
+      tenantId: id,
+      email: body.data.email,
+      displayName: body.data.display_name ?? null,
+      tier: body.data.tier,
+      createdAt: deps.now(),
+    });
+    if (res === "exists") return c.json({ error: "duplicate", ...tokenOut }, 409);
     await deps.audit.record({ action: "tenant.created", owner: id, actor: "hub", meta: { tier: body.data.tier } });
     return c.json(tokenOut, 201);
   });
@@ -53,9 +45,7 @@ export const hubRoutes = (deps: Deps) => {
   app.post("/tenants/:id/status", async (c) => {
     const body = HubTenantStatus.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
-    const ref = deps.db.doc(`users/${c.req.param("id")}`);
-    if (!(await ref.get()).exists) fail(404, "not_found");
-    await ref.update({ status: body.data.status, statusAt: deps.now() });
+    if (!(await deps.repo.setTenantStatus(c.req.param("id"), body.data.status, deps.now()))) fail(404, "not_found");
     await deps.audit.record({ action: `tenant.${body.data.status}`, owner: c.req.param("id"), actor: "hub" });
     return c.body(null, 204);
   });
@@ -68,23 +58,14 @@ export const hubRoutes = (deps: Deps) => {
     if (!res.ok) return fail(401, res.reason);
     const { payload, sigHash } = res;
     // Single use: a second exchange of the same token fails.
-    try {
-      await deps.db.doc(`ssoTokens/${sigHash}`).create({ expireAt: new Date(payload.exp * 1000 + 60_000) });
-    } catch (err) {
-      if ((err as { code?: number }).code === 6) return fail(409, "token_replayed");
-      throw err;
-    }
-    await deps.db
-      .doc(`users/${payload.user_id}`)
-      .set(
-        { v: 1, tenantId: payload.tenant_id, email: payload.email, tier: payload.tier, lastSsoAt: deps.now() },
-        { merge: true },
-      );
-    const customToken = await deps.auth.createCustomToken(payload.user_id, {
-      role: "user",
-      owner: payload.user_id,
+    if (!(await deps.repo.claimSsoToken(sigHash, payload.exp * 1000 + 60_000))) return fail(409, "token_replayed");
+    await deps.repo.upsertUserFromSso(payload.user_id, {
+      tenantId: payload.tenant_id,
+      email: payload.email,
       tier: payload.tier,
+      lastSsoAt: deps.now(),
     });
+    const customToken = await deps.identity.mintUser(payload.user_id, payload.tier);
     await deps.audit.record({ action: "sso.exchange", owner: payload.user_id, actor: "hub" });
     return c.json({ customToken, owner: payload.user_id });
   });

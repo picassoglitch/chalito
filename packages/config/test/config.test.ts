@@ -58,3 +58,15 @@ describe("currency lint", () => {
     expect(isLintedFile("packages/config/plans.yaml")).toBe(false);
   });
 });
+
+describe("devmode liability text", () => {
+  it("both locales load with the same version and a phrase", async () => {
+    const { loadLiabilityText } = await import("../src/load.js");
+    const es = loadLiabilityText("es");
+    const en = loadLiabilityText("en");
+    expect(es.version).toBe(en.version);
+    expect(es.text).toContain("Chalito no es responsable");
+    expect(en.text).toContain("Chalito is not liable");
+    expect(es.phrase).toBe("ACEPTO");
+  });
+});

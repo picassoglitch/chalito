@@ -42,20 +42,9 @@ export const pairingRoutes = (deps: Deps) => {
       claimerPubBox: null,
       expiresAt: glyph.body.expiresAt,
     };
-    try {
-      await deps.db
-        .doc(`pairingCodes/${glyph.body.codeId}`)
-        .create({ ...doc, expireAt: new Date(glyph.body.expiresAt) });
-    } catch (err) {
-      if ((err as { code?: number }).code === 6) return fail(409, "code_exists");
-      throw err;
-    }
-    // A token that can only read this one pairing doc: the agent waits on a listener, not a poll.
-    const watchToken = await deps.auth.createCustomToken(`p_${glyph.body.codeId}`, {
-      role: "pairing",
-      owner: "pairing",
-      pairingCode: glyph.body.codeId,
-    });
+    if ((await deps.repo.createPairingCode(doc)) === "exists") return fail(409, "code_exists");
+    // A credential that can only read this one pairing code: the agent waits on a listener, not a poll.
+    const watchToken = await deps.identity.mintPairingWatch(glyph.body.codeId);
     await deps.audit.record({
       action: "pairing.code_created",
       owner: null,
@@ -74,12 +63,7 @@ export const pairingRoutes = (deps: Deps) => {
       const body = ResolveShortCodeRequest.safeParse(await c.req.json().catch(() => null));
       const code = body.success ? normalizeShortCode(body.data.shortCode) : null;
       if (!code) return fail(400, "bad_request");
-      const q = await deps.db
-        .collection("pairingCodes")
-        .where("shortCodeHash", "==", await hashShortCode(code))
-        .limit(1)
-        .get();
-      const doc = q.docs[0]?.data() as PairingCodeDoc | undefined;
+      const doc = await deps.repo.findPairingCodeByShortHash(await hashShortCode(code));
       if (!doc || doc.claimed || doc.expiresAt <= deps.now()) return fail(404, "not_found");
       return c.json({ glyph: doc.glyph });
     },
@@ -95,8 +79,9 @@ export const pairingRoutes = (deps: Deps) => {
     if (b.owner !== p.owner || b.claimerDeviceId !== p.deviceId || claim.signerDeviceId !== p.deviceId)
       fail(403, "claimer_mismatch");
     if (Math.abs(deps.now() - b.issuedAt) > deps.config.skewMs * 5) fail(400, "stale_request");
-    const claimer = await deps.db.doc(`users/${p.owner}/devices/${p.deviceId}`).get();
-    const claimerPubSign = claimer.get("pubSign") as string;
+    const claimer = await deps.repo.getDevice(p.owner, p.deviceId!);
+    if (!claimer) return fail(403, "device_revoked");
+    const claimerPubSign = claimer.pubSign;
     const sig = await verifyEnvelope(
       claim,
       "chalito.pairing-claim.v1",
@@ -104,42 +89,38 @@ export const pairingRoutes = (deps: Deps) => {
     );
     if (!sig.ok) fail(400, "bad_signature");
 
-    const codeRef = deps.db.doc(`pairingCodes/${b.codeId}`);
-    const agentId = await deps.db.runTransaction(async (tx) => {
-      const snap = await tx.get(codeRef);
-      if (!snap.exists) fail(404, "not_found");
-      const code = snap.data() as PairingCodeDoc;
-      if (code.claimed) fail(409, "already_claimed");
-      if (code.expiresAt <= deps.now()) fail(410, "expired");
-      if (code.agentDeviceId !== b.agentDeviceId) fail(400, "device_mismatch");
-      const fp = await fingerprint(await fromB64url(code.glyph.body.issuerPubSign));
-      if (fp !== b.agentFingerprint) fail(400, "fingerprint_mismatch");
-      const deviceRef = deps.db.doc(`users/${p.owner}/devices/${code.agentDeviceId}`);
-      if ((await tx.get(deviceRef)).exists) fail(409, "device_exists");
-      const agentDoc = await buildDeviceDoc(deps, {
+    const res = await deps.repo.claimPairingCode(
+      b.codeId,
+      {
         owner: p.owner,
-        deviceId: code.agentDeviceId,
-        kind: code.kind,
-        platform: code.platform,
-        name: code.glyph.body.label || "Escritorio",
-        role: "agent",
-        pubSign: code.glyph.body.issuerPubSign,
-        pubBox: code.glyph.body.issuerPubBox ?? "",
-        enrolledVia: "pairing",
-        endorsedBy: p.deviceId,
-      });
-      if (!agentDoc.pubBox) fail(400, "agent_box_key_missing");
-      tx.create(deviceRef, agentDoc);
-      tx.update(codeRef, {
-        claimed: true,
-        owner: p.owner,
-        claimedByDeviceId: p.deviceId,
+        claimedByDeviceId: p.deviceId!,
         claimerPubSign,
-        claimerPubBox: claimer.get("pubBox"),
+        claimerPubBox: claimer.pubBox,
         claimedAt: deps.now(),
-      });
-      return code.agentDeviceId;
-    });
+      },
+      async (code) => {
+        if (code.expiresAt <= deps.now()) fail(410, "expired");
+        if (code.agentDeviceId !== b.agentDeviceId) fail(400, "device_mismatch");
+        const fp = await fingerprint(await fromB64url(code.glyph.body.issuerPubSign));
+        if (fp !== b.agentFingerprint) fail(400, "fingerprint_mismatch");
+        const agentDoc = await buildDeviceDoc(deps, {
+          owner: p.owner,
+          deviceId: code.agentDeviceId,
+          kind: code.kind,
+          platform: code.platform,
+          name: code.glyph.body.label || "Escritorio",
+          role: "agent",
+          pubSign: code.glyph.body.issuerPubSign,
+          pubBox: code.glyph.body.issuerPubBox ?? "",
+          enrolledVia: "pairing",
+          endorsedBy: p.deviceId,
+        });
+        if (!agentDoc.pubBox) fail(400, "agent_box_key_missing");
+        return agentDoc;
+      },
+    );
+    if (!res.ok) return fail(res.reason === "not_found" ? 404 : 409, res.reason);
+    const agentId = res.agentDeviceId;
     await deps.audit.record({ action: "pairing.claimed", owner: p.owner, actor: p.uid, target: agentId });
     return c.json({ ok: true, agentDeviceId: agentId });
   });

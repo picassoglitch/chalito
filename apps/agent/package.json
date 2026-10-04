@@ -1,0 +1,32 @@
+{
+  "name": "@chalito/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "chalito": "./src/cli.ts"
+  },
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:emulator": "vitest run -c vitest.emulator.config.ts"
+  },
+  "dependencies": {
+    "@chalito/adapters": "workspace:*",
+    "@chalito/config": "workspace:*",
+    "@chalito/crypto": "workspace:*",
+    "@chalito/glyph": "workspace:*",
+    "@chalito/protocol": "workspace:*",
+    "@napi-rs/keyring": "^2.1.0",
+    "firebase": "^12.19.0",
+    "libsodium-wrappers-sumo": "0.8.4",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers-sumo": "^0.8.2",
+    "fast-check": "^4.10.2",
+    "firebase-admin": "^14.5.0"
+  }
+}

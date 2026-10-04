@@ -5,7 +5,7 @@ import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { buildDeviceDoc, checkRegistration, mintDeviceToken } from "../lib/devices.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
-import { hashRecoveryCode, verifyRecoveryCode, type RecoveryHash } from "../lib/recovery.js";
+import { hashRecoveryCode, verifyRecoveryCode } from "../lib/recovery.js";
 
 /**
  * Only-client-lost recovery: hub sign-in + recovery code + cool-down + alerts to every
@@ -17,9 +17,9 @@ export const recoveryRoutes = (deps: Deps) => {
   const limiter = rateLimit({ capacity: 5, refillPerSec: 1 / 60, now: deps.now });
 
   const loadRecovery = async (owner: string) => {
-    const snap = await deps.db.doc(`users/${owner}/private/recovery`).get();
-    if (!snap.exists) fail(404, "no_recovery_code");
-    return snap.data() as RecoveryHash & { cooldownUntil: number | null };
+    const rec = await deps.repo.getRecovery(owner);
+    if (!rec) return fail(404, "no_recovery_code");
+    return rec;
   };
 
   app.post("/start", requireAuth(deps, ["user"]), limiter, async (c) => {
@@ -32,10 +32,10 @@ export const recoveryRoutes = (deps: Deps) => {
       return fail(401, "bad_code");
     }
     const cooldownUntil = rec.cooldownUntil ?? deps.now() + deps.config.recoveryCooldownMs;
-    await deps.db.doc(`users/${p.owner}/private/recovery`).update({ cooldownUntil, startedAt: deps.now() });
+    await deps.repo.startRecovery(p.owner, cooldownUntil, deps.now());
     // Alert every device of the account (metadata only; escalation picks it up in M6).
     const nid = `recovery_${deps.now()}`;
-    await deps.db.doc(`users/${p.owner}/notifications/${nid}`).set({
+    await deps.repo.createNotification(p.owner, nid, {
       v: 1,
       nid,
       uid: p.owner,
@@ -80,12 +80,12 @@ export const recoveryRoutes = (deps: Deps) => {
       endorsedBy: null,
     });
     const next = await hashRecoveryCode(body.data.newRecoveryCode);
-    await deps.db.runTransaction(async (tx) => {
-      const ref = deps.db.doc(`users/${p.owner}/devices/${doc.deviceId}`);
-      if ((await tx.get(ref)).exists) fail(409, "device_exists");
-      tx.create(ref, doc);
-      tx.set(deps.db.doc(`users/${p.owner}/private/recovery`), { ...next, cooldownUntil: null, createdAt: deps.now() });
+    const done = await deps.repo.completeRecovery(p.owner, doc, {
+      ...next,
+      cooldownUntil: null,
+      createdAt: deps.now(),
     });
+    if (done === "device_exists") fail(409, "device_exists");
     await deps.audit.record({ action: "recovery.completed", owner: p.owner, actor: p.uid, target: doc.deviceId });
     return c.json(
       { customToken: await mintDeviceToken(deps, p.owner, doc.deviceId, "client"), deviceId: doc.deviceId },
