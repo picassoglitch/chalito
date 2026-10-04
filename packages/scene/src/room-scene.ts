@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import { FrameLoop, browserHost, type CardItem, type CardSpec, type LoopHost } from "@chalito/avatar-three";
-import { placeOnCard, type CardPlacement } from "@chalito/roster";
+import { FrameLoop, browserHost, type LoopHost } from "@chalito/avatar-three";
+import type { CardPlacement } from "@chalito/roster";
 import type { CosmeticSlot } from "@chalito/protocol";
 import { choreograph, type SceneEvent, type SceneMember, type SceneState } from "./choreography.js";
 import {
@@ -11,7 +11,8 @@ import {
   type RenderQuality,
   type RenderSettings,
 } from "./quality.js";
-import { RoomWorld, type ActorAssets } from "./world.js";
+import { loadCardAssets } from "./card-assets.js";
+import { RoomWorld } from "./world.js";
 
 /** A cosmetic a member wears (from the store catalog): its art path in @chalito/roster and placement. */
 export interface SceneCosmetic {
@@ -47,15 +48,6 @@ export interface RoomSceneOptions {
   loadTexture?: (url: string) => Promise<THREE.Texture>;
   fetchJson?: (url: string) => Promise<unknown>;
   loopHost?: LoopHost;
-}
-
-interface CardJson {
-  width: number;
-  height: number;
-  layers: { src: string }[];
-  emotions?: { src: Record<string, string> };
-  shadow?: CardSpec["shadow"];
-  anchors?: Partial<Record<CosmeticSlot, { x: number; y: number; z: number }>>;
 }
 
 const MAX_EVENTS = 500;
@@ -272,7 +264,10 @@ export class RoomScene {
     const key = `${m.avatar}|${(m.cosmetics ?? []).map((c) => c.art).join(",")}`;
     if (this.#loadedKey.get(m.companionId) === key) return this.#loading.get(m.companionId) ?? Promise.resolve();
     this.#loadedKey.set(m.companionId, key);
-    const p = this.#assets(m).then(
+    const p = loadCardAssets(this.#opts.assetBase, m.avatar, m.cosmetics ?? [], {
+      fetchJson: this.#opts.fetchJson,
+      loadTexture: this.#opts.loadTexture,
+    }).then(
       (assets) => {
         if (!this.#disposed && this.#loadedKey.get(m.companionId) === key) this.#world.addActor(m.companionId, assets);
       },
@@ -280,31 +275,5 @@ export class RoomScene {
     );
     this.#loading.set(m.companionId, p);
     return p;
-  }
-
-  async #assets(m: RoomSceneMember): Promise<ActorAssets> {
-    const base = this.#opts.assetBase.endsWith("/") ? this.#opts.assetBase : `${this.#opts.assetBase}/`;
-    if (!/^[a-z0-9_-]+$/.test(m.avatar)) throw new Error("bad avatar id");
-    const dir = `${base}assets/${m.avatar}/`;
-    const fetchJson = this.#opts.fetchJson ?? (async (u: string) => (await fetch(u)).json());
-    const loadTexture = this.#opts.loadTexture ?? ((u: string) => new THREE.TextureLoader().loadAsync(u));
-    const card = (await fetchJson(`${dir}card.json`)) as CardJson;
-    const srcs = card.emotions?.src ?? { neutral: card.layers[0]!.src };
-    const drawings: Record<string, THREE.Texture> = {};
-    await Promise.all(
-      Object.entries(srcs).map(async ([k, src]) => {
-        drawings[k] = await loadTexture(dir + src);
-      }),
-    );
-    const items: CardItem[] = [];
-    for (const c of m.cosmetics ?? []) {
-      const anchor = card.anchors?.[c.slot];
-      if (!anchor || !/^cosmetics\/[a-z0-9_]+\.webp$/.test(c.art)) continue;
-      const texture = await loadTexture(base + c.art);
-      const img = texture.image as { width?: number; height?: number } | undefined;
-      const aspect = img?.width && img.height ? img.height / img.width : 1;
-      items.push({ placed: placeOnCard(anchor, c.card, aspect, card.height / card.width), texture });
-    }
-    return { spec: { width: card.width, height: card.height, shadow: card.shadow }, drawings, items };
   }
 }
