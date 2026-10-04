@@ -4,8 +4,12 @@
  * (hub, Twilio, Meta, OpenAI) mocked at the network. Each step is its own describe with its own
  * people and devices, so one failure doesn't hide the others.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { http, HttpResponse } from "msw";
+import { setupServer } from "msw/node";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
+import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HubClient, PostgresOutbox, computeEntitlements, drainOutbox } from "@chalito/billing";
 import { loadModels, loadPlans, loadPrices } from "@chalito/config";
@@ -15,7 +19,15 @@ import { PostgresMesaStore } from "../../orchestrator/src/postgres-store.js";
 import { runTurn, type TurnDeps, type TurnRequest } from "../../orchestrator/src/turn.js";
 import { HUB, mocks } from "../../orchestrator/test/harness.js";
 import { approveEndorsement, introducedAgents, resolveForEndorsement, type TrustedAgent } from "@chalito/client-keys";
-import { TrustedClientList, fingerprint, randomNonce, signEnvelope, stepUpChallenge } from "@chalito/crypto";
+import {
+  TrustedClientList,
+  fingerprint,
+  openJson,
+  randomNonce,
+  sealJson,
+  signEnvelope,
+  stepUpChallenge,
+} from "@chalito/crypto";
 import { CommandBody } from "@chalito/protocol";
 import {
   RoomController,
@@ -28,7 +40,20 @@ import {
   type RoomsDb,
 } from "@chalito/rooms";
 import { startAgent, waitFor } from "./agent.js";
-import { READY, RP_ID, createStack, keys, type Person } from "./stack.js";
+import { GatewayApi } from "../../mcp-gateway/src/api-client.js";
+import { createGateway } from "../../mcp-gateway/src/app.js";
+import { PostgresGatewayReader, gatewaySql } from "../../mcp-gateway/src/postgres-reader.js";
+import {
+  API_ISSUER,
+  DB_URL,
+  GATEWAY_TOKEN,
+  MCP_RESOURCE,
+  READY,
+  RP_ID,
+  createStack,
+  keys,
+  type Person,
+} from "./stack.js";
 
 const stack = READY ? createStack() : null;
 afterAll(async () => {
@@ -246,7 +271,11 @@ describe.skipIf(!READY)("6. a Mesa turn bills llm.tokens through the outbox → 
       {
         store,
         hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "engine-token" }),
-        brains: { managed: { anthropic: new AnthropicBrain({ apiKey: "sk-ant-managed", maxRetries: 0 }) }, byo: {} },
+        brains: {
+          managed: { anthropic: new AnthropicBrain({ apiKey: "sk-ant-managed", maxRetries: 0 }) },
+          // No BYO keys for this person: managed billing (what the hub meters).
+          byo: async () => null,
+        },
         models: loadModels(),
         prices: loadPrices(),
         entitlements: async () =>
@@ -477,3 +506,220 @@ describe.skipIf(!READY)("8. revoke-all: the agent drops the other clients (R-H5)
     await expect(s.deviceSession(p.owner, web)).rejects.toThrow(/device token 4\d\d/);
   });
 });
+
+describe.skipIf(!READY)(
+  "5. an MCP connector (OAuth CIMD) prompts the session; its HIGH action asks the phone (R-C1)",
+  () => {
+    const s = stack!;
+    const CLAUDE_CLIENT = "https://claude.ai/oauth/mcp-oauth-client-metadata";
+    const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
+    // Claude's client ID metadata document, served at its URL (the api fetches it: CIMD).
+    const cimd = setupServer(
+      http.get(CLAUDE_CLIENT, () =>
+        HttpResponse.json({
+          client_id: CLAUDE_CLIENT,
+          client_name: "Claude",
+          redirect_uris: [CLAUDE_REDIRECT],
+          grant_types: ["authorization_code", "refresh_token"],
+          token_endpoint_auth_method: "none",
+        }),
+      ),
+    );
+    const gwSql = gatewaySql(DB_URL ?? "postgres://unused", { max: 2, role: "chalito_gateway" });
+    let agent: Awaited<ReturnType<typeof startAgent>> | null = null;
+    beforeAll(() => cimd.listen({ onUnhandledFrame: "bypass" }));
+    afterAll(async () => {
+      cimd.close();
+      await agent?.close();
+      await gwSql.end();
+    });
+
+    const get = (path: string) => s.api.request(path, { method: "GET" });
+    const form = (path: string, f: Record<string, string>) =>
+      s.api.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(f).toString(),
+      });
+
+    it("CIMD + PKCE + passkey consent → a token; prompt_session → the agent's HIGH action waits for a passkey-signed allow", async () => {
+      const p = await s.person("gabi");
+      await s.enrolPasskey(p);
+      const { device: agentDevice } = await s.pairAgent(p, "Laptop de Gabi");
+      const trust = new TrustedClientList(agentDevice.deviceId);
+      await trust.addConfirmed(
+        { deviceId: p.phone.deviceId, pubSign: p.phone.pubSign, pubBox: p.phone.pubBox, webauthn: p.credential! },
+        Date.now(),
+      );
+      const push: FakeStep[] = [{ tool: "Bash", input: { command: "git push origin fix-login" } }];
+      const fake = fakeClaudeCode([[{ say: "Listo." }], push]);
+      agent = await startAgent({
+        owner: p.owner,
+        device: agentDevice,
+        trust,
+        adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
+      });
+
+      // The phone starts a session with a signed command (a trusted, client-origin turn).
+      const cid = `cmd_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+      const start = await signEnvelope(
+        "chalito.command.v1",
+        CommandBody.parse({
+          v: 1,
+          cid,
+          uid: p.owner,
+          targetDeviceId: agentDevice.deviceId,
+          origin: `client:${p.phone.deviceId}`,
+          nonce: await randomNonce(),
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          payload: {
+            type: "session.start",
+            adapter: "claude-code",
+            workspaceLabel: "app",
+            promptCt: await sealJson("hola", { [agentDevice.deviceId]: agentDevice.box.publicKey }, `command:${cid}`),
+            permissionMode: "default",
+          },
+        }),
+        p.phone.deviceId,
+        p.phone.sign.secretKey,
+      );
+      const sent = await p.phone.db.from("commands").insert({
+        owner: p.owner,
+        target_device_id: agentDevice.deviceId,
+        id: cid,
+        env: start,
+        from_device_id: p.phone.deviceId,
+      });
+      expect(sent.error).toBeNull();
+      await waitFor(() => agent!.core.sessions.size === 1, 20_000, "the session to start");
+      const sid = [...agent.core.sessions.keys()][0]!;
+
+      // Claude connects: authorize (CIMD client), the person consents on the phone with the passkey.
+      const pk = { verifier: randomUUID() + randomUUID(), challenge: "" };
+      pk.challenge = createHash("sha256").update(pk.verifier).digest("base64url");
+      const az = await get(
+        `/oauth/authorize?${new URLSearchParams({
+          response_type: "code",
+          client_id: CLAUDE_CLIENT,
+          redirect_uri: CLAUDE_REDIRECT,
+          code_challenge: pk.challenge,
+          code_challenge_method: "S256",
+          resource: MCP_RESOURCE,
+          scope: "mcp:read session:prompt",
+          state: "st-1",
+        })}`,
+      );
+      expect(az.status).toBe(302);
+      const requestId = new URL(az.headers.get("location")!).searchParams.get("request")!;
+      const approved = await s.call(
+        `/oauth/requests/${requestId}/approve`,
+        { scopes: ["mcp:read", "session:prompt"], assertion: await s.stepUp(p) },
+        p.phone.token,
+      );
+      expect(approved.status).toBe(200);
+      const code = new URL(approved.json.redirect).searchParams.get("code")!;
+      const tok = await form("/oauth/token", {
+        grant_type: "authorization_code",
+        code,
+        code_verifier: pk.verifier,
+        client_id: CLAUDE_CLIENT,
+        redirect_uri: CLAUDE_REDIRECT,
+        resource: MCP_RESOURCE,
+      });
+      expect(tok.status).toBe(200);
+      const accessToken = ((await tok.json()) as { access_token: string }).access_token;
+
+      // The gateway (its read-only role on the database) relays prompt_session to the api.
+      const gw = createGateway({
+        reader: new PostgresGatewayReader(gwSql),
+        api: new GatewayApi("http://api.rehearsal.invalid", GATEWAY_TOKEN, s.apiFetch),
+        cfg: { resource: MCP_RESOURCE, issuer: API_ISSUER },
+        now: Date.now,
+      });
+      const client = new Client({ name: "rehearsal", version: "1" });
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(MCP_RESOURCE), {
+          fetch: ((url: string | URL, init?: RequestInit) => gw.fetch(new Request(url, init))) as typeof fetch,
+          requestInit: { headers: { authorization: `Bearer ${accessToken}` } },
+        }),
+      );
+      const res = (await client.callTool({ name: "prompt_session", arguments: { sid, prompt: "push otra vez" } })) as {
+        isError?: boolean;
+        content: { text: string }[];
+      };
+      expect(res.isError ?? false).toBe(false);
+      await client.close();
+
+      // The agent gets the relayed (mcp:claude) prompt; its HIGH push waits for the phone.
+      let approval: { aid: string; request_id: string; details_ct: unknown; origin: string; risk: string } | null =
+        null;
+      await waitFor(
+        async () => {
+          const { data } = await p.phone.db
+            .from("approvals")
+            .select("aid, request_id, details_ct, origin, risk, status")
+            .eq("owner", p.owner)
+            .eq("status", "pending");
+          approval = (data?.[0] as typeof approval) ?? null;
+          return approval !== null;
+        },
+        20_000,
+        "the HIGH approval",
+      );
+      const a = approval!;
+      expect(a).toMatchObject({ origin: "mcp:claude", risk: "HIGH" });
+      expect(fake.run.ran).toHaveLength(0);
+
+      // The phone verifies what the agent signed (detailsHash) and decides.
+      const opened = await openJson<{ details: unknown; request: { body: { detailsHash: string } } }>(
+        a.details_ct as never,
+        p.phone.deviceId,
+        p.phone.box,
+        `approval:${a.aid}`,
+      );
+      const decide = async (stepUp: boolean) => {
+        const body = {
+          v: 1 as const,
+          aid: a.aid,
+          requestId: a.request_id,
+          uid: p.owner,
+          targetDeviceId: agentDevice.deviceId,
+          allow: true,
+          nonce: await randomNonce(),
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          detailsHash: opened.request.body.detailsHash,
+        };
+        const signedBody = stepUp
+          ? {
+              ...body,
+              stepUp: {
+                method: "webauthn" as const,
+                at: Date.now(),
+                assertion: await p.passkey!.stepUp(RP_ID)(await stepUpChallenge(body)),
+              },
+            }
+          : body;
+        const decision = await signEnvelope(
+          "chalito.decision.v1",
+          signedBody,
+          p.phone.deviceId,
+          p.phone.sign.secretKey,
+        );
+        const r = await p.phone.db
+          .from("approval_decisions")
+          .insert({ owner: p.owner, aid: a.aid, signer_device_id: p.phone.deviceId, decision });
+        return r.error;
+      };
+      // A signed allow WITHOUT the passkey step-up doesn't release a HIGH action from an MCP turn.
+      await decide(false);
+      await new Promise((r) => setTimeout(r, 2000));
+      expect(fake.run.ran).toHaveLength(0);
+      // With the phone's passkey it does.
+      await decide(true);
+      await waitFor(() => fake.run.ran.length === 1, 20_000, "the tool to run");
+      expect(fake.run.ran[0]!.tool).toBe("Bash");
+    });
+  },
+);

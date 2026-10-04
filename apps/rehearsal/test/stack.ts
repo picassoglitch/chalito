@@ -6,7 +6,7 @@
  * SSO contract is plain config (an HMAC secret and the admin token), and outside services are
  * mocked at the network (msw) by the steps that need them.
  */
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { AuthClient, createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
   deriveDeviceId,
@@ -35,6 +35,7 @@ import type { Endorsement, GlyphPayload } from "@chalito/protocol";
 import { createApp } from "../../api/src/app.js";
 import { MemoryAudit, type Deps } from "../../api/src/deps.js";
 import { PostgresRepo, chalitoSql } from "../../api/src/postgres/repo.js";
+import { PostgresMcpStore } from "../../api/src/oauth/postgres-store.js";
 import { PostgresRoomsRepo } from "../../api/src/rooms/repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "../../api/src/supabase/identity.js";
 
@@ -54,6 +55,12 @@ const RECOVERY = "ABCDE-FGHJK-MNPQR-STVWX-YZ0123";
 /** The default WebAuthn relying party (webauthnConfigFromEnv): what the phone's passkey is for. */
 export const RP_ID = "chalito.chalyb.com";
 export const ORIGIN = `https://${RP_ID}`;
+/** The MCP gateway's service token, set the way the api reads it (oauthConfigFromEnv). */
+export const GATEWAY_TOKEN = "rehearsal-gateway-token";
+process.env.CHALITO_GATEWAY_TOKEN ??= GATEWAY_TOKEN;
+/** The api's OAuth defaults (oauthConfigFromEnv): the gateway resource tokens are issued for. */
+export const MCP_RESOURCE = "https://mcp.chalito.chalyb.com/mcp";
+export const API_ISSUER = "https://api.chalito.chalyb.com";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Db = SupabaseClient<any, any, any>;
@@ -117,6 +124,7 @@ export const createStack = () => {
   const deps = {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     rooms: new PostgresRoomsRepo(sql),
+    mcp: new PostgresMcpStore(sql),
     identity: new SupabaseIssuer(authAdmin),
     audit,
     config: { ssoSecret: SSO_SECRET, adminToken: ADMIN, recoveryCooldownMs: 60 * 60 * 1000, skewMs: 60_000 },
@@ -126,10 +134,24 @@ export const createStack = () => {
   const hubUsers: string[] = [];
   const clients: Db[] = [];
 
+  /**
+   * Each device reaches the api from its own address, as the load balancer reports it in
+   * x-forwarded-for (the per-IP rate limits would otherwise see every rehearsal person as one).
+   */
+  const ipFor = (credential: string | null | undefined) => {
+    const h = createHash("sha256")
+      .update(credential ?? "anonymous")
+      .digest();
+    return `10.${h[0]}.${h[1]}.${h[2]}`;
+  };
   const call = async (path: string, body: unknown, bearer?: string) => {
     const res = await api.request(path, {
       method: "POST",
-      headers: { "content-type": "application/json", ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": ipFor(bearer ?? JSON.stringify(body).slice(0, 200)),
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+      },
       body: JSON.stringify(body),
     });
     const text = await res.text();
@@ -137,8 +159,11 @@ export const createStack = () => {
     return { status: res.status, json: (text ? JSON.parse(text) : null) as any };
   };
   /** `fetch` for clients that talk to the api over HTTP (httpApi): routed to the in-process app. */
-  const apiFetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) =>
-    api.request(String(input).replace(/^https?:\/\/[^/]+/, ""), init)) as typeof fetch;
+  const apiFetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    if (!headers.has("x-forwarded-for")) headers.set("x-forwarded-for", ipFor(headers.get("authorization")));
+    return api.request(String(input).replace(/^https?:\/\/[^/]+/, ""), { ...init, headers });
+  }) as typeof fetch;
 
   const ssoToken = (payload: object) => {
     const body = Buffer.from(JSON.stringify(payload)).toString("base64url");

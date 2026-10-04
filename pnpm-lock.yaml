@@ -518,6 +518,9 @@ importers:
       '@chalito/rooms':
         specifier: workspace:*
         version: link:../../packages/rooms
+      '@modelcontextprotocol/client':
+        specifier: 2.3.0
+        version: 2.3.0
       '@supabase/supabase-js':
         specifier: ^2.117.2
         version: 2.117.2(@opentelemetry/api@1.9.1)
