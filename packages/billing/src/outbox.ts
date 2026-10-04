@@ -46,7 +46,11 @@ type DrainDeps = {
  * rows the hub really refuses are left, and only those go dead.
  */
 const sendRows = async (p: DrainDeps, rows: Valid[], total: DrainResult): Promise<"ok" | "stop"> => {
-  const result: UsageResult = await p.hub.usage(rows.map((r) => r.event));
+  // Callers pass one user's rows (drainOutbox groups by external_user_id).
+  const result: UsageResult = await p.hub.usage(
+    rows[0]!.event.external_user_id,
+    rows.map((r) => r.event),
+  );
   const ids = rows.map((r) => r.id);
   if (result.status === "ok") {
     await p.store.markSent(ids, p.now());
@@ -108,7 +112,27 @@ export const drainOutbox = async (p: {
       total.dead += invalid.length;
     }
     if (rows.length === 0) continue;
-    if ((await sendRows(p, rows, total)) === "stop") break; // the hub is struggling; stop for now
+    // The hub takes one user per request: send each user's rows on their own.
+    const byUser = new Map<string, Valid[]>();
+    for (const r of rows) byUser.set(r.event.external_user_id, [...(byUser.get(r.event.external_user_id) ?? []), r]);
+    const groups = [...byUser.values()];
+    let stopped = false;
+    for (const [i, group] of groups.entries()) {
+      if ((await sendRows(p, group, total)) !== "stop") continue;
+      // The hub is struggling: leave the rest of this claim for a later drain.
+      const rest = groups.slice(i + 1).flat();
+      if (rest.length) {
+        await p.store.markRetry(
+          rest.map((r) => r.id),
+          p.now() + backoffMs(Math.max(...rest.map((r) => r.attempts))),
+          "deferred: the hub asked to retry",
+        );
+        total.retried += rest.length;
+      }
+      stopped = true;
+      break;
+    }
+    if (stopped) break;
   }
   return total;
 };
