@@ -167,7 +167,11 @@ export const mockServer = () => {
       return HttpResponse.json({ ok: true });
     }),
     http.post(`${hubBase}/usage`, async ({ request }) => {
-      cap.hub.push({ path: "usage", body: (await request.json()) as Record<string, unknown> });
+      const body = (await request.json()) as Record<string, unknown>;
+      cap.hub.push({ path: "usage", body });
+      // As the real hub (chalyb usage/route.ts:75-78): one user per request, at the top level.
+      if (typeof body.external_user_id !== "string" || !body.external_user_id)
+        return HttpResponse.json({ error: "external_user_id required" }, { status: 400 });
       return HttpResponse.json({ ok: true });
     }),
     http.post("https://api.openai.com/v1/*", async ({ request }) => {

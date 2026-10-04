@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { usageEvent } from "../src/billable.js";
 import { HubClient } from "../src/hub.js";
 import { MemoryOutbox, backoffMs, drainOutbox } from "../src/outbox.js";
-import { hubMock } from "./hub-mock.js";
+import { HUB_TOKEN, hubMock } from "./hub-mock.js";
 
 const { server, calls, state } = hubMock();
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
@@ -12,8 +12,10 @@ beforeEach(() => {
   state.usageStatus = 200;
 });
 
-const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: "t" });
+const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: HUB_TOKEN });
 const NOW = 1_790_000_000_000;
+// The hub mock judges occurred_at windows on the test clock.
+state.now = () => NOW;
 const ev = (i: number) =>
   usageEvent(
     { owner: "u1", billingMode: "managed", origin: "sms.message" },

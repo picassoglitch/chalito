@@ -1201,11 +1201,14 @@ Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landi
 - **Consumption** (`{CHALYB_BASE_URL}/api/engines/{slug}`, engine bearer):
   - `POST /usage/admit` takes `{external_user_id, external_job_id, class: job|stream, operation, est_tokens, upload_mb, source_minutes, storage_mb_after, boost, ttl_seconds}` and returns `{allowed, reservation_id, lane: standard|boost, boost_fee_tokens, limits, balance}`. A refusal returns `{allowed:false, reason}`, where `reason` is one of `upload_too_large`, `video_too_long`, `storage_full`, `minutes_cap`, `jobs_cap`, `concurrency`, `streams_cap`, `no_tokens` or `boost_unavailable`. Re-admitting the same `external_job_id` updates the reservation. Reservations expire (TTL, default 3 h); `heartbeat` extends them.
   - `POST /usage`:
+    - **Body: `{external_user_id, events: [...]}`, one user per request.** The user id is top-level and required: a missing one is `400 "external_user_id required"` (`src/app/api/engines/[slug]/usage/route.ts:75-78`, identical on main 3f27ef3 and a5733df). Per-event `external_user_id` is ignored, so an engine batching several users must send one request per user. Re-checked 2026-10-04, after Chalito's client was found sending `{events}` only (fixed: the outbox drain groups by user).
+    - An unknown user is 404. A missing engine token on the hub is 503, and a wrong one is 403 (`src/lib/engines/bearer.ts`).
     - At most 100 events. `amount` is an integer from 0 to 10^12. `cost_usd_micros` is an integer from 0 to 10^9 and is **required on every event**.
     - `occurred_at` must be within the last 7 days and no more than 5 min in the future.
     - Optional `reservation_id`. For `llm.tokens`, `metadata.tokens {input, output, cache_read, cache_write}` must sum to `amount`.
     - Idempotent on `(engine, source_id)`. A 4xx other than 408/429 is permanent (mark dead and alert).
-  - `POST /usage/settle {reservation_id, outcome: succeeded|failed|cancelled|heartbeat}`. Settling twice is a no-op.
+  - `POST /usage/settle {reservation_id, outcome: succeeded|failed|cancelled|heartbeat}`. Settling twice is a no-op. An unknown reservation is 404; an already-closed one is 409 `{ok:false, status}` (`settle/route.ts:28-45` @ a5733df).
+  - The rules are copied for tests in `packages/billing/test/hub-contract.ts` (requests) and `apps/api/test/hub-contract.test.ts` (provisioning and the launch token), each citing chalyb file:line and sha.
   - Billing: `billable_tokens = max(1, ceil(cost_usd_micros × (1 + margin) / 4))`. The margin is `app_settings.usage_margin_percent`, default 160%, and is frozen per event. 4 micros = $4 per 1M billable tokens. `boost.fee` events are already a price: `ceil(cost/4)`.
   - Meter kinds documented today: `llm.tokens`, `transcription.seconds`, `compute.seconds`, `storage.gb_month`, `stream.minutes`, `engine.base`. **Chalito's `voice.seconds`, `call.seconds`, `whatsapp.messages`, `sms.segments` and `store.purchase` must be confirmed or added on the hub (D-030).**
   - `compute.seconds` list rates (us-central1): standard 4 vCPU/8 GiB = 88 µ$/s, boost 8 vCPU/32 GiB = 208 µ$/s.
