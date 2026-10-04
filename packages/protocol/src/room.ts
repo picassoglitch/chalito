@@ -110,3 +110,73 @@ export const RoomInvite = z.object({
   expiresAt: EpochMs,
 });
 export type RoomInvite = z.infer<typeof RoomInvite>;
+
+// ---- api requests (apps/api/src/routes/rooms.ts) ------------------------------------------
+// Every write goes through the api, which acts for a verified client device and its owner's
+// companion. Content stays sealed with the room key; the api never sees plaintext.
+
+/** deviceId → the room key for one epoch, sealed to that device (crypto_box_seal, 80 bytes). */
+export const WrappedKeys = z
+  .record(DeviceId, b64url(80))
+  .refine((k) => Object.keys(k).length <= 20, "at most 20 devices");
+
+export const CreateRoomRequest = z.object({
+  roomId: RoomId,
+  type: RoomType,
+  name: z.string().min(1).max(60),
+  companionId: CompanionId,
+  /** Epoch 1, wrapped by the creator's client to its owner's client devices. */
+  wrappedKeys: WrappedKeys,
+});
+
+/** The inviting member's client signs a `room_invite` glyph (codeId = inviteId); the api stores hashes. */
+export const CreateRoomInviteRequest = z.object({
+  companionId: CompanionId,
+  glyph: z.object({ body: z.record(z.string(), z.unknown()), sig: z.string() }),
+  maxUses: z.number().int().min(1).max(50).default(1),
+});
+
+export const JoinRoomRequest = z
+  .object({
+    companionId: CompanionId,
+    shortCode: z.string().min(8).max(20).optional(),
+    glyph: z.object({ body: z.record(z.string(), z.unknown()), sig: z.string() }).optional(),
+  })
+  .refine((r) => !!r.shortCode !== !!r.glyph, { message: "exactly one of shortCode or glyph" });
+
+export const WrapRoomKeysRequest = z.object({
+  companionId: CompanionId,
+  /** The member whose devices receive the key. */
+  targetCompanionId: CompanionId,
+  epoch: z.number().int().positive(),
+  wrappedKeys: WrappedKeys,
+});
+
+export const RotateRoomKeyRequest = z.object({
+  companionId: CompanionId,
+  epoch: z.number().int().positive(),
+  /** companionId → deviceId → sealed key, for exactly the remaining members. */
+  wrappedKeys: z.record(CompanionId, WrappedKeys),
+});
+
+export const RoomActorRequest = z.object({ companionId: CompanionId });
+
+export const PostRoomEventRequest = z.object({
+  eid: Id,
+  companionId: CompanionId,
+  to: z.array(CompanionId).max(50).default([]),
+  kind: RoomEventKind,
+  urgency: Urgency.default("low"),
+  ct: RoomSealed,
+  keyEpoch: z.number().int().positive(),
+});
+
+export const PromoteRoomEventRequest = z.object({
+  companionId: CompanionId,
+  rid: Id,
+  kind: z.enum(["reminder", "decision", "transcript", "note"]),
+  /** The actor's durable copy, sealed to their own devices by their client. */
+  ct: z.record(z.string(), z.unknown()),
+});
+
+export const SetRoomRetentionRequest = z.object({ companionId: CompanionId, retention: RoomRetention });

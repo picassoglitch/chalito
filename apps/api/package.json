@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@chalito/client-keys": "workspace:*",
+    "@chalito/rooms": "workspace:*",
     "msw": "^3.0.2"
   }
 }

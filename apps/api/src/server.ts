@@ -12,6 +12,7 @@ import { twilioPhoneVerifier } from "./phone/twilio.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
 import type { McpStore } from "./oauth/model.js";
 import { PostgresMcpStore } from "./oauth/postgres-store.js";
+import { PostgresRoomsRepo, type RoomsRepo } from "./rooms/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
 import { pgVoiceCap } from "./voice/caps.js";
@@ -33,6 +34,7 @@ const backend = (): {
   repo: ApiRepo;
   identity: IdentityIssuer;
   mcp: McpStore;
+  rooms: RoomsRepo;
   phone?: PhoneDeps;
   voice?: VoiceDeps;
 } => {
@@ -49,6 +51,7 @@ const backend = (): {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
     mcp: new PostgresMcpStore(sql),
+    rooms: new PostgresRoomsRepo(sql),
     // Desktop push-to-talk when OpenAI is configured, admitted and metered through the hub.
     ...(process.env.OPENAI_API_KEY
       ? {

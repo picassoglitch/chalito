@@ -13,6 +13,7 @@
  * Playwright drives it through `window.__chalitoDev`.
  */
 import {
+  canonicalize,
   deriveDeviceId,
   fromB64url,
   generateBoxKeyPair,
@@ -21,8 +22,10 @@ import {
   openJson,
   randomNonce,
   sealJson,
+  sha256,
   signEnvelope,
   toB64url,
+  utf8,
   verifyEnvelope,
   type BoxKeyPair,
   type SigningKeyPair,
@@ -255,6 +258,43 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   await event("message.user", { origin: `client:${me.deviceId}` }, { text: "Agrega notas al README" });
   await event("message.assistant", {}, { text: "Claro. Primero necesito tu aprobación para editar." });
 
+  /** What a real agent seals (ADR 0019): details + its signature over {request, detailsHash}. */
+  const detailsHashes = new Map<string, string>();
+  const signedApproval = async (aid: string, risk: string, created: number, ttlMs: number, summary?: string) => {
+    const details = {
+      v: 1,
+      toolName: risk === "HIGH" ? "Bash" : "Write",
+      summary: summary ?? (risk === "HIGH" ? "Bash: rm -rf dist" : "Write: notes.txt"),
+      input: risk === "HIGH" ? { command: "rm -rf dist" } : { file_path: "notes.txt" },
+      reasons: risk === "HIGH" ? ["deletes files"] : [],
+      origin: `client:${me.deviceId}`,
+    };
+    const detailsHash = [...(await sha256(utf8(canonicalize(details))))]
+      .map((x) => x.toString(16).padStart(2, "0"))
+      .join("");
+    detailsHashes.set(aid, detailsHash);
+    const request = await signEnvelope(
+      "chalito.approval.v1",
+      {
+        v: 1,
+        aid,
+        requestId: `req_${aid}`,
+        sid: SID,
+        deviceId: agent.deviceId,
+        kind: "tool",
+        risk,
+        stepUpRequired: risk === "HIGH" || risk === "CRITICAL",
+        origin: `client:${me.deviceId}`,
+        createdAt: created,
+        expiresAt: created + ttlMs,
+        detailsHash,
+      },
+      agent.deviceId,
+      agent.sign.secretKey,
+    );
+    return { details, request };
+  };
+
   const seedApproval: DevControls["seedApproval"] = async ({ aid, risk, ttlMs = 10 * 60 * 1000, summary }) => {
     const created = Date.now();
     db.insert("approvals", {
@@ -267,15 +307,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       risk,
       origin: `client:${me.deviceId}`,
       step_up_required: risk === "HIGH" || risk === "CRITICAL",
-      details_ct: await sealToBoth(
-        {
-          v: 1,
-          toolName: risk === "HIGH" ? "Bash" : "Write",
-          summary: summary ?? (risk === "HIGH" ? "Bash: rm -rf dist" : "Write: notes.txt"),
-          reasons: risk === "HIGH" ? ["deletes files"] : [],
-        },
-        `approval:${aid}`,
-      ),
+      // ADR 0019: like apps/agent, seal the details WITH the agent's signed request over them.
+      details_ct: await sealToBoth(await signedApproval(aid, risk, created, ttlMs, summary), `approval:${aid}`),
       status: "pending",
       created_at: iso(created),
       expires_at: iso(created + ttlMs),
@@ -320,6 +353,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           allow: boolean;
           expiresAt: number;
           stepUp?: { method: string };
+          detailsHash?: string;
         };
         const a = db.rows("approvals").find((r) => r.aid === body.aid);
         if (
@@ -327,7 +361,9 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           !a ||
           a.status !== "pending" ||
           a.request_id !== body.requestId ||
-          body.expiresAt <= Date.now()
+          body.expiresAt <= Date.now() ||
+          // ADR 0019: an allow must be for exactly what this agent signed.
+          (body.allow && body.detailsHash !== detailsHashes.get(body.aid))
         )
           return;
         if (body.allow && a.step_up_required && !body.stepUp) return; // missing_step_up: keep waiting
@@ -419,6 +455,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       return sealJson(value, r, aad) as Promise<SealedEnvelope>;
     },
     trustedAgentBoxKey: (id) => (id === agent.deviceId && mePairedWithAgent ? agent.pubBox : null),
+    // ADR 0019: the same local-trust rule for the agent's signing key.
+    trustedAgentSignKey: (id) => (id === agent.deviceId && mePairedWithAgent ? agent.pubSign : null),
   };
 
   // ---- sessions: the person's (hub SSO) until this browser signs in as its own device -------

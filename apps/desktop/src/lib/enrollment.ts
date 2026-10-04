@@ -1,15 +1,28 @@
-import type { ApiClient, DeviceKeys, DeviceSigner, Ceremonies } from "@chalito/client-keys";
+import type {
+  ApiClient,
+  Ceremonies,
+  DeviceKeys,
+  DeviceSigner,
+  DirectoryDevice,
+  DroppedAgent,
+} from "@chalito/client-keys";
 import {
   ApiError,
   enrollEndorsed,
   generateDeviceKeys,
+  introducedAgents,
   registerPasskey,
   signDeviceRegistration,
 } from "@chalito/client-keys";
-import { EndorsementUnavailableError, type EndorsementChannel } from "@chalito/client";
-import type { DeviceRegistration, Endorsement } from "@chalito/protocol";
+import { EndorsementUnavailableError, endorsementMatches, type EndorsementChannel } from "@chalito/client";
+import type { Endorsement, IntroducedAgent } from "@chalito/protocol";
 
-export { EndorsementUnavailableError, unavailableEndorsement, type EndorsementChannel } from "@chalito/client";
+export {
+  EndorsementUnavailableError,
+  endorsementMatches,
+  unavailableEndorsement,
+  type EndorsementChannel,
+} from "@chalito/client";
 
 /**
  * Making this desktop panel a trusted client (decision: no special path; ADR 0006). It is a
@@ -44,6 +57,10 @@ export type EnrollResult =
       passkey: PasskeyOutcome;
       /** Public identifiers of the enrolled passkey (for step-up), or null. */
       credential: { credentialId: string; rpId: string } | null;
+      /** ADR 0018: agents introduced by the endorsement and now trusted here. */
+      agents: string[];
+      /** Introduced agents refused (directory disagrees with the endorsement). */
+      droppedAgents: DroppedAgent[];
     }
   | { ok: false; reason: EnrollError };
 
@@ -66,6 +83,15 @@ export interface EnrollDeps {
    */
   origin?: string;
   ceremonies?: Ceremonies;
+  /**
+   * ADR 0018: the account's devices directory and where to keep the agents the endorsement
+   * introduced (after `introducedAgents` checked them). Without it no agent is trusted here
+   * until a glyph pairing.
+   */
+  introduce?: {
+    directory: () => Promise<DirectoryDevice[]>;
+    trust: (keys: DeviceKeys, agents: IntroducedAgent[], endorsedBy: string) => Promise<string[]>;
+  };
   onDisplay?: (display: unknown) => void;
   signal?: AbortSignal;
   now?: () => number;
@@ -76,13 +102,6 @@ const API_REASONS: Record<string, EnrollError> = {
   endorser_not_trusted: "endorser_not_trusted",
   device_exists: "device_exists",
 };
-
-/** The endorsement must vouch for exactly this account and these keys (the api checks too). */
-export const endorsementMatches = (e: Endorsement, reg: DeviceRegistration): boolean =>
-  e.body.uid === reg.body.owner &&
-  e.body.newDeviceId === reg.body.deviceId &&
-  e.body.pubSign === reg.body.pubSign &&
-  e.body.pubBox === reg.body.pubBox;
 
 export const enrollDesktop = async (d: EnrollDeps): Promise<EnrollResult> => {
   const now = d.now ?? Date.now;
@@ -130,6 +149,26 @@ export const enrollDesktop = async (d: EnrollDeps): Promise<EnrollResult> => {
   }
   if (enrolled.deviceId !== keys.deviceId) return { ok: false, reason: "failed" };
 
+  // ADR 0018: the computers the endorser trusts, where the directory agrees. Best effort: a
+  // failure here only means pairing each computer by glyph later.
+  let agents: string[] = [];
+  let droppedAgents: DroppedAgent[] = [];
+  if (d.introduce) {
+    try {
+      const check = await introducedAgents(
+        endorsement,
+        { uid: d.owner, deviceId: keys.deviceId, pubSign: registration.body.pubSign, pubBox: registration.body.pubBox },
+        await d.introduce.directory(),
+      );
+      if (check.ok) {
+        droppedAgents = check.dropped;
+        if (check.agents.length) agents = await d.introduce.trust(keys, check.agents, endorsement.signerDeviceId);
+      }
+    } catch {
+      agents = [];
+    }
+  }
+
   // Passkey right after, where available. Not having one is fine: the panel then asks the
   // person to approve HIGH/CRITICAL actions from their phone.
   let passkey: PasskeyOutcome = "unavailable";
@@ -149,5 +188,13 @@ export const enrollDesktop = async (d: EnrollDeps): Promise<EnrollResult> => {
       passkey = "failed";
     }
   }
-  return { ok: true, deviceId: enrolled.deviceId, customToken: enrolled.customToken, passkey, credential };
+  return {
+    ok: true,
+    deviceId: enrolled.deviceId,
+    customToken: enrolled.customToken,
+    passkey,
+    credential,
+    agents,
+    droppedAgents,
+  };
 };

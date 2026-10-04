@@ -84,7 +84,7 @@ describe("signed builders", () => {
     const list = new TrustedClientList("dev_agent");
     const pp = await publicKeys(phone);
     await list.addConfirmed({ deviceId: phone.deviceId, pubSign: pp.pubSign, pubBox: pp.pubBox }, NOW);
-    expect(await list.addEndorsed(e, NOW + 1000)).toBe(true);
+    expect(await list.addEndorsed(e, NOW + 1000)).toEqual({ ok: true, passkey: false });
     expect(list.has(browser.deviceId)).toBe(true);
   });
 

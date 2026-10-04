@@ -168,5 +168,19 @@ export const DeviceEvent = z.discriminatedUnion("type", [
     inForceHash: z.string().regex(/^[0-9a-f]{64}$/),
     t: EpochMs,
   }),
+  /**
+   * ADR 0018 / R-L13: this agent refused an endorsed client. Shown to the person on their
+   * clients, so a refusal is never silent ("missing step-up": approve the new device again
+   * with the endorsing device's passkey).
+   */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("trust.endorsement_refused"),
+    deviceId: DeviceId,
+    clientDeviceId: DeviceId,
+    endorsedBy: DeviceId,
+    reason: z.enum(["missing_step_up", "bad_step_up", "bad_binding", "bad_signature", "stale"]),
+    t: EpochMs,
+  }),
 ]);
 export type DeviceEvent = z.infer<typeof DeviceEvent>;

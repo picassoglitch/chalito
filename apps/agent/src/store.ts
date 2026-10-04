@@ -25,6 +25,15 @@ export interface AgentStore {
   /** Durable, create-only audit trail: users/{uid}/devices/{deviceId}/audit/{eid}. `meta` is already redacted. */
   audit(entry: AuditEntry): Promise<void>;
 
+  /**
+   * ADR 0018: the account's endorsements, each with the endorsed device's directory state.
+   * Cloud data: only `TrustedClientList.addEndorsed` (a signature from a locally trusted
+   * client) decides anything.
+   */
+  listEndorsements(): Promise<EndorsementRow[]>;
+  /** Called when an endorsement is stored (pointer) and after every resync. */
+  watchEndorsements(onChange: () => void): () => void;
+
   /** users/{uid}.callBriefing.enabled (user setting; local policy must also allow it). */
   callBriefingEnabled(): Promise<boolean>;
   writeCallLine(id: string, line: CallLine): Promise<void>;
@@ -37,6 +46,15 @@ export interface AgentStore {
    * otherwise). Turning sharing off deletes it in the database.
    */
   writeSharedCard(sid: string, card: SessionCard): Promise<void>;
+}
+
+export interface EndorsementRow {
+  deviceId: string;
+  endorsement: unknown;
+  /** The endorsed device is revoked in the directory (or missing). */
+  revoked: boolean;
+  /** Its passkey binding (signed by its own key), if it enrolled one. */
+  webauthnBinding: unknown;
 }
 
 export interface AuditEntry {
@@ -62,6 +80,23 @@ export class MemoryStore implements AgentStore {
   sharedCards = new Map<string, SessionCard>();
   #approvalWatchers = new Map<string, (d: unknown) => void>();
   #commandWatcher: ((id: string, doc: Record<string, unknown>) => void) | null = null;
+  endorsements: EndorsementRow[] = [];
+  #endorsementWatcher: (() => void) | null = null;
+
+  async listEndorsements() {
+    return this.endorsements.map((e) => ({ ...e }));
+  }
+  watchEndorsements(cb: () => void) {
+    this.#endorsementWatcher = cb;
+    return () => {
+      this.#endorsementWatcher = null;
+    };
+  }
+  /** Test hook: the cloud stores an endorsement and points the agent at it. */
+  pushEndorsement(row: EndorsementRow) {
+    this.endorsements.push(row);
+    this.#endorsementWatcher?.();
+  }
   commands = new Map<string, Record<string, unknown>>();
 
   async createApproval(req: ApprovalRequest) {

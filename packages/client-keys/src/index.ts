@@ -29,5 +29,5 @@ export {
 } from "./pairing.js";
 export type { PairingDisplay, ScanResult, ClaimRequest } from "./pairing.js";
 export { deviceLogin } from "./device-login.js";
-export { EndorseError, approveEndorsement, endorseGlyph, resolveForEndorsement } from "./endorse.js";
-export type { EndorseTarget } from "./endorse.js";
+export { EndorseError, approveEndorsement, endorseGlyph, introducedAgents, resolveForEndorsement } from "./endorse.js";
+export type { DirectoryDevice, DroppedAgent, EndorseTarget, IntroductionCheck } from "./endorse.js";

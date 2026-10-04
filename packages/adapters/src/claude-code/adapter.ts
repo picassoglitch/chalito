@@ -10,6 +10,7 @@ import {
   type SessionHandle,
   type SessionStartOptions,
 } from "../core.js";
+import { envAllowed } from "../env.js";
 
 /** The slice of the SDK's Query the adapter uses. */
 export interface QueryLike extends AsyncIterable<SDKMessage> {
@@ -54,40 +55,6 @@ export interface ClaudeCodeInitInfo {
 
 /** Cap on the CLAUDE.md text appended to the system prompt; larger files are skipped. */
 const CLAUDE_MD_MAX = 64 * 1024;
-
-/**
- * Variables the CLI may inherit; everything else (credentials, base URLs, provider switches,
- * custom headers, helper TTLs, …) is dropped. Matched case-insensitively for Windows.
- */
-const ENV_ALLOW = new Set(
-  [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TERM",
-    "LANG",
-    "TMPDIR",
-    "TZ",
-    "NODE_EXTRA_CA_CERTS",
-    "SSL_CERT_FILE",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    // Windows: the CLI and its child processes don't start without these.
-    "SYSTEMROOT",
-    "WINDIR",
-    "COMSPEC",
-    "PATHEXT",
-    "USERPROFILE",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "TEMP",
-    "TMP",
-  ].map((k) => k.toUpperCase()),
-);
-const envAllowed = (k: string) => ENV_ALLOW.has(k.toUpperCase()) || /^LC_[A-Z_]+$/i.test(k);
 
 const ORIGIN_TRUST = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
 /** The less trusted of two origins (unsigned mcp:/call: < client: < local); ties keep `a`. */

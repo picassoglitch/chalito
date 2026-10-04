@@ -16,7 +16,10 @@
     "ack": "Visto",
     "risk": "Riesgo {risk}",
     "error": "No se pudo enviar: {reason}",
-    "approveOnPhone": "Aprueba esta acción desde tu teléfono"
+    "approveOnPhone": "Aprueba esta acción desde tu teléfono",
+    "unverified": "Sin verificar: tu computadora no firmó lo que ves. Solo puedes rechazarla.",
+    "showFull": "Ver el comando completo",
+    "openFullFirst": "Abre el comando completo antes de aprobar"
   },
   "security": {
     "localOnly": "Estas pantallas solo funcionan en esta computadora. Ni el teléfono ni la web pueden cambiarlas.",
@@ -50,6 +53,11 @@
       "cancel": "Cancelar",
       "confirm": "Activar (te pedirá tu contraseña)",
       "failed": "No se activó: {reason}"
+    },
+    "notices": {
+      "title": "Avisos de seguridad",
+      "missingStepUp": "«{computer}» rechazó un dispositivo nuevo: el dispositivo que lo aprobó no usó su llave de acceso. Vuelve a aprobarlo desde tu teléfono con la llave de acceso.",
+      "refused": "«{computer}» rechazó un dispositivo nuevo porque su aprobación no se pudo verificar. Vuelve a aprobarlo desde un dispositivo de confianza."
     }
   },
   "voice": {

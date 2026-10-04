@@ -6,7 +6,7 @@ import {
   stepUpChallenge,
   type WebAuthnCredentialRef,
 } from "@chalito/crypto";
-import type { GlyphPayload, SealedEnvelope, SigningContext } from "@chalito/protocol";
+import type { GlyphPayload, IntroducedAgent, SealedEnvelope, SigningContext } from "@chalito/protocol";
 import type { DeviceKeys, KeyVault, TrustedAgent } from "./keys.js";
 import { publicKeys } from "./keys.js";
 import { checkPairingGlyph } from "./pairing.js";
@@ -53,11 +53,17 @@ export class DeviceClientKeys {
   }
 
   /**
-   * Only agents this client verified itself: a signed pairing glyph whose fingerprint the user
-   * confirmed. Never a key from the devices table or any other cloud listing.
+   * Only agents this client trusts: verified itself (a signed pairing glyph whose fingerprint
+   * the user confirmed), or introduced by the endorsement of a client the person trusts AND
+   * matching the devices directory (ADR 0018). Never a key from a cloud listing alone.
    */
   trustedAgentBoxKey(agentDeviceId: string): string | null {
     return this.#agents.get(agentDeviceId)?.pubBox ?? null;
+  }
+
+  /** ADR 0019: verifies the agent's signed approval requests. Same trust rule as the box key. */
+  trustedAgentSignKey(agentDeviceId: string): string | null {
+    return this.#agents.get(agentDeviceId)?.pubSign ?? null;
   }
 
   trustedAgents(): TrustedAgent[] {
@@ -86,6 +92,32 @@ export class DeviceClientKeys {
     this.#agents.set(agent.deviceId, agent);
     await this.vault?.saveTrustedAgents(this.trustedAgents());
     return agent;
+  }
+
+  /**
+   * ADR 0018: agents introduced by this client's endorsement, already vetted by
+   * `introducedAgents` (endorsement signature + devices directory). Never downgrades an agent
+   * this client confirmed itself.
+   */
+  async trustIntroducedAgents(agents: readonly IntroducedAgent[], endorsedBy: string, now: number): Promise<string[]> {
+    const added: string[] = [];
+    for (const a of agents) {
+      const cur = this.#agents.get(a.deviceId);
+      if (cur && cur.via !== "endorsement") continue;
+      this.#agents.set(a.deviceId, {
+        deviceId: a.deviceId,
+        pubSign: a.pubSign,
+        pubBox: a.pubBox,
+        fingerprint: a.fingerprint,
+        label: "",
+        confirmedAt: now,
+        via: "endorsement",
+        endorsedBy,
+      });
+      added.push(a.deviceId);
+    }
+    if (added.length) await this.vault?.saveTrustedAgents(this.trustedAgents());
+    return added;
   }
 
   /** After revoking or unpairing an agent: nothing is sealed to it any more. */
