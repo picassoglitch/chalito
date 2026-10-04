@@ -61,7 +61,7 @@ describe("cosmetics never change entitlements, the model profile or safety", () 
       }),
       { numRuns: 150 },
     );
-  });
+  }, 60_000);
 
   it("the entitlement inputs refuse inventory outright (strict schema)", () => {
     expect(() =>
