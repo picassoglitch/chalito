@@ -54,6 +54,7 @@ const harness = async (
     turns?: FakeStep[][];
     policy?: Partial<Policy>;
     devToggles?: ("allowSudo" | "autoApproveHigh" | "autoApproveCritical")[];
+    classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -107,6 +108,7 @@ const harness = async (
     locale: () => "es",
     now: Date.now,
     log: createLogger((l) => logs.push(l)),
+    ...(opts.classifyExtras ? { classifyExtras: opts.classifyExtras } : {}),
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
@@ -389,6 +391,34 @@ describe("Developer mode never reaches unsigned turns or the hard floor", () => 
     await h.startSession();
     await waitFor(() => h.fake.run.refused.length === 1);
     expect(h.store.pendingApprovals()).toHaveLength(0);
+  });
+});
+
+describe("host hard floor (classifyExtras)", () => {
+  const UNIT = `${HOME}/.config/systemd/user/chalito-agent.service`;
+
+  it("an Edit of a protected service file is refused even with every Developer-mode toggle on", async () => {
+    const h = await harness({
+      turns: [[{ tool: "Edit", input: { file_path: UNIT, old_string: "a", new_string: "b" } }]],
+      devToggles: ["allowSudo", "autoApproveHigh", "autoApproveCritical"],
+      classifyExtras: () => ({ agentBinaries: [], protectedPaths: [UNIT], pathDirs: [] }),
+    });
+    await h.startSession();
+    await waitFor(() => h.fake.run.refused.length === 1);
+    expect(h.fake.run.ran).toHaveLength(0);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    await waitFor(() => h.store.events.some((e) => e.type === "tool.started"));
+    expect(h.store.events.find((e) => e.type === "tool.started")).toMatchObject({ risk: "CRITICAL" });
+  });
+
+  it("without the extras the same file isn't on the floor (so the wiring is what blocks it)", async () => {
+    const h = await harness({
+      turns: [[{ tool: "Edit", input: { file_path: UNIT, old_string: "a", new_string: "b" } }]],
+      devToggles: ["allowSudo", "autoApproveHigh", "autoApproveCritical"],
+    });
+    await h.startSession();
+    await waitFor(() => h.fake.run.ran.length + h.fake.run.refused.length + h.store.pendingApprovals().length > 0);
+    expect(h.fake.run.refused).toHaveLength(0);
   });
 });
 
