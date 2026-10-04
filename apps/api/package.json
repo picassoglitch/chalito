@@ -16,6 +16,7 @@
     "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
     "@chalito/glyph": "workspace:*",
+    "@chalito/guard": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@chalito/releases": "workspace:*",
     "@google-cloud/pubsub": "^6.1.0",

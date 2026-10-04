@@ -127,6 +127,9 @@ jobs:
       - run: pnpm --filter @chalito/orchestrator test:pg
         env:
           CHALITO_DB_ROLE: chalito_server
+      - run: pnpm --filter @chalito/guard test:pg
+        env:
+          CHALITO_DB_ROLE: chalito_server
       - name: Agent SupabaseStore and browser client integration
         run: |
           eval "$(supabase status -o env)"
@@ -137,6 +140,17 @@ jobs:
       # Realtime delivery (supabase-js against the local stack).
       - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
       - run: node supabase/scripts/realtime-latency.mjs
+      # Load harness at CI scale (50 devices, 3 rooms, listener churn): p95 delivery < 2 s.
+      # The 1k-device run against a real dev project is owner-approved (docs/LOAD_TEST.md).
+      - run: node supabase/scripts/load-test.mjs
+        env:
+          LOADTEST_OUT: ${{ runner.temp }}/load-test.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test
+          path: ${{ runner.temp }}/load-test.json
+          if-no-files-found: ignore
       - if: always()
         run: supabase stop --no-backup
 

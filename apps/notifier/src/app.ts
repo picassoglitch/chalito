@@ -1,3 +1,5 @@
+import { guard } from "@chalito/guard";
+import { NOTIFIER_ROUTES } from "./limits.js";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -25,6 +27,8 @@ import { callSession, type CallContext } from "./voice/call-session.js";
 import { verifyStandardWebhook, type VoiceProvider } from "@chalito/adapters/voice";
 
 export interface AppConfig {
+  /** Proxies in front of Cloud Run that append to X-Forwarded-For (default 0). */
+  trustedProxies?: number;
   pubsub: OidcExpectation & { notificationsAudience: string; roomEventsAudience: string };
   tasks: OidcExpectation & { queueName: string };
   twilioAuthToken: string;
@@ -121,6 +125,8 @@ export const waToE164 = (from: string) => {
 export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVerifier) => {
   const app = new Hono();
   const voice = (locale: "es" | "en") => deps.config.voices[locale];
+  // First: per-IP rate limits and body caps for every route (src/limits.ts).
+  app.use("*", guard(NOTIFIER_ROUTES, { now: deps.now, trustedProxies: cfg.trustedProxies ?? 0 }));
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 
