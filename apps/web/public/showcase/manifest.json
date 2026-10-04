@@ -1,0 +1,263 @@
+{
+  "v": 1,
+  "generator": "scripts/render-showcase.ts",
+  "renderer": "chromium (headless) + SwiftShader, three r186",
+  "source": "ff69422bd923766e88b31ceb7716ade3ac11c372",
+  "assets": [
+    {
+      "id": "hero-chalito",
+      "kind": "animated",
+      "file": "showcase/hero-chalito.webp",
+      "poster": "showcase/hero-chalito-poster.webp",
+      "w": 480,
+      "h": 640,
+      "fps": 10,
+      "frames": 40,
+      "seed": 11,
+      "sha256": "d1c1296eb47ddf475ef725f8013c326cfc30ef0f5088f6ca13a879319b610224",
+      "posterSha256": "78317481162c62cb34cc02da4f220ed9c81e0ee75409bbd144ae9e12e58d4835",
+      "alt": {
+        "es": "Chalito respira, saluda y sonríe",
+        "en": "Chalito breathes, waves and smiles"
+      },
+      "actors": [
+        {
+          "roster": "chalito",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "roster-chalito",
+      "kind": "still",
+      "file": "showcase/roster-chalito.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 100,
+      "sha256": "ec8ecc0b7904ddcaf85a08e9c4fb9a4731291b5bd386c4e3c1bfb9a87375611e",
+      "alt": {
+        "es": "Chalito: Tu compañero de siempre.",
+        "en": "Chalito: Your everyday companion."
+      },
+      "actors": [
+        {
+          "roster": "chalito",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "roster-bruno",
+      "kind": "still",
+      "file": "showcase/roster-bruno.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 101,
+      "sha256": "4cc5485089887d5dfd4020ed5c0e36787170a4b1e7f02c0d313a7f1131d85526",
+      "alt": {
+        "es": "Bruno: Un osito tranquilo y paciente.",
+        "en": "Bruno: A calm, patient bear."
+      },
+      "actors": [
+        {
+          "roster": "bruno",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "roster-luna",
+      "kind": "still",
+      "file": "showcase/roster-luna.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 102,
+      "sha256": "75db788bd00117d666e14ce4085de14d6d7cd3e9b977f891d3bd82ce0ace2e7c",
+      "alt": {
+        "es": "Luna: Una gatita curiosa.",
+        "en": "Luna: A curious kitten."
+      },
+      "actors": [
+        {
+          "roster": "luna",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "roster-tito",
+      "kind": "still",
+      "file": "showcase/roster-tito.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 103,
+      "sha256": "481053fc7af39494cc1e03d2798f47f713659c09c8f4acca18e4a3d3b15d3667",
+      "alt": {
+        "es": "Tito: Un búho atento a todo.",
+        "en": "Tito: An owl who notices everything."
+      },
+      "actors": [
+        {
+          "roster": "tito",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "roster-canela",
+      "kind": "still",
+      "file": "showcase/roster-canela.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 104,
+      "sha256": "42ed8fcc2b73926271260f52b8fbb61974d50a2c739cc7eac05193f6b70e8345",
+      "alt": {
+        "es": "Canela: Una zorrita lista y rápida.",
+        "en": "Canela: A quick, clever fox."
+      },
+      "actors": [
+        {
+          "roster": "canela",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "roster-nube",
+      "kind": "still",
+      "file": "showcase/roster-nube.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 105,
+      "sha256": "b8015571d881542360f714ba84037d54163d7dcef2defa6dd503c034fdb72ab7",
+      "alt": {
+        "es": "Nube: Una conejita suave y alegre.",
+        "en": "Nube: A soft, cheerful bunny."
+      },
+      "actors": [
+        {
+          "roster": "nube",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "tryon-chalito-viking",
+      "kind": "animated",
+      "file": "showcase/tryon-chalito-viking.webp",
+      "poster": "showcase/tryon-chalito-viking-poster.webp",
+      "w": 400,
+      "h": 560,
+      "fps": 10,
+      "frames": 30,
+      "seed": 21,
+      "sha256": "390da7c3919551726bbcaf391b17a4454e9e5048abda2bb853d5850342df1d62",
+      "posterSha256": "9643370c80c07b964599903affccf6e9f60e72622efe02dc29f2f03aea6da6c3",
+      "alt": {
+        "es": "Chalito con el casco vikingo",
+        "en": "Chalito wearing the Viking helmet"
+      },
+      "actors": [
+        {
+          "roster": "chalito",
+          "cosmetics": [
+            "viking_hat"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tryon-luna-crown",
+      "kind": "still",
+      "file": "showcase/tryon-luna-crown.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 22,
+      "sha256": "6a30218a739787b1f5e8a936a8edc4311368c7660984c44a4194eeef3121d078",
+      "alt": {
+        "es": "Luna con corona de flores y lentes redondos",
+        "en": "Luna with a flower crown and round glasses"
+      },
+      "actors": [
+        {
+          "roster": "luna",
+          "cosmetics": [
+            "flower_crown",
+            "round_glasses"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tryon-bruno-cape",
+      "kind": "still",
+      "file": "showcase/tryon-bruno-cape.webp",
+      "w": 300,
+      "h": 420,
+      "seed": 23,
+      "sha256": "dac14f170006fb9d63492b091eebc4ae5cf9d63b07a245d1e751a460e719c4a0",
+      "alt": {
+        "es": "Bruno con la capa de estrellas",
+        "en": "Bruno wearing the star cape"
+      },
+      "actors": [
+        {
+          "roster": "bruno",
+          "cosmetics": [
+            "star_cape"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recharge-chalito",
+      "kind": "animated",
+      "file": "showcase/recharge-chalito.webp",
+      "poster": "showcase/recharge-chalito-poster.webp",
+      "w": 400,
+      "h": 560,
+      "fps": 10,
+      "frames": 36,
+      "seed": 31,
+      "sha256": "5143e8d3e9e2115c6ef697e9c7eeae358dec7b0f1286d14b515626e4650e03dc",
+      "posterSha256": "14994edfa2ed20f255f9ce95b474cf0fbbe16606e81f290fc33aecf936513d73",
+      "alt": {
+        "es": "Chalito se queda sin energía y bosteza",
+        "en": "Chalito runs out of energy and yawns"
+      },
+      "actors": [
+        {
+          "roster": "chalito",
+          "cosmetics": []
+        }
+      ]
+    },
+    {
+      "id": "together-tito-canela",
+      "kind": "animated",
+      "file": "showcase/together-tito-canela.webp",
+      "poster": "showcase/together-tito-canela-poster.webp",
+      "w": 560,
+      "h": 420,
+      "fps": 10,
+      "frames": 30,
+      "seed": 41,
+      "sha256": "1e1456180fd3ec74084aa504af02861598e1a4524b2388ff162191a3b278096c",
+      "posterSha256": "67ce8d280770100a630d821a621d91f0b821742826d54367baf83d95b795b0b1",
+      "alt": {
+        "es": "Tito y Canela juntos",
+        "en": "Tito and Canela together"
+      },
+      "actors": [
+        {
+          "roster": "tito",
+          "cosmetics": []
+        },
+        {
+          "roster": "canela",
+          "cosmetics": []
+        }
+      ]
+    }
+  ]
+}

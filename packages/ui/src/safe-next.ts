@@ -1,5 +1,8 @@
 const BASE = "https://chalito.invalid";
 
+/** The signed-in app's home (`/` is the public landing). */
+export const APP_HOME = "/inicio";
+
 /**
  * Validates a post-SSO redirect: a same-origin relative path only (no open redirect). The checks
  * run on the NORMALISED url too, because dot segments and encodings collapse after parsing
@@ -7,16 +10,16 @@ const BASE = "https://chalito.invalid";
  * Shared by the web app's /auth/sso; apps/api/src/hub/sso.ts keeps a copy.
  */
 export const safeNextPath = (next: string | null | undefined): string => {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.length > 2048) return "/";
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.length > 2048) return APP_HOME;
   // Backslashes (browsers read them as slashes), encoded slashes/backslashes, and any control,
   // whitespace or format character: nothing a real app path needs.
-  if (/[\\\s\p{C}]/u.test(next) || /%(2f|5c)/i.test(next)) return "/";
+  if (/[\\\s\p{C}]/u.test(next) || /%(2f|5c)/i.test(next)) return APP_HOME;
   let u: URL;
   try {
     u = new URL(next, BASE);
   } catch {
-    return "/";
+    return APP_HOME;
   }
-  if (u.origin !== BASE || !u.pathname.startsWith("/") || u.pathname.startsWith("//")) return "/";
+  if (u.origin !== BASE || !u.pathname.startsWith("/") || u.pathname.startsWith("//")) return APP_HOME;
   return `${u.pathname}${u.search}${u.hash}`;
 };

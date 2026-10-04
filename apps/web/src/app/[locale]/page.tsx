@@ -1,7 +1,8 @@
 import { setRequestLocale } from "next-intl/server";
-import { Home } from "@/components/Home";
+import { Landing } from "@/components/landing/Landing";
 
-export default async function HomePage({ params }: { params: Promise<{ locale: string }> }) {
+/** The public landing. The signed-in app's home is /inicio. */
+export default async function LandingPage({ params }: { params: Promise<{ locale: string }> }) {
   setRequestLocale((await params).locale);
-  return <Home />;
+  return <Landing />;
 }

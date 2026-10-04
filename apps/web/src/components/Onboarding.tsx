@@ -43,7 +43,7 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
   const next = async () => {
     if (i < STEPS.length - 1) return setI(i + 1);
     await finishOnboarding(values);
-    router.push("/");
+    router.push("/inicio");
   };
   // The dev/test backend stands in for a signed-in session.
   const signedIn = session.status === "signed_in" || (DEV_BACKEND && status === "ready");

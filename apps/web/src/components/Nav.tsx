@@ -12,7 +12,7 @@ export const Nav = () => {
   const other = locale === "es" ? "en" : "es";
   return (
     <nav className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-sm">
-      <Link href="/" className="font-semibold">
+      <Link href="/inicio" className="font-semibold">
         {tc("appName")}
       </Link>
       <Link href="/bandeja">{t("inbox")}</Link>

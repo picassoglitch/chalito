@@ -18,7 +18,7 @@ describe("safeNextPath (no open redirect)", () => {
       undefined,
       "/x\r\nLocation: y",
     ]) {
-      expect(safeNextPath(bad)).toBe("/");
+      expect(safeNextPath(bad)).toBe("/inicio");
     }
   });
   it("rejects what only becomes `//host` after normalisation (review R-M1)", () => {
@@ -35,7 +35,7 @@ describe("safeNextPath (no open redirect)", () => {
       "/\u202e/x",
       "/ /x",
     ])
-      expect(safeNextPath(bad), bad).toBe("/");
+      expect(safeNextPath(bad), bad).toBe("/inicio");
   });
   it("never returns a protocol-relative or off-site path, whatever the input", () => {
     const parts = [
@@ -61,7 +61,7 @@ describe("safeNextPath (no open redirect)", () => {
       const r = safeNextPath(s);
       expect(r.startsWith("/") && !r.startsWith("//") && !r.startsWith("/\\"), s).toBe(true);
     }
-    expect(safeNextPath("/" + "a".repeat(2048))).toBe("/");
+    expect(safeNextPath("/" + "a".repeat(2048))).toBe("/inicio");
   });
   it("normalises harmless dot segments", () => {
     expect(safeNextPath("/a/../creditos")).toBe("/creditos");

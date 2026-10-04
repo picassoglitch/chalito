@@ -23,7 +23,7 @@ test("/auth/sso never follows an off-origin next", async ({ page, context }) => 
   await startedSignIn(context);
   await mockBackends(page, []);
   await page.goto("/auth/sso?token=t&next=https%3A%2F%2Fevil.example%2F");
-  await expect(page).toHaveURL(/127\.0\.0\.1:3100\/$/);
+  await expect(page).toHaveURL(/127\.0\.0\.1:3100\/inicio$/);
 });
 
 test("/auth/sso without a token, or with a failing exchange, shows an error and no session", async ({
@@ -86,7 +86,7 @@ for (const tampered of ["https%3A%2F%2Fevil.example%2F", "%2F%2Fevil.example", "
     await startedSignIn(context);
     await mockBackends(page, []);
     await page.goto("/auth/sso?token=hub.launch.token");
-    await expect(page).toHaveURL(/127\.0\.0\.1:3100\/$/);
+    await expect(page).toHaveURL(/127\.0\.0\.1:3100\/inicio$/);
   });
 }
 
@@ -126,7 +126,7 @@ test("login CSRF (R-M1): a launch token this browser didn't ask for is never exc
   await page.getByTestId("sign-in").click();
   await expect.poll(() => launched).toContain("state=");
   const next = (await context.cookies()).find((c) => c.name === "chalito_next")!;
-  expect(decodeURIComponent(next.value)).toBe("/");
+  expect(decodeURIComponent(next.value)).toBe("/inicio");
 });
 
 test("login CSRF (R-M1): a state the hub echoes must match, and the nonce is single-use", async ({ page, context }) => {

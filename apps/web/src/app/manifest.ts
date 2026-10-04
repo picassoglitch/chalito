@@ -8,7 +8,7 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: "Chalito",
     description: "Tu compañero que dirige a tu equipo de IA.",
     lang: "es",
-    start_url: "/",
+    start_url: "/inicio",
     scope: "/",
     display: "standalone",
     background_color: "#fafafa",

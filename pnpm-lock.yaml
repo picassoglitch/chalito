@@ -8,12 +8,30 @@ importers:
 
   .:
     devDependencies:
+      '@chalito/avatar':
+        specifier: workspace:*
+        version: link:packages/avatar
+      '@chalito/avatar-three':
+        specifier: workspace:*
+        version: link:packages/avatar-three
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:packages/config
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:packages/roster
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.12.0(jiti@2.7.0))
+      '@playwright/test':
+        specifier: ^1.63.0
+        version: 1.63.0
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       eslint:
         specifier: ^10.12.0
         version: 10.12.0(jiti@2.7.0)
@@ -23,9 +41,18 @@ importers:
       globals:
         specifier: ^17.13.0
         version: 17.13.0
+      pixelmatch:
+        specifier: ^7.2.0
+        version: 7.2.0
       prettier:
         specifier: ^3.9.9
         version: 3.9.9
+      sharp:
+        specifier: ^0.35.5
+        version: 0.35.5(@types/node@22.20.5)
+      three:
+        specifier: 0.186.1
+        version: 0.186.1
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -3587,6 +3614,10 @@ packages:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
 
+  pixelmatch@7.2.0:
+    resolution: {integrity: sha512-xhcb4yHu9sM/G7foGzoLtXYcC0zHEaOXXjRKhGup0fw78Nf2Tkiapv4EQyMzrbcmQPsllAI7DbFY2UT7PlI9Pg==}
+    hasBin: true
+
   pkce-challenge@5.0.1:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
@@ -3600,6 +3631,10 @@ packages:
     resolution: {integrity: sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg==}
     engines: {node: '>=20'}
     hasBin: true
+
+  pngjs@7.0.0:
+    resolution: {integrity: sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow==}
+    engines: {node: '>=14.19.0'}
 
   po-parser@2.2.0:
     resolution: {integrity: sha512-NdTrKgh0oO7+y+RFX8KKhOB438x/j94UGXEFzl/7pHH0JjWSn42iJ9tgmPksIO6n1JKDHmNDcejPJfKspljB9g==}
@@ -6770,6 +6805,10 @@ snapshots:
 
   picomatch@4.0.7: {}
 
+  pixelmatch@7.2.0:
+    dependencies:
+      pngjs: 7.0.0
+
   pkce-challenge@5.0.1: {}
 
   playwright-core@1.63.0: {}
@@ -6777,6 +6816,8 @@ snapshots:
   playwright@1.63.0:
     dependencies:
       playwright-core: 1.63.0
+
+  pngjs@7.0.0: {}
 
   po-parser@2.2.0: {}
 

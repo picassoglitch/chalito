@@ -5,7 +5,7 @@ test("the manifest makes the app installable", async ({ request }) => {
   const res = await request.get("/manifest.webmanifest");
   expect(res.ok()).toBe(true);
   const m = await res.json();
-  expect(m).toMatchObject({ name: "Chalito", short_name: "Chalito", start_url: "/", display: "standalone" });
+  expect(m).toMatchObject({ name: "Chalito", short_name: "Chalito", start_url: "/inicio", display: "standalone" });
   const sizes = (m.icons as { sizes: string; purpose: string }[]).map((i) => `${i.sizes}:${i.purpose}`);
   expect(sizes).toEqual(expect.arrayContaining(["192x192:any", "512x512:any", "512x512:maskable"]));
   for (const i of m.icons as { src: string }[])
