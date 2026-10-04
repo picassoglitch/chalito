@@ -1,7 +1,7 @@
 -- Settings RPC (phone rule), companions RPC, connections, notifier tables.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(48);
+select plan(49);
 
 grant usage on schema extensions to chalito_server;
 
@@ -58,8 +58,8 @@ select throws_ok($$select chalito.update_my_settings('{"phone_verified_at": "202
 select throws_ok($$select chalito.update_my_settings('{"tz": "Mars/Olympus"}')$$, '22023', null, 'settings: unknown time zones are refused');
 select throws_ok($$select chalito.update_my_settings('{"phone_pending_e164": "5512345678"}')$$, '23514', null,
   'settings: the pending phone must be E.164');
-select throws_ok($$select chalito.update_my_settings('{"calls_enabled": true}')$$, '23514', null,
-  'phone rule: calls need a verified phone and the charges ack');
+select throws_ok($$select chalito.update_my_settings('{"calls_enabled": true}')$$, '42501', null,
+  'phone rule: clients can''t turn calls on (the api does, after its checks)');
 select throws_ok($$update chalito.users set locale = 'en' where id = 'st-user'$$, '42501', null,
   'settings: no direct update of users');
 select throws_ok($$select phone_pending_e164 from chalito.users$$, '42501', null,
@@ -72,11 +72,13 @@ select lives_ok($$update chalito.users set phone_e164 = '+525512345678', phone_c
   where id = 'st-user'$$, 'phone: the server records the verified number after Twilio Verify');
 select throws_ok($$update chalito.users set phone_e164 = '+525512345678', phone_verified_at = now() where id = 'st-other'$$,
   '23505', null, 'phone: two accounts can''t verify the same number');
+select throws_ok($$update chalito.users set whatsapp_opt_in = true where id = 'st-user'$$, '23514', null,
+  'phone rule: even the server can''t opt in before the charges notice is acknowledged (CHECK)');
 reset role;
 
 select pg_temp.as_device('st-user', 'st_phone', 'client');
-select throws_ok($$select chalito.update_my_settings('{"whatsapp_opt_in": true}')$$, '23514', null,
-  'phone rule: still no opt-in before the charges notice is acknowledged');
+select throws_ok($$select chalito.update_my_settings('{"whatsapp_opt_in": true}')$$, '42501', null,
+  'phone rule: nor WhatsApp, verified or not');
 select ok((chalito.update_my_settings('{"charges_notice_ack_at": true}') ->> 'charges_notice_ack_at') is not null,
   'phone rule: the ack is stamped with server time');
 select throws_ok($$select chalito.update_my_settings('{"whatsapp_opt_in": true, "calls_enabled": true, "sms_enabled": null}')$$,
