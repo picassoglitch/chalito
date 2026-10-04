@@ -63,5 +63,5 @@ glyph-confirmed ones. A later glyph confirmation upgrades the entry.
 - Trust in a computer via endorsement is weaker than a glyph scan: it rests on the endorser's
   local trust plus the directory, not on this person comparing that computer's fingerprint.
   The client UI shows "added by <endorser>" and offers the glyph check for an upgrade.
-- The agent reads `chalito.endorsements`, which `member_ok` already allows. Migration 20261004002600 only adds a
+- The agent reads `chalito.endorsements`, which `member_ok` already allows. Migration 20261004002900 only adds a
   pointer broadcast to the account's agents when an endorsement is stored (`devices` inserts aren't broadcast).
