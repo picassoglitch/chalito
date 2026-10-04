@@ -15,6 +15,7 @@ import {
 } from "@/lib/endorse";
 import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
+import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
 import type { UsageApi } from "@/lib/usage";
 import type { Platform } from "@/lib/platform";
 import type { Session, SessionState } from "@/lib/session";
@@ -49,6 +50,9 @@ interface Ctx {
   addDevice: AddDevice | null;
   /** Token usage (/uso), read as this device; null until paired. */
   usage: UsageApi | null;
+  /** The store (/tienda) and the companion it dresses; null when signed out. */
+  store: StoreApi | null;
+  readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
 }
 
 export interface AddDevice {
@@ -105,6 +109,8 @@ const INITIAL: Ctx = {
   newDevice: null,
   addDevice: null,
   usage: null,
+  store: null,
+  readCompanion: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -257,6 +263,8 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         settings,
         mcp: platform.mcp(token),
         readSharing: sharingReader(platform.db),
+        store: platform.store(token),
+        readCompanion: () => readCompanion(platform.db, owner),
       };
       const keys = await platform.loadDeviceKeys();
       if (!keys)

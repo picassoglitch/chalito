@@ -19,7 +19,8 @@
     "download": "Descargar",
     "inbox": "Bandeja",
     "sessions": "Sesiones",
-    "devices": "Dispositivos"
+    "devices": "Dispositivos",
+    "store": "Tienda"
   },
   "home": {
     "title": "Hola, soy {name}",
@@ -154,11 +155,6 @@
     },
     "avatar": {
       "label": "Compañero"
-    },
-    "companions": {
-      "chalito": "Chalito",
-      "luna": "Luna",
-      "tito": "Tito"
     },
     "companionName": {
       "label": "Nombre",
@@ -560,5 +556,42 @@
       "title": "Ver por día",
       "day": "Día"
     }
+  },
+  "store": {
+    "title": "Tienda",
+    "intro": "Ropa y efectos para tu compañero. Solo cambian cómo se ve, nunca lo que puede hacer.",
+    "loading": "Cargando…",
+    "signIn": "Entra con tu cuenta de Chalyb para ver la tienda.",
+    "signInCta": "Entrar con Chalyb",
+    "error": "No pudimos cargar la tienda.",
+    "retry": "Reintentar",
+    "previewLabel": "{name} con lo que lleva puesto",
+    "noCompanion": "Todavía no tienes compañero.",
+    "chooseCompanion": "Elige uno",
+    "slot": {
+      "head": "Cabeza",
+      "face": "Cara",
+      "body": "Cuerpo",
+      "back": "Espalda",
+      "aura": "Aura",
+      "portal_fx": "Portal"
+    },
+    "free": "Gratis",
+    "owned": "Ya es tuyo",
+    "price": "{tokens} tokens",
+    "buy": "Comprar",
+    "equip": "Ponérselo",
+    "unequip": "Quitárselo",
+    "noTokens": "No te alcanzan los tokens.",
+    "whyChip": "¿Por qué?",
+    "retryBuy": "No se pudo completar la compra. Reintentar no te cobra dos veces.",
+    "failed": "No se pudo comprar. Vuelve a intentarlo más tarde.",
+    "equipError": {
+      "not_owned": "Primero cómpralo.",
+      "wrong_slot": "Eso no va ahí.",
+      "no_companion": "Primero elige a tu compañero.",
+      "failed": "No se pudo cambiar. Vuelve a intentarlo."
+    },
+    "lookOnly": "Los accesorios no cambian lo que tu compañero puede hacer ni sus límites."
   }
 }

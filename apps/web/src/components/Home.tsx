@@ -1,6 +1,7 @@
 "use client";
 import { useLocale, useTranslations } from "next-intl";
 import { PRODUCT_NAME, formatCompanionTitle } from "@chalito/brand";
+import { companionName } from "@chalito/ui";
 import { Link } from "@/i18n/navigation";
 import { hubLaunchUrl } from "@/lib/hub";
 import { useSettings } from "./useSettings";
@@ -9,7 +10,6 @@ import type { AppLocale } from "@/i18n/routing";
 
 export const Home = () => {
   const t = useTranslations("home");
-  const ts = useTranslations("settings");
   const locale = useLocale() as AppLocale;
   const session = useSession();
   const { values: settings } = useSettings();
@@ -22,7 +22,7 @@ export const Home = () => {
       {title?.credit ? <p className="text-sm text-neutral-600">{title.credit}</p> : null}
       <p>{t("subtitle")}</p>
       {settings ? (
-        <p data-testid="home-companion">{t("companion", { name: ts(`companions.${settings.avatar}`) })}</p>
+        <p data-testid="home-companion">{t("companion", { name: companionName(settings.avatar, locale) })}</p>
       ) : null}
       {session.status === "signed_out" ? (
         <div className="grid gap-2">

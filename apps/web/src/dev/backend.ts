@@ -44,7 +44,9 @@ import type { ChannelSetter } from "@/lib/phone";
 import type { Connector, ConsentRequest, McpApi } from "@/lib/mcp";
 import { confirmStepUp } from "@/components/StepUpHost";
 import { passkeyRef, savePasskeyRef } from "@/lib/keys";
+import { httpStore } from "@/lib/store";
 import { parseUsage, type UsageApi } from "@/lib/usage";
+import { DEV_CATALOG } from "./catalog";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -102,6 +104,15 @@ export interface DevControls {
   revokeMe(): void;
   /** GET /v1/usage/daily: "normal" (comms under target), "over" (above), "empty", or "error". */
   setUsage(mode: "normal" | "over" | "empty" | "error"): void;
+  /** /v1/store: the hub balance in tokens, a one-shot failure, and the companion to dress. */
+  storeState: {
+    balance(): number;
+    setBalance(tokens: number): void;
+    failNextPurchase(how: "hub_unavailable" | "network"): void;
+    /** Purchases as the api recorded them (purchaseId → charged). */
+    purchases(): Record<string, { cosmeticId: string; charged: number }>;
+    seedCompanion(avatar: string): void;
+  };
   /** /v1/endorse: the other side of "Añadir un dispositivo" / "Esperando aprobación". */
   endorse: {
     /** A new browser of the owner opens a code (for this trusted browser to approve). */
@@ -436,7 +447,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   db.setSession(personSession);
   const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
 
-  const controls: Omit<DevControls, "endorse" | "setUsage"> & Partial<Pick<DevControls, "endorse" | "setUsage">> = {
+  const controls: Omit<DevControls, "endorse" | "setUsage" | "storeState"> &
+    Partial<Pick<DevControls, "endorse" | "setUsage" | "storeState">> = {
     marker: DEV_MARKER,
     owner: OWNER,
     get me() {
@@ -858,6 +870,84 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     })!;
   };
 
+  // ---- /v1/store (apps/api/src/store/routes.ts), simulated ------------------------------
+  let balance = 300_000;
+  let failNext: "hub_unavailable" | "network" | null = null;
+  const owned = new Set<string>();
+  const purchases: Record<string, { cosmeticId: string; charged: number }> = {};
+  const catalogItem = (id: string) =>
+    (DEV_CATALOG as Record<string, (typeof DEV_CATALOG)[keyof typeof DEV_CATALOG]>)[id];
+  const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  const storeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const body = init?.body ? (JSON.parse(String(init.body)) as Row) : {};
+    db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...body } });
+    if (path === "/v1/store/catalog")
+      return reply(200, {
+        items: Object.entries(DEV_CATALOG).map(([id, x]) => ({ id, ...x, owned: x.free || owned.has(id) })),
+      });
+    if (path === "/v1/store/purchase") {
+      const item = catalogItem(body.cosmeticId as string);
+      if (!item) return reply(404, { error: "unknown_cosmetic" });
+      if (item.free) return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: 0 });
+      const prior = purchases[body.purchaseId as string];
+      if (prior)
+        return reply(200, { status: "owned", cosmeticId: prior.cosmeticId, charged: prior.charged, replay: true });
+      if (owned.has(body.cosmeticId as string))
+        return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: 0 });
+      if (failNext) {
+        const how = failNext;
+        failNext = null;
+        if (how === "network") throw new TypeError("Failed to fetch");
+        return reply(503, { error: "hub_unavailable" });
+      }
+      const price = (item as { priceTokens: number }).priceTokens;
+      if (balance < price)
+        return reply(402, { error: "no_tokens", chips: [{ label: "¿Por qué?", href: "/creditos" }] });
+      balance -= price;
+      owned.add(body.cosmeticId as string);
+      purchases[body.purchaseId as string] = { cosmeticId: body.cosmeticId as string, charged: price };
+      return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: price });
+    }
+    if (path === "/v1/store/equip") {
+      const { companionId, slot, cosmeticId } = body as {
+        companionId: string;
+        slot: string;
+        cosmeticId: string | null;
+      };
+      if (cosmeticId !== null) {
+        const item = catalogItem(cosmeticId);
+        if (!item) return reply(404, { error: "unknown_cosmetic" });
+        if (item.slot !== slot) return reply(400, { error: "wrong_slot" });
+        if (!item.free && !owned.has(cosmeticId)) return reply(403, { error: "not_owned" });
+      }
+      const row = db.rows("companions").find((r) => r.owner === OWNER && r.companion_id === companionId);
+      if (!row) return reply(404, { error: "unknown_companion" });
+      const equipped = { ...((row.equipped as Row) ?? {}) };
+      if (cosmeticId === null) delete equipped[slot];
+      else equipped[slot] = cosmeticId;
+      db.update("companions", (r) => r === row, { equipped });
+      return reply(200, { ok: true, slot, cosmeticId });
+    }
+    return reply(404, { error: "not_found" });
+  }) as typeof fetch;
+  const store = httpStore("http://dev.invalid", async () => db.session?.access_token ?? null, storeFetch);
+  controls.storeState = {
+    balance: () => balance,
+    setBalance: (n) => void (balance = n),
+    failNextPurchase: (how) => void (failNext = how),
+    purchases: () => ({ ...purchases }),
+    seedCompanion: (avatar) =>
+      db.insert("companions", {
+        owner: OWNER,
+        companion_id: "chl_devcompanionaaaaaaaaaaaaaa",
+        name: "Chalito",
+        is_renamed: false,
+        avatar,
+        equipped: {},
+      }),
+  };
+
   // /v1/devices/token, simulated: the signature over the refresh challenge is the authentication.
   const sb = db.client(OWNER);
   return {
@@ -892,6 +982,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     mcp: () => mcp,
     api: () => api,
     usage: () => usage,
+    store: () => store,
     endorseWatch,
     saveDeviceKeys,
     enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
