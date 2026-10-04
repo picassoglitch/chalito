@@ -1,4 +1,6 @@
-# Secret containers only: values are added out of band (brief §9). Access is granted per secret.
+# Secret containers, each with a placeholder version: values are added out of band as a new version
+# (brief §9, GO_LIVE 3.5). Cloud Run refuses a revision whose secret has no version, so without the
+# placeholder the first apply couldn't create the services. Access is granted per secret.
 variable "project_id" {
   type = string
 }
@@ -23,6 +25,15 @@ resource "google_secret_manager_secret" "this" {
   replication {
     auto {}
   }
+}
+
+# Version 1 only: the real value is added with `gcloud secrets versions add`, "latest" moves on, and
+# the next deploy picks it up. Terraform never sees or overwrites the real value.
+resource "google_secret_manager_secret_version" "placeholder" {
+  for_each = google_secret_manager_secret.this
+
+  secret      = each.value.id
+  secret_data = "REPLACE_ME"
 }
 
 locals {

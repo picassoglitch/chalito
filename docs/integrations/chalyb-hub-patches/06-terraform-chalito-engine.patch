@@ -1,0 +1,128 @@
+diff --git a/infra/terraform/engines.tf b/infra/terraform/engines.tf
+index 3c9f67b..48f6d8b 100644
+--- a/infra/terraform/engines.tf
++++ b/infra/terraform/engines.tf
+@@ -33,6 +33,7 @@ module "engine" {
+       CHALYB_BASE_URL = coalesce(var.hub_url, "https://www.${var.domain}")
+     },
+     each.value.env,
++    lookup(var.engine_extra_env, each.key, {}),
+     each.key == local.relay_engine ? local.relay_engine_env : {},
+   )
+ 
+@@ -41,10 +42,13 @@ module "engine" {
+   secret_env_names          = each.value.secret_env_names
+   object_storage_env_prefix = each.value.object_storage_env_prefix
+ 
+-  shared_secret_env = {
+-    for var_name, secret_key in each.value.shared_secrets :
+-    var_name => google_secret_manager_secret.shared[secret_key].secret_id
+-  }
++  shared_secret_env = merge(
++    {
++      for var_name, secret_key in each.value.shared_secrets :
++      var_name => google_secret_manager_secret.shared[secret_key].secret_id
++    },
++    lookup(var.engine_extra_secret_env, each.key, {}),
++  )
+ 
+   worker = each.value.worker
+   boost  = each.value.boost
+diff --git a/infra/terraform/terraform.tfvars.example b/infra/terraform/terraform.tfvars.example
+index c81cab7..5fa8ad9 100644
+--- a/infra/terraform/terraform.tfvars.example
++++ b/infra/terraform/terraform.tfvars.example
+@@ -54,3 +54,29 @@ enable_domain_mappings = false
+ #   chalybobs    = { display_name = "ChalyOBS",    secret_env_names = { admin_token = "CHALYBOBS_ADMIN_TOKEN", sso_secret = "CHALYBOBS_SSO_SECRET" } }
+ #   chalybcrypto = { display_name = "ChalyCrypto", secret_env_names = { admin_token = "CHALYB_ADMIN_TOKEN",    sso_secret = "CHALYB_SSO_SECRET" } }
+ # }
++
++# Chalito, second apply: once Chalito's own Terraform (picassoglitch/chalito
++# infra/terraform/envs/dev) has created its buckets and secrets and granted the
++# `chalito` service account access. Values are that apply's outputs.
++#
++# engine_extra_env = {
++#   chalito = {
++#     ACCOUNT_EXPORT_BUCKET   = "<project>-chalito-records"
++#     AVATAR_BUCKET           = "<project>-chalito-assets"
++#     RECORDS_BUCKET          = "<project>-chalito-records"
++#     CHALITO_RELEASES_BUCKET = "<project>-chalito-releases"
++#     CHALITO_RELEASES_SIGNER = "chalito-release-signer@<project>.iam.gserviceaccount.com"
++#     SCHEDULER_SA_EMAIL      = "chalito-pubsub-push@<project>.iam.gserviceaccount.com"
++#   }
++# }
++# engine_extra_secret_env = {
++#   chalito = {
++#     CHALITO_GATEWAY_TOKEN     = "chalito-gateway-token"
++#     OPENAI_API_KEY            = "chalito-openai-api-key"
++#     VOICE_TOKEN_SECRET        = "chalito-voice-token-secret"
++#     TWILIO_ACCOUNT_SID        = "chalito-twilio-account-sid"
++#     TWILIO_AUTH_TOKEN         = "chalito-twilio-auth-token"
++#     TWILIO_VERIFY_SERVICE_SID = "chalito-twilio-verify-service"
++#     OWNER_UIDS                = "chalito-owner-uids"
++#   }
++# }
+diff --git a/infra/terraform/variables.tf b/infra/terraform/variables.tf
+index e9f1190..616639a 100644
+--- a/infra/terraform/variables.tf
++++ b/infra/terraform/variables.tf
+@@ -273,9 +273,59 @@ variable "engines" {
+         database_url = "DATABASE_URL"
+       }
+     }
++
++    # Chalito's api (picassoglitch/chalito apps/api) reads its own prefixed
++    # pair. Its web app is on Vercel at chalito.chalyb.com, so this service is
++    # api.chalito.chalyb.com: leave enable_domain_mappings off and map that
++    # host by hand. Buckets, the scheduler signer and the api's other secrets
++    # come from Chalito's own Terraform, which runs after this one; they go in
++    # engine_extra_env / engine_extra_secret_env on a second apply.
++    chalito = {
++      display_name = "Chalito"
++      secret_env_names = {
++        admin_token  = "CHALITO_ADMIN_TOKEN"
++        sso_secret   = "CHALITO_SSO_SECRET"
++        database_url = "DATABASE_URL"
++      }
++      env = {
++        SUPABASE_URL           = "https://uqcbziwdgbnzehipzjxp.supabase.co"
++        API_PUBLIC_URL         = "https://api.chalito.chalyb.com"
++        CHALITO_API_ISSUER     = "https://api.chalito.chalyb.com"
++        CHALITO_WEB_ORIGIN     = "https://chalito.chalyb.com"
++        CHALITO_MCP_RESOURCE   = "https://mcp.chalito.chalyb.com/mcp"
++        CHALITO_WEBAUTHN_RP_ID = "chalito.chalyb.com"
++        TRUSTED_PROXIES        = "0"
++      }
++      shared_secrets = {
++        SUPABASE_SECRET_KEY = "supabase-secret-key"
++      }
++    }
+   }
+ }
+ 
++variable "engine_extra_env" {
++  description = <<-EOT
++    Extra plain env for an engine's API, by slug: { <slug> = { VAR = "value" } }.
++    For values another apply produces (an engine's own buckets, say), so they
++    can be added without restating the whole `engines` map, whose default
++    describes every live engine.
++  EOT
++  type        = map(map(string))
++  default     = {}
++}
++
++variable "engine_extra_secret_env" {
++  description = <<-EOT
++    Secrets an engine manages itself, in this project, injected into its API,
++    by slug: { <slug> = { VAR = "secret-id" } }. Each secret must exist with a
++    version, and the engine's own Terraform must grant this engine's service
++    account access, before the apply that adds it: Cloud Run refuses a
++    revision it can't read. Nothing here creates or grants.
++  EOT
++  type        = map(map(string))
++  default     = {}
++}
++
+ variable "enable_domain_mappings" {
+   description = <<-EOT
+     Create Cloud Run domain mappings for <slug>.<domain>. Requires the domain
