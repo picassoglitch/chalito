@@ -52,7 +52,6 @@ locals {
   mcp          = local.sa["chalito-mcp-gateway"]
   push         = local.sa["chalito-pubsub-push"]
   # The `api` service account comes from Chalyb's engine module (ADR 0016); empty until it exists.
-  api       = var.api_service_account
   api_list  = var.api_service_account == "" ? [] : [var.api_service_account]
   pubsub_sa = "service-${var.project_number}@gcp-sa-pubsub.iam.gserviceaccount.com"
 }
