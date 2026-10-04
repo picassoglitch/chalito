@@ -57,6 +57,15 @@ export interface CommsBilling {
   ): Promise<{ ok: true; sourceId: string } | { ok: false; reason: string }>;
   /** The call's voice ended: bill the elapsed seconds (voice + SIP interface minutes) and settle. */
   closeCallVoice(uid: string, sourceId: string): Promise<void>;
+  /** OpenAI accepted the call: remember its call id so the call can be hung up server-side. */
+  connectedCallVoice(uid: string, sourceId: string, callId: string): Promise<void>;
+  /** Open phone-call voice sessions (all owners, or one). */
+  openCallVoices(uid?: string): Promise<VoiceSession[]>;
+  /**
+   * Ends a phone call's voice now: hangs up the Twilio call and the OpenAI call. Billing follows
+   * when the call agent's socket closes (closeCallVoice), or the sweep if that instance is gone.
+   */
+  hangUpCallVoice(s: VoiceSession): Promise<void>;
   /** Bills desktop voice sessions that were never ended (R-H6), then drains the outbox. */
   drain(): Promise<DrainResult & { voiceSessionsSwept?: number }>;
 }
@@ -87,9 +96,18 @@ export const hubCommsBilling = (p: {
   voiceSessions?: VoiceSessionStore;
   /** Prices a desktop session's increment, for the sweep (apps/api's HubStreamUsage.event). */
   desktopVoiceEvent?: VoiceEventFor;
-  /** Hangs up a stale desktop session's WebRTC call (apps/api proxies it and records its id). */
+  /** Hangs up an OpenAI Realtime call by id (desktop WebRTC via apps/api, or a phone call's SIP leg). */
   hangupCall?: (callId: string) => Promise<unknown>;
+  /** Hangs up a Twilio call by CallSid (Status=completed). */
+  endPhoneCall?: (callSid: string) => Promise<unknown>;
 }): CommsBilling => {
+  /** Best effort, each leg on its own: a phone call's Twilio call and any OpenAI call. */
+  const hangUp = async (s: VoiceSession) => {
+    const legs: Promise<unknown>[] = [];
+    if (s.channel === "call" && p.endPhoneCall) legs.push(p.endPhoneCall(s.deviceId));
+    if (s.callId && p.hangupCall) legs.push(p.hangupCall(s.callId));
+    await Promise.allSettled(legs);
+  };
   const ctx = (owner: string, origin: "whatsapp.message" | "sms.message" | "call.pstn" | "voice.call") => ({
     owner,
     billingMode: "managed" as const,
@@ -222,6 +240,11 @@ export const hubCommsBilling = (p: {
       if (r.reservationId)
         await p.hub.settle({ reservation_id: r.reservationId, outcome: "succeeded" }).catch(() => undefined);
     },
+    async connectedCallVoice(uid, sourceId, callId) {
+      if (p.voiceSessions && sourceId) await p.voiceSessions.setCallId(uid, sourceId, callId);
+    },
+    openCallVoices: async (uid) => (p.voiceSessions ? p.voiceSessions.openOn("call", uid) : []),
+    hangUpCallVoice: (s) => hangUp(s),
     drain: async () => {
       const voiceSessionsSwept = p.voiceSessions
         ? await sweepVoiceSessions({
@@ -232,12 +255,7 @@ export const hubCommsBilling = (p: {
                 ? callVoiceEvent(s, seconds, total)
                 : (p.desktopVoiceEvent?.(s, seconds, total) ?? null),
             settle: (rid) => p.hub.settle({ reservation_id: rid, outcome: "succeeded" }),
-            ...(p.hangupCall
-              ? {
-                  hangup: (s: VoiceSession) =>
-                    s.channel === "desktop" && s.callId ? p.hangupCall!(s.callId) : Promise.resolve(),
-                }
-              : {}),
+            hangup: hangUp,
           })
         : undefined;
       const r = await drainOutbox({ store: p.outbox, hub: p.hub, now: p.now, alert: p.alert });

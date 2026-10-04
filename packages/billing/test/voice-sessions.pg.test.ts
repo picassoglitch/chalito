@@ -120,6 +120,8 @@ if (!url) {
       expect(await store.setCallId("someone-else", s, "rtc_x")).toBe(false);
       const [first] = await store.openFor(u, "dev_x");
       expect(first).toMatchObject({ sourceId: s, callId: "rtc_abc" });
+      expect((await store.openOn("desktop", u)).map((v) => v.sourceId)).toEqual([s]);
+      expect(await store.openOn("call", u)).toEqual([]);
       const hung: string[] = [];
       await sweepVoiceSessions({
         store,

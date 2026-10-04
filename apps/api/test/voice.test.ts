@@ -396,6 +396,25 @@ describe("the api ends the call itself (SDP proxy, R-H6 follow-up)", () => {
     expect(sessions.events.map((e) => e.amount)).toEqual([25]);
   });
 
+  it("revoking a device also hangs up the owner's live phone call (its OpenAI leg; the notifier bills it)", async () => {
+    const { revoke, sessions } = setup();
+    await sessions.open({
+      sourceId: "voice_call1",
+      owner: "hub-user-1",
+      channel: "call",
+      deviceId: `CA${"c".repeat(32)}`,
+      reservationId: "r_call",
+      model: "gpt-realtime-2.1-mini",
+      startedAt: clock,
+      maxSeconds: 900,
+    });
+    await sessions.setCallId("hub-user-1", "voice_call1", "rtc_phone");
+    expect((await revoke("client:dev_phone", "dev_agent")).status).toBe(200);
+    expect(hungUp).toEqual(["rtc_phone"]);
+    expect(sessions.sessions.get("voice_call1")!.endedAt).toBeNull();
+    expect(sessions.events).toEqual([]);
+  });
+
   it("the stale sweep hangs up a call that was never ended", async () => {
     const { connect, call } = setup(realHub().hub, undefined, 60);
     await connect();
