@@ -73,7 +73,7 @@ const harness = async (
     },
   };
 
-  const dmStore = new DevModeStore(mkdtempSync(join(tmpdir(), "chalito-agent-")));
+  const dmStore = new DevModeStore(mkdtempSync(join(tmpdir(), "chalito-agent-")), agent.sign, agent.id);
   const liability = loadLiabilityText("es");
   const devMode = new DevMode({
     store: dmStore,

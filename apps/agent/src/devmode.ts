@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DevModeToggle, Locale } from "@chalito/protocol";
 import type { LiabilityText } from "@chalito/config";
+import type { SigningKeyPair } from "@chalito/crypto";
+import { signLocal, verifyLocal } from "./local-sig.js";
 import { DEVMODE_OFF, type DevModeState } from "./policy/decide.js";
 
 /** OS user authentication (macOS LocalAuthentication, Windows Hello, polkit/PAM on Linux). */
@@ -73,11 +75,44 @@ export interface LiabilityRecord {
   t: number;
   prevHash: string;
   hash: string;
+  /** Agent-key signature over the record (prevHash and hash included). */
+  sig: string;
 }
 
-/** ~/.chalito/devmode.json + ~/.chalito/audit/devmode.jsonl (append-only, hash-chained). */
+/** Turning toggles off is chained too, so an old signed state can't be replayed after it. */
+export interface DisableRecord {
+  type: "devmode.disabled";
+  toggles: DevModeToggle[];
+  deviceId: string;
+  by: string;
+  t: number;
+  prevHash: string;
+  hash: string;
+  sig: string;
+}
+
+export type AuditRecord = LiabilityRecord | DisableRecord;
+type Unsealed<R> = R extends AuditRecord ? Omit<R, "prevHash" | "hash" | "sig"> : never;
+
+export type DevModeTamper = "state_signature" | "audit_chain" | "stale_state" | "toggle_unbacked";
+
+const GENESIS = "0".repeat(64);
+
+/**
+ * ~/.chalito/devmode.json + ~/.chalito/audit/devmode.jsonl (append-only, hash-chained).
+ *
+ * Both are signed with the agent key, so a shell write that slips past the classifier
+ * can't turn anything on: the state file must carry a valid signature and point at the
+ * current head of the audit chain, every audit line must be signed, and every enabled
+ * toggle needs a signed liability record newer than its last disable. Anything that
+ * fails reads as OFF and is reported as tampering. A missing state file is plain OFF.
+ */
 export class DevModeStore {
-  constructor(readonly dir: string) {
+  constructor(
+    readonly dir: string,
+    private readonly keys: SigningKeyPair,
+    private readonly deviceId: string,
+  ) {
     mkdirSync(join(dir, "audit"), { recursive: true, mode: 0o700 });
   }
 
@@ -88,41 +123,96 @@ export class DevModeStore {
     return join(this.dir, "audit", "devmode.jsonl");
   }
 
+  /** Verified state plus the reason it was forced off, if any. */
+  inspect(): { state: DevModeState; tampered: DevModeTamper | null } {
+    if (!existsSync(this.#stateFile)) return { state: DEVMODE_OFF, tampered: null };
+    let file: { deviceId?: unknown; state?: DevModeState; chainHead?: unknown; sig?: unknown };
+    try {
+      file = JSON.parse(readFileSync(this.#stateFile, "utf8")) as typeof file;
+    } catch {
+      return { state: DEVMODE_OFF, tampered: "state_signature" };
+    }
+    const { sig, ...body } = file;
+    if (
+      body.deviceId !== this.deviceId ||
+      !body.state ||
+      !verifyLocal("chalito.devmode-state.v1", body, sig, this.keys.publicKey)
+    )
+      return { state: DEVMODE_OFF, tampered: "state_signature" };
+    const records = this.#verifiedRecords();
+    if (!records) return { state: DEVMODE_OFF, tampered: "audit_chain" };
+    if (body.chainHead !== (records.at(-1)?.hash ?? GENESIS)) return { state: DEVMODE_OFF, tampered: "stale_state" };
+
+    const state = body.state;
+    if (!state.on) return { state: DEVMODE_OFF, tampered: null };
+    const backed = state.toggles.filter((toggle) => {
+      const lastAccept = records.findLastIndex((r) => r.type === "devmode.liability_accepted" && r.toggle === toggle);
+      const lastDisable = records.findLastIndex((r) => r.type === "devmode.disabled" && r.toggles.includes(toggle));
+      return lastAccept > lastDisable;
+    });
+    if (backed.length !== state.toggles.length) {
+      const s: DevModeState = backed.length ? { ...state, toggles: backed } : DEVMODE_OFF;
+      return { state: s, tampered: "toggle_unbacked" };
+    }
+    return { state, tampered: null };
+  }
+
   read(): DevModeState {
-    if (!existsSync(this.#stateFile)) return DEVMODE_OFF;
-    return JSON.parse(readFileSync(this.#stateFile, "utf8")) as DevModeState;
+    return this.inspect().state;
   }
 
   write(state: DevModeState): void {
-    writeFileSync(this.#stateFile, JSON.stringify(state), { mode: 0o600 });
+    const body = { deviceId: this.deviceId, state, chainHead: this.records().at(-1)?.hash ?? GENESIS };
+    const tmp = `${this.#stateFile}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ ...body, sig: signLocal("chalito.devmode-state.v1", body, this.keys) }), {
+      mode: 0o600,
+    });
+    renameSync(tmp, this.#stateFile);
   }
 
-  records(): LiabilityRecord[] {
+  records(): AuditRecord[] {
     if (!existsSync(this.#auditFile)) return [];
     return readFileSync(this.#auditFile, "utf8")
       .split("\n")
       .filter(Boolean)
-      .map((l) => JSON.parse(l) as LiabilityRecord);
+      .map((l) => JSON.parse(l) as AuditRecord);
   }
 
-  append(rec: Omit<LiabilityRecord, "prevHash" | "hash">): LiabilityRecord {
-    const prevHash = this.records().at(-1)?.hash ?? "0".repeat(64);
+  liabilityRecords(): LiabilityRecord[] {
+    return this.records().filter((r): r is LiabilityRecord => r.type === "devmode.liability_accepted");
+  }
+
+  append<R extends AuditRecord>(rec: Unsealed<R>): R {
+    const prevHash = this.records().at(-1)?.hash ?? GENESIS;
     const hash = createHash("sha256").update(prevHash).update(JSON.stringify(rec)).digest("hex");
-    const full = { ...rec, prevHash, hash };
+    const unsigned = { ...rec, prevHash, hash };
+    const full = { ...unsigned, sig: signLocal("chalito.devmode-liability.v1", unsigned, this.keys) } as unknown as R;
     appendFileSync(this.#auditFile, `${JSON.stringify(full)}\n`, { mode: 0o600 });
     return full;
   }
 
-  /** True when no line was edited or removed from the middle. */
+  /** True when no line was edited, removed from the middle, or written without the agent key. */
   verifyChain(): boolean {
-    let prev = "0".repeat(64);
-    for (const r of this.records()) {
-      const { prevHash, hash, ...rest } = r;
-      if (prevHash !== prev) return false;
-      if (createHash("sha256").update(prevHash).update(JSON.stringify(rest)).digest("hex") !== hash) return false;
+    return this.#verifiedRecords() !== null;
+  }
+
+  #verifiedRecords(): AuditRecord[] | null {
+    let records: AuditRecord[];
+    try {
+      records = this.records();
+    } catch {
+      return null;
+    }
+    let prev = GENESIS;
+    for (const r of records) {
+      const { prevHash, hash, sig, ...rest } = r;
+      if (prevHash !== prev || rest.deviceId !== this.deviceId) return null;
+      if (createHash("sha256").update(prevHash).update(JSON.stringify(rest)).digest("hex") !== hash) return null;
+      if (!verifyLocal("chalito.devmode-liability.v1", { ...rest, prevHash, hash }, sig, this.keys.publicKey))
+        return null;
       prev = hash;
     }
-    return true;
+    return records;
   }
 }
 
@@ -145,10 +235,18 @@ export type EnableResult = { ok: true; state: DevModeState } | { ok: false; reas
  * everything off and writes no acceptance.
  */
 export class DevMode {
+  #lastTamper: DevModeTamper | null = null;
+
   constructor(private readonly deps: DevModeDeps) {}
 
+  /** Verified on every read; tampering reads as off and is emitted once per occurrence. */
   get state(): DevModeState {
-    return this.deps.store.read();
+    const { state, tampered } = this.deps.store.inspect();
+    if (tampered !== this.#lastTamper) {
+      this.#lastTamper = tampered;
+      if (tampered) void this.deps.emit({ type: "devmode.tampered", reason: tampered }).catch(() => undefined);
+    }
+    return state;
   }
 
   async enableToggle(toggle: DevModeToggle): Promise<EnableResult> {
@@ -160,7 +258,9 @@ export class DevMode {
     const accepted = await prompter.liability(liability);
     if (!accepted.checked || accepted.typed.trim() !== liability.phrase) return { ok: false, reason: "cancelled" };
 
-    const rec = store.append({
+    // Read before appending: the state is bound to the chain head it was written with.
+    const cur = this.state;
+    const rec = store.append<LiabilityRecord>({
       type: "devmode.liability_accepted",
       toggle,
       deviceId,
@@ -169,7 +269,6 @@ export class DevMode {
       text: liability.text,
       t: now(),
     });
-    const cur = store.read();
     const state: DevModeState = {
       on: true,
       toggles: [...new Set([...cur.toggles, toggle])],
@@ -183,6 +282,14 @@ export class DevMode {
 
   /** Always allowed, locally or from a verified signed remote command. */
   async off(by: string): Promise<DevModeState> {
+    const cur = this.deps.store.read();
+    this.deps.store.append<DisableRecord>({
+      type: "devmode.disabled",
+      toggles: cur.toggles,
+      deviceId: this.deps.deviceId,
+      by,
+      t: this.deps.now(),
+    });
     this.deps.store.write(DEVMODE_OFF);
     await this.deps.emit({ type: "devmode.changed", on: false, toggles: [], by });
     return DEVMODE_OFF;
@@ -191,6 +298,13 @@ export class DevMode {
   async toggleOff(toggle: DevModeToggle, by: string): Promise<DevModeState> {
     const cur = this.deps.store.read();
     const toggles = cur.toggles.filter((t) => t !== toggle);
+    this.deps.store.append<DisableRecord>({
+      type: "devmode.disabled",
+      toggles: [toggle],
+      deviceId: this.deps.deviceId,
+      by,
+      t: this.deps.now(),
+    });
     const state: DevModeState = toggles.length ? { ...cur, toggles } : DEVMODE_OFF;
     this.deps.store.write(state);
     await this.deps.emit({ type: "devmode.changed", on: state.on, toggles: state.toggles, by });
