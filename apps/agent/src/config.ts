@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import type { SigningKeyPair } from "@chalito/crypto";
 import { DerivedDeviceId, Locale, Uid } from "@chalito/protocol";
+import { signLocal, verifyLocal } from "./local-sig.js";
 
 /** ~/.chalito: config, policy, trusted clients, Developer-mode state and audit. 0700. */
 export const chalitoDir = (home = homedir()): string => join(home, ".chalito");
@@ -26,8 +28,12 @@ export const AgentConfig = z.object({
     databaseId: z.string().min(1).default("chalito"),
   }),
   locale: Locale.default("es"),
-  /** Optional override for the user's Claude Code binary (otherwise `which claude`). */
-  claudePath: z.string().min(1).optional(),
+  /**
+   * The user's Claude Code binary, pinned by `chalito claude pin` (resolved once, by a
+   * human at a terminal). The daemon runs exactly this file, checked against the hash;
+   * it never searches PATH.
+   */
+  claude: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfig>;
 export type PairedConfig = AgentConfig & { owner: string; deviceId: string };
@@ -36,6 +42,10 @@ export const configPath = (dir: string): string => join(dir, "config.json");
 
 export class ConfigError extends Error {
   override name = "ConfigError";
+}
+
+export class ConfigTamperedError extends ConfigError {
+  override name = "ConfigTamperedError";
 }
 
 /** Locale for messages before a config exists: LANG=en* → en, anything else → es. */
@@ -48,16 +58,27 @@ export const envLocale = (env: Record<string, string | undefined>): "es" | "en" 
  * CHALITO_FIREBASE_DATABASE_ID), so a fresh install can pair before a file exists.
  * With the Firebase emulator variables set, the project defaults to demo-chalito.
  */
-export const readConfig = (dir: string, env: Record<string, string | undefined> = process.env): AgentConfig => {
+export const readConfig = (
+  dir: string,
+  env: Record<string, string | undefined> = process.env,
+  /** With keys, the file must carry the agent's signature (the daemon always passes them). */
+  verify?: { keys: SigningKeyPair },
+): AgentConfig => {
   const file = configPath(dir);
   let raw: Record<string, unknown> = {};
   if (existsSync(file)) {
     try {
-      raw = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-    } catch {
+      const { sig, ...body } = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      if (verify && !verifyLocal("chalito.agent-config.v1", body, sig, verify.keys.publicKey))
+        throw new ConfigTamperedError(
+          `${file} was changed outside chalito (its signature doesn't match). Run \`chalito pair\` again to rewrite it.`,
+        );
+      raw = body;
+    } catch (err) {
+      if (err instanceof ConfigTamperedError) throw err;
       throw new ConfigError(`${file} is not valid JSON.`);
     }
-  }
+  } else if (verify) throw new ConfigError("This computer isn't paired yet. Run `chalito pair` first.");
   const fb = (raw.firebase ?? {}) as Record<string, unknown>;
   // Emulators accept any API key; the demo- project id keeps them from touching a real project.
   const emulated = Boolean(env.FIRESTORE_EMULATOR_HOST || env.FIREBASE_AUTH_EMULATOR_HOST);
@@ -87,11 +108,17 @@ export const requirePaired = (c: AgentConfig): PairedConfig => {
   return c;
 };
 
-/** Atomic write, 0600. */
-export const writeConfig = (dir: string, c: AgentConfig): void => {
+/**
+ * Atomic write, 0600, signed with the agent key: `claude.path` decides what the daemon
+ * runs with the API key, and `apiBase`/`firebase` where it connects, so an unsigned edit
+ * must not take effect.
+ */
+export const writeConfig = (dir: string, c: AgentConfig, keys: SigningKeyPair): void => {
   ensureChalitoDir(dir);
   const file = configPath(dir);
   const tmp = `${file}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(AgentConfig.parse(c), null, 2)}\n`, { mode: 0o600 });
+  const body = JSON.parse(JSON.stringify(AgentConfig.parse(c))) as Record<string, unknown>;
+  const sig = signLocal("chalito.agent-config.v1", body, keys);
+  writeFileSync(tmp, `${JSON.stringify({ ...body, sig }, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmp, file);
 };

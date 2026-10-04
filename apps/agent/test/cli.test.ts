@@ -1,11 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { generateSigningKeyPair } from "@chalito/crypto";
 import { lineDiff, main, parseArgs, type CliIo } from "../src/cli.js";
-import { chalitoDir } from "../src/config.js";
+import { AnchorStore } from "../src/anchor.js";
+import { chalitoDir, readConfig, writeConfig } from "../src/config.js";
 import type { Daemon } from "../src/daemon.js";
 import { DevModeStore } from "../src/devmode.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
@@ -19,7 +21,12 @@ type Run = { cmd: string; args: string[]; interactive: boolean };
 const cli = (
   opts: {
     lines?: string[];
+    /** stdin is a TTY (default true). */
     tty?: boolean;
+    /** stdout is a TTY (default true). */
+    outTty?: boolean;
+    /** What /usr/bin/pkexec looks like (default: root-owned, 0755). */
+    helperUid?: number;
     platform?: NodeJS.Platform;
     execPath?: string;
     runner?: (r: Run) => number;
@@ -40,12 +47,15 @@ const cli = (
   let err = "";
   const make = (lines = opts.lines ?? []): CliIo => {
     const input = new PassThrough() as PassThrough & { isTTY?: boolean };
-    input.isTTY = opts.tty ?? false;
+    input.isTTY = opts.tty ?? true;
     input.end(lines.map((l) => `${l}\n`).join(""));
+    const output = new PassThrough() as PassThrough & { isTTY?: boolean };
+    output.isTTY = opts.outTty ?? true;
     return {
       out: (s) => void (out += s),
       err: (s) => void (err += s),
-      tty: { input, output: new PassThrough() },
+      tty: { input, output },
+      osStat: () => ({ uid: opts.helperUid ?? 0, mode: 0o100755, isFile: () => true }),
       env: { LANG: "en_US.UTF-8", ...opts.env },
       home,
       platform: opts.platform ?? "linux",
@@ -146,16 +156,28 @@ describe("chalito CLI", () => {
     it("on: refuses without an interactive terminal", async () => {
       const c = cli({ tty: false });
       expect(await c.run(["devmode", "on", "allowSudo"])).toBe(1);
-      expect(c.err()).toMatch(/interactive terminal/);
+      expect(c.err()).toMatch(/terminal you're typing in/);
       expect(c.runs).toHaveLength(0);
+    });
+
+    it("reset: OS auth + typed RESET archives the log and leaves everything off", async () => {
+      const c = cli();
+      await c.run(["devmode", "on", "allowSudo"], ["y", "y", "y", "I ACCEPT"]);
+      expect(await c.run(["devmode", "reset"], ["nope"])).toBe(1);
+      expect(c.err()).toMatch(/Cancelled/);
+      expect(await c.run(["devmode", "reset"], ["RESET"])).toBe(0);
+      const id = await loadOrCreateIdentity(c.secrets);
+      const store = new DevModeStore(c.dir, id.sign, id.deviceId, await new AnchorStore(c.secrets).load());
+      expect(store.records()).toMatchObject([{ type: "devmode.reset", epoch: 1 }]);
+      expect(store.inspect()).toMatchObject({ state: { on: false }, tampered: null });
     });
 
     it("on: OS auth + three confirmations + phrase writes a signed liability record", async () => {
       const c = cli({ tty: true });
       expect(await c.run(["devmode", "on", "autoApproveHigh"], ["y", "y", "y", "I ACCEPT"])).toBe(0);
-      expect(c.runs).toEqual([{ cmd: "pkexec", args: ["/bin/true"], interactive: true }]);
+      expect(c.runs).toEqual([{ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true }]);
       const id = await loadOrCreateIdentity(c.secrets);
-      const store = new DevModeStore(c.dir, id.sign, id.deviceId);
+      const store = new DevModeStore(c.dir, id.sign, id.deviceId, await new AnchorStore(c.secrets).load());
       expect(store.read()).toMatchObject({ on: true, toggles: ["autoApproveHigh"] });
       expect(store.liabilityRecords()).toHaveLength(1);
       expect(c.out()).toMatch(/Developer mode ACTIVE/);
@@ -203,7 +225,7 @@ describe("chalito CLI", () => {
 
   describe("policy", () => {
     const editTo = (text: string) => (r: Run) => {
-      writeFileSync(r.args.at(-1)!, text);
+      if (r.cmd !== "/usr/bin/pkexec") writeFileSync(r.args.at(-1)!, text);
       return 0;
     };
     const loosened = policyToYaml({ ...DEFAULT_POLICY, workspaces: [{ label: "code", path: "/home/u/code" }] });
@@ -216,10 +238,12 @@ describe("chalito CLI", () => {
       expect(c.out()).toMatch(/policyHash \(in force\): [0-9a-f]{64}/);
     });
 
-    it("edit: $EDITOR on a temp copy → validate → diff → confirm → signed write", async () => {
+    it("edit: $EDITOR on a temp copy → validate → diff → confirm → OS auth (loosening) → signed write", async () => {
       const c = cli({ runner: editTo(loosened), env: { EDITOR: "nano -w" } });
       expect(await c.run(["policy", "edit"], ["y"])).toBe(0);
       expect(c.runs[0]).toMatchObject({ cmd: "nano", interactive: true });
+      expect(c.runs[1]).toMatchObject({ cmd: "/usr/bin/pkexec" });
+      expect(c.out()).toMatch(/loosens the policy/);
       expect(c.runs[0]!.args[0]).toBe("-w");
       expect(c.runs[0]!.args[1]).not.toContain(c.dir);
       expect(c.out()).toContain("+   - label: code");
@@ -242,6 +266,25 @@ describe("chalito CLI", () => {
         const id = await loadOrCreateIdentity(c.secrets);
         expect(new FilePolicyHolder(c.dir, id.sign).get()).toEqual(DEFAULT_POLICY);
       }
+    });
+
+    it("edit: loosening without OS auth changes nothing; tightening needs none", async () => {
+      const denied = cli({ runner: (r) => (r.cmd === "/usr/bin/pkexec" ? 126 : editTo(loosened)(r)) });
+      expect(await denied.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(denied.err()).toMatch(/OS authentication failed/);
+      const id = await loadOrCreateIdentity(denied.secrets);
+      expect(new FilePolicyHolder(denied.dir, id.sign).get().workspaces).toEqual([]);
+
+      // A user-owned fake pkexec is never trusted.
+      const fake = cli({ runner: editTo(loosened), helperUid: 1000 });
+      expect(await fake.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(fake.err()).toMatch(/not owned by root/);
+      expect(fake.runs.map((r) => r.cmd)).not.toContain("/usr/bin/pkexec");
+
+      const tighter = policyToYaml({ ...DEFAULT_POLICY, approvals: { ttlSeconds: 120 } });
+      const t = cli({ runner: editTo(tighter) });
+      expect(await t.run(["policy", "edit"], ["y"])).toBe(0);
+      expect(t.runs.map((r) => r.cmd)).not.toContain("/usr/bin/pkexec");
     });
 
     it("edit: a hand edit that was refused can be reviewed and confirmed here (re-signs)", async () => {
@@ -321,5 +364,79 @@ describe("chalito CLI", () => {
     );
     const id = await loadOrCreateIdentity(c.secrets);
     expect(new FilePolicyHolder(c.dir, id.sign).get().workspaces).toEqual([]);
+  });
+
+  describe("only a human at a terminal can change anything (P2-1)", () => {
+    const mutating: [string[], string[]][] = [
+      [["pair"], []],
+      [["keys", "set", "anthropic"], ["sk-ant-abcdefgh12345678"]],
+      [["service", "install"], []],
+      [["service", "uninstall"], []],
+      [["policy", "edit"], ["y"]],
+      [
+        ["devmode", "on", "allowSudo"],
+        ["y", "y", "y", "I ACCEPT"],
+      ],
+      [["devmode", "off"], []],
+      [["devmode", "reset"], ["RESET"]],
+      [["claude", "pin", "/usr/bin/true"], []],
+    ];
+
+    for (const [argv, lines] of mutating) {
+      it(`${argv.join(" ")}: refused with piped stdin, a non-TTY stdout, or inside a session`, async () => {
+        for (const o of [{ tty: false }, { outTty: false }, { env: { CHALITO_SESSION: "1" } }]) {
+          const c = cli(o);
+          expect(await c.run(argv, lines)).toBe(1);
+          expect(c.err()).toMatch(o.env ? /inside a Chalito session/ : /terminal you're typing in/);
+          expect(c.runs).toHaveLength(0);
+          expect(await c.secrets.get(SECRET_NAMES.anthropicApiKey)).toBeNull();
+        }
+      });
+    }
+
+    it("read-only commands still work when piped", async () => {
+      const c = cli({ tty: false, outTty: false });
+      expect(await c.run(["status"])).toBe(0);
+      expect(await c.run(["policy", "show"])).toBe(0);
+    });
+  });
+
+  describe("claude pin", () => {
+    const paired = async (c: ReturnType<typeof cli>) => {
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            CHALITO_FIREBASE_PROJECT_ID: "p",
+            CHALITO_FIREBASE_API_KEY: "k",
+            LANG: "en_US",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      return id;
+    };
+
+    it("pins path (symlinks resolved) + sha256 into the signed config", async () => {
+      const c = cli();
+      const id = await paired(c);
+      const real = join(c.home, "claude-2.1");
+      writeFileSync(real, "#!/bin/sh\n");
+      symlinkSync(real, join(c.home, "claude"));
+      expect(await c.run(["claude", "pin", join(c.home, "claude")])).toBe(0);
+      const cfg = readConfig(c.dir, {}, { keys: id.sign });
+      expect(cfg.claude).toEqual({ path: real, sha256: createHash("sha256").update("#!/bin/sh\n").digest("hex") });
+      expect(c.out()).toMatch(/Claude Code pinned/);
+    });
+
+    it("needs a paired computer", async () => {
+      const c = cli();
+      expect(await c.run(["claude", "pin", "/usr/bin/true"])).toBe(1);
+      expect(c.err()).toMatch(/Pair this computer first/);
+    });
   });
 });

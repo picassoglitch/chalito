@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -97,19 +97,22 @@ const world = async (opts: { owner?: string; claim?: "valid" | "wrong_key" | "ne
   const secrets = new MemorySecretStore();
   let out = "";
   const asked: string[] = [];
-  const deps = (confirm: boolean): PairDeps => ({
+  const typed: string[] = [];
+  const deps = (confirm: boolean, o: { os?: boolean; typed?: string } = {}): PairDeps => ({
     dir,
     env: {},
     secrets,
     fetch,
     watcher,
     confirm: async (q) => (asked.push(q), confirm),
+    confirmTyped: async (q, phrase) => (typed.push(q), (o.typed ?? phrase) === phrase),
+    osAuth: { verify: async () => o.os ?? true },
     out: (s) => void (out += s),
     now: () => NOW,
     hostname: "aldo-desktop",
     platform: "linux",
   });
-  return { dir, phone, secrets, deps, requests, watched, out: () => out, asked };
+  return { dir, phone, secrets, deps, requests, watched, out: () => out, asked, typed };
 };
 
 describe("chalito pair", () => {
@@ -173,13 +176,52 @@ describe("chalito pair", () => {
     const again = await world({ owner: "hub-user-2" });
     const deps = { ...again.deps(true), dir: w.dir, secrets: w.secrets };
     const firstPhone = w.phone.deviceId;
-    await runPair(deps);
+    expect((await runPair(deps)).ok).toBe(true);
+    expect(again.typed).toHaveLength(1);
+    expect(again.out()).toMatch(/hub-user-1 → hub-user-2/);
     const id = await loadOrCreateIdentity(w.secrets);
     const list = (await new TrustStore(w.dir, id.sign, id.deviceId).load()).list.toJSON().map((c) => c.deviceId);
     expect(list).toEqual([again.phone.deviceId]);
     expect(list).not.toContain(firstPhone);
     expect(w2Phone.deviceId).not.toBe(firstPhone);
     expect(readConfig(w.dir, {}).owner).toBe("hub-user-2");
+  });
+
+  it("needs OS authentication before anything is published", async () => {
+    const w = await world();
+    expect(await runPair(w.deps(true, { os: false }))).toEqual({ ok: false, reason: "os_auth_failed" });
+    expect(w.requests).toHaveLength(0);
+  });
+
+  it("replacing the account without the typed phrase changes nothing", async () => {
+    const w = await world({ owner: "hub-user-1" });
+    await runPair(w.deps(true));
+    const again = await world({ owner: "attacker" });
+    const res = await runPair({ ...again.deps(true, { typed: "y" }), dir: w.dir, secrets: w.secrets });
+    expect(res).toEqual({ ok: false, reason: "replace_declined" });
+    const id = await loadOrCreateIdentity(w.secrets);
+    expect(readConfig(w.dir, {}, { keys: id.sign }).owner).toBe("hub-user-1");
+    expect((await new TrustStore(w.dir, id.sign, id.deviceId).load()).list.toJSON()).toHaveLength(1);
+  });
+
+  it("re-pairing to the same account needs no typed phrase and keeps the trusted phones", async () => {
+    const w = await world({ owner: "hub-user-1" });
+    await runPair(w.deps(true));
+    const again = await world({ owner: "hub-user-1" });
+    expect((await runPair({ ...again.deps(true), dir: w.dir, secrets: w.secrets })).ok).toBe(true);
+    expect(again.typed).toHaveLength(0);
+    const id = await loadOrCreateIdentity(w.secrets);
+    expect((await new TrustStore(w.dir, id.sign, id.deviceId).load()).list.toJSON()).toHaveLength(2);
+  });
+
+  it("an owner forged into an unsigned config.json doesn't count: the replacement still needs the phrase", async () => {
+    const w = await world({ owner: "hub-user-1" });
+    await runPair(w.deps(true));
+    const raw = JSON.parse(readFileSync(configPath(w.dir), "utf8"));
+    writeFileSync(configPath(w.dir), JSON.stringify({ ...raw, owner: "attacker" }));
+    const again = await world({ owner: "attacker" });
+    const res = await runPair({ ...again.deps(true, { typed: "nope" }), dir: w.dir, secrets: w.secrets });
+    expect(res).toEqual({ ok: false, reason: "replace_declined" });
   });
 
   it("surfaces API errors with the API's code", async () => {

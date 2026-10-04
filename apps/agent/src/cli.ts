@@ -5,16 +5,28 @@ import { fileURLToPath } from "node:url";
 import { loadLiabilityText } from "@chalito/config";
 import { DevModeToggle } from "@chalito/protocol";
 import type { FetchFn, PairingWatcher } from "./cloud.js";
-import { chalitoDir, ensureChalitoDir, envLocale, isPaired, readConfig, type AgentConfig } from "./config.js";
+import { AnchorStore } from "./anchor.js";
+import { pinClaude } from "./claude-pin.js";
+import {
+  ConfigTamperedError,
+  chalitoDir,
+  ensureChalitoDir,
+  envLocale,
+  isPaired,
+  readConfig,
+  writeConfig,
+  type AgentConfig,
+} from "./config.js";
 import { runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
-import { ChainHeadStore, DevMode, DevModeStore } from "./devmode.js";
+import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
-import { osAuthFor } from "./os-auth.js";
+import { osAuthFor, type StatFn } from "./os-auth.js";
 import { runPair } from "./pair.js";
 import { FilePolicyHolder, parsePolicyYaml, policyToYaml } from "./policy-file.js";
-import { policyHash } from "./policy/index.js";
+import { isTighterOrEqual, policyHash } from "./policy/index.js";
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
-import { KeyringStore, SECRET_NAMES, type SecretStore } from "./secrets.js";
+import { openSecretStore } from "./secret-choice.js";
+import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
 import { TrustStore } from "./trust-store.js";
 import { LineReader, isYes, readHidden, type TtyIo } from "./tty.js";
@@ -27,7 +39,8 @@ export interface CliIo {
   env: Record<string, string | undefined>;
   home: string;
   platform: NodeJS.Platform;
-  secrets: SecretStore;
+  /** Injected in tests; otherwise the keychain (or the encrypted file, see secret-choice.ts). */
+  secrets?: SecretStore;
   runner: ProcessRunner;
   fetch: FetchFn;
   now: () => number;
@@ -36,6 +49,8 @@ export interface CliIo {
   tmpdir: string;
   daemon?: (deps: DaemonDeps) => Promise<Daemon>;
   pairWatcher?: PairingWatcher;
+  /** Injected in tests: how OS-auth helpers (/usr/bin/pkexec, osascript) are checked for root ownership. */
+  osStat?: StatFn;
   hostname?: string;
 }
 
@@ -46,11 +61,17 @@ export const USAGE = `chalito <command>
   status                               show pairing, policy, Developer mode and keys
   devmode on <toggle>                  turn a Developer-mode toggle on (local only, 3 confirmations)
   devmode off [toggle]                 turn Developer mode (or one toggle) off
+  devmode reset                        archive a broken Developer-mode log and start over (OS auth)
+  claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   policy show|path|edit                show, locate or edit ~/.chalito/policy.yaml
   keys set anthropic|openai|xai        save a BYO API key in the OS keychain
   service install|uninstall [--bin p]  register the agent as a per-user OS service
 
 toggles: allowSudo, autoApproveHigh, autoApproveCritical
+
+Commands that change anything only run in a terminal you are typing in (not piped,
+not from an AI session). Dev/test: CHALITO_SECRETS=file:<path> + CHALITO_SECRETS_PASSPHRASE
+keep keys in an encrypted file instead of the OS keychain.
 `;
 
 const ON_TOGGLES = ["allowSudo", "autoApproveHigh", "autoApproveCritical"] as const;
@@ -64,7 +85,20 @@ const T = {
   es: {
     unknown: (c: string) => `Comando desconocido: ${c}\n`,
     toggleOnUsage: `Uso: chalito devmode on <${ON_TOGGLES.join("|")}>\n`,
-    needTty: "El Modo desarrollador solo se activa desde una terminal interactiva.\n",
+    needTty:
+      "Este comando cambia la seguridad de Chalito: solo funciona en una terminal donde estés escribiendo tú (no con entrada redirigida).\n",
+    inSession:
+      "Este comando no se puede ejecutar desde una sesión de Chalito (Claude Code o Codex). Ábrelo tú en una terminal.\n",
+    looseningAuth: "Esta edición afloja la política: confirma con la autenticación del sistema.\n",
+    resetWarn: "Esto archiva el registro actual del Modo desarrollador y empieza uno nuevo con todo apagado.\n",
+    resetPrompt: 'Escribe "REINICIAR" para continuar: ',
+    resetPhrase: "REINICIAR",
+    resetDone: "Registro reiniciado. El Modo desarrollador está apagado.\n",
+    pinned: (p: string, h: string) => `Claude Code fijado: ${p}\n  sha256 ${h}\n`,
+    pinNeedsPair: "Primero empareja esta computadora (`chalito pair`); luego `chalito claude pin`.\n",
+    claudeNotFound:
+      "No encontré `claude`. Instálalo (https://code.claude.com/docs/en/setup) o pasa su ruta: chalito claude pin <ruta>\n",
+    passphrase: "Frase de contraseña del archivo de secretos: ",
     enabled: (t: string) => `Activado: ${t}. Verás "Modo desarrollador ACTIVO" en todas tus apps.\n`,
     authFailed: "La autenticación del sistema falló. No cambió nada.\n",
     cancelled: "Cancelado. No cambió nada y no se registró ninguna aceptación.\n",
@@ -89,7 +123,20 @@ const T = {
   en: {
     unknown: (c: string) => `Unknown command: ${c}\n`,
     toggleOnUsage: `Usage: chalito devmode on <${ON_TOGGLES.join("|")}>\n`,
-    needTty: "Developer mode can only be turned on from an interactive terminal.\n",
+    needTty:
+      "This command changes Chalito's security settings, so it only runs in a terminal you're typing in (not with piped input).\n",
+    inSession:
+      "This command can't run from inside a Chalito session (Claude Code or Codex). Open a terminal and run it yourself.\n",
+    looseningAuth: "This edit loosens the policy: confirm with OS authentication.\n",
+    resetWarn: "This archives the current Developer-mode log and starts a new one with everything off.\n",
+    resetPrompt: 'Type "RESET" to continue: ',
+    resetPhrase: "RESET",
+    resetDone: "Log reset. Developer mode is off.\n",
+    pinned: (p: string, h: string) => `Claude Code pinned: ${p}\n  sha256 ${h}\n`,
+    pinNeedsPair: "Pair this computer first (`chalito pair`), then run `chalito claude pin`.\n",
+    claudeNotFound:
+      "`claude` wasn't found. Install it (https://code.claude.com/docs/en/setup) or pass its path: chalito claude pin <path>\n",
+    passphrase: "Secrets file passphrase: ",
     enabled: (t: string) => `On: ${t}. Every app will show "Developer mode ACTIVE".\n`,
     authFailed: "OS authentication failed. Nothing changed.\n",
     cancelled: "Cancelled. Nothing changed and no acceptance was recorded.\n",
@@ -184,7 +231,6 @@ export const defaultIo = (): CliIo => ({
   env: process.env,
   home: homedir(),
   platform: process.platform,
-  secrets: new KeyringStore(),
   runner: spawnRunner,
   fetch: fetch as unknown as FetchFn,
   now: Date.now,
@@ -210,13 +256,37 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     return cmd || flags.help ? 0 : 1;
   }
 
+  // Everything that changes trust, keys, policy, Developer mode or the service needs a human
+  // at a real terminal, and never runs from inside an agent session (CHALITO_SESSION is set
+  // by the adapters). Neither check alone is enough: `script -qc` supplies a pty.
+  const mutating =
+    ["pair", "keys", "service", "devmode", "claude"].includes(cmd) || (cmd === "policy" && sub === "edit");
+  if (mutating) {
+    if (io.env.CHALITO_SESSION !== undefined) {
+      io.err(t.inSession);
+      return 1;
+    }
+    if (!io.tty.input.isTTY || !io.tty.output.isTTY) {
+      io.err(t.needTty);
+      return 1;
+    }
+  }
+
   try {
+    const secrets =
+      io.secrets ??
+      (await openSecretStore({
+        env: io.env,
+        prompt: async () => (await readHidden(io.tty, t.passphrase)) ?? "",
+        warn: (m) => io.err(`${m}\n`),
+      }));
+    io = { ...io, secrets };
     switch (cmd) {
       case "run": {
         const d = await (io.daemon ?? runDaemon)({
           home: io.home,
           env: io.env,
-          secrets: io.secrets,
+          secrets,
           fetch: io.fetch,
           now: io.now,
         });
@@ -230,9 +300,11 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           const res = await runPair({
             dir: ensureChalitoDir(dir),
             env: io.env,
-            secrets: io.secrets,
+            secrets,
             fetch: io.fetch,
             confirm: async (q) => isYes(await reader.ask(q)),
+            confirmTyped: async (q, phrase) => (await reader.ask(q))?.trim() === phrase,
+            osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
             out: io.out,
             now: io.now,
             platform: io.platform,
@@ -247,7 +319,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       }
 
       case "status":
-        await status(io, dir, cfg);
+        await status(io, secrets, dir, cfg);
         return 0;
 
       case "devmode":
@@ -268,9 +340,28 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           return 1;
         }
         if (!KEY_SHAPE[provider].test(value)) io.err(t.keyShape(provider));
-        await io.secrets.set(KEY_NAMES[provider], value);
+        await secrets.set(KEY_NAMES[provider], value);
         io.out(t.keySaved(provider));
+        // Setup time: pin Claude Code now if this computer is paired and nothing is pinned yet.
+        if (provider === "anthropic" && cfg && isPaired(cfg) && !cfg.claude) {
+          const found = which("claude", io.env, io.platform);
+          if (found) await claudePin(io, dir, locale, found);
+          else io.err(t.claudeNotFound);
+        }
         return 0;
+      }
+
+      case "claude": {
+        if (sub !== "pin") {
+          io.err(USAGE);
+          return 1;
+        }
+        const found = arg ?? which("claude", io.env, io.platform);
+        if (!found) {
+          io.err(t.claudeNotFound);
+          return 1;
+        }
+        return await claudePin(io, dir, locale, found);
       }
 
       case "service":
@@ -286,15 +377,47 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   }
 };
 
-const status = async (io: CliIo, dir: string, cfg: AgentConfig | null) => {
+/** Resolves and hashes `found`, then rewrites the signed config with the pin. */
+const claudePin = async (io: CliIo, dir: string, locale: "es" | "en", found: string): Promise<number> => {
+  const t = T[locale];
+  const id = await loadOrCreateIdentity(io.secrets!);
+  let cfg: AgentConfig;
+  try {
+    cfg = readConfig(dir, io.env, { keys: id.sign });
+  } catch {
+    io.err(t.pinNeedsPair);
+    return 1;
+  }
+  if (!isPaired(cfg)) {
+    io.err(t.pinNeedsPair);
+    return 1;
+  }
+  const pin = await pinClaude(found);
+  writeConfig(dir, { ...cfg, claude: pin }, id.sign);
+  io.out(t.pinned(pin.path, pin.sha256));
+  return 0;
+};
+
+const status = async (io: CliIo, secrets: SecretStore, dir: string, cfg: AgentConfig | null) => {
   const lines: string[] = ["Chalito agent"];
   const row = (k: string, v: string) => lines.push(`  ${k.padEnd(16)} ${v}`);
   if (!cfg) row("Config", `missing (${join(dir, "config.json")})`);
   row("Paired", cfg && isPaired(cfg) ? `yes (owner ${cfg.owner})` : "no — run `chalito pair`");
 
-  const hasIdentity = (await io.secrets.get(SECRET_NAMES.identity)) !== null;
+  const hasIdentity = (await secrets.get(SECRET_NAMES.identity)) !== null;
+  const anchor = await new AnchorStore(secrets).load();
   if (hasIdentity) {
-    const id = await loadOrCreateIdentity(io.secrets);
+    const id = await loadOrCreateIdentity(secrets);
+    if (cfg)
+      try {
+        readConfig(dir, io.env, { keys: id.sign });
+        row("Config", "signed");
+      } catch (err) {
+        row(
+          "Config",
+          err instanceof ConfigTamperedError ? "CHANGED outside chalito (ignored by the agent)" : "unsigned",
+        );
+      }
     row("Device", id.deviceId);
     row("Fingerprint", id.fingerprint);
     const trust = await new TrustStore(dir, id.sign, id.deviceId).load();
@@ -306,20 +429,23 @@ const status = async (io: CliIo, dir: string, cfg: AgentConfig | null) => {
 
   const policyFile = join(dir, "policy.yaml");
   if (existsSync(policyFile) && hasIdentity) {
-    const holder = new FilePolicyHolder(dir, (await loadOrCreateIdentity(io.secrets)).sign);
+    const holder = new FilePolicyHolder(dir, (await loadOrCreateIdentity(secrets)).sign, { anchor });
     const p = holder.get();
     row(
       "Policy",
       `${policyFile} (policyHash ${holder.hash.slice(0, 12)}…, ${p.workspaces.length} workspace(s))` +
-        (holder.tampered ? " — edited without `chalito policy edit`: refused, signed policy in force" : ""),
+        (holder.tamperReason === "rollback"
+          ? " — an OLDER signed policy was restored: refused, nothing runs until `chalito policy edit`"
+          : holder.tampered
+            ? " — edited without `chalito policy edit`: refused, signed policy in force"
+            : ""),
     );
   } else if (existsSync(policyFile)) row("Policy", `${policyFile} (not verifiable yet: no device identity)`);
   else row("Policy", "defaults (no file yet, no workspaces: nothing runs)");
 
   if (hasIdentity && existsSync(dir)) {
-    const id = await loadOrCreateIdentity(io.secrets);
-    const head = await new ChainHeadStore(io.secrets).load();
-    const dm = new DevModeStore(dir, id.sign, id.deviceId, head).inspect();
+    const id = await loadOrCreateIdentity(secrets);
+    const dm = new DevModeStore(dir, id.sign, id.deviceId, anchor).inspect();
     row(
       "Developer mode",
       (dm.state.on ? `ACTIVE (${dm.state.toggles.join(", ")})` : "off") +
@@ -328,10 +454,15 @@ const status = async (io: CliIo, dir: string, cfg: AgentConfig | null) => {
   } else row("Developer mode", "off");
 
   const keys = await Promise.all(
-    Object.entries(KEY_NAMES).map(async ([p, n]) => `${p}: ${(await io.secrets.get(n)) ? "set" : "missing"}`),
+    Object.entries(KEY_NAMES).map(async ([p, n]) => `${p}: ${(await secrets.get(n)) ? "set" : "missing"}`),
   );
   row("Keys", keys.join(", "));
-  row("Claude Code", cfg?.claudePath ?? which("claude", io.env, io.platform) ?? "not found");
+  row(
+    "Claude Code",
+    cfg?.claude
+      ? `${cfg.claude.path} (pinned, sha256 ${cfg.claude.sha256.slice(0, 12)}…)`
+      : "not pinned — `chalito claude pin`",
+  );
   let svc = "unknown";
   try {
     const f = servicePlan(io.platform, "chalito-agent", { home: io.home }).files[0]!.path;
@@ -348,10 +479,10 @@ const devmode = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string
   ensureChalitoDir(dir);
   const reader = new LineReader(io.tty);
   try {
-    const id = await loadOrCreateIdentity(io.secrets);
+    const id = await loadOrCreateIdentity(io.secrets!);
     const dm = new DevMode({
-      store: new DevModeStore(dir, id.sign, id.deviceId, await new ChainHeadStore(io.secrets).load()),
-      osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale),
+      store: new DevModeStore(dir, id.sign, id.deviceId, await new AnchorStore(io.secrets!).load()),
+      osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
       prompter: new TtyPrompter(reader, io.out, locale),
       liability: loadLiabilityText(locale),
       deviceId: id.deviceId,
@@ -365,13 +496,19 @@ const devmode = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string
         io.err(t.toggleOnUsage);
         return 1;
       }
-      if (!io.tty.input.isTTY) {
-        io.err(t.needTty);
-        return 1;
-      }
       const res = await dm.enableToggle(arg as (typeof ON_TOGGLES)[number]);
       if (res.ok) {
         io.out(t.enabled(arg));
+        return 0;
+      }
+      io.err(res.reason === "os_auth_failed" ? t.authFailed : t.cancelled);
+      return 1;
+    }
+    if (sub === "reset") {
+      io.out(t.resetWarn);
+      const res = await dm.reset("local", async () => (await reader.ask(t.resetPrompt))?.trim() === t.resetPhrase);
+      if (res.ok) {
+        io.out(t.resetDone);
         return 0;
       }
       io.err(res.reason === "os_auth_failed" ? t.authFailed : t.cancelled);
@@ -401,8 +538,8 @@ const devmode = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string
 
 const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string) => {
   const t = T[locale];
-  const id = await loadOrCreateIdentity(io.secrets);
-  const holder = new FilePolicyHolder(dir, id.sign);
+  const id = await loadOrCreateIdentity(io.secrets!);
+  const holder = new FilePolicyHolder(dir, id.sign, { anchor: await new AnchorStore(io.secrets!).load() });
   if (sub === "path") {
     io.out(`${holder.file}\n`);
     return 0;
@@ -454,6 +591,15 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
       }
     } finally {
       reader.close();
+    }
+    // Loosening is a human decision at the OS prompt, not a "y" on stdin.
+    if (!isTighterOrEqual(parsed.policy, holder.get())) {
+      io.out(t.looseningAuth);
+      const auth = osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat);
+      if (!(await auth.verify("Chalito: aflojar la política local"))) {
+        io.err(t.authFailed);
+        return 1;
+      }
     }
     await holder.set(parsed.policy, "local");
     io.out(t.policySaved(holder.hash));
