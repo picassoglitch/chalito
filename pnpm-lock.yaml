@@ -180,6 +180,19 @@ importers:
         specifier: ^4.10.2
         version: 4.10.2
 
+  packages/escalation:
+    dependencies:
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+    devDependencies:
+      fast-check:
+        specifier: ^4.10.2
+        version: 4.10.2
+
   packages/glyph:
     dependencies:
       '@chalito/crypto':
