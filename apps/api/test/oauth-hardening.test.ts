@@ -128,3 +128,28 @@ describe("R-L10: OAuth consent checks the passkey sign counter", () => {
     expect(h.mcp.grants.size).toBe(0);
   });
 });
+
+describe("R-M13: prompt_session is rate-limited per grant", () => {
+  it("a burst of 10, then 429; another connector has its own budget", async () => {
+    const { generateBoxKeyPair, sealJson } = await import("@chalito/crypto");
+    const { GATEWAY_TOKEN, CHATGPT_CLIENT } = await import("./oauth-harness.js");
+    const h = await oauthHarness();
+    h.mcp.sessions.set(`${h.o}/s_1`, "dev_agent");
+    h.mcp.devices.add(`${h.o}/dev_agent`);
+    const box = await generateBoxKeyPair();
+    const prompt = async (access: string, i: number) => {
+      const cid = `mcp_rate_${String(i).padStart(4, "0")}`;
+      const promptCt = await sealJson("hola", { dev_agent: box.publicKey }, `command:${cid}`);
+      return h.call("/v1/gateway/prompts", {
+        json: { cid, sid: "s_1", promptCt },
+        headers: { authorization: `Bearer ${GATEWAY_TOKEN}`, "x-chalito-access-token": access },
+      });
+    };
+    const claude = await h.connect(["session:prompt"]);
+    for (let i = 0; i < 10; i++) expect((await prompt(claude.access_token, i)).status).toBe(201);
+    const over = await prompt(claude.access_token, 10);
+    expect(over.status).toBe(429);
+    const gpt = await h.connect(["session:prompt"], CHATGPT_CLIENT);
+    expect((await prompt(gpt.access_token, 11)).status).toBe(201);
+  });
+});
