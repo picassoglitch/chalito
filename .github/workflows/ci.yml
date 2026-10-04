@@ -85,7 +85,8 @@ jobs:
       - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,storage-api
       - run: supabase test db
       - run: supabase/scripts/smoke-data-api.sh
-      # ApiRepo contract against the local stack's database (PostgresRepo).
+      # ApiRepo contract against the local stack's database (PostgresRepo), then the agent's
+      # SupabaseStore against the same local stack (apps/agent/test/*.int.test.ts).
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -94,6 +95,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: echo "DATABASE_URL=$(supabase status -o json | jq -r '.DB_URL')" >> "$GITHUB_ENV"
       - run: pnpm --filter @chalito/api test:pg
+      - name: Agent SupabaseStore integration
+        run: |
+          eval "$(supabase status -o env)"
+          export API_URL ANON_KEY SERVICE_ROLE_KEY
+          export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
+          pnpm --filter @chalito/agent test:supabase
       - if: always()
         run: supabase stop --no-backup
 

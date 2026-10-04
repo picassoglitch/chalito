@@ -10,7 +10,8 @@
     "build": "tsx scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:emulator": "vitest run -c vitest.emulator.config.ts"
+    "test:emulator": "vitest run -c vitest.emulator.config.ts",
+    "test:supabase": "vitest run -c vitest.supabase.config.ts"
   },
   "dependencies": {
     "@chalito/adapters": "workspace:*",
@@ -19,6 +20,7 @@
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@napi-rs/keyring": "^2.1.0",
+    "@supabase/supabase-js": "^2.117.2",
     "firebase": "^12.19.0",
     "libsodium-wrappers-sumo": "0.8.4",
     "yaml": "^2.9.1",

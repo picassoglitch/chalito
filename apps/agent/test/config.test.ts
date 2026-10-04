@@ -55,6 +55,32 @@ describe("config.json", () => {
     expect(c.firebase).toMatchObject({ projectId: "demo-chalito", databaseId: "chalito" });
   });
 
+  it("supabase {url, publishableKey}: from the signed file, or SUPABASE_URL + its publishable key (local stack)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
+    const c = readConfig(dir, {
+      CHALITO_API_BASE: "http://127.0.0.1:8787",
+      SUPABASE_URL: "http://127.0.0.1:54321/",
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_local",
+    });
+    expect(c.supabase).toEqual({
+      url: "http://127.0.0.1:54321",
+      publishableKey: "sb_publishable_local",
+      auth: "device-user",
+    });
+    expect(c.firebase).toBeUndefined();
+
+    writeConfig(dir, { ...c, owner: "u1", deviceId: DEVICE }, KEYS);
+    const back = readConfig(dir, {}, { keys: KEYS });
+    expect(back.supabase).toEqual(c.supabase);
+  });
+
+  it("needs a data layer: supabase, or the legacy firebase block", () => {
+    const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
+    writeFileSync(configPath(dir), JSON.stringify({ apiBase: "https://api.test" }));
+    expect(() => readConfig(dir, {})).toThrow(/supabase/);
+    expect(() => readConfig(dir, { SUPABASE_URL: "http://127.0.0.1:54321" })).toThrow(/publishableKey/);
+  });
+
   it("names the missing fields", () => {
     const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
     expect(() => readConfig(dir, {})).toThrow(ConfigError);

@@ -10,7 +10,6 @@ import {
   CLAUDE_MISSING,
   CLAUDE_PIN_FAILED,
   OnboardingError,
-  TOKEN_REFRESH_MS,
   defaultAdapters,
   runDaemon,
   type DaemonDeps,
@@ -18,6 +17,7 @@ import {
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
+import { DeviceRevokedError } from "../src/device-auth.js";
 import { MemorySecretStore, SECRET_NAMES } from "../src/secrets.js";
 import { MemoryStore } from "../src/store.js";
 
@@ -68,25 +68,28 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
     return { ok: true, status: 200, json: async () => ({ customToken: `token-${++n}`, deviceId: id.deviceId }) };
   };
   const store = new MemoryStore();
+  const mintRef: { mint?: () => Promise<string> } = {};
   let closed = false;
   const cloud: Cloud = {
-    signIn: async (t) => void tokens.push(t),
+    refreshIntervalMs: 4 * 60 * 1000,
+    refresh: async () => void tokens.push(await mintRef.mint!()),
     store: () => store,
     close: async () => void (closed = true),
   };
   const logs: Record<string, unknown>[] = [];
   const refreshers: (() => void)[] = [];
+  const refreshEvery: number[] = [];
   const adapterInputs: { apiKey: string | null; claudePath: string }[] = [];
   const deps: DaemonDeps = {
     home,
     env: { PATH: `${evilBin}:${bin}` },
     secrets,
     fetch,
-    cloud: () => cloud,
+    cloud: (_cfg, mint) => ((mintRef.mint = mint), cloud),
     adapters: (i) => (adapterInputs.push(i), {}),
     log: createLogger((l) => void logs.push(JSON.parse(l))),
     now: () => NOW,
-    every: (fn) => (refreshers.push(fn), { clear: () => undefined }),
+    every: (fn, ms) => (refreshers.push(fn), refreshEvery.push(ms), { clear: () => undefined }),
     onSignal: () => undefined,
     watchFiles: false,
   };
@@ -101,6 +104,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
     challenges,
     logs,
     refreshers,
+    refreshEvery,
     adapterInputs,
     claude: pin.path,
     closed: () => closed,
@@ -166,7 +170,7 @@ describe("chalito run (daemon)", () => {
   it("refreshes the device token on a timer (~50 min)", async () => {
     const s = await setup();
     const d = await runDaemon(s.deps);
-    expect(TOKEN_REFRESH_MS).toBe(50 * 60 * 1000);
+    expect(s.refreshEvery).toEqual([4 * 60 * 1000]);
     s.refreshers[0]!();
     await new Promise((r) => setTimeout(r, 10));
     expect(s.tokens).toEqual(["token-1", "token-2"]);
@@ -301,5 +305,27 @@ describe("chalito run (daemon)", () => {
     adapter.config.onInit({ sid: "s1", apiKeySource: "ANTHROPIC_API_KEY", permissionMode: "default" });
     expect(logs[0]).toMatchObject({ msg: "adapter.init", sid: "s1", apiKeySource: "ANTHROPIC_API_KEY" });
     expect(defaultAdapters({ apiKey: null, claudePath: "/usr/bin/claude", log })).toEqual({});
+  });
+
+  it("a revoked device found on a refresh tick stops the daemon with a clear log", async () => {
+    const s = await setup();
+    const d = await runDaemon({
+      ...s.deps,
+      cloud: () => ({
+        refreshIntervalMs: 1000,
+        refresh: (() => {
+          let n = 0;
+          return async () => {
+            if (++n > 1) throw new DeviceRevokedError();
+          };
+        })(),
+        store: () => s.store,
+        close: async () => undefined,
+      }),
+    });
+    s.refreshers[0]!();
+    await d.done;
+    expect(s.logs.find((l) => l.msg === "device.revoked")).toMatchObject({ action: "stopping" });
+    expect(s.logs.find((l) => l.msg === "agent.stopping")).toMatchObject({ reason: "device_revoked" });
   });
 });

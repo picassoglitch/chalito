@@ -18,23 +18,44 @@ export const ensureChalitoDir = (dir: string): string => {
  * ~/.chalito/config.json. `owner` and `deviceId` are written by `chalito pair`; until
  * then only the endpoints are known.
  */
-export const AgentConfig = z.object({
-  owner: Uid.nullable().default(null),
-  deviceId: DerivedDeviceId.nullable().default(null),
-  apiBase: z.url().transform((u) => u.replace(/\/+$/, "")),
-  firebase: z.object({
-    projectId: z.string().min(1),
-    apiKey: z.string().min(1),
-    databaseId: z.string().min(1).default("chalito"),
-  }),
-  locale: Locale.default("es"),
-  /**
-   * The user's Claude Code binary, pinned by `chalito claude pin` (resolved once, by a
-   * human at a terminal). The daemon runs exactly this file, checked against the hash;
-   * it never searches PATH.
-   */
-  claude: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
-});
+export const AgentConfig = z
+  .object({
+    owner: Uid.nullable().default(null),
+    deviceId: DerivedDeviceId.nullable().default(null),
+    apiBase: z.url().transform((u) => u.replace(/\/+$/, "")),
+    /** Legacy data layer (ADR 0002); kept until the Supabase cut-over. */
+    firebase: z
+      .object({
+        projectId: z.string().min(1),
+        apiKey: z.string().min(1),
+        databaseId: z.string().min(1).default("chalito"),
+      })
+      .optional(),
+    /** The Chalyb hub's Supabase project (ADR 0017). When present, the agent uses it. */
+    supabase: z
+      .object({
+        url: z.url().transform((u) => u.replace(/\/+$/, "")),
+        /** Publishable (anon) key: identifies the project; every request is authorized by the device JWT. */
+        publishableKey: z.string().min(1),
+        /**
+         * Device credentials: a Supabase Auth user per device (owner decision, the default),
+         * or API-minted custom JWTs (iss = chalito).
+         */
+        auth: z.enum(["device-user", "api-jwt"]).default("device-user"),
+      })
+      .optional(),
+    locale: Locale.default("es"),
+    /**
+     * The user's Claude Code binary, pinned by `chalito claude pin` (resolved once, by a
+     * human at a terminal). The daemon runs exactly this file, checked against the hash;
+     * it never searches PATH.
+     */
+    claude: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
+  })
+  .refine((c) => c.supabase !== undefined || c.firebase !== undefined, {
+    message: "needs supabase {url, publishableKey} (or the legacy firebase block)",
+    path: ["supabase"],
+  });
 export type AgentConfig = z.infer<typeof AgentConfig>;
 export type PairedConfig = AgentConfig & { owner: string; deviceId: string };
 
@@ -56,7 +77,8 @@ export const envLocale = (env: Record<string, string | undefined>): "es" | "en" 
  * Reads config.json. Missing endpoint fields may come from the environment
  * (CHALITO_API_BASE, CHALITO_FIREBASE_PROJECT_ID, CHALITO_FIREBASE_API_KEY,
  * CHALITO_FIREBASE_DATABASE_ID), so a fresh install can pair before a file exists.
- * With the Firebase emulator variables set, the project defaults to demo-chalito.
+ * With the Firebase emulator variables set, the project defaults to demo-chalito. For the
+ * Supabase data layer, SUPABASE_URL + SUPABASE_PUBLISHABLE_KEY (local `supabase start`).
  */
 export const readConfig = (
   dir: string,
@@ -82,15 +104,24 @@ export const readConfig = (
   const fb = (raw.firebase ?? {}) as Record<string, unknown>;
   // Emulators accept any API key; the demo- project id keeps them from touching a real project.
   const emulated = Boolean(env.FIRESTORE_EMULATOR_HOST || env.FIREBASE_AUTH_EMULATOR_HOST);
+  const firebase = {
+    ...fb,
+    projectId: fb.projectId ?? env.CHALITO_FIREBASE_PROJECT_ID ?? (emulated ? "demo-chalito" : undefined),
+    apiKey: fb.apiKey ?? env.CHALITO_FIREBASE_API_KEY ?? (emulated ? "demo-api-key" : undefined),
+    databaseId: fb.databaseId ?? env.CHALITO_FIREBASE_DATABASE_ID,
+  };
+  // Local stack (`supabase start`) or CI: SUPABASE_URL + its publishable key.
+  const sb = (raw.supabase ?? {}) as Record<string, unknown>;
+  const supabase = {
+    ...sb,
+    url: sb.url ?? env.SUPABASE_URL,
+    publishableKey: sb.publishableKey ?? env.SUPABASE_PUBLISHABLE_KEY ?? env.SUPABASE_ANON_KEY,
+  };
   const merged = {
     ...raw,
     apiBase: raw.apiBase ?? env.CHALITO_API_BASE,
-    firebase: {
-      ...fb,
-      projectId: fb.projectId ?? env.CHALITO_FIREBASE_PROJECT_ID ?? (emulated ? "demo-chalito" : undefined),
-      apiKey: fb.apiKey ?? env.CHALITO_FIREBASE_API_KEY ?? (emulated ? "demo-api-key" : undefined),
-      databaseId: fb.databaseId ?? env.CHALITO_FIREBASE_DATABASE_ID,
-    },
+    ...(firebase.projectId !== undefined || firebase.apiKey !== undefined ? { firebase } : { firebase: undefined }),
+    ...(supabase.url !== undefined || supabase.publishableKey !== undefined ? { supabase } : { supabase: undefined }),
     locale: raw.locale ?? envLocale(env),
   };
   const parsed = AgentConfig.safeParse(merged);

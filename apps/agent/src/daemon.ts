@@ -9,8 +9,17 @@ import type { AdapterKind, DeviceEvent } from "@chalito/protocol";
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
-import { firebaseCloud, fetchDeviceToken, type Cloud, type FetchFn } from "./cloud.js";
+import {
+  apiTokenSource,
+  fetchDeviceToken,
+  firebaseCloud,
+  supabaseCloud,
+  type Cloud,
+  type FetchFn,
+  type MintToken,
+} from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, type PairedConfig } from "./config.js";
+import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
 import { DevMode, DevModeStore, type DevModeTamper } from "./devmode.js";
 import { FileNonceStore } from "./nonce-store.js";
 import { loadOrCreateIdentity } from "./identity.js";
@@ -22,9 +31,6 @@ import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
 import type { AgentStore } from "./store.js";
 import { TrustStore } from "./trust-store.js";
-
-/** Custom tokens live an hour; refresh well before. */
-export const TOKEN_REFRESH_MS = 50 * 60 * 1000;
 
 export const CLAUDE_MISSING = {
   es: "No hay un Claude Code (`claude`) fijado. Instálalo con el instalador oficial de Anthropic (https://code.claude.com/docs/en/setup) y luego ejecuta `chalito claude pin` en una terminal.",
@@ -56,7 +62,7 @@ export interface DaemonDeps {
   secrets?: SecretStore;
   fetch?: FetchFn;
   /** Firebase in production; a fake with a MemoryStore in tests. */
-  cloud?: (cfg: PairedConfig) => Cloud;
+  cloud?: (cfg: PairedConfig, mint: MintToken) => Cloud;
   adapters?: (input: {
     apiKey: string | null;
     claudePath: string;
@@ -106,6 +112,26 @@ const servicePlanFiles = (bin: string, home: string): string[] => {
     return [];
   }
 };
+
+const defaultCloud =
+  (env: Record<string, string | undefined>, log: Logger, secrets: SecretStore) =>
+  (cfg: PairedConfig, mint: MintToken): Cloud => {
+    if (cfg.supabase) {
+      const tokens =
+        cfg.supabase.auth === "api-jwt"
+          ? apiTokenSource(mint)
+          : new SupabaseAuthTokenSource(
+              createDeviceAuth(cfg.supabase.url, cfg.supabase.publishableKey, secrets),
+              mint,
+              {
+                log,
+              },
+            );
+      return supabaseCloud(cfg.supabase, tokens, { log });
+    }
+    if (cfg.firebase) return firebaseCloud(cfg.firebase, mint, env);
+    throw new OnboardingError("config.json has no data layer (supabase). Run `chalito pair` again.");
+  };
 
 const repeat = (fn: () => void, ms: number) => {
   const t = setInterval(fn, ms);
@@ -224,8 +250,10 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const apiKey = await secrets.get(SECRET_NAMES.anthropicApiKey);
   if (!apiKey) log.error("adapter.claude_code_unavailable", { reason: ANTHROPIC_KEY_MISSING[cfg.locale] });
 
-  const cloud = (deps.cloud ?? ((c) => firebaseCloud(c.firebase, env)))(cfg);
-  await cloud.signIn(await fetchDeviceToken(fetchFn, cfg, id, now()));
+  // Supabase when configured (ADR 0017), else the legacy Firebase path until the cut-over.
+  const mint: MintToken = () => fetchDeviceToken(fetchFn, cfg, id, now());
+  const cloud = (deps.cloud ?? defaultCloud(env, log, secrets))(cfg, mint);
+  await cloud.refresh();
   store = cloud.store(cfg.owner, id.deviceId);
   const signedInStore = store;
   for (const e of queued.splice(0)) publish(e);
@@ -286,13 +314,19 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     });
 
   const refresh = every(() => {
-    void fetchDeviceToken(fetchFn, cfg, id, now())
-      .then((t) => cloud.signIn(t))
+    void cloud
+      .refresh()
       .then(() => log.info("auth.refreshed"))
-      .catch((err: unknown) =>
-        log.error("auth.refresh_failed", { error: err instanceof Error ? err.message : "error" }),
-      );
-  }, TOKEN_REFRESH_MS);
+      .catch((err: unknown) => {
+        if (err instanceof DeviceRevokedError) {
+          // The account removed this computer: nothing it does can be authorized any more.
+          log.error("device.revoked", { message: err.message, action: "stopping" });
+          void stop("device_revoked");
+          return;
+        }
+        log.error("auth.refresh_failed", { error: err instanceof Error ? err.message : "error" });
+      });
+  }, cloud.refreshIntervalMs);
 
   let resolveDone!: () => void;
   const done = new Promise<void>((r) => (resolveDone = r));
