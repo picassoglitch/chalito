@@ -11,6 +11,7 @@
     "test:pg": "vitest run -c vitest.pg.config.ts"
   },
   "dependencies": {
+    "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
@@ -20,5 +21,8 @@
     "hono": "^4.13.12",
     "postgres": "^3.4.9",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@chalito/rooms": "workspace:*"
   }
 }
