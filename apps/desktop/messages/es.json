@@ -111,6 +111,7 @@
       "no_pending": "No hay un inicio de sesión en curso.",
       "state_mismatch": "Enlace no válido.",
       "duplicate_param": "Enlace no válido."
-    }
+    },
+    "glyph": "Código para escanear con tu teléfono"
   }
 }

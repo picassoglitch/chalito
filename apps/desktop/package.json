@@ -15,6 +15,7 @@
     "@chalito/avatar-three": "workspace:*",
     "@chalito/client": "workspace:*",
     "@chalito/client-keys": "workspace:*",
+    "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@tauri-apps/api": "2.12.1",

@@ -67,6 +67,18 @@ export interface ApiRepo {
   /** Records the device's passkey on its device record; false if the device doesn't exist. */
   setDeviceWebAuthn(owner: string, deviceId: string, cred: StoredWebAuthnCredential): Promise<boolean>;
   getDeviceWebAuthn(owner: string, deviceId: string): Promise<StoredWebAuthnCredential | null>;
+  /**
+   * Atomic, after a verified assertion: moves the passkey's sign counter forward. "cloned" when
+   * it didn't advance (new ≤ stored, unless both are 0: authenticators without a counter always
+   * report 0), the WebAuthn signal of a cloned authenticator; nothing is written then.
+   * "not_found" when the device no longer has this credential.
+   */
+  bumpWebAuthnCounter(
+    owner: string,
+    deviceId: string,
+    credentialId: string,
+    counter: number,
+  ): Promise<"ok" | "cloned" | "not_found">;
   /** Stores the device-signed binding for its current passkey (the route verified it). */
   setDeviceWebAuthnBinding(owner: string, deviceId: string, binding: unknown): Promise<boolean>;
 

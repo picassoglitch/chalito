@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { useT } from "../lib/i18n.js";
 import type { SignInController } from "../lib/sign-in.js";
+import { GlyphView } from "./GlyphView.js";
 
 const shortCode = (d: unknown): string | null =>
   typeof (d as { shortCode?: unknown } | null)?.shortCode === "string" ? (d as { shortCode: string }).shortCode : null;
@@ -37,7 +38,10 @@ export const SignIn = ({ controller }: { controller: SignInController | null }) 
       return (
         <div className="card" data-sign-in="endorsing">
           <p>{t("signIn.endorsing")}</p>
-          {code && <code className="fingerprint">{code}</code>}
+          <div className="row">
+            <GlyphView glyph={(s.display as { glyph?: unknown } | null)?.glyph} label={t("signIn.glyph")} />
+            {code && <code className="fingerprint">{code}</code>}
+          </div>
           {cancel}
         </div>
       );

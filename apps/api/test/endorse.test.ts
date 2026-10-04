@@ -121,6 +121,14 @@ const memoryRepo = (devices: DeviceDoc[]) => {
     },
     setDeviceWebAuthn: async (o, d, cred) => (creds.set(`${o}/${d}`, cred), true),
     getDeviceWebAuthn: async (o, d) => creds.get(`${o}/${d}`) ?? null,
+    bumpWebAuthnCounter: async (o, d, id, counter) => {
+      const c = creds.get(`${o}/${d}`);
+      if (!c || c.credentialId !== id) return "not_found";
+      if (counter === 0 && c.counter === 0) return "ok";
+      if (counter <= c.counter) return "cloned";
+      creds.set(`${o}/${d}`, { ...c, counter });
+      return "ok";
+    },
   };
   return { repo: repo as ApiRepo, codes, creds };
 };
@@ -388,6 +396,47 @@ describe("endorsement handoff", () => {
         "phone",
       );
       expect([replay.status, replay.json.error]).toEqual([401, "step_up_failed"]);
+    });
+  });
+
+  describe("passkey sign counter", () => {
+    const enrolPasskey = async (s: Awaited<ReturnType<typeof setup>>) => {
+      const auth = new SoftAuthenticator({ origin: ORIGIN, alg: -7 });
+      const opts = await s.post("/v1/webauthn/register/options", {}, "phone");
+      await s.post("/v1/webauthn/register/verify", { response: await auth.create(opts.json.options) }, "phone");
+      return auth;
+    };
+    const approveWithStepUp = async (s: Awaited<ReturnType<typeof setup>>, auth: SoftAuthenticator) => {
+      const c = await s.createCode();
+      const a = await s.post("/v1/webauthn/assert/options", {}, "phone");
+      return s.post(
+        "/v1/endorse/approve",
+        { codeId: c.codeId, endorsement: await s.endorse(c.reg), stepUp: await auth.get(a.json.options) },
+        "phone",
+      );
+    };
+
+    it("moves forward with each verified assertion", async () => {
+      const s = await setup();
+      const auth = await enrolPasskey(s);
+      expect((await approveWithStepUp(s, auth)).status).toBe(200);
+      expect((await approveWithStepUp(s, auth)).status).toBe(200);
+      expect([...s.mem.creds.values()][0]!.counter).toBe(2);
+    });
+
+    it("a counter that didn't advance (a cloned passkey) is refused and alerted", async () => {
+      const s = await setup();
+      const auth = await enrolPasskey(s);
+      const [key, cred] = [...s.mem.creds.entries()][0]!;
+      s.mem.creds.set(key, { ...cred, counter: 100 }); // the other copy already signed 100 times
+      const r = await approveWithStepUp(s, auth);
+      expect([r.status, r.json.error]).toEqual([403, "authenticator_cloned"]);
+      expect(s.audit.events.at(-1)).toMatchObject({
+        action: "webauthn.clone_suspected",
+        meta: { stored: 100, reported: 1, during: "endorse.approve" },
+      });
+      expect([...s.mem.codes.values()].every((c) => c.endorsement === null)).toBe(true);
+      expect(s.mem.creds.get(key)!.counter).toBe(100);
     });
   });
 

@@ -472,6 +472,52 @@ export const runApiRepoContract = (
       });
     });
 
+    describe("passkey sign counter", () => {
+      const withPasskey = async (repo: ApiRepo, counter = 0) => {
+        const o = await seededOwner(repo);
+        const d = await device(o);
+        await repo.createDevice(o, d);
+        const credentialId = `cred-${owner()}`;
+        await repo.setDeviceWebAuthn(o, d.deviceId, {
+          credentialId,
+          publicKey: "pk",
+          rpId: "chalito.chalyb.com",
+          counter,
+          transports: ["internal"],
+          createdAt: 1,
+        });
+        return { o, d, credentialId };
+      };
+
+      it("moves forward only; a counter that doesn't advance is reported as cloned and not written", async () => {
+        const repo = await makeRepo();
+        const { o, d, credentialId } = await withPasskey(repo, 5);
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 6)).toBe("ok");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 6)).toBe("cloned");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 3)).toBe("cloned");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 0)).toBe("cloned");
+        expect((await repo.getDeviceWebAuthn(o, d.deviceId))?.counter).toBe(6);
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, "other-cred", 9)).toBe("not_found");
+      });
+
+      it("authenticators without a counter (always 0) are fine", async () => {
+        const repo = await makeRepo();
+        const { o, d, credentialId } = await withPasskey(repo, 0);
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 0)).toBe("ok");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 0)).toBe("ok");
+      });
+
+      it(`of ${RACERS} concurrent assertions with the same counter, exactly one is accepted`, async () => {
+        const repo = await makeRepo();
+        const { o, d, credentialId } = await withPasskey(repo, 1);
+        const results = await Promise.all(
+          Array.from({ length: RACERS }, () => repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 2)),
+        );
+        expect(count(results, "ok")).toBe(1);
+        expect(count(results, "cloned")).toBe(RACERS - 1);
+      });
+    });
+
     describe("endorsement handoff", () => {
       it("createEndorseCode: once per code id and per short code; found by either", async () => {
         const repo = await makeRepo();

@@ -111,6 +111,7 @@
       "no_pending": "No sign-in in progress.",
       "state_mismatch": "Invalid link.",
       "duplicate_param": "Invalid link."
-    }
+    },
+    "glyph": "Code to scan with your phone"
   }
 }
