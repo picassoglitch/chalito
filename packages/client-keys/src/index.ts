@@ -28,3 +28,4 @@ export {
   revokeDevice,
 } from "./pairing.js";
 export type { PairingDisplay, ScanResult, ClaimRequest } from "./pairing.js";
+export { deviceLogin } from "./device-login.js";

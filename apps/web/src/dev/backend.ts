@@ -25,11 +25,10 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import type { ClientKeys, ConnectOptions } from "@chalito/client";
-import { memoryStorage } from "@chalito/client";
+import type { ClientKeys } from "@chalito/client";
 import type { SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
-import type { SettingsDb } from "@/lib/settings-store";
+import type { Platform } from "@/lib/platform";
 import type { ChannelSetter } from "@/lib/phone";
 import type { Connector, ConsentRequest, McpApi } from "@/lib/mcp";
 import { confirmStepUp } from "@/components/StepUpHost";
@@ -85,19 +84,23 @@ export interface DevControls {
   askQuestion(questionId: string, question: string, options: string[]): Promise<void>;
   /** What the agent received, opened with its key (prompts, answers). */
   agentInbox: { type: string; text?: unknown }[];
+  /** The browser's current Supabase session (who the app is signed in as). */
+  session(): { access_token: string; role: unknown } | null;
+  /** Revokes THIS browser device (as another trusted device would). */
+  revokeMe(): void;
 }
 
-export const startDevBackend = async (): Promise<{
-  connectOptions: ConnectOptions;
-  phoneVerifier: PhoneVerifier;
-  settingsDb: SettingsDb;
-  channels: ChannelSetter;
-  /** Stub of client-keys registerPasskey: records a reference, no authenticator. */
-  enrollPasskey: () => Promise<void>;
-  mcp: McpApi;
-  assertPasskey: () => Promise<Record<string, unknown>>;
-  controls: DevControls;
-}> => {
+/** DEV/TEST: whether this browser counts as paired (localStorage "chalito.dev.paired", default yes). */
+export const DEV_PAIRED_KEY = "chalito.dev.paired";
+const devPaired = () => {
+  try {
+    return window.localStorage.getItem(DEV_PAIRED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+};
+
+export const startDevBackend = async (): Promise<Platform & { controls: DevControls }> => {
   const db = new FakeDb();
   const me = await newDevice();
   const agent = await newDevice();
@@ -195,6 +198,13 @@ export const startDevBackend = async (): Promise<{
   });
   device(agent, "agent", "Laptop de Aldo", "laptop", "linux");
   device(me, "client", "Este teléfono", "phone", "ios");
+  // DEV/TEST: start with this browser already revoked ("chalito.dev.revoked" = "1").
+  try {
+    if (window.localStorage.getItem("chalito.dev.revoked") === "1")
+      db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true });
+  } catch {
+    /* storage unavailable */
+  }
   const other = await newDevice();
   device(other, "client", "Navegador del trabajo", "web", "web");
   db.insert("connections", {
@@ -374,6 +384,21 @@ export const startDevBackend = async (): Promise<{
     trustedAgentBoxKey: (id) => (id === agent.deviceId ? agent.pubBox : null),
   };
 
+  // ---- sessions: the person's (hub SSO) until this browser signs in as its own device -------
+  const personSession = {
+    access_token: "dev-person-token",
+    user: { id: OWNER, app_metadata: { chalito: { role: "user", tier: "pro" } } },
+  };
+  const deviceSession = {
+    access_token: `dev-device-token-${me.deviceId}`,
+    user: {
+      id: `auth_${me.deviceId}`,
+      app_metadata: { chalito: { role: "client", owner: OWNER, device_id: me.deviceId } },
+    },
+  };
+  db.setSession(personSession);
+  const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
+
   const controls: DevControls = {
     marker: DEV_MARKER,
     owner: OWNER,
@@ -396,6 +421,9 @@ export const startDevBackend = async (): Promise<{
       await session({ state: "waiting_input", openQuestion: question });
     },
     agentInbox,
+    session: () => (db.session ? { access_token: db.session.access_token, role: role() } : null),
+    revokeMe: () =>
+      db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true, revoked_at: iso(Date.now()) }),
   };
   (window as unknown as { __chalitoDev: DevControls }).__chalitoDev = controls;
 
@@ -497,6 +525,7 @@ export const startDevBackend = async (): Promise<{
       return view;
     },
     approve: async (id, scopes, assertion) => {
+      if (role() !== "client") return "forbidden"; // requireAuth(["client"])
       const r = requests.get(id);
       if (!r) return "not_found";
       if (!passkeyRef()) return "no_passkey";
@@ -531,6 +560,7 @@ export const startDevBackend = async (): Promise<{
       return true;
     },
     setSharing: async ({ sessionId, deviceId, enabled, plaintextAck }) => {
+      if (role() !== "client") return "forbidden"; // requireAuth(["client"])
       if (!!sessionId === !!deviceId) return "error";
       if (enabled && plaintextAck !== true) return "error";
       const scope = sessionId ? "session" : "device";
@@ -559,25 +589,39 @@ export const startDevBackend = async (): Promise<{
     return { id: lastAssertion.value, type: "public-key" };
   };
 
+  // /v1/devices/token, simulated: the signature over the refresh challenge is the authentication.
+  const sb = db.client(OWNER);
   return {
-    phoneVerifier,
-    channels,
-    mcp,
-    assertPasskey,
-    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
     controls,
-    settingsDb: db.client({ access_token: "dev-access" }, OWNER) as unknown as SettingsDb,
-    connectOptions: {
-      url: "http://dev.invalid",
-      publishableKey: "dev",
-      keys,
-      owner: OWNER,
-      storage: memoryStorage(),
-      // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
-      stepUp: async ({ risk }) =>
-        passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
-      signIn: { kind: "sso", exchange: async () => ({ token_hash: "dev" }) },
-      create: () => db.client({ access_token: "dev-access" }, OWNER),
+    db: sb,
+    url: "http://dev.invalid",
+    publishableKey: "dev",
+    loadDeviceKeys: async () =>
+      devPaired()
+        ? {
+            keys: keys as ClientKeys & { sign: typeof keys.sign; deviceId: string },
+            // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
+            stepUp: async ({ risk }) =>
+              passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
+            forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
+          }
+        : null,
+    deviceLogin: (k, owner) => async () => {
+      const body = { v: 1 as const, owner, deviceId: k.deviceId, nonce: "n".repeat(22), issuedAt: Date.now() };
+      const challenge = await k.sign("chalito.refresh-challenge.v1", body);
+      const ok = await verifyEnvelope(challenge as never, "chalito.refresh-challenge.v1", trusted);
+      const row = db.rows("devices").find((r) => r.device_id === k.deviceId);
+      if (!row || row.revoked !== false)
+        throw Object.assign(new Error("device_revoked"), { status: 403, code: "device_revoked" });
+      if (!ok.ok) throw Object.assign(new Error("bad_signature"), { status: 401, code: "bad_signature" });
+      const hash = `dev-magiclink-${k.deviceId}-${Math.random().toString(36).slice(2)}`;
+      db.tokenHashes.set(hash, deviceSession);
+      db.clientWrites.push({ table: "api", op: "devices/token", row: { deviceId: k.deviceId } });
+      return hash;
     },
+    phone: () => ({ verifier: phoneVerifier, channels }),
+    mcp: () => mcp,
+    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
+    assertPasskey: () => assertPasskey(),
   };
 };

@@ -242,7 +242,8 @@
       "signIn": "Entrar con Chalyb",
       "unpaired": "Este dispositivo aún no está emparejado. Emparéjalo desde la app de escritorio para aprobar y ver tus sesiones.",
       "error": "No pudimos conectar. Vuelve a intentarlo en un momento.",
-      "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza."
+      "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza.",
+      "repair": "Emparejar de nuevo"
     },
     "devMode": {
       "banner": "Modo desarrollador ACTIVO.",

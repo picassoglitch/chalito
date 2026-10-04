@@ -242,7 +242,8 @@
       "signIn": "Sign in with Chalyb",
       "unpaired": "This device isn't paired yet. Pair it from the desktop app to approve and see your sessions.",
       "error": "We couldn't connect. Try again in a moment.",
-      "revoked": "This device was removed from your account. Pair it again from a trusted device."
+      "revoked": "This device was removed from your account. Pair it again from a trusted device.",
+      "repair": "Pair again"
     },
     "devMode": {
       "banner": "Developer mode ACTIVE.",

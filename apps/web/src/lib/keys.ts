@@ -5,6 +5,8 @@ export interface DeviceKeys {
   keys: ClientKeys & Pick<DeviceClientKeys, "sign" | "deviceId">;
   /** WebAuthn step-up for HIGH and CRITICAL decisions (assertion bound to the decision, D-019). */
   stepUp: StepUpProvider;
+  /** After revocation: drop every agent this browser trusted (it must be paired again). */
+  forget: () => Promise<void>;
 }
 
 /**
@@ -63,5 +65,8 @@ export const loadDeviceKeys = async (): Promise<DeviceKeys | null> => {
   const keys = await DeviceClientKeys.create(stored, vault);
   if (keys.trustedAgents().length === 0) return null;
   const stepUp: StepUpProvider = (approval, body) => passkeyStepUp(passkeyRef())(approval, body);
-  return { keys, stepUp };
+  const forget = async () => {
+    for (const a of keys.trustedAgents()) await keys.forgetAgent(a.deviceId);
+  };
+  return { keys, stepUp, forget };
 };
