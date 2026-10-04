@@ -1,0 +1,108 @@
+diff --git a/docs/engines/consumption-contract.md b/docs/engines/consumption-contract.md
+index a6fb178..ebd9439 100644
+--- a/docs/engines/consumption-contract.md
++++ b/docs/engines/consumption-contract.md
+@@ -35,7 +35,7 @@ to push the expiry out again.
+   "external_job_id": "stream_123", // engine's id; re-admitting the same id returns the same reservation
+   "class": "job", // "job" (uploads, renders, analyses) | "stream" (live)
+   "operation": "clips.pipeline",
+-  "est_tokens": 40000, // estimated provider cost ÷ 4 µ$, BEFORE margin (the hub adds it when reserving)
++  "est_tokens": 40000, // estimated provider cost ÷ 4 µ$, BEFORE margin (the hub adds it when reserving); for store.purchase, the price itself (no margin)
+   "upload_mb": 812.4, // size of the file about to be uploaded/processed (0 if none)
+   "source_minutes": 95.5, // duration of the media to process (0 if unknown/none)
+   "storage_mb_after": 3120, // what the user will hold on this engine after this job
+@@ -111,7 +111,7 @@ default **160%** — every unit consumed earns 160% over its cost):
+ ```
+ billable_tokens = max(1, ceil(cost_usd_micros × (1 + margin) / 4))  when cost_usd_micros is sent
+                 = max(1, ceil(amount × (1 + margin)))              for llm.tokens without a cost
+-                = ceil(cost_usd_micros / 4)                        for boost.fee (already a price)
++                = ceil(cost_usd_micros / 4)                        for boost.fee and store.purchase (already a price)
+                 = 1                                                otherwise
+ ```
+ 
+diff --git a/src/lib/usage/admission-core.ts b/src/lib/usage/admission-core.ts
+index ded9b5e..07d8f88 100644
+--- a/src/lib/usage/admission-core.ts
++++ b/src/lib/usage/admission-core.ts
+@@ -179,6 +179,17 @@ export function sqlCaps(caps: TierCapabilities, allocation: number, unlimited: b
+  *  (cost_usd_micros / 4); what it will actually draw is that plus the
+  *  margin. Reserving the raw figure let a job reserve ~3× less than it
+  *  spends (a 1.4-min test run: 22.6k reserved, 70.4k billed). */
+-export function reserveWithMargin(estTokens: number, marginPercent: number): number {
++export function reserveWithMargin(
++  estTokens: number,
++  marginPercent: number,
++  operation?: string | null,
++): number {
++  if (operation && PRICED_OPERATIONS.has(operation)) return Math.ceil(estTokens);
+   return Math.ceil(estTokens * (1 + Math.max(0, marginPercent) / 100));
+ }
++
++/** Operations whose estimate is already the price in billable tokens
++ *  (Chalito's store: the event is `store.purchase`, billed with no margin —
++ *  migration 0052). Reserving the price plus the margin would refuse a
++ *  purchase the balance covers. */
++export const PRICED_OPERATIONS: ReadonlySet<string> = new Set(['store.purchase']);
+diff --git a/src/lib/usage/admission.ts b/src/lib/usage/admission.ts
+index dbe637e..2219883 100644
+--- a/src/lib/usage/admission.ts
++++ b/src/lib/usage/admission.ts
+@@ -58,7 +58,7 @@ export async function admitUsage(
+   if (itemRefusal) return { status: 200, allowed: false, reason: itemRefusal, limits };
+ 
+   const { lane, feeTokens } = resolveLane(req, caps, subject.unlimited);
+-  const estTokens = reserveWithMargin(req.estTokens, await usageMarginPercent());
++  const estTokens = reserveWithMargin(req.estTokens, await usageMarginPercent(), req.operation);
+ 
+   const admin = createAdminClient();
+   const { data, error } = await admin.rpc('admit_usage', {
+diff --git a/supabase/migrations/0052_store_purchase_already_a_price.sql b/supabase/migrations/0052_store_purchase_already_a_price.sql
+new file mode 100644
+index 0000000..1a837ab
+--- /dev/null
++++ b/supabase/migrations/0052_store_purchase_already_a_price.sql
+@@ -0,0 +1,28 @@
++-- =====================================================================
++-- Chalyb — store.purchase is already a price (Chalito's cosmetics store).
++--
++-- An engine that sells an in-app item paid from the user's token balance
++-- reports it as one `store.purchase` event whose cost_usd_micros IS the
++-- price (price in billable tokens × 4). Like `boost.fee`, it must be billed
++-- as ceil(cost_usd_micros / 4), with no margin on top: the engine already
++-- set the price, and adding the margin would charge the user more than the
++-- price they were shown.
++--
++-- Same function as 0046, one more kind in the first branch. Applies to rows
++-- written from now on (billable_tokens is computed on insert and frozen).
++-- Idempotent.
++-- =====================================================================
++
++create or replace function public.usage_billable_tokens(
++  p_kind text, p_amount bigint, p_cost_usd_micros bigint, p_margin_percent numeric
++) returns bigint language sql immutable as $$
++  select greatest(1, case
++    when p_kind in ('boost.fee', 'store.purchase') and p_cost_usd_micros is not null
++      then ceil(p_cost_usd_micros / 4.0)
++    when p_cost_usd_micros is not null
++      then ceil(p_cost_usd_micros * (100 + p_margin_percent) / 400.0)
++    when p_kind = 'llm.tokens'
++      then ceil(p_amount * (100 + p_margin_percent) / 100.0)
++    else 1
++  end)::bigint
++$$;
+diff --git a/tests/consumption.test.ts b/tests/consumption.test.ts
+index 2bf815f..ba2593e 100644
+--- a/tests/consumption.test.ts
++++ b/tests/consumption.test.ts
+@@ -231,6 +231,11 @@ test('reservations hold the estimate plus the margin', () => {
+   assert.equal(reserveWithMargin(1000, -5), 1000);
+ });
+ 
++test('a store purchase reserves its price, nothing on top', () => {
++  assert.equal(reserveWithMargin(1200, 160, 'store.purchase'), 1200);
++  assert.equal(reserveWithMargin(1200, 160, 'clips.pipeline'), 3120);
++});
++
+ test('reconciliation: cents strings → micros, per model and workspace', async () => {
+   const { sumCostReport, reconcileByModel, centsToMicros } = await import('@/lib/usage/reconciliation-core');
+   assert.equal(centsToMicros('123.45'), 1_234_500); // $1.2345
