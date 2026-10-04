@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { join, sep } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, HookCallback, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { RemotePermissionMode, isSignedOrigin, type Origin } from "@chalito/protocol";
@@ -38,8 +38,6 @@ export interface ClaudeCodeConfig {
   env?: Record<string, string | undefined>;
   /** Called once per session with the SDK's init metadata (for the `adapter.init` log). */
   onInit?: (info: ClaudeCodeInitInfo) => void;
-  /** Injected in tests; reads the workspace CLAUDE.md. */
-  readFile?: (path: string) => Promise<string>;
 }
 
 export interface ClaudeCodeInitInfo {
@@ -54,26 +52,42 @@ export interface ClaudeCodeInitInfo {
   model: string;
 }
 
-/** Cap on the CLAUDE.md text appended to the system prompt. */
+/** Cap on the CLAUDE.md text appended to the system prompt; larger files are skipped. */
 const CLAUDE_MD_MAX = 64 * 1024;
 
-/** Credentials that would take precedence over the API key, or route through a subscription. */
-const STRIPPED_ENV = [
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_USE_BEDROCK",
-  "CLAUDE_CODE_USE_VERTEX",
-  "CLAUDE_CODE_USE_FOUNDRY",
-  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-  "ANTHROPIC_API_KEY",
-  // Anything that could send the key somewhere other than api.anthropic.com.
-  "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_CUSTOM_HEADERS",
-  "ANTHROPIC_BEDROCK_BASE_URL",
-  "ANTHROPIC_VERTEX_BASE_URL",
-  "ANTHROPIC_FOUNDRY_BASE_URL",
-  "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
-];
+/**
+ * Variables the CLI may inherit; everything else (credentials, base URLs, provider switches,
+ * custom headers, helper TTLs, …) is dropped. Matched case-insensitively for Windows.
+ */
+const ENV_ALLOW = new Set(
+  [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "TMPDIR",
+    "TZ",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    // Windows: the CLI and its child processes don't start without these.
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+  ].map((k) => k.toUpperCase()),
+);
+const envAllowed = (k: string) => ENV_ALLOW.has(k.toUpperCase()) || /^LC_[A-Z_]+$/i.test(k);
 
 const ORIGIN_TRUST = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
 /** The less trusted of two origins (unsigned mcp:/call: < client: < local); ties keep `a`. */
@@ -83,8 +97,10 @@ export const claudeEnv = (
   base: Record<string, string | undefined>,
   apiKey: string,
 ): Record<string, string | undefined> => {
-  const env = { ...base };
-  for (const k of STRIPPED_ENV) delete env[k];
+  const env: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(base)) if (v !== undefined && envAllowed(k)) env[k] = v;
+  // Marks the session's own processes; the chalito CLI refuses to run under it.
+  env.CHALITO_SESSION = "1";
   env.ANTHROPIC_API_KEY = apiKey;
   return env;
 };
@@ -114,13 +130,14 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   async start(opts: SessionStartOptions): Promise<SessionHandle> {
     const startMode = checkedMode(opts.permissionMode);
     const input = new InputQueue<SDKUserMessage>();
-    // The origin of the turn the SDK is running. A prompt queued mid-turn must not change the
-    // running turn's origin, so queued origins apply only at the turn boundary (`result`). If
-    // several prompts queue up, the next turn takes the least trusted of them, since the CLI
-    // may fold them into one turn.
+    // The origin of the turn the SDK is running. A prompt can only LOWER it right away (the CLI
+    // may fold a queued message into the running turn); it is raised only at a confirmed turn
+    // boundary (`result`, or interrupt()), to the least trusted of the prompts queued since.
     let origin: Origin = opts.origin;
     let turnActive = true;
     let pendingOrigins: Origin[] = [];
+    // After interrupt() the interrupted turn's own `result` may still arrive; it is not a new boundary.
+    let skipNextResult = false;
     const turnEnded = () => {
       if (pendingOrigins.length === 0) {
         turnActive = false;
@@ -220,7 +237,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
             });
           }
           this.#map(msg, opts);
-          if ((msg as { type: string }).type === "result") turnEnded();
+          if ((msg as { type: string }).type === "result") {
+            if (skipNextResult) skipNextResult = false;
+            else turnEnded();
+          }
         }
         opts.onEvent({ type: "state", state: "completed" });
       } catch (err) {
@@ -236,8 +256,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
     return {
       prompt: (text, turnOrigin) => {
-        if (turnActive) pendingOrigins.push(turnOrigin);
-        else {
+        if (turnActive) {
+          pendingOrigins.push(turnOrigin);
+          origin = lowerTrustOrigin(origin, turnOrigin);
+        } else {
           origin = turnOrigin;
           turnActive = true;
         }
@@ -246,6 +268,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       },
       interrupt: async () => {
         await q.interrupt();
+        if (turnActive) {
+          skipNextResult = true;
+          turnEnded();
+        }
         opts.onEvent({ type: "state", state: "interrupted" });
       },
       setPermissionMode: async (mode) => {
@@ -256,11 +282,22 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     };
   }
 
+  /** The workspace CLAUDE.md: a regular file (no symlinks), really inside the workspace, at most CLAUDE_MD_MAX bytes. */
   async #workspaceClaudeMd(cwd: string): Promise<string | null> {
-    const read = this.config.readFile ?? ((p: string) => readFile(p, "utf8"));
+    let root: string;
+    try {
+      root = await realpath(cwd);
+    } catch {
+      return null;
+    }
     for (const p of [join(cwd, "CLAUDE.md"), join(cwd, ".claude", "CLAUDE.md")]) {
       try {
-        const text = (await read(p)).slice(0, CLAUDE_MD_MAX).trim();
+        const st = await lstat(p);
+        if (!st.isFile() || st.size > CLAUDE_MD_MAX) continue;
+        // lstat only checks the last component; a symlinked .claude/ is caught here.
+        const real = await realpath(p);
+        if (!real.startsWith(root.endsWith(sep) ? root : root + sep)) continue;
+        const text = (await readFile(real, "utf8")).slice(0, CLAUDE_MD_MAX).trim();
         if (text) return text;
       } catch {
         /* not present */
