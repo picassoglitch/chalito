@@ -61,6 +61,11 @@ export class DeviceClientKeys {
     return this.#agents.get(agentDeviceId)?.pubBox ?? null;
   }
 
+  /** ADR 0019: verifies the agent's signed approval requests. Same trust rule as the box key. */
+  trustedAgentSignKey(agentDeviceId: string): string | null {
+    return this.#agents.get(agentDeviceId)?.pubSign ?? null;
+  }
+
   trustedAgents(): TrustedAgent[] {
     return [...this.#agents.values()];
   }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +9,15 @@ import {
   MemoryNonceStore,
   TrustedClientList,
   generateBoxKeyPair,
+  canonicalize,
   generateSigningKeyPair,
+  openJson,
   randomNonce,
   sealJson,
   signEnvelope,
   stepUpChallenge,
   toB64url,
+  verifyEnvelope,
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
@@ -112,7 +116,7 @@ const harness = async (
     saveTrust: async () => undefined,
     nonces: new MemoryNonceStore(),
     owner: OWNER,
-    self: { deviceId: agent.id, pubBox: agent.pubBox, box: agent.box },
+    self: { deviceId: agent.id, pubBox: agent.pubBox, box: agent.box, sign: agent.sign },
     home: HOME,
     locale: () => "es",
     now: Date.now,
@@ -175,6 +179,8 @@ const harness = async (
       aid?: string;
       requestId?: string;
       nonce?: string;
+      /** ADR 0019: override the hash (null = omit it) for negative tests. */
+      detailsHash?: string | null;
     } = {},
   ) => {
     const pending = store.pendingApprovals().at(-1)!;
@@ -188,7 +194,20 @@ const harness = async (
       nonce: o.nonce ?? (await randomNonce()),
       issuedAt: Date.now(),
       expiresAt: Date.now() + 60_000,
+      // ADR 0019: the phone answers for exactly what the agent signed (opened from detailsCt).
+      detailsHash:
+        o.detailsHash === undefined
+          ? (
+              await openJson<{ request: { body: { detailsHash: string } } }>(
+                pending.detailsCt,
+                phone.id,
+                phone.box,
+                `approval:${pending.aid}`,
+              )
+            ).request.body.detailsHash
+          : (o.detailsHash ?? undefined),
     };
+    if (body.detailsHash === undefined) delete body.detailsHash;
     if (o.customStepUp) body.stepUp = await o.customStepUp(body);
     else if (o.stepUp) {
       const assertion = await passkey.stepUp(passkeyRef.rpId)(await stepUpChallenge(body));
@@ -754,5 +773,78 @@ describe("R-L13: an endorsement can't smuggle in a passkey (ADR 0018)", () => {
     // The phone (passkey recorded at the reverse check) still can.
     await h.decide(true, { stepUp: true });
     await waitFor(() => h.fake.run.ran.length === 1);
+  });
+});
+
+describe("R-H1: a decision is bound to what the agent signed (ADR 0019)", () => {
+  const medEdit: FakeStep[][] = [
+    [{ tool: "Edit", input: { file_path: `${WS}/src/app.ts`, old_string: "a", new_string: "b" } }],
+  ];
+  const opened = async (h: Awaited<ReturnType<typeof harness>>) => {
+    const p = h.store.pendingApprovals().at(-1)!;
+    return {
+      row: p,
+      payload: await openJson<{
+        details: Record<string, unknown>;
+        request: Parameters<typeof verifyEnvelope>[0] & { body: Record<string, unknown> };
+      }>(p.detailsCt, h.phone.id, h.phone.box, `approval:${p.aid}`),
+    };
+  };
+
+  it("the sealed payload carries the agent's signature over the row and the exact details", async () => {
+    const h = await harness({ turns: medEdit });
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const { row, payload } = await opened(h);
+    const sig = await verifyEnvelope(
+      payload.request,
+      "chalito.approval.v1",
+      new Map([[h.agent.id, h.agent.sign.publicKey]]),
+    );
+    expect(sig.ok).toBe(true);
+    expect(payload.request.body).toMatchObject({
+      aid: row.aid,
+      requestId: row.requestId,
+      deviceId: h.agent.id,
+      risk: row.risk,
+      stepUpRequired: row.stepUpRequired,
+      detailsHash: createHash("sha256").update(canonicalize(payload.details)).digest("hex"),
+    });
+  });
+
+  it("an allow without the hash, or for other details, never runs; a deny needs no hash", async () => {
+    const h = await harness({ turns: medEdit });
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    await h.decide(true, { detailsHash: null });
+    await h.decide(true, { detailsHash: "0".repeat(64) });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.fake.run.ran).toHaveLength(0);
+    expect(h.logs.join("\n")).toMatch(/details_mismatch/);
+    await h.decide(false, { detailsHash: null });
+    await waitFor(() => [...h.store.approvals.values()].some((a) => a.status === "denied"));
+  });
+
+  it("the attack: the server swaps details_ct for harmless text; the phone's honest allow for it is refused", async () => {
+    const h = await harness({ turns: medEdit });
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const { row } = await opened(h);
+    // The attacker seals its own "details" to the phone (anonymous sealing allows that)…
+    const fake = {
+      v: 1,
+      toolName: "Read",
+      summary: "Read: README.md",
+      input: { file_path: "README.md" },
+      reasons: [],
+      origin: "local",
+    };
+    const swapped = await sealJson({ details: fake }, { [h.phone.id]: h.phone.box.publicKey }, `approval:${row.aid}`);
+    h.store.approvals.set(row.aid, { ...h.store.approvals.get(row.aid)!, detailsCt: swapped });
+    // …and a phone that (wrongly) trusted it answers for what it was shown.
+    const fakeHash = createHash("sha256").update(canonicalize(fake)).digest("hex");
+    await h.decide(true, { detailsHash: fakeHash });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.fake.run.ran).toHaveLength(0);
   });
 });

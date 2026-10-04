@@ -35,6 +35,8 @@ export type RoomSealed = z.infer<typeof RoomSealed>;
  */
 export const SigningContext = z.enum([
   "chalito.decision.v1",
+  /** ADR 0019: the agent's approval request (risk, step-up, detailsHash), inside the sealed details. */
+  "chalito.approval.v1",
   "chalito.command.v1",
   "chalito.endorsement.v1",
   "chalito.glyph.v1",

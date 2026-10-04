@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { openJson, type BoxKeyPair, type NonceStore, type TrustedClientList } from "@chalito/crypto";
+import {
+  openJson,
+  type BoxKeyPair,
+  type NonceStore,
+  type SigningKeyPair,
+  type TrustedClientList,
+} from "@chalito/crypto";
 import type { AdapterEvent, SessionAdapter, SessionHandle, ToolCall, ToolGate } from "@chalito/adapters";
 import {
   AgentEvent,
@@ -12,6 +18,7 @@ import {
   type RemotePermissionMode,
   type SealedEnvelope,
   type SessionState,
+  approvalSummary,
 } from "@chalito/protocol";
 import { ApprovalManager } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
@@ -48,7 +55,7 @@ export interface AgentCoreDeps {
   saveTrust: () => Promise<void>;
   nonces: NonceStore;
   owner: string;
-  self: { deviceId: string; pubBox: string; box: BoxKeyPair };
+  self: { deviceId: string; pubBox: string; box: BoxKeyPair; sign: SigningKeyPair };
   home: string;
   locale: () => "es" | "en";
   now: () => number;
@@ -102,6 +109,7 @@ export class AgentCore {
       sealer: this.sealer,
       owner: d.owner,
       deviceId: d.self.deviceId,
+      signer: d.self.sign,
       now: d.now,
       ttlMs: () => d.policy.get().approvals.ttlSeconds * 1000,
       audit: (e) => this.#audit(e.type, e),
@@ -381,7 +389,8 @@ export class AgentCore {
         devMode: this.d.devMode.state,
         permissionMode: s.permissionMode,
       });
-      const summary = `${call.toolName}: ${JSON.stringify(call.input).slice(0, 300)}`;
+      // R-M10: the same sanitised, explicitly-truncated summary the approval shows.
+      const summary = approvalSummary(call.toolName, call.input).summary;
       if (decision.action === "allow") {
         s.card.action(summary);
         if (classification.workspaceEdit) s.card.fileTouched(String(call.input.file_path ?? ""));
@@ -402,7 +411,7 @@ export class AgentCore {
         risk: classification.tier,
         stepUp: decision.stepUp,
         origin: call.origin,
-        details: { toolName: call.toolName, summary, input: call.input, reasons: classification.reasons },
+        details: { toolName: call.toolName, input: call.input, reasons: classification.reasons },
         onRequested: (requested, expiresAt) => {
           aid = requested;
           announced = (async () => {

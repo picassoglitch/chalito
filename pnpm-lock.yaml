@@ -329,6 +329,9 @@ importers:
 
   packages/client:
     dependencies:
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -339,9 +342,6 @@ importers:
         specifier: ^2.117.2
         version: 2.117.2(@opentelemetry/api@1.9.1)
     devDependencies:
-      '@chalito/crypto':
-        specifier: workspace:*
-        version: link:../crypto
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0

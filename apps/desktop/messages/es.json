@@ -16,7 +16,10 @@
     "ack": "Visto",
     "risk": "Riesgo {risk}",
     "error": "No se pudo enviar: {reason}",
-    "approveOnPhone": "Aprueba esta acción desde tu teléfono"
+    "approveOnPhone": "Aprueba esta acción desde tu teléfono",
+    "unverified": "Sin verificar: tu computadora no firmó lo que ves. Solo puedes rechazarla.",
+    "showFull": "Ver el comando completo",
+    "openFullFirst": "Abre el comando completo antes de aprobar"
   },
   "security": {
     "localOnly": "Estas pantallas solo funcionan en esta computadora. Ni el teléfono ni la web pueden cambiarlas.",

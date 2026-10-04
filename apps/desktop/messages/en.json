@@ -16,7 +16,10 @@
     "ack": "Seen",
     "risk": "{risk} risk",
     "error": "Couldn't send: {reason}",
-    "approveOnPhone": "Approve this action from your phone"
+    "approveOnPhone": "Approve this action from your phone",
+    "unverified": "Unverified: your computer didn't sign what you see. You can only deny it.",
+    "showFull": "Show the full command",
+    "openFullFirst": "Open the full command before approving"
   },
   "security": {
     "localOnly": "These screens only work on this computer. Neither your phone nor the web can change them.",

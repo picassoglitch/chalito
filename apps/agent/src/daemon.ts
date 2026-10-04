@@ -270,7 +270,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     saveTrust: () => trustStore.save(trust),
     nonces: deps.nonces ?? new FileNonceStore(dir, log),
     owner: cfg.owner,
-    self: { deviceId: id.deviceId, pubBox: id.pubBox, box: id.box },
+    self: { deviceId: id.deviceId, pubBox: id.pubBox, box: id.box, sign: id.sign },
     home: deps.home ?? homedir(),
     locale: () => cfg.locale,
     now,
