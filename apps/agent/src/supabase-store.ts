@@ -31,6 +31,12 @@ export interface SupaChannel {
   subscribe(cb?: (status: string, err?: Error) => void): SupaChannel;
 }
 export interface SupaClient {
+  /**
+   * realtime-js 2.117: `setAuth()` returns a Promise; with no argument it takes the token from
+   * the client's accessToken callback. A channel must not subscribe before it resolves, or the
+   * join goes out with the previous (or no) token and Realtime refuses the private topic.
+   */
+  realtime?: { setAuth(token?: string | null): unknown };
   from(table: string): SupaQuery;
   rpc(fn: string, args: Record<string, unknown>): PromiseLike<SupaResult>;
   channel(topic: string, opts: { config: { private: boolean } }): SupaChannel;
@@ -135,14 +141,35 @@ export class SupabaseStore implements AgentStore {
 
   // ---- realtime ------------------------------------------------------------------
 
+  #joining: Promise<void> | null = null;
+
+  /** Authorizes Realtime with the current token, then joins (once). */
   #ensureChannel(): void {
-    if (this.#channel) return;
+    if (this.#channel || this.#joining) return;
+    this.#joining = (async () => {
+      try {
+        await this.db.realtime?.setAuth();
+      } catch (err) {
+        this.#log?.warn("realtime.set_auth_failed", { error: err instanceof Error ? err.message : "error" });
+      }
+      if (!this.#closed) this.#join();
+    })();
+  }
+
+  /** Resolves once the channel join was issued (after setAuth). */
+  joined(): Promise<void> {
+    return this.#joining ?? Promise.resolve();
+  }
+
+  #join(): void {
     this.#channel = this.db
       .channel(deviceTopic(this.deviceId), { config: { private: true } })
       .on("broadcast", { event: "*" }, (msg) => void this.#onPointer(msg.payload as Pointer))
       .subscribe((status, err) => {
-        if (status === "SUBSCRIBED") void this.resync();
-        else if (status !== "CLOSED")
+        if (status === "SUBSCRIBED") {
+          this.#log?.info("realtime.subscribed", { topic: "device" });
+          void this.resync();
+        } else if (status !== "CLOSED")
           this.#log?.warn("realtime.status", { status, error: err?.message ?? null, topic: "device" });
       });
   }
@@ -249,7 +276,11 @@ export class SupabaseStore implements AgentStore {
   }
 
   /** Leaves the channel (daemon shutdown). */
+  #closed = false;
+
   async close(): Promise<void> {
+    this.#closed = true;
+    await this.#joining;
     if (this.#channel) await this.db.removeChannel(this.#channel);
     this.#channel = null;
   }

@@ -67,6 +67,8 @@ export interface ApiRepo {
   /** Records the device's passkey on its device record; false if the device doesn't exist. */
   setDeviceWebAuthn(owner: string, deviceId: string, cred: StoredWebAuthnCredential): Promise<boolean>;
   getDeviceWebAuthn(owner: string, deviceId: string): Promise<StoredWebAuthnCredential | null>;
+  /** Stores the device-signed binding for its current passkey (the route verified it). */
+  setDeviceWebAuthnBinding(owner: string, deviceId: string, binding: unknown): Promise<boolean>;
 
   // ---- pairing ----
   /** "exists" if the code id was already published. */
@@ -89,6 +91,8 @@ export interface ApiRepo {
       claimedByDeviceId: string;
       claimerPubSign: string;
       claimerPubBox: string;
+      /** The claimer's passkey binding, passed on to the agent for its reverse check. */
+      claimerWebauthnBinding?: unknown;
       claimedAt: number;
     },
     build: (code: PairingCodeDoc) => Promise<DeviceDoc>,
@@ -116,6 +120,8 @@ export interface StoredWebAuthnCredential {
   counter: number;
   transports: string[];
   createdAt: number;
+  /** chalito.webauthn-binding.v1 signed by the device key, once the device sent it. */
+  binding?: unknown;
 }
 
 export type TenantStatus = z.infer<typeof HubTenantStatus>["status"];

@@ -5,7 +5,8 @@ import {
   verifyRegistrationResponse,
   type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
-import { toB64url } from "@chalito/crypto";
+import { toB64url, verifyWebAuthnBinding } from "@chalito/crypto";
+import { WebAuthnBindRequest } from "@chalito/protocol";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
@@ -123,6 +124,38 @@ export const webauthnRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFr
       { credential: { credentialId: stored.credentialId, publicKey: stored.publicKey, rpId: stored.rpId } },
       201,
     );
+  });
+
+  /**
+   * The device's binding for the passkey it just registered: signed by its DEVICE key over
+   * {deviceId, credentialId, publicKey, rpId}. Must match the stored credential exactly.
+   */
+  app.post("/register/bind", requireAuth(deps, ["client"]), limiter, async (c) => {
+    const p = principal(c);
+    const body = WebAuthnBindRequest.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(400, "bad_request");
+    const binding = body.data.binding;
+    const device = await activeDevice(p.owner, p.deviceId!);
+    const cred = await deps.repo.getDeviceWebAuthn(p.owner, device.deviceId);
+    if (!cred) return fail(409, "no_passkey");
+    const check = await verifyWebAuthnBinding(binding, {
+      deviceId: device.deviceId,
+      pubSign: device.pubSign,
+      rpId: wa.rpId,
+    });
+    if (!check.ok) return fail(400, `bad_binding_${check.reason}`);
+    if (binding.body.credentialId !== cred.credentialId || binding.body.publicKey !== cred.publicKey)
+      return fail(400, "bad_binding_credential_mismatch");
+    if (!(await deps.repo.setDeviceWebAuthnBinding(p.owner, device.deviceId, binding)))
+      return fail(403, "device_revoked");
+    await deps.audit.record({
+      action: "webauthn.bound",
+      owner: p.owner,
+      actor: p.uid,
+      target: device.deviceId,
+      meta: { credentialId: cred.credentialId },
+    });
+    return c.json({ ok: true });
   });
 
   app.post("/assert/options", requireAuth(deps, ["client"]), limiter, async (c) => {

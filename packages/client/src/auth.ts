@@ -89,7 +89,7 @@ export interface BrowserAuth {
 /** What the browser client needs from supabase-js. */
 export type BrowserSupabase = SupaClient & {
   auth: BrowserAuth;
-  realtime: { setAuth(token?: string | null): unknown };
+  realtime: { setAuth(token?: string | null): unknown | Promise<unknown> };
   removeAllChannels(): Promise<unknown>;
 };
 
@@ -213,10 +213,11 @@ export const connect = async (o: ConnectOptions): Promise<ChalitoClient> => {
   const storage = o.storage ?? indexedDbStorage();
   const sb = (o.create ?? createBrowserSupabase)(o.url, o.publishableKey, storage);
   const token = await ensureSession(sb.auth, o.signIn);
-  sb.realtime.setAuth(token);
+  // realtime-js 2.117's setAuth is async: the channel joins only after it resolves.
+  await sb.realtime.setAuth(token);
   const sub = sb.auth.onAuthStateChange((_event, session) => {
     // Realtime caches join authorization until it sees a new token.
-    if (session?.access_token) sb.realtime.setAuth(session.access_token);
+    if (session?.access_token) void Promise.resolve(sb.realtime.setAuth(session.access_token)).catch(() => undefined);
   }).data.subscription;
   const live = new LiveStore(sb, o.keys, o.owner, o.live);
   const actions = new ClientActions(sb, o.keys, live, { ...o.actions, stepUp: o.stepUp });

@@ -237,4 +237,33 @@ describe("LiveStore", () => {
     expect(db.channels[0]!.removed).toBe(true);
     expect(live.getSnapshot().status).toBe("idle");
   });
+
+  it("doesn't subscribe before Realtime has the token (setAuth is async in realtime-js 2.117)", async () => {
+    const { db, live } = await setup();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    (db as unknown as { realtime: { setAuth: () => Promise<void> } }).realtime = { setAuth: () => gate };
+    live.start();
+    await tick();
+    expect(db.channels).toHaveLength(0);
+    expect(live.getSnapshot().status).toBe("connecting");
+    release();
+    await live.joined();
+    expect(db.channels).toHaveLength(1);
+    await tick();
+    expect(live.getSnapshot().status).toBe("live");
+  });
+
+  it("stop() before the join was issued never joins", async () => {
+    const { db, live } = await setup();
+    let release!: () => void;
+    (db as unknown as { realtime: { setAuth: () => Promise<void> } }).realtime = {
+      setAuth: () => new Promise<void>((r) => (release = r)),
+    };
+    live.start();
+    const stopping = live.stop();
+    release();
+    await stopping;
+    expect(db.channels).toHaveLength(0);
+  });
 });

@@ -290,8 +290,35 @@ export const runApiRepoContract = (
         await repo.createDevice(o, d);
         expect(await repo.getDeviceWebAuthn(o, d.deviceId)).toBeNull();
         expect(await repo.setDeviceWebAuthn(o, d.deviceId, cred)).toBe(true);
-        expect(await repo.getDeviceWebAuthn(o, d.deviceId)).toEqual(cred);
+        expect(await repo.getDeviceWebAuthn(o, d.deviceId)).toEqual({ ...cred, binding: null });
         expect((await repo.getDevice(o, d.deviceId))?.revoked).toBe(false);
+      });
+
+      it("stores the device-signed binding with the passkey; a new passkey clears it", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const d = await device(o);
+        await repo.createDevice(o, d);
+        const binding = {
+          ctx: "chalito.webauthn-binding.v1",
+          body: { v: 1, deviceId: d.deviceId },
+          signerDeviceId: d.deviceId,
+          sig: "x",
+        };
+        expect(await repo.setDeviceWebAuthnBinding(o, d.deviceId, binding)).toBe(false); // no passkey yet
+        const cred = {
+          credentialId: `cred2-${o}`,
+          publicKey: "pQECAyYgASFYIA",
+          rpId: "chalito.chalyb.com",
+          counter: 0,
+          transports: [],
+          createdAt: 1_790_000_000_000,
+        };
+        await repo.setDeviceWebAuthn(o, d.deviceId, cred);
+        expect(await repo.setDeviceWebAuthnBinding(o, d.deviceId, binding)).toBe(true);
+        expect((await repo.getDeviceWebAuthn(o, d.deviceId))?.binding).toEqual(binding);
+        await repo.setDeviceWebAuthn(o, d.deviceId, { ...cred, credentialId: `cred3-${o}` });
+        expect((await repo.getDeviceWebAuthn(o, d.deviceId))?.binding).toBeNull();
       });
     });
 
@@ -314,6 +341,7 @@ export const runApiRepoContract = (
           claimedByDeviceId: "dev_phone",
           claimerPubSign: "ps",
           claimerPubBox: "pb",
+          claimerWebauthnBinding: { ctx: "chalito.webauthn-binding.v1", sig: "s" },
           claimedAt: 42,
         };
         expect(await repo.claimPairingCode(code.codeId, claim, () => agentFor(code, o, "dev_phone"))).toEqual({
@@ -333,6 +361,7 @@ export const runApiRepoContract = (
           claimedByDeviceId: "dev_phone",
           claimerPubSign: "ps",
           claimerPubBox: "pb",
+          claimerWebauthnBinding: { ctx: "chalito.webauthn-binding.v1", sig: "s" },
         });
         expect(await repo.claimPairingCode(code.codeId, claim, async () => agent)).toEqual({
           ok: false,
