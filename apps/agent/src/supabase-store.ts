@@ -83,7 +83,7 @@ export interface SupabaseStoreOptions {
 /**
  * AgentStore over the Chalyb hub's Supabase (ADR 0017), signed in as this device.
  *
- * - Writes go through the Data API under RLS (column grants mirror firestore.rules); a
+ * - Writes go through the Data API under RLS (column-scoped grants, the port of the old firestore.rules); a
  *   rate-limited write is retried with exponential backoff.
  * - One private Realtime channel, `chalito:device:<id>`, carries pointers for this device,
  *   shared by watchCommands and every watchApproval(aid).
