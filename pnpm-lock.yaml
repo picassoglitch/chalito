@@ -133,6 +133,9 @@ importers:
       '@chalito/client-keys':
         specifier: workspace:*
         version: link:../../packages/client-keys
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
       msw:
         specifier: ^3.0.2
         version: 3.0.2(@types/node@22.20.5)(typescript@5.9.3)(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
@@ -390,6 +393,18 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+
+  packages/rooms:
+    dependencies:
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../crypto
+      '@chalito/glyph':
+        specifier: workspace:*
+        version: link:../glyph
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
   packages/ui:
     dependencies:
