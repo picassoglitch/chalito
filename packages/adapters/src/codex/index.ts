@@ -15,5 +15,3 @@ export {
   sandboxPolicyFor,
 } from "./adapter.js";
 export type { CodexConfig, CodexSpawn, CodexTransport, CodexVersionRange } from "./adapter.js";
-export { fakeCodex } from "./fake.js";
-export type { FakeCodexStep, FakeCodexRun } from "./fake.js";

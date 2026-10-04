@@ -3,13 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AdapterEvent, ToolCall } from "../src/core.js";
-import {
-  ClaudeCodeAdapter,
-  claudeEnv,
-  fakeClaudeCode,
-  lowerTrustOrigin,
-  type FakeStep,
-} from "../src/claude-code/index.js";
+import { ClaudeCodeAdapter, claudeEnv, lowerTrustOrigin } from "../src/claude-code/index.js";
+import { fakeClaudeCode, type FakeStep } from "../src/testing.js";
 import type { Origin } from "@chalito/protocol";
 
 const waitFor = async (cond: () => boolean, ms = 2000) => {
