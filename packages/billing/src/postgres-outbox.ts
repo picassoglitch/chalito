@@ -21,7 +21,7 @@ export class PostgresOutbox implements OutboxStore {
 
   async claimDue(limit: number, now: number): Promise<OutboxRow[]> {
     // Push the claimed rows' next attempt out, so a concurrent drainer skips them.
-    const rows = await this.sql<{ id: string; event: HubUsageEvent; attempts: number }[]>`
+    const rows = await this.sql<{ id: string; source_id: string; event: unknown; attempts: number }[]>`
       update chalito_private.usage_outbox set next_attempt_at = ${new Date(now + 5 * 60_000)}
       where id in (
         select id from chalito_private.usage_outbox
@@ -29,8 +29,10 @@ export class PostgresOutbox implements OutboxStore {
         order by id limit ${limit}
         for update skip locked
       )
-      returning id, event, attempts`;
-    return rows.map((r) => ({ id: Number(r.id), event: r.event, attempts: r.attempts })).sort((a, b) => a.id - b.id);
+      returning id, source_id, event, attempts`;
+    return rows
+      .map((r) => ({ id: Number(r.id), sourceId: r.source_id, event: r.event, attempts: r.attempts }))
+      .sort((a, b) => a.id - b.id);
   }
 
   async markSent(ids: number[], now: number) {

@@ -1,4 +1,4 @@
-import type { HubUsageEvent } from "@chalito/protocol";
+import { HubUsageEvent } from "@chalito/protocol";
 import type { HubClient, UsageResult } from "./hub.js";
 
 /**
@@ -8,7 +8,10 @@ import type { HubClient, UsageResult } from "./hub.js";
  */
 export interface OutboxRow {
   id: number;
-  event: HubUsageEvent;
+  /** The source_id column (the idempotency key), independent of the stored event. */
+  sourceId: string;
+  /** As stored. It is validated against HubUsageEvent before it is ever sent. */
+  event: unknown;
   attempts: number;
 }
 
@@ -39,8 +42,25 @@ export const drainOutbox = async (p: {
 }): Promise<DrainResult> => {
   const total: DrainResult = { sent: 0, retried: 0, dead: 0 };
   for (let b = 0; b < (p.maxBatches ?? 10); b++) {
-    const rows = await p.store.claimDue(100, p.now());
-    if (rows.length === 0) break;
+    const claimed = await p.store.claimDue(100, p.now());
+    if (claimed.length === 0) break;
+    // Never send a malformed event (the hub would only refuse it): dead-letter it and alert.
+    const rows: { id: number; sourceId: string; event: HubUsageEvent; attempts: number }[] = [];
+    const invalid: OutboxRow[] = [];
+    for (const r of claimed) {
+      const parsed = HubUsageEvent.safeParse(r.event);
+      if (parsed.success && parsed.data.source_id === r.sourceId) rows.push({ ...r, event: parsed.data });
+      else invalid.push(r);
+    }
+    if (invalid.length) {
+      await p.store.markDead(
+        invalid.map((r) => r.id),
+        "invalid event: not a HubUsageEvent, or its source_id differs from the row's",
+      );
+      p.alert("billing.usage_invalid", { count: invalid.length, sourceIds: invalid.map((r) => r.sourceId) });
+      total.dead += invalid.length;
+    }
+    if (rows.length === 0) continue;
     const result: UsageResult = await p.hub.usage(rows.map((r) => r.event));
     const ids = rows.map((r) => r.id);
     if (result.status === "ok") {
@@ -56,7 +76,7 @@ export const drainOutbox = async (p: {
       p.alert("billing.usage_dead", {
         count: ids.length,
         httpStatus: result.httpStatus,
-        sourceIds: rows.map((r) => r.event.source_id),
+        sourceIds: rows.map((r) => r.sourceId),
       });
       total.dead += ids.length;
     }
@@ -66,7 +86,8 @@ export const drainOutbox = async (p: {
 
 /** In-memory outbox for tests and local runs. */
 export class MemoryOutbox implements OutboxStore {
-  rows: (OutboxRow & {
+  rows: (Omit<OutboxRow, "event"> & {
+    event: HubUsageEvent;
     status: "pending" | "sent" | "dead";
     nextAttemptAt: number;
     lastError: string | null;
@@ -75,10 +96,11 @@ export class MemoryOutbox implements OutboxStore {
   #id = 0;
   async enqueue(owner: string, events: (HubUsageEvent | null)[]) {
     for (const event of events) {
-      if (!event || this.rows.some((r) => r.event.source_id === event.source_id)) continue;
+      if (!event || this.rows.some((r) => r.sourceId === event.source_id)) continue;
       this.rows.push({
         id: ++this.#id,
         owner,
+        sourceId: event.source_id,
         event,
         attempts: 0,
         status: "pending",

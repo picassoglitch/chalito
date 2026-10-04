@@ -4,6 +4,17 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Ladder } from "@chalito/escalation";
 import { PostgresStore } from "../src/postgres-store.js";
 
+/** A complete HubUsageEvent, as the outbox CHECK requires (source_id must match the row). */
+const fixtureEvent = (sourceId: string, owner: string, kind: string, amount: number) => ({
+  source_id: sourceId,
+  kind,
+  provider: "test",
+  external_user_id: owner,
+  amount,
+  cost_usd_micros: 1,
+  occurred_at: new Date().toISOString(),
+});
+
 /**
  * PostgresStore against a Chalito database with the notifier migrations (DATABASE_URL), acting as
  * CHALITO_DB_ROLE like the service does. A role-less connection seeds rows clients would write.
@@ -250,7 +261,7 @@ if (!url) {
       // The engine's daily caps don't count the suppressed send either.
       expect((await store.withUser(u, (tx) => tx.history(since))).sent.map((x) => x.nid).sort()).toEqual(["n1", "n2"]);
       await admin`insert into chalito_private.usage_outbox (owner, source_id, event)
-                  values (${u}, ${`v:${u}`}, ${admin.json({ kind: "voice.seconds", amount: 90, cost_usd_micros: 1 })})`;
+                  values (${u}, ${`v:${u}`}, ${admin.json(fixtureEvent(`v:${u}`, u, "voice.seconds", 90))})`;
       expect(await store.voiceSecondsSince(u, since)).toBe(90);
       const note = {
         nid: "cap_call_2026_10",

@@ -47,7 +47,7 @@ if (!url) {
         owner,
         Array.from({ length: 6 }, (_, i) => ev(owner, `${owner}:${i}`)),
       );
-      const mine = (rows: OutboxRow[]) => rows.filter((r) => r.event.source_id.startsWith(owner));
+      const mine = (rows: OutboxRow[]) => rows.filter((r) => r.sourceId.startsWith(owner));
       // Claim in rounds (a shared database may hold other pending rows): two drainers at a time
       // never get the same row, and every one of ours is claimed exactly once.
       const all: OutboxRow[] = [];
@@ -58,7 +58,7 @@ if (!url) {
         if (a.length + b.length === 0) break;
         all.push(...mine(a), ...mine(b));
       }
-      const ids = all.map((r) => r.event.source_id).sort();
+      const ids = all.map((r) => r.sourceId).sort();
       expect(ids).toEqual(Array.from({ length: 6 }, (_, i) => `${owner}:${i}`).sort());
       await outbox.markSent(
         all.slice(0, 3).map((r) => r.id),
@@ -75,6 +75,19 @@ if (!url) {
       expect(later.map((r) => r.attempts)).toEqual([1, 1]);
       const [dead] = await sql`select status, last_error from chalito_private.usage_outbox where id = ${all[3]!.id}`;
       expect(dead).toEqual({ status: "dead", last_error: "422: bad kind" });
+    });
+
+    it("the table only takes JSON objects whose source_id matches the row (no double-encoded strings)", async () => {
+      const owner = `o-${randomUUID()}`;
+      const good = ev(owner, `${owner}:ok`)!;
+      await expect(
+        sql`insert into chalito_private.usage_outbox (owner, source_id, event) values (${owner}, ${`${owner}:x`}, ${sql.json(good as never)})`,
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        sql`insert into chalito_private.usage_outbox (owner, source_id, event)
+            values (${owner}, ${good.source_id}, ${sql.json(JSON.stringify(good) as never)})`,
+      ).rejects.toMatchObject({ code: "23514" });
+      await enqueueUsage(sql, owner, [good]);
     });
   });
 }

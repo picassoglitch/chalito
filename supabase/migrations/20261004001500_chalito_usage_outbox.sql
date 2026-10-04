@@ -11,7 +11,10 @@ create table chalito_private.usage_outbox (
   owner chalito.id not null,
   source_id text not null unique check (char_length(source_id) between 1 and 200),
   -- A HubUsageEvent (packages/protocol billing.ts): kind, amount, cost_usd_micros, occurred_at, …
-  event jsonb not null check (jsonb_typeof(event) = 'object' and event ? 'cost_usd_micros'),
+  -- Must be a JSON object (never a double-encoded string) whose source_id matches the column.
+  event jsonb not null check (
+    jsonb_typeof(event) = 'object' and event ? 'cost_usd_micros' and event ->> 'source_id' = source_id
+  ),
   status text not null default 'pending' check (status in ('pending', 'sent', 'dead')),
   attempts integer not null default 0 check (attempts >= 0),
   next_attempt_at timestamptz not null default now(),
