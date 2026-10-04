@@ -1,10 +1,61 @@
-# Cosmetics (pay-to-dress, never pay-to-win). Prices only here; seed items free
-# until the owner sets prices (decision #16). Paid items go through the hub (D-030).
+# Cosmetics (pay-to-dress, never pay-to-win: nothing here can change what a companion can do).
+# Prices only here, in billable hub tokens, paid from the hub balance (D-030). The paid prices are
+# placeholders for the owner to confirm (decision #16). Art lives in @chalito/roster (cosmetics/),
+# generated with Google AI Studio and logged in docs/ASSET_PROVENANCE.md.
+#
+# card: placement on a 2.5D image card (width as a fraction of the card; pivot is the point of the
+# item image that lands on the slot's anchor). vrm: offset from the slot's humanoid bone, metres.
 schemaVersion: 1
 cosmetics:
   viking_hat:
     name: { es: Casco vikingo, en: Viking helmet }
     slot: head
     free: true
-    provenance: pending # art via Google AI Studio, logged in docs/ASSET_PROVENANCE.md
+    art: cosmetics/viking_hat.webp
+    card: { width: 0.5, pivot: [0.5, 0.82] }
+    vrm: { offset: [0, 0.14, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  flower_crown:
+    name: { es: Corona de flores, en: Flower crown }
+    slot: head
+    free: true
+    art: cosmetics/flower_crown.webp
+    card: { width: 0.46, pivot: [0.5, 0.75] }
+    vrm: { offset: [0, 0.12, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  round_glasses:
+    name: { es: Lentes redondos, en: Round glasses }
+    slot: face
+    free: true
+    art: cosmetics/round_glasses.webp
+    card: { width: 0.36, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.03, 0.09] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  star_cape:
+    name: { es: Capa de estrellas, en: Star cape }
+    slot: back
+    free: false
+    priceTokens: 250000
+    art: cosmetics/star_cape.webp
+    card: { width: 0.72, pivot: [0.5, 0.12] }
+    vrm: { offset: [0, -0.05, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  sparkle_aura:
+    name: { es: Aura brillante, en: Sparkle aura }
+    slot: aura
+    free: false
+    priceTokens: 150000
+    art: cosmetics/sparkle_aura.webp
+    card: { width: 1.1, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  portal_swirl:
+    name: { es: Portal giratorio, en: Swirl portal }
+    slot: portal_fx
+    free: false
+    priceTokens: 400000
+    art: cosmetics/portal_swirl.webp
+    card: { width: 1.0, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.01, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
 drops: {}

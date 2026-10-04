@@ -1,0 +1,22 @@
+{
+  "name": "@chalito/roster",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./assets/*": "./assets/*",
+    "./icons/*": "./icons/*",
+    "./cosmetics/*": "./cosmetics/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@chalito/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@chalito/config": "workspace:*"
+  }
+}

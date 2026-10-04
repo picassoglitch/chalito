@@ -1,0 +1,39 @@
+# Escalation defaults (brief §5 M6, ADR 0011, D-013, D-014). Loaded by @chalito/escalation
+# (the engine) and apps/notifier (senders). Times are in milliseconds.
+schemaVersion: 1
+
+# Per user per local day.
+caps:
+  call: 3
+  whatsapp: 10
+  sms: 3
+
+# "HH:MM" in the user's time zone; the window may cross midnight.
+quietHoursDefault:
+  start: "23:00"
+  end: "07:00"
+
+# While the desktop is active, phone channels wait this long after a ladder starts.
+presenceHoldMs: 120000
+# Tool approvals expire 10 minutes after they're requested.
+approvalTtlMs: 600000
+# DTMF 2 re-calls after this long, or this long before a Mesa starts.
+snoozeMs: 600000
+mesaRecallLeadMs: 60000
+
+sms:
+  # SMS is the last rung; off unless the user turns it on for these countries (D-013: SMS to MX
+  # costs ~21x a WhatsApp utility message).
+  defaultOffCountries: [MX]
+
+# Twilio <Say> voices (D-014: Polly only for es-MX).
+voices:
+  es: Polly.Mia-Neural
+  en: Polly.Joanna-Neural
+
+whatsapp:
+  graphVersion: v26.0
+  template: chalito_pendientes_v1
+  languages:
+    es: es_MX
+    en: en_US
