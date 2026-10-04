@@ -1,4 +1,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Origin, RemotePermissionMode } from "@chalito/protocol";
 import type { AdapterEvent, Question, SessionAdapter, SessionHandle, SessionStartOptions, ToolCall } from "../core.js";
@@ -17,7 +20,21 @@ export interface CodexTransport {
   /** Closes stdin; app-server exits on EOF. */
   close(): void;
 }
-export type CodexSpawn = (command: string, args: string[], env: Record<string, string | undefined>) => CodexTransport;
+/** `cwd` is the session's working directory; app-server takes the thread's cwd from it (see APPROVAL_POLICY). */
+export type CodexSpawn = (
+  command: string,
+  args: string[],
+  env: Record<string, string | undefined>,
+  cwd: string,
+) => CodexTransport;
+
+/** Codex releases this adapter is tested against: `min` inclusive, `below` exclusive. */
+export interface CodexVersionRange {
+  min: string;
+  below: string;
+}
+/** Built and tested against openai/codex main at 550eb50 (2026-10-03, after rust-v0.162.0-alpha.11). */
+export const DEFAULT_CODEX_VERSIONS: CodexVersionRange = { min: "0.160.0", below: "0.163.0" };
 
 export interface CodexConfig {
   /** The user's own Codex install (never bundled). Defaults to `codex` on PATH. */
@@ -35,6 +52,13 @@ export interface CodexConfig {
   model?: string;
   /** Reported in `initialize.clientInfo.version`. */
   clientVersion?: string;
+  /**
+   * Chalito's own Codex state dir, passed as CODEX_HOME so the API-key login, trust decisions and
+   * rules never touch the user's own ~/.codex. Defaults to ~/.chalito/codex.
+   */
+  codexHome?: string;
+  /** Refuse app-server builds outside this range (app-server is experimental, D-021). */
+  versions?: CodexVersionRange;
   /** Injected in tests; defaults to spawning the binary. */
   spawn?: CodexSpawn;
   /** Base environment (defaults to process.env). */
@@ -59,6 +83,7 @@ export const codexLaunch = (
 ): { command: string; args: string[]; env: Record<string, string | undefined> } => {
   const env = { ...(config.env ?? process.env) };
   for (const k of STRIPPED_ENV) delete env[k];
+  env.CODEX_HOME = config.codexHome ?? join(homedir(), ".chalito", "codex");
   const args = ["app-server", "--listen", "stdio://"];
   if (config.chatgptPlan) {
     if (!config.chatgptPlanEnabled) throw new Error("ChatGPT plan usage is not enabled for this user");
@@ -70,8 +95,10 @@ export const codexLaunch = (
   return { command: config.codexPath ?? "codex", args, env };
 };
 
-const spawnTransport: CodexSpawn = (command, args, env) => {
-  const child = nodeSpawn(command, args, { env, stdio: ["pipe", "pipe", "inherit"] });
+const spawnTransport: CodexSpawn = (command, args, env, cwd) => {
+  // Codex refuses a CODEX_HOME that doesn't exist.
+  if (env.CODEX_HOME) mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
+  const child = nodeSpawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   child.on("error", () => lines.close());
   child.stdin.on("error", () => undefined);
@@ -82,6 +109,50 @@ const spawnTransport: CodexSpawn = (command, args, env) => {
     lines,
     close: () => child.stdin.end(),
   };
+};
+
+/**
+ * Every command and every file change must reach the gate (local policy sees everything).
+ * Checked in openai/codex codex-rs at 550eb50:
+ * - core/src/exec_policy.rs `render_decision_for_unmatched_command_for_platform`: under
+ *   `UnlessTrusted` ("untrusted") every command not matched by an explicit `*.rules` allow
+ *   prefix rule is `Decision::Prompt`; there is no built-in "known safe" auto-run list any more.
+ *   `OnRequest` and `Granular` both `Allow` non-escalated commands inside a restricted sandbox.
+ * - core/src/safety.rs `assess_patch_safety`: `UnlessTrusted` returns `AskUser` for every patch;
+ *   `OnRequest` and `Granular` auto-approve patches inside writable roots, so granular can't force it.
+ * Allow rules only come from `rules/` of enabled config layers (core/src/exec_policy.rs
+ * `load_exec_policy`): CODEX_HOME (Chalito's own, empty; we never send
+ * `acceptWithExecpolicyAmendment`), trusted project `.codex/` dirs, and admin/system config.
+ * Projects stay untrusted because thread/start never carries `cwd`: app-server's
+ * `thread_start_task` (app-server/src/request_processors/thread_processor.rs) persists
+ * `trust_level = "trusted"` when a request has a cwd and the sandbox can write it, which would
+ * load the repo's own `.codex/` rules and hooks. The process is spawned in the session cwd instead.
+ */
+export const APPROVAL_POLICY = "untrusted";
+
+const parseVersion = (v: string): number[] | null => {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+};
+const cmpVersion = (a: number[], b: number[]) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!;
+
+/** The Codex version from initialize's userAgent (`<originator>/<version> (<os>; <arch>) ...`). */
+export const codexVersionFromUserAgent = (userAgent: string): string | null =>
+  /^[^/\s]+\/(\d+\.\d+\.\d+[\w.+-]*)/.exec(userAgent)?.[1] ?? null;
+
+export const checkCodexVersion = (userAgent: string, range: CodexVersionRange = DEFAULT_CODEX_VERSIONS) => {
+  const version = codexVersionFromUserAgent(userAgent);
+  const v = version ? parseVersion(version) : null;
+  const min = parseVersion(range.min);
+  const below = parseVersion(range.below);
+  if (v && min && below && cmpVersion(v, min) >= 0 && cmpVersion(v, below) < 0) return;
+  throw Object.assign(
+    new Error(
+      `Codex ${version ?? `(unrecognised version in "${userAgent}")`} is outside the tested range ` +
+        `>=${range.min} <${range.below}. Install a Codex release in that range, or update Chalito.`,
+    ),
+    { code: "unsupported_version" },
+  );
 };
 
 /** Thread-level sandbox (kebab-case). Never "danger-full-access"; unknown modes fail closed. */
@@ -156,7 +227,7 @@ export class CodexAdapter implements SessionAdapter {
 
   async start(opts: SessionStartOptions): Promise<SessionHandle> {
     const launch = codexLaunch(this.config);
-    const t = (this.config.spawn ?? spawnTransport)(launch.command, launch.args, launch.env);
+    const t = (this.config.spawn ?? spawnTransport)(launch.command, launch.args, launch.env, opts.cwd);
 
     let nextId = 0;
     const pending = new Map<Id, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -196,7 +267,7 @@ export class CodexAdapter implements SessionAdapter {
       turnStart = request<{ turn: { id: string } }>("turn/start", {
         threadId,
         input: [{ type: "text", text, text_elements: [] }],
-        approvalPolicy: "on-request",
+        approvalPolicy: APPROVAL_POLICY,
         sandboxPolicy: sandboxPolicyFor(mode),
       }).then(
         (r) => {
@@ -393,17 +464,18 @@ export class CodexAdapter implements SessionAdapter {
     })();
 
     try {
-      await request("initialize", {
+      const init = await request<{ userAgent?: string }>("initialize", {
         clientInfo: { name: "chalito", title: "Chalito", version: this.config.clientVersion ?? "0.0.0" },
         capabilities: null,
       });
+      checkCodexVersion(init.userAgent ?? "", this.config.versions);
       send({ method: "initialized" });
       if (!this.config.chatgptPlan) {
         await request("account/login/start", { type: "apiKey", apiKey: this.config.apiKey });
       }
+      // No cwd here (see APPROVAL_POLICY): app-server uses the process cwd.
       const threadParams = {
-        cwd: opts.cwd,
-        approvalPolicy: "on-request",
+        approvalPolicy: APPROVAL_POLICY,
         sandbox: sandboxModeFor(mode),
         ...(this.config.model ? { model: this.config.model } : {}),
       };
@@ -417,8 +489,9 @@ export class CodexAdapter implements SessionAdapter {
       t.close();
       await done;
       const message = err instanceof Error ? err.message : String(err);
+      const known = (err as { code?: string }).code;
       throw Object.assign(new Error(`codex app-server: ${message}`), {
-        code: /auth|api key|401|unauthorized/i.test(message) ? "auth_required" : "adapter_crash",
+        code: known ?? (/auth|api key|401|unauthorized/i.test(message) ? "auth_required" : "adapter_crash"),
       });
     }
 

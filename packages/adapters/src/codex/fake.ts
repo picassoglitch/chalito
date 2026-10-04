@@ -14,7 +14,9 @@ export type FakeCodexStep =
   | { ask: { id: string; question: string; header?: string; options: string[] }[] };
 
 export interface FakeCodexRun {
-  spawned?: { command: string; args: string[]; env: Record<string, string | undefined> };
+  spawned?: { command: string; args: string[]; env: Record<string, string | undefined>; cwd: string };
+  /** `approvalPolicy` of every thread/start|resume and turn/start. */
+  policies: unknown[];
   /** Every message the client sent, in order. */
   received: { id?: number | string; method?: string; params?: Record<string, unknown>; result?: unknown }[];
   /** Tool items that actually "ran". */
@@ -42,13 +44,16 @@ export const fakeCodex = (
     refused: [],
     decisions: [],
     answers: [],
+    policies: [],
     sandboxes: [],
     interrupted: 0,
     violations: [],
   },
+  /** What initialize reports; the adapter checks the version in it. */
+  userAgent = "chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm-256color (chalito; 0.0.0)",
 ): { spawn: CodexSpawn; run: FakeCodexRun } => {
-  const spawn: CodexSpawn = (command, args, env) => {
-    run.spawned = { command, args, env };
+  const spawn: CodexSpawn = (command, args, env, cwd) => {
+    run.spawned = { command, args, env, cwd };
     const out = new InputQueue<string>();
     const emit = (m: Msg) => out.push(JSON.stringify(m));
     const waiting = new Map<number | string, (result: unknown) => void>();
@@ -173,7 +178,7 @@ export const fakeCodex = (
           return emit({
             id: m.id,
             result: {
-              userAgent: "fake_codex/0.0.0",
+              userAgent,
               codexHome: "/home/u/.codex",
               platformFamily: "unix",
               platformOs: "linux",
@@ -185,12 +190,21 @@ export const fakeCodex = (
         case "thread/start":
         case "thread/resume":
           run.sandboxes.push(p.sandbox);
+          run.policies.push(p.approvalPolicy);
+          if (p.approvalPolicy !== "untrusted")
+            run.violations.push(`approvalPolicy ${JSON.stringify(p.approvalPolicy)}`);
+          // Real app-server auto-trusts the project (loading its .codex rules and hooks) when
+          // thread/start carries a cwd the sandbox can write.
+          if (m.method === "thread/start" && p.cwd !== undefined) run.violations.push("thread/start with cwd");
           return emit({
             id: m.id,
             result: { thread: { id: m.method === "thread/resume" ? p.threadId : threadId, turns: [] } },
           });
         case "turn/start": {
           run.sandboxes.push(p.sandboxPolicy);
+          run.policies.push(p.approvalPolicy);
+          if (p.approvalPolicy !== "untrusted")
+            run.violations.push(`approvalPolicy ${JSON.stringify(p.approvalPolicy)}`);
           const turn = { id: `turn_${++turnN}`, aborted: false };
           current = turn;
           emit({ id: m.id, result: { turn: { id: turn.id, items: [], status: "inProgress", error: null } } });

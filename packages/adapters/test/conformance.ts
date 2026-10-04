@@ -21,6 +21,10 @@ export interface ConformanceHarness {
   appliedModes(): string[];
   /** True if any applied mode is the provider's full, unsandboxed access. */
   isFullAccess(mode: string): boolean;
+  /** The provider was configured so that every tool call reaches the gate (nothing auto-runs). */
+  escalatesEveryTool(): boolean;
+  /** Protocol violations the fake noticed. */
+  violations(): string[];
 }
 
 export const waitFor = async (cond: () => boolean, ms = 2000) => {
@@ -76,6 +80,7 @@ export const runConformance = (name: string, makeHarness: (turns: ConformanceSte
         { tool: "Edit", target: "/ws/a.ts" },
       ]);
       expect(h.refused()).toEqual([{ tool: "Bash", target: "sudo rm -rf /" }]);
+      expect(h.escalatesEveryTool()).toBe(true);
       s.close();
       await s.done;
     });
@@ -135,7 +140,7 @@ export const runConformance = (name: string, makeHarness: (turns: ConformanceSte
     });
 
     it("emits started, text, tool, usage events and ends with state completed on close", async () => {
-      const { events, start, idleCount } = setup([[{ say: "uno" }, { bash: "ls" }]]);
+      const { h, events, start, idleCount } = setup([[{ say: "uno" }, { bash: "ls" }]]);
       const s = await start();
       await waitFor(() => idleCount() === 1);
       s.close();
@@ -145,6 +150,7 @@ export const runConformance = (name: string, makeHarness: (turns: ConformanceSte
         expect(types).toContain(t);
       expect(events).toContainEqual({ type: "assistant_text", text: "uno" });
       expect(events.at(-1)).toEqual({ type: "state", state: "completed" });
+      expect(h.violations()).toEqual([]);
     });
   });
 };

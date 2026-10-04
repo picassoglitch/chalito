@@ -1,5 +1,5 @@
 import { ClaudeCodeAdapter, fakeClaudeCode, type FakeStep } from "../src/claude-code/index.js";
-import { CodexAdapter, fakeCodex, type FakeCodexStep } from "../src/codex/index.js";
+import { APPROVAL_POLICY, CodexAdapter, fakeCodex, type FakeCodexStep } from "../src/codex/index.js";
 import { runConformance, type ConformanceStep } from "./conformance.js";
 
 const target = (input: Record<string, unknown>) => String(input.command ?? input.file_path ?? "");
@@ -44,6 +44,12 @@ runConformance("claude-code", (turns) => {
     interrupts: () => fake.run.interrupted,
     appliedModes: () => fake.run.modes,
     isFullAccess: (m) => m === "bypassPermissions",
+    // PreToolUse gates every tool; canUseTool denies anything the hook didn't approve.
+    escalatesEveryTool: () =>
+      (fake.run.options?.hooks?.PreToolUse?.length ?? 0) > 0 &&
+      fake.run.options?.allowDangerouslySkipPermissions === false &&
+      typeof fake.run.options?.canUseTool === "function",
+    violations: () => [],
   };
 });
 
@@ -63,5 +69,12 @@ runConformance("codex", (turns) => {
     interrupts: () => fake.run.interrupted,
     appliedModes: () => fake.run.sandboxes.map((s) => (typeof s === "string" ? s : (s as { type: string }).type)),
     isFullAccess: (m) => m === "danger-full-access" || m === "dangerFullAccess",
+    // "untrusted" prompts for every command and patch (see APPROVAL_POLICY); the fake flags any
+    // other policy and a thread/start cwd (project auto-trust) as violations.
+    escalatesEveryTool: () =>
+      fake.run.policies.length > 0 &&
+      fake.run.policies.every((p) => p === APPROVAL_POLICY) &&
+      !fake.run.violations.some((v) => v.startsWith("thread/start with cwd")),
+    violations: () => fake.run.violations,
   };
 });

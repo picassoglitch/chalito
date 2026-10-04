@@ -1,8 +1,14 @@
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RemotePermissionMode } from "@chalito/protocol";
 import type { AdapterEvent, Question, SessionStartOptions, ToolCall } from "../src/core.js";
 import {
+  APPROVAL_POLICY,
   CHATGPT_PLAN_OVERRIDES,
+  checkCodexVersion,
+  codexVersionFromUserAgent,
   CodexAdapter,
   type CodexConfig,
   type CodexTransport,
@@ -15,7 +21,10 @@ import { InputQueue } from "../src/core.js";
 import { waitFor } from "./conformance.js";
 import { loadTranscript, replay, type TranscriptEntry } from "./replay.js";
 
-const transcript = loadTranscript(new URL("./fixtures/codex-transcript.jsonl", import.meta.url));
+// SYNTHETIC: codex-transcript.synthetic.jsonl was hand-built from openai/codex app-server-protocol at
+// 550eb50, not recorded from a real binary. It MUST be re-recorded against a real `codex app-server`
+// in the tested version range before M4 closes.
+const transcript = loadTranscript(new URL("./fixtures/codex-transcript.synthetic.jsonl", import.meta.url));
 
 const session = (
   config: CodexConfig,
@@ -122,6 +131,7 @@ describe("Codex adapter: recorded app-server transcript", () => {
       expect(line).not.toContain("acceptForSession");
       expect(line).not.toMatch(/"type":"chatgpt"/);
       expect(line).not.toMatch(/danger-full-access|dangerFullAccess/);
+      expect(line).not.toMatch(/"approvalPolicy":"(?!untrusted")/);
     }
   });
 
@@ -182,7 +192,8 @@ describe("Codex adapter: launch and auth", () => {
     expect(fake.run.spawned).toEqual({
       command: "/opt/codex/bin/codex",
       args: ["app-server", "--listen", "stdio://"],
-      env: { PATH: "/usr/bin" },
+      env: { PATH: "/usr/bin", CODEX_HOME: join(homedir(), ".chalito", "codex") },
+      cwd: "/ws",
     });
     const login = fake.run.received.find((m) => m.method === "account/login/start");
     expect(login?.params).toEqual({ type: "apiKey", apiKey: "sk-test" });
@@ -212,7 +223,11 @@ describe("Codex adapter: launch and auth", () => {
       "stdio://",
       ...CHATGPT_PLAN_OVERRIDES.flatMap((o) => ["-c", o]),
     ]);
-    expect(fake.run.spawned?.env).toEqual({ PATH: "/usr/bin", ACCESS_TOKEN: "siwc-access" });
+    expect(fake.run.spawned?.env).toEqual({
+      PATH: "/usr/bin",
+      ACCESS_TOKEN: "siwc-access",
+      CODEX_HOME: join(homedir(), ".chalito", "codex"),
+    });
     expect(fake.run.received.some((m) => m.method?.startsWith("account/"))).toBe(false);
   });
 
@@ -250,7 +265,7 @@ describe("Codex adapter: launch and auth", () => {
     expect(resume?.params).toMatchObject({
       threadId: "thr_old",
       sandbox: "workspace-write",
-      approvalPolicy: "on-request",
+      approvalPolicy: "untrusted",
     });
     expect(fake.run.received.some((m) => m.method === "thread/start")).toBe(false);
     expect(events[0]).toEqual({ type: "started", providerSessionId: "thr_old" });
@@ -380,7 +395,9 @@ describe("Codex adapter: approvals and sandbox", () => {
             ? { thread: { id: "thr_1" } }
             : m.method === "turn/start"
               ? { turn: { id: "t1" } }
-              : {};
+              : m.method === "initialize"
+                ? { userAgent: "chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm-256color (chalito; 0.0.0)" }
+                : {};
         out.push(JSON.stringify({ id: m.id, result }));
         if (m.method === "turn/start") setTimeout(() => out.close(), 5);
       },
@@ -394,5 +411,93 @@ describe("Codex adapter: approvals and sandbox", () => {
       { type: "error", code: "adapter_crash", message: "codex app-server exited" },
       { type: "state", state: "failed" },
     ]);
+  });
+});
+
+describe("Codex adapter: approval policy", () => {
+  it("sends approvalPolicy untrusted on every thread and turn, never a thread cwd, and runs in the session cwd", async () => {
+    expect(APPROVAL_POLICY).toBe("untrusted");
+    const fake = fakeCodex([[{ command: "ls" }], [{ edit: "/ws/a.ts" }]]);
+    const { start, states } = session({ apiKey: "k", spawn: fake.spawn, env: {} }, { permissionMode: "plan" });
+    const h = await start();
+    await waitFor(() => states().filter((s) => s === "idle").length === 1);
+    await h.setPermissionMode("acceptEdits");
+    h.prompt("sigue", "client:phone1");
+    await waitFor(() => states().filter((s) => s === "idle").length === 2);
+    h.close();
+    await h.done;
+    expect(fake.run.policies).toEqual(["untrusted", "untrusted", "untrusted"]);
+    const threadStart = fake.run.received.find((m) => m.method === "thread/start");
+    expect(threadStart?.params).not.toHaveProperty("cwd");
+    expect(fake.run.spawned?.cwd).toBe("/ws");
+    expect(fake.run.violations).toEqual([]);
+  });
+});
+
+describe("Codex adapter: isolated CODEX_HOME", () => {
+  it("defaults to ~/.chalito/codex and is configurable", async () => {
+    const fake = fakeCodex([[{ say: "ok" }]]);
+    const { start, states } = session({ apiKey: "k", codexHome: "/srv/chalito/codex", spawn: fake.spawn, env: {} });
+    const h = await start();
+    await waitFor(() => states().includes("idle"));
+    h.close();
+    await h.done;
+    expect(fake.run.spawned?.env.CODEX_HOME).toBe("/srv/chalito/codex");
+  });
+
+  it("the real spawn creates CODEX_HOME (0700), runs in the session cwd and never touches the user's ~/.codex", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "chalito-codex-"));
+    const home = join(dir, "home");
+    const codexHome = join(dir, "chalito", "codex");
+    const cwd = mkdtempSync(join(dir, "ws-"));
+    const report = join(dir, "report");
+    // A stand-in `codex` binary: records what it was started with, then exits without answering.
+    const bin = join(dir, "codex");
+    writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' "$CODEX_HOME" "$(pwd)" "$*" > ${JSON.stringify(report)}\n`);
+    chmodSync(bin, 0o755);
+    const { start } = session(
+      { apiKey: "k", codexPath: bin, codexHome, env: { PATH: process.env.PATH, HOME: home } },
+      { cwd },
+    );
+    await expect(start()).rejects.toMatchObject({ code: "adapter_crash" });
+    expect(readFileSync(report, "utf8").split("\n").slice(0, 3)).toEqual([
+      codexHome,
+      cwd,
+      "app-server --listen stdio://",
+    ]);
+    expect(statSync(codexHome).mode & 0o777).toBe(0o700);
+    expect(existsSync(join(home, ".codex"))).toBe(false);
+  });
+});
+
+describe("Codex adapter: version pin", () => {
+  it("reads the version from initialize's userAgent", () => {
+    expect(codexVersionFromUserAgent("chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm (chalito; 0.1.0)")).toBe("0.162.0");
+    expect(codexVersionFromUserAgent("codex_cli_rs/0.162.0-alpha.11 (Mac OS 15.1.0; arm64) iTerm")).toBe(
+      "0.162.0-alpha.11",
+    );
+    expect(codexVersionFromUserAgent("garbage")).toBeNull();
+  });
+
+  it("accepts the tested range and refuses anything else with a clear message", () => {
+    const ua = (v: string) => `chalito/${v} (Ubuntu 24.4.0; x86_64) xterm (chalito; 0.1.0)`;
+    for (const v of ["0.160.0", "0.161.3", "0.162.0-alpha.11"]) expect(() => checkCodexVersion(ua(v))).not.toThrow();
+    for (const v of ["0.159.3", "0.163.0", "1.0.0", "0.0.0"])
+      expect(() => checkCodexVersion(ua(v))).toThrow(
+        new RegExp(`Codex ${v.replace(/\./g, "\\.")} is outside the tested range >=0\\.160\\.0 <0\\.163\\.0`),
+      );
+    expect(() => checkCodexVersion("garbage")).toThrow(/unrecognised version/);
+    expect(() => checkCodexVersion(ua("0.170.1"), { min: "0.170.0", below: "0.171.0" })).not.toThrow();
+  });
+
+  it("an untested app-server fails start before any login and stops the process", async () => {
+    const fake = fakeCodex([], undefined, "chalito/0.150.0 (Ubuntu 24.4.0; x86_64) xterm (chalito; 0.0.0)");
+    const { start, events } = session({ apiKey: "k", spawn: fake.spawn, env: {} });
+    await expect(start()).rejects.toMatchObject({
+      code: "unsupported_version",
+      message: expect.stringMatching(/Codex 0\.150\.0 is outside the tested range/),
+    });
+    expect(fake.run.received.map((m) => m.method)).toEqual(["initialize"]);
+    expect(events).toEqual([]);
   });
 });
