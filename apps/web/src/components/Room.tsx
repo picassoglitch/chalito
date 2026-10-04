@@ -12,10 +12,43 @@ import {
   type ReportTarget,
   type RoomEndReason,
 } from "@chalito/ui";
+import type { RoomEventKind } from "@chalito/protocol";
+import { DEFAULT_COMPANION, rosterEntry } from "@chalito/roster";
 import { Link } from "@/i18n/navigation";
+import { markSeen } from "@/lib/room-seen";
+import type { StoreItem } from "@/lib/store";
 import { useChalito, useLive } from "./ChalitoProvider";
+import { RoomStage } from "./RoomStage";
 
 type Report = ReportTarget & { label: string };
+
+type DirDb = {
+  from(t: string): {
+    select(c: string): PromiseLike<{
+      data: { companion_id?: unknown; avatar_thumb?: unknown; equipped?: unknown }[] | null;
+      error: unknown;
+    }>;
+  };
+};
+type Card = { avatar: string; equipped: string[] };
+/**
+ * Co-members' public companion cards (chalito.companion_directory, server-written; RLS shows only
+ * co-members): roster avatar and equipped cosmetic ids.
+ */
+const readDirectory = async (db: unknown): Promise<Record<string, Card>> => {
+  const { data, error } = await (db as DirDb)
+    .from("companion_directory")
+    .select("companion_id, avatar_thumb, equipped");
+  if (error || !data) return {};
+  const out: Record<string, Card> = {};
+  for (const r of data)
+    if (typeof r.companion_id === "string")
+      out[r.companion_id] = {
+        avatar: typeof r.avatar_thumb === "string" ? r.avatar_thumb : "",
+        equipped: Array.isArray(r.equipped) ? r.equipped.filter((x): x is string => typeof x === "string") : [],
+      };
+  return out;
+};
 
 const LOADING: RoomSnapshot = { status: "loading", room: null, members: [], events: [] };
 const noop = () => () => undefined;
@@ -27,7 +60,7 @@ const noop = () => () => undefined;
  */
 export const Room = ({ roomId }: { roomId: string }) => {
   const t = useTranslations("settings.rooms");
-  const { rooms, readCompanion, deviceId } = useChalito();
+  const { rooms, readCompanion, deviceId, store } = useChalito();
   const live = useLive();
   const [me, setMe] = useState<string | null | undefined>(undefined);
   const [leftByMe, setLeftByMe] = useState(false);
@@ -49,11 +82,13 @@ export const Room = ({ roomId }: { roomId: string }) => {
       rooms && deviceId && me
         ? new RoomController({
             db: rooms.db as RoomsDb,
-            api: rooms.api.client,
+            api: rooms.api,
             keyring: rooms.keyring,
             deviceId,
             companionId: me,
             roomId,
+            // Unread markers on /salas: the newest event this view has shown.
+            onSeen: (rev) => markSeen(roomId, rev),
           })
         : null,
     [rooms, deviceId, me, roomId],
@@ -74,6 +109,62 @@ export const Room = ({ roomId }: { roomId: string }) => {
   }, [ctl, live.status]);
 
   const snap = useSyncExternalStore(ctl?.subscribe ?? noop, ctl?.getSnapshot ?? (() => LOADING), () => LOADING);
+
+  // The stage needs each companion's roster card: ours from the companion row, co-members' from the
+  // companion directory (RLS: co-members only); without one, the default companion stands in.
+  const [cards, setCards] = useState<Record<string, Card>>({});
+  const [catalog, setCatalog] = useState<StoreItem[]>([]);
+  const memberKey = snap.members.map((m) => m.companionId).join(",");
+  useEffect(() => {
+    if (!rooms || !me || !readCompanion) return;
+    let alive = true;
+    void (async () => {
+      // Re-read on membership changes: the directory itself doesn't broadcast.
+      const [mine, dir, items] = await Promise.all([
+        readCompanion(),
+        readDirectory(rooms.db).catch(() => ({}) as Record<string, Card>),
+        store ? store.catalog() : Promise.resolve("error" as const),
+      ]);
+      if (!alive) return;
+      if (Array.isArray(items)) setCatalog(items);
+      setCards({
+        ...dir,
+        ...(mine && mine !== "error"
+          ? { [mine.companionId]: { avatar: mine.avatar, equipped: Object.values(mine.equipped) } }
+          : {}),
+      });
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [rooms, me, readCompanion, store, roomId, memberKey]);
+  const stageMembers = useMemo(
+    () =>
+      snap.members.map((m) => {
+        const c = cards[m.companionId];
+        return {
+          companionId: m.companionId,
+          avatar: c && rosterEntry(c.avatar) ? c.avatar : DEFAULT_COMPANION,
+          // Equipped cosmetics as the store sells them (slot, art, card placement).
+          cosmetics: (c?.equipped ?? []).flatMap((id) => {
+            const item = catalog.find((i) => i.id === id);
+            return item ? [{ slot: item.slot, art: item.art, card: item.card }] : [];
+          }),
+        };
+      }),
+    [snap.members, cards, catalog],
+  );
+  const stageEvents = useMemo(
+    () =>
+      snap.events.map((e) => ({
+        eid: e.eid,
+        fromCompanionId: e.from,
+        to: e.to,
+        kind: e.kind as RoomEventKind,
+        t: e.t,
+      })),
+    [snap.events],
+  );
 
   if (me === null)
     return (
@@ -153,6 +244,7 @@ export const Room = ({ roomId }: { roomId: string }) => {
           {note}
         </p>
       ) : null}
+      {!ended ? <RoomStage roomId={roomId} label={t("stage")} members={stageMembers} events={stageEvents} /> : null}
       <section className="grid gap-2">
         <RoomEventList
           events={snap.events}

@@ -20,7 +20,8 @@
     "inbox": "Bandeja",
     "sessions": "Sesiones",
     "devices": "Dispositivos",
-    "store": "Tienda"
+    "store": "Tienda",
+    "rooms": "Salas"
   },
   "home": {
     "title": "Hola, soy {name}",
@@ -300,7 +301,10 @@
         "no_key": "Todavía no tienes la llave de la sala.",
         "failed": "No se pudo. Vuelve a intentarlo.",
         "ended": "Esta sala ya terminó para ti."
-      }
+      },
+      "memberCount": "{n, plural, one {# miembro} other {# miembros}}",
+      "unread": "Nuevo",
+      "stage": "Los compañeros de la sala"
     }
   },
   "integrations": {
@@ -333,10 +337,6 @@
     "room": "Sala {id}",
     "stub": "Esta pantalla llega pronto.",
     "credits": "Créditos"
-  },
-  "download": {
-    "title": "Descargar Chalito",
-    "body": "Las apps para Linux, Windows y macOS llegan pronto."
   },
   "pwa": {
     "description": "Tu compañero que dirige a tu equipo de IA."
@@ -505,7 +505,26 @@
       "revokeFailed": "No pudimos retirarlo. No se cambió nada; vuelve a intentarlo.",
       "revokedServer": "{name} fue retirado: ya no puede entrar a tu cuenta ni enviar nada a tus computadoras.",
       "revokeAgentOnline": "{agent}: lo quitó de su lista.",
-      "revokeAgentOffline": "{agent}: sin conexión. Su acceso ya está cerrado en el servidor, y {agent} lo quitará de su lista en cuanto se conecte."
+      "revokeAgentOffline": "{agent}: sin conexión. Su acceso ya está cerrado en el servidor, y {agent} lo quitará de su lista en cuanto se conecte.",
+      "everywhere": {
+        "title": "Cerrar sesión en todos los demás dispositivos",
+        "body": "Si perdiste un teléfono o crees que alguien entró a tu cuenta: todos los demás teléfonos y navegadores quedan fuera al instante. Tus computadoras siguen emparejadas.",
+        "needsPasskey": "Para usarlo, primero crea una llave de acceso en este dispositivo.",
+        "button": "Cerrar sesión en todos los demás",
+        "confirm": "¿Cerrar sesión en todos los demás teléfonos y navegadores? Te pediremos tu llave de acceso.",
+        "yes": "Sí, cerrar sesión",
+        "cancel": "Cancelar",
+        "done": "{n, plural, =0 {No había otros dispositivos.} one {Se cerró la sesión en # dispositivo.} other {Se cerró la sesión en # dispositivos.}}",
+        "agentOnline": "{agent}: los quitó de su lista.",
+        "agentOffline": "{agent}: sin conexión; los quitará en cuanto se conecte.",
+        "agentUntrusted": "{agent}: no confía en este dispositivo, así que no recibió el aviso. Su acceso ya está cerrado en el servidor.",
+        "banFailed": "Algunos accesos tardarán un momento más en cerrarse.",
+        "error": {
+          "cancelled": "Se canceló: no se cambió nada.",
+          "no_passkey": "Hace falta tu llave de acceso en este dispositivo.",
+          "failed": "No se pudo. No se cambió nada; vuelve a intentarlo."
+        }
+      }
     },
     "settings": {
       "server": "Tus ajustes se guardan en tu cuenta.",

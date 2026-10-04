@@ -108,3 +108,57 @@ test("join with a code (and a bad code says so); EN path /en/rooms", async ({ pa
   await page.goto("/en/rooms");
   await expect(page.getByRole("heading", { name: "Rooms" })).toBeVisible();
 });
+
+test("Salas in the nav; the list shows members and a 'Nuevo' marker until the room is opened; the stage", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.rooms", "1"));
+  await ready(page, "/bandeja");
+  await page.getByRole("link", { name: "Salas" }).click();
+  const familia = page.getByTestId("room-link").filter({ hasText: "Familia" });
+  await expect(familia).toContainText("2 miembros");
+  await expect(familia.getByTestId("room-unread")).toHaveText("Nuevo");
+
+  await familia.click();
+  await expect(page.getByTestId("room-event-text").first()).toBeVisible();
+  // The 3D stage gets metadata only; it's there (or hidden without WebGL) and never errors.
+  expect(await page.getByTestId("room-stage").count()).toBeLessThanOrEqual(1);
+
+  await page.getByRole("link", { name: "Salas" }).click();
+  await expect(page.getByTestId("room-link").filter({ hasText: "Familia" }).getByTestId("room-unread")).toHaveCount(0);
+  // The room's feed has closed (its view is gone) before Ana writes again.
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (window as unknown as { __chalitoDev: { db: { openTopics(): string[] } } }).__chalitoDev.db
+          .openTopics()
+          .filter((t) => t.startsWith("chalito:room:")),
+      ),
+    )
+    .toEqual([]);
+  // Client-side navigation only (a full load would restart the in-browser mock).
+  await page.evaluate(() => ((window as unknown as { __sameDoc: boolean }).__sameDoc = true));
+  await rooms(page, "postAsAna", "¿Cenamos juntos?");
+  await page.getByRole("link", { name: "Bandeja" }).click();
+  await expect(page).toHaveURL(/\/bandeja$/);
+  await page.getByRole("link", { name: "Salas" }).click();
+  await expect(page.getByTestId("rooms")).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __sameDoc?: boolean }).__sameDoc)).toBe(true);
+  await expect(page.getByTestId("room-link").filter({ hasText: "Familia" }).getByTestId("room-unread")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("prefetches of app routes resolve (the proxy's locale rewrite applies to them)", async ({ page }) => {
+  const missing: string[] = [];
+  page.on("response", (r) => {
+    if (r.status() === 404 && r.url().includes("_rsc=")) missing.push(r.url());
+  });
+  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.rooms", "1"));
+  await ready(page, "/salas");
+  await page.getByTestId("room-link").filter({ hasText: "Familia" }).hover();
+  await page.getByTestId("room-link").filter({ hasText: "Familia" }).click();
+  await expect(page.getByTestId("room-event-text").first()).toBeVisible();
+  expect(missing).toEqual([]);
+});

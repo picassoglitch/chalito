@@ -177,6 +177,91 @@ export const Devices = () => {
         </div>
       ) : null}
       {note ? <p role="status">{note}</p> : null}
+      <SignOutEverywhere />
     </div>
+  );
+};
+
+/**
+ * "Cerrar sesión en todos los demás dispositivos" (POST /v1/devices/revoke-all): for a lost or
+ * stolen phone. Needs this device's passkey; every other client is cut off server-side at once,
+ * and each computer this device trusts gets a signed revoke. Computers stay paired.
+ */
+const SignOutEverywhere = () => {
+  const t = useTranslations("live.devices.everywhere");
+  const { revokeAll, passkey } = useChalito();
+  const { devices } = useLive();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<NonNullable<typeof revokeAll>>> | null>(null);
+  if (!revokeAll) return null;
+  const name = (id: string) => devices.find((d) => d.deviceId === id)?.name ?? id.slice(0, 8);
+  const online = (id: string) => devices.find((d) => d.deviceId === id)?.online === true;
+  const run = async () => {
+    setBusy(true);
+    setResult(await revokeAll());
+    setBusy(false);
+    setConfirming(false);
+  };
+  return (
+    <section className="grid gap-2 rounded-xl border border-red-200 p-4" aria-labelledby="everywhere">
+      <h2 id="everywhere" className="font-semibold">
+        {t("title")}
+      </h2>
+      <p className="text-sm text-neutral-700">{t("body")}</p>
+      {!passkey.enrolled ? (
+        <p data-testid="everywhere-needs-passkey" className="text-sm text-amber-900">
+          {t("needsPasskey")}
+        </p>
+      ) : confirming ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span>{t("confirm")}</span>
+          <button
+            data-testid="everywhere-yes"
+            className="rounded bg-red-700 px-2 py-1 text-white disabled:opacity-50"
+            disabled={busy}
+            onClick={() => void run()}
+          >
+            {t("yes")}
+          </button>
+          <button className="rounded border px-2 py-1" disabled={busy} onClick={() => setConfirming(false)}>
+            {t("cancel")}
+          </button>
+        </div>
+      ) : (
+        <button
+          data-testid="everywhere"
+          className="w-fit rounded-lg border border-red-700 px-3 py-1.5 text-sm text-red-800"
+          onClick={() => {
+            setResult(null);
+            setConfirming(true);
+          }}
+        >
+          {t("button")}
+        </button>
+      )}
+      {result === "cancelled" || result === "no_passkey" || result === "failed" ? (
+        <p role="alert" data-testid="everywhere-error" className="text-sm text-red-800">
+          {t(`error.${result}`)}
+        </p>
+      ) : result ? (
+        <div role="status" data-testid="everywhere-result" className="grid gap-1 rounded-lg bg-neutral-100 p-3 text-sm">
+          <p className="font-medium">{t("done", { n: result.revoked.length })}</p>
+          <ul className="grid gap-0.5">
+            {result.notified.map((id) => (
+              <li key={id} data-testid="everywhere-agent" data-online={online(id)}>
+                {online(id) ? t("agentOnline", { agent: name(id) }) : t("agentOffline", { agent: name(id) })}
+              </li>
+            ))}
+            {result.untrusted.map((id) => (
+              <li key={id} data-testid="everywhere-untrusted">
+                {t("agentUntrusted", { agent: name(id) })}
+              </li>
+            ))}
+          </ul>
+          {result.banFailed.length ? <p className="text-amber-900">{t("banFailed")}</p> : null}
+        </div>
+      ) : null}
+    </section>
   );
 };

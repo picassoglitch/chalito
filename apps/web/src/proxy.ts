@@ -26,14 +26,6 @@ export default function proxy(request: NextRequest) {
 
 export const config = {
   // Everything except API routes, Next internals and static files (sw.js, manifest, icons).
-  // Prefetches don't render HTML and don't need a nonce.
-  matcher: [
-    {
-      source: "/((?!api|auth/desktop|_next|_vercel|.*\\..*).*)",
-      missing: [
-        { type: "header", key: "next-router-prefetch" },
-        { type: "header", key: "purpose", value: "prefetch" },
-      ],
-    },
-  ],
+  // Prefetches go through too: they need next-intl's locale rewrite, or they 404.
+  matcher: "/((?!api|auth/desktop|_next|_vercel|.*\\..*).*)",
 };
