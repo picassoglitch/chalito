@@ -451,3 +451,110 @@ describe("events and cards", () => {
     expect(JSON.stringify(session)).not.toContain("SECRET");
   });
 });
+
+describe("turn origin follows the least trusted voice in the turn (review #10)", () => {
+  const askThenPush: FakeStep[][] = [
+    [
+      { tool: "AskUserQuestion", input: { questions: [{ question: "¿Hago push?", options: [{ label: "Sí" }] }] } },
+      pushTurn[0]![0]!,
+    ],
+  ];
+  const answer = async (h: Awaited<ReturnType<typeof harness>>, o: { origin?: string; relayed?: "mcp-gateway" }) => {
+    await waitFor(() => h.store.events.some((e) => e.type === "question.asked"));
+    const q = h.store.events.find((e) => e.type === "question.asked") as { questionId: string; sid: string };
+    return h.command(
+      {
+        type: "session.answer",
+        sid: q.sid,
+        questionId: q.questionId,
+        answerCt: await h.sealed(2, { "¿Hago push?": "Sí" }),
+      },
+      o,
+    );
+  };
+
+  it("a signed answer keeps Developer-mode auto-approve for the client turn", async () => {
+    const h = await harness({ turns: askThenPush, devToggles: ["autoApproveHigh"] });
+    await h.startSession();
+    expect(await answer(h, {})).toEqual({ ok: true });
+    await waitFor(() => h.fake.run.ran.length === 2);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+  });
+
+  it("a relayed MCP answer lowers the rest of the turn: the HIGH push waits for a signed approval", async () => {
+    const h = await harness({ turns: askThenPush, devToggles: ["autoApproveHigh"] });
+    await h.startSession();
+    expect(await answer(h, { origin: "mcp:chatgpt", relayed: "mcp-gateway" })).toEqual({ ok: true });
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    expect(h.fake.run.ran.map((r) => r.tool)).toEqual(["AskUserQuestion"]);
+    expect(h.store.pendingApprovals()[0]).toMatchObject({ origin: "mcp:chatgpt" });
+  });
+});
+
+describe("the Codex sandbox ceiling is enforced remotely", () => {
+  it("session.start and setPermissionMode above maxCodexSandbox are rejected", async () => {
+    const h = await harness({
+      turns: [[{ say: "hola" }]],
+      policy: { remote: { maxPermissionMode: "acceptEdits", maxCodexSandbox: "read-only" } },
+    });
+    const res = await h.command({
+      type: "session.start",
+      adapter: "claude-code",
+      workspaceLabel: "chalito",
+      promptCt: await h.sealed(1, "x"),
+      permissionMode: "default",
+      codexSandbox: "workspace-write",
+    });
+    expect(res).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
+
+    expect(await h.startSession()).toEqual({ ok: true });
+    const sid = [...h.core.sessions.keys()][0]!;
+    const set = await h.command({
+      type: "session.setPermissionMode",
+      sid,
+      permissionMode: "default",
+      codexSandbox: "workspace-write",
+    });
+    expect(set).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
+    expect(
+      await h.command({ type: "session.setPermissionMode", sid, permissionMode: "default", codexSandbox: "read-only" }),
+    ).toEqual({ ok: true });
+  });
+});
+
+describe("durable audit trail", () => {
+  it("routes agent audits and device events to store.audit, redacted", async () => {
+    const h = await harness();
+    await h.command({ type: "devmode.on" });
+    await waitFor(() => h.store.audits.filter((a) => a.type === "remote_enable.rejected").length === 2);
+    const sources = h.store.audits.filter((a) => a.type === "remote_enable.rejected").map((a) => a.source);
+    expect(sources.sort()).toEqual(["agent", "deviceEvent"]);
+    await h.command({ type: "session.prompt", sid: "nope", promptCt: await h.sealed(2, "x") });
+    await waitFor(() => h.store.audits.some((a) => a.type === "command.rejected"));
+  });
+
+  it("a failing audit write is logged, never thrown", async () => {
+    const h = await harness();
+    h.store.audit = async () => {
+      throw new Error("offline");
+    };
+    expect((await h.command({ type: "session.interrupt", sid: "nope" })).reason).toBe("unknown_session");
+    await waitFor(() => h.logs.some((l) => l.includes("audit write failed")));
+  });
+
+  it("audit meta is redacted before it reaches the store", async () => {
+    const h = await harness();
+    const secret = "sk-ant-abcdefghijklmnop";
+    await h.command({
+      type: "session.start",
+      adapter: "claude-code",
+      workspaceLabel: "chalito",
+      promptCt: await h.sealed(1, "x"),
+      permissionMode: `bypass ${secret}`,
+    });
+    await waitFor(() => h.store.audits.some((a) => a.source === "agent" && a.type === "remote_enable.rejected"));
+    const entry = h.store.audits.find((a) => a.source === "agent" && a.type === "remote_enable.rejected")!;
+    expect(String(entry.meta.attempted)).toContain("bypass");
+    expect(JSON.stringify(entry)).not.toContain(secret);
+  });
+});

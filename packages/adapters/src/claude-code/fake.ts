@@ -38,7 +38,16 @@ export const fakeClaudeCode = (
     const canUseTool = options.canUseTool as CanUseTool | undefined;
 
     async function* gen(): AsyncGenerator<SDKMessage> {
-      yield { type: "system", subtype: "init", session_id: "fake-session-1" } as unknown as SDKMessage;
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: "fake-session-1",
+        apiKeySource: options.env?.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "none",
+        permissionMode: options.permissionMode,
+        claude_code_version: "2.9.0-fake",
+        mcp_servers: [{ name: "fake-mcp", status: "connected" }],
+        model: options.model ?? "claude-fake",
+      } as unknown as SDKMessage;
       let turn = 0;
       for await (const _msg of prompt as AsyncIterable<SDKUserMessage>) {
         const steps = turns[turn++] ?? [];

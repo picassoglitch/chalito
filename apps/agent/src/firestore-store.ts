@@ -10,7 +10,9 @@ import {
   type Firestore,
 } from "firebase/firestore";
 import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
-import type { AgentStore } from "./store.js";
+import { randomUUID } from "node:crypto";
+import { redactDeep } from "./redact.js";
+import type { AgentStore, AuditEntry } from "./store.js";
 
 const EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -68,6 +70,19 @@ export class FirestoreStore implements AgentStore {
 
   async publishDeviceEvent(e: DeviceEvent) {
     await updateDoc(this.#u(`devices/${this.deviceId}`), { lastEvent: e });
+    await this.audit({ eid: randomUUID(), t: e.t, type: e.type, meta: { ...e }, source: "deviceEvent" });
+  }
+
+  async audit(entry: AuditEntry) {
+    // JSON round-trip drops undefined values, which Firestore rejects.
+    const meta = JSON.parse(JSON.stringify(redactDeep(entry.meta) ?? {})) as Record<string, unknown>;
+    await setDoc(this.#u(`devices/${this.deviceId}/audit/${entry.eid}`), {
+      t: entry.t,
+      type: entry.type,
+      meta,
+      source: entry.source,
+      deviceId: this.deviceId,
+    });
   }
 
   async callBriefingEnabled() {

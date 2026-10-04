@@ -1,6 +1,8 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, HookCallback, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Origin, RemotePermissionMode } from "@chalito/protocol";
+import { RemotePermissionMode, isSignedOrigin, type Origin } from "@chalito/protocol";
 import {
   InputQueue,
   type Question,
@@ -21,7 +23,11 @@ export interface ClaudeCodeConfig {
   apiKey: string;
   /** The user's own Claude Code install (D-008). */
   claudePath?: string;
-  /** Defaults to ['project'] so user-level hooks or defaultMode can't change the start mode. */
+  /**
+   * Defaults to [] (SDK isolation): project settings are repo-controlled and can carry hooks
+   * that run outside the gate, `env` that redirects the API key, or an apiKeyHelper. The
+   * workspace CLAUDE.md is appended to the system prompt instead.
+   */
   settingSources?: ("user" | "project" | "local")[];
   model?: string;
   /** Must exceed the 10-minute approval window (PreToolUse default is 600 s; timeout = tool doesn't run). */
@@ -30,7 +36,26 @@ export interface ClaudeCodeConfig {
   queryFn?: QueryFn;
   /** Base environment (defaults to process.env). */
   env?: Record<string, string | undefined>;
+  /** Called once per session with the SDK's init metadata (for the `adapter.init` log). */
+  onInit?: (info: ClaudeCodeInitInfo) => void;
+  /** Injected in tests; reads the workspace CLAUDE.md. */
+  readFile?: (path: string) => Promise<string>;
 }
+
+export interface ClaudeCodeInitInfo {
+  sid: string;
+  providerSessionId: string;
+  /** "ANTHROPIC_API_KEY" proves the BYO key is in use; anything else is a misconfiguration. */
+  apiKeySource: string;
+  permissionMode: string;
+  claude_code_version: string;
+  /** Server names only. */
+  mcp_servers: string[];
+  model: string;
+}
+
+/** Cap on the CLAUDE.md text appended to the system prompt. */
+const CLAUDE_MD_MAX = 64 * 1024;
 
 /** Credentials that would take precedence over the API key, or route through a subscription. */
 const STRIPPED_ENV = [
@@ -41,7 +66,18 @@ const STRIPPED_ENV = [
   "CLAUDE_CODE_USE_FOUNDRY",
   "CLAUDE_CODE_USE_ANTHROPIC_AWS",
   "ANTHROPIC_API_KEY",
+  // Anything that could send the key somewhere other than api.anthropic.com.
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_CUSTOM_HEADERS",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_VERTEX_BASE_URL",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
 ];
+
+const ORIGIN_TRUST = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
+/** The less trusted of two origins (unsigned mcp:/call: < client: < local); ties keep `a`. */
+export const lowerTrustOrigin = (a: Origin, b: Origin): Origin => (ORIGIN_TRUST(b) < ORIGIN_TRUST(a) ? b : a);
 
 export const claudeEnv = (
   base: Record<string, string | undefined>,
@@ -51,6 +87,17 @@ export const claudeEnv = (
   for (const k of STRIPPED_ENV) delete env[k];
   env.ANTHROPIC_API_KEY = apiKey;
   return env;
+};
+
+type InitMessage = Partial<Extract<SDKMessage, { type: "system"; subtype: "init" }>> & { session_id: string };
+const isInit = (m: SDKMessage): m is SDKMessage & InitMessage =>
+  m.type === "system" && (m as { subtype?: string }).subtype === "init";
+
+/** Types aren't enough at runtime: anything outside default|plan|acceptEdits is refused, never forwarded. */
+const checkedMode = (mode: unknown): RemotePermissionMode => {
+  const r = RemotePermissionMode.safeParse(mode);
+  if (!r.success) throw new Error(`Refused permission mode ${JSON.stringify(String(mode)).slice(0, 40)}`);
+  return r.data;
 };
 
 const userMessage = (text: string): SDKUserMessage => ({
@@ -65,23 +112,46 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   constructor(private readonly config: ClaudeCodeConfig) {}
 
   async start(opts: SessionStartOptions): Promise<SessionHandle> {
+    const startMode = checkedMode(opts.permissionMode);
     const input = new InputQueue<SDKUserMessage>();
+    // The origin of the turn the SDK is running. A prompt queued mid-turn must not change the
+    // running turn's origin, so queued origins apply only at the turn boundary (`result`). If
+    // several prompts queue up, the next turn takes the least trusted of them, since the CLI
+    // may fold them into one turn.
     let origin: Origin = opts.origin;
+    let turnActive = true;
+    let pendingOrigins: Origin[] = [];
+    const turnEnded = () => {
+      if (pendingOrigins.length === 0) {
+        turnActive = false;
+        return;
+      }
+      origin = pendingOrigins.reduce(lowerTrustOrigin);
+      pendingOrigins = [];
+    };
     // Tool uses the PreToolUse gate approved; canUseTool only allows these (plus AskUserQuestion).
     const approved = new Set<string>();
 
     const preToolUse: HookCallback = async (hookInput, _toolUseId, { signal }) => {
       if (hookInput.hook_event_name !== "PreToolUse") return {};
-      const res = await opts.gate(
-        {
-          sid: opts.sid,
-          toolUseId: hookInput.tool_use_id,
-          toolName: hookInput.tool_name,
-          input: (hookInput.tool_input ?? {}) as Record<string, unknown>,
-          origin,
-        },
-        signal,
-      );
+      // Fail closed: a throwing gate must never fall through to the SDK's own permission flow
+      // (acceptEdits would auto-approve edits without canUseTool).
+      let res: Awaited<ReturnType<typeof opts.gate>>;
+      try {
+        res = await opts.gate(
+          {
+            sid: opts.sid,
+            toolUseId: hookInput.tool_use_id,
+            toolName: hookInput.tool_name,
+            input: (hookInput.tool_input ?? {}) as Record<string, unknown>,
+            origin,
+          },
+          signal,
+        );
+        if (signal.aborted) res = { allow: false, reason: "aborted" };
+      } catch {
+        res = { allow: false, reason: "gate error" };
+      }
       if (res.allow) approved.add(hookInput.tool_use_id);
       return {
         hookSpecificOutput: {
@@ -103,12 +173,14 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       return { behavior: "deny", message: "Not approved by Chalito" };
     };
 
+    const settingSources = this.config.settingSources ?? [];
+    const claudeMd = settingSources.includes("project") ? null : await this.#workspaceClaudeMd(opts.cwd);
     const options: Options = {
       cwd: opts.cwd,
       // Always explicit: an omitted mode may resolve to `auto` in SDK ≥ 0.3.286.
-      permissionMode: opts.permissionMode,
+      permissionMode: startMode,
       allowDangerouslySkipPermissions: false,
-      settingSources: this.config.settingSources ?? ["project"],
+      settingSources,
       strictMcpConfig: true,
       env: claudeEnv(this.config.env ?? process.env, this.config.apiKey),
       hooks: { PreToolUse: [{ hooks: [preToolUse], timeout: this.config.hookTimeoutSec ?? 660 }] },
@@ -116,6 +188,15 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       ...(this.config.claudePath ? { pathToClaudeCodeExecutable: this.config.claudePath } : {}),
       ...(this.config.model ? { model: this.config.model } : {}),
       ...(opts.resume ? { resume: opts.resume } : {}),
+      ...(claudeMd
+        ? {
+            systemPrompt: {
+              type: "preset",
+              preset: "claude_code",
+              append: `Contents of the workspace CLAUDE.md (project instructions):\n\n${claudeMd}`,
+            },
+          }
+        : {}),
     };
 
     const q = (this.config.queryFn ?? (sdkQuery as unknown as QueryFn))({ prompt: input, options });
@@ -124,7 +205,23 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
     const done = (async () => {
       try {
-        for await (const msg of q) this.#map(msg, opts);
+        let initLogged = false;
+        for await (const msg of q) {
+          if (!initLogged && this.config.onInit && isInit(msg)) {
+            initLogged = true;
+            this.config.onInit({
+              sid: opts.sid,
+              providerSessionId: msg.session_id,
+              apiKeySource: String(msg.apiKeySource ?? "unknown"),
+              permissionMode: String(msg.permissionMode ?? "unknown"),
+              claude_code_version: String(msg.claude_code_version ?? "unknown"),
+              mcp_servers: (msg.mcp_servers ?? []).map((m) => m.name),
+              model: String(msg.model ?? "unknown"),
+            });
+          }
+          this.#map(msg, opts);
+          if ((msg as { type: string }).type === "result") turnEnded();
+        }
         opts.onEvent({ type: "state", state: "completed" });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -139,7 +236,11 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
     return {
       prompt: (text, turnOrigin) => {
-        origin = turnOrigin;
+        if (turnActive) pendingOrigins.push(turnOrigin);
+        else {
+          origin = turnOrigin;
+          turnActive = true;
+        }
         opts.onEvent({ type: "state", state: "running" });
         input.push(userMessage(text));
       },
@@ -148,11 +249,24 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         opts.onEvent({ type: "state", state: "interrupted" });
       },
       setPermissionMode: async (mode) => {
-        await q.setPermissionMode(mode);
+        await q.setPermissionMode(checkedMode(mode));
       },
       close: () => input.close(),
       done,
     };
+  }
+
+  async #workspaceClaudeMd(cwd: string): Promise<string | null> {
+    const read = this.config.readFile ?? ((p: string) => readFile(p, "utf8"));
+    for (const p of [join(cwd, "CLAUDE.md"), join(cwd, ".claude", "CLAUDE.md")]) {
+      try {
+        const text = (await read(p)).slice(0, CLAUDE_MD_MAX).trim();
+        if (text) return text;
+      } catch {
+        /* not present */
+      }
+    }
+    return null;
   }
 
   #map(msg: SDKMessage, opts: SessionStartOptions): void {

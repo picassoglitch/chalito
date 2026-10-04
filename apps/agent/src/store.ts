@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
 
 /**
@@ -18,12 +19,23 @@ export interface AgentStore {
   deleteCommand(id: string): Promise<void>;
 
   updateDevice(fields: { policyHash?: string; devMode?: unknown; lastSeenAt?: number }): Promise<void>;
+  /** Also appended to the durable audit collection. */
   publishDeviceEvent(e: DeviceEvent): Promise<void>;
+  /** Durable, create-only audit trail: users/{uid}/devices/{deviceId}/audit/{eid}. `meta` is already redacted. */
+  audit(entry: AuditEntry): Promise<void>;
 
   /** users/{uid}.callBriefing.enabled (user setting; local policy must also allow it). */
   callBriefingEnabled(): Promise<boolean>;
   writeCallLine(id: string, line: CallLine): Promise<void>;
   deleteCallLine(id: string): Promise<void>;
+}
+
+export interface AuditEntry {
+  eid: string;
+  t: number;
+  type: string;
+  meta: Record<string, unknown>;
+  source: "agent" | "deviceEvent";
 }
 
 /** In-memory store with hooks for tests to play the phone and the cloud. */
@@ -33,6 +45,7 @@ export class MemoryStore implements AgentStore {
   sessions = new Map<string, Record<string, unknown>>();
   device: Record<string, unknown> = {};
   deviceEvents: DeviceEvent[] = [];
+  audits: AuditEntry[] = [];
   callLines = new Map<string, CallLine>();
   briefingEnabled = true;
   #approvalWatchers = new Map<string, (d: unknown) => void>();
@@ -69,6 +82,10 @@ export class MemoryStore implements AgentStore {
   }
   async publishDeviceEvent(e: DeviceEvent) {
     this.deviceEvents.push(e);
+    this.audits.push({ eid: randomUUID(), t: e.t, type: e.type, meta: { ...e }, source: "deviceEvent" });
+  }
+  async audit(entry: AuditEntry) {
+    this.audits.push(entry);
   }
   async callBriefingEnabled() {
     return this.briefingEnabled;

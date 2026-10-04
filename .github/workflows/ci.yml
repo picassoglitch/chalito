@@ -48,6 +48,32 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:emulator
 
+  agent-binary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @chalito/agent build src/smoke.ts
+      # No Secret Service on the runner: exit 2 (keychain unavailable) is fine, but the addon must load.
+      - name: Run the smoke binary
+        working-directory: ${{ runner.temp }}
+        run: |
+          cp "$GITHUB_WORKSPACE/apps/agent/dist/chalito-agent-x86_64-unknown-linux-gnu" ./chalito-agent
+          set +e; ./chalito-agent > smoke.json; code=$?; set -e
+          cat smoke.json
+          [ "$code" = 0 ] || [ "$code" = 2 ]
+          grep -q '"addonLoaded":true' smoke.json
+          grep -q '"sodium":true' smoke.json
+      - run: pnpm --filter @chalito/agent exec vitest run test/binary-smoke.test.ts
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:
