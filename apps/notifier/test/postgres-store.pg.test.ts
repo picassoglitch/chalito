@@ -4,6 +4,17 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { Ladder } from "@chalito/escalation";
 import { PostgresStore } from "../src/postgres-store.js";
 
+/** A complete HubUsageEvent, as the outbox CHECK requires (source_id must match the row). */
+const fixtureEvent = (sourceId: string, owner: string, kind: string, amount: number) => ({
+  source_id: sourceId,
+  kind,
+  provider: "test",
+  external_user_id: owner,
+  amount,
+  cost_usd_micros: 1,
+  occurred_at: new Date().toISOString(),
+});
+
 /**
  * PostgresStore against a Chalito database with the notifier migrations (DATABASE_URL), acting as
  * CHALITO_DB_ROLE like the service does. A role-less connection seeds rows clients would write.
@@ -224,6 +235,55 @@ if (!url) {
       expect(
         (await admin`select from_device_id from chalito.commands where owner = ${u} and id = 'c1'`)[0]?.from_device_id,
       ).toBe("notifier");
+    });
+
+    it("voice call refs are single-use across instances", async () => {
+      const hash = randomUUID().replace(/-/g, "").padEnd(64, "0");
+      const [a, b] = await Promise.all([
+        store.claimCallRef(hash, Date.now() + 60_000),
+        store.claimCallRef(hash, Date.now() + 60_000),
+      ]);
+      expect([a, b].sort()).toEqual([false, true]);
+      expect(await new PostgresStore(sql).claimCallRef(hash, Date.now() + 60_000)).toBe(false);
+    });
+
+    it("monthly cap queries: plan info, sends excluding suppressed, voice seconds, once-only notes", async () => {
+      const u = await user({ tier: "pro" });
+      expect(await store.planInfo(u)).toMatchObject({ hubTier: "pro", tz: "America/Mexico_City", locale: "es" });
+      const since = Date.now() - 60_000;
+      await store.withUser(u, async (tx) => {
+        await tx.recordSent({ nid: "n1", channel: "call", at: Date.now() }, "k1");
+        await tx.recordSent({ nid: "n2", channel: "call", at: Date.now() }, "k2");
+        await tx.recordSent({ nid: "n2", channel: "sms", at: Date.now() }, "k2");
+      });
+      await store.markSuppressed(u, "n2", "call", "cap_reached");
+      expect(await store.monthlySends(u, since)).toEqual({ whatsapp: 0, sms: 1, call: 1 });
+      // The engine's daily caps don't count the suppressed send either.
+      expect((await store.withUser(u, (tx) => tx.history(since))).sent.map((x) => x.nid).sort()).toEqual(["n1", "n2"]);
+      await admin`insert into chalito_private.usage_outbox (owner, source_id, event)
+                  values (${u}, ${`v:${u}`}, ${admin.json(fixtureEvent(`v:${u}`, u, "voice.seconds", 90))})`;
+      expect(await store.voiceSecondsSince(u, since)).toBe(90);
+      const note = {
+        nid: "cap_call_2026_10",
+        source: "budget" as const,
+        urgency: "normal" as const,
+        counts: { approvals: 0, questions: 0, messages: 0, mesas: 0 },
+        deepLink: "/creditos",
+        coalesceKey: "cap:call",
+        state: "pending" as const,
+        step: 0,
+        nextAt: null,
+        createdAt: Date.now(),
+        level: "L1" as const,
+        channels: ["desktop" as const],
+        ackedAt: null,
+        ackedVia: null,
+      };
+      await store.noteOnce(u, note);
+      await store.noteOnce(u, { ...note, level: "L4" as const });
+      expect(
+        await admin`select level from chalito.notifications where owner = ${u} and nid = 'cap_call_2026_10'`,
+      ).toEqual([{ level: "L1" }]);
     });
   });
 }

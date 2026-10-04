@@ -93,6 +93,9 @@ importers:
       '@chalito/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@chalito/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
       '@chalito/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -145,6 +148,9 @@ importers:
       '@chalito/adapters':
         specifier: workspace:*
         version: link:../../packages/adapters
+      '@chalito/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
       '@chalito/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -279,6 +285,28 @@ importers:
       zod:
         specifier: ^4.6.5
         version: 4.6.5
+
+  packages/billing:
+    dependencies:
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../config
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+    devDependencies:
+      fast-check:
+        specifier: ^4.10.2
+        version: 4.10.2
+      msw:
+        specifier: ^3.0.2
+        version: 3.0.2(@types/node@22.20.5)(typescript@5.9.3)(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
   packages/brand:
     dependencies:

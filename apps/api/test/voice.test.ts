@@ -8,12 +8,46 @@ import type { DeviceDoc } from "@chalito/protocol";
 import { createApp } from "../src/app.js";
 import { MemoryAudit } from "../src/deps.js";
 import type { ApiRepo, IdentityIssuer } from "../src/repo.js";
-import { StubHubUsage, type HubUsage } from "../src/voice/hub.js";
+import { HubClient, HubStreamUsage, MemoryOutbox } from "@chalito/billing";
+import { loadPrices } from "@chalito/config";
+import type { HubUsage } from "../src/voice/hub.js";
+import type { VoiceDeps } from "../src/voice/routes.js";
 import { DESKTOP_TOOLS } from "../src/voice/tools.js";
 
-/** OpenAI client_secrets, mocked at the HTTP layer. */
+/** OpenAI client_secrets and the Chalyb hub, mocked at the HTTP layer. */
 const minted: { body: Record<string, unknown>; headers: Record<string, string> }[] = [];
+const hubCalls: { path: string; body: Record<string, unknown> }[] = [];
+let hubRemaining = 50_000;
+const RID = "33333333-3333-4333-8333-333333333333";
 const server = setupServer(
+  http.post("https://www.chalyb.com/api/engines/chalito/usage/admit", async ({ request }) => {
+    hubCalls.push({ path: "admit", body: (await request.json()) as Record<string, unknown> });
+    return HttpResponse.json(
+      hubRemaining > 0
+        ? {
+            ok: true,
+            allowed: true,
+            reservation_id: RID,
+            lane: "standard",
+            boost_fee_tokens: 0,
+            limits: {},
+            balance: {
+              remaining: hubRemaining,
+              reserved: 0,
+              unlimited: false,
+              monthlyAllocation: 100_000,
+              bonus: 0,
+              monthlyUsed: 0,
+              periodStart: "2026-10-01T00:00:00.000Z",
+            },
+          }
+        : { ok: true, allowed: false, reason: "no_tokens" },
+    );
+  }),
+  http.post("https://www.chalyb.com/api/engines/chalito/usage/settle", async ({ request }) => {
+    hubCalls.push({ path: "settle", body: (await request.json()) as Record<string, unknown> });
+    return HttpResponse.json({ ok: true });
+  }),
   http.post("https://api.openai.com/v1/realtime/client_secrets", async ({ request }) => {
     minted.push({
       body: (await request.json()) as Record<string, unknown>,
@@ -24,12 +58,29 @@ const server = setupServer(
 );
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterAll(() => server.close());
-beforeEach(() => void (minted.length = 0));
+beforeEach(() => {
+  minted.length = 0;
+  hubCalls.length = 0;
+  hubRemaining = 50_000;
+});
+
+/** The real hub-backed stream usage, with a memory outbox. */
+const realHub = () => {
+  const outbox = new MemoryOutbox();
+  const hub = new HubStreamUsage({
+    hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "chalito-admin-token" }),
+    enqueue: (owner, events) => outbox.enqueue(owner, events),
+    prices: loadPrices(),
+    model: "gpt-realtime-2.1-mini",
+    now: () => 1_790_000_000_000,
+  });
+  return { hub, outbox };
+};
 
 const device = (deviceId: string, role: DeviceDoc["role"], revoked = false) =>
   ({ deviceId, role, revoked }) as DeviceDoc;
 
-const setup = (hub: HubUsage = new StubHubUsage()) => {
+const setup = (hub: HubUsage = realHub().hub, cap?: VoiceDeps["cap"]) => {
   const devices = new Map([
     ["dev_phone", device("dev_phone", "client")],
     ["dev_agent", device("dev_agent", "agent")],
@@ -55,6 +106,7 @@ const setup = (hub: HubUsage = new StubHubUsage()) => {
       model: loadModels().voice.desktop.model,
       voiceName: "marin",
       tokenSecret: "voice-token-secret",
+      ...(cap ? { cap } : {}),
     },
   });
   const call = async (path: string, token: string, body: unknown = {}) => {
@@ -115,7 +167,7 @@ describe("POST /v1/voice/session (desktop push-to-talk)", () => {
   });
 
   it("heartbeats meter voice.seconds (at most 60 s each) for the device that opened the session; end settles", async () => {
-    const hub = new StubHubUsage();
+    const { hub, outbox } = realHub();
     const { call } = setup(hub);
     const { json } = await call("/session", "client:dev_phone");
     const voiceToken = String(json.voiceToken);
@@ -135,15 +187,73 @@ describe("POST /v1/voice/session (desktop push-to-talk)", () => {
       status: 200,
       json: { ok: true, continue: false },
     });
-    expect(hub.recorded.map((r) => [r.kind, r.quantity])).toEqual([
-      ["voice.seconds", 30],
-      ["voice.seconds", 12],
+    // Each report is a priced voice.seconds event in the outbox, tied to the reservation.
+    expect(
+      outbox.rows.map((r) => [r.event.kind, r.event.amount, r.event.cost_usd_micros, r.event.reservation_id]),
+    ).toEqual([
+      ["voice.seconds", 30, 15_000, RID],
+      ["voice.seconds", 12, 6_000, RID],
     ]);
-    expect(hub.settled).toHaveLength(1);
+    expect(hubCalls.filter((c) => c.path === "settle").map((c) => c.body.outcome)).toEqual([
+      "heartbeat",
+      "heartbeat",
+      "succeeded",
+    ]);
+    expect(hubCalls[0]!.body).toMatchObject({
+      external_user_id: "hub-user-1",
+      class: "stream",
+      operation: "voice.session",
+    });
   });
 
   it("no desktop tool decides anything: open_approval only opens the app", () => {
     expect(JSON.stringify(DESKTOP_TOOLS)).not.toMatch(/"name":"(approve|deny|decide|decision)/i);
     expect(DESKTOP_TOOLS.find((t) => t.name === "open_approval")!.description).toMatch(/sign it there/);
+  });
+
+  it("stops the stream when the hub balance runs out, and refuses new sessions with no tokens", async () => {
+    const { call } = setup();
+    const { json } = await call("/session", "client:dev_phone");
+    hubRemaining = 0;
+    expect(
+      await call("/session/heartbeat", "client:dev_phone", { voiceToken: String(json.voiceToken), seconds: 30 }),
+    ).toEqual({
+      status: 200,
+      json: { ok: true, continue: false },
+    });
+    expect(await call("/session", "client:dev_phone")).toMatchObject({
+      status: 402,
+      json: { error: "voice_not_admitted", message: "no_tokens" },
+    });
+  });
+
+  it("monthly voice minutes: no new session at the cap (with a note), and a running stream stops when it hits it", async () => {
+    let used = 0;
+    const notes: string[] = [];
+    const cap = {
+      status: async () => ({ limitSeconds: 120 * 60, usedSeconds: used }),
+      note: async (owner: string) => void notes.push(owner),
+    };
+    const { call } = setup(realHub().hub, cap);
+    const { json } = await call("/session", "client:dev_phone");
+    used = 120 * 60 - 10;
+    expect(
+      (await call("/session/heartbeat", "client:dev_phone", { voiceToken: String(json.voiceToken), seconds: 5 })).json,
+    ).toEqual({
+      ok: true,
+      continue: true,
+    });
+    used = 120 * 60;
+    expect(
+      (await call("/session/heartbeat", "client:dev_phone", { voiceToken: String(json.voiceToken), seconds: 10 })).json,
+    ).toEqual({
+      ok: true,
+      continue: false,
+    });
+    expect(await call("/session", "client:dev_phone")).toMatchObject({
+      status: 402,
+      json: { error: "voice_cap_reached" },
+    });
+    expect(notes).toEqual(["hub-user-1", "hub-user-1"]);
   });
 });

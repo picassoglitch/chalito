@@ -180,7 +180,7 @@ describe("a full L4 ladder, end to end", () => {
     const call = cap.calls[0]!;
     expect(call.To).toBe("+525512345678");
     expect(call.From).toBe("+14155550100");
-    expect(call.StatusCallback).toBe(`${BASE}/webhooks/twilio/status`);
+    expect(call.StatusCallback).toBe(`${BASE}/webhooks/twilio/status?uid=hub-user-1&c=MX`);
     expect(call.Twiml).toContain(
       `<Gather input="dtmf speech" language="es-MX" numDigits="1" speechTimeout="auto" actionOnEmptyResult="true" method="POST" action="${BASE}/webhooks/twilio/gather?uid=hub-user-1&amp;nid=n1&amp;lang=es">`,
     );
