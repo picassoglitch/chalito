@@ -85,6 +85,19 @@ jobs:
       - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,storage-api
       - run: supabase test db
       - run: supabase/scripts/smoke-data-api.sh
+      # The agent's SupabaseStore against the same local stack (apps/agent/test/*.int.test.ts).
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Agent SupabaseStore integration
+        run: |
+          eval "$(supabase status -o env)"
+          export API_URL ANON_KEY SERVICE_ROLE_KEY
+          export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
+          pnpm --filter @chalito/agent test:supabase
       - if: always()
         run: supabase stop --no-backup
 
