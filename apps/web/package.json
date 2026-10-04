@@ -23,6 +23,7 @@
     "@chalito/releases": "workspace:*",
     "@chalito/rooms": "workspace:*",
     "@chalito/roster": "workspace:*",
+    "@chalito/scene": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
     "next": "^16",

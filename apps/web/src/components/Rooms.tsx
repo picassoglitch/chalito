@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { JoinRoomForm } from "@chalito/ui";
 import { Link, useRouter } from "@/i18n/navigation";
-import { myRooms, type RoomSummary, type RoomsDb } from "@chalito/rooms";
+import { joinRoom, roomList, type RoomListItem, type RoomsDb } from "@chalito/rooms";
+import { seenRev } from "@/lib/room-seen";
 import { useChalito } from "./ChalitoProvider";
 
 /** /salas: the rooms this companion is in, and "Unirse con código". */
@@ -12,7 +13,7 @@ export const Rooms = () => {
   const { rooms, readCompanion } = useChalito();
   const router = useRouter();
   const [me, setMe] = useState<string | null | undefined>(undefined);
-  const [list, setList] = useState<RoomSummary[] | null>(null);
+  const [list, setList] = useState<RoomListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -23,7 +24,7 @@ export const Rooms = () => {
       if (!alive) return;
       const id = c && c !== "error" ? c.companionId : null;
       setMe(id);
-      if (id) setList(await myRooms(rooms.db as RoomsDb, id).catch(() => []));
+      if (id) setList(await roomList(rooms.db as RoomsDb, id, seenRev).catch(() => []));
     })();
     return () => {
       alive = false;
@@ -48,7 +49,20 @@ export const Rooms = () => {
                     className="block rounded-xl border bg-white p-3 font-medium"
                     data-testid="room-link"
                   >
-                    {r.name}
+                    <span className="flex items-center gap-2">
+                      {r.name}
+                      <span className="text-xs font-normal text-neutral-600">
+                        {t("memberCount", { n: r.memberCount })}
+                      </span>
+                      {r.unread ? (
+                        <span
+                          data-testid="room-unread"
+                          className="ml-auto rounded-full bg-emerald-700 px-2 text-xs text-white"
+                        >
+                          {t("unread")}
+                        </span>
+                      ) : null}
+                    </span>
                   </Link>
                 </li>
               ))}
@@ -61,7 +75,7 @@ export const Rooms = () => {
             <JoinRoomForm
               onJoin={async (code) => {
                 setError(null);
-                const r = await rooms.api.join(me, code);
+                const r = await joinRoom(rooms.api, me, code);
                 if (r.ok) router.push({ pathname: "/r/[id]", params: { id: r.roomId } });
                 else setError(t(`error.${r.reason}`));
               }}

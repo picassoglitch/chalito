@@ -18,6 +18,7 @@ export const Nav = () => {
       <Link href="/bandeja">{t("inbox")}</Link>
       <Link href="/sesiones">{t("sessions")}</Link>
       <Link href="/dispositivos">{t("devices")}</Link>
+      <Link href="/salas">{t("rooms")}</Link>
       <Link href="/tienda">{t("store")}</Link>
       <Link href="/ajustes">{t("settings")}</Link>
       <Link

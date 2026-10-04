@@ -73,6 +73,11 @@ export class FakeDb {
     for (const fn of this.#onWrite) queueMicrotask(() => fn(e));
   }
 
+  /** Topics of the channels still open (tests wait for a feed to close). */
+  openTopics(): string[] {
+    return this.#channels.filter((c) => !c.removed).map((c) => c.topic);
+  }
+
   /** A server-sent pointer with its own payload (room kicks and dissolves, review R-L14). */
   pointer(payload: Row): void {
     for (const ch of this.#channels) if (!ch.removed) for (const h of ch.handlers) h({ event: "pointer", payload });
