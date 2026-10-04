@@ -2,12 +2,11 @@
 --
 -- 1. A Mesa participant can ASK for a decision: the orchestrator (chalito_server) creates a pending
 --    `kind=decision` approval, device 'orchestrator', details sealed to the person's clients. It
---    can't create anything else, and it can never resolve one (no status grant). The person decides
---    with the normal signed Decision (approval_decisions, client RLS); the first one recorded for a
---    Mesa decision resolves it, here in the database, as that person's choice. RLS already proves
---    the signer is the person's active client device; the envelope (signature included) is kept
---    in approval_decisions for any client to verify against its trusted list. No agent action
---    hangs on a Mesa decision: it's the person's answer to a question at the table.
+--    can't create anything else and has no status grant. The person answers with the normal signed
+--    Decision (approval_decisions, client RLS). A decision binds only after its Ed25519 signature
+--    is verified: the orchestrator verifies it with @chalito/crypto against the signer's stored
+--    pub_sign, then calls chalito_private.resolve_orchestrator_decision, which re-checks the rows
+--    in SQL and can only ever touch pending orchestrator decisions (never an agent's approval).
 -- 2. BYO brain keys: a copy sealed to the person's own devices (readable by them under RLS) and,
 --    only if they opt in to cloud turns, a KMS-wrapped copy in chalito_private that only the
 --    orchestrator reads. Neither is ever readable by the MCP gateway.
@@ -20,34 +19,51 @@ create policy server_creates_mesa_decisions_only on chalito.approvals as restric
   with check (kind = 'decision' and status = 'pending' and device_id = 'orchestrator'
               and recommendations = '[]'::jsonb and not step_up_required and risk in ('LOW', 'MED'));
 
-create or replace function chalito_private.resolve_mesa_decision()
-returns trigger
+-- Called by the orchestrator only AFTER it verified the decision's signature. Returns the new
+-- status, or null when nothing was resolved (not a pending orchestrator decision, expired, no
+-- such signed row, signer not an active client of the owner, or a malformed body).
+create or replace function chalito_private.resolve_orchestrator_decision(p_owner text, p_aid text, p_signer text)
+returns text
 language plpgsql
 security definer
 set search_path = ''
 as $$
 declare
-  b jsonb := new.decision -> 'body';
+  d jsonb;
+  s text;
 begin
-  -- Only Mesa decisions (no agent verifies them); agents resolve their own approvals as before.
+  select ad.decision into d
+  from chalito.approval_decisions ad
+  join chalito.devices dv on dv.owner = ad.owner and dv.device_id = ad.signer_device_id
+  where ad.owner = p_owner and ad.aid = p_aid and ad.signer_device_id = p_signer
+    and dv.role = 'client' and not dv.revoked;
+  if d is null
+     or d ->> 'ctx' is distinct from 'chalito.decision.v1'
+     or d ->> 'signerDeviceId' is distinct from p_signer
+     or d #>> '{body,aid}' is distinct from p_aid
+     or d #>> '{body,uid}' is distinct from p_owner
+     or d #>> '{body,targetDeviceId}' is distinct from 'orchestrator'
+     or jsonb_typeof(d #> '{body,allow}') is distinct from 'boolean' then
+    return null;
+  end if;
+  s := case when (d #>> '{body,allow}')::boolean then 'approved' else 'denied' end;
   update chalito.approvals a
-     set status = case when (b ->> 'allow')::boolean then 'approved' else 'denied' end,
-         reason = 'signed:' || new.signer_device_id
-                  || coalesce(':choice=' || (b ->> 'choice'), ''),
+     set status = s,
+         reason = 'signed:' || p_signer || coalesce(':choice=' || (d #>> '{body,choice}'), ''),
          resolved_at = now()
-   where a.owner = new.owner and a.aid = new.aid
+   where a.owner = p_owner and a.aid = p_aid
      and a.kind = 'decision' and a.device_id = 'orchestrator'
      and a.status = 'pending' and a.expires_at > now()
-     and new.decision ->> 'ctx' = 'chalito.decision.v1'
-     and new.decision ->> 'signerDeviceId' = new.signer_device_id
-     and b ->> 'aid' = new.aid and b ->> 'targetDeviceId' = 'orchestrator'
-     and jsonb_typeof(b -> 'allow') = 'boolean';
-  return null;
+     and a.request_id = d #>> '{body,requestId}';
+  if not found then
+    return null;
+  end if;
+  return s;
 end
 $$;
-revoke execute on function chalito_private.resolve_mesa_decision() from public;
-create trigger approval_decisions_resolve_mesa after insert on chalito.approval_decisions
-  for each row execute function chalito_private.resolve_mesa_decision();
+revoke all on function chalito_private.resolve_orchestrator_decision(text, text, text)
+  from public, anon, authenticated, service_role;
+grant execute on function chalito_private.resolve_orchestrator_decision(text, text, text) to chalito_server;
 
 -- ---------------------------------------------------------------- 2. BYO brain keys
 create table chalito.brain_keys (

@@ -45,8 +45,19 @@ for the person's efficiency profile. A provider without a configured key is skip
    - device `orchestrator`, origin `client:<the device that took the turn>`;
    - details sealed to the person's clients (`aad approval:<aid>`).
 
-   The person decides with the normal signed Decision. A database trigger records the first signed answer for a
-   Mesa decision (migration 002300). The orchestrator has no grant and no code path to resolve one.
+   The person answers with the normal signed Decision (`targetDeviceId: "orchestrator"`, optional `choice`). It binds
+   **only after its Ed25519 signature is verified**:
+   - `processDecisions` (`src/decisions.ts`) parses the envelope (`chalito.decision.v1`) and checks the aid,
+     requestId, owner, target and expiry.
+   - It verifies the signature against the signer's stored `pub_sign` (an active client of the same owner) and
+     rejects a nonce reused on another approval.
+   - Only then does it call `chalito_private.resolve_orchestrator_decision`. That function re-checks the rows in SQL,
+     only `chalito_server` may execute it, and it can never touch an agent's approval.
+   - Invalid answers stay pending and are audited once (`decision.invalid_signature`). The first valid signed answer
+     wins.
+
+   Two triggers run it: the client's poke, `POST /v1/decisions/:aid/check`, right after it inserts its Decision (the
+   poke carries no authority), and Cloud Scheduler's `POST /tasks/sweep-decisions` (Google OIDC) as a safety net.
 5. **Out of energy.** When the hub says `no_tokens`, the balance is 0, or there's no managed allowance (trial,
    free_min), managed speakers finish on `free_min`. The companion turn carries the recharge line from
    `copy/recharge.*.yaml`, the `tired` emotion and animation, and an inline "¿Por qué?" chip to `/creditos`. No LLM
@@ -124,6 +135,7 @@ can't read either table.
 | `ANTHROPIC_API_KEY` | Chalito's managed Claude key, from Secret Manager. |
 | `OPENAI_API_KEY`, `XAI_API_KEY` | Optional managed keys; without one, that provider's participants are skipped. |
 | `GOOGLE_CLOUD_PROJECT` | Gemini on Vertex (`global`, ADC); without it, the low profile's companion uses Claude. |
+| `SCHEDULER_SA_EMAIL`, `ORCHESTRATOR_BASE_URL` | The decision sweep's OIDC signer and audience (route off without them). |
 | `BRAIN_KEYS_KMS_KEY` | Cloud KMS key (`projects/…/cryptoKeys/…`) that wraps BYO keys for cloud turns. |
 | `OWNER_UIDS` | Comped owners. |
 | `PORT` | Default 8080. |

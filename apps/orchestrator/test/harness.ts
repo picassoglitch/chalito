@@ -253,9 +253,17 @@ export const harness = async (
     status: "open",
     createdAt: 1,
   });
+  store.now = deps.now;
+  const audits: { action: string; owner: string; target: string; meta: Record<string, unknown> }[] = [];
   const app = createOrchestrator({
     ...deps,
     wrapper,
+    audit: (e) => void audits.push(e),
+    sweep: {
+      verify: async (auth, expect) =>
+        auth === "Bearer scheduler-oidc" && expect.audience.endsWith("/tasks/sweep-decisions"),
+      expect: { audience: "https://orchestrator.test/tasks/sweep-decisions", email: "scheduler@test" },
+    },
     authn: {
       verify: async (t) => {
         if (t === "phone-token") return { owner: OWNER, deviceId: "dev_phone", role: "client" };
@@ -268,5 +276,5 @@ export const harness = async (
   /** Opens a stored turn as the phone would. */
   const open = async (doc: Record<string, unknown>, m = mid) =>
     openJson<Record<string, unknown>>(SealedEnvelope.parse(doc.outCt), "dev_phone", phone, `mesa:${m}`);
-  return { store, deps, mid, app, open, phone, wrapper };
+  return { store, deps, mid, app, open, phone, wrapper, audits };
 };

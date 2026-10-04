@@ -1,6 +1,7 @@
 import type { HubUsageEvent, SealedEnvelope } from "@chalito/protocol";
 import type { BrainProviderId } from "./brains/brain.js";
 import type { MesaDoc } from "./core/mesa.js";
+import type { DecisionStore, PendingDecision } from "./decisions.js";
 
 /** What the orchestrator stores. Postgres (as chalito_server) in production, memory in tests. */
 export interface TurnSpend {
@@ -11,9 +12,9 @@ export interface TurnSpend {
 }
 
 /**
- * A `kind=decision` approval raised by a Mesa participant. The orchestrator only CREATES it
- * (pending, details sealed to the person's clients); the person decides with a signed Decision.
- * There is deliberately no method to resolve one.
+ * A `kind=decision` approval raised by a Mesa participant. The orchestrator CREATES it (pending,
+ * details sealed to the person's clients); the person answers with a signed Decision, and it
+ * resolves only through DecisionStore.resolveDecision after the signature is verified.
  */
 export interface DecisionApproval {
   aid: string;
@@ -42,7 +43,7 @@ export interface UsageRow {
   costUsdMicros: number;
 }
 
-export interface MesaStore {
+export interface MesaStore extends DecisionStore {
   createMesa(owner: string, mid: string, doc: MesaDoc): Promise<boolean>;
   getMesa(owner: string, mid: string): Promise<MesaDoc | null>;
   setStatus(owner: string, mid: string, status: MesaDoc["status"]): Promise<void>;
@@ -75,7 +76,18 @@ export class MemoryMesaStore implements MesaStore {
   turns = new Map<string, { owner: string; mid: string; tid: string; doc: Record<string, unknown> }>();
   outbox: HubUsageEvent[] = [];
   clients = new Map<string, Record<string, string>>();
-  approvals: (DecisionApproval & { owner: string; status: "pending" })[] = [];
+  approvals: (DecisionApproval & {
+    owner: string;
+    status: "pending" | "approved" | "denied";
+    reason?: string;
+    expiresAt: number;
+  })[] = [];
+  /** approval_decisions rows: what clients inserted (signed or not). */
+  decisions: { owner: string; aid: string; signer: string; decision: unknown }[] = [];
+  /** Client devices' pub_sign (b64url), and which are revoked. */
+  signKeys = new Map<string, string>();
+  revoked = new Set<string>();
+  now = () => Date.now();
   brainKeys = new Map<string, BrainKeyRow>();
   wrapped = new Map<string, string>();
   /** Makes the next appendTurn that carries spend throw (the turn and its usage commit together). */
@@ -117,7 +129,48 @@ export class MemoryMesaStore implements MesaStore {
     return "ok" as const;
   }
   async createDecisionApproval(owner: string, a: DecisionApproval) {
-    this.approvals.push({ ...structuredClone(a), owner, status: "pending" });
+    this.approvals.push({ ...structuredClone(a), owner, status: "pending", expiresAt: this.now() + 10 * 60_000 });
+  }
+  async pendingDecisions(filter: { owner?: string; aid?: string }): Promise<PendingDecision[]> {
+    return this.approvals
+      .filter(
+        (a) =>
+          a.status === "pending" &&
+          a.expiresAt > this.now() &&
+          (!filter.owner || a.owner === filter.owner) &&
+          (!filter.aid || a.aid === filter.aid),
+      )
+      .map((a) => ({
+        owner: a.owner,
+        aid: a.aid,
+        requestId: a.tid,
+        answers: this.decisions
+          .filter((x) => x.owner === a.owner && x.aid === a.aid)
+          .map((x) => ({ signer: x.signer, decision: x.decision })),
+      }))
+      .filter((p) => p.answers.length > 0);
+  }
+  async signerKey(owner: string, deviceId: string) {
+    const k = `${owner}/${deviceId}`;
+    return this.revoked.has(k) ? null : (this.signKeys.get(k) ?? null);
+  }
+  async nonceUsedElsewhere(owner: string, aid: string, nonce: string) {
+    return this.decisions.some(
+      (x) =>
+        x.owner === owner && x.aid !== aid && (x.decision as { body?: { nonce?: unknown } })?.body?.nonce === nonce,
+    );
+  }
+  /** Mirrors the SQL function's re-checks (minus the signature, which the caller verified). */
+  async resolveDecision(owner: string, aid: string, signer: string) {
+    const a = this.approvals.find((x) => x.owner === owner && x.aid === aid);
+    const row = this.decisions.find((x) => x.owner === owner && x.aid === aid && x.signer === signer);
+    const body = (row?.decision as { body?: { allow?: unknown; requestId?: unknown } })?.body;
+    if (!a || a.status !== "pending" || a.expiresAt <= this.now() || !row || this.revoked.has(`${owner}/${signer}`))
+      return null;
+    if (typeof body?.allow !== "boolean" || body.requestId !== a.tid) return null;
+    a.status = body.allow ? "approved" : "denied";
+    a.reason = `signed:${signer}`;
+    return a.status;
   }
   async putBrainKey(owner: string, row: BrainKeyRow, wrapped: string | null) {
     this.brainKeys.set(`${owner}/${row.provider}`, structuredClone(row));

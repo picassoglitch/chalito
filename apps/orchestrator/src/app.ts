@@ -3,7 +3,9 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { Id, MesaCard, SealedEnvelope, SessionCard } from "@chalito/protocol";
 import type { Authn, Caller } from "./auth.js";
+import { processDecisions, type AuditFn } from "./decisions.js";
 import { brainKeyAad, type KeyWrapper } from "./kms.js";
+import type { OidcExpectation, OidcVerifier } from "./oidc.js";
 import type { UsageRow } from "./store.js";
 import { Participant, type MesaDoc } from "./core/mesa.js";
 import type { RecentTurn } from "./core/brief.js";
@@ -18,6 +20,9 @@ export interface AppDeps extends TurnDeps {
   authn: Authn;
   /** Wraps BYO keys for cloud turns (Cloud KMS in production). */
   wrapper: KeyWrapper;
+  audit: AuditFn;
+  /** Cloud Scheduler → POST /tasks/sweep-decisions (Google OIDC). Absent: the route is off. */
+  sweep?: { verify: OidcVerifier; expect: OidcExpectation };
 }
 
 const CreateBody = z.object({
@@ -124,6 +129,20 @@ export const createOrchestrator = (deps: AppDeps) => {
   const app = new Hono<Env>();
   app.get("/healthz", (c) => c.json({ ok: true }));
 
+  // Signed answers already rejected (audited once; never resolve anything later either).
+  const rejected = new Set<string>();
+  const decisions = (filter: { owner?: string; aid?: string }) =>
+    processDecisions({ store: deps.store, now: deps.now, audit: deps.audit, rejected }, filter);
+
+  /** Safety net for pokes that never came: every pending Mesa decision with signed answers. */
+  app.post("/tasks/sweep-decisions", async (c) => {
+    if (!deps.sweep) return c.text("not found", 404);
+    if (!(await deps.sweep.verify(c.req.header("authorization"), deps.sweep.expect)))
+      return c.json({ error: "unauthorized" }, 401);
+    const r = await decisions({});
+    return c.json({ resolved: r.resolved.length, invalid: r.invalid });
+  });
+
   app.use("/v1/*", async (c, next) => {
     const h = c.req.header("authorization") ?? "";
     const token = h.startsWith("Bearer ") ? h.slice(7) : "";
@@ -187,6 +206,16 @@ export const createOrchestrator = (deps: AppDeps) => {
     if (r.status !== "ok")
       return c.json({ error: r.status, ...(r.stopped ? { stopped: r.stopped } : {}) }, status[r.status]);
     return c.json(r, 200, { "cache-control": "no-store" });
+  });
+
+  // ---- Mesa decisions: the client pokes after inserting its signed Decision. The poke carries no
+  // authority: the decision binds only if its signature verifies against the signer's key.
+  app.post("/v1/decisions/:aid/check", async (c) => {
+    const aid = Id.safeParse(c.req.param("aid"));
+    if (!aid.success) return c.json({ error: "bad_request" }, 400);
+    const r = await decisions({ owner: c.get("caller").owner, aid: aid.data });
+    const done = r.resolved.find((x) => x.aid === aid.data);
+    return c.json({ aid: aid.data, status: done?.status ?? "pending" });
   });
 
   // ---- BYO brain keys (the person's own provider keys)
