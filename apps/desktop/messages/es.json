@@ -1,0 +1,117 @@
+{
+  "tabs": {
+    "inbox": "Bandeja",
+    "settings": "Ajustes",
+    "security": "Seguridad",
+    "voice": "Voz"
+  },
+  "dnd": "No molestar",
+  "offline": "Sin conexión a tu cuenta. Empareja esta computadora con «chalito pair».",
+  "inbox": {
+    "empty": "Nada pendiente.",
+    "approvals": "Aprobaciones",
+    "notifications": "Avisos",
+    "approve": "Aprobar",
+    "deny": "Rechazar",
+    "ack": "Visto",
+    "risk": "Riesgo {risk}",
+    "error": "No se pudo enviar: {reason}",
+    "approveOnPhone": "Aprueba esta acción desde tu teléfono"
+  },
+  "security": {
+    "localOnly": "Estas pantallas solo funcionan en esta computadora. Ni el teléfono ni la web pueden cambiarlas.",
+    "unavailable": "El agente local no responde. Asegúrate de que el servicio de Chalito esté corriendo.",
+    "pairing": {
+      "title": "Comprobación de emparejamiento",
+      "none": "No hay ningún teléfono esperando confirmación.",
+      "compare": "Compara esta huella con la que muestra tu teléfono «{label}».",
+      "passkey": "Llave de acceso: {id}",
+      "match": "Coinciden",
+      "mismatch": "No coinciden"
+    },
+    "policy": {
+      "title": "Política",
+      "chain": "Versión {seq} · {hash}",
+      "allow": "permitir",
+      "ask": "preguntar",
+      "deny": "bloquear"
+    },
+    "devmode": {
+      "title": "Modo desarrollador",
+      "active": "Modo desarrollador ACTIVO",
+      "off": "Desactivado",
+      "enable": "Activar",
+      "disable": "Desactivar",
+      "step1": "¿Activar {toggle}? Esto permitiría, por ejemplo:",
+      "step2": "Confírmalo de nuevo:",
+      "step3": "Lee y acepta la responsabilidad. Escribe «{phrase}» para continuar.",
+      "accept": "Acepto la responsabilidad",
+      "continue": "Continuar",
+      "cancel": "Cancelar",
+      "confirm": "Activar (te pedirá tu contraseña)",
+      "failed": "No se activó: {reason}"
+    }
+  },
+  "voice": {
+    "hold": "Mantén presionado para hablar",
+    "connecting": "Conectando…",
+    "listening": "Te escucho…",
+    "unavailable": "La voz aún no está disponible."
+  },
+  "room": {
+    "soon": "Tu cuarto llega pronto."
+  },
+  "integrations": {
+    "anthropic": {
+      "name": "Anthropic"
+    },
+    "openai": {
+      "name": "OpenAI"
+    },
+    "xai": {
+      "name": "xAI"
+    },
+    "google": {
+      "name": "Google"
+    }
+  },
+  "settingsError": {
+    "rejected": "El servidor no aceptó el cambio.",
+    "failed": "No se pudo guardar. Revisa tu conexión."
+  },
+  "signIn": {
+    "intro": "Inicia sesión con tu cuenta de Chalyb para ver tus pendientes aquí.",
+    "start": "Iniciar sesión",
+    "notConfigured": "Esta compilación no tiene configurado el inicio de sesión.",
+    "browser": "Termina de iniciar sesión en tu navegador. Volverás aquí automáticamente.",
+    "reopen": "Abrir de nuevo",
+    "cancel": "Cancelar",
+    "exchanging": "Verificando…",
+    "endorsing": "Abre Chalito en un dispositivo de confianza (tu teléfono) y aprueba este equipo.",
+    "ready": "Listo: este equipo ya es de confianza.",
+    "noPasskey": "Este equipo no tiene llave de acceso: las acciones de riesgo ALTO o CRÍTICO se aprueban desde tu teléfono.",
+    "retry": "Intentar de nuevo",
+    "errors": {
+      "expired": "El inicio de sesión caducó. Vuelve a intentarlo.",
+      "missing_token": "El enlace de regreso no era válido.",
+      "exchange_failed": "No se pudo verificar tu cuenta.",
+      "token_replayed": "Ese enlace ya se usó. Inicia sesión de nuevo.",
+      "bad_response": "Respuesta inesperada del servidor.",
+      "verify_failed": "No se pudo abrir tu sesión.",
+      "channel_unavailable": "Aún no se puede aprobar este equipo desde otro dispositivo.",
+      "cancelled": "Cancelado.",
+      "endorsement_mismatch": "La aprobación no corresponde a este equipo.",
+      "endorser_not_trusted": "El dispositivo que aprobó no es de confianza.",
+      "device_exists": "Este equipo ya está registrado.",
+      "rejected": "El servidor rechazó el registro.",
+      "failed": "Algo falló. Vuelve a intentarlo.",
+      "open_failed": "No se pudo abrir el navegador.",
+      "malformed": "Enlace no válido.",
+      "wrong_target": "Enlace no válido.",
+      "no_pending": "No hay un inicio de sesión en curso.",
+      "state_mismatch": "Enlace no válido.",
+      "duplicate_param": "Enlace no válido."
+    },
+    "glyph": "Código para escanear con tu teléfono"
+  }
+}
