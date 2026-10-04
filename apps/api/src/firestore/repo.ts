@@ -129,6 +129,10 @@ export class FirestoreRepo implements ApiRepo {
     return (q.docs[0]?.data() as PairingCodeDoc | undefined) ?? null;
   }
 
+  async releasePairingWatches(_owner: string, _agentDeviceId: string): Promise<string[]> {
+    return []; // Firebase watch tokens are custom tokens that expire on their own.
+  }
+
   async claimPairingCode(
     codeId: string,
     claim: {

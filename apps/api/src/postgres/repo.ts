@@ -1,14 +1,38 @@
-import type { Sql, TransactionSql } from "postgres";
+import postgres, { type Sql, type TransactionSql } from "postgres";
 import type { DeviceDoc, PairingCodeDoc } from "@chalito/protocol";
 import type { ApiRepo, StoredRecovery, TenantRecord, TenantStatus } from "../repo.js";
 
 /**
- * ApiRepo over the `chalito` schema (supabase/migrations). Runs on a server-side connection
- * that bypasses RLS, as firebase-admin did. Times are epoch ms in the API and timestamptz in
- * the database. Atomic methods are single transactions.
+ * ApiRepo over the `chalito` schema (supabase/migrations). Runs as `chalito_server` (least
+ * privilege, reaching rows through its server_all policies; see `chalitoSql`). Times are epoch
+ * ms in the API and timestamptz in the database. Atomic methods are single transactions.
  */
+export interface PostgresRepoOptions {
+  /**
+   * The Auth user id a device / pairing watch signs in as (SupabaseIssuer's
+   * `chalitoAuthUserId`). Written to devices.auth_user_id and pairing_codes.watch_auth_user_id
+   * in the same statement that creates the row; RLS requires the token's sub to match.
+   */
+  authUserId?: (kind: "device" | "pairing", id: string) => string;
+}
+
+/** A connection that acts as `chalito_server` (or the role given), e.g. from a postgres login granted that role. */
+export const chalitoSql = (url: string, opts: { role?: string; max?: number } = {}): Sql =>
+  postgres(url, {
+    max: opts.max ?? 10,
+    onnotice: () => {},
+    ...(opts.role ? { connection: { role: opts.role } } : {}),
+  });
+
 export class PostgresRepo implements ApiRepo {
-  constructor(private readonly sql: Sql) {}
+  constructor(
+    private readonly sql: Sql,
+    private readonly opts: PostgresRepoOptions = {},
+  ) {}
+
+  #authUser(kind: "device" | "pairing", id: string) {
+    return this.opts.authUserId ? this.opts.authUserId(kind, id) : null;
+  }
 
   // ---- tenants / users -------------------------------------------------------------
 
@@ -70,7 +94,7 @@ export class PostgresRepo implements ApiRepo {
 
   async createDevice(owner: string, doc: DeviceDoc) {
     // device_id is unique across owners (derived from the device's keys).
-    const rows = await insertDevice(this.sql, owner, doc, true);
+    const rows = await insertDevice(this.sql, owner, doc, this.#authUser("device", doc.deviceId), true);
     return rows.length ? ("created" as const) : ("exists" as const);
   }
 
@@ -98,7 +122,7 @@ export class PostgresRepo implements ApiRepo {
         select 1 from chalito.devices where owner = ${owner} and role = 'client' and revoked = false limit 1`;
       if (active) return "client_exists" as const;
       if (await deviceIdTaken(tx, doc.deviceId)) return "device_exists" as const;
-      await insertDevice(tx, owner, doc, false);
+      await insertDevice(tx, owner, doc, this.#authUser("device", doc.deviceId), false);
       await upsertRecovery(tx, owner, recovery);
       return "ok" as const;
     });
@@ -108,7 +132,7 @@ export class PostgresRepo implements ApiRepo {
     await this.sql`
       insert into chalito.endorsements (owner, device_id, endorsement, created_at)
       values (${owner}, ${newDeviceId}, ${this.sql.json(endorsement as never)}, ${ts(at)})
-      on conflict (owner, device_id) do update set endorsement = excluded.endorsement, created_at = excluded.created_at`;
+      on conflict (owner, device_id) do nothing`;
   }
 
   // ---- recovery ----------------------------------------------------------------------
@@ -135,7 +159,7 @@ export class PostgresRepo implements ApiRepo {
     return this.sql.begin(async (tx) => {
       await lockUser(tx, owner);
       if (await deviceIdTaken(tx, doc.deviceId)) return "device_exists" as const;
-      await insertDevice(tx, owner, doc, false);
+      await insertDevice(tx, owner, doc, this.#authUser("device", doc.deviceId), false);
       await upsertRecovery(tx, owner, next);
       return "ok" as const;
     });
@@ -166,10 +190,11 @@ export class PostgresRepo implements ApiRepo {
     const rows = await this.sql`
       insert into chalito.pairing_codes
         (code_id, short_code_hash, glyph, agent_device_id, kind, platform, claimed, owner,
-         claimed_by_device_id, claimer_pub_sign, claimer_pub_box, expires_at)
+         claimed_by_device_id, claimer_pub_sign, claimer_pub_box, expires_at, watch_auth_user_id)
       values (${doc.codeId}, ${doc.shortCodeHash}, ${this.sql.json(doc.glyph as never)}, ${doc.agentDeviceId},
               ${doc.kind}, ${doc.platform}, ${doc.claimed}, ${doc.owner}, ${doc.claimedByDeviceId},
-              ${doc.claimerPubSign}, ${doc.claimerPubBox}, ${ts(doc.expiresAt)})
+              ${doc.claimerPubSign}, ${doc.claimerPubBox}, ${ts(doc.expiresAt)},
+              ${this.#authUser("pairing", doc.codeId)})
       on conflict (code_id) do nothing
       returning code_id`;
     return rows.length ? ("created" as const) : ("exists" as const);
@@ -179,6 +204,14 @@ export class PostgresRepo implements ApiRepo {
     const [row] = await this.sql<PairingRow[]>`
       select * from chalito.pairing_codes where short_code_hash = ${shortCodeHash}`;
     return row ? toPairingCode(row) : null;
+  }
+
+  async releasePairingWatches(owner: string, agentDeviceId: string) {
+    const rows = await this.sql<{ code_id: string }[]>`
+      update chalito.pairing_codes set watch_auth_user_id = null
+      where owner = ${owner} and agent_device_id = ${agentDeviceId} and claimed and watch_auth_user_id is not null
+      returning code_id`;
+    return rows.map((r) => r.code_id);
   }
 
   async claimPairingCode(
@@ -199,7 +232,7 @@ export class PostgresRepo implements ApiRepo {
       // `build` may throw: the transaction rolls back and the error propagates.
       const agent = await build(toPairingCode(row));
       if (await deviceIdTaken(tx, agent.deviceId)) return { ok: false as const, reason: "device_exists" as const };
-      await insertDevice(tx, claim.owner, agent, false);
+      await insertDevice(tx, claim.owner, agent, this.#authUser("device", agent.deviceId), false);
       await tx`
         update chalito.pairing_codes set claimed = true, owner = ${claim.owner},
           claimed_by_device_id = ${claim.claimedByDeviceId}, claimer_pub_sign = ${claim.claimerPubSign},
@@ -227,14 +260,14 @@ const lockUser = async (tx: TransactionSql, owner: string) => {
 const deviceIdTaken = async (tx: Q, deviceId: string) =>
   (await tx`select 1 from chalito.devices where device_id = ${deviceId}`).length > 0;
 
-const insertDevice = (q: Q, owner: string, d: DeviceDoc, ignoreConflict: boolean) => {
+const insertDevice = (q: Q, owner: string, d: DeviceDoc, authUserId: string | null, ignoreConflict: boolean) => {
   const insert = q`
     insert into chalito.devices
       (owner, device_id, role, kind, platform, name, pub_sign, pub_box, fingerprint, enrolled_via, endorsed_by,
-       revoked, revoked_at, created_at, last_seen_at, policy_hash, dev_mode)
+       revoked, revoked_at, created_at, last_seen_at, policy_hash, dev_mode, auth_user_id)
     values (${owner}, ${d.deviceId}, ${d.role}, ${d.kind}, ${d.platform}, ${d.name}, ${d.pubSign}, ${d.pubBox},
             ${d.fingerprint}, ${d.enrolledVia}, ${d.endorsedBy}, ${d.revoked}, ${tsOrNull(d.revokedAt)},
-            ${ts(d.createdAt)}, ${tsOrNull(d.lastSeenAt)}, ${d.policyHash}, ${q.json(d.devMode as never)})`;
+            ${ts(d.createdAt)}, ${tsOrNull(d.lastSeenAt)}, ${d.policyHash}, ${q.json(d.devMode as never)}, ${authUserId})`;
   return ignoreConflict ? q`${insert} on conflict do nothing returning device_id` : q`${insert} returning device_id`;
 };
 

@@ -103,6 +103,9 @@ jobs:
             echo "SUPABASE_ANON_KEY=$(jq -r '.ANON_KEY // .PUBLISHABLE_KEY' "$RUNNER_TEMP/sb.json")"
           } >> "$GITHUB_ENV"
       - run: pnpm --filter @chalito/api test:pg
+        env:
+          # The api's least-privilege role (security review S2); postgres holds it with SET.
+          CHALITO_DB_ROLE: chalito_server
       - name: Agent SupabaseStore integration
         run: |
           eval "$(supabase status -o env)"

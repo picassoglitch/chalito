@@ -4,19 +4,16 @@ import type { IdentityClaims, IdentityIssuer } from "../repo.js";
 
 /**
  * IdentityIssuer over Supabase Auth (the hub project, ADR 0017): every device, and every
- * pairing watch, is its own Auth user whose `app_metadata.chalito` carries the claims RLS
- * reads (`chalito.jwt_claims()` with claim_source 'app_metadata'). People are their own hub
+ * pairing watch, is its own Auth user whose `app_metadata.chalito` = {owner, device_id, role,
+ * pairing_code?} carries the claims RLS reads (`chalito.jwt_claims()`, claim_source
+ * 'app_metadata'). Its id is `chalitoAuthUserId(...)`, which PostgresRepo also writes to
+ * devices.auth_user_id / pairing_codes.watch_auth_user_id (RLS requires sub = that id). People are their own hub
  * users. Minting returns a magic-link token hash; the client exchanges it with
  * `auth.verifyOtp({ token_hash, type: "magiclink" })` for a session.
  *
  * Needs an AuthClient authorised with the service (secret) key: server only.
  */
 type Auth = InstanceType<typeof AuthClient>;
-
-export interface SupabaseIssuerOptions {
-  /** Called with each device's Auth user id (wire to chalito.devices.auth_user_id). */
-  onDeviceUser?: (deviceId: string, authUserId: string) => Promise<void>;
-}
 
 /** ~100 years: Supabase Auth bans take a duration, not "forever". */
 const BAN_FOREVER = "876000h";
@@ -39,10 +36,7 @@ const emailFor = (kind: "device" | "pairing", authUserId: string) =>
   `${authUserId}@${kind === "device" ? "devices" : "pairing"}.chalito.invalid`;
 
 export class SupabaseIssuer implements IdentityIssuer {
-  constructor(
-    private readonly auth: Auth,
-    private readonly opts: SupabaseIssuerOptions = {},
-  ) {}
+  constructor(private readonly auth: Auth) {}
 
   /** The hub user's own account: a magic link for their email, no Chalito claims added. */
   async mintUser(owner: string, _tier: string) {
@@ -53,8 +47,7 @@ export class SupabaseIssuer implements IdentityIssuer {
 
   async mintDevice(owner: string, deviceId: string, role: "client" | "agent") {
     const id = chalitoAuthUserId("device", deviceId);
-    await this.#ensureUser(id, emailFor("device", id), { owner, device_id: deviceId, chalito_role: role });
-    await this.opts.onDeviceUser?.(deviceId, id);
+    await this.#ensureUser(id, emailFor("device", id), { owner, device_id: deviceId, role });
     return this.#magicLink(emailFor("device", id));
   }
 
@@ -63,7 +56,7 @@ export class SupabaseIssuer implements IdentityIssuer {
     await this.#ensureUser(id, emailFor("pairing", id), {
       owner: "pairing",
       pairing_code: codeId,
-      chalito_role: "pairing",
+      role: "pairing",
     });
     return this.#magicLink(emailFor("pairing", id));
   }
@@ -118,7 +111,7 @@ export class SupabaseIssuer implements IdentityIssuer {
 const claimsOf = (user: User): IdentityClaims => {
   const c = (user.app_metadata as { chalito?: Record<string, unknown> }).chalito;
   if (!c || typeof c !== "object") return { uid: user.id, role: "user", owner: user.id };
-  const role = typeof c.chalito_role === "string" && ROLES.has(c.chalito_role) ? c.chalito_role : "";
+  const role = typeof c.role === "string" && ROLES.has(c.role) ? c.role : "";
   return {
     uid: user.id,
     role,
