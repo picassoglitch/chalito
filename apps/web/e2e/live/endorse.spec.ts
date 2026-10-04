@@ -39,9 +39,12 @@ test("Esperando aprobación: a new browser shows a code, a trusted device approv
   const opened = (await clientWrites(page)).find((w) => w.op === "endorse/codes")!;
   expect((opened.row.registration as { body: { name: string } }).body.name).toBe("Chrome del estudio");
 
-  // "Navegador del trabajo" approves it.
+  // "Navegador del trabajo" approves it, introducing the computer it trusts (ADR 0018).
   await endorse(page, "approveFromOther", code);
   await expect(page.getByTestId("endorse-done")).toBeVisible();
+  await expect(page.getByTestId("endorse-introduced")).toContainText("Laptop de Aldo");
+  const agent = await dev<string>(page, "agent");
+  expect((await clientWrites(page)).find((w) => w.op === "trustIntroduced")?.row.agents).toEqual([agent]);
   await expect.poll(async () => (await dev<Sess>(page, "session"))?.role).toBe("client");
   const me = await dev<string>(page, "me");
   expect((await rows(page, "devices")).find((r) => r.device_id === me)).toMatchObject({
@@ -49,6 +52,7 @@ test("Esperando aprobación: a new browser shows a code, a trusted device approv
     name: "Chrome del estudio",
     revoked: false,
   });
+  // Introduced: prompts reach the computer right away (sealed to its key).
   const writes = (await clientWrites(page)).map((w) => w.op);
   expect(writes).toEqual(expect.arrayContaining(["endorse/take", "devices/endorsed"]));
 
@@ -92,9 +96,19 @@ test("Añadir un dispositivo: type the code, compare the fingerprint, approve wi
   await page.getByTestId("add-approve").click();
   await expect(page.getByTestId("add-done")).toContainText("Firefox en Linux");
   const me = await dev<string>(page, "me");
-  expect(await endorse(page, "endorsementOf", nb.codeId)).toEqual({ signer: me, newDeviceId: nb.deviceId });
+  // ADR 0018: this browser introduced its glyph-confirmed computer.
+  expect(await endorse(page, "endorsementOf", nb.codeId)).toEqual({
+    signer: me,
+    newDeviceId: nb.deviceId,
+    agents: [await dev<string>(page, "agent")],
+  });
   const approve = (await clientWrites(page)).find((w) => w.op === "endorse/approve")!;
-  expect(approve.row.stepUp).toBeTruthy();
+  // R-L13: the passkey signs the endorsement body itself (no separate top-level stepUp).
+  expect(approve.row.stepUp).toBeUndefined();
+  expect(
+    (approve.row.endorsement as { body: { stepUp?: { assertion: { credentialId: string } } } }).body.stepUp?.assertion
+      .credentialId,
+  ).toBe("dev-passkey");
 
   // The same code can't be used twice.
   await page.getByRole("link", { name: "Volver a Dispositivos" }).click();
@@ -120,7 +134,7 @@ test("Añadir un dispositivo: without a passkey there's no step-up; 'No es mío'
   await page.getByTestId("add-approve").click();
   await expect(page.getByTestId("add-done")).toBeVisible();
   const approve = (await clientWrites(page)).find((w) => w.op === "endorse/approve")!;
-  expect(approve.row.stepUp).toBeUndefined();
+  expect((approve.row.endorsement as { body: { stepUp?: unknown } }).body.stepUp).toBeUndefined();
 });
 
 test("EN paths: /en/devices/new, and /en/link on a trusted browser says it's already trusted", async ({ page }) => {
@@ -128,4 +142,27 @@ test("EN paths: /en/devices/new, and /en/link on a trusted browser says it's alr
   await expect(page.getByRole("heading", { name: "Add a device" })).toBeVisible();
   await page.goto("/en/link");
   await expect(page.getByTestId("endorse-done")).toBeVisible();
+});
+
+test("ADR 0018: an introduced computer whose keys don't match the directory is dropped, with a way forward", async ({
+  page,
+}) => {
+  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
+  await page.goto("/vincular");
+  await page.getByTestId("endorse-start-button").click();
+  const code = (await page.getByTestId("endorse-code").textContent())!;
+  await endorse(page, "approveFromOther", code, "tampered");
+  await expect(page.getByTestId("endorse-done")).toBeVisible();
+  await expect(page.getByTestId("endorse-introduced")).toHaveCount(0);
+  await expect(page.getByTestId("endorse-dropped").locator("li")).toHaveAttribute("data-reason", "key_mismatch");
+  await expect(page.getByTestId("endorse-dropped")).toContainText("Emparéjala con su anillo");
+  expect((await clientWrites(page)).filter((w) => w.op === "trustIntroduced")).toEqual([]);
+});
+
+test("R-L13: a computer that refused an endorsement shows a security notice on /dispositivos", async ({ page }) => {
+  await ready(page, "/dispositivos");
+  const other = await dev<string>(page, "other");
+  await endorse(page, "refusedByAgent", other, "missing_step_up");
+  await expect(page.getByTestId("endorse-refused")).toHaveAttribute("data-reason", "missing_step_up");
+  await expect(page.getByTestId("endorse-refused")).toContainText("Laptop de Aldo rechazó un dispositivo nuevo");
 });

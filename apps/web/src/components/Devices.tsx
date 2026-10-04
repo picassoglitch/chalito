@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import type { DeviceView } from "@chalito/client";
+import { DeviceEvent } from "@chalito/protocol";
 import { Link } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { PasskeyEnroll } from "./PasskeyEnroll";
@@ -18,6 +19,11 @@ export const Devices = () => {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const agents = devices.filter((d) => d.role === "agent" && !d.revoked);
+  // R-L13 / ADR 0018: a computer that refused an endorsement says so (never silent).
+  const refusals = agents.flatMap((d) => {
+    const e = DeviceEvent.safeParse(d.lastEvent);
+    return e.success && e.data.type === "trust.endorsement_refused" ? [{ agent: d, event: e.data }] : [];
+  });
 
   const send = async (f: () => Promise<unknown>, ok: string) => {
     setNote(null);
@@ -50,6 +56,30 @@ export const Devices = () => {
         </Link>
       </div>
       <PasskeyEnroll />
+      {refusals.length ? (
+        <section
+          aria-labelledby="sec-notices"
+          className="grid gap-1 rounded-xl border border-amber-300 bg-amber-50 p-4"
+        >
+          <h2 id="sec-notices" className="font-semibold">
+            {t("notices.title")}
+          </h2>
+          <ul className="grid gap-1 text-sm">
+            {refusals.map(({ agent, event }) => (
+              <li
+                key={`${agent.deviceId}:${event.clientDeviceId}`}
+                role="alert"
+                data-testid="endorse-refused"
+                data-reason={event.reason}
+              >
+                {t(event.reason === "missing_step_up" ? "notices.missingStepUp" : "notices.refused", {
+                  computer: agent.name,
+                })}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <ul className="grid gap-3">
         {devices.map((d) => (
           <li

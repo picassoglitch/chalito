@@ -13,7 +13,8 @@ export const parseSsoExchange = (body: unknown): string => {
 };
 
 export type SsoResult =
-  { ok: true; next: string } | { ok: false; reason: "missing_token" | "exchange_failed" | "verify_failed" };
+  | { ok: true; next: string }
+  | { ok: false; reason: "missing_token" | "exchange_failed" | "verify_failed" | "rate_limited" };
 
 /**
  * /auth/sso (ADR 0016): the hub's launch token goes to the api, which verifies it and returns
@@ -28,6 +29,7 @@ export const completeSso = async (
 ): Promise<SsoResult> => {
   if (!params.token) return { ok: false, reason: "missing_token" };
   let exchangeFailed = false;
+  let rateLimited = false;
   try {
     // Local scope: clear this browser only (no network call, other devices keep their sessions).
     await (deps.auth.signOut as ((o: { scope: "local" }) => Promise<unknown>) | undefined)?.({ scope: "local" });
@@ -41,6 +43,8 @@ export const completeSso = async (
             body: JSON.stringify({ token: params.token }),
             credentials: "omit",
           });
+          // 429 {error:"rate_limited"}: say so; signing in again right away won't help.
+          if (res.status === 429) rateLimited = true;
           return { token_hash: parseSsoExchange(res.ok ? await res.json() : null) };
         } catch (err) {
           exchangeFailed = true;
@@ -49,7 +53,7 @@ export const completeSso = async (
       },
     });
   } catch {
-    return { ok: false, reason: exchangeFailed ? "exchange_failed" : "verify_failed" };
+    return { ok: false, reason: rateLimited ? "rate_limited" : exchangeFailed ? "exchange_failed" : "verify_failed" };
   }
   return { ok: true, next: safeNextPath(params.next) };
 };
