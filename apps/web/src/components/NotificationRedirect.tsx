@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { hubLaunchUrl } from "@/lib/hub";
+import { signInAndReturn } from "@/lib/next-cookie";
 import { ackVia, notificationTarget } from "@/lib/notification-link";
 import { useSession } from "@/lib/session";
 import { supabase } from "@/lib/supabase";
@@ -31,10 +32,10 @@ export const NotificationRedirect = ({ nid }: { nid: string }) => {
     };
     const signedOut = status === "signed_out" && session.status === "signed_out";
     if (signedOut) {
-      const launch = hubLaunchUrl();
       done.current = true;
-      if (launch) window.location.replace(`${launch}?next=${encodeURIComponent(`/n/${nid}`)}`);
-      else setFailed(true);
+      if (!hubLaunchUrl()) return setFailed(true);
+      // Back here after the hub sign-in (chalito_next cookie; the hub drops `next`).
+      signInAndReturn(window.location.pathname);
       return;
     }
     if (status === "ready" && client) {

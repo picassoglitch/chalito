@@ -30,7 +30,10 @@ import { memoryStorage } from "@chalito/client";
 import type { SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
 import type { SettingsDb } from "@/lib/settings-store";
+import type { ChannelSetter } from "@/lib/phone";
+import type { Connector, ConsentRequest, McpApi } from "@/lib/mcp";
 import { confirmStepUp } from "@/components/StepUpHost";
+import { passkeyRef, savePasskeyRef } from "@/lib/keys";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -88,6 +91,11 @@ export const startDevBackend = async (): Promise<{
   connectOptions: ConnectOptions;
   phoneVerifier: PhoneVerifier;
   settingsDb: SettingsDb;
+  channels: ChannelSetter;
+  /** Stub of client-keys registerPasskey: records a reference, no authenticator. */
+  enrollPasskey: () => Promise<void>;
+  mcp: McpApi;
+  assertPasskey: () => Promise<Record<string, unknown>>;
   controls: DevControls;
 }> => {
   const db = new FakeDb();
@@ -391,22 +399,172 @@ export const startDevBackend = async (): Promise<{
   };
   (window as unknown as { __chalitoDev: DevControls }).__chalitoDev = controls;
 
-  // The api + Twilio Verify, simulated: code 123456; on success the SERVER writes the verified phone.
+  // The api + Twilio Verify, simulated (apps/api/src/phone/routes.ts): /start needs the charges
+  // acknowledgement; /check takes 123456, refuses a number on another account, and on success
+  // the SERVER stores the verified phone and records the acknowledgement.
+  const IN_USE = "+525500000000";
+  const user = () => db.rows("users").find((r) => r.id === OWNER)!;
   const phoneVerifier: PhoneVerifier = {
-    start: async (e164) => (/^\+[1-9]\d{6,14}$/.test(e164) ? { ok: true } : { ok: false, reason: "invalid" }),
+    start: async (e164) => (/^\+[1-9]\d{7,14}$/.test(e164) ? { ok: true } : { ok: false, reason: "invalid" }),
     check: async (e164, code) => {
       if (code !== "123456") return { ok: false, reason: "wrong_code" };
+      if (e164 === IN_USE) return { ok: false, reason: "in_use" };
+      const at = new Date().toISOString();
       db.update("users", (r) => r.id === OWNER, {
         phone_e164: e164,
-        phone_verified_at: new Date().toISOString(),
+        phone_country: e164.startsWith("+81") ? "JP" : e164.startsWith("+52") ? "MX" : "US",
+        phone_verified_at: at,
         phone_pending_e164: null,
+        charges_notice_ack_at: user().charges_notice_ack_at ?? at,
       });
       return { ok: true };
     },
   };
+  // POST /v1/phone/channels: verified phone + acknowledgement to turn anything on; no calls to JP.
+  const channels: ChannelSetter = async (patch) => {
+    const u = user();
+    if (Object.values(patch).some((v) => v === true)) {
+      if (!u.phone_verified_at) return { ok: false, reason: "phone_not_verified" };
+      if (!u.charges_notice_ack_at) return { ok: false, reason: "charges_notice_required" };
+      if (patch.calls === true && u.phone_country === "JP") return { ok: false, reason: "country_not_supported" };
+    }
+    const next: Row = {};
+    if (patch.whatsapp !== undefined) next.whatsapp_opt_in = patch.whatsapp;
+    if (patch.calls !== undefined) next.calls_enabled = patch.calls;
+    if (patch.sms !== undefined) next.sms_enabled = patch.sms;
+    db.clientWrites.push({ table: "api", op: "phone/channels", row: { ...patch } });
+    db.update("users", (r) => r.id === OWNER, next);
+    return { ok: true };
+  };
+
+  // ---- M10 api (apps/api/src/routes/oauth.ts), simulated -------------------------------
+  const SCOPES: ConsentRequest["scopes"] = [
+    {
+      scope: "mcp:read",
+      es: "Ver tus aprobaciones pendientes y el estado de tus sesiones.",
+      en: "See your pending approvals and session status.",
+      defaultChecked: true,
+    },
+    {
+      scope: "approval:recommend",
+      es: "Sugerir aprobar o rechazar (solo una sugerencia).",
+      en: "Suggest approving or denying (advice only).",
+      defaultChecked: true,
+    },
+    {
+      scope: "session:prompt",
+      es: "Enviar instrucciones a tus sesiones de agentes.",
+      en: "Send prompts to your agent sessions.",
+      defaultChecked: false,
+    },
+  ];
+  const requests = new Map<string, ConsentRequest & { redirectUri: string; state: string }>([
+    [
+      "req_dev_1",
+      {
+        requestId: "req_dev_1",
+        client: {
+          name: "Claude",
+          id: "https://claude.ai/oauth/mcp-client-metadata",
+          redirectHost: "claude.ai",
+          provider: "claude",
+        },
+        scopes: SCOPES,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        redirectUri: "https://claude.ai/api/mcp/auth_callback",
+        state: "st_dev",
+      },
+    ],
+  ]);
+  const connectors: Connector[] = [
+    {
+      cid: "con_dev_gpt",
+      clientId: "https://chatgpt.com/oauth/client",
+      clientName: "ChatGPT",
+      provider: "chatgpt",
+      scopes: ["mcp:read"],
+      createdAt: now - 86_400_000,
+      lastUsedAt: now - 3_600_000,
+      revokedAt: null,
+    },
+  ];
+  const lastAssertion = { value: null as string | null };
+  const mcp: McpApi = {
+    getRequest: async (id) => {
+      const r = requests.get(id);
+      if (!r) return "not_found";
+      const { redirectUri: _r, state: _s, ...view } = r;
+      return view;
+    },
+    approve: async (id, scopes, assertion) => {
+      const r = requests.get(id);
+      if (!r) return "not_found";
+      if (!passkeyRef()) return "no_passkey";
+      if (assertion.id !== lastAssertion.value) return "passkey_failed";
+      if (!scopes.every((x) => r.scopes.some((s) => s.scope === x))) return "error";
+      requests.delete(id);
+      connectors.push({
+        cid: "con_dev_new",
+        clientId: r.client.id,
+        clientName: r.client.name,
+        provider: r.client.provider,
+        scopes,
+        createdAt: Date.now(),
+        lastUsedAt: null,
+        revokedAt: null,
+      });
+      db.clientWrites.push({ table: "api", op: "oauth/approve", row: { id, scopes } });
+      return { redirect: `${r.redirectUri}?code=dev_code&state=${r.state}&iss=https%3A%2F%2Fapi.chalito.dev` };
+    },
+    deny: async (id) => {
+      const r = requests.get(id);
+      if (!r) return "not_found";
+      requests.delete(id);
+      return { redirect: `${r.redirectUri}?error=access_denied&state=${r.state}&iss=https%3A%2F%2Fapi.chalito.dev` };
+    },
+    listConnectors: async () => connectors.map((c) => ({ ...c })),
+    revoke: async (cid) => {
+      const c = connectors.find((x) => x.cid === cid);
+      if (!c) return "not_found";
+      c.revokedAt = Date.now();
+      db.clientWrites.push({ table: "api", op: "connectors/revoke", row: { cid } });
+      return true;
+    },
+    setSharing: async ({ sessionId, deviceId, enabled, plaintextAck }) => {
+      if (!!sessionId === !!deviceId) return "error";
+      if (enabled && plaintextAck !== true) return "error";
+      const scope = sessionId ? "session" : "device";
+      const target = (sessionId ?? deviceId)!;
+      db.clientWrites.push({
+        table: "api",
+        op: "mcp/sharing",
+        row: { scope, target, enabled, plaintextAck: !!plaintextAck },
+      });
+      const match = (r: Row) => r.owner === OWNER && r.scope === scope && r.target === target;
+      if (db.rows("mcp_sharing").some(match)) db.update("mcp_sharing", match, { enabled });
+      else
+        db.insert("mcp_sharing", {
+          owner: OWNER,
+          scope,
+          target,
+          enabled,
+          plaintext_ack_at: enabled ? new Date().toISOString() : null,
+        });
+      return true;
+    },
+  };
+  const assertPasskey = async () => {
+    if (!passkeyRef()) throw Object.assign(new Error("no passkey"), { name: "NotAllowedError" });
+    lastAssertion.value = `dev_assert_${Math.random().toString(36).slice(2)}`;
+    return { id: lastAssertion.value, type: "public-key" };
+  };
 
   return {
     phoneVerifier,
+    channels,
+    mcp,
+    assertPasskey,
+    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
     controls,
     settingsDb: db.client({ access_token: "dev-access" }, OWNER) as unknown as SettingsDb,
     connectOptions: {
@@ -415,8 +573,9 @@ export const startDevBackend = async (): Promise<{
       keys,
       owner: OWNER,
       storage: memoryStorage(),
+      // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
       stepUp: async ({ risk }) =>
-        (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
+        passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
       signIn: { kind: "sso", exchange: async () => ({ token_hash: "dev" }) },
       create: () => db.client({ access_token: "dev-access" }, OWNER),
     },

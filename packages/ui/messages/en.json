@@ -84,6 +84,10 @@
     "done": {
       "title": "All set!",
       "body": "{name} is here for you."
+    },
+    "passkey": {
+      "title": "Protect your approvals",
+      "body": "High-risk actions ask for your passkey."
     }
   },
   "settings": {
@@ -111,9 +115,15 @@
       "verified": "{number} verified",
       "change": "Change number",
       "wrongCode": "That code isn't right.",
-      "expired": "The code expired. Request a new one.",
       "rateLimited": "Too many attempts. Wait a moment.",
-      "error": "We couldn't verify the number. Try again later."
+      "error": "We couldn't verify the number. Try again later.",
+      "channel": "How to get the code",
+      "by": {
+        "sms": "By text",
+        "call": "By call"
+      },
+      "willCall": "We'll call you with a code.",
+      "inUse": "That number is already on another account."
     },
     "whatsapp": {
       "label": "WhatsApp alerts",
@@ -270,7 +280,9 @@
       },
       "openSession": "Open the session",
       "notFound": "We couldn't find that approval.",
-      "loading": "Loading…"
+      "loading": "Loading…",
+      "needsPasskey": "To approve high-risk actions, protect this device with your passkey.",
+      "enrolPasskey": "Create passkey"
     },
     "inbox": {
       "title": "Inbox",
@@ -330,17 +342,17 @@
     "timeline": {
       "label": "Activity",
       "type": {
-        "session.started": "Session started",
-        "session.state": "State change",
-        "message.user": "You",
-        "message.assistant": "Agent",
-        "tool.started": "Tool",
-        "tool.finished": "Tool finished",
-        "approval.requested": "Asked for approval",
-        "approval.resolved": "Approval resolved",
-        "question.asked": "Question",
+        "session_started": "Session started",
+        "session_state": "State change",
+        "message_user": "You",
+        "message_assistant": "Agent",
+        "tool_started": "Tool",
+        "tool_finished": "Tool finished",
+        "approval_requested": "Asked for approval",
+        "approval_resolved": "Approval resolved",
+        "question_asked": "Question",
         "usage": "Usage",
-        "card.updated": "Card",
+        "card_updated": "Card",
         "error": "Error"
       }
     },
@@ -369,12 +381,70 @@
       "device": "Sign in to save your settings; for now they're kept on this device.",
       "error": {
         "rejected": "Couldn't save: verify your phone and confirm that charges may apply first.",
-        "failed": "We couldn't save that change. Try again."
-      }
+        "failed": "We couldn't save that change. Try again.",
+        "phone_not_verified": "Verify your phone first.",
+        "charges_notice_required": "First confirm you understand that charges may apply.",
+        "country_not_supported": "Calls to this country aren't available."
+      },
+      "connectedApps": "Connected apps"
     },
     "notification": {
       "opening": "Opening…",
       "notFound": "That alert no longer exists or isn't yours."
+    },
+    "passkey": {
+      "title": "Protect your approvals with your passkey",
+      "body": "To approve high or critical risk actions from here, we'll ask for your fingerprint, face or security key. Your computer verifies it.",
+      "create": "Create passkey",
+      "enrolled": "This device has a passkey.",
+      "afterPairing": "Once you pair your computer, we'll ask you to create a passkey on this device.",
+      "cancelled": "You cancelled the passkey; you can try again.",
+      "error": "We couldn't create the passkey. Try again."
+    }
+  },
+  "mcp": {
+    "consent": {
+      "title": "{client} wants to connect to Chalito",
+      "redirect": "Afterwards you'll go back to",
+      "scopes": "Permissions requested",
+      "approve": "Allow",
+      "deny": "Don't allow",
+      "loading": "Loading…",
+      "missing": "The connection request is missing.",
+      "gone": "That request no longer exists or expired. Connect again from the app.",
+      "error": {
+        "not_found": "That request no longer exists.",
+        "no_passkey": "This device has no passkey.",
+        "passkey_failed": "We couldn't confirm with your passkey.",
+        "challenge_expired": "That took too long; try again.",
+        "forbidden": "This device can't approve connections.",
+        "error": "Something went wrong. Try again."
+      },
+      "badRedirect": "The return address isn't safe; we won't send you there.",
+      "needsDevice": "To allow it, open this page on a paired device.",
+      "needsPasskey": "Allowing it asks for your passkey.",
+      "enrolPasskey": "Create passkey"
+    },
+    "connectors": {
+      "title": "Connected apps",
+      "empty": "You have no connected apps.",
+      "loading": "Loading…",
+      "failed": "We couldn't load your connected apps.",
+      "signedOut": "Sign in to see your connected apps.",
+      "lastUsed": "Used {when}",
+      "neverUsed": "Not used yet",
+      "revoke": "Disconnect",
+      "revokeConfirm": "Disconnect {name}? It loses access immediately.",
+      "revokeYes": "Yes, disconnect",
+      "cancel": "Cancel"
+    },
+    "sharing": {
+      "label": "Share card with connected apps",
+      "warning": "The card (goal, state and last action) will be stored unencrypted so your connected apps can read it.",
+      "ack": "I understand it's stored unencrypted.",
+      "confirm": "Share",
+      "cancel": "Cancel",
+      "failed": "We couldn't change it."
     }
   }
 }

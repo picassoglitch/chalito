@@ -2,10 +2,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SettingContext, SettingsValues } from "@chalito/ui";
 import { isOnboarded, loadSettings, markOnboarded, saveSettings } from "@/lib/local";
-import { SettingsError } from "@/lib/settings-store";
+import { SettingsError, type SettingsErrorCode } from "@/lib/settings-store";
 import { useChalito } from "./ChalitoProvider";
 
-export type SaveError = "rejected" | "failed" | null;
+export type SaveError = Exclude<SettingsErrorCode, "companion_exists"> | null;
 
 /**
  * Settings from the server (get/update_my_settings) when signed in, else on this device.
@@ -65,7 +65,7 @@ export const useSettings = () => {
     void store
       .save(k, v)
       .catch((err: unknown) =>
-        setError(err instanceof SettingsError && err.code === "rejected" ? "rejected" : "failed"),
+        setError(err instanceof SettingsError && err.code !== "companion_exists" ? err.code : "failed"),
       )
       .finally(() => void reload().catch(() => undefined));
   };

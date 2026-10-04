@@ -17,6 +17,7 @@ vi.mock("@/components/ChalitoProvider", () => ({
     client: null,
     deviceId: null,
     settings: null,
+    passkey: { available: false, enrolled: false, enroll: async () => "error" },
     phoneVerifier: {
       start: async () => ({ ok: true }),
       check: async (_e: string, code: string) =>
@@ -81,17 +82,21 @@ describe("onboarding", () => {
 
     expect(step()).toBe("phone");
     fireEvent.change(screen.getByLabelText("Número"), { target: { value: "55 1234 5678" } });
+    // The api needs the charges acknowledgement before it sends a code.
+    fireEvent.click(screen.getByLabelText("Entiendo que pueden aplicar cargos."));
     click("Enviar código");
     fireEvent.change(await screen.findByLabelText("Código"), { target: { value: "123456" } });
     click("Verificar");
     expect(await screen.findByTestId("phone-verified")).toBeTruthy();
-    fireEvent.click(screen.getByLabelText("Entiendo que pueden aplicar cargos."));
     fireEvent.click(screen.getByRole("switch", { name: /Avisos por WhatsApp/ }));
     expect(screen.getAllByTestId("charges-notice")[0]!.textContent).toBe("Pueden aplicar cargos.");
     click("Continuar");
 
     expect(step()).toBe("pair");
     expect(screen.getByRole("link", { name: "Ir a Descargar" }).getAttribute("href")).toBe("/descargar");
+    click("Continuar");
+    expect(step()).toBe("passkey");
+    expect(screen.getByText(/Cuando emparejes tu computadora/)).toBeTruthy();
     click("Terminar");
     await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/"));
     expect(localStorage.getItem("chalito.onboarded.v1")).toBe("true");

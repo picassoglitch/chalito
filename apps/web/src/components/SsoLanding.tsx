@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { env } from "@/lib/env";
 import { hubLaunchUrl } from "@/lib/hub";
+import { takeNext } from "@/lib/next-cookie";
 import { completeSso } from "@/lib/sso";
 import { supabase } from "@/lib/supabase";
 
@@ -30,7 +31,10 @@ export const SsoLanding = () => {
       { token, next },
       { apiBase: env.apiBase, fetch: window.fetch.bind(window), auth: client.auth },
     ).then((r) => {
-      if (r.ok) window.location.replace(r.next);
+      // The token's own `next` wins; else where the person was going before the hub sign-in
+      // (the hub drops `next`, so Chalito remembered it in the chalito_next cookie).
+      const remembered = takeNext();
+      if (r.ok) window.location.replace(next ? r.next : (remembered ?? "/"));
       else setFailed(r.reason === "missing_token" ? "missing" : "failed");
     });
   }, []);

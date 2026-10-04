@@ -84,6 +84,10 @@
     "done": {
       "title": "¡Listo!",
       "body": "{name} ya está contigo."
+    },
+    "passkey": {
+      "title": "Protege tus aprobaciones",
+      "body": "Las acciones de riesgo alto piden tu passkey."
     }
   },
   "settings": {
@@ -111,9 +115,15 @@
       "verified": "{number} verificado",
       "change": "Cambiar número",
       "wrongCode": "Ese código no es correcto.",
-      "expired": "El código venció. Pide otro.",
       "rateLimited": "Demasiados intentos. Espera un momento.",
-      "error": "No pudimos verificar el número. Inténtalo más tarde."
+      "error": "No pudimos verificar el número. Inténtalo más tarde.",
+      "channel": "Cómo recibir el código",
+      "by": {
+        "sms": "Por SMS",
+        "call": "Por llamada"
+      },
+      "willCall": "Te llamaremos para dictarte un código.",
+      "inUse": "Ese número ya está en otra cuenta."
     },
     "whatsapp": {
       "label": "Avisos por WhatsApp",
@@ -270,7 +280,9 @@
       },
       "openSession": "Ver la sesión",
       "notFound": "No encontramos esa aprobación.",
-      "loading": "Cargando…"
+      "loading": "Cargando…",
+      "needsPasskey": "Para aprobar acciones de riesgo alto, protege este dispositivo con tu passkey.",
+      "enrolPasskey": "Crear passkey"
     },
     "inbox": {
       "title": "Bandeja",
@@ -330,17 +342,17 @@
     "timeline": {
       "label": "Actividad",
       "type": {
-        "session.started": "Sesión iniciada",
-        "session.state": "Cambio de estado",
-        "message.user": "Tú",
-        "message.assistant": "Agente",
-        "tool.started": "Herramienta",
-        "tool.finished": "Herramienta terminada",
-        "approval.requested": "Pidió aprobación",
-        "approval.resolved": "Aprobación resuelta",
-        "question.asked": "Pregunta",
+        "session_started": "Sesión iniciada",
+        "session_state": "Cambio de estado",
+        "message_user": "Tú",
+        "message_assistant": "Agente",
+        "tool_started": "Herramienta",
+        "tool_finished": "Herramienta terminada",
+        "approval_requested": "Pidió aprobación",
+        "approval_resolved": "Aprobación resuelta",
+        "question_asked": "Pregunta",
         "usage": "Uso",
-        "card.updated": "Tarjeta",
+        "card_updated": "Tarjeta",
         "error": "Error"
       }
     },
@@ -369,12 +381,70 @@
       "device": "Entra con tu cuenta para guardar tus ajustes; por ahora se guardan en este dispositivo.",
       "error": {
         "rejected": "No se pudo guardar: primero verifica tu teléfono y confirma que pueden aplicar cargos.",
-        "failed": "No pudimos guardar el cambio. Inténtalo de nuevo."
-      }
+        "failed": "No pudimos guardar el cambio. Inténtalo de nuevo.",
+        "phone_not_verified": "Primero verifica tu teléfono.",
+        "charges_notice_required": "Primero confirma que entiendes que pueden aplicar cargos.",
+        "country_not_supported": "Las llamadas a este país no están disponibles."
+      },
+      "connectedApps": "Apps conectadas"
     },
     "notification": {
       "opening": "Abriendo…",
       "notFound": "Ese aviso ya no existe o no es tuyo."
+    },
+    "passkey": {
+      "title": "Protege tus aprobaciones con tu passkey",
+      "body": "Para aprobar acciones de riesgo alto o crítico desde aquí te pediremos tu huella, rostro o llave de seguridad. Tu computadora lo verifica.",
+      "create": "Crear passkey",
+      "enrolled": "Este dispositivo ya tiene passkey.",
+      "afterPairing": "Cuando emparejes tu computadora te pediremos crear una passkey en este dispositivo.",
+      "cancelled": "Cancelaste la passkey; puedes intentarlo de nuevo.",
+      "error": "No pudimos crear la passkey. Inténtalo de nuevo."
+    }
+  },
+  "mcp": {
+    "consent": {
+      "title": "{client} quiere conectarse a Chalito",
+      "redirect": "Después volverás a",
+      "scopes": "Permisos que pide",
+      "approve": "Permitir",
+      "deny": "No permitir",
+      "loading": "Cargando…",
+      "missing": "Falta la solicitud de conexión.",
+      "gone": "Esa solicitud ya no existe o venció. Vuelve a conectar desde la app.",
+      "error": {
+        "not_found": "Esa solicitud ya no existe.",
+        "no_passkey": "Este dispositivo no tiene passkey.",
+        "passkey_failed": "No se pudo confirmar con tu passkey.",
+        "challenge_expired": "Tardaste demasiado; inténtalo de nuevo.",
+        "forbidden": "Este dispositivo no puede aprobar conexiones.",
+        "error": "Algo falló. Inténtalo de nuevo."
+      },
+      "badRedirect": "La dirección de regreso no es segura; no te enviamos ahí.",
+      "needsDevice": "Para permitirlo, abre esta página en un dispositivo emparejado.",
+      "needsPasskey": "Permitirlo pide tu passkey.",
+      "enrolPasskey": "Crear passkey"
+    },
+    "connectors": {
+      "title": "Apps conectadas",
+      "empty": "No tienes apps conectadas.",
+      "loading": "Cargando…",
+      "failed": "No pudimos cargar tus apps conectadas.",
+      "signedOut": "Entra con tu cuenta para ver tus apps conectadas.",
+      "lastUsed": "Usada {when}",
+      "neverUsed": "Aún no se ha usado",
+      "revoke": "Desconectar",
+      "revokeConfirm": "¿Desconectar {name}? Dejará de tener acceso de inmediato.",
+      "revokeYes": "Sí, desconectar",
+      "cancel": "Cancelar"
+    },
+    "sharing": {
+      "label": "Compartir tarjeta con apps conectadas",
+      "warning": "La tarjeta (objetivo, estado y última acción) se guardará sin cifrar para que tus apps conectadas la lean.",
+      "ack": "Entiendo que se guarda sin cifrar.",
+      "confirm": "Compartir",
+      "cancel": "Cancelar",
+      "failed": "No pudimos cambiarlo."
     }
   }
 }

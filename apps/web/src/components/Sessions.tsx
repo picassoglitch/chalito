@@ -5,6 +5,7 @@ import { ActionError, type EventView, type SessionView } from "@chalito/client";
 import type { RemotePermissionMode } from "@chalito/protocol";
 import { Link } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
+import { SharingToggle } from "./SharingToggle";
 
 /** The only modes a remote surface may set (the device policy is still the ceiling). Never bypassPermissions. */
 export const REMOTE_MODES: readonly RemotePermissionMode[] = ["default", "plan", "acceptEdits"];
@@ -54,7 +55,10 @@ const Timeline = ({ events }: { events: readonly EventView[] }) => {
         const body = text(e.content);
         return (
           <li key={e.eid} data-testid="event" data-type={e.type} className="rounded-lg border bg-white p-2 text-sm">
-            <span className="font-medium">{t.has(`type.${e.type}`) ? t(`type.${e.type}`) : e.type}</span>
+            {/* Message keys can't contain "." (next-intl nesting): session.started → session_started. */}
+            <span className="font-medium">
+              {t.has(`type.${e.type.replace(/\./g, "_")}`) ? t(`type.${e.type.replace(/\./g, "_")}`) : e.type}
+            </span>
             {body ? <p className="mt-1 whitespace-pre-wrap">{body}</p> : null}
           </li>
         );
@@ -188,6 +192,7 @@ export const SessionDetail = ({ sid }: { sid: string }) => {
       ) : (
         <p className="text-sm text-neutral-600">{t("sealed")}</p>
       )}
+      <SharingToggle scope="session" target={sid} />
       {pendingQuestions.map((q) => (
         <QuestionForm key={q.questionId} sid={sid} q={q} onSent={() => setNote(t("answerSent"))} />
       ))}

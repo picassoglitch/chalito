@@ -71,10 +71,16 @@ export const canOptIn = (v: Pick<SettingsValues, "phone" | "chargesAck">): boole
 
 export const chargesApply = (v: Pick<SettingsValues, "whatsapp" | "calls">): boolean => v.whatsapp || v.calls;
 
-/** Phone verification (api route, Twilio Verify behind it). Injected so the shells and tests can mock it. */
+/**
+ * Phone verification through the api (apps/api phone routes, Twilio Verify behind them). The
+ * charges acknowledgement comes first: `start` requires it. Injected so shells and tests can mock it.
+ */
 export interface PhoneVerifier {
-  /** Sends a code to `e164`. */
-  start(e164: string): Promise<{ ok: true } | { ok: false; reason: "invalid" | "rate_limited" | "error" }>;
-  /** Checks the code; on success the server stores the number as verified. */
-  check(e164: string, code: string): Promise<{ ok: true } | { ok: false; reason: "wrong_code" | "expired" | "error" }>;
+  /** Sends a code by SMS or a voice call. Only callable after "Entiendo que pueden aplicar cargos". */
+  start(
+    e164: string,
+    opts: { channel: "sms" | "call"; locale: "es" | "en" },
+  ): Promise<{ ok: true } | { ok: false; reason: "invalid" | "charges_notice_required" | "rate_limited" | "error" }>;
+  /** Checks the code; on success the server stores the number as verified (and records the acknowledgement). */
+  check(e164: string, code: string): Promise<{ ok: true } | { ok: false; reason: "wrong_code" | "in_use" | "error" }>;
 }
