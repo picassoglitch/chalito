@@ -94,7 +94,12 @@ describe("adding a browser (/v1/endorse)", () => {
     expect(await approveTarget(srv.api, signer(trusted), r.target, { owner: OWNER, now: Date.now() })).toEqual({
       ok: true,
     });
-    expect(await w.result).toEqual({ ok: true, deviceId: saved[0]!.deviceId, customToken: "tok" });
+    expect(await w.result).toEqual({
+      ok: true,
+      deviceId: saved[0]!.deviceId,
+      customToken: "tok",
+      introduced: { trusted: [], dropped: [] },
+    });
     expect(srv.calls).toContain("/v1/devices/endorsed");
   });
 

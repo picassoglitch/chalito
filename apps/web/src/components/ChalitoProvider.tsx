@@ -9,6 +9,7 @@ import {
   resolveTarget,
   waitForEndorsement,
   type AddError,
+  type DirectoryRow,
   type Resolved,
   type WaitError,
   type Waiting,
@@ -151,6 +152,30 @@ const loadPlatform = async (): Promise<Platform> => {
  * data, decisions, consent approval and sharing all use that device session. A revoked device
  * lands on the "revoked" state and forgets the agents it trusted.
  */
+type DirectoryDb = {
+  from(t: string): {
+    select(c: string): {
+      eq(c: string, v: unknown): PromiseLike<{ data: Record<string, unknown>[] | null; error: unknown }>;
+    };
+  };
+};
+/** The account's devices directory (RLS), for vetting introduced computers (ADR 0018). */
+const readDirectory = async (db: unknown, owner: string): Promise<DirectoryRow[]> => {
+  const { data, error } = await (db as DirectoryDb)
+    .from("devices")
+    .select("device_id, role, revoked, pub_sign, pub_box, name")
+    .eq("owner", owner);
+  if (error || !data) throw new Error("directory");
+  return data.map((r) => ({
+    deviceId: String(r.device_id),
+    role: r.role === "agent" ? "agent" : "client",
+    revoked: r.revoked !== false,
+    pubSign: String(r.pub_sign ?? ""),
+    pubBox: String(r.pub_box ?? ""),
+    name: String(r.name ?? ""),
+  }));
+};
+
 const newDevice =
   (platform: Platform, owner: string, token: () => Promise<string | null>) =>
   async (name: string): Promise<Waiting | { error: WaitError }> => {
@@ -160,6 +185,9 @@ const newDevice =
       save: (k) => platform.saveDeviceKeys(k),
       owner,
       name,
+      // Read with the person's session, before this browser switches to its own.
+      directory: () => readDirectory(platform.db, owner),
+      trustIntroduced: (k, agents, by) => platform.trustIntroduced(k, agents, by),
     });
     if ("error" in w) return w;
     return {
@@ -192,13 +220,17 @@ const addDevice = (
   const api = platform.api(token);
   return {
     resolve: (input) => resolveTarget(api, input, Date.now()),
-    approve: (target) =>
-      approveTarget(api, keys.keys, target, {
+    approve: (target) => {
+      // Required when this device has a passkey: it signs the endorsement body itself (R-L13).
+      const ref = passkeyRef();
+      return approveTarget(api, keys.keys, target, {
         owner,
         now: Date.now(),
-        // The api requires a passkey step-up when this device has one.
-        ...(passkeyRef() ? { stepUp: () => platform.assertPasskey(token) } : {}),
-      }),
+        ...(ref ? { stepUp: platform.passkeyAssertion(ref) } : {}),
+        // ADR 0018: the new browser can prompt these computers right away.
+        agents: keys.keys.trustedAgents(),
+      });
+    },
   };
 };
 

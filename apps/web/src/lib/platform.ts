@@ -3,12 +3,15 @@ import {
   assertWithServerChallenge,
   deviceLogin,
   httpApi,
+  stepUpWithPasskey,
   type ApiClient,
+  type StepUpAssertion,
   type DeviceKeys as RawDeviceKeys,
 } from "@chalito/client-keys";
 import type { PhoneVerifier } from "@chalito/ui";
 import { env } from "./env";
-import { enrollPasskey, loadDeviceKeys, saveDeviceKeys, type DeviceKeys } from "./keys";
+import { enrollPasskey, loadDeviceKeys, saveDeviceKeys, trustIntroducedAgents, type DeviceKeys } from "./keys";
+import type { IntroducedAgent } from "@chalito/protocol";
 import { httpMcp, type McpApi } from "./mcp";
 import { apiPhone, type ChannelSetter } from "./phone";
 import { supabase } from "./supabase";
@@ -41,6 +44,10 @@ export interface Platform {
   endorseWatch: EndorseWatch;
   /** Stores a new identity for this browser (replacing the old one). */
   saveDeviceKeys(keys: RawDeviceKeys): Promise<void>;
+  /** This device's passkey as an assertion over a given challenge (R-L13: bound to what it approves). */
+  passkeyAssertion(ref: { credentialId: string; rpId: string }): StepUpAssertion;
+  /** ADR 0018: stores introduced (vetted) computers in this browser's trust list. */
+  trustIntroduced(keys: RawDeviceKeys, agents: IntroducedAgent[], endorsedBy: string): Promise<void>;
 }
 
 export const productionPlatform = (): Platform => ({
@@ -60,4 +67,6 @@ export const productionPlatform = (): Platform => ({
   store: (token) => httpStore(env.apiBase, token),
   endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),
   saveDeviceKeys,
+  passkeyAssertion: (ref) => stepUpWithPasskey(ref),
+  trustIntroduced: trustIntroducedAgents,
 });

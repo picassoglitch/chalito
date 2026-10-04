@@ -25,7 +25,7 @@ const consumeDesktopHandoff = async (): Promise<DesktopHandoff | null> => {
  */
 export const SsoLanding = () => {
   const t = useTranslations("sso");
-  const [failed, setFailed] = useState<null | "missing" | "failed">(null);
+  const [failed, setFailed] = useState<null | "missing" | "failed" | "rate_limited">(null);
   const [desktop, setDesktop] = useState<string | null>(null);
   const started = useRef(false);
   useEffect(() => {
@@ -53,7 +53,8 @@ export const SsoLanding = () => {
         // (the hub drops `next`, so Chalito remembered it in the chalito_next cookie).
         const remembered = takeNext();
         if (r.ok) window.location.replace(next ? r.next : (remembered ?? "/"));
-        else setFailed(r.reason === "missing_token" ? "missing" : "failed");
+        else
+          setFailed(r.reason === "missing_token" ? "missing" : r.reason === "rate_limited" ? "rate_limited" : "failed");
       });
     };
 
@@ -78,8 +79,11 @@ export const SsoLanding = () => {
   if (!failed) return <p aria-live="polite">{t("working")}</p>;
   return (
     <div className="grid gap-3" role="alert">
-      <p>{failed === "missing" ? t("missingToken") : t("failed")}</p>
-      {hubLaunchUrl() ? (
+      <p data-reason={failed}>
+        {failed === "missing" ? t("missingToken") : failed === "rate_limited" ? t("rateLimited") : t("failed")}
+      </p>
+      {/* Rate limited: no relaunch offered; another sign-in right away would be refused too. */}
+      {failed !== "rate_limited" && hubLaunchUrl() ? (
         <a className="w-fit rounded-lg border px-4 py-2" href={hubLaunchUrl()!}>
           {t("retry")}
         </a>

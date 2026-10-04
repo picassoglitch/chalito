@@ -39,7 +39,8 @@
       "title": "Abre Chalito para terminar",
       "body": "Entraste con tu cuenta. Vuelve a la app de escritorio para terminar de entrar.",
       "open": "Abrir Chalito"
-    }
+    },
+    "rateLimited": "Demasiados intentos, espera un momento y vuelve a entrar."
   },
   "onboarding": {
     "title": "Primeros pasos",
@@ -379,7 +380,12 @@
       "cancel": "Cancelar",
       "revokeSent": "Retiro enviado a tus computadoras.",
       "failed": "No pudimos enviarlo.",
-      "add": "Añadir un dispositivo"
+      "add": "Añadir un dispositivo",
+      "notices": {
+        "title": "Avisos de seguridad",
+        "missingStepUp": "{computer} rechazó un dispositivo nuevo porque la aprobación no tenía tu llave de acceso. Apruébalo otra vez con la llave de acceso.",
+        "refused": "{computer} rechazó un dispositivo nuevo: la aprobación no era válida. Apruébalo otra vez."
+      }
     },
     "settings": {
       "server": "Tus ajustes se guardan en tu cuenta.",
@@ -482,7 +488,9 @@
         "device_exists": "Este navegador ya estaba registrado. Muestra un código nuevo.",
         "rejected": "No se aceptó la aprobación. Vuelve a intentarlo.",
         "failed": "Algo salió mal. Vuelve a intentarlo."
-      }
+      },
+      "doneIntroduced": "Ya puedes enviar instrucciones a {computers}: tu otro dispositivo te las presentó.",
+      "doneDropped": "{computer}: no pudimos confirmarla. Emparéjala con su anillo para enviarle instrucciones."
     },
     "add": {
       "title": "Añadir un dispositivo",

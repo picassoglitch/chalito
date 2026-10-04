@@ -39,7 +39,8 @@
       "title": "Open Chalito to finish",
       "body": "You're signed in. Go back to the desktop app to finish signing in.",
       "open": "Open Chalito"
-    }
+    },
+    "rateLimited": "Too many attempts. Wait a moment, then sign in again."
   },
   "onboarding": {
     "title": "Get started",
@@ -379,7 +380,12 @@
       "cancel": "Cancel",
       "revokeSent": "Removal sent to your computers.",
       "failed": "We couldn't send it.",
-      "add": "Add a device"
+      "add": "Add a device",
+      "notices": {
+        "title": "Security notices",
+        "missingStepUp": "{computer} refused a new device because the approval didn't include your passkey. Approve it again with your passkey.",
+        "refused": "{computer} refused a new device: the approval wasn't valid. Approve it again."
+      }
     },
     "settings": {
       "server": "Your settings are saved to your account.",
@@ -482,7 +488,9 @@
         "device_exists": "This browser was already registered. Show a new code.",
         "rejected": "The approval wasn't accepted. Try again.",
         "failed": "Something went wrong. Try again."
-      }
+      },
+      "doneIntroduced": "You can send instructions to {computers} right away: your other device introduced them.",
+      "doneDropped": "{computer}: we couldn't confirm it. Pair it with its ring to send it instructions."
     },
     "add": {
       "title": "Add a device",

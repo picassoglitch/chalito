@@ -39,13 +39,15 @@ test("the launch token doesn't stay in the address bar", async ({ page }) => {
 });
 
 test("/n/<nid> signed out → hub sign-in (no next) → /auth/sso → back at /n/<nid>", async ({ page, context }) => {
-  let launched = "";
+  const launches: string[] = [];
   await page.route("https://hub.example/**", async (r) => {
-    launched = r.request().url();
+    launches.push(r.request().url());
     await r.fulfill({ body: "hub" });
   });
   await page.goto("/n/n1");
-  await expect.poll(() => launched).toBe("https://hub.example/auth/launch/chalito");
+  // On the hub before going on (the redirect's navigation must have committed), and only once.
+  await page.waitForURL("https://hub.example/auth/launch/chalito");
+  expect(launches).toEqual(["https://hub.example/auth/launch/chalito"]);
   const cookie = (await context.cookies()).find((c) => c.name === "chalito_next");
   expect(cookie).toMatchObject({ value: "%2Fn%2Fn1", path: "/", sameSite: "Lax" });
 
@@ -54,6 +56,17 @@ test("/n/<nid> signed out → hub sign-in (no next) → /auth/sso → back at /n
   await page.goto("/auth/sso?token=hub.launch.token");
   await expect(page).toHaveURL(/\/n\/n1$/);
   expect((await context.cookies()).find((c) => c.name === "chalito_next")).toBeUndefined();
+  expect(launches).toHaveLength(1);
+});
+
+test("a rate-limited exchange (429) says to wait and offers no relaunch", async ({ page }) => {
+  await page.route(`${API}/sso/exchange`, (r) =>
+    r.fulfill({ status: 429, headers: { "retry-after": "30" }, json: { error: "rate_limited" } }),
+  );
+  await page.goto("/auth/sso?token=t");
+  await expect(page.locator("main [role=alert]")).toContainText("Demasiados intentos, espera un momento");
+  await expect(page.locator("main [role=alert] a")).toHaveCount(0);
+  expect(await storedSession(page)).toBeNull();
 });
 
 for (const tampered of ["https%3A%2F%2Fevil.example%2F", "%2F%2Fevil.example", "%2Fapi%2Fanything"]) {
