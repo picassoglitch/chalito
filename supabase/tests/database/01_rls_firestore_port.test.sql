@@ -2,24 +2,30 @@
 -- revocation cases. Run with `supabase test db`.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(68);
+select plan(74);
 
 -- ---------------------------------------------------------------- helpers
--- Act as a Chalito principal: the claims PostgREST would set after verifying the JWT.
+-- Act as a Chalito principal: the claims PostgREST would set after verifying the JWT. Devices are
+-- Supabase Auth users (sub = the device's auth user id, md5(device_id) in these fixtures) with
+-- app_metadata.chalito set by the API; a person's web session is their hub account (sub = owner).
 create function pg_temp.login(claims jsonb) returns void language plpgsql as $$
 begin
   perform set_config('request.jwt.claims',
-    (jsonb_build_object('role', 'authenticated', 'aud', 'authenticated', 'iss', 'chalito') || claims)::text, true);
+    (jsonb_build_object('role', 'authenticated', 'aud', 'authenticated') || claims)::text, true);
   set local role authenticated;
 end $$;
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language sql as $$
-  select pg_temp.login(jsonb_build_object('owner', owner, 'device_id', device, 'chalito_role', chalito_role)) $$;
+  select pg_temp.login(jsonb_build_object('sub', md5(device)::uuid, 'app_metadata', jsonb_build_object(
+    'provider', 'chalito', 'chalito', jsonb_build_object('owner', owner, 'device_id', device, 'role', chalito_role)))) $$;
+create function pg_temp.as_pairing(code text) returns void language sql as $$
+  select pg_temp.login(jsonb_build_object('sub', md5('watch:' || code)::uuid, 'app_metadata', jsonb_build_object(
+    'chalito', jsonb_build_object('role', 'pairing', 'pairing_code', code)))) $$;
 create function pg_temp.as_client(owner text, device text) returns void language sql as $$
   select pg_temp.as_device(owner, device, 'client') $$;
 create function pg_temp.as_agent(owner text, device text) returns void language sql as $$
   select pg_temp.as_device(owner, device, 'agent') $$;
 create function pg_temp.as_user(owner text) returns void language sql as $$
-  select pg_temp.login(jsonb_build_object('owner', owner, 'chalito_role', 'user')) $$;
+  select pg_temp.login(jsonb_build_object('sub', owner, 'app_metadata', '{"provider": "email"}'::jsonb)) $$;
 create function pg_temp.logout() returns void language plpgsql as $$
 begin
   reset role;
@@ -50,6 +56,8 @@ values
   ('user-1', 'oldphone', 'client', 'phone',   'ios',   'Old phone', 'ps', 'pb', 'fp', 'first_client', true),
   ('user-1', 'oldagent', 'agent',  'desktop', 'linux', 'Old desk',  'ps', 'pb', 'fp', 'pairing',      true),
   ('user-2', 'phoneX',   'client', 'phone',   'ios',   'Other',     'ps', 'pb', 'fp', 'first_client', false);
+update chalito.devices set auth_user_id = md5(device_id)::uuid;
+insert into chalito.sessions (owner, sid, device_id) values ('user-1', 's1', 'agent1');
 insert into chalito.commands (owner, target_device_id, id, env, from_device_id)
 values ('user-1', 'agent1', 'c1', '{"ctx": "chalito.command.v1"}', 'phone1');
 insert into chalito.approvals (owner, aid, device_id, sid, request_id, kind, risk, origin, step_up_required,
@@ -63,6 +71,7 @@ values
   ('code123', repeat('a', 64), '{}', 'agentNew', 'desktop', 'linux', now() + interval '5 minutes'),
   ('other',   repeat('b', 64), '{}', 'agentNew2', 'desktop', 'linux', now() + interval '5 minutes'),
   ('stale',   repeat('c', 64), '{}', 'agentNew3', 'desktop', 'linux', now() - interval '1 second');
+update chalito.pairing_codes set watch_auth_user_id = md5('watch:' || code_id)::uuid;
 
 -- ================================================================ commands
 -- Firestore: "an active client of the same owner may send a command to an agent"
@@ -223,22 +232,37 @@ select is(pg_temp.count($$select 1 from chalito.devices where owner = 'user-1'$$
   'devices: another account can''t');
 
 -- ================================================================ approvals
--- "a client may attach a decision only; the agent resolves only status fields"
+-- Firestore: "a client may attach a decision only; the agent resolves only status fields". Since the
+-- security review (S6) decisions are insert-only rows in approval_decisions, one per signer.
 select pg_temp.as_client('user-1', 'phone1');
-select is(pg_temp.affected($$update chalito.approvals set decision = '{"sig": "x"}' where aid = 'a1'$$), 1,
-  'approvals: a client attaches a decision while pending');
-select throws_ok($$update chalito.approvals set status = 'approved' where aid = 'a1'$$, '42501', null,
+select lives_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
+  values ('user-1', 'a1', 'phone1', '{"sig": "x"}')$$, 'approvals: a client attaches a decision while pending');
+select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
+  values ('user-1', 'a1', 'phone1', '{"sig": "again"}')$$, '23505', null,
+  'approvals: a signer''s decision can''t be replaced');
+select throws_ok($$update chalito.approval_decisions set decision = '{"sig": "y"}' where aid = 'a1'$$, '42501', null,
+  'approvals: decisions are never updated');
+select throws_ok($$delete from chalito.approval_decisions where aid = 'a1'$$, '42501', null,
+  'approvals: or deleted');
+select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
+  values ('user-1', 'a1', 'someoneelse', '{"sig": "x"}')$$, '42501', null, 'approvals: a client can''t sign as another device');
+select is(pg_temp.affected($$update chalito.approvals set status = 'approved' where aid = 'a1'$$), 0,
   'approvals: a client can''t set the status');
-select throws_ok($$update chalito.approvals set expires_at = now() where aid = 'a1'$$, '42501', null,
-  'approvals: a client can''t touch other columns');
+select pg_temp.as_client('user-1', 'oldphone');
+select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
+  values ('user-1', 'a1', 'oldphone', '{"sig": "x"}')$$, '42501', null, 'approvals: a revoked client can''t decide');
 select pg_temp.as_agent('user-1', 'agent1');
-select throws_ok($$update chalito.approvals set decision = '{"sig": "forged"}' where aid = 'a1'$$, '42501', null,
-  'approvals: the agent can''t write a decision');
+select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
+  values ('user-1', 'a1', 'agent1', '{"sig": "forged"}')$$, '42501', null, 'approvals: the agent can''t write a decision');
+select is(pg_temp.count($$select 1 from chalito.approval_decisions where aid = 'a1'$$), 1,
+  'approvals: the agent reads the decisions');
+select throws_ok($$update chalito.approvals set expires_at = now() where aid = 'a1'$$, '42501', null,
+  'approvals: the agent can''t touch other columns');
 select is(pg_temp.affected($$update chalito.approvals set status = 'approved', resolved_at = now(),
   reason = 'signed_allow' where aid = 'a1'$$), 1, 'approvals: the owning agent resolves it');
 select pg_temp.as_client('user-1', 'phone1');
-select is(pg_temp.affected($$update chalito.approvals set decision = '{"sig": "late"}' where aid = 'a1'$$), 0,
-  'approvals: no decisions once resolved');
+select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
+  values ('user-1', 'a1', 'phone1', '{"sig": "late"}')$$, '42501', null, 'approvals: no decisions once resolved');
 select pg_temp.as_agent('user-1', 'agent1');
 select throws_ok($$insert into chalito.approvals (owner, aid, device_id, sid, request_id, kind, risk, origin,
   step_up_required, details_ct, status, expires_at) values ('user-1', 'a2', 'agent1', 's1', 'r2', 'tool', 'LOW',
@@ -250,7 +274,7 @@ select lives_ok($$insert into chalito.approvals (owner, aid, device_id, sid, req
 
 -- ================================================================ sessions / events
 select pg_temp.as_agent('user-1', 'agent1');
-select lives_ok($$insert into chalito.sessions (owner, sid, device_id, doc) values ('user-1', 's1', 'agent1', '{"state": "running"}')$$,
+select lives_ok($$insert into chalito.sessions (owner, sid, device_id, doc) values ('user-1', 's9', 'agent1', '{"state": "running"}')$$,
   'sessions: an agent writes its own session');
 select throws_ok($$insert into chalito.sessions (owner, sid, device_id, doc) values ('user-1', 's2', 'phone1', '{}')$$,
   '42501', null, 'sessions: not on behalf of another device');
@@ -274,13 +298,13 @@ select is(pg_temp.affected($$update chalito.companions set name = 'Batman', is_r
   'companions: a client renames the companion');
 
 -- "a pairing watch token reads only its own code"
-select pg_temp.login('{"chalito_role": "pairing", "owner": "pairing", "pairing_code": "code123"}');
+select pg_temp.as_pairing('code123');
 select is(pg_temp.count($$select 1 from chalito.pairing_codes where code_id = 'code123'$$), 1,
   'pairing: the watch token reads its code');
 select is(pg_temp.count($$select 1 from chalito.pairing_codes where code_id = 'other'$$), 0,
   'pairing: not another code');
 select is(pg_temp.count($$select 1 from chalito.users$$), 0, 'pairing: nothing else');
-select pg_temp.login('{"chalito_role": "pairing", "owner": "pairing", "pairing_code": "stale"}');
+select pg_temp.as_pairing('stale');
 select is(pg_temp.count($$select 1 from chalito.pairing_codes$$), 0, 'pairing: an expired code is invisible');
 select pg_temp.as_client('user-1', 'phone1');
 select is(pg_temp.count($$select 1 from chalito.pairing_codes$$), 0, 'pairing: a client can''t read codes');

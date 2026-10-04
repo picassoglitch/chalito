@@ -109,6 +109,9 @@ jobs:
           export API_URL ANON_KEY SERVICE_ROLE_KEY
           export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
           pnpm --filter @chalito/agent test:supabase
+      # Realtime delivery (supabase-js against the local stack).
+      - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
+      - run: node supabase/scripts/realtime-latency.mjs
       - if: always()
         run: supabase stop --no-backup
 
