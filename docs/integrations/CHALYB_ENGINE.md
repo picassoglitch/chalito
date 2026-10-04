@@ -63,6 +63,8 @@ Chalito's tables live in schemas `chalito` and `chalito_private` on the hub's Su
 - **Device users in `auth.users`:** each paired device is a Supabase Auth user with `app_metadata.chalito = {owner, device_id, role}`. The hub's `auth.users` triggers and policies must ignore these users (a guard on `app_metadata ? 'chalito'`), and hub policies keyed on `auth.uid()` must not match them.
 - **`service_role`:** revoked from the Chalito schemas. Chalito's servers use the `chalito_server` role.
 - **Realtime:** Chalito's `realtime.messages` policies are scoped to `chalito:*` topics. Confirm that the hub's own policies don't grant those topics, and that the quota is shared.
+- **Exposed schemas:** add `chalito` to the Data API's exposed schemas (not `chalito_private`), and keep it out of pg_graphql introspection.
+- **Realtime "Allow public access" off:** Chalito's topics are private. Check that no hub feature relies on public channels before turning it off.
 - **pg_cron and pgcrypto:** Chalito's migrations create the extensions if missing and schedule `chalito-*` jobs (TTL purge, room purge, rate-limit buckets).
 - **Applying the migrations** (`supabase/migrations/2026100400*`) to nexo-ai is an owner action, after a dry run on a branch.
 
