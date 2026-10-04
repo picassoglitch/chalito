@@ -489,6 +489,58 @@ importers:
         specifier: ^3.0.2
         version: 3.0.2(@types/node@22.20.5)(typescript@5.9.3)(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
 
+  apps/rehearsal:
+    dependencies:
+      '@chalito/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@chalito/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
+      '@chalito/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@chalito/client-keys':
+        specifier: workspace:*
+        version: link:../../packages/client-keys
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@chalito/glyph':
+        specifier: workspace:*
+        version: link:../../packages/glyph
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
+      '@modelcontextprotocol/client':
+        specifier: 2.3.0
+        version: 2.3.0
+      '@supabase/supabase-js':
+        specifier: ^2.117.2
+        version: 2.117.2(@opentelemetry/api@1.9.1)
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
+      msw:
+        specifier: ^3.0.2
+        version: 3.0.2(@types/node@22.20.5)(typescript@5.9.3)(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+      web-push:
+        specifier: ^3.6.7
+        version: 3.6.7
+    devDependencies:
+      '@types/web-push':
+        specifier: ^3.6.4
+        version: 3.6.4
+
   apps/web:
     dependencies:
       '@chalito/brand':
