@@ -49,7 +49,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://*.supabase.co wss://*.supabase.co"
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://api.chalito.chalyb.com https://*.supabase.co wss://*.supabase.co"
     }
   },
   "bundle": {
