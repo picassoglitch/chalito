@@ -114,7 +114,16 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
         .manage(state.clone());
+    // The updater exists only in release builds: CI adds `plugins.updater` (public key +
+    // endpoint) through the release config overlay. Dev and plain debug builds have no updater.
+    let context = tauri::generate_context!();
+    let builder = if has_updater(&context.config().plugins.0) {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        builder
+    };
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         set_hit_box,
@@ -130,12 +139,28 @@ pub fn run() {
             spawn_cursor_poll(app.handle().clone(), state.clone());
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running the Chalito desktop app");
+}
+
+/// Whether the build carries an updater configuration (release overlay only).
+fn has_updater(plugins: &std::collections::HashMap<String, serde_json::Value>) -> bool {
+    plugins.get("updater").and_then(|u| u.get("pubkey")).and_then(|k| k.as_str()).is_some_and(|k| !k.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn updater_only_with_a_public_key() {
+        use std::collections::HashMap;
+        let none: HashMap<String, serde_json::Value> = HashMap::new();
+        assert!(!super::has_updater(&none));
+        let empty = HashMap::from([("updater".to_string(), serde_json::json!({ "pubkey": "" }))]);
+        assert!(!super::has_updater(&empty));
+        let set = HashMap::from([("updater".to_string(), serde_json::json!({ "pubkey": "dW50cnVzdGVk", "endpoints": [] }))]);
+        assert!(super::has_updater(&set));
+    }
+
     /// Run in CI with `cargo test --release`: the loopback must not exist in release builds.
     #[test]
     fn dev_loopback_follows_debug_assertions() {

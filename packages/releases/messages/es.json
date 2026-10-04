@@ -1,0 +1,21 @@
+{
+  "title": "Descarga Chalito para tu computadora",
+  "detected": "Detectamos {os}.",
+  "choose": "Elige tu sistema",
+  "os": { "windows": "Windows", "macos": "macOS", "linux": "Linux" },
+  "kinds": {
+    "nsis": "Instalador (.exe)",
+    "dmg": "Imagen de disco (.dmg, Apple Silicon e Intel)",
+    "appimage": "AppImage (cualquier distribución)",
+    "deb": "Paquete .deb (Debian, Ubuntu)",
+    "rpm": "Paquete .rpm (Fedora, openSUSE)"
+  },
+  "version": "Versión {version}",
+  "size": "{mb} MB",
+  "checksum": "SHA-256",
+  "unsigned": "Esta versión aún no está firmada. Tu sistema puede mostrar una advertencia al abrirla.",
+  "smartscreen": "La primera vez, Windows puede mostrar SmartScreen («Windows protegió tu PC»): elige «Más información» y luego «Ejecutar de todas formas».",
+  "mobile": "Chalito para computadora es para Windows, macOS y Linux. En tu teléfono, usa la app web.",
+  "unavailable": "Las descargas aún no están disponibles.",
+  "loading": "Cargando…"
+}

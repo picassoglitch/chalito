@@ -113,5 +113,19 @@
       "duplicate_param": "Invalid link."
     },
     "glyph": "Code to scan with your phone"
+  },
+  "updates": {
+    "title": "Updates",
+    "check": "Check for updates",
+    "checking": "Checking…",
+    "current": "You have the latest version.",
+    "available": "A new version is available: {version}.",
+    "install": "Download and install",
+    "downloading": "Downloading…",
+    "downloadingPct": "Downloading… {pct}%",
+    "ready": "Version {version} is ready. Restart Chalito to use it.",
+    "relaunch": "Restart now",
+    "unavailable": "This build doesn't update itself.",
+    "error": "Couldn't update. Try again later."
   }
 }

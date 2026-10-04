@@ -108,6 +108,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/releases':
+        specifier: workspace:*
+        version: link:../../packages/releases
       '@google-cloud/pubsub':
         specifier: ^6.1.0
         version: 6.1.0
@@ -120,6 +123,9 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.117.2
         version: 2.117.2(@opentelemetry/api@1.9.1)
+      google-auth-library:
+        specifier: ^11.1.0
+        version: 11.1.0
       hono:
         specifier: ^4.13.12
         version: 4.13.12
@@ -181,6 +187,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/releases':
+        specifier: workspace:*
+        version: link:../../packages/releases
       '@chalito/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -193,6 +202,12 @@ importers:
       '@tauri-apps/plugin-opener':
         specifier: 2.7.0
         version: 2.7.0
+      '@tauri-apps/plugin-process':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@tauri-apps/plugin-updater':
+        specifier: 2.13.1
+        version: 2.13.1
       react:
         specifier: ^19.3.0
         version: 19.3.0
@@ -230,6 +245,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.1.1
         version: 6.1.1(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      ajv:
+        specifier: 8.20.0
+        version: 8.20.0
       jsdom:
         specifier: ^30.1.1
         version: 30.1.1
@@ -642,6 +660,34 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+
+  packages/releases:
+    dependencies:
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../crypto
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+    devDependencies:
+      '@testing-library/react':
+        specifier: ^16.3.3
+        version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
+      '@vitejs/plugin-react':
+        specifier: ^6.1.1
+        version: 6.1.1(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      jsdom:
+        specifier: ^30.1.1
+        version: 30.1.1
+      react:
+        specifier: ^19.3.0
+        version: 19.3.0
+      react-dom:
+        specifier: ^19.3.0
+        version: 19.3.0(react@19.3.0)
 
   packages/rooms:
     dependencies:
@@ -2112,6 +2158,12 @@ packages:
 
   '@tauri-apps/plugin-opener@2.7.0':
     resolution: {integrity: sha512-mBorYfVKh9Lt7s4ZFtKbMUTxBw+Y/sVmSlKCtkkoBgMTC/DIbt/kaPm67L/2djAUqDI1wbixy5OHHVmipjuGMw==}
+
+  '@tauri-apps/plugin-process@2.4.0':
+    resolution: {integrity: sha512-GddrmsSLAYrLa/yTXlXK/YRDzUgYeeOnUXTbiyvJWkmI424RmDPD3FVLeqcon7rv6O6ZfhBilcrHWnSo7o6hIQ==}
+
+  '@tauri-apps/plugin-updater@2.13.1':
+    resolution: {integrity: sha512-+STDzJ0sdQLImjc63zkv6Nncimqeo6jyCWoTQtbSwgGLNj1qbP9I6LC4p5R5ocBk3gNKAZs6i/AJz0jxysytiw==}
 
   '@testing-library/dom@10.4.2':
     resolution: {integrity: sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==}
@@ -5273,6 +5325,14 @@ snapshots:
       '@tauri-apps/api': 2.12.1
 
   '@tauri-apps/plugin-opener@2.7.0':
+    dependencies:
+      '@tauri-apps/api': 2.12.1
+
+  '@tauri-apps/plugin-process@2.4.0':
+    dependencies:
+      '@tauri-apps/api': 2.12.1
+
+  '@tauri-apps/plugin-updater@2.13.1':
     dependencies:
       '@tauri-apps/api': 2.12.1
 

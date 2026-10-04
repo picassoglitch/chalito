@@ -8,6 +8,7 @@ import { phoneRoutes } from "./phone/routes.js";
 import { voiceRoutes } from "./voice/routes.js";
 import { pairingRoutes } from "./routes/pairing.js";
 import { recoveryRoutes } from "./routes/recovery.js";
+import { releasesRoutes } from "./routes/releases.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
 import { oauthRoutes } from "./routes/oauth.js";
 import { storeRoutes } from "./store/routes.js";
@@ -28,6 +29,7 @@ export const createApp = (deps: Deps) => {
   if (deps.voice) app.route("/v1/voice", voiceRoutes(deps, deps.voice));
   if (deps.store) app.route("/v1/store", storeRoutes(deps, deps.store));
   app.route("/v1/rooms", roomsRoutes(deps));
+  if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
     console.error("[api] unhandled", err instanceof Error ? err.message : "error");

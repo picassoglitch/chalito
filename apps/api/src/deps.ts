@@ -1,6 +1,7 @@
 import type { PhoneDeps } from "./phone/routes.js";
 import type { StoreDeps } from "./store/routes.js";
 import type { VoiceDeps } from "./voice/routes.js";
+import type { ReleaseStore } from "./releases/gcs.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import type { McpStore } from "./oauth/model.js";
 import type { RoomsRepo } from "./rooms/repo.js";
@@ -37,6 +38,8 @@ export interface Deps {
   rooms?: RoomsRepo;
   identity: IdentityIssuer;
   audit: AuditSink;
+  /** The private releases bucket (ADR 0014). Unset (dev, tests): /releases isn't mounted. */
+  releases?: ReleaseStore;
   config: ApiConfig;
   now: () => number;
   /** Phone verification and channel opt-ins (/v1/phone), when Twilio Verify is configured. */
