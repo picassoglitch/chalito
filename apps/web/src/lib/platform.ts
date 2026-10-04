@@ -1,8 +1,14 @@
-import type { BrowserSupabase } from "@chalito/client";
-import { assertWithServerChallenge, deviceLogin, httpApi } from "@chalito/client-keys";
+import { supabaseEndorseWatch, type BrowserSupabase, type EndorseWatch } from "@chalito/client";
+import {
+  assertWithServerChallenge,
+  deviceLogin,
+  httpApi,
+  type ApiClient,
+  type DeviceKeys as RawDeviceKeys,
+} from "@chalito/client-keys";
 import type { PhoneVerifier } from "@chalito/ui";
 import { env } from "./env";
-import { enrollPasskey, loadDeviceKeys, type DeviceKeys } from "./keys";
+import { enrollPasskey, loadDeviceKeys, saveDeviceKeys, type DeviceKeys } from "./keys";
 import { httpMcp, type McpApi } from "./mcp";
 import { apiPhone, type ChannelSetter } from "./phone";
 import { supabase } from "./supabase";
@@ -23,6 +29,12 @@ export interface Platform {
   mcp(token: () => Promise<string | null>): McpApi;
   enrollPasskey(keys: DeviceKeys["keys"], token: () => Promise<string | null>): Promise<void>;
   assertPasskey(token: () => Promise<string | null>): Promise<Record<string, unknown>>;
+  /** The api as whoever the bearer is (/v1/endorse: the person on a new browser, the device on a trusted one). */
+  api(token: () => Promise<string | null>): ApiClient;
+  /** Hears the endorsement pointer on `chalito:pairing:<codeId>` with the code's scoped watch token. */
+  endorseWatch: EndorseWatch;
+  /** Stores a new identity for this browser (replacing the old one). */
+  saveDeviceKeys(keys: RawDeviceKeys): Promise<void>;
 }
 
 export const productionPlatform = (): Platform => ({
@@ -37,4 +49,7 @@ export const productionPlatform = (): Platform => ({
   enrollPasskey: (keys, token) => enrollPasskey(keys, env.apiBase, token),
   assertPasskey: async (token) =>
     (await assertWithServerChallenge(httpApi({ baseUrl: env.apiBase, token }))) as unknown as Record<string, unknown>,
+  api: (token) => httpApi({ baseUrl: env.apiBase, token }),
+  endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),
+  saveDeviceKeys,
 });

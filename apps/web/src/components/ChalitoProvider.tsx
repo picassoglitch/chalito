@@ -1,9 +1,19 @@
 "use client";
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { DeviceRevokedError, connect, type ChalitoClient, type Snapshot } from "@chalito/client";
+import { DeviceRevokedError, connect, ensureSession, type ChalitoClient, type Snapshot } from "@chalito/client";
+import type { EndorseTarget } from "@chalito/client-keys";
 import type { PhoneVerifier } from "@chalito/ui";
 import type { DeviceKeys } from "@/lib/keys";
-import { passkeyRef } from "@/lib/keys";
+import {
+  approveTarget,
+  resolveTarget,
+  waitForEndorsement,
+  type AddError,
+  type Resolved,
+  type WaitError,
+  type Waiting,
+} from "@/lib/endorse";
+import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
 import type { Platform } from "@/lib/platform";
 import type { Session, SessionState } from "@/lib/session";
@@ -29,6 +39,18 @@ interface Ctx {
   assertPasskey: (() => Promise<Record<string, unknown>>) | null;
   /** Whether a session's or device's card is shared with connected apps (chalito.mcp_sharing, RLS read). */
   readSharing: ((scope: "session" | "device", target: string) => Promise<boolean>) | null;
+  /**
+   * "Esperando aprobación": this browser is signed in as the person but not trusted yet. Opens a
+   * code for a trusted device to approve; on success this browser signs in as itself. Null otherwise.
+   */
+  newDevice: ((name: string) => Promise<Waiting | { error: WaitError }>) | null;
+  /** "Añadir un dispositivo": a trusted (ready) browser endorses another one. Null otherwise. */
+  addDevice: AddDevice | null;
+}
+
+export interface AddDevice {
+  resolve(input: { glyph: unknown } | { shortCode: string }): Promise<Resolved>;
+  approve(target: EndorseTarget): Promise<{ ok: true } | { ok: false; reason: AddError }>;
 }
 
 type SharingDb = {
@@ -77,6 +99,8 @@ const INITIAL: Ctx = {
   mcp: null,
   assertPasskey: null,
   readSharing: null,
+  newDevice: null,
+  addDevice: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -99,6 +123,10 @@ export const ownerOf = (s: Session): string => {
   return typeof c?.owner === "string" ? c.owner : (s.user?.id ?? "");
 };
 
+/** The person's own session (hub SSO), as opposed to a device's (role client). */
+const isPersonSession = (s: Session): boolean =>
+  (s.user?.app_metadata as { chalito?: { role?: unknown } } | undefined)?.chalito?.role !== "client";
+
 const loadPlatform = async (): Promise<Platform> => {
   // DEV/TEST ONLY (never on Vercel; see next.config.ts): the mock backend. The env read is inlined
   // so webpack sees `if (false)` in normal builds and never emits src/dev.
@@ -113,6 +141,57 @@ const loadPlatform = async (): Promise<Platform> => {
  * data, decisions, consent approval and sharing all use that device session. A revoked device
  * lands on the "revoked" state and forgets the agents it trusted.
  */
+const newDevice =
+  (platform: Platform, owner: string, token: () => Promise<string | null>) =>
+  async (name: string): Promise<Waiting | { error: WaitError }> => {
+    const w = await waitForEndorsement({
+      api: platform.api(token),
+      watch: platform.endorseWatch,
+      save: (k) => platform.saveDeviceKeys(k),
+      owner,
+      name,
+    });
+    if ("error" in w) return w;
+    return {
+      ...w,
+      // Enrolled: from now on this browser is its own device user, not the person's session. The
+      // auth change reruns the connection, which now finds trusted keys.
+      result: w.result.then(async (r) => {
+        if (!r.ok) return r;
+        markEndorsed(r.deviceId);
+        try {
+          await ensureSession(platform.db.auth as never, {
+            kind: "device",
+            deviceId: r.deviceId,
+            login: async () => r.customToken,
+          });
+        } catch {
+          return { ok: false, reason: "failed" } as const;
+        }
+        return r;
+      }),
+    };
+  };
+
+const addDevice = (
+  platform: Platform,
+  keys: DeviceKeys,
+  owner: string,
+  token: () => Promise<string | null>,
+): AddDevice => {
+  const api = platform.api(token);
+  return {
+    resolve: (input) => resolveTarget(api, input, Date.now()),
+    approve: (target) =>
+      approveTarget(api, keys.keys, target, {
+        owner,
+        now: Date.now(),
+        // The api requires a passkey step-up when this device has one.
+        ...(passkeyRef() ? { stepUp: () => platform.assertPasskey(token) } : {}),
+      }),
+  };
+};
+
 export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
   const [ctx, setCtx] = useState<Ctx>(INITIAL);
   const [platform, setPlatform] = useState<Platform | null>(null);
@@ -176,7 +255,13 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         readSharing: sharingReader(platform.db),
       };
       const keys = await platform.loadDeviceKeys();
-      if (!keys) return done({ ...INITIAL, ...base, status: "unpaired" });
+      if (!keys)
+        return done({
+          ...INITIAL,
+          ...base,
+          status: "unpaired",
+          newDevice: isPersonSession(session.session) ? newDevice(platform, owner, token) : null,
+        });
       keysRef.current = keys;
       deviceMode.current = true;
       try {
@@ -209,6 +294,8 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
             },
           },
           assertPasskey: () => platform.assertPasskey(token),
+          newDevice: null,
+          addDevice: addDevice(platform, keys, owner, token),
         });
       } catch (err) {
         if (err instanceof DeviceRevokedError) {

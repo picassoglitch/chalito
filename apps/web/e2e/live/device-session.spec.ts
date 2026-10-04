@@ -49,7 +49,7 @@ test("revoked while connected: the gate says so, offers re-pairing, and the brow
   await ready(page, "/bandeja");
   await dev(page, "revokeMe");
   await expect(page.getByTestId("gate-revoked")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Emparejar de nuevo" })).toHaveAttribute("href", "/descargar");
+  await expect(page.getByRole("link", { name: "Emparejar de nuevo" })).toHaveAttribute("href", "/vincular");
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem("chalito.dev.paired"))).toBe("0");
 });
 

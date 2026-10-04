@@ -240,10 +240,11 @@
       "loading": "Conectando…",
       "signed_out": "Entra con tu cuenta de Chalyb para ver tus sesiones y aprobaciones.",
       "signIn": "Entrar con Chalyb",
-      "unpaired": "Este dispositivo aún no está emparejado. Emparéjalo desde la app de escritorio para aprobar y ver tus sesiones.",
+      "unpaired": "Este navegador aún no es de confianza. Apruébalo desde un dispositivo de confianza o emparéjalo desde la app de escritorio.",
       "error": "No pudimos conectar. Vuelve a intentarlo en un momento.",
       "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza.",
-      "repair": "Emparejar de nuevo"
+      "repair": "Emparejar de nuevo",
+      "link": "Usar este navegador"
     },
     "devMode": {
       "banner": "Modo desarrollador ACTIVO.",
@@ -380,7 +381,8 @@
       "revokeYes": "Sí, retirar",
       "cancel": "Cancelar",
       "revokeSent": "Retiro enviado a tus computadoras.",
-      "failed": "No pudimos enviarlo."
+      "failed": "No pudimos enviarlo.",
+      "add": "Añadir un dispositivo"
     },
     "settings": {
       "server": "Tus ajustes se guardan en tu cuenta.",
@@ -451,6 +453,76 @@
       "confirm": "Compartir",
       "cancel": "Cancelar",
       "failed": "No pudimos cambiarlo."
+    }
+  },
+  "endorse": {
+    "wait": {
+      "title": "Usar este navegador",
+      "body": "Para ver y aprobar tus sesiones aquí, un dispositivo en el que ya confías tiene que aprobar este navegador.",
+      "nameLabel": "Nombre de este navegador",
+      "start": "Mostrar código",
+      "loading": "Conectando…",
+      "signInFirst": "Primero entra con tu cuenta de Chalyb en este navegador.",
+      "signIn": "Entrar con Chalyb",
+      "unavailable": "No se puede añadir este navegador ahora. Vuelve a intentarlo en un momento.",
+      "waitingTitle": "Esperando aprobación",
+      "waitingBody": "En tu teléfono u otro navegador de confianza, abre Dispositivos → Añadir un dispositivo y escanea este anillo o escribe el código.",
+      "glyphLabel": "Anillo para escanear desde un dispositivo de confianza",
+      "orType": "o escribe este código:",
+      "fingerprint": "Huella de este navegador:",
+      "expiresIn": "Vence en {minutes}:{seconds}",
+      "whereToApprove": "Antes de aprobar, comprueba que la huella sea la misma en los dos dispositivos.",
+      "cancel": "Cancelar",
+      "doneTitle": "Listo",
+      "doneBody": "Este navegador ya es de confianza. Para enviar instrucciones a una computadora, emparéjalo también con ella.",
+      "doneCta": "Ir a la bandeja",
+      "error": {
+        "expired": "El código venció. Muestra uno nuevo.",
+        "cancelled": "Se canceló.",
+        "unavailable": "No se puede añadir este navegador ahora. Vuelve a intentarlo en un momento.",
+        "endorsement_mismatch": "La aprobación no corresponde a este navegador. Vuelve a intentarlo.",
+        "endorser_not_trusted": "El dispositivo que aprobó ya no es de confianza.",
+        "device_exists": "Este navegador ya estaba registrado. Muestra un código nuevo.",
+        "rejected": "No se aceptó la aprobación. Vuelve a intentarlo.",
+        "failed": "Algo salió mal. Vuelve a intentarlo."
+      }
+    },
+    "add": {
+      "title": "Añadir un dispositivo",
+      "body": "En el dispositivo nuevo, entra con tu cuenta y abre «Usar este navegador». Luego escanea su anillo o escribe su código.",
+      "codeLabel": "Código",
+      "find": "Buscar",
+      "scan": {
+        "start": "Escanear anillo",
+        "starting": "Abriendo la cámara…",
+        "scanning": "Apunta la cámara al anillo.",
+        "denied": "No hay permiso para usar la cámara. Escribe el código.",
+        "unavailable": "La cámara no está disponible. Escribe el código."
+      },
+      "kind": {
+        "phone": "Teléfono",
+        "web": "Navegador"
+      },
+      "compare": "Comprueba que esta huella sea la misma que muestra el dispositivo nuevo:",
+      "expiresIn": "Vence en {minutes}:{seconds}",
+      "withPasskey": "Al aprobar, te pediremos tu passkey.",
+      "withoutPasskey": "Ese dispositivo podrá aprobar acciones igual que este.",
+      "approve": "Aprobar",
+      "notMine": "No es mío",
+      "done": "Listo: {name} ya es de confianza.",
+      "back": "Volver a Dispositivos",
+      "error": {
+        "invalid_code": "Ese código no es válido. Revísalo.",
+        "not_found": "No encontramos ese código. Revísalo o muestra uno nuevo.",
+        "expired": "El código venció. Muestra uno nuevo en el otro dispositivo.",
+        "wrong_account": "Ese dispositivo es de otra cuenta.",
+        "same_device": "Es este mismo dispositivo.",
+        "already_endorsed": "Ese código ya se aprobó.",
+        "step_up": "Hace falta tu passkey para aprobar. Vuelve a intentarlo.",
+        "not_trusted": "Este dispositivo ya no es de confianza.",
+        "tampered": "Los datos no coinciden. No lo apruebes y muestra un código nuevo.",
+        "failed": "Algo salió mal. Vuelve a intentarlo."
+      }
     }
   }
 }

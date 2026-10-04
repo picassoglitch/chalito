@@ -249,6 +249,9 @@ importers:
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@chalito/glyph':
+        specifier: workspace:*
+        version: link:../../packages/glyph
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
