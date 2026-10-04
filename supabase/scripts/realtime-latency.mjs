@@ -70,12 +70,16 @@ const deviceClient = (token) => {
 const join = async (client, topic) => {
   const inbox = [];
   let status = "PENDING";
+  let reason = "";
   const channel = client
     .channel(topic, { config: { private: true } })
     .on("broadcast", { event: "*" }, (msg) => inbox.push({ at: performance.now(), msg }))
-    .subscribe((s) => (status = s));
+    .subscribe((s, err) => {
+      status = s;
+      if (err) reason = err.message;
+    });
   await waitFor(() => status !== "PENDING" && status !== "CLOSED", 10_000);
-  return { channel, inbox, status: () => status };
+  return { channel, inbox, status: () => (reason ? `${status}: ${reason}` : status) };
 };
 const must = (res, what) => {
   if (res.error) fail(`${what}: ${res.error.message}`);
