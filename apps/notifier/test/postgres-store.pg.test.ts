@@ -192,8 +192,33 @@ if (!url) {
       })}`;
       expect(await store.callItems(u)).toEqual({
         callBriefingEnabled: true,
-        items: [{ deviceLabel: "Laptop", sessionLabel: "API de pagos", line: "¿Corro las migraciones?" }],
+        items: [
+          {
+            deviceLabel: "Laptop",
+            sessionLabel: "API de pagos",
+            line: "¿Corro las migraciones?",
+            deviceId: dev,
+            sid: "s1",
+          },
+        ],
       });
+      await admin`insert into chalito.approvals ${admin({
+        owner: u,
+        aid: "apr_1",
+        device_id: dev,
+        sid: "s1",
+        request_id: "r1",
+        kind: "tool",
+        risk: "MED",
+        origin: "local",
+        step_up_required: false,
+        details_ct: admin.json({}),
+        expires_at: new Date(Date.now() + 300_000),
+      })}`;
+      expect(await store.pendingApprovals(u)).toEqual([
+        { aid: "apr_1", deviceLabel: "Laptop", sessionLabel: "API de pagos" },
+      ]);
+      expect(await store.companionName(u)).toBeNull();
       expect(await store.agentPubBox(u, dev)).toBe("pb");
       await store.insertRelayedCommand(u, dev, "c1", { relayedBy: "notifier" } as never, Date.now() + 60_000);
       expect(

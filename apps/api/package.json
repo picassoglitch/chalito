@@ -11,6 +11,8 @@
     "test:pg": "vitest run -c vitest.pg.config.ts"
   },
   "dependencies": {
+    "@chalito/adapters": "workspace:*",
+    "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",

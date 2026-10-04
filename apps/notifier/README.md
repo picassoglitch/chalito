@@ -22,6 +22,7 @@ Persistent channels carry no content. Nothing here can approve anything.
 | `POST /webhooks/twilio/sms` | Twilio inbound SMS | `X-Twilio-Signature` |
 | `POST /webhooks/twilio/status` | Twilio call/SMS status callbacks | `X-Twilio-Signature` |
 | `GET/POST /webhooks/whatsapp` | Meta verification and webhook | `hub.verify_token`; `X-Hub-Signature-256` |
+| `POST /webhooks/openai` | OpenAI project webhook (`realtime.call.incoming`) | Standard Webhooks signature (`webhook-id`, `webhook-timestamp`, `webhook-signature`, 5 min tolerance) |
 
 **Why the webhooks live here and not in `api`:** the notifier holds the provider secrets and owns the call flow. ADR 0011 puts the inbound webhook (acks and opt-outs) with the notifier. Phone verification (Twilio Verify OTP, Geo Permissions, the charges acknowledgement) is user-facing, so it lives in `apps/api/src/phone` under `/v1/phone`.
 
@@ -55,7 +56,21 @@ The call uses `<Gather input="dtmf speech" language="es-MX|en-US" numDigits="1" 
 | **2** | Snooze: re-call 1 min before a Mesa, else +10 min. |
 | **3** | Dismiss (ack). |
 
-Spoken digits and words work too. Speech can only become a `call:<CallSid>` **RelayedCommand** (`src/relay.ts`, for the Realtime side), never a Decision. A test also asserts that no notifier source can sign or write a decision.
+Spoken digits and words work too.
+
+### Voice on the call (ADR 0005/0011)
+
+1. **1** dials `<REALTIME_SIP_URI>?X-Chalito-Ref=<ref>`. The ref is HMAC-signed `{uid, nid, callSid, locale}`, expires in 2 minutes, and is single-use per instance. Twilio passes `X-` headers through, and OpenAI lists them in `sip_headers`.
+2. `realtime.call.incoming` with a valid ref is accepted. Any other call is rejected (603). The accept carries:
+   - the companion persona (the user's companion name);
+   - the waiting items as references `i1…`, with call lines only when call briefing is on;
+   - the pending approvals as `a1…`;
+   - exactly two tools:
+     - `answer_item(session_ref, text)` sends a sealed `call:<CallSid>` **RelayedCommand** to that session;
+     - `push_approval(aid)` re-sends the approval to the app.
+
+   **No tool decides anything.** Unknown tools and references do nothing. A test asserts that no notifier source can sign or write a decision.
+3. The notifier follows the call on its server WebSocket (`wss://api.openai.com/v1/realtime?call_id=…`) and answers tool calls there. The call outlives the webhook request, so **the Cloud Run service needs CPU always allocated** (and a timeout covering a call).
 
 ## Data
 
@@ -82,7 +97,10 @@ Presence contract with the agent and desktop app: `chalito.devices.presence = {"
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API: system-user token and sender number id. |
 | `META_APP_SECRET`, `META_VERIFY_TOKEN` | Webhook signature and verification. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Calls and SMS (US local number by default, decision #17). |
-| `REALTIME_SIP_URI` | Optional: `sip:<proj>@sip.api.openai.com;transport=tls;secure=true`. |
+| `REALTIME_SIP_URI` | Optional: `sip:<proj>@sip.api.openai.com;transport=tls;secure=true`. Setting it turns voice on and requires the next four. |
+| `OPENAI_API_KEY`, `OPENAI_WEBHOOK_SECRET` | Realtime SIP call control and the project webhook secret (`whsec_…`). |
+| `VOICE_REF_SECRET` | Signs the `X-Chalito-Ref` SIP header that ties an OpenAI call to its Twilio call. |
+| `REALTIME_VOICE` | OpenAI voice name (default `marin`). The model comes from `models.yaml` `voice.call`. |
 
 All secrets come from Secret Manager. None are committed.
 

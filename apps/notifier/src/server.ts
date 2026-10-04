@@ -1,7 +1,8 @@
 import { serve } from "@hono/node-server";
 import { GoogleAuth } from "google-auth-library";
 import postgres from "postgres";
-import { loadEscalation } from "@chalito/config";
+import { openaiRealtime } from "@chalito/adapters/voice";
+import { loadEscalation, loadModels } from "@chalito/config";
 import { createApp } from "./app.js";
 import type { Logger } from "./executor.js";
 import { googleOidcVerifier } from "./oidc.js";
@@ -10,6 +11,7 @@ import { cloudTasksScheduler } from "./scheduler.js";
 import { webPushSender } from "./senders/push.js";
 import { twilioClient } from "./senders/twilio.js";
 import { whatsappSender } from "./senders/whatsapp.js";
+import { wsSocketFactory } from "./voice/ws-socket.js";
 
 const env = (name: string): string => {
   const v = process.env[name];
@@ -71,7 +73,19 @@ const app = createApp(
     twilioAuthToken: env("TWILIO_AUTH_TOKEN"),
     metaAppSecret: env("META_APP_SECRET"),
     metaVerifyToken: env("META_VERIFY_TOKEN"),
-    ...(process.env.REALTIME_SIP_URI ? { realtimeSipUri: process.env.REALTIME_SIP_URI } : {}),
+    ...(process.env.REALTIME_SIP_URI
+      ? {
+          voice: {
+            provider: openaiRealtime({ apiKey: env("OPENAI_API_KEY") }),
+            webhookSecret: env("OPENAI_WEBHOOK_SECRET"),
+            refSecret: env("VOICE_REF_SECRET"),
+            sipUri: process.env.REALTIME_SIP_URI,
+            model: loadModels().voice.call.model,
+            voiceName: process.env.REALTIME_VOICE ?? "marin",
+            openSocket: wsSocketFactory,
+          },
+        }
+      : {}),
   },
   googleOidcVerifier(),
 );

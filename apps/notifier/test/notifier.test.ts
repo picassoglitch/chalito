@@ -309,8 +309,8 @@ describe("webhooks", () => {
     expect(h.store.ladders.get(UID)![0]!.state).toBe("snoozed");
 
     const connect = await twilioPost(h, path, { CallSid: `CA${"a".repeat(32)}`, Digits: "1" });
-    expect(await connect.text()).toContain(
-      "<Dial><Sip>sip:proj_test@sip.api.openai.com;transport=tls;secure=true</Sip></Dial>",
+    expect(await connect.text()).toMatch(
+      /<Dial><Sip>sip:proj_test@sip\.api\.openai\.com;transport=tls;secure=true\?X-Chalito-Ref=[\w-]+\.[\w-]+<\/Sip><\/Dial>/,
     );
     expect(h.store.ladders.get(UID)![0]).toMatchObject({ state: "acked", ackedVia: "call" });
 
