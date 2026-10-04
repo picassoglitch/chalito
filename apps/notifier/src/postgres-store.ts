@@ -92,9 +92,13 @@ export class PostgresStore implements NotifierStore {
     return r?.id ?? null;
   }
 
+  /** Only active devices' subscriptions: nothing, not even a count, goes to a revoked device. */
   async pushSubscriptions(uid: string): Promise<PushSubscriptionRecord[]> {
     const rows = await this.sql<{ endpoint: string; p256dh: string; auth: string }[]>`
-      select endpoint, p256dh, auth from chalito.push_subscriptions where owner = ${uid}`;
+      select p.endpoint, p.p256dh, p.auth
+      from chalito.push_subscriptions p
+      join chalito.devices d on d.owner = p.owner and d.device_id = p.device_id
+      where p.owner = ${uid} and not d.revoked`;
     return rows.map((r) => ({ endpoint: r.endpoint, keys: { p256dh: r.p256dh, auth: r.auth } }));
   }
 
@@ -118,7 +122,7 @@ export class PostgresStore implements NotifierStore {
       from chalito.call_lines cl
       join chalito.devices d on d.owner = cl.owner and d.device_id = cl.device_id
       left join chalito.sessions s on s.owner = cl.owner and s.sid = cl.sid
-      where cl.owner = ${uid} and cl.expires_at > now()
+      where cl.owner = ${uid} and cl.expires_at > now() and not d.revoked
       order by cl.created_at limit 10`;
     const items: CallItem[] = rows.map((r) => ({
       lid: r.lid,
@@ -137,7 +141,7 @@ export class PostgresStore implements NotifierStore {
       from chalito.approvals a
       join chalito.devices d on d.owner = a.owner and d.device_id = a.device_id
       left join chalito.sessions s on s.owner = a.owner and s.sid = a.sid
-      where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now()
+      where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now() and not d.revoked
       order by a.created_at limit 10`;
     return rows.map((r) => ({ aid: r.aid, deviceLabel: r.device_label, sessionLabel: r.session_label }));
   }
