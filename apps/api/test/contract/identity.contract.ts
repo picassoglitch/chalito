@@ -4,7 +4,7 @@ import { owner } from "./fixtures.js";
 
 export interface IdentityHarness {
   issuer: IdentityIssuer;
-  /** Turns a minted credential into the bearer a client would send (e.g. Firebase: sign in, take the ID token). */
+  /** Turns a minted credential into the bearer a client would send (Supabase: exchange the magic-link token_hash for a session, take the access token). */
   toBearer(minted: string): Promise<string>;
   /** An owner id mintUser accepts (Supabase: a real hub user). Defaults to a random id. */
   makeOwner?: () => Promise<string>;

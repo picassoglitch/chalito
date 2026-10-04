@@ -3,8 +3,8 @@ import type { DeviceDoc, HubTenantStatus, PairingCodeDoc } from "@chalito/protoc
 import type { RecoveryHash } from "./lib/recovery.js";
 
 /**
- * Everything the API routes read or write, and nothing more. Firestore today
- * (firestore/repo.ts); a Postgres implementation can back the same interface. Methods
+ * Everything the API routes read or write, and nothing more. Backed by Postgres on the
+ * hub's Supabase project (postgres/repo.ts, ADR 0017). Methods
  * that must be atomic say so: implement them as one transaction.
  */
 export interface ApiRepo {
@@ -56,6 +56,18 @@ export interface ApiRepo {
   // ---- notifications ----
   createNotification(owner: string, nid: string, doc: Record<string, unknown>): Promise<void>;
 
+  // ---- WebAuthn passkeys (D-019/D-034) ----
+  /** Stores the pending challenge for one device and purpose, replacing any earlier one. */
+  putWebAuthnChallenge(c: WebAuthnChallenge): Promise<void>;
+  /**
+   * Atomic and single-use: returns the device's pending challenge for `purpose` and deletes it;
+   * null if there is none or it expired by `now`.
+   */
+  takeWebAuthnChallenge(owner: string, deviceId: string, purpose: WebAuthnPurpose, now: number): Promise<string | null>;
+  /** Records the device's passkey on its device record; false if the device doesn't exist. */
+  setDeviceWebAuthn(owner: string, deviceId: string, cred: StoredWebAuthnCredential): Promise<boolean>;
+  getDeviceWebAuthn(owner: string, deviceId: string): Promise<StoredWebAuthnCredential | null>;
+
   // ---- pairing ----
   /** "exists" if the code id was already published. */
   createPairingCode(doc: PairingCodeDoc): Promise<"created" | "exists">;
@@ -85,6 +97,27 @@ export interface ApiRepo {
   >;
 }
 
+export type WebAuthnPurpose = "register" | "assert";
+
+export interface WebAuthnChallenge {
+  owner: string;
+  deviceId: string;
+  purpose: WebAuthnPurpose;
+  /** base64url, as @simplewebauthn/server issues it. */
+  challenge: string;
+  expiresAt: number;
+}
+
+/** A device's passkey. `publicKey` is the base64url COSE key agents verify step-ups against. */
+export interface StoredWebAuthnCredential {
+  credentialId: string;
+  publicKey: string;
+  rpId: string;
+  counter: number;
+  transports: string[];
+  createdAt: number;
+}
+
 export type TenantStatus = z.infer<typeof HubTenantStatus>["status"];
 
 export interface TenantRecord {
@@ -106,7 +139,8 @@ export interface IdentityClaims {
 }
 
 /**
- * Mints and checks the credentials the API hands out (Firebase custom tokens today).
+ * Mints and checks the credentials the API hands out (Supabase Auth users per device and
+ * pairing watch; magic-link token hashes the clients exchange for a session).
  * `verify` must reject revoked credentials; `disableDevice` makes a device's existing
  * credentials stop working.
  */

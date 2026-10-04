@@ -6,10 +6,6 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 7.0"
     }
-    google-beta = {
-      source  = "hashicorp/google-beta"
-      version = "~> 7.0"
-    }
   }
 
   # Partial config: `terraform init -backend-config=backend.hcl` (see README in this folder).
@@ -22,9 +18,4 @@ provider "google" {
   region                = var.region
   user_project_override = true
   billing_project       = var.project_id
-}
-
-provider "google-beta" {
-  project = var.project_id
-  region  = var.region
 }

@@ -31,8 +31,9 @@ server_sql "insert into chalito.tenants (id) values ('smoke-user');
     enrolled_via, auth_user_id)
   values ('smoke-user', 'smoke-phone', 'client', 'phone', 'ios', 'Smoke', 'p', 'p', 'f', 'first_client', '$DEVICE_USER');"
 
+# The CLI asks for a JWK signing key; a blank answer uses the local stack's default key.
 mint() { # mint <sub>
-  supabase gen bearer-jwt --role authenticated --sub "$1" --valid-for 5m \
+  printf '\n' | supabase gen bearer-jwt --role authenticated --sub "$1" --valid-for 5m \
     --payload '{"aud":"authenticated","app_metadata":{"provider":"chalito","chalito":{"owner":"smoke-user","device_id":"smoke-phone","role":"client"}}}'
 }
 TOKEN="$(mint "$DEVICE_USER")"

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   BROWSER_SESSION_KEY,
   DeviceRevokedError,
+  NoSessionError,
   connect,
   ensureSession,
   indexedDbStorage,
@@ -12,9 +13,20 @@ import {
 } from "../src/auth.js";
 import { FakeSupabase, newDevice, testKeys, tick } from "./helpers.js";
 
+type S = { access_token: string; user?: { id: string; app_metadata?: Record<string, unknown> } };
+const asDevice = (token: string, deviceId: string): S => ({
+  access_token: token,
+  user: { id: `u-${deviceId}`, app_metadata: { chalito: { device_id: deviceId } } },
+});
+
 class FakeAuth implements BrowserAuth {
-  session: { access_token: string } | null = null;
+  session: S | null = null;
   calls: string[] = [];
+  async signOut(opts?: { scope?: string }) {
+    this.calls.push(`signOut:${opts?.scope ?? "global"}`);
+    this.session = null;
+    return {};
+  }
   cbs: ((e: string, s: { access_token: string } | null) => void)[] = [];
   async verifyOtp(p: { token_hash: string; type: "magiclink" }) {
     this.calls.push(`verifyOtp:${p.token_hash}`);
@@ -41,16 +53,44 @@ class FakeAuth implements BrowserAuth {
 }
 
 describe("ensureSession", () => {
-  it("uses a stored session as is", async () => {
+  it("a device reuses its OWN stored session as is", async () => {
     const auth = new FakeAuth();
-    auth.session = { access_token: "stored" };
-    expect(await ensureSession(auth, { kind: "device", login: async () => "never" })).toBe("stored");
+    auth.session = asDevice("stored", "dev1");
+    expect(await ensureSession(auth, { kind: "device", deviceId: "dev1", login: async () => "never" })).toBe("stored");
+    expect(auth.calls).toEqual([]);
+  });
+
+  it("a device never inherits another identity's stored session: sign out, then log in", async () => {
+    const auth = new FakeAuth();
+    auth.session = asDevice("someone-else", "dev_other");
+    expect(await ensureSession(auth, { kind: "device", deviceId: "dev1", login: async () => "h1" })).toBe("at-h1");
+    expect(auth.calls).toEqual(["signOut:local", "verifyOtp:h1"]);
+    const person = new FakeAuth();
+    person.session = { access_token: "a-person", user: { id: "hub-user-A" } };
+    expect(await ensureSession(person, { kind: "device", deviceId: "dev1", login: async () => "h2" })).toBe("at-h2");
+    expect(person.calls[0]).toBe("signOut:local");
+  });
+
+  it("an SSO launch always replaces the stored session (user A signed in, launch for user B)", async () => {
+    const auth = new FakeAuth();
+    auth.session = { access_token: "session-of-A", user: { id: "hub-user-A" } };
+    expect(await ensureSession(auth, { kind: "sso", exchange: async () => ({ token_hash: "launch-B" }) })).toBe(
+      "at-launch-B",
+    );
+    expect(auth.calls).toEqual(["signOut:local", "verifyOtp:launch-B"]);
+  });
+
+  it("stored: restores only; with nothing stored it fails instead of signing anyone in", async () => {
+    const auth = new FakeAuth();
+    await expect(ensureSession(auth, { kind: "stored" })).rejects.toBeInstanceOf(NoSessionError);
+    auth.session = { access_token: "kept", user: { id: "hub-user-A" } };
+    expect(await ensureSession(auth, { kind: "stored" })).toBe("kept");
     expect(auth.calls).toEqual([]);
   });
 
   it("device: signed-challenge login → magic-link token_hash → verifyOtp", async () => {
     const auth = new FakeAuth();
-    expect(await ensureSession(auth, { kind: "device", login: async () => "h1" })).toBe("at-h1");
+    expect(await ensureSession(auth, { kind: "device", deviceId: "dev1", login: async () => "h1" })).toBe("at-h1");
     expect(auth.calls).toEqual(["verifyOtp:h1"]);
   });
 
@@ -68,14 +108,15 @@ describe("ensureSession", () => {
     await expect(
       ensureSession(new FakeAuth(), {
         kind: "device",
+        deviceId: "dev1",
         login: async () => {
           throw Object.assign(new Error("device_revoked"), { code: "device_revoked" });
         },
       }),
     ).rejects.toBeInstanceOf(DeviceRevokedError);
-    await expect(ensureSession(new FakeAuth(), { kind: "device", login: async () => "bad" })).rejects.toThrow(
-      /sign-in failed/,
-    );
+    await expect(
+      ensureSession(new FakeAuth(), { kind: "device", deviceId: "dev1", login: async () => "bad" }),
+    ).rejects.toThrow(/sign-in failed/);
   });
 });
 
@@ -89,7 +130,7 @@ describe("connect", () => {
       publishableKey: "k",
       keys: testKeys(me),
       owner: "hub-user-1",
-      signIn: { kind: "device", login: async () => "h" },
+      signIn: { kind: "device", deviceId: me.deviceId, login: async () => "h" },
       stepUp: async () => null,
       storage: memoryStorage(),
       create: () => fake,

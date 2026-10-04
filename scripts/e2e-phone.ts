@@ -5,12 +5,14 @@
  *
  *   pnpm tsx scripts/e2e-phone.ts <command> [--flags]
  *
- * Talks to the real `api` routes and Firestore. With FIRESTORE_EMULATOR_HOST and
- * FIREBASE_AUTH_EMULATOR_HOST set it uses the emulators. Keys and ids are kept in
- * ~/.chalito-e2e-phone.json (0600): test keys only, never a real phone's.
+ * Talks to the real `api` routes and the hub's Supabase (ADR 0017): by default the local
+ * stack (`supabase start`, SUPABASE_URL + SUPABASE_PUBLISHABLE_KEY). The phone signs in as
+ * its own Supabase Auth user (the api returns a magic-link token_hash) and reads and writes
+ * under RLS. Keys and ids are kept in ~/.chalito-e2e-phone.json (0600): test keys only,
+ * never a real phone's.
  *
- * Workspace packages are imported by path and `firebase` is resolved from apps/agent, so
- * this script adds nothing to the root package.json.
+ * Workspace packages are imported by path and `@supabase/supabase-js` is resolved from
+ * apps/agent, so this script adds nothing to the root package.json.
  */
 import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -59,8 +61,8 @@ const need = (name: string): string => flag(name) ?? die(`--${name} is required`
 
 const env = process.env;
 const API = (env.CHALITO_API_BASE ?? "http://localhost:8787").replace(/\/+$/, "");
-const PROJECT = env.CHALITO_FIREBASE_PROJECT_ID ?? "demo-chalito";
-const DATABASE = env.CHALITO_FIREBASE_DATABASE_ID ?? "chalito";
+const SUPABASE_URL = (env.SUPABASE_URL ?? "http://127.0.0.1:54321").replace(/\/+$/, "");
+const SUPABASE_KEY = env.SUPABASE_PUBLISHABLE_KEY ?? env.SUPABASE_ANON_KEY ?? "";
 const STATE_FILE = env.CHALITO_E2E_PHONE_STATE ?? join(homedir(), ".chalito-e2e-phone.json");
 
 interface State {
@@ -87,7 +89,7 @@ const keysOf = async (s: State) => ({
 });
 const agentOf = (s: State) => s.agent ?? die("not paired with an agent yet; run `claim` first");
 
-// ---- HTTP + Firebase ------------------------------------------------------------
+// ---- HTTP + Supabase ------------------------------------------------------------
 
 const post = async (path: string, body: unknown, bearer?: string): Promise<Record<string, unknown>> => {
   const res = await fetch(`${API}${path}`, {
@@ -100,39 +102,72 @@ const post = async (path: string, body: unknown, bearer?: string): Promise<Recor
   return json;
 };
 
-/** The firebase client SDK, resolved from apps/agent (the root has no firebase dependency). */
+/** supabase-js, resolved from apps/agent (the root has no supabase dependency). */
 const requireFromAgent = createRequire(new URL("../apps/agent/package.json", import.meta.url));
 const load = async <T>(id: string): Promise<T> => (await import(pathToFileURL(requireFromAgent.resolve(id)).href)) as T;
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- the SDK is loaded dynamically, untyped here */
-interface Fb {
+interface Sb {
+  /** A chalito-schema client signed in as this phone (or the hub user). */
   db: any;
-  fs: any;
+  /** The access token, also the api bearer. */
   idToken: string;
 }
-const signIn = async (customToken: string): Promise<Fb> => {
-  const appMod = await load<any>("firebase/app");
-  const authMod = await load<any>("firebase/auth");
-  const fs = await load<any>("firebase/firestore");
-  const app = appMod.initializeApp(
-    { projectId: PROJECT, apiKey: env.CHALITO_FIREBASE_API_KEY ?? "demo-key" },
-    randomUUID(),
-  );
-  const auth = authMod.getAuth(app);
-  if (env.FIREBASE_AUTH_EMULATOR_HOST)
-    authMod.connectAuthEmulator(auth, `http://${env.FIREBASE_AUTH_EMULATOR_HOST}`, { disableWarnings: true });
-  const db = fs.getFirestore(app, DATABASE);
-  if (env.FIRESTORE_EMULATOR_HOST) {
-    const [host, port] = env.FIRESTORE_EMULATOR_HOST.split(":");
-    fs.connectFirestoreEmulator(db, host, Number(port));
-  }
-  const cred = await authMod.signInWithCustomToken(auth, customToken);
-  return { db, fs, idToken: await cred.user.getIdToken() };
+/** Exchanges the api's magic-link token_hash for a Supabase session. */
+const signIn = async (tokenHash: string): Promise<Sb> => {
+  if (!SUPABASE_KEY) die("SUPABASE_PUBLISHABLE_KEY is required (`supabase status` shows it)");
+  const { createClient } = await load<any>("@supabase/supabase-js");
+  const auth = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data, error } = await auth.auth.verifyOtp({ token_hash: tokenHash, type: "magiclink" });
+  if (error || !data.session) die(`sign-in failed: ${error?.message ?? "no session"}`);
+  const token: string = data.session.access_token;
+  const db = createClient(SUPABASE_URL, SUPABASE_KEY, { db: { schema: "chalito" }, accessToken: async () => token });
+  db.realtime.setAuth(token);
+  return { db, idToken: token };
+};
+
+/**
+ * Follows a table the way the client data layer does: pointers on this phone's private
+ * channel (and a slow poll as a fallback) trigger a pull of rows with rev above the last seen.
+ */
+const follow = (
+  sb: Sb,
+  me: string,
+  owner: string,
+  table: string,
+  narrow: (q: any) => any,
+  onRow: (row: Record<string, unknown>) => void,
+) => {
+  let last = 0;
+  let pulling = Promise.resolve();
+  const pull = () =>
+    (pulling = pulling.then(async () => {
+      const { data, error } = await narrow(
+        sb.db.from(table).select("*").eq("owner", owner).gt("rev", last).order("rev", { ascending: true }),
+      );
+      if (error) {
+        out(`(${table}: ${error.message})`);
+        return;
+      }
+      for (const r of data ?? []) {
+        last = Math.max(last, Number(r.rev));
+        onRow(r);
+      }
+    }));
+  sb.db
+    .channel(`chalito:device:${me}`, { config: { private: true } })
+    .on("broadcast", { event: "*" }, (m: { payload?: { table?: string } }) => {
+      if (m.payload?.table === table) void pull();
+    })
+    .subscribe((status: string) => {
+      if (status === "SUBSCRIBED") void pull();
+    });
+  setInterval(() => void pull(), 5000);
 };
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-/** Device credential: a signed one-time challenge exchanged for a custom token (as the agent does). */
-const deviceSession = async (s: State): Promise<Fb> => {
+/** Device credential: a signed one-time challenge exchanged for a sign-in token_hash (as the agent does). */
+const deviceSession = async (s: State): Promise<Sb> => {
   const k = await keysOf(s);
   const challenge = await signEnvelope(
     "chalito.refresh-challenge.v1",
@@ -149,7 +184,7 @@ const deviceSession = async (s: State): Promise<Fb> => {
 const COMMAND_TTL_MS = 5 * 60_000;
 const APPROVAL_DECISION_TTL_MS = 5 * 60_000;
 
-/** Signs a command body and writes it to the agent's commands collection. */
+/** Signs a command body and inserts it into chalito.commands for the agent. */
 const sendCommand = async (s: State, payload: (cid: string) => Promise<Record<string, unknown>>) => {
   const agent = agentOf(s);
   const k = await keysOf(s);
@@ -173,13 +208,17 @@ const sendCommand = async (s: State, payload: (cid: string) => Promise<Record<st
 
 const writeCommand = async (s: State, envelope: unknown) => {
   const agent = agentOf(s);
-  const { db, fs } = await deviceSession(s);
-  await fs.addDoc(fs.collection(db, `users/${s.owner}/devices/${agent.deviceId}/commands`), {
+  const { db } = await deviceSession(s);
+  const env = envelope as { body: { cid: string } };
+  const { error } = await db.from("commands").insert({
+    owner: s.owner,
+    target_device_id: agent.deviceId,
+    id: env.body.cid,
     env: envelope,
-    createdAt: Date.now(),
-    expireAt: fs.Timestamp.fromMillis(Date.now() + COMMAND_TTL_MS),
-    fromDeviceId: s.deviceId,
+    from_device_id: s.deviceId,
+    expires_at: new Date(Date.now() + COMMAND_TTL_MS).toISOString(),
   });
+  if (error) die(`command refused: ${error.message}`);
 };
 
 /** Seals to the agent only, with the AAD the agent opens it with. */
@@ -418,11 +457,12 @@ const commands: Record<string, { help: string; run: () => Promise<void> }> = {
     help: "   list this agent's sessions (sid, state, mode)",
     run: async () => {
       const s = loadState();
-      const { db, fs } = await deviceSession(s);
-      const snap = await fs.getDocs(fs.collection(db, `users/${s.owner}/sessions`));
-      for (const d of snap.docs) {
-        const v = d.data() as Record<string, unknown>;
-        out(`${d.id}  ${String(v.state)}  ${String(v.permissionMode)}  ${String(v.cwdLabel)}`);
+      const { db } = await deviceSession(s);
+      const { data, error } = await db.from("sessions").select("sid, doc").eq("owner", s.owner);
+      if (error) die(error.message);
+      for (const r of data ?? []) {
+        const v = (r.doc ?? {}) as Record<string, unknown>;
+        out(`${String(r.sid)}  ${String(v.state)}  ${String(v.permissionMode)}  ${String(v.cwdLabel)}`);
       }
     },
   },
@@ -433,12 +473,15 @@ const commands: Record<string, { help: string; run: () => Promise<void> }> = {
       const s = loadState();
       const k = await keysOf(s);
       const sid = need("sid");
-      const { db, fs } = await deviceSession(s);
-      const q = fs.query(fs.collection(db, `users/${s.owner}/sessions/${sid}/events`), fs.orderBy("seq"));
-      fs.onSnapshot(q, (snap: { docChanges(): { type: string; doc: { data(): Record<string, unknown> } }[] }) => {
-        for (const ch of snap.docChanges()) {
-          if (ch.type !== "added") continue;
-          const e = ch.doc.data();
+      const sb = await deviceSession(s);
+      follow(
+        sb,
+        s.deviceId,
+        s.owner,
+        "session_events",
+        (q) => q.eq("sid", sid),
+        (row) => {
+          const e = (row.doc ?? {}) as Record<string, unknown>;
           const { ct, ...meta } = e;
           void (async () => {
             const opened = ct
@@ -448,8 +491,8 @@ const commands: Record<string, { help: string; run: () => Promise<void> }> = {
               `${String(e.seq).padStart(3)} ${JSON.stringify(meta)}${opened !== undefined ? ` ${JSON.stringify(opened)}` : ""}`,
             );
           })();
-        }
-      });
+        },
+      );
       await new Promise(() => undefined);
     },
   },
@@ -461,46 +504,60 @@ const commands: Record<string, { help: string; run: () => Promise<void> }> = {
       const k = await keysOf(s);
       const auto = flag("auto");
       const stepUpMode = flag("step-up") ?? "auto";
-      const { db, fs } = await deviceSession(s);
+      const sb = await deviceSession(s);
       const seen = new Set<string>();
       let queue = Promise.resolve();
-      const q = fs.query(fs.collection(db, `users/${s.owner}/approvals`), fs.where("status", "==", "pending"));
-      fs.onSnapshot(q, (snap: { docs: { id: string; data(): Record<string, unknown> }[] }) => {
-        for (const d of snap.docs) {
-          if (seen.has(d.id)) continue;
-          seen.add(d.id);
-          const a = d.data();
+      follow(
+        sb,
+        s.deviceId,
+        s.owner,
+        "approvals",
+        (q) => q,
+        (a) => {
+          const aid = String(a.aid);
+          if (a.status !== "pending" || seen.has(aid)) return;
+          seen.add(aid);
+          const d = { id: aid };
           queue = queue.then(async () => {
-            const details = await openJson(a.detailsCt as SealedEnvelope, s.deviceId, k.box, `approval:${d.id}`).catch(
+            const details = await openJson(a.details_ct as SealedEnvelope, s.deviceId, k.box, `approval:${d.id}`).catch(
               () => "(could not open: not sealed to this phone)",
             );
             out(
-              `\n[${String(a.risk)}] approval ${d.id}  stepUpRequired=${String(a.stepUpRequired)}  origin=${String(a.origin)}`,
+              `\n[${String(a.risk)}] approval ${d.id}  stepUpRequired=${String(a.step_up_required)}  origin=${String(a.origin)}`,
             );
             out(`  ${JSON.stringify(details)}`);
             const choice = auto ?? (await ask("  allow / deny / allow without step-up / skip [a/d/n/s] "));
             if (choice === "s" || choice === "skip") return;
             const allow = choice === "a" || choice === "allow" || choice === "n";
             const stepUp =
-              stepUpMode === "always" || (stepUpMode === "auto" && a.stepUpRequired === true && choice !== "n");
-            const decision = await signDecision(s, { aid: d.id, requestId: String(a.requestId) }, allow, stepUp);
-            await fs.updateDoc(fs.doc(db, `users/${s.owner}/approvals/${d.id}`), { decision });
+              stepUpMode === "always" || (stepUpMode === "auto" && a.step_up_required === true && choice !== "n");
+            const decision = await signDecision(s, { aid: d.id, requestId: String(a.request_id) }, allow, stepUp);
+            const { error } = await sb.db
+              .from("approval_decisions")
+              .insert({ owner: s.owner, aid: d.id, signer_device_id: s.deviceId, decision });
+            if (error) {
+              out(`  → refused: ${error.message}`);
+              return;
+            }
             saveState({ ...loadState(), lastDecision: decision });
             out(`  → signed ${allow ? "allow" : "deny"}${stepUp ? " with step-up" : ""}`);
           });
-        }
-      });
+        },
+      );
       await new Promise(() => undefined);
     },
   },
 
   "replay-last": {
-    help: "--aid <aid>   attach the last signed decision to another approval (must be rejected; runbook 5.11)",
+    help: "--aid <aid>   insert the last signed decision for another approval (must be rejected; runbook 5.11)",
     run: async () => {
       const s = loadState();
       if (!s.lastDecision) die("no decision signed yet");
-      const { db, fs } = await deviceSession(s);
-      await fs.updateDoc(fs.doc(db, `users/${s.owner}/approvals/${need("aid")}`), { decision: s.lastDecision });
+      const { db } = await deviceSession(s);
+      const { error } = await db
+        .from("approval_decisions")
+        .insert({ owner: s.owner, aid: need("aid"), signer_device_id: s.deviceId, decision: s.lastDecision });
+      if (error) die(`the database refused it: ${error.message}`);
       out("replayed; the agent log should show approval.decision_rejected");
     },
   },
@@ -518,10 +575,10 @@ const commands: Record<string, { help: string; run: () => Promise<void> }> = {
 if (cmd === "help" || !commands[cmd]) {
   out("pnpm tsx scripts/e2e-phone.ts <command> [flags]\n");
   for (const [name, c] of Object.entries(commands)) out(`  ${name} ${c.help}`);
-  out(`\nEnv: CHALITO_API_BASE (${API}), CHALITO_FIREBASE_PROJECT_ID, CHALITO_FIREBASE_DATABASE_ID,`);
-  out("     FIRESTORE_EMULATOR_HOST, FIREBASE_AUTH_EMULATOR_HOST, CHALITO_SSO_SECRET, CHALITO_E2E_PHONE_STATE");
+  out(`\nEnv: CHALITO_API_BASE (${API}), SUPABASE_URL (${SUPABASE_URL}), SUPABASE_PUBLISHABLE_KEY,`);
+  out("     CHALITO_SSO_SECRET, CHALITO_E2E_PHONE_STATE");
   process.exit(cmd === "help" ? 0 : 1);
 }
 await commands[cmd].run();
-// Firebase keeps sockets open; exit once stdout has drained (pipes are async in Node).
+// supabase-js keeps sockets open; exit once stdout has drained (pipes are async in Node).
 if (!["events", "approvals"].includes(cmd)) process.stdout.write("", () => process.exit(0));

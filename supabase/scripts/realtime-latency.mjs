@@ -7,13 +7,14 @@
 //   4. revocation: once the agent is revoked and its token is refreshed, nothing reaches it,
 //      neither database broadcasts nor direct REST broadcasts to its topic.
 //
-// Devices are Supabase Auth users (sub = the device's auth user id, claims in app_metadata.chalito);
-// tokens come from `supabase gen bearer-jwt` (the local stack's signing key). Server writes go
-// through Postgres as chalito_server, as the API does. Needs Node >= 22.
+// Devices are real Supabase Auth users of the local stack (Option C): created through the GoTrue
+// admin API with app_metadata.chalito, signed in the way the apps do it (magic-link token_hash →
+// verifyOtp), so Realtime sees genuine GoTrue sessions. Server writes go through Postgres as
+// chalito_server, as the API does; the service key is used only for GoTrue admin and REST
+// broadcasts. Needs Node >= 22.
 // Run: npm install --no-save --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
 //      node supabase/scripts/realtime-latency.mjs
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { createClient } from "@supabase/supabase-js";
 import postgres from "postgres";
@@ -44,28 +45,39 @@ const env = Object.fromEntries(
 );
 if (!/^http:\/\/(127\.0\.0\.1|localhost):/.test(env.API_URL ?? "")) fail(`local stack only, got ${env.API_URL}`);
 
-const mint = (sub, claims) =>
-  execFileSync(
-    "supabase",
-    [
-      "gen",
-      "bearer-jwt",
-      "--role",
-      "authenticated",
-      "--sub",
-      sub,
-      "--valid-for",
-      "5m",
-      "--payload",
-      JSON.stringify({ aud: "authenticated", app_metadata: { provider: "chalito", chalito: claims } }),
-    ],
-    { encoding: "utf8" },
-  ).trim();
-
 const opts = { db: { schema: "chalito" }, auth: { persistSession: false, autoRefreshToken: false } };
 // REST broadcasts (the revocation probe) only; the hub's service_role has no access to chalito tables.
 const admin = createClient(env.API_URL, env.SERVICE_ROLE_KEY, opts);
 const db = postgres(env.DB_URL, { max: 1, onnotice: () => {} });
+const gotrue = createClient(env.API_URL, env.SERVICE_ROLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+const authIds = [];
+/** A device (or pairing watcher) as a GoTrue user; app_metadata is server-set only. */
+const createAuthUser = async (email, chalito) => {
+  const { data, error } = await gotrue.auth.admin.createUser({
+    email,
+    email_confirm: true,
+    app_metadata: { provider: "chalito", chalito },
+  });
+  if (error || !data.user) fail(`createUser ${email}: ${error?.message ?? "no user"}`);
+  authIds.push(data.user.id);
+  return data.user.id;
+};
+/** A fresh session for that user: magic-link token_hash → verifyOtp (what the API hands devices). */
+const sessionToken = async (email) => {
+  const link = await gotrue.auth.admin.generateLink({ type: "magiclink", email });
+  if (link.error) fail(`generateLink ${email}: ${link.error.message}`);
+  const anon = createClient(env.API_URL, env.ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data, error } = await anon.auth.verifyOtp({
+    token_hash: link.data.properties.hashed_token,
+    type: "magiclink",
+  });
+  if (error || !data.session) fail(`verifyOtp ${email}: ${error?.message ?? "no session"}`);
+  return data.session.access_token;
+};
+const deviceEmail = (id) => `${id}@devices.chalito.invalid`;
+const watchEmail = (code) => `${code}@pairing.chalito.invalid`;
 /** Runs server-side SQL as chalito_server, as the API does. */
 const server = (fn) =>
   db.begin(async (tx) => {
@@ -80,6 +92,9 @@ const deviceClient = (token) => {
 };
 /** Joins a private topic and records every broadcast on it. */
 const join = async (client, topic) => {
+  // Hand the session token to Realtime BEFORE joining: with the accessToken callback alone the
+  // socket can send the join before the token arrives, and the join is then authorized as anon.
+  await client.realtime.setAuth();
   const inbox = [];
   let status = "PENDING";
   let reason = "";
@@ -92,6 +107,92 @@ const join = async (client, topic) => {
     });
   await waitFor(() => status !== "PENDING" && status !== "CLOSED", 10_000);
   return { channel, inbox, status: () => (reason ? `${status}: ${reason}` : status) };
+};
+/**
+ * When a join is refused: evaluate, as `authenticated` with the token's real claims, every
+ * predicate the realtime.messages policies use, so the log says which one failed.
+ */
+const diagnose = async (token, topic) => {
+  const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+  const code = topic.startsWith("chalito:pairing:") ? topic.slice("chalito:pairing:".length) : null;
+  const [row] = code
+    ? await db`select code_id, expires_at > now() as live, claimed, watch_auth_user_id::text as watch_user
+               from chalito.pairing_codes where code_id = ${code}`
+    : [null];
+  const [checks] = await db.begin(async (tx) => {
+    await tx`select set_config('request.jwt.claims', ${JSON.stringify(claims)}, true),
+                    set_config('realtime.topic', ${topic}, true)`;
+    await tx`set local role authenticated`;
+    return tx`select chalito.jwt_claims() as claims, chalito.jwt_role() as role,
+                     chalito.jwt_device_id() as device_id, chalito.jwt_pairing_code() as pairing_code,
+                     chalito_private.device_ok() as device_ok,
+                     chalito_private.pairing_watch_ok(chalito.jwt_pairing_code()) as pairing_watch_ok,
+                     chalito_private.realtime_topic_ok(${topic}) as topic_ok, realtime.topic() as realtime_topic`;
+  });
+  log(
+    `diagnose ${topic}: token=${JSON.stringify({ sub: claims.sub, aud: claims.aud, role: claims.role, app_metadata: claims.app_metadata })}`,
+  );
+  log(`diagnose ${topic}: row=${JSON.stringify(row)} checks=${JSON.stringify(checks)}`);
+  log(`diagnose ${topic}: probes=${JSON.stringify(await realtimeProbes(claims, topic))}`);
+};
+
+/**
+ * Realtime's own join check, replicated: in one transaction (rolled back) the admin connection
+ * inserts a broadcast and a presence message for the topic, then switches to the token's role,
+ * claims and topic and reads them back through RLS (can_read), and tries an insert as the user
+ * (can_write). Each probe runs in a savepoint so one error doesn't hide the others.
+ */
+const realtimeProbes = async (claims, topic) => {
+  const out = {};
+  await db
+    .begin(async (tx) => {
+      await tx`insert into realtime.messages (topic, extension, payload, event, private)
+               values (${topic}, 'broadcast', '{}', 'probe', true), (${topic}, 'presence', '{}', 'probe', true)`;
+      await tx`select set_config('request.jwt.claims', ${JSON.stringify(claims)}, true),
+                      set_config('realtime.topic', ${topic}, true),
+                      set_config('request.jwt.claim.sub', ${claims.sub ?? ""}, true),
+                      set_config('request.jwt.claim.role', ${claims.role ?? ""}, true)`;
+      await tx`set local role authenticated`;
+      const probe = async (name, fn) => {
+        try {
+          out[name] = await tx.savepoint(fn);
+        } catch (err) {
+          out[name] = `error: ${err.message}`;
+        }
+      };
+      await probe(
+        "read_broadcast",
+        async (sp) =>
+          (
+            await sp`select count(*)::int as n from realtime.messages where topic = realtime.topic() and extension = 'broadcast'`
+          )[0].n,
+      );
+      await probe(
+        "read_presence",
+        async (sp) =>
+          (
+            await sp`select count(*)::int as n from realtime.messages where topic = realtime.topic() and extension = 'presence'`
+          )[0].n,
+      );
+      await probe(
+        "read_any",
+        async (sp) =>
+          (
+            await sp`select count(*)::int as n from realtime.messages where topic = realtime.topic()
+                  and extension in ('broadcast', 'presence')`
+          )[0].n,
+      );
+      await probe("write_broadcast", async (sp) => {
+        await sp`insert into realtime.messages (topic, extension, payload, event, private)
+                 values (realtime.topic(), 'broadcast', '{}', 'probe', true)`;
+        return "allowed";
+      });
+      throw Object.assign(new Error("rollback"), { rollback: true });
+    })
+    .catch((err) => {
+      if (!err.rollback) out.setup_error = err.message;
+    });
+  return out;
 };
 const must = (res, what) => {
   if (res.error) fail(`${what}: ${res.error.message}`);
@@ -107,7 +208,13 @@ const PHONE = `rtphone${run}`;
 const XAGENT = `rtxagent${run}`;
 const CODE = `rtcode${run}`;
 // Each device (and the pairing watcher) is its own auth user.
-const SUB = { [AGENT]: randomUUID(), [PHONE]: randomUUID(), [XAGENT]: randomUUID(), watch: randomUUID() };
+const agentClaims = { owner: U1, device_id: AGENT, role: "agent" };
+const SUB = {
+  [AGENT]: await createAuthUser(deviceEmail(AGENT), agentClaims),
+  [PHONE]: await createAuthUser(deviceEmail(PHONE), { owner: U1, device_id: PHONE, role: "client" }),
+  [XAGENT]: await createAuthUser(deviceEmail(XAGENT), { owner: U2, device_id: XAGENT, role: "agent" }),
+  watch: await createAuthUser(watchEmail(CODE), { role: "pairing", pairing_code: CODE }),
+};
 const device = (owner, device_id, role) => ({
   owner,
   device_id,
@@ -140,13 +247,23 @@ await server(async (tx) => {
   })}`;
 });
 
-const agentClaims = { owner: U1, device_id: AGENT, role: "agent" };
-const agent = deviceClient(mint(SUB[AGENT], agentClaims));
-const phone = deviceClient(mint(SUB[PHONE], { owner: U1, device_id: PHONE, role: "client" }));
-const other = deviceClient(mint(SUB[XAGENT], { owner: U2, device_id: XAGENT, role: "agent" }));
+const agent = deviceClient(await sessionToken(deviceEmail(AGENT)));
+const phone = deviceClient(await sessionToken(deviceEmail(PHONE)));
+const other = deviceClient(await sessionToken(deviceEmail(XAGENT)));
 
 const agentCh = await join(agent.client, `chalito:device:${AGENT}`);
-if (agentCh.status() !== "SUBSCRIBED") fail(`agent could not join its own topic (${agentCh.status()})`);
+if (agentCh.status() !== "SUBSCRIBED") {
+  await diagnose(agent.holder.token, `chalito:device:${AGENT}`);
+  fail(`agent could not join its own topic (${agentCh.status()})`);
+}
+log(
+  `probes for the device topic (joined OK): ${JSON.stringify(
+    await realtimeProbes(
+      JSON.parse(Buffer.from(agent.holder.token.split(".")[1], "base64url").toString("utf8")),
+      `chalito:device:${AGENT}`,
+    ),
+  )}`,
+);
 const otherOwn = await join(other.client, `chalito:device:${XAGENT}`);
 if (otherOwn.status() !== "SUBSCRIBED") fail(`other owner's agent could not join its own topic (${otherOwn.status()})`);
 const otherSpy = await join(other.client, `chalito:device:${AGENT}`);
@@ -186,9 +303,12 @@ if (otherSpy.status() === "SUBSCRIBED") fail(`another owner joined device:${AGEN
 log("isolation: another owner's device received nothing");
 
 // ---------------------------------------------------------------- 3. pairing topic
-const watch = deviceClient(mint(SUB.watch, { role: "pairing", pairing_code: CODE }));
+const watch = deviceClient(await sessionToken(watchEmail(CODE)));
 const watchCh = await join(watch.client, `chalito:pairing:${CODE}`);
-if (watchCh.status() !== "SUBSCRIBED") fail(`pairing watcher could not join pairing:${CODE} (${watchCh.status()})`);
+if (watchCh.status() !== "SUBSCRIBED") {
+  await diagnose(watch.holder.token, `chalito:pairing:${CODE}`);
+  fail(`pairing watcher could not join chalito:pairing:${CODE} (${watchCh.status()})`);
+}
 const watchSpy = await join(watch.client, `chalito:device:${AGENT}`);
 if (watchSpy.status() === "SUBSCRIBED") fail("a pairing token joined a device topic");
 const tClaim = performance.now();
@@ -211,8 +331,8 @@ await probe(1);
 if (!(await waitFor(probed(1), LIMIT_MS))) fail("control: an active agent did not receive a REST broadcast");
 
 await server((tx) => tx`update chalito.devices set revoked = true, revoked_at = now() where device_id = ${AGENT}`);
-// The agent's next token refresh (same claims, fresh expiry) re-runs join authorization.
-agent.holder.token = mint(SUB[AGENT], agentClaims);
+// The agent's next token refresh (a fresh session for the same auth user) re-runs join authorization.
+agent.holder.token = await sessionToken(deviceEmail(AGENT));
 await agent.client.realtime.setAuth();
 await sleep(1000);
 const before = agentCh.inbox.length;
@@ -228,5 +348,6 @@ log(`revocation: nothing reached the agent after revoke + refresh (channel ${age
 
 for (const c of [agent, phone, other, watch]) await c.client.removeAllChannels();
 log(`realtime: ok ${JSON.stringify(Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, Math.round(v)])))}`);
+for (const id of authIds) await gotrue.auth.admin.deleteUser(id).catch(() => undefined);
 await db.end();
 process.exit(0);
