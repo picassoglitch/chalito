@@ -22,9 +22,11 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
+import { CommandAcceptedMeta, CommandRejectedMeta } from "@chalito/protocol";
 import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { AgentCore, type PolicyHolder } from "../src/agent-core.js";
+import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
@@ -248,7 +250,7 @@ const pushTurn: FakeStep[][] = [[{ tool: "Bash", input: { command: "git push ori
 describe("signed approvals end to end (fake Claude Code)", () => {
   it("a MED edit waits for the phone; a signed allow releases it", async () => {
     const h = await harness({ turns: editTurn });
-    expect(await h.startSession()).toEqual({ ok: true });
+    expect(await h.startSession()).toEqual({ ok: true, sid: expect.any(String) });
     await waitFor(() => h.store.pendingApprovals().length === 1);
     expect(h.fake.run.ran).toHaveLength(0);
     await h.decide(true);
@@ -720,7 +722,7 @@ describe("turn origin follows the least trusted voice in the turn (review #10)",
   it("a signed answer keeps Developer-mode auto-approve for the client turn", async () => {
     const h = await harness({ turns: askThenPush, devToggles: ["autoApproveHigh"] });
     await h.startSession();
-    expect(await answer(h, {})).toEqual({ ok: true });
+    expect(await answer(h, {})).toEqual({ ok: true, sid: expect.any(String) });
     await waitFor(() => h.fake.run.ran.length === 2);
     expect(h.store.pendingApprovals()).toHaveLength(0);
   });
@@ -752,7 +754,7 @@ describe("the Codex sandbox ceiling is enforced remotely", () => {
     });
     expect(res).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
 
-    expect(await h.startSession()).toEqual({ ok: true });
+    expect(await h.startSession()).toEqual({ ok: true, sid: expect.any(String) });
     const sid = [...h.core.sessions.keys()][0]!;
     const set = await h.command({
       type: "session.setPermissionMode",
@@ -763,7 +765,7 @@ describe("the Codex sandbox ceiling is enforced remotely", () => {
     expect(set).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
     expect(
       await h.command({ type: "session.setPermissionMode", sid, permissionMode: "default", codexSandbox: "read-only" }),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: true, sid: expect.any(String) });
   });
 });
 
@@ -784,7 +786,7 @@ describe("durable audit trail", () => {
       throw new Error("offline");
     };
     expect((await h.command({ type: "session.interrupt", sid: "nope" })).reason).toBe("unknown_session");
-    await waitFor(() => h.logs.some((l) => l.includes("audit write failed")));
+    await waitFor(() => h.logs.some((l) => l.includes("command.result_publish_failed")));
   });
 
   it("audit meta is redacted before it reaches the store", async () => {
@@ -971,5 +973,72 @@ describe("R-H1: a decision is bound to what the agent signed (ADR 0019)", () => 
     await h.decide(true, { detailsHash: fakeHash });
     await new Promise((r) => setTimeout(r, 50));
     expect(h.fake.run.ran).toHaveLength(0);
+  });
+});
+
+describe("command results reach the person's clients (audit: command.accepted / command.rejected)", () => {
+  const results = (h: Awaited<ReturnType<typeof harness>>) =>
+    h.store.audits
+      .filter((a) => a.type === "command.accepted" || a.type === "command.rejected")
+      .map((a) => ({ type: a.type, source: a.source, meta: a.meta }));
+
+  it("an accepted session.start says which session it started, and touches no device event", async () => {
+    const h = await harness({ turns: editTurn });
+    const r = await h.startSession();
+    expect(results(h)).toEqual([{ type: "command.accepted", source: "agent", meta: { cid: "c1", sid: r.sid } }]);
+    expect(CommandAcceptedMeta.parse(results(h)[0]!.meta)).toEqual({ cid: "c1", sid: r.sid });
+    expect(h.core.sessions.has(r.sid!)).toBe(true);
+    // devices.last_event keeps whatever security notice it holds.
+    expect(h.store.deviceEvents.filter((e) => e.type.startsWith("command."))).toEqual([]);
+  });
+
+  it("refusals carry a closed reason and nothing else (no labels, paths or text), one row each", async () => {
+    const h = await harness();
+    const start = (over: Partial<CommandPayload>) =>
+      h.sealed(0, "x").then((promptCt) =>
+        h.command({
+          type: "session.start",
+          adapter: "claude-code",
+          workspaceLabel: "chalito",
+          promptCt,
+          permissionMode: "default",
+          ...over,
+        } as CommandPayload),
+      );
+    await start({ workspaceLabel: "/home/ana/secret-project" });
+    await start({ adapter: "codex" });
+    await h.command({ type: "session.interrupt", sid: "nope" });
+    await h.command({ type: "devmode.off" }, { expiresAt: Date.now() - 1 });
+    const stranger = await device("dev_stranger");
+    await h.command({ type: "devmode.off" }, { signer: stranger });
+    const r = results(h);
+    expect(r.map((e) => [e.type, e.meta])).toEqual([
+      ["command.rejected", { cid: "c1", reason: "unknown_workspace" }],
+      ["command.rejected", { cid: "c2", reason: "adapter_disabled" }],
+      ["command.rejected", { cid: "c3", reason: "unknown_session" }],
+      ["command.rejected", { cid: "c4", reason: "expired" }],
+      ["command.rejected", { cid: "c5", reason: "untrusted_signer" }],
+    ]);
+    for (const e of r) expect(CommandRejectedMeta.strict().safeParse(e.meta).success).toBe(true);
+    expect(JSON.stringify(h.store.audits)).not.toContain("secret-project");
+  });
+
+  it("a garbled command row is reported as invalid; a malformed row id gets no row", async () => {
+    const h = await harness();
+    await h.core.handleCommand("c9", { env: { nope: true } });
+    await h.core.handleCommand("bad id/../x", { env: { nope: true } });
+    expect(results(h)).toEqual([{ type: "command.rejected", source: "agent", meta: { cid: "c9", reason: "invalid" } }]);
+  });
+
+  it("internal reasons map onto the closed set", () => {
+    expect(publicReason("unknown_workspace")).toBe("unknown_workspace");
+    expect(publicReason("invalid_signature")).toBe("bad_signature");
+    expect(publicReason("wrong_context")).toBe("bad_signature");
+    expect(publicReason("would_loosen")).toBe("policy_would_loosen");
+    expect(publicReason("invalid_patch")).toBe("policy_invalid");
+    expect(publicReason("step_up_counter")).toBe("step_up_failed");
+    expect(publicReason("step_up_required")).toBe("step_up_required");
+    expect(publicReason("/etc/passwd")).toBe("internal");
+    expect(publicReason(undefined)).toBe("internal");
   });
 });

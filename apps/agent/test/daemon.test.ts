@@ -177,6 +177,10 @@ describe("chalito run (daemon)", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(s.store.commands.size).toBe(0);
     expect(s.store.deviceEvents.map((e) => e.type)).toEqual(["remote_enable.rejected"]);
+    expect(s.store.audits.find((a) => a.type === "command.rejected")?.meta).toEqual({
+      cid: "c1",
+      reason: "remote_enable_rejected",
+    });
     await d.stop();
   });
 
