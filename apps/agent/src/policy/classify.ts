@@ -313,9 +313,64 @@ const INSTALLERS: [string, RegExp][] = [
   ["gem", /^install$/],
 ];
 
+// Commands that run another command: classify the inner one.
+const WRAPPERS: Record<string, (args: string[]) => string[]> = {
+  env: (a) => dropWhile(a, (w) => w.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(w)),
+  nohup: (a) => a,
+  exec: (a) => dropWhile(a, (w) => w.startsWith("-")),
+  command: (a) => dropWhile(a, (w) => w.startsWith("-")),
+  builtin: (a) => a,
+  time: (a) => dropWhile(a, (w) => w.startsWith("-")),
+  nice: (a) => (a[0] === "-n" ? a.slice(2) : dropWhile(a, (w) => w.startsWith("-"))),
+  ionice: (a) => dropWhile(a, (w) => w.startsWith("-") || /^\d+$/.test(w)),
+  timeout: (a) =>
+    dropWhile(
+      dropWhile(a, (w) => w.startsWith("-")),
+      (w, i) => i === 0,
+    ),
+  stdbuf: (a) => dropWhile(a, (w) => w.startsWith("-")),
+  xargs: (a) => dropWhile(a, (w) => w.startsWith("-")),
+  caffeinate: (a) => dropWhile(a, (w) => w.startsWith("-")),
+  watch: (a) => dropWhile(a, (w) => w.startsWith("-")),
+};
+const dropWhile = (a: string[], pred: (w: string, i: number) => boolean) => {
+  let i = 0;
+  while (i < a.length && pred(a[i]!, i)) i++;
+  return a.slice(i);
+};
+
 const classifySegment = (seg: Segment, ctx: ClassifyContext, paths: Paths, out: Classification): void => {
-  const words = [...seg.words];
+  let words = [...seg.words];
   while (words[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift(); // FOO=bar cmd
+  // Unwrap env/nohup/timeout/xargs/… so the real command is what gets classified.
+  for (let depth = 0; depth < 5; depth++) {
+    const w = (words[0] ?? "").split("/").pop() ?? "";
+    const unwrap = WRAPPERS[w];
+    if (!unwrap) break;
+    out.reasons.push(`via ${w}`);
+    words = unwrap(words.slice(1));
+  }
+  // bash -c "…", sh -c, eval "…": classify the inner script as a command line.
+  {
+    const w = (words[0] ?? "").split("/").pop() ?? "";
+    const cIdx = words.indexOf("-c");
+    const script = w === "eval" ? words.slice(1).join(" ") : SHELLS.has(w) && cIdx > 0 ? words[cIdx + 1] : undefined;
+    if (script !== undefined) {
+      const inner = classifyBash(script, ctx, paths);
+      out.tier = max(out.tier, max(inner.tier, "MED"));
+      out.hardFloor ||= inner.hardFloor;
+      out.sudo ||= inner.sudo;
+      out.reasons.push(`inline ${w}`, ...inner.reasons);
+      return;
+    }
+    if (SHELLS.has(w) && words.length > 1 && !words[1]!.startsWith("-")) {
+      // `bash script.sh` / `python x.py`: runs a file. Check the path, then treat as MED.
+      classifyPath(paths, words[1]!, false, out);
+      out.tier = max(out.tier, "MED");
+      out.reasons.push("runs a script");
+      return;
+    }
+  }
   const cmd = (words[0] ?? "").split("/").pop() ?? "";
   const args = words.slice(1);
   const line = words.join(" ");
