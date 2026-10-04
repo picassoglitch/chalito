@@ -16,6 +16,7 @@
     "@chalito/brand": "workspace:*",
     "@chalito/client": "workspace:*",
     "@chalito/client-keys": "workspace:*",
+    "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",

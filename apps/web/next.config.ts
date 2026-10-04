@@ -34,6 +34,8 @@ const config: NextConfig = {
   // Workspace packages use NodeNext-style `./x.js` specifiers for TypeScript files. Turbopack
   // can't map those yet, so the web app builds with webpack (`next build --webpack`).
   webpack: (cfg) => {
+    // The legal texts and their status live in packages/config/legal: bundled as plain source.
+    cfg.module.rules.push({ test: /[\\/]config[\\/]legal[\\/][^\\/]+\.(md|yaml)$/, type: "asset/source" });
     cfg.resolve.extensionAlias = { ".js": [".ts", ".tsx", ".js"], ".mjs": [".mts", ".mjs"] };
     return cfg;
   },
