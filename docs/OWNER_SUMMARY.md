@@ -14,9 +14,9 @@
   - la app web/PWA;
   - la app de escritorio con el compañero animado;
   - las Mesas;
-  - las salas con otros compañeros;
+  - las salas con otros compañeros, en web y escritorio, con la escena del portal (cada compañero con su avatar y sus cosméticos) y un control de calidad gráfica para la sala y la mascota;
   - el conector MCP para ChatGPT y Claude.
-- **Avisos que suben de nivel:** push, WhatsApp, llamada y SMS, con límites y horas de silencio.
+- **Avisos que suben de nivel:** push, WhatsApp, llamada y SMS, con límites y horas de silencio. La base de datos avisa sola al motor de avisos cuando hay una aprobación, una pregunta de un agente o un mensaje en una sala.
 - **Cobro a través del hub de Chalyb:** cada gasto se admite antes, se reporta y se liquida. La tienda de cosméticos es solo de apariencia, nunca da ventajas.
 - **Seis personajes y seis cosméticos,** generados con AI Studio y con su origen registrado.
 - **Seguridad:**
@@ -40,7 +40,7 @@
    - el número de Twilio (EE. UU. o MX);
    - quién es el responsable de los datos, y si se permiten usuarios de la UE.
 2. **El PR en Chalyb** ([Fase 1](GO_LIVE.md#phase-1-the-chalyb-hub-pr-hub-owners-go-visible)): registrar el motor, y que las rutas de consumo (`admit` y `settle`) lleguen a `main` del hub. **Sin esto, la IA administrada no se enciende.**
-3. **Base de datos en nexo-ai** ([Fase 2](GO_LIVE.md#phase-2-supabase-on-nexo-ai-owner--hub-sign-off-visible)): tu visto bueno, luego una prueba en una rama de Supabase, y después aplicar.
+3. **Base de datos en nexo-ai** ([Fase 2](GO_LIVE.md#phase-2-supabase-on-nexo-ai-owner--hub-sign-off-visible)): tu visto bueno, luego una prueba en una rama de Supabase, y después aplicar. Ahí también se activa `pg_net` y se guardan dos secretos en Vault, para que las aprobaciones avisen a tu teléfono en segundos.
 4. **Nube** ([Fases 3–4](GO_LIVE.md#phase-3-gcp-with-terraform-ops-owners-go-cost)): aprobar `terraform apply` y los despliegues. 💲
 5. **Cuentas** ([Fase 5](GO_LIVE.md#phase-5-provider-accounts-owner-cost-visible)): OpenAI, Anthropic, Twilio y Meta/WhatsApp (verificación y aprobación de plantilla). 💲
 6. **Web en Vercel** ([Fase 6](GO_LIVE.md#phase-6-web-on-vercel-ops-visible)).
@@ -50,9 +50,11 @@
    - **una llamada real y un WhatsApp real**;
    - una compra en la tienda;
    - invitar a los testers. 💲
-8. **Apps de escritorio firmadas** ([Fase 9](GO_LIVE.md#phase-9-desktop-apps-owner-after-82-cost-visible)): la llave de actualizaciones (respáldala), Apple y Azure. 💲
+8. **Apps de escritorio firmadas** ([Fase 9](GO_LIVE.md#phase-9-desktop-apps-owner-after-82-cost-visible)): la llave de actualizaciones (respáldala), Apple, Azure, y dos variables del repositorio para que la app se conecte a tu cuenta (`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`). 💲
 
 💲 = cuesta dinero o es visible para terceros. Nada de eso se ha hecho sin tu permiso.
+
+Las limitaciones que verán los testers están en [`BETA_NOTES.md`](BETA_NOTES.md).
 
 ### Antes de abrir más allá de la beta
 - Aviso de privacidad y términos publicados, revisados por tu abogado.
@@ -71,9 +73,9 @@
   - the web/PWA app;
   - the desktop app with the animated companion;
   - Mesas;
-  - rooms with other companions;
+  - rooms with other companions, on web and desktop, with the portal scene (each companion with its avatar and cosmetics) and a graphics-quality control for the room and the pet;
   - the MCP connector for ChatGPT and Claude.
-- **Escalating alerts:** push, WhatsApp, call and SMS, with caps and quiet hours.
+- **Escalating alerts:** push, WhatsApp, call and SMS, with caps and quiet hours. The database itself tells the alert engine when there's an approval, an agent's question or a room message.
 - **Billing through the Chalyb hub:** every spend is admitted first, reported and settled. The cosmetics store is looks only, never an advantage.
 - **Six characters and six cosmetics,** generated with AI Studio, provenance logged.
 - **Security:**
@@ -97,7 +99,7 @@
    - the Twilio number (US or MX);
    - who the data controller is, and whether EU users are allowed.
 2. **The Chalyb PR** ([Phase 1](GO_LIVE.md#phase-1-the-chalyb-hub-pr-hub-owners-go-visible)): register the engine, and get the consumption routes (`admit` and `settle`) onto the hub's `main`. **Without this, managed AI stays off.**
-3. **Database on nexo-ai** ([Phase 2](GO_LIVE.md#phase-2-supabase-on-nexo-ai-owner--hub-sign-off-visible)): your sign-off, then a dry run on a Supabase branch, then apply.
+3. **Database on nexo-ai** ([Phase 2](GO_LIVE.md#phase-2-supabase-on-nexo-ai-owner--hub-sign-off-visible)): your sign-off, then a dry run on a Supabase branch, then apply. That's also where `pg_net` is turned on and two Vault secrets are stored, so approvals reach your phone in seconds.
 4. **Cloud** ([Phases 3–4](GO_LIVE.md#phase-3-gcp-with-terraform-ops-owners-go-cost)): approve `terraform apply` and the deploys. 💲
 5. **Accounts** ([Phase 5](GO_LIVE.md#phase-5-provider-accounts-owner-cost-visible)): OpenAI, Anthropic, Twilio and Meta/WhatsApp (verification and template approval). 💲
 6. **Web on Vercel** ([Phase 6](GO_LIVE.md#phase-6-web-on-vercel-ops-visible)).
@@ -107,9 +109,11 @@
    - **one real call and one real WhatsApp**;
    - one store purchase;
    - invite the testers. 💲
-8. **Signed desktop apps** ([Phase 9](GO_LIVE.md#phase-9-desktop-apps-owner-after-82-cost-visible)): the updater key (back it up), Apple and Azure. 💲
+8. **Signed desktop apps** ([Phase 9](GO_LIVE.md#phase-9-desktop-apps-owner-after-82-cost-visible)): the updater key (back it up), Apple, Azure, and two repository variables so the app connects to accounts (`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`). 💲
 
 💲 = costs money or is visible to others. None of it has been done without your go.
+
+What testers should know is in [`BETA_NOTES.md`](BETA_NOTES.md).
 
 ### Before opening beyond the beta
 - A privacy notice and terms published, reviewed by your lawyer.
