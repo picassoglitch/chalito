@@ -4,6 +4,8 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(17);
 
+grant usage on schema extensions to chalito_server;
+
 create function pg_temp.login(claims jsonb, topic text) returns void language plpgsql as $$
 begin
   perform set_config('request.jwt.claims',
