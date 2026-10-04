@@ -1,3 +1,4 @@
+import type { PhoneDeps } from "./phone/routes.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 
 export interface AuditEvent {
@@ -30,6 +31,8 @@ export interface Deps {
   audit: AuditSink;
   config: ApiConfig;
   now: () => number;
+  /** Phone verification and channel opt-ins (/v1/phone), when Twilio Verify is configured. */
+  phone?: PhoneDeps;
 }
 
 export class MemoryAudit implements AuditSink {

@@ -3,6 +3,9 @@ import { PubSub } from "@google-cloud/pubsub";
 import { createClient } from "@supabase/supabase-js";
 import { createApp } from "./app.js";
 import type { AuditSink } from "./deps.js";
+import { PostgresPhoneStore } from "./phone/postgres.js";
+import type { PhoneDeps } from "./phone/routes.js";
+import { twilioPhoneVerifier } from "./phone/twilio.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
@@ -19,7 +22,7 @@ const env = (name: string): string => {
  * server only). CHALITO_DATA_BACKEND defaults to `supabase`, the only backend since the
  * Firestore cut-over.
  */
-const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
+const backend = (): { repo: ApiRepo; identity: IdentityIssuer; phone?: PhoneDeps } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
     throw new Error(`CHALITO_DATA_BACKEND=${kind} is not supported (Firestore was removed, ADR 0017)`);
@@ -32,6 +35,19 @@ const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
   return {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
+    // Phone verification (Twilio Verify + Geo Permissions) when configured.
+    ...(process.env.TWILIO_VERIFY_SERVICE_SID
+      ? {
+          phone: {
+            store: new PostgresPhoneStore(sql),
+            verifier: twilioPhoneVerifier({
+              accountSid: env("TWILIO_ACCOUNT_SID"),
+              authToken: env("TWILIO_AUTH_TOKEN"),
+              verifyServiceSid: env("TWILIO_VERIFY_SERVICE_SID"),
+            }),
+          },
+        }
+      : {}),
   };
 };
 

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { loadCatalog, loadModels, loadPlans, loadPrices, loadProviders, loadRender, loadRooms } from "../src/load.js";
+import {
+  loadCatalog,
+  loadEscalation,
+  loadModels,
+  loadPlans,
+  loadPrices,
+  loadProviders,
+  loadRender,
+  loadRooms,
+} from "../src/load.js";
 import { isLintedFile, lintCurrency } from "../src/currency.js";
 
 describe("config files", () => {
@@ -11,6 +20,10 @@ describe("config files", () => {
     expect(loadRooms().defaults.ephemeralTtl).toBe("PT24H");
     expect(loadRender().default).toBe("auto");
     expect(loadCatalog().cosmetics.viking_hat?.free).toBe(true);
+    const esc = loadEscalation();
+    expect(esc.caps).toEqual({ call: 3, whatsapp: 10, sms: 3 });
+    expect(esc.voices).toEqual({ es: "Polly.Mia-Neural", en: "Polly.Joanna-Neural" });
+    expect(esc.whatsapp.graphVersion).toBe("v26.0");
   });
 
   it("every model referenced in models.yaml has a price", () => {
