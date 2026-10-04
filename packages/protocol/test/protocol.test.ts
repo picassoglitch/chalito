@@ -96,9 +96,9 @@ describe("remote surfaces can never widen the device", () => {
     }
   });
 
-  it("relayed (unsigned) commands may only prompt or answer", () => {
-    const body = (origin: string, payload: unknown) => ({
-      relayedBy: "mcp-gateway",
+  it("relayed (unsigned) commands may only prompt, each relay from its own origin (review R-L2)", () => {
+    const body = (origin: string, payload: unknown, relayedBy = "mcp-gateway") => ({
+      relayedBy,
       body: {
         v: 1,
         cid: "c1",
@@ -115,6 +115,21 @@ describe("remote surfaces can never widen the device", () => {
       false,
     );
     expect(CommandEnvelope.safeParse(body("client:p1", { type: "devmode.off" })).success).toBe(false);
+    const prompt = {
+      type: "session.prompt",
+      sid: "s1",
+      promptCt: { alg: "xchacha20poly1305+sealedbox", nonce: b64(24), ct: b64(10), keys: { d1: b64(80) } },
+    };
+    const call = `call:CA${"a".repeat(32)}`;
+    expect(CommandEnvelope.safeParse(body("mcp:claude", prompt)).success).toBe(true);
+    expect(CommandEnvelope.safeParse(body(call, prompt, "notifier")).success).toBe(true);
+    // The gateway can't relay call: origins, nor the notifier mcp: ones.
+    expect(CommandEnvelope.safeParse(body(call, prompt, "mcp-gateway")).success).toBe(false);
+    expect(CommandEnvelope.safeParse(body("mcp:claude", prompt, "notifier")).success).toBe(false);
+    // Nothing relays answers any more.
+    const answer = { type: "session.answer", sid: "s1", questionId: "q1", answerCt: prompt.promptCt };
+    expect(CommandEnvelope.safeParse(body("mcp:claude", answer)).success).toBe(false);
+    expect(CommandEnvelope.safeParse(body(call, answer, "notifier")).success).toBe(false);
   });
 });
 

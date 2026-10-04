@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { openJson, type BoxKeyPair, type NonceStore, type TrustedClientList } from "@chalito/crypto";
+import {
+  openJson,
+  stepUpChallenge,
+  verifyWebAuthnAssertion,
+  type BoxKeyPair,
+  type NonceStore,
+  type TrustedClientList,
+} from "@chalito/crypto";
 import type { AdapterEvent, SessionAdapter, SessionHandle, ToolCall, ToolGate } from "@chalito/adapters";
 import {
   AgentEvent,
@@ -176,10 +183,15 @@ export class AgentCore {
     if (!(await this.d.nonces.claim(body.nonce, body.expiresAt, now))) return this.#reject(id, "replayed_nonce");
     if (!originAllowed(this.d.policy.get().origins, body.origin)) return this.#reject(id, "origin_disabled");
 
-    return this.#dispatch(body.cid, body.payload, body.origin);
+    return this.#dispatch(body.cid, body.payload, body.origin, body);
   }
 
-  async #dispatch(cid: string, p: CommandPayload, origin: Origin): Promise<{ ok: boolean; reason?: string }> {
+  async #dispatch(
+    cid: string,
+    p: CommandPayload,
+    origin: Origin,
+    body?: CommandBody,
+  ): Promise<{ ok: boolean; reason?: string }> {
     const policy = this.d.policy.get();
     const open = <T>(ct: SealedEnvelope) => openJson<T>(ct, this.d.self.deviceId, this.d.self.box, `command:${cid}`);
     const aboveCeiling = (mode: RemotePermissionMode) =>
@@ -271,6 +283,15 @@ export class AgentCore {
         await this.d.store.updateDevice({ devMode: this.d.devMode.state });
         return { ok: true };
       case "device.revokeClient": {
+        // Revoking ANOTHER client takes the signer's passkey step-up over this command (review
+        // R-L1), so a stolen phone can't wipe the user's other phones (or the last one holding a
+        // passkey) from every agent. Revoking oneself never needs it. Setups where no trusted
+        // client has a passkey yet keep working without one.
+        const signer = origin.startsWith("client:") ? origin.slice("client:".length) : null;
+        if (p.clientDeviceId !== signer) {
+          const failure = await this.#revokeStepUpFailure(signer, body);
+          if (failure) return this.#reject(cid, failure);
+        }
         this.d.trust().remove(p.clientDeviceId);
         await this.d.saveTrust();
         for (const s of this.sessions.values())
@@ -517,6 +538,24 @@ export class AgentCore {
     } catch (err) {
       this.d.log.warn("card.share_failed", { sid: s.sid, error: err instanceof Error ? err.message : "error" });
     }
+  }
+
+  async #revokeStepUpFailure(signer: string | null, body: CommandBody | undefined): Promise<string | null> {
+    const trust = this.d.trust();
+    const anyPasskey = trust.toJSON().some((c) => c.webauthn !== undefined);
+    if (!anyPasskey) return null;
+    const credential = signer ? trust.webauthnFor(signer) : undefined;
+    if (!credential) return "step_up_required";
+    const step = body?.stepUp;
+    if (!body || !step || step.method !== "webauthn" || !step.assertion) return "step_up_required";
+    const res = await verifyWebAuthnAssertion({
+      assertion: step.assertion,
+      credential,
+      expectedChallenge: await stepUpChallenge(body),
+      rpId: credential.rpId,
+      origin: [`https://${credential.rpId}`],
+    });
+    return res.ok ? null : `step_up_${res.reason}`;
   }
 
   #reject(id: string, reason: string): { ok: false; reason: string } {
