@@ -394,6 +394,7 @@ describe("chalito CLI", () => {
       [["devmode", "off"], []],
       [["devmode", "reset"], ["RESET"]],
       [["claude", "pin", "/usr/bin/true"], []],
+      [["codex", "pin", "/usr/bin/true"], []],
     ];
 
     for (const [argv, lines] of mutating) {
@@ -451,6 +452,45 @@ describe("chalito CLI", () => {
       const c = cli();
       expect(await c.run(["claude", "pin", "/usr/bin/true"])).toBe(1);
       expect(c.err()).toMatch(/Pair this computer first/);
+    });
+
+    it("codex pin: path + sha256 into the signed config, next to the Claude Code pin", async () => {
+      const c = cli();
+      const id = await paired(c);
+      const real = join(c.home, "codex-0.162");
+      writeFileSync(real, "#!/bin/sh\n# codex\n");
+      symlinkSync(real, join(c.home, "codex"));
+      expect(await c.run(["codex", "pin", join(c.home, "codex")])).toBe(0);
+      const cfg = readConfig(c.dir, {}, { keys: id.sign });
+      expect(cfg.codex).toEqual({
+        path: real,
+        sha256: createHash("sha256").update("#!/bin/sh\n# codex\n").digest("hex"),
+      });
+      expect(c.out()).toMatch(/Codex pinned/);
+      c.reset();
+      expect(await c.run(["status"])).toBe(0);
+      expect(c.out()).toMatch(/Codex\s+.*codex-0\.162 \(pinned, sha256/);
+    });
+
+    it("codex pin: needs a paired computer, and says how to install Codex when it isn't found", async () => {
+      const c = cli({ env: { PATH: "/nonexistent" } });
+      expect(await c.run(["codex", "pin", "/usr/bin/true"])).toBe(1);
+      expect(c.err()).toMatch(/then run `chalito codex pin`/);
+      await paired(c);
+      c.reset();
+      expect(await c.run(["codex", "pin"])).toBe(1);
+      expect(c.err()).toMatch(/`codex` wasn't found.*developers\.openai\.com\/codex/);
+    });
+
+    it("keys set openai pins the Codex found on PATH when nothing is pinned yet", async () => {
+      const bin = mkdtempSync(join(tmpdir(), "chalito-cli-bin-"));
+      writeFileSync(join(bin, "codex"), "#!/bin/sh\n");
+      chmodSync(join(bin, "codex"), 0o755);
+      const c = cli({ env: { PATH: bin } });
+      const id = await paired(c);
+      expect(await c.run(["keys", "set", "openai"], ["sk-proj-abcdefgh12345678"])).toBe(0);
+      expect(readConfig(c.dir, {}, { keys: id.sign }).codex?.path).toBe(join(bin, "codex"));
+      expect(c.out()).toMatch(/Codex pinned/);
     });
   });
 });

@@ -215,6 +215,8 @@ describe("Codex adapter: launch and auth", () => {
         LANG: "es_MX.UTF-8",
         LC_ALL: "es_MX.UTF-8",
         CODEX_HOME: join(homedir(), ".chalito", "codex"),
+        // The chalito CLI refuses key, trust, policy and Developer-mode changes under it.
+        CHALITO_SESSION: "1",
         [BYO_KEY_ENV]: "sk-test",
       },
       cwd: "/ws",
@@ -247,6 +249,7 @@ describe("Codex adapter: launch and auth", () => {
       PATH: "/usr/bin",
       ACCESS_TOKEN: "siwc-access",
       CODEX_HOME: join(homedir(), ".chalito", "codex"),
+      CHALITO_SESSION: "1",
     });
     expect(fake.run.received.some((m) => m.method?.startsWith("account/"))).toBe(false);
   });

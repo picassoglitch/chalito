@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { basename, delimiter } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { homedir } from "node:os";
 import type { SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv } from "@chalito/adapters/claude-code";
+import { CodexAdapter } from "@chalito/adapters/codex";
 import { loadLiabilityText } from "@chalito/config";
 import type { NonceStore, TrustedClientList } from "@chalito/crypto";
 import type { AdapterKind, DeviceEvent } from "@chalito/protocol";
@@ -40,6 +41,24 @@ export const CLAUDE_PIN_FAILED = {
       ? "Claude Code updated itself: run `chalito claude pin` again in a terminal to trust the new version."
       : `The pinned Claude Code is no longer safe to run (${r === "world_writable" ? "anyone can modify it" : r}). Check it, then run \`chalito claude pin\` in a terminal.`,
 } as const;
+export const CODEX_PIN_FAILED = {
+  es: (r: string) =>
+    r === "hash_mismatch"
+      ? "Codex se actualizó: ejecuta `chalito codex pin` otra vez en una terminal para confiar en la versión nueva."
+      : r === "missing" || r === "not_pinned"
+        ? "El Codex fijado ya no está. Reinstálalo y ejecuta `chalito codex pin` en una terminal."
+        : `El Codex fijado ya no es seguro de ejecutar (${r === "world_writable" ? "cualquiera puede modificarlo" : r}). Revísalo y ejecuta \`chalito codex pin\` en una terminal.`,
+  en: (r: string) =>
+    r === "hash_mismatch"
+      ? "Codex was updated: run `chalito codex pin` again in a terminal to trust the new version."
+      : r === "missing" || r === "not_pinned"
+        ? "The pinned Codex isn't there any more. Reinstall it, then run `chalito codex pin` in a terminal."
+        : `The pinned Codex is no longer safe to run (${r === "world_writable" ? "anyone can modify it" : r}). Check it, then run \`chalito codex pin\` in a terminal.`,
+} as const;
+export const OPENAI_KEY_MISSING = {
+  es: "Codex está fijado pero falta tu API key de OpenAI. Guárdala con `chalito keys set openai`.",
+  en: "Codex is pinned but your OpenAI API key is missing. Save it with `chalito keys set openai`.",
+} as const;
 export const ANTHROPIC_KEY_MISSING = {
   es: "Falta tu API key de Anthropic. Guárdala con `chalito keys set anthropic`.",
   en: "Your Anthropic API key is missing. Save it with `chalito keys set anthropic`.",
@@ -57,11 +76,7 @@ export interface DaemonDeps {
   fetch?: FetchFn;
   /** Supabase in production; a fake with a MemoryStore in tests. */
   cloud?: (cfg: PairedConfig, mint: MintToken) => Cloud;
-  adapters?: (input: {
-    apiKey: string | null;
-    claudePath: string;
-    log: Logger;
-  }) => Partial<Record<AdapterKind, SessionAdapter>>;
+  adapters?: (input: AdapterInput) => Partial<Record<AdapterKind, SessionAdapter>>;
   nonces?: NonceStore;
   log?: Logger;
   now?: () => number;
@@ -85,8 +100,18 @@ export interface Daemon {
   readonly done: Promise<void>;
 }
 
-export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, claudePath, log }) =>
-  apiKey
+export interface AdapterInput {
+  /** BYO Anthropic key; null when missing. */
+  apiKey: string | null;
+  /** The pinned Claude Code, or null when its pin is missing or failed (Codex may still run). */
+  claudePath: string | null;
+  /** The pinned Codex and the BYO OpenAI key; absent unless both are there and the pin checks out. */
+  codex?: { path: string; apiKey: string; home: string; env: Record<string, string | undefined> };
+  log: Logger;
+}
+
+export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, claudePath, codex, log }) => ({
+  ...(apiKey && claudePath
     ? {
         "claude-code": new ClaudeCodeAdapter({
           apiKey,
@@ -95,7 +120,17 @@ export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, c
           onInit: (i) => log.info("adapter.init", { ...i }),
         }),
       }
-    : {};
+    : {}),
+  // BYO key only, through the adapter's env-key provider: Codex never logs in or stores it
+  // (R-L12), runs with Chalito's own CODEX_HOME and an allowlisted env, and refuses app-server
+  // builds outside DEFAULT_CODEX_VERSIONS. Sign in with ChatGPT stays off: the agent has no SIWC
+  // token lifecycle yet, and providers.yaml keeps it owner_only (D-003).
+  ...(codex
+    ? {
+        codex: new CodexAdapter({ codexPath: codex.path, apiKey: codex.apiKey, codexHome: codex.home, env: codex.env }),
+      }
+    : {}),
+});
 
 const isInterpreter = (p: string) => /^(node|nodejs|bun|tsx)(\.exe)?$/i.test(basename(p));
 
@@ -232,17 +267,29 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     });
   };
 
-  // Fail fast, before touching the cloud: run exactly the pinned Claude Code, never a PATH lookup.
+  // Fail fast, before touching the cloud: run exactly the pinned binaries, never a PATH lookup.
+  // Claude Code's pin failing is fatal only when there's no usable Codex either.
   const pin = await checkClaudePin(cfg.claude);
-  if (!pin.ok)
-    throw new OnboardingError(
-      pin.reason === "not_pinned" || pin.reason === "missing"
-        ? CLAUDE_MISSING[cfg.locale]
-        : CLAUDE_PIN_FAILED[cfg.locale](pin.reason),
-    );
-  const claudePath = cfg.claude!.path;
-  const apiKey = await secrets.get(SECRET_NAMES.anthropicApiKey);
-  if (!apiKey) log.error("adapter.claude_code_unavailable", { reason: ANTHROPIC_KEY_MISSING[cfg.locale] });
+  const claudeProblem = pin.ok
+    ? null
+    : pin.reason === "not_pinned" || pin.reason === "missing"
+      ? CLAUDE_MISSING[cfg.locale]
+      : CLAUDE_PIN_FAILED[cfg.locale](pin.reason);
+  const codexPin = cfg.codex ? await checkClaudePin(cfg.codex) : null;
+  const openaiKey = cfg.codex ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
+  if (codexPin && !codexPin.ok)
+    log.error("adapter.codex_unavailable", { reason: CODEX_PIN_FAILED[cfg.locale](codexPin.reason) });
+  else if (codexPin && !openaiKey) log.error("adapter.codex_unavailable", { reason: OPENAI_KEY_MISSING[cfg.locale] });
+  const codex =
+    codexPin?.ok && openaiKey
+      ? { path: cfg.codex!.path, apiKey: openaiKey, home: join(dir, "codex"), env: { ...env } }
+      : undefined;
+  if (claudeProblem && !codex) throw new OnboardingError(claudeProblem);
+  if (claudeProblem) log.error("adapter.claude_code_unavailable", { reason: claudeProblem });
+  const claudePath = claudeProblem ? null : cfg.claude!.path;
+  const apiKey = claudePath ? await secrets.get(SECRET_NAMES.anthropicApiKey) : null;
+  if (claudePath && !apiKey)
+    log.error("adapter.claude_code_unavailable", { reason: ANTHROPIC_KEY_MISSING[cfg.locale] });
 
   // Supabase (ADR 0017): the only data layer.
   const mint: MintToken = () => fetchDeviceToken(fetchFn, cfg, id, now());
@@ -258,7 +305,8 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     agentBinaries: [...new Set([process.execPath, agentBin].filter((p): p is string => !!p && !isInterpreter(p)))],
     protectedPaths: [
       ...(agentBin ? servicePlanFiles(agentBin, deps.home ?? homedir()) : []),
-      claudePath,
+      ...(claudePath ? [claudePath] : []),
+      ...(cfg.codex ? [cfg.codex.path] : []),
       ...(agentBin ? [agentBin] : []),
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
@@ -266,7 +314,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const coreDeps: AgentCoreDeps = {
     classifyExtras: () => extras,
     store: signedInStore,
-    adapters: (deps.adapters ?? defaultAdapters)({ apiKey, claudePath, log }),
+    adapters: (deps.adapters ?? defaultAdapters)({ apiKey, claudePath, ...(codex ? { codex } : {}), log }),
     policy,
     devMode,
     trust: () => trust,

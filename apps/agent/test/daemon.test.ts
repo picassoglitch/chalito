@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CodexAdapter } from "@chalito/adapters/codex";
 import { describe, expect, it, vi } from "vitest";
 import { verifyEnvelope, type SignedEnvelope } from "@chalito/crypto";
 import type { Cloud, FetchFn } from "../src/cloud.js";
@@ -12,8 +13,10 @@ import {
   ENDORSEMENT_SYNC_MS,
   PRESENCE_HEARTBEAT_MS,
   OnboardingError,
+  OPENAI_KEY_MISSING,
   defaultAdapters,
   runDaemon,
+  type AdapterInput,
   type DaemonDeps,
 } from "../src/daemon.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
@@ -33,7 +36,15 @@ import {
 
 const NOW = 1_790_000_000_000;
 
-const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; apiKey?: boolean } = {}) => {
+const setup = async (
+  opts: {
+    paired?: boolean;
+    claude?: "pinned" | "missing";
+    apiKey?: boolean;
+    codex?: boolean;
+    openaiKey?: boolean;
+  } = {},
+) => {
   const home = mkdtempSync(join(tmpdir(), "chalito-daemon-"));
   const dir = chalitoDir(home);
   const secrets = new MemorySecretStore();
@@ -51,6 +62,11 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
   writeFileSync(join(evilBin, "claude"), "#!/bin/sh\necho pwned\n");
   chmodSync(join(evilBin, "claude"), 0o755);
   const pin = await pinClaude(claude);
+  const codex = join(bin, "codex");
+  writeFileSync(codex, "#!/bin/sh\n# codex\n");
+  chmodSync(codex, 0o755);
+  const codexPin = await pinClaude(codex);
+  if (opts.openaiKey) await secrets.set(SECRET_NAMES.openaiApiKey, "sk-openai-test-123456");
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -65,6 +81,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
         owner: "hub-user-1",
         deviceId: id.deviceId,
         ...(opts.claude === "missing" ? {} : { claude: pin }),
+        ...(opts.codex ? { codex: codexPin } : {}),
       },
       id.sign,
     );
@@ -89,7 +106,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
   const logs: Record<string, unknown>[] = [];
   const refreshers: (() => void)[] = [];
   const refreshEvery: number[] = [];
-  const adapterInputs: { apiKey: string | null; claudePath: string }[] = [];
+  const adapterInputs: AdapterInput[] = [];
   const deps: DaemonDeps = {
     home,
     env: { PATH: `${evilBin}:${bin}` },
@@ -117,6 +134,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
     refreshEvery,
     adapterInputs,
     claude: pin.path,
+    codex: codexPin.path,
     closed: () => closed,
   };
 };
@@ -315,6 +333,66 @@ describe("chalito run (daemon)", () => {
     adapter.config.onInit({ sid: "s1", apiKeySource: "ANTHROPIC_API_KEY", permissionMode: "default" });
     expect(logs[0]).toMatchObject({ msg: "adapter.init", sid: "s1", apiKeySource: "ANTHROPIC_API_KEY" });
     expect(defaultAdapters({ apiKey: null, claudePath: "/usr/bin/claude", log })).toEqual({});
+  });
+
+  describe("Codex", () => {
+    it("a pinned Codex with an OpenAI key gets the Codex adapter: pinned path, Chalito's CODEX_HOME", async () => {
+      const s = await setup({ codex: true, openaiKey: true });
+      const d = await runDaemon(s.deps);
+      const input = s.adapterInputs[0]!;
+      expect(input.codex).toMatchObject({ path: s.codex, apiKey: "sk-openai-test-123456", home: join(s.dir, "codex") });
+      expect(input.codex!.path).not.toContain("evil");
+      expect(d.classifyExtras().protectedPaths).toContain(s.codex);
+      await d.stop();
+    });
+
+    it("not pinned, or pinned without a key: no Codex adapter (the key is logged as missing)", async () => {
+      const none = await setup({ openaiKey: true });
+      const d1 = await runDaemon(none.deps);
+      expect(none.adapterInputs[0]!.codex).toBeUndefined();
+      expect(none.logs.some((l) => l.msg === "adapter.codex_unavailable")).toBe(false);
+      await d1.stop();
+
+      const noKey = await setup({ codex: true });
+      const d2 = await runDaemon(noKey.deps);
+      expect(noKey.adapterInputs[0]!.codex).toBeUndefined();
+      expect(noKey.logs.find((l) => l.msg === "adapter.codex_unavailable")?.reason).toBe(OPENAI_KEY_MISSING.es);
+      await d2.stop();
+    });
+
+    it("a Codex that changed since the pin isn't run, and Claude Code keeps working", async () => {
+      const s = await setup({ codex: true, openaiKey: true });
+      writeFileSync(s.codex, "#!/bin/sh\necho swapped\n");
+      const d = await runDaemon(s.deps);
+      expect(s.adapterInputs[0]!.codex).toBeUndefined();
+      expect(s.adapterInputs[0]!.claudePath).toBe(s.claude);
+      expect(s.logs.find((l) => l.msg === "adapter.codex_unavailable")?.reason).toMatch(/chalito codex pin/);
+      await d.stop();
+    });
+
+    it("with Codex usable, a missing Claude Code pin is logged instead of stopping the agent", async () => {
+      const s = await setup({ claude: "missing", codex: true, openaiKey: true });
+      const d = await runDaemon(s.deps);
+      expect(s.adapterInputs[0]).toMatchObject({ claudePath: null, apiKey: null });
+      expect(s.adapterInputs[0]!.codex?.path).toBe(s.codex);
+      expect(s.logs.find((l) => l.msg === "adapter.claude_code_unavailable")?.reason).toBe(CLAUDE_MISSING.es);
+      await d.stop();
+    });
+
+    it("defaultAdapters builds a CodexAdapter on the BYO key only (never SIWC)", () => {
+      const log = createLogger(() => undefined);
+      const a = defaultAdapters({
+        apiKey: null,
+        claudePath: null,
+        codex: { path: "/opt/codex", apiKey: "sk-o", home: "/h/.chalito/codex", env: { PATH: "/usr/bin" } },
+        log,
+      });
+      expect(Object.keys(a)).toEqual(["codex"]);
+      const cfg = (a.codex as unknown as { config: Record<string, unknown> }).config;
+      expect(cfg).toMatchObject({ codexPath: "/opt/codex", apiKey: "sk-o", codexHome: "/h/.chalito/codex" });
+      expect(cfg.chatgptPlan).toBeUndefined();
+      expect(a.codex).toBeInstanceOf(CodexAdapter);
+    });
   });
 
   it("a revoked device found on a refresh tick stops the daemon with a clear log", async () => {
