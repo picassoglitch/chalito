@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,8 @@ import type { AdapterEvent, Question, SessionStartOptions, ToolCall } from "../s
 import {
   APPROVAL_POLICY,
   CHATGPT_PLAN_OVERRIDES,
+  API_KEY_OVERRIDES,
+  BYO_KEY_ENV,
   HARDENING_OVERRIDES,
   checkCodexVersion,
   codexVersionFromUserAgent,
@@ -28,6 +30,8 @@ import { loadTranscript, replay, type TranscriptEntry } from "./replay.js";
 const transcript = loadTranscript(new URL("./fixtures/codex-transcript.synthetic.jsonl", import.meta.url));
 
 const LAUNCH_ARGS = ["app-server", "--listen", "stdio://", ...HARDENING_OVERRIDES.flatMap((o) => ["-c", o])];
+/** With a BYO API key: the env-key provider, never a Codex login (review R-L12). */
+const KEY_LAUNCH_ARGS = [...LAUNCH_ARGS, ...API_KEY_OVERRIDES.flatMap((o) => ["-c", o])];
 
 const session = (
   config: CodexConfig,
@@ -84,7 +88,7 @@ describe("Codex adapter: recorded app-server transcript", () => {
 
     expect(r.state.mismatches).toEqual([]);
     expect(r.finished()).toBe(true);
-    expect(r.state.spawned).toEqual({ command: "codex", args: LAUNCH_ARGS });
+    expect(r.state.spawned).toEqual({ command: "codex", args: KEY_LAUNCH_ARGS });
 
     expect(calls.map((c) => [c.toolUseId, c.toolName, c.input, c.origin])).toEqual([
       ["item_3", "Bash", { command: "pnpm test", cwd: "/ws" }, "client:phone1"],
@@ -180,13 +184,25 @@ describe("Codex adapter: recorded app-server transcript", () => {
 });
 
 describe("Codex adapter: launch and auth", () => {
-  it("API key: plain app-server on stdio, competing credentials stripped, apiKey login", async () => {
+  it("API key: an env-key provider, only allowlisted env, and no Codex login (nothing written to auth.json)", async () => {
     const fake = fakeCodex([[{ say: "ok" }]]);
     const { start, states } = session({
       apiKey: "sk-test",
       codexPath: "/opt/codex/bin/codex",
       spawn: fake.spawn,
-      env: { PATH: "/usr/bin", OPENAI_API_KEY: "other", CODEX_API_KEY: "x", ACCESS_TOKEN: "y" },
+      env: {
+        PATH: "/usr/bin",
+        LANG: "es_MX.UTF-8",
+        LC_ALL: "es_MX.UTF-8",
+        OPENAI_API_KEY: "other",
+        CODEX_API_KEY: "x",
+        ACCESS_TOKEN: "y",
+        CHALITO_SECRETS_PASSPHRASE: "hunter2",
+        ANTHROPIC_API_KEY: "sk-ant-x",
+        XAI_API_KEY: "xai-x",
+        SUPABASE_SECRET_KEY: "sb",
+        OPENAI_BASE_URL: "https://evil.example",
+      },
     });
     const h = await start();
     await waitFor(() => states().includes("idle"));
@@ -194,17 +210,18 @@ describe("Codex adapter: launch and auth", () => {
     await h.done;
     expect(fake.run.spawned).toEqual({
       command: "/opt/codex/bin/codex",
-      args: LAUNCH_ARGS,
-      env: { PATH: "/usr/bin", CODEX_HOME: join(homedir(), ".chalito", "codex") },
+      args: KEY_LAUNCH_ARGS,
+      env: {
+        PATH: "/usr/bin",
+        LANG: "es_MX.UTF-8",
+        LC_ALL: "es_MX.UTF-8",
+        CODEX_HOME: join(homedir(), ".chalito", "codex"),
+        [BYO_KEY_ENV]: "sk-test",
+      },
       cwd: "/ws",
     });
-    const login = fake.run.received.find((m) => m.method === "account/login/start");
-    expect(login?.params).toEqual({ type: "apiKey", apiKey: "sk-test" });
-    expect(fake.run.received.map((m) => m.method).slice(0, 3)).toEqual([
-      "initialize",
-      "initialized",
-      "account/login/start",
-    ]);
+    expect(fake.run.received.some((m) => m.method === "account/login/start")).toBe(false);
+    expect(fake.run.received.map((m) => m.method).slice(0, 3)).toEqual(["initialize", "initialized", "thread/start"]);
     expect(fake.run.violations).toEqual([]);
   });
 
@@ -466,9 +483,34 @@ describe("Codex adapter: isolated CODEX_HOME", () => {
       { cwd },
     );
     await expect(start()).rejects.toMatchObject({ code: "adapter_crash" });
-    expect(readFileSync(report, "utf8").split("\n").slice(0, 3)).toEqual([codexHome, cwd, LAUNCH_ARGS.join(" ")]);
+    expect(readFileSync(report, "utf8").split("\n").slice(0, 3)).toEqual([codexHome, cwd, KEY_LAUNCH_ARGS.join(" ")]);
     expect(statSync(codexHome).mode & 0o777).toBe(0o700);
     expect(existsSync(join(home, ".codex"))).toBe(false);
+  });
+
+  it("a stored key from earlier versions (CODEX_HOME/auth.json) is removed, and the key isn't on disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "chalito-codex-"));
+    const codexHome = join(dir, "chalito", "codex");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "sk-old-leftover" }));
+    const report = join(dir, "env");
+    const bin = join(dir, "codex");
+    writeFileSync(bin, `#!/bin/sh\nenv > ${JSON.stringify(report)}\n`);
+    chmodSync(bin, 0o755);
+    const { start } = session(
+      {
+        apiKey: "sk-live-in-env-only",
+        codexPath: bin,
+        codexHome,
+        env: { PATH: process.env.PATH, CHALITO_SECRETS_PASSPHRASE: "p" },
+      },
+      { cwd: mkdtempSync(join(dir, "ws-")) },
+    );
+    await expect(start()).rejects.toMatchObject({ code: "adapter_crash" });
+    expect(existsSync(join(codexHome, "auth.json"))).toBe(false);
+    const childEnv = readFileSync(report, "utf8");
+    expect(childEnv).toContain(`${BYO_KEY_ENV}=sk-live-in-env-only`);
+    expect(childEnv).not.toContain("CHALITO_SECRETS_PASSPHRASE");
   });
 });
 
@@ -529,12 +571,12 @@ describe("Codex adapter: tools that skip approvals", () => {
     await h.done;
     const args = fake.run.spawned!.args;
     for (const o of HARDENING_OVERRIDES) expect(args[args.indexOf(o) - 1]).toBe("-c");
-    expect(fake.run.received.map((m) => m.method).slice(3, 6)).toEqual([
+    expect(fake.run.received.map((m) => m.method).slice(2, 5)).toEqual([
       "thread/start",
       "mcpServerStatus/list",
       "turn/start",
     ]);
-    expect(fake.run.received[4]?.params).toEqual({ threadId: "thr_fake_1", detail: "toolsAndAuthOnly" });
+    expect(fake.run.received[3]?.params).toEqual({ threadId: "thr_fake_1", detail: "toolsAndAuthOnly" });
     expect(fake.run.violations).toEqual([]);
   });
 
