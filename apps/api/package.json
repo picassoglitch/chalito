@@ -27,6 +27,7 @@
     "hono": "^4.13.12",
     "libphonenumber-js": "^1.13.14",
     "postgres": "^3.4.9",
+    "undici": "^8.11.2",
     "zod": "^4.6.5"
   },
   "devDependencies": {
