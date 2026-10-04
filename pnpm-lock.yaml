@@ -253,6 +253,9 @@ importers:
       '@chalito/roster':
         specifier: workspace:*
         version: link:../../packages/roster
+      '@chalito/scene':
+        specifier: workspace:*
+        version: link:../../packages/scene
       '@chalito/ui':
         specifier: workspace:*
         version: link:../../packages/ui

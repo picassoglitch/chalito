@@ -1,87 +1,103 @@
-import { useState, type FormEvent } from "react";
-import type { ReportInput, RoomController, RoomEventView, RoomSnapshot } from "@chalito/rooms";
+import { useCallback, useState } from "react";
+import type { RoomController, RoomMemberView, RoomSnapshot } from "@chalito/rooms";
+import type { RoomSceneMember } from "@chalito/scene";
+import {
+  RoomComposer,
+  RoomEnded,
+  RoomEventList,
+  RoomMembers,
+  RoomReportDialog,
+  memberLabel,
+  useUiText,
+  type ReportTarget,
+  type RoomEndReason,
+} from "@chalito/ui";
 import { useT } from "../lib/i18n.js";
+import { RoomStage } from "./RoomStage.js";
+
+const ENDED: readonly string[] = ["kicked", "dissolved", "revoked", "not_member"];
 
 /**
- * One room's view. Everything a room event says is rendered as a text node (React escapes it):
- * never markup, never a link, never an action. Stand-in until picassoglitch-37's packages/ui room
- * components (RoomEventList, RoomMembers, RoomComposer, RoomReportDialog, RoomEnded) land; the
- * props here are the controller's snapshot so the swap stays local to this file.
+ * One room: the scene (metadata only), then the shared packages/ui room components over the
+ * controller's snapshot. Event content is only ever quoted text (RoomEventList).
  */
-export const RoomBody = ({ snapshot, controller }: { snapshot: RoomSnapshot; controller: RoomController }) => {
+export const RoomBody = ({
+  snapshot,
+  controller,
+  me,
+  resolveMembers,
+  stage = true,
+}: {
+  snapshot: RoomSnapshot;
+  controller: RoomController;
+  /** This person's companion id. */
+  me: string;
+  resolveMembers: (m: readonly RoomMemberView[]) => Promise<RoomSceneMember[]>;
+  /** The 3D/card scene (off in tests without WebGL). */
+  stage?: boolean;
+}) => {
   const t = useT();
-  const [reporting, setReporting] = useState<
-    (Pick<ReportInput, "eventId" | "memberCompanionId"> & { text?: string }) | null
-  >(null);
-  const [draft, setDraft] = useState("");
+  const { t: ut } = useUiText();
+  const [reporting, setReporting] = useState<ReportTarget | null>(null);
+  const [left, setLeft] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const live = snapshot.status === "live";
-  const ended = ["kicked", "dissolved", "revoked", "not_member"].includes(snapshot.status);
+  const ended: RoomEndReason | null = left
+    ? "left"
+    : ENDED.includes(snapshot.status)
+      ? (snapshot.status as RoomEndReason)
+      : null;
+  const live = snapshot.status === "live" && !ended;
 
-  const send = async (e: FormEvent) => {
-    e.preventDefault();
-    const text = draft.trim();
-    if (!text) return;
-    const r = await controller.postNotice(text.slice(0, 500));
-    if (r.ok) setDraft("");
-    else setNotice(t(`room.error.${r.reason}`));
-  };
+  const send = useCallback(
+    async (text: string) => {
+      const r = await controller.postNotice(text);
+      return r.ok ? null : r.reason;
+    },
+    [controller],
+  );
 
   return (
     <section className="room" aria-label={snapshot.room?.name ?? t("room.title")}>
       <h1>{snapshot.room?.name ?? t("room.title")}</h1>
-      {ended && <p role="alert">{t(`room.ended.${snapshot.status}`)}</p>}
+      {stage && snapshot.room && (
+        <RoomStage
+          roomId={snapshot.room.roomId}
+          members={snapshot.members}
+          events={snapshot.events}
+          running={!ended}
+          resolveMembers={resolveMembers}
+        />
+      )}
+      {ended && <RoomEnded status={ended} />}
       {snapshot.status === "error" && <p role="alert">{t("room.error.failed")}</p>}
       {notice && <p role="status">{notice}</p>}
 
-      <ol className="room-events">
-        {snapshot.events.map((e) => (
-          <RoomEventItem
-            key={e.eid}
-            e={e}
-            onReport={() => setReporting({ eventId: e.eid, text: e.text ?? undefined })}
-          />
-        ))}
-      </ol>
-
+      <RoomEventList
+        events={snapshot.events.filter((e) => e.kind !== "presence")}
+        me={me}
+        onReport={(eid) =>
+          setReporting({ eventId: eid, text: snapshot.events.find((e) => e.eid === eid)?.text ?? null })
+        }
+      />
       {snapshot.members.length > 0 && (
-        <ul className="room-members" aria-label={t("room.members")}>
-          {snapshot.members.map((m) => (
-            <li key={m.companionId}>
-              <span>{m.me ? t("room.you") : m.companionId}</span>
-              {m.role === "owner" && <span className="muted"> · {t("room.owner")}</span>}
-              {!m.me && (
-                <button
-                  type="button"
-                  className="link"
-                  onClick={() => setReporting({ memberCompanionId: m.companionId })}
-                >
-                  {t("room.report")}
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
+        <RoomMembers members={snapshot.members} onReport={(c) => setReporting({ memberCompanionId: c })} />
       )}
-
       {live && (
-        <form onSubmit={(e) => void send(e)}>
-          <label>
-            {t("room.compose")}
-            <textarea value={draft} maxLength={500} onChange={(e) => setDraft(e.target.value)} />
-          </label>
-          <button type="submit" disabled={!draft.trim()}>
-            {t("room.send")}
-          </button>
-          <button type="button" className="link" onClick={() => void controller.leave()}>
+        <>
+          <RoomComposer onSend={send} />
+          <button
+            type="button"
+            className="link"
+            onClick={() => void controller.leave().then((r) => r.ok && setLeft(true))}
+          >
             {t("room.leave")}
           </button>
-        </form>
+        </>
       )}
-
       {reporting && (
-        <ReportForm
+        <RoomReportDialog
           target={reporting}
+          label={reporting.memberCompanionId ? memberLabel(reporting.memberCompanionId, false, ut) : undefined}
           onCancel={() => setReporting(null)}
           onSubmit={async (input) => {
             const r = await controller.report(input);
@@ -93,72 +109,5 @@ export const RoomBody = ({ snapshot, controller }: { snapshot: RoomSnapshot; con
         />
       )}
     </section>
-  );
-};
-
-const RoomEventItem = ({ e, onReport }: { e: RoomEventView; onReport: () => void }) => {
-  const t = useT();
-  if (e.kind === "enter" || e.kind === "leave" || e.kind === "presence") return null;
-  return (
-    <li className="room-event">
-      <span className="muted">{e.from}</span>
-      {e.text === null ? <em className="muted">{t("room.unreadable")}</em> : <blockquote>{e.text}</blockquote>}
-      <button type="button" className="link" onClick={onReport}>
-        {t("room.report")}
-      </button>
-    </li>
-  );
-};
-
-const REASONS = ["spam", "abuse", "impersonation", "other"] as const;
-
-const ReportForm = ({
-  target,
-  onSubmit,
-  onCancel,
-}: {
-  target: Pick<ReportInput, "eventId" | "memberCompanionId"> & { text?: string };
-  onSubmit: (r: ReportInput) => Promise<void>;
-  onCancel: () => void;
-}) => {
-  const t = useT();
-  const [reason, setReason] = useState<ReportInput["reason"]>("spam");
-  const [note, setNote] = useState("");
-  // Off by default: the decrypted text leaves this device only if the person ticks it.
-  const [attach, setAttach] = useState(false);
-  return (
-    <form
-      aria-label={t("room.report")}
-      onSubmit={(e) => {
-        e.preventDefault();
-        const { text, ...ids } = target;
-        void onSubmit({ ...ids, reason, note, ...(attach && ids.eventId && text ? { attachText: text } : {}) });
-      }}
-    >
-      <label>
-        {t("room.reportReason")}
-        <select value={reason} onChange={(e) => setReason(e.target.value as ReportInput["reason"])}>
-          {REASONS.map((r) => (
-            <option key={r} value={r}>
-              {t(`room.reasons.${r}`)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        {t("room.reportNote")}
-        <textarea value={note} maxLength={500} onChange={(e) => setNote(e.target.value)} />
-      </label>
-      {target.eventId && target.text && (
-        <label>
-          <input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} />
-          {t("room.attachText")}
-        </label>
-      )}
-      <button type="submit">{t("room.reportSend")}</button>
-      <button type="button" className="link" onClick={onCancel}>
-        {t("room.cancel")}
-      </button>
-    </form>
   );
 };

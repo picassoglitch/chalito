@@ -100,7 +100,15 @@ body.pet {
 .ptt-listening {
   outline: 3px solid currentColor;
 }
-.room-soon {
-  padding: 48px;
-  text-align: center;
+
+/* The room scene follows its canvas's CSS size (RoomScene observes it). */
+.room-stage {
+  display: block;
+  width: 100%;
+  height: min(45vh, 360px);
+  border-radius: 12px;
+}
+.room-list button {
+  width: 100%;
+  text-align: left;
 }
