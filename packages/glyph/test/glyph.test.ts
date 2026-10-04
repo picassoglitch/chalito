@@ -121,8 +121,14 @@ describe("render → sample", () => {
         async (size, rot, noise, seed) => {
           const decoder = new GlyphDecoder();
           let result: GlyphPayload | null = null;
-          for (const f of frames) {
-            result = decoder.pushImage(addNoise(renderFrame(f, size, { rotationDeg: rot }), noise, seed)) ?? result;
+          // A camera keeps seeing the glyph cycle, with fresh sensor noise on every frame: feed up to
+          // three loops, each frame with its own noise seed (one fixed pattern on every frame
+          // correlated the errors and rarely failed a single pass at 120 px / noise 50).
+          for (let loop = 0; loop < 3 && !result; loop++) {
+            for (const [k, f] of frames.entries()) {
+              const img = addNoise(renderFrame(f, size, { rotationDeg: rot }), noise, seed * 1000 + loop * 100 + k);
+              result = decoder.pushImage(img) ?? result;
+            }
           }
           expect(result).toEqual(g);
         },

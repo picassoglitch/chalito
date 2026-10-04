@@ -3,7 +3,8 @@
     "inbox": "Bandeja",
     "settings": "Ajustes",
     "security": "Seguridad",
-    "voice": "Voz"
+    "voice": "Voz",
+    "rooms": "Salas"
   },
   "dnd": "No molestar",
   "offline": "Sin conexión a tu cuenta. Empareja esta computadora con «chalito pair».",
@@ -19,7 +20,8 @@
     "approveOnPhone": "Aprueba esta acción desde tu teléfono",
     "unverified": "Sin verificar: tu computadora no firmó lo que ves. Solo puedes rechazarla.",
     "showFull": "Ver el comando completo",
-    "openFullFirst": "Abre el comando completo antes de aprobar"
+    "openFullFirst": "Abre el comando completo antes de aprobar",
+    "openRoom": "Abrir sala"
   },
   "security": {
     "localOnly": "Estas pantallas solo funcionan en esta computadora. Ni el teléfono ni la web pueden cambiarlas.",
@@ -64,10 +66,34 @@
     "hold": "Mantén presionado para hablar",
     "connecting": "Conectando…",
     "listening": "Te escucho…",
-    "unavailable": "La voz aún no está disponible."
+    "unavailable": "La voz aún no está disponible.",
+    "capReached": "Se acabaron tus minutos de voz este mes.",
+    "maxReached": "Llegaste al límite de esta conversación de voz. Vuelve a presionar para seguir.",
+    "noCredits": "Te quedaste sin créditos para la voz.",
+    "ended": "La llamada de voz terminó.",
+    "failed": "No pude conectar la voz. Inténtalo de nuevo."
   },
   "room": {
-    "soon": "Tu cuarto llega pronto."
+    "title": "Sala",
+    "list": "Tus salas",
+    "loading": "Cargando tus salas…",
+    "none": "Aún no estás en ninguna sala.",
+    "signedOut": "Inicia sesión en el panel para ver tus salas.",
+    "revoked": "Este dispositivo fue revocado. Sus salas ya no están disponibles aquí.",
+    "back": "← Salas",
+    "leave": "Salir de la sala",
+    "reported": {
+      "ok": "Reporte enviado.",
+      "duplicate": "Ya habías reportado esto."
+    },
+    "error": {
+      "not_member": "No eres integrante de esta sala.",
+      "not_found": "La sala ya no existe.",
+      "rate_limited": "Demasiados intentos. Espera un momento.",
+      "ended": "La sala terminó.",
+      "no_key": "Este dispositivo aún no tiene la clave de la sala.",
+      "failed": "Algo falló. Inténtalo de nuevo."
+    }
   },
   "integrations": {
     "anthropic": {
@@ -135,5 +161,25 @@
     "relaunch": "Reiniciar ahora",
     "unavailable": "Esta compilación no se actualiza sola.",
     "error": "No se pudo actualizar. Inténtalo más tarde."
+  },
+  "rooms": {
+    "title": "Tus salas",
+    "loading": "Cargando salas…",
+    "loadFailed": "No se pudieron cargar tus salas.",
+    "none": "Aún no estás en ninguna sala.",
+    "unread": "Mensajes nuevos",
+    "members": "{n} integrantes",
+    "open": "Abrir",
+    "join": "Unirse con código",
+    "joinButton": "Unirme",
+    "codePlaceholder": "Código de invitación",
+    "joined": "Listo. Un integrante te dará acceso a los mensajes en un momento.",
+    "joinError": {
+      "bad_code": "Ese código no es válido o ya expiró.",
+      "full": "La sala está llena.",
+      "rate_limited": "Demasiados intentos. Espera un momento.",
+      "failed": "No se pudo unir. Inténtalo de nuevo.",
+      "no_companion": "Tu compañero aún no está listo. Termina de configurar tu cuenta."
+    }
   }
 }

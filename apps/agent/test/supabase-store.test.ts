@@ -298,6 +298,18 @@ describe("SupabaseStore: writes through the Data API", () => {
     expect(JSON.stringify(db.rows("audit")[0]!.meta)).not.toContain("abcdefghijklmnop");
   });
 
+  it("revokedClients: only revoked CLIENT devices of this owner, among the ids asked (review R-H5)", async () => {
+    const { db, store } = setup();
+    expect(await store.revokedClients([])).toEqual([]);
+    db.seed("devices", { owner: OWNER, device_id: "p_revoked", role: "client", revoked: true });
+    db.seed("devices", { owner: OWNER, device_id: "p_active", role: "client", revoked: false });
+    db.seed("devices", { owner: OWNER, device_id: "a_revoked", role: "agent", revoked: true });
+    db.seed("devices", { owner: "someone-else", device_id: "x_revoked", role: "client", revoked: true });
+    expect(await store.revokedClients(["p_revoked", "p_active", "a_revoked", "x_revoked", "nope"])).toEqual([
+      "p_revoked",
+    ]);
+  });
+
   it("callBriefingEnabled reads users.call_briefing.enabled", async () => {
     const { db, store } = setup();
     expect(await store.callBriefingEnabled()).toBe(false);

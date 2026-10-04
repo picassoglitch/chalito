@@ -45,6 +45,34 @@ jobs:
           path: apps/web/test-results
           retention-days: 7
 
+  showcase:
+    # M13: re-render the Solo landing's showcase with the real runtime (headless Chromium +
+    # SwiftShader, pinned seeds) and compare with the committed renders, with a pixel tolerance.
+    # The fresh renders are uploaded only when they drift.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Render and compare with apps/web/public/showcase
+        run: pnpm check-showcase
+        env:
+          SHOWCASE_OUT: ${{ runner.temp }}/showcase
+      - name: Room scene at quality bajo draws >= 30 FPS on SwiftShader
+        run: pnpm scene-perf
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: showcase-renders
+          path: ${{ runner.temp }}/showcase
+          retention-days: 7
+
   node:
     runs-on: ubuntu-latest
     steps:
@@ -127,6 +155,9 @@ jobs:
       - run: pnpm --filter @chalito/orchestrator test:pg
         env:
           CHALITO_DB_ROLE: chalito_server
+      - run: pnpm --filter @chalito/guard test:pg
+        env:
+          CHALITO_DB_ROLE: chalito_server
       - name: Agent SupabaseStore and browser client integration
         run: |
           eval "$(supabase status -o env)"
@@ -134,11 +165,66 @@ jobs:
           export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
           pnpm --filter @chalito/agent test:supabase
           pnpm --filter @chalito/client test:supabase
+      # The beta rehearsal: the main paths end to end across api, agent, client, notifier and rooms on
+      # this stack (apps/rehearsal). Outside services are mocked at the network; nothing live.
+      - name: Beta rehearsal (cross-app, local stack)
+        run: pnpm --filter @chalito/rehearsal test:rehearsal
+        env:
+          CHALITO_DB_ROLE: chalito_server
       # Realtime delivery (supabase-js against the local stack).
       - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
       - run: node supabase/scripts/realtime-latency.mjs
+      # Load harness at CI scale (50 devices, 3 rooms, listener churn): p95 delivery < 2 s.
+      # The 1k-device run against a real dev project is owner-approved (docs/LOAD_TEST.md).
+      - run: node supabase/scripts/load-test.mjs
+        env:
+          LOADTEST_OUT: ${{ runner.temp }}/load-test.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test
+          path: ${{ runner.temp }}/load-test.json
+          if-no-files-found: ignore
       - if: always()
         run: supabase stop --no-backup
+
+  # Container images: build only (never pushed), then boot each one with a read-only root
+  # filesystem and no env: it must load every module and stop on the first missing variable.
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { app: api, entry: src/server.ts, expect: "is required" }
+          - { app: notifier, entry: src/server.ts, expect: "is required" }
+          - { app: orchestrator, entry: src/server.ts, expect: "is required" }
+          - { app: mcp-gateway, entry: src/server.ts, expect: "is required" }
+          - { app: avatar-jobs, entry: src/job.ts, expect: "AVATAR_BUCKET and UPLOAD_PATH are required" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/service.Dockerfile
+          build-args: |
+            APP=${{ matrix.app }}
+            ENTRY=${{ matrix.entry }}
+          tags: chalito-${{ matrix.app }}:ci
+          load: true
+          push: false
+      - name: Boot read-only, as non-root, without env
+        run: |
+          set +e
+          # Read-only root; /tmp is the only writable path (tmpfs), as on Cloud Run's in-memory /tmp.
+          out=$(docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL --security-opt no-new-privileges chalito-${{ matrix.app }}:ci 2>&1)
+          code=$?
+          set -e
+          echo "$out" | tail -5
+          test "$code" -ne 0
+          echo "$out" | grep -q "${{ matrix.expect }}"
+          test "$(docker inspect -f '{{.Config.User}}' chalito-${{ matrix.app }}:ci)" = "nonroot:nonroot"
 
   gitleaks:
     runs-on: ubuntu-latest

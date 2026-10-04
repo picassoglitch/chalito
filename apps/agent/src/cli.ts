@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { redactError } from "./redact.js";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +26,7 @@ import { runPair } from "./pair.js";
 import { FilePolicyHolder, parsePolicyYaml, policyToYaml } from "./policy-file.js";
 import { isTighterOrEqual, policyHash } from "./policy/index.js";
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
-import { openSecretStore } from "./secret-choice.js";
+import { openSecretStore, passphraseFileProblem } from "./secret-choice.js";
 import { KeyringUnavailableError, SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
 import { TrustStore } from "./trust-store.js";
@@ -65,7 +66,10 @@ export const USAGE = `chalito <command>
   claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   policy show|path|edit                show, locate or edit ~/.chalito/policy.yaml
   keys set anthropic|openai|xai        save a BYO API key in the OS keychain
-  service install|uninstall [--bin p]  register the agent as a per-user OS service
+  service install|uninstall [--bin p] [--passphrase-file f]
+                                       register the agent as a per-user OS service; on Linux,
+                                       --passphrase-file loads the secrets passphrase as a systemd
+                                       credential (a 0600 file you own; never Environment=)
 
 toggles: allowSudo, autoApproveHigh, autoApproveCritical
 
@@ -116,6 +120,7 @@ const T = {
     keySaved: (p: string) => `Key de ${p} guardada en el llavero del sistema. Nunca sale de esta computadora.\n`,
     keyShape: (p: string) => `Aviso: no parece una key de ${p}; se guardó de todos modos.\n`,
     needBin: "Estás ejecutando desde el código fuente. Indica el binario: --bin /ruta/a/chalito-agent\n",
+    badPassphraseFile: (p: string, why: string) => `No uso ${p} como frase de paso: ${why}.\n`,
     installed: (f: string) => `Servicio instalado (${f}).\n`,
     uninstalled: "Servicio desinstalado.\n",
     cmdFailed: (c: string, e: string) => `Falló \`${c}\`: ${e}\n`,
@@ -154,6 +159,7 @@ const T = {
     keySaved: (p: string) => `${p} key saved in the OS keychain. It never leaves this computer.\n`,
     keyShape: (p: string) => `Warning: that doesn't look like a ${p} key; saved anyway.\n`,
     needBin: "You're running from source. Pass the binary: --bin /path/to/chalito-agent\n",
+    badPassphraseFile: (p: string, why: string) => `Not using ${p} as the passphrase: ${why}.\n`,
     installed: (f: string) => `Service installed (${f}).\n`,
     uninstalled: "Service uninstalled.\n",
     cmdFailed: (c: string, e: string) => `\`${c}\` failed: ${e}\n`,
@@ -172,7 +178,7 @@ export interface ParsedArgs {
 }
 
 /** Tiny argv parser: positionals, `--flag`, `--flag value`, `--flag=value`, `-h`. */
-export const parseArgs = (argv: string[], valueFlags: readonly string[] = ["bin"]): ParsedArgs => {
+export const parseArgs = (argv: string[], valueFlags: readonly string[] = ["bin", "passphrase-file"]): ParsedArgs => {
   const positional: string[] = [];
   const flags: Record<string, string | true> = {};
   for (let i = 0; i < argv.length; i++) {
@@ -365,7 +371,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       }
 
       case "service":
-        return await service(io, sub, flags.bin, locale);
+        return await service(io, sub, flags.bin, locale, flags["passphrase-file"]);
 
       default:
         io.err(t.unknown(cmd) + USAGE);
@@ -609,7 +615,13 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
   }
 };
 
-const service = async (io: CliIo, sub: string | undefined, binFlag: string | true | undefined, locale: "es" | "en") => {
+const service = async (
+  io: CliIo,
+  sub: string | undefined,
+  binFlag: string | true | undefined,
+  locale: "es" | "en",
+  passphraseFlag?: string | true,
+) => {
   const t = T[locale];
   if (sub !== "install" && sub !== "uninstall") {
     io.err(USAGE);
@@ -620,13 +632,25 @@ const service = async (io: CliIo, sub: string | undefined, binFlag: string | tru
     io.err(t.needBin);
     return 1;
   }
-  const plan = servicePlan(io.platform, bin, { home: io.home });
+  // --passphrase-file: a 0600 file the systemd unit loads as a credential (Linux only).
+  let passphraseFile: string | undefined;
+  if (typeof passphraseFlag === "string") {
+    passphraseFile = resolve(passphraseFlag);
+    const problem = passphraseFileProblem(passphraseFile);
+    if (problem) {
+      io.err(t.badPassphraseFile(passphraseFile, problem));
+      return 1;
+    }
+  }
+  const plan = servicePlan(io.platform, bin, { home: io.home, ...(passphraseFile ? { passphraseFile } : {}) });
 
   if (sub === "install") {
     mkdirSync(join(chalitoDir(io.home), "logs"), { recursive: true, mode: 0o700 });
     for (const f of plan.files) {
       mkdirSync(dirname(f.path), { recursive: true });
-      writeFileSync(f.path, f.content, { mode: 0o644 });
+      // 0600 even when the file already existed (the mode option only applies on create).
+      writeFileSync(f.path, f.content, { mode: 0o600 });
+      chmodSync(f.path, 0o600);
     }
     for (const c of plan.install) {
       const r = await io.runner.run(c[0]!, c.slice(1));
@@ -668,7 +692,8 @@ if (isEntry) {
         console.error(err.message);
         process.exit(3);
       }
-      console.error(err);
+      // Redacted: a crash message can carry a key or token (R-M9).
+      console.error(redactError(err));
       process.exit(1);
     },
   );

@@ -225,6 +225,21 @@ describe("LiveStore", () => {
     expect(calls).toBe(n + 1);
   });
 
+  it("a `revoked` pointer for this device closes the channel at once (review R-L14)", async () => {
+    const { db, live, topic, me } = await setup();
+    live.start();
+    await tick();
+    expect(live.getSnapshot().status).toBe("live");
+    // Someone else's revocation is not ours.
+    db.broadcast(topic, { table: "device_revoked", op: "revoked", key: { device_id: "dev_other" } });
+    await tick();
+    expect(live.getSnapshot().status).toBe("live");
+    db.broadcast(topic, { table: "device_revoked", op: "revoked", key: { device_id: me.deviceId } });
+    await tick();
+    expect(live.getSnapshot().status).toBe("revoked");
+    expect(db.channels[0]!.removed).toBe(true);
+  });
+
   it("ignores unknown and malformed pointers; stop() leaves the channel", async () => {
     const { db, live, topic } = await setup();
     live.start();

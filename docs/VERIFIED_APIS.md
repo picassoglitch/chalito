@@ -333,6 +333,13 @@ Method: read-only. Sources are official docs fetched on 2026-10-03, plus a shall
   - "Unified interface": the server posts multipart form fields `sdp` and `session` with the standard key.
   - The data channel label is `oai-events`.
   - Source: https://developers.openai.com/api/docs/guides/voice-webrtc (checked 2026-10-03)
+- **WebRTC through our server (the desktop's path; R-H6 follow-up):** the api uses the unified interface, so the desktop never holds an OpenAI credential.
+  - Call: `POST /v1/realtime/calls`, `multipart/form-data` with `sdp` (the browser's offer) and `session` (JSON, same shape as the `client_secrets` session), plus `Authorization: Bearer <server key>`. `OpenAI-Safety-Identifier` is optional. The response body is the answer SDP (`application/sdp`).
+  - Call id: the `Location` response header, `/v1/realtime/calls/rtc_…`. The api parses it and stores it in `voice_sessions.call_id`.
+  - Hang up: `POST /v1/realtime/calls/{call_id}/hangup` ends a WebRTC call as well as a SIP one. It returns 200; a repeat on an already-ended call returns 404, which we treat as done. The api calls it at the monthly cap, the session maximum, end, revoke and the stale sweep.
+  - Sideband control: `wss://api.openai.com/v1/realtime?call_id=rtc_…` with the server key (not used yet).
+  - Max duration: I found no per-call duration limit on `/v1/realtime/calls` or in the session config (only the platform's own session limit). Our limit is the api's clock (`maxSeconds`) plus the hang-up.
+  - Sources: https://developers.openai.com/api/docs/guides/realtime-webrtc ; https://developers.openai.com/api/docs/guides/realtime-server-controls ; https://developers.openai.com/api/reference/resources/realtime/subresources/calls/methods/hangup (checked 2026-10-03)
 - **SIP (Realtime):**
   - Point the SIP trunk (e.g. Twilio Elastic SIP) at `sip:$PROJECT_ID@sip.api.openai.com;transport=tls`, where the project ID starts with `proj_`. For EU residency, use `sip-eu.api.openai.com`.
   - Configure a project webhook (platform settings > Project > Webhooks). It fires `realtime.call.incoming` with `data.call_id` and `data.sip_headers`. Verify the `webhook-signature`.
@@ -619,6 +626,12 @@ This was read-only research. Nothing was signed up for, bought or sent. Prices a
 Source: https://www.twilio.com/docs/voice/twiml/gather (checked 2026-10-03)
 
 Suggested settings: `<Gather input="dtmf speech" language="es-MX" speechTimeout="auto" actionOnEmptyResult="true" numDigits="1">`, with no `speechModel`. If you need deterministic STT, use `speechModel="googlev2_telephony"` or `deepgram_nova-3` with `speechTimeout="2"`.
+
+#### Ending a call in progress (REST)
+- `POST https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Calls/{CallSid}.json` with the form field `Status=completed` ends an in-progress call. `Status=canceled` applies only to a call that is still ringing.
+- The update applies to calls in progress. The docs don't state the error for a call that has already ended, so we treat 400 and 404 as "already ended".
+- When a `<Dial><Sip>` leg ends and no verb follows `<Dial>` (our `connectTwiml`), the call hangs up. So hanging up the OpenAI leg (`/v1/realtime/calls/{call_id}/hangup`) also ends the phone call, which is the api's path on revoke (it has no Twilio credentials).
+- Source: https://www.twilio.com/docs/voice/api/call-resource#update-a-call-resource ; https://www.twilio.com/docs/voice/tutorials/how-to-modify-calls-in-progress (checked 2026-10-03)
 
 #### `<Say>` voices (exact `voice=` strings)
 
@@ -1160,6 +1173,20 @@ Note: Google Cloud docs moved from `cloud.google.com/.../docs` to `docs.cloud.go
 
 ---
 
+## Supabase: pg_net and Vault (the notify outbox, migration 20261004003050)
+
+Checked 2026-10-04 at https://supabase.com/docs/guides/database/extensions/pg_net and https://supabase.com/docs/guides/database/vault.
+
+- **pg_net, the signature:** `net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{"Content-Type": "application/json"}', timeout_milliseconds int default 2000) returns bigint`, the request id.
+- **When it sends:** "HTTP requests are not started until the transaction is committed." A poke sent from a trigger can't race its own row's commit.
+- **Limits:**
+  - at most 200 requests per second;
+  - POST bodies are JSON only;
+  - responses are kept in `net._http_response` for 6 hours;
+  - requests and responses live in **unlogged** tables, lost in a crash or unclean shutdown.
+- **No retries** are documented. That's why the notifier also drains the outbox every minute, and a lost poke only delays delivery.
+- **Vault:** `vault.create_secret('<value>', '<name>')` creates a secret. Read it back through the view `vault.decrypted_secrets` (column `decrypted_secret`). Anyone who can read the view can read every secret, so only a `security definer` function (`chalito_private.notify_poke`) reads it, and only by name; nothing grants the view to `authenticated` or `chalito_server`.
+
 ## Chalyb hub engine contract (internal)
 
 Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landing-clip-images` (`4ed57c9`, the branch on prod): `docs/engines/consumption-contract.md`, `docs/infra/adding-an-engine.md`, `src/lib/engines/integrations/factory.ts`, `src/app/auth/launch/[slug]/route.ts`, `src/config/pricing.ts`.
@@ -1174,11 +1201,14 @@ Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landi
 - **Consumption** (`{CHALYB_BASE_URL}/api/engines/{slug}`, engine bearer):
   - `POST /usage/admit` takes `{external_user_id, external_job_id, class: job|stream, operation, est_tokens, upload_mb, source_minutes, storage_mb_after, boost, ttl_seconds}` and returns `{allowed, reservation_id, lane: standard|boost, boost_fee_tokens, limits, balance}`. A refusal returns `{allowed:false, reason}`, where `reason` is one of `upload_too_large`, `video_too_long`, `storage_full`, `minutes_cap`, `jobs_cap`, `concurrency`, `streams_cap`, `no_tokens` or `boost_unavailable`. Re-admitting the same `external_job_id` updates the reservation. Reservations expire (TTL, default 3 h); `heartbeat` extends them.
   - `POST /usage`:
+    - **Body: `{external_user_id, events: [...]}`, one user per request.** The user id is top-level and required: a missing one is `400 "external_user_id required"` (`src/app/api/engines/[slug]/usage/route.ts:75-78`, identical on main 3f27ef3 and a5733df). Per-event `external_user_id` is ignored, so an engine batching several users must send one request per user. Re-checked 2026-10-04, after Chalito's client was found sending `{events}` only (fixed: the outbox drain groups by user).
+    - An unknown user is 404. A missing engine token on the hub is 503, and a wrong one is 403 (`src/lib/engines/bearer.ts`).
     - At most 100 events. `amount` is an integer from 0 to 10^12. `cost_usd_micros` is an integer from 0 to 10^9 and is **required on every event**.
     - `occurred_at` must be within the last 7 days and no more than 5 min in the future.
     - Optional `reservation_id`. For `llm.tokens`, `metadata.tokens {input, output, cache_read, cache_write}` must sum to `amount`.
     - Idempotent on `(engine, source_id)`. A 4xx other than 408/429 is permanent (mark dead and alert).
-  - `POST /usage/settle {reservation_id, outcome: succeeded|failed|cancelled|heartbeat}`. Settling twice is a no-op.
+  - `POST /usage/settle {reservation_id, outcome: succeeded|failed|cancelled|heartbeat}`. Settling twice is a no-op. An unknown reservation is 404; an already-closed one is 409 `{ok:false, status}` (`settle/route.ts:28-45` @ a5733df).
+  - The rules are copied for tests in `packages/billing/test/hub-contract.ts` (requests) and `apps/api/test/hub-contract.test.ts` (provisioning and the launch token), each citing chalyb file:line and sha.
   - Billing: `billable_tokens = max(1, ceil(cost_usd_micros × (1 + margin) / 4))`. The margin is `app_settings.usage_margin_percent`, default 160%, and is frozen per event. 4 micros = $4 per 1M billable tokens. `boost.fee` events are already a price: `ceil(cost/4)`.
   - Meter kinds documented today: `llm.tokens`, `transcription.seconds`, `compute.seconds`, `storage.gb_month`, `stream.minutes`, `engine.base`. **Chalito's `voice.seconds`, `call.seconds`, `whatsapp.messages`, `sms.segments` and `store.purchase` must be confirmed or added on the hub (D-030).**
   - `compute.seconds` list rates (us-central1): standard 4 vCPU/8 GiB = 88 µ$/s, boost 8 vCPU/32 GiB = 208 µ$/s.

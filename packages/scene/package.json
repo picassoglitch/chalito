@@ -1,0 +1,23 @@
+{
+  "name": "@chalito/scene",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@chalito/avatar-three": "workspace:*",
+    "@chalito/protocol": "workspace:*",
+    "@chalito/roster": "workspace:*",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@chalito/config": "workspace:*",
+    "@types/three": "0.186.0"
+  }
+}

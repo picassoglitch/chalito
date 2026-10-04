@@ -32,6 +32,57 @@ export interface DrainResult {
   dead: number;
 }
 
+type Valid = { id: number; sourceId: string; event: HubUsageEvent; attempts: number };
+type DrainDeps = {
+  store: OutboxStore;
+  hub: Pick<HubClient, "usage">;
+  now: () => number;
+  alert: (msg: string, meta: Record<string, unknown>) => void;
+};
+
+/**
+ * Sends rows as one batch. The hub answers once per batch, so a permanent refusal of a batch of
+ * several rows is bisected (R-M6): each half is sent again (idempotent on source_id) until only the
+ * rows the hub really refuses are left, and only those go dead.
+ */
+const sendRows = async (p: DrainDeps, rows: Valid[], total: DrainResult): Promise<"ok" | "stop"> => {
+  // Callers pass one user's rows (drainOutbox groups by external_user_id).
+  const result: UsageResult = await p.hub.usage(
+    rows[0]!.event.external_user_id,
+    rows.map((r) => r.event),
+  );
+  const ids = rows.map((r) => r.id);
+  if (result.status === "ok") {
+    await p.store.markSent(ids, p.now());
+    total.sent += ids.length;
+    return "ok";
+  }
+  if (result.status === "retry") {
+    const attempts = Math.max(...rows.map((r) => r.attempts));
+    await p.store.markRetry(ids, p.now() + backoffMs(attempts), result.error || String(result.httpStatus));
+    total.retried += ids.length;
+    return "stop";
+  }
+  if (rows.length > 1) {
+    const mid = Math.ceil(rows.length / 2);
+    if ((await sendRows(p, rows.slice(0, mid), total)) === "stop") {
+      const rest = rows.slice(mid);
+      await p.store.markRetry(
+        rest.map((r) => r.id),
+        p.now() + backoffMs(Math.max(...rest.map((r) => r.attempts))),
+        "deferred: the hub asked to retry",
+      );
+      total.retried += rest.length;
+      return "stop";
+    }
+    return sendRows(p, rows.slice(mid), total);
+  }
+  await p.store.markDead(ids, `${result.httpStatus}: ${result.error}`);
+  p.alert("billing.usage_dead", { count: 1, httpStatus: result.httpStatus, sourceIds: [rows[0]!.sourceId] });
+  total.dead += 1;
+  return "ok";
+};
+
 export const drainOutbox = async (p: {
   store: OutboxStore;
   hub: Pick<HubClient, "usage">;
@@ -45,7 +96,7 @@ export const drainOutbox = async (p: {
     const claimed = await p.store.claimDue(100, p.now());
     if (claimed.length === 0) break;
     // Never send a malformed event (the hub would only refuse it): dead-letter it and alert.
-    const rows: { id: number; sourceId: string; event: HubUsageEvent; attempts: number }[] = [];
+    const rows: Valid[] = [];
     const invalid: OutboxRow[] = [];
     for (const r of claimed) {
       const parsed = HubUsageEvent.safeParse(r.event);
@@ -61,25 +112,27 @@ export const drainOutbox = async (p: {
       total.dead += invalid.length;
     }
     if (rows.length === 0) continue;
-    const result: UsageResult = await p.hub.usage(rows.map((r) => r.event));
-    const ids = rows.map((r) => r.id);
-    if (result.status === "ok") {
-      await p.store.markSent(ids, p.now());
-      total.sent += ids.length;
-    } else if (result.status === "retry") {
-      const attempts = Math.max(...rows.map((r) => r.attempts));
-      await p.store.markRetry(ids, p.now() + backoffMs(attempts), result.error || String(result.httpStatus));
-      total.retried += ids.length;
-      break; // the hub is struggling; stop for now
-    } else {
-      await p.store.markDead(ids, `${result.httpStatus}: ${result.error}`);
-      p.alert("billing.usage_dead", {
-        count: ids.length,
-        httpStatus: result.httpStatus,
-        sourceIds: rows.map((r) => r.sourceId),
-      });
-      total.dead += ids.length;
+    // The hub takes one user per request: send each user's rows on their own.
+    const byUser = new Map<string, Valid[]>();
+    for (const r of rows) byUser.set(r.event.external_user_id, [...(byUser.get(r.event.external_user_id) ?? []), r]);
+    const groups = [...byUser.values()];
+    let stopped = false;
+    for (const [i, group] of groups.entries()) {
+      if ((await sendRows(p, group, total)) !== "stop") continue;
+      // The hub is struggling: leave the rest of this claim for a later drain.
+      const rest = groups.slice(i + 1).flat();
+      if (rest.length) {
+        await p.store.markRetry(
+          rest.map((r) => r.id),
+          p.now() + backoffMs(Math.max(...rest.map((r) => r.attempts))),
+          "deferred: the hub asked to retry",
+        );
+        total.retried += rest.length;
+      }
+      stopped = true;
+      break;
     }
+    if (stopped) break;
   }
   return total;
 };

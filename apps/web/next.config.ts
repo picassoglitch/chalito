@@ -34,6 +34,8 @@ const config: NextConfig = {
   // Workspace packages use NodeNext-style `./x.js` specifiers for TypeScript files. Turbopack
   // can't map those yet, so the web app builds with webpack (`next build --webpack`).
   webpack: (cfg) => {
+    // The legal texts and their status live in packages/config/legal: bundled as plain source.
+    cfg.module.rules.push({ test: /[\\/]config[\\/]legal[\\/][^\\/]+\.(md|yaml)$/, type: "asset/source" });
     cfg.resolve.extensionAlias = { ".js": [".ts", ".tsx", ".js"], ".mjs": [".mts", ".mjs"] };
     return cfg;
   },
@@ -45,6 +47,8 @@ const config: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
           { key: "X-Frame-Options", value: "DENY" },
+          // HTTPS only from now on (browsers ignore this over plain http, e.g. local e2e).
+          { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
         ],
       },
       // The launch token is in this URL: never send it on as a referrer.

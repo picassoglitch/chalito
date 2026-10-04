@@ -1,7 +1,9 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { getCountries, getCountryCallingCode, parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 import { formatCompanionTitle } from "@chalito/brand";
-import { COMPANIONS, type CompanionId } from "../companions.js";
+import { rosterEntry } from "@chalito/roster";
+import { COMPANIONS, companionName, type CompanionId } from "../companions.js";
+import { useRosterAsset } from "../roster-assets.js";
 import { useUiText } from "../text.js";
 import {
   RENDER_QUALITIES,
@@ -252,7 +254,8 @@ export const PhoneField = ({
 };
 
 export const CompanionPicker = ({ value, onChange }: { value: CompanionId; onChange: (c: CompanionId) => void }) => {
-  const { t } = useUiText();
+  const { t, locale } = useUiText();
+  const asset = useRosterAsset();
   return (
     <div role="radiogroup" aria-label={t("avatar.label")} className="grid grid-cols-3 gap-3">
       {COMPANIONS.map((c) => (
@@ -268,8 +271,20 @@ export const CompanionPicker = ({ value, onChange }: { value: CompanionId; onCha
             checked={value === c}
             onChange={() => onChange(c)}
           />
-          <span aria-hidden className="mx-auto mb-2 block h-12 w-12 rounded-full bg-emerald-100" />
-          <span className="text-sm font-medium">{t(`companions.${c}`)}</span>
+          {asset ? (
+            <img
+              src={asset(rosterEntry(c)!.thumbs[128])}
+              alt=""
+              width={64}
+              height={64}
+              loading="lazy"
+              decoding="async"
+              className="mx-auto mb-2 block h-16 w-16 rounded-full bg-emerald-50 object-cover object-top"
+            />
+          ) : (
+            <span aria-hidden className="mx-auto mb-2 block h-12 w-12 rounded-full bg-emerald-100" />
+          )}
+          <span className="text-sm font-medium">{companionName(c, locale)}</span>
         </label>
       ))}
     </div>

@@ -1,7 +1,9 @@
-import type { ReleaseStore } from "./releases/gcs.js";
+import type { BucketStore } from "@chalito/guard";
 import type { PhoneDeps } from "./phone/routes.js";
+import type { AccountDeps } from "./account/routes.js";
 import type { StoreDeps } from "./store/routes.js";
 import type { VoiceDeps } from "./voice/routes.js";
+import type { ReleaseStore } from "./releases/gcs.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import type { McpStore } from "./oauth/model.js";
 import type { RoomsRepo } from "./rooms/repo.js";
@@ -28,9 +30,20 @@ export interface ApiConfig {
   recoveryCooldownMs: number;
   /** Allowed clock skew for signed requests. */
   skewMs: number;
+  /** Proxies in front of Cloud Run that append to X-Forwarded-For (an external load balancer: 1). */
+  trustedProxies?: number;
+  /**
+   * Browser origins allowed to call the api (CORS): the web app (CHALITO_WEB_ORIGIN) and the desktop
+   * webview (CHALITO_DESKTOP_ORIGINS). Exact matches only. Absent or empty: no CORS headers.
+   */
+  corsOrigins?: readonly string[];
 }
 
 export interface Deps {
+  /** Account deletion and export (/v1/account, /tasks/account-deletions), when storage is configured. */
+  account?: AccountDeps;
+  /** Shared rate buckets for the routes marked `shared` in src/limits.ts (Postgres in production). */
+  rateBuckets?: BucketStore;
   repo: ApiRepo;
   /** OAuth server + MCP gateway writes (M10); those routes answer 503 without it. */
   mcp?: McpStore;

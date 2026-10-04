@@ -1,6 +1,13 @@
 "use client";
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { DeviceRevokedError, connect, ensureSession, type ChalitoClient, type Snapshot } from "@chalito/client";
+import {
+  DeviceRevokedError,
+  connect,
+  ensureSession,
+  type ChalitoClient,
+  type RevokeAllResult,
+  type Snapshot,
+} from "@chalito/client";
 import type { EndorseTarget } from "@chalito/client-keys";
 import type { PhoneVerifier } from "@chalito/ui";
 import type { DeviceKeys } from "@/lib/keys";
@@ -16,7 +23,12 @@ import {
 } from "@/lib/endorse";
 import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
+import type { AccountApi } from "@/lib/account";
+import { disablePush, enablePush, type PushDb, type PushResult } from "@/lib/push";
+import { env } from "@/lib/env";
+import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
 import type { UsageApi } from "@/lib/usage";
+import type { ApiClient } from "@chalito/client-keys";
 import type { Platform } from "@/lib/platform";
 import type { Session, SessionState } from "@/lib/session";
 import { SettingsStore, type SettingsDb } from "@/lib/settings-store";
@@ -50,6 +62,25 @@ interface Ctx {
   addDevice: AddDevice | null;
   /** Token usage (/uso), read as this device; null until paired. */
   usage: UsageApi | null;
+  /**
+   * Revokes a device on the SERVER (/v1/devices/revoke: its account is disabled and its sessions
+   * end), before the signed per-agent commands (review R-H5). Null until paired.
+   */
+  revokeDevice: ((deviceId: string) => Promise<"ok" | "failed">) | null;
+  /**
+   * "Cerrar sesión en todos los demás dispositivos": every other client revoked server-side with
+   * this device's passkey, plus signed revokes for the computers it trusts. Null until paired.
+   */
+  revokeAll: (() => Promise<RevokeAllResult | "cancelled" | "no_passkey" | "failed">) | null;
+  /** Rooms (/salas, /r/[id]): reads with this device's session, api calls, and its room keys. */
+  rooms: { db: unknown; api: ApiClient; keyring: DeviceKeys["roomKeyring"] } | null;
+  /** The store (/tienda) and the companion it dresses; null when signed out. */
+  store: StoreApi | null;
+  readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
+  /** Account deletion and export (/v1/account/*); null when signed out. Requesting needs `client`. */
+  account: AccountApi | null;
+  /** Web Push on this browser (its own push_subscriptions row, written as this device). Null until paired. */
+  push: { enable: () => Promise<PushResult>; disable: () => Promise<PushResult> } | null;
 }
 
 export interface AddDevice {
@@ -79,7 +110,8 @@ const sharingReader =
     return data?.enabled === true;
   };
 
-export type EnrollResult = "ok" | "cancelled" | "error";
+/** `replace_refused`: the api wants the CURRENT passkey to replace it (R-M11) and didn't get it. */
+export type EnrollResult = "ok" | "cancelled" | "replace_refused" | "error";
 export interface PasskeyState {
   /** A paired device can enrol one. */
   available: boolean;
@@ -106,6 +138,13 @@ const INITIAL: Ctx = {
   newDevice: null,
   addDevice: null,
   usage: null,
+  store: null,
+  readCompanion: null,
+  rooms: null,
+  revokeDevice: null,
+  revokeAll: null,
+  push: null,
+  account: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -289,6 +328,9 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         settings,
         mcp: platform.mcp(token),
         readSharing: sharingReader(platform.db),
+        store: platform.store(token),
+        account: platform.account(token),
+        readCompanion: () => readCompanion(platform.db, owner),
       };
       const keys = await platform.loadDeviceKeys();
       if (!keys)
@@ -323,7 +365,13 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
               try {
                 await platform.enrollPasskey(keys.keys, token);
               } catch (err) {
-                return (err as { name?: string } | null)?.name === "NotAllowedError" ? "cancelled" : "error";
+                const e = err as { name?: string; code?: string } | null;
+                if (e?.name === "NotAllowedError") return "cancelled";
+                if (
+                  ["current_passkey_required", "current_passkey_failed", "authenticator_cloned"].includes(e?.code ?? "")
+                )
+                  return "replace_refused";
+                return "error";
               }
               setCtx((c) => ({ ...c, passkey: { ...c.passkey, enrolled: true } }));
               return "ok";
@@ -332,7 +380,39 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           assertPasskey: () => platform.assertPasskey(token),
           newDevice: null,
           addDevice: addDevice(platform, keys, owner, token),
+          rooms: { db: platform.db, api: platform.api(token), keyring: keys.roomKeyring },
           usage: platform.usage(token),
+          push: {
+            enable: () =>
+              enablePush({
+                vapidKey: env.vapidPublicKey,
+                db: platform.db as unknown as PushDb,
+                owner,
+                deviceId: keys.keys.deviceId,
+              }),
+            disable: () => disablePush({ db: platform.db as unknown as PushDb, owner, deviceId: keys.keys.deviceId }),
+          },
+          revokeAll: async () => {
+            try {
+              return await client.actions.revokeAll({
+                api: platform.api(token),
+                stepUp: () => platform.assertPasskey(token),
+              });
+            } catch (err) {
+              const e = err as { name?: string; code?: string } | null;
+              if (e?.name === "NotAllowedError" || e?.code === "step_up_cancelled") return "cancelled" as const;
+              if (e?.code === "passkey_required" || e?.code === "step_up_required") return "no_passkey" as const;
+              return "failed" as const;
+            }
+          },
+          revokeDevice: async (deviceId: string) => {
+            try {
+              await platform.api(token).post("/v1/devices/revoke", { deviceId });
+              return "ok" as const;
+            } catch {
+              return "failed" as const;
+            }
+          },
         });
       } catch (err) {
         if (err instanceof DeviceRevokedError) {

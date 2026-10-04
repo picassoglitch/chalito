@@ -163,3 +163,22 @@ describe("entitlements", () => {
     );
   });
 });
+
+describe("R-L9: the efficiency picker only goes cheaper", () => {
+  it("a chosen profile never ranks above the plan's default", () => {
+    const RANK = { free_min: 0, low: 1, standard: 2, max: 3 } as const;
+    for (const hubTier of ["free", "pro", "vip"] as const)
+      for (const chosenEfficiency of ["free_min", "low", "standard", "max"] as const) {
+        const e = ent({ hubTier, hubBalanceRemaining: 9, chosenEfficiency });
+        expect(RANK[e.efficiencyCurrent]).toBeLessThanOrEqual(RANK[e.efficiencyDefault]);
+      }
+    // A plan whose default sits below its max: picking the max is not "cheaper".
+    const p2 = structuredClone(plans);
+    (p2.tiers.standard as { efficiencyDefault: string }).efficiencyDefault = "low";
+    const e = ent({ hubTier: "pro", hubBalanceRemaining: 9, chosenEfficiency: "standard" }, p2);
+    expect([e.maxProfile, e.efficiencyDefault, e.efficiencyCurrent]).toEqual(["standard", "low", "low"]);
+    expect(ent({ hubTier: "pro", hubBalanceRemaining: 9, chosenEfficiency: "free_min" }, p2).efficiencyCurrent).toBe(
+      "free_min",
+    );
+  });
+});

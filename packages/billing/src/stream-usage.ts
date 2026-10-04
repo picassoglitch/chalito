@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
 import type { PricesConfig } from "@chalito/config";
 import type { HubUsageEvent } from "@chalito/protocol";
 import { usageEvent } from "./billable.js";
 import { voiceSecondsCostMicros } from "./cost.js";
 import type { HubClient } from "./hub.js";
+import { reserveTokens, type ReserveBasis } from "./reserve-basis.js";
 
 /** Metered streams (voice): admit once, report as it runs, settle at the end. */
 export type MeterKind = "voice.seconds";
@@ -14,42 +14,55 @@ export interface StreamUsage {
     kind: MeterKind;
     class: "stream";
     sourceId: string;
+    /** Seconds the stream may run: the reservation covers them. */
+    reserveSeconds?: number;
   }): Promise<{ admitted: true; admissionId: string } | { admitted: false; reason: string }>;
-  /** Reports usage; `continue: false` means stop (balance gone or the hub refused). */
-  record(p: {
+  /**
+   * The usage event for `seconds` more of the stream. `sourceId` must identify the increment
+   * (e.g. `<session>:<total>`), so a retried report is the same event (R-L9).
+   */
+  event(p: {
     owner: string;
     admissionId: string;
     kind: MeterKind;
-    quantity: number;
+    seconds: number;
     sourceId: string;
-  }): Promise<{ continue: boolean }>;
+  }): HubUsageEvent | null;
+  /** Extends the reservation and re-admits; `continue: false` means stop (balance gone or refused). */
+  keepAlive(p: { owner: string; admissionId: string; sourceId: string }): Promise<{ continue: boolean }>;
   settle(p: { owner: string; admissionId: string }): Promise<void>;
 }
 
-/** Billable tokens the hub will reserve for a cost estimate (cost × (1 + 160%) at 4 µ$ per token). */
+/** Billable tokens a cost turns into at the hub (cost × (1 + 160%) at 4 µ$ per token). For an admit's
+ *  est_tokens use reserveTokens, which follows HUB_RESERVE_BASIS. */
 export const estimateBillable = (costMicros: number, marginPercent = 160) =>
   Math.ceil((costMicros * (1 + marginPercent / 100)) / 4);
 
 /**
- * StreamUsage over the hub contract. Each report is a voice.seconds event (priced from
- * prices.yaml) written to the outbox, then the reservation is extended (settle: heartbeat) and
- * re-admitted to learn whether the balance still covers the stream.
+ * StreamUsage over the hub contract. `event` prices a voice.seconds increment from prices.yaml
+ * (the caller writes it to the outbox in its own transaction, see voice-sessions.ts); `keepAlive`
+ * extends the reservation (settle: heartbeat) and re-admits to learn whether the balance still
+ * covers the stream.
  */
 export class HubStreamUsage implements StreamUsage {
   constructor(
     private readonly p: {
       hub: Pick<HubClient, "admit" | "settle">;
-      enqueue: (owner: string, events: (HubUsageEvent | null)[]) => Promise<void>;
       prices: PricesConfig;
       model: string;
       now: () => number;
       /** How much a stream reserves up front (seconds of voice). */
       reserveSeconds?: number;
+      /** What est_tokens means at this hub (HUB_RESERVE_BASIS). */
+      reserveBasis: ReserveBasis;
     },
   ) {}
 
-  #admitRequest(owner: string, sourceId: string) {
-    const est = estimateBillable(voiceSecondsCostMicros(this.p.prices, this.p.model, this.p.reserveSeconds ?? 600));
+  #admitRequest(owner: string, sourceId: string, reserveSeconds?: number) {
+    const est = reserveTokens(
+      voiceSecondsCostMicros(this.p.prices, this.p.model, reserveSeconds ?? this.p.reserveSeconds ?? 600),
+      this.p.reserveBasis,
+    );
     return {
       external_user_id: owner,
       external_job_id: sourceId,
@@ -60,8 +73,8 @@ export class HubStreamUsage implements StreamUsage {
     };
   }
 
-  async admit(p: { owner: string; kind: MeterKind; class: "stream"; sourceId: string }) {
-    const res = await this.p.hub.admit(this.#admitRequest(p.owner, p.sourceId));
+  async admit(p: { owner: string; kind: MeterKind; class: "stream"; sourceId: string; reserveSeconds?: number }) {
+    const res = await this.p.hub.admit(this.#admitRequest(p.owner, p.sourceId, p.reserveSeconds));
     if (!res.allowed) return { admitted: false as const, reason: res.reason };
     if (!res.balance.unlimited && res.balance.remaining <= 0) {
       await this.p.hub.settle({ reservation_id: res.reservation_id, outcome: "cancelled" });
@@ -70,21 +83,23 @@ export class HubStreamUsage implements StreamUsage {
     return { admitted: true as const, admissionId: res.reservation_id };
   }
 
-  async record(p: { owner: string; admissionId: string; kind: MeterKind; quantity: number; sourceId: string }) {
-    const event = usageEvent(
+  event(p: { owner: string; admissionId: string; kind: MeterKind; seconds: number; sourceId: string }) {
+    return usageEvent(
       { owner: p.owner, billingMode: "managed", origin: "voice.desktop" },
       {
         kind: "voice.seconds",
         provider: "openai",
-        amount: p.quantity,
-        costUsdMicros: voiceSecondsCostMicros(this.p.prices, this.p.model, p.quantity),
+        amount: p.seconds,
+        costUsdMicros: voiceSecondsCostMicros(this.p.prices, this.p.model, p.seconds),
         occurredAt: this.p.now(),
-        sourceId: `${p.sourceId}:${randomUUID()}`,
+        sourceId: p.sourceId,
         reservationId: p.admissionId,
         metadata: { model: this.p.model },
       },
     );
-    await this.p.enqueue(p.owner, [event]);
+  }
+
+  async keepAlive(p: { owner: string; admissionId: string; sourceId: string }) {
     // A heartbeat on a closed reservation is 409: stop the stream.
     const beat = await this.p.hub.settle({ reservation_id: p.admissionId, outcome: "heartbeat" });
     if (!beat.ok && beat.closed) return { continue: false };

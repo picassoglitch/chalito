@@ -1,10 +1,11 @@
+import { MemoryNotifyOutbox } from "../src/notify-outbox.js";
 import { createECDH, randomBytes } from "node:crypto";
 import { SignJWT, exportJWK, generateKeyPair, createLocalJWKSet, type JWK } from "jose";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import webpush from "web-push";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, MemoryOutbox } from "@chalito/billing";
+import { HubClient, MemoryOutbox, MemoryVoiceSessions, type ReserveBasis } from "@chalito/billing";
 import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { hubCommsBilling } from "../src/billing.js";
 import type { UserPrefs } from "@chalito/escalation";
@@ -76,16 +77,19 @@ export const NOON_MX = Date.UTC(2026, 9, 5, 18, 0, 0);
 
 /** Every provider request the notifier made, as the mocks saw it. */
 export const SCHEDULER_SA = "scheduler@chalito-dev.iam.gserviceaccount.com";
+export const POKE_SECRET = "notify-poke-secret-test";
 export const RID = "44444444-4444-4444-8444-444444444444";
 
 /** What the mocked Chalyb hub answers to /usage/admit. */
-export const hubState = { admit: "allowed" as "allowed" | "no_tokens" | "down" };
+export const hubState = { admit: "allowed" as "allowed" | "no_tokens" | "down", remaining: 10_000 };
 
 export interface Captured {
   hub: { path: string; body: Record<string, unknown> }[];
   openai: { path: string; body: Record<string, unknown>; headers: Record<string, string> }[];
   whatsapp: { url: string; body: Record<string, unknown> }[];
   calls: Record<string, string>[];
+  /** Twilio call updates (POST Calls/<CallSid>.json), e.g. Status=completed. */
+  callUpdates: { callSid: string; form: Record<string, string> }[];
   sms: Record<string, string>[];
   tasks: { method: string; url: string; body?: Record<string, unknown> }[];
   push: { endpoint: string; headers: Record<string, string>; bytes: number }[];
@@ -129,7 +133,7 @@ export const prefs = (over: Partial<UserPrefs> = {}): UserPrefs => ({
 });
 
 export const mockServer = () => {
-  const cap: Captured = { hub: [], openai: [], whatsapp: [], calls: [], sms: [], tasks: [], push: [] };
+  const cap: Captured = { hub: [], openai: [], whatsapp: [], calls: [], callUpdates: [], sms: [], tasks: [], push: [] };
   const goneEndpoints = new Set<string>();
   const hubBase = "https://www.chalyb.com/api/engines/chalito";
   const server = setupServer(
@@ -146,7 +150,7 @@ export const mockServer = () => {
               boost_fee_tokens: 0,
               limits: {},
               balance: {
-                remaining: 10_000,
+                remaining: hubState.remaining,
                 reserved: 0,
                 unlimited: false,
                 monthlyAllocation: 100_000,
@@ -163,11 +167,16 @@ export const mockServer = () => {
       return HttpResponse.json({ ok: true });
     }),
     http.post(`${hubBase}/usage`, async ({ request }) => {
-      cap.hub.push({ path: "usage", body: (await request.json()) as Record<string, unknown> });
+      const body = (await request.json()) as Record<string, unknown>;
+      cap.hub.push({ path: "usage", body });
+      // As the real hub (chalyb usage/route.ts:75-78): one user per request, at the top level.
+      if (typeof body.external_user_id !== "string" || !body.external_user_id)
+        return HttpResponse.json({ error: "external_user_id required" }, { status: 400 });
       return HttpResponse.json({ ok: true });
     }),
     http.post("https://api.openai.com/v1/*", async ({ request }) => {
-      const body = (await request.json()) as Record<string, unknown>;
+      // Call controls like /hangup have no body.
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       cap.openai.push({
         path: new URL(request.url).pathname,
         body,
@@ -184,6 +193,13 @@ export const mockServer = () => {
     http.post("https://api.twilio.com/2010-04-01/Accounts/:sid/Calls.json", async ({ request }) => {
       cap.calls.push(Object.fromEntries(new URLSearchParams(await request.text())));
       return HttpResponse.json({ sid: `CA${"0".repeat(31)}${cap.calls.length}` }, { status: 201 });
+    }),
+    http.post("https://api.twilio.com/2010-04-01/Accounts/:sid/Calls/:callSid", async ({ request, params }) => {
+      cap.callUpdates.push({
+        callSid: String(params.callSid).replace(/\.json$/, ""),
+        form: Object.fromEntries(new URLSearchParams(await request.text())),
+      });
+      return HttpResponse.json({ sid: params.callSid, status: "completed" });
     }),
     http.post("https://api.twilio.com/2010-04-01/Accounts/:sid/Messages.json", async ({ request }) => {
       cap.sms.push(Object.fromEntries(new URLSearchParams(await request.text())));
@@ -211,7 +227,9 @@ export const mockServer = () => {
   return { server, cap, goneEndpoints };
 };
 
-export const setup = (opts: { now?: () => number; billing?: boolean; caps?: boolean } = {}) => {
+export const setup = (
+  opts: { now?: () => number; billing?: boolean; caps?: boolean; reserveBasis?: ReserveBasis } = {},
+) => {
   const store = new MemoryStore();
   const sockets: FakeSocket[] = [];
   const logs: { msg: string; meta?: Record<string, unknown> }[] = [];
@@ -238,6 +256,8 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
     log: { info: (msg, meta) => logs.push({ msg, meta }), error: (msg, meta) => logs.push({ msg, meta }) },
   };
   const outbox = new MemoryOutbox();
+  const voiceSessions = new MemoryVoiceSessions();
+  const notifyOutbox = new MemoryNotifyOutbox();
   if (opts.caps) deps.caps = { plans: loadPlans(), isComped: (uid) => uid === "owner-1" };
   if (opts.billing)
     deps.billing = hubCommsBilling({
@@ -246,8 +266,12 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
       enqueue: (owner, events) => outbox.enqueue(owner, events),
       prices: loadPrices(),
       voiceModel: loadModels().voice.call.model,
+      reserveBasis: opts.reserveBasis ?? "pre_margin",
       now: () => deps.now(),
       alert: (msg, meta) => logs.push({ msg, meta }),
+      voiceSessions,
+      hangupCall: (callId) => openaiRealtime({ apiKey: "sk-test" }).hangupCall(callId),
+      endPhoneCall: (callSid) => deps.twilio.endCall(callSid),
     });
   const cfg: AppConfig = {
     pubsub: {
@@ -258,6 +282,11 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
     },
     tasks: { email: TASKS_SA, audience: `${BASE}/tasks/tick`, queueName: QUEUE },
     drain: { email: SCHEDULER_SA, audience: `${BASE}/tasks/drain-usage` },
+    notify: {
+      store: notifyOutbox,
+      pokeSecret: POKE_SECRET,
+      drain: { email: SCHEDULER_SA, audience: `${BASE}/tasks/drain-notify` },
+    },
     twilioAuthToken: TWILIO_TOKEN,
     metaAppSecret: META_SECRET,
     metaVerifyToken: "meta-verify",
@@ -280,6 +309,8 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
     app,
     store,
     outbox,
+    voiceSessions,
+    notifyOutbox,
     sockets,
     deps,
     logs,

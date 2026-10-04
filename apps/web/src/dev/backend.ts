@@ -19,6 +19,7 @@ import {
   generateBoxKeyPair,
   generateSigningKeyPair,
   fingerprint,
+  generateRoomKey,
   openJson,
   randomNonce,
   sealJson,
@@ -48,7 +49,11 @@ import type { ChannelSetter } from "@/lib/phone";
 import type { Connector, ConsentRequest, McpApi } from "@/lib/mcp";
 import { confirmStepUp } from "@/components/StepUpHost";
 import { passkeyRef, savePasskeyRef } from "@/lib/keys";
+import { httpStore } from "@/lib/store";
 import { parseUsage, type UsageApi } from "@/lib/usage";
+import { httpAccount } from "@/lib/account";
+import { DEV_CATALOG } from "./catalog";
+import { sealRoomEvent, unwrapKeyring, wrapRoomKeyFor } from "@chalito/rooms";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -62,6 +67,8 @@ interface Device {
 
 const OWNER = "dev-owner";
 const SID = "s_dev_1";
+/** The simulated computer's locally allowed workspaces (apps/agent policy.workspaces labels). */
+const AGENT_WORKSPACES = ["chalito", "web"];
 
 const newDevice = async (): Promise<Device> => {
   const sign = await generateSigningKeyPair();
@@ -95,6 +102,11 @@ export interface DevControls {
     risk: "LOW" | "MED" | "HIGH" | "CRITICAL";
     ttlMs?: number;
     summary?: string;
+    /** The tool input as the agent saw it (the summary may cut it, R-M10). */
+    input?: unknown;
+    toolName?: string;
+    /** Sealed WITHOUT the agent's signed request (ADR 0019): the browser must show it unverified. */
+    unverified?: boolean;
   }): Promise<void>;
   setDevMode(on: boolean, toggles?: string[]): void;
   askQuestion(questionId: string, question: string, options: string[]): Promise<void>;
@@ -102,10 +114,39 @@ export interface DevControls {
   agentInbox: { type: string; text?: unknown }[];
   /** The browser's current Supabase session (who the app is signed in as). */
   session(): { access_token: string; role: unknown } | null;
+  /** The current passkey fails its assertion (R-M11 replace). */
+  losePasskey(): void;
+  /** The agent stops reading commands and shows as offline. */
+  sleepAgent(): void;
+  /** The agent reconnects and, like apps/agent (R-H5), drops clients the directory marks revoked. */
+  wakeAgent(): void;
+  /** Whether the agent dropped this client from its local trust list. */
+  agentDropped(deviceId: string): boolean;
   /** Revokes THIS browser device (as another trusted device would). */
   revokeMe(): void;
   /** GET /v1/usage/daily: "normal" (comms under target), "over" (above), "empty", or "error". */
   setUsage(mode: "normal" | "over" | "empty" | "error"): void;
+  /** /v1/store: the hub balance in tokens, a one-shot failure, and the companion to dress. */
+  storeState: {
+    balance(): number;
+    setBalance(tokens: number): void;
+    failNextPurchase(how: "hub_unavailable" | "network"): void;
+    /** Purchases as the api recorded them (purchaseId → charged). */
+    purchases(): Record<string, { cosmeticId: string; charged: number }>;
+    seedCompanion(avatar: string): void;
+  };
+  /** Rooms (ADR 0010): a seeded room with another family's companion, and the server's side. */
+  rooms: {
+    /** Creates this browser's companion (if needed) and a room "Familia" it owns, with Ana's companion. */
+    seed(): Promise<{ roomId: string; me: string; ana: string; eid: string }>;
+    /** Ana's companion posts a notice. */
+    postAsAna(text: string): Promise<string>;
+    kickMe(): void;
+    dissolve(): void;
+    /** A one-use invite code to another room ("Proyecto"), keyed to this device on join. */
+    inviteCode: string;
+    reports(): Row[];
+  };
   /** /v1/endorse: the other side of "Añadir un dispositivo" / "Esperando aprobación". */
   endorse: {
     /** A new browser of the owner opens a code (for this trusted browser to approve). */
@@ -145,6 +186,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   const agent = await newDevice();
   const now = Date.now();
   const agentInbox: DevControls["agentInbox"] = [];
+  let started = 0;
 
   const sealToBoth = async (value: unknown, aad: string) =>
     sealJson(
@@ -267,12 +309,18 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
 
   /** What a real agent seals (ADR 0019): details + its signature over {request, detailsHash}. */
   const detailsHashes = new Map<string, string>();
-  const signedApproval = async (aid: string, risk: string, created: number, ttlMs: number, summary?: string) => {
+  const signedApproval = async (
+    aid: string,
+    risk: string,
+    created: number,
+    ttlMs: number,
+    o: { summary?: string; input?: unknown; toolName?: string } = {},
+  ) => {
     const details = {
       v: 1,
-      toolName: risk === "HIGH" ? "Bash" : "Write",
-      summary: summary ?? (risk === "HIGH" ? "Bash: rm -rf dist" : "Write: notes.txt"),
-      input: risk === "HIGH" ? { command: "rm -rf dist" } : { file_path: "notes.txt" },
+      toolName: o.toolName ?? (risk === "HIGH" ? "Bash" : "Write"),
+      summary: o.summary ?? (risk === "HIGH" ? "Bash: rm -rf dist" : "Write: notes.txt"),
+      input: o.input ?? (risk === "HIGH" ? { command: "rm -rf dist" } : { file_path: "notes.txt" }),
       reasons: risk === "HIGH" ? ["deletes files"] : [],
       origin: `client:${me.deviceId}`,
     };
@@ -302,7 +350,15 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     return { details, request };
   };
 
-  const seedApproval: DevControls["seedApproval"] = async ({ aid, risk, ttlMs = 10 * 60 * 1000, summary }) => {
+  const seedApproval: DevControls["seedApproval"] = async ({
+    aid,
+    risk,
+    ttlMs = 10 * 60 * 1000,
+    summary,
+    input,
+    toolName,
+    unverified,
+  }) => {
     const created = Date.now();
     db.insert("approvals", {
       owner: OWNER,
@@ -315,7 +371,12 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       origin: `client:${me.deviceId}`,
       step_up_required: risk === "HIGH" || risk === "CRITICAL",
       // ADR 0019: like apps/agent, seal the details WITH the agent's signed request over them.
-      details_ct: await sealToBoth(await signedApproval(aid, risk, created, ttlMs, summary), `approval:${aid}`),
+      details_ct: await sealToBoth(
+        unverified
+          ? { details: (await signedApproval(aid, risk, created, ttlMs, { summary, input, toolName })).details }
+          : await signedApproval(aid, risk, created, ttlMs, { summary, input, toolName }),
+        `approval:${aid}`,
+      ),
       status: "pending",
       created_at: iso(created),
       expires_at: iso(created + ttlMs),
@@ -347,6 +408,10 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   });
 
   // ---- the simulated agent ----------------------------------------------------------
+  let agentAsleep = false;
+  /** R-M11: the current passkey can't assert (lost or wrong authenticator). */
+  let currentPasskeyLost = false;
+  const agentDropped = new Set<string>();
   const trusted = new Map([[me.deviceId, await fromB64url(me.pubSign)]]);
   db.onWrite((w) => {
     if (!w.byClient) return;
@@ -394,6 +459,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
         return;
       }
       if (w.table === "commands" && w.op === "insert") {
+        if (agentAsleep) return; // a sleeping agent never sees it (commands expire)
         const env = w.row.env as Parameters<typeof verifyEnvelope>[0];
         const check = await verifyEnvelope(env, "chalito.command.v1", trusted);
         db.remove("commands", (r) => r.id === w.row.id); // the agent consumes its commands
@@ -402,6 +468,40 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
         const p = body.payload;
         const open = (ct: unknown) => openJson(ct as SealedEnvelope, agent.deviceId, agent.box, `command:${body.cid}`);
         switch (p.type) {
+          case "session.start": {
+            // Like apps/agent: only a locally allowed workspace; a refusal is only in its own log.
+            if (!AGENT_WORKSPACES.includes(p.workspaceLabel as string)) return;
+            const text = await open(p.promptCt);
+            agentInbox.push({ type: p.type, text });
+            const sid = `s_dev_new_${++started}`;
+            const c = {
+              ...card,
+              sid,
+              cardVersion: 1,
+              adapter: p.adapter as typeof card.adapter,
+              label: p.workspaceLabel as string,
+              workspaceLabel: p.workspaceLabel as string,
+              state: "running",
+              goal: String(text).slice(0, 80),
+              lastAction: "Leyó tu mensaje",
+              pendingApprovals: 0,
+              updatedAt: Date.now(),
+            };
+            db.insert("sessions", {
+              owner: OWNER,
+              sid,
+              device_id: agent.deviceId,
+              doc: {
+                adapter: p.adapter,
+                label: p.workspaceLabel,
+                permissionMode: p.permissionMode,
+                state: "running",
+                card: { ct: await sealToBoth(c, `card:${sid}`) },
+              },
+              updated_at: iso(Date.now()),
+            });
+            return;
+          }
           case "session.prompt": {
             const text = await open(p.promptCt);
             agentInbox.push({ type: p.type, text });
@@ -437,10 +537,10 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
             });
           }
           case "device.revokeClient":
-            return db.update("devices", (r) => r.device_id === p.clientDeviceId, {
-              revoked: true,
-              revoked_at: iso(Date.now()),
-            });
+            // The agent's LOCAL trust list (the server row is /v1/devices/revoke's).
+            trusted.delete(p.clientDeviceId as string);
+            agentDropped.add(p.clientDeviceId as string);
+            return;
         }
       }
     })();
@@ -496,7 +596,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   db.setSession(personSession);
   const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
 
-  const controls: Omit<DevControls, "endorse" | "setUsage"> & Partial<Pick<DevControls, "endorse" | "setUsage">> = {
+  const controls: Omit<DevControls, "endorse" | "setUsage" | "storeState" | "rooms"> &
+    Partial<Pick<DevControls, "endorse" | "setUsage" | "storeState" | "rooms">> = {
     marker: DEV_MARKER,
     owner: OWNER,
     get me() {
@@ -521,6 +622,21 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     },
     agentInbox,
     session: () => (db.session ? { access_token: db.session.access_token, role: role() } : null),
+    losePasskey: () => void (currentPasskeyLost = true),
+    sleepAgent: () => {
+      agentAsleep = true;
+      db.update("devices", (r) => r.device_id === agent.deviceId, { last_seen_at: iso(Date.now() - 3_600_000) });
+    },
+    agentDropped: (id) => agentDropped.has(id),
+    wakeAgent: () => {
+      agentAsleep = false;
+      db.update("devices", (r) => r.device_id === agent.deviceId, { last_seen_at: iso(Date.now()) });
+      for (const r of db.rows("devices"))
+        if (r.role === "client" && r.revoked) {
+          trusted.delete(r.device_id as string);
+          agentDropped.add(r.device_id as string);
+        }
+    },
     revokeMe: () =>
       db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true, revoked_at: iso(Date.now()) }),
   };
@@ -759,6 +875,10 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     post: async <T>(path: string, body: unknown): Promise<T> => {
       const b = body as Record<string, unknown>;
       db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...b } });
+      if (path.startsWith("/v1/rooms/")) {
+        if (role() !== "client") throw fail(403, "forbidden");
+        return (await roomsApi(path, b)) as T;
+      }
       switch (path) {
         case "/v1/endorse/codes": {
           needRole("user");
@@ -798,6 +918,59 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
             if (su.assertion?.credentialId !== passkeyRef()!.credentialId) throw fail(401, "step_up_failed");
           }
           await endorse(c, b.endorsement as Endorsement, me.deviceId);
+          return { ok: true } as T;
+        }
+        case "/v1/devices/revoke-all": {
+          // apps/api/src/routes/devices.ts: passkey mandatory, then revoke + ban every other client
+          // and queue the caller's signed revokeClient commands (checked: signer, signature, target).
+          needRole("client");
+          if (!passkeyRef()) throw fail(403, "passkey_required");
+          if (!b.stepUp) throw fail(401, "step_up_required");
+          if ((b.stepUp as { id?: unknown }).id !== lastAssertion.value) throw fail(401, "step_up_failed");
+          const others = db
+            .rows("devices")
+            .filter((r) => r.role === "client" && !r.revoked && r.device_id !== me.deviceId)
+            .map((r) => String(r.device_id));
+          for (const id of others)
+            db.update("devices", (r) => r.device_id === id, { revoked: true, revoked_at: iso(Date.now()) });
+          const agents = db
+            .rows("devices")
+            .filter((r) => r.role === "agent" && !r.revoked)
+            .map((r) => String(r.device_id));
+          let queued = 0;
+          const refused: string[] = [];
+          for (const cmd of (b.commands as {
+            body: { cid: string; targetDeviceId: string; payload: { type: string } };
+            signerDeviceId: string;
+          }[]) ?? []) {
+            const ok =
+              cmd.signerDeviceId === me.deviceId &&
+              cmd.body.payload.type === "device.revokeClient" &&
+              agents.includes(cmd.body.targetDeviceId) &&
+              (
+                await verifyEnvelope(
+                  cmd as never,
+                  "chalito.command.v1",
+                  new Map([[me.deviceId, await fromB64url(me.pubSign)]]),
+                )
+              ).ok;
+            if (!ok) {
+              refused.push(cmd.body.cid);
+              continue;
+            }
+            // Queued for the agent (its own loop picks commands up like any other).
+            db.insert("commands", { id: cmd.body.cid, target_device_id: cmd.body.targetDeviceId, env: cmd }, true);
+            queued++;
+          }
+          return { ok: true, revoked: others, agents, commandsQueued: queued, refused, banFailed: [] } as T;
+        }
+        case "/v1/devices/revoke": {
+          needRole("client");
+          const id = b.deviceId as string;
+          const row = db.rows("devices").find((r) => r.device_id === id);
+          if (!row) throw fail(404, "not_found");
+          if (row.revoked) return { ok: true, alreadyRevoked: true } as T;
+          db.update("devices", (r) => r.device_id === id, { revoked: true, revoked_at: iso(Date.now()) });
           return { ok: true } as T;
         }
         case "/v1/devices/endorsed": {
@@ -975,6 +1148,267 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     })!;
   };
 
+  // ---- /v1/account/* (apps/api/src/account/routes.ts), simulated -------------------------
+  const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+  let deletion: { status: "scheduled" | "cancelled"; requestedAt: number; dueAt: number } | null = null;
+  const accountFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const method = init?.method ?? "GET";
+    const body = init?.body ? (JSON.parse(String(init.body)) as Row) : {};
+    const answer = (status: number, b: unknown) => new Response(JSON.stringify(b), { status });
+    db.clientWrites.push({ table: "api", op: `${method} ${path.replace(/^\/v1\//, "")}`, row: { ...body } });
+    if (!role()) return answer(401, { error: "unauthorized" });
+    if (path === "/v1/account/deletion" && method === "GET") return answer(200, deletion ?? { status: "none" });
+    if (path === "/v1/account/deletion" && method === "POST") {
+      if (role() !== "client") return answer(403, { error: "forbidden" });
+      if (!passkeyRef()) return answer(403, { error: "passkey_required" });
+      if (!body.stepUp) return answer(401, { error: "step_up_required" });
+      if ((body.stepUp as { id?: unknown }).id !== lastAssertion.value) return answer(401, { error: "step_up_failed" });
+      if (deletion?.status === "scheduled") return answer(409, { error: "already_scheduled" });
+      const at = Date.now();
+      deletion = { status: "scheduled", requestedAt: at, dueAt: at + GRACE_MS };
+      return answer(202, { status: "scheduled", dueAt: deletion.dueAt, exportReady: true });
+    }
+    if (path === "/v1/account/deletion" && method === "DELETE") {
+      if (deletion?.status !== "scheduled") return answer(404, { error: "nothing_scheduled" });
+      deletion = { ...deletion, status: "cancelled" };
+      return answer(200, { status: "cancelled" });
+    }
+    if (path === "/v1/account/export" && method === "GET") {
+      if (!deletion) return answer(404, { error: "no_export" });
+      return new Response(JSON.stringify({ owner: OWNER, users: db.rows("users") }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return answer(404, { error: "not_found" });
+  }) as typeof fetch;
+  const account = httpAccount("http://dev.invalid", async () => db.session?.access_token ?? null, accountFetch);
+
+  // ---- /v1/store (apps/api/src/store/routes.ts), simulated ------------------------------
+  let balance = 300_000;
+  let failNext: "hub_unavailable" | "network" | null = null;
+  const owned = new Set<string>();
+  const purchases: Record<string, { cosmeticId: string; charged: number }> = {};
+  const catalogItem = (id: string) =>
+    (DEV_CATALOG as Record<string, (typeof DEV_CATALOG)[keyof typeof DEV_CATALOG]>)[id];
+  const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  const storeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const body = init?.body ? (JSON.parse(String(init.body)) as Row) : {};
+    db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...body } });
+    if (path === "/v1/store/catalog")
+      return reply(200, {
+        items: Object.entries(DEV_CATALOG).map(([id, x]) => ({ id, ...x, owned: x.free || owned.has(id) })),
+      });
+    if (path === "/v1/store/purchase") {
+      const item = catalogItem(body.cosmeticId as string);
+      if (!item) return reply(404, { error: "unknown_cosmetic" });
+      if (item.free) return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: 0 });
+      const prior = purchases[body.purchaseId as string];
+      if (prior)
+        return reply(200, { status: "owned", cosmeticId: prior.cosmeticId, charged: prior.charged, replay: true });
+      if (owned.has(body.cosmeticId as string))
+        return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: 0 });
+      if (failNext) {
+        const how = failNext;
+        failNext = null;
+        if (how === "network") throw new TypeError("Failed to fetch");
+        return reply(503, { error: "hub_unavailable" });
+      }
+      const price = (item as { priceTokens: number }).priceTokens;
+      if (balance < price)
+        return reply(402, { error: "no_tokens", chips: [{ label: "¿Por qué?", href: "/creditos" }] });
+      balance -= price;
+      owned.add(body.cosmeticId as string);
+      purchases[body.purchaseId as string] = { cosmeticId: body.cosmeticId as string, charged: price };
+      return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: price });
+    }
+    if (path === "/v1/store/equip") {
+      const { companionId, slot, cosmeticId } = body as {
+        companionId: string;
+        slot: string;
+        cosmeticId: string | null;
+      };
+      if (cosmeticId !== null) {
+        const item = catalogItem(cosmeticId);
+        if (!item) return reply(404, { error: "unknown_cosmetic" });
+        if (item.slot !== slot) return reply(400, { error: "wrong_slot" });
+        if (!item.free && !owned.has(cosmeticId)) return reply(403, { error: "not_owned" });
+      }
+      const row = db.rows("companions").find((r) => r.owner === OWNER && r.companion_id === companionId);
+      if (!row) return reply(404, { error: "unknown_companion" });
+      const equipped = { ...((row.equipped as Row) ?? {}) };
+      if (cosmeticId === null) delete equipped[slot];
+      else equipped[slot] = cosmeticId;
+      db.update("companions", (r) => r === row, { equipped });
+      return reply(200, { ok: true, slot, cosmeticId });
+    }
+    return reply(404, { error: "not_found" });
+  }) as typeof fetch;
+  const store = httpStore("http://dev.invalid", async () => db.session?.access_token ?? null, storeFetch);
+  controls.storeState = {
+    balance: () => balance,
+    setBalance: (n) => void (balance = n),
+    failNextPurchase: (how) => void (failNext = how),
+    purchases: () => ({ ...purchases }),
+    seedCompanion: (avatar) =>
+      db.insert("companions", {
+        owner: OWNER,
+        companion_id: "chl_devcompanionaaaaaaaaaaaaaa",
+        name: "Chalito",
+        is_renamed: false,
+        avatar,
+        equipped: {},
+      }),
+  };
+
+  // ---- /v1/rooms (apps/api/src/routes/rooms.ts), simulated --------------------------------
+  const MY_COMPANION = "chl_devcompanionaaaaaaaaaaaaaa";
+  const ANA = "chl_anacompanionbbbbbbbbbbbbbb";
+  const ROOM = "room_dev_familia";
+  const PROJECT = "room_dev_proyecto";
+  const INVITE = "KQ7R-M2XZ";
+  const roomKeys = new Map<string, Uint8Array>();
+  const reports: Row[] = [];
+  let inviteUsed = false;
+  const ensureCompanion = () => {
+    if (!db.rows("companions").some((c) => c.owner === OWNER))
+      db.insert("companions", {
+        owner: OWNER,
+        companion_id: MY_COMPANION,
+        name: "Chalito",
+        is_renamed: false,
+        avatar: "chalito",
+        equipped: {},
+      });
+    return String(db.rows("companions").find((c) => c.owner === OWNER)!.companion_id);
+  };
+  const makeRoom = async (roomId: string, name: string, owner: string, members: string[]) => {
+    const key = await generateRoomKey();
+    roomKeys.set(roomId, key);
+    db.insert("rooms", { room_id: roomId, type: "family", name, owner_companion_id: owner, key_epoch: 1 });
+    for (const m of members)
+      db.insert("room_members", { room_id: roomId, companion_id: m, role: m === owner ? "owner" : "member" });
+  };
+  const keyMe = async (roomId: string, companion: string) => {
+    const wrapped = await wrapRoomKeyFor(roomKeys.get(roomId)!, 1, [{ deviceId: me.deviceId, pubBox: me.pubBox }]);
+    db.insert("room_member_keys", {
+      room_id: roomId,
+      companion_id: companion,
+      device_id: me.deviceId,
+      epoch: 1,
+      ct: wrapped[me.deviceId],
+    });
+  };
+  const insertEvent = (
+    roomId: string,
+    req: { eid: string; companionId: string; kind: string; urgency: string; ct: unknown; keyEpoch: number },
+  ) =>
+    db.insert("room_events", {
+      room_id: roomId,
+      eid: req.eid,
+      from_companion_id: req.companionId,
+      to_companions: [],
+      kind: req.kind,
+      urgency: req.urgency,
+      ct: req.ct,
+      key_epoch: req.keyEpoch,
+      promoted: false,
+      t: iso(Date.now()),
+      expires_at: iso(Date.now() + 24 * 3_600_000),
+    });
+  const postAsAna = async (text: string, roomId = ROOM) => {
+    const req = await sealRoomEvent({
+      roomId,
+      epoch: 1,
+      key: roomKeys.get(roomId)!,
+      eid: `evt_${Math.random().toString(36).slice(2)}`,
+      companionId: ANA,
+      body: { kind: "notice", text },
+    });
+    insertEvent(roomId, req);
+    return req.eid;
+  };
+  const isMember = (roomId: string, companion: string) =>
+    db.rows("room_members").some((m) => m.room_id === roomId && m.companion_id === companion);
+  const roomsApi = async (path: string, b: Row): Promise<unknown> => {
+    if (path === "/v1/rooms/join") {
+      if (b.shortCode !== INVITE || inviteUsed) throw fail(404, "invite_not_found");
+      inviteUsed = true;
+      await makeRoom(PROJECT, "Proyecto", ANA, [ANA]);
+      db.insert("room_members", { room_id: PROJECT, companion_id: b.companionId, role: "member" });
+      await keyMe(PROJECT, String(b.companionId)); // a member's client wraps the key to the newcomer
+      return { roomId: PROJECT };
+    }
+    const m = /^\/v1\/rooms\/([^/]+)\/(events|leave|reports)$/.exec(path);
+    if (!m) throw fail(404, "not_found");
+    const roomId = decodeURIComponent(m[1]!);
+    if (!isMember(roomId, String(b.companionId))) throw fail(403, "not_a_member");
+    if (m[2] === "events") {
+      insertEvent(roomId, b as never);
+      return { ok: true };
+    }
+    if (m[2] === "leave") {
+      db.remove("room_members", (r) => r.room_id === roomId && r.companion_id === b.companionId);
+      db.pointer({ table: "room_members", op: "kicked", key: { companion_id: b.companionId } });
+      return {};
+    }
+    if (reports.length >= 10) throw fail(429, "rate_limited");
+    const dup = reports.find(
+      (r) => r.roomId === roomId && r.eventId === (b.eventId ?? null) && r.member === (b.memberCompanionId ?? null),
+    );
+    if (dup) return { reportId: dup.reportId, duplicate: true };
+    const r = {
+      reportId: `rpt_${reports.length + 1}`,
+      roomId,
+      eventId: b.eventId ?? null,
+      member: b.memberCompanionId ?? null,
+      reason: b.reason,
+      note: b.note ?? null,
+      plaintext: b.attachPlaintext === true ? (b.attachedPlaintext ?? null) : null,
+    };
+    reports.push(r);
+    return { reportId: r.reportId, duplicate: false };
+  };
+  controls.rooms = {
+    seed: async () => {
+      const mine = ensureCompanion();
+      if (!roomKeys.has(ROOM)) {
+        await makeRoom(ROOM, "Familia", mine, [mine, ANA]);
+        // Co-members' public card (what the stage draws for another family's companion).
+        db.insert("companion_directory", {
+          companion_id: ANA,
+          display_name: "Luna de Ana",
+          avatar_thumb: "luna",
+          equipped: ["round_glasses"],
+        });
+        await keyMe(ROOM, mine);
+      }
+      const eid = await postAsAna("Llego a las 7, ¿alguien pasa por pan? <b>no es HTML</b>");
+      return { roomId: ROOM, me: mine, ana: ANA, eid };
+    },
+    postAsAna: (text) => postAsAna(text),
+    kickMe: () => {
+      const mine = ensureCompanion();
+      db.remove("room_members", (r) => r.room_id === ROOM && r.companion_id === mine);
+      db.pointer({ table: "room_members", op: "kicked", key: { companion_id: mine } });
+    },
+    dissolve: () => {
+      db.remove("rooms", (r) => r.room_id === ROOM);
+      db.pointer({ table: "rooms", op: "dissolve" });
+    },
+    inviteCode: INVITE,
+    reports: () => reports.map((r) => ({ ...r })),
+  };
+
+  // DEV/TEST: start with the seeded room ("chalito.dev.rooms" = "1"), so a page load lands in it.
+  try {
+    if (window.localStorage.getItem("chalito.dev.rooms") === "1") await controls.rooms.seed();
+  } catch {
+    /* storage unavailable */
+  }
+
   // /v1/devices/token, simulated: the signature over the refresh challenge is the authentication.
   const sb = db.client(OWNER);
   return {
@@ -994,6 +1428,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
             stepUp: async ({ risk }) =>
               passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
             forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
+            roomKeyring: (rows: readonly { epoch: number; ct: string }[]) => unwrapKeyring(rows, me.box),
           }
         : null,
     deviceLogin: (k, owner) => async () => {
@@ -1013,6 +1448,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     mcp: () => mcp,
     api: () => api,
     usage: () => usage,
+    store: () => store,
+    account: () => account,
     endorseWatch,
     saveDeviceKeys,
     trustIntroduced,
@@ -1025,7 +1462,14 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       ),
       signature: "ZGV2",
     }),
-    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
+    // /v1/webauthn/register, simulated with R-M11's rule: replacing needs the current passkey.
+    enrollPasskey: async () => {
+      const current = passkeyRef();
+      db.clientWrites.push({ table: "api", op: "webauthn/register", row: { replace: current !== null } });
+      if (current && currentPasskeyLost)
+        throw Object.assign(new Error("current_passkey_failed"), { status: 401, code: "current_passkey_failed" });
+      savePasskeyRef({ credentialId: current ? "dev-passkey-2" : "dev-passkey", rpId: window.location.hostname });
+    },
     assertPasskey: () => assertPasskey(),
   };
 };

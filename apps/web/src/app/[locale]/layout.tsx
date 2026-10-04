@@ -1,11 +1,13 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { hasLocale, NextIntlClientProvider } from "next-intl";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { routing } from "@/i18n/routing";
 import { ChalitoProvider } from "@/components/ChalitoProvider";
 import { DevModeBanner } from "@/components/DevModeBanner";
+import { Footer } from "@/components/Footer";
 import { Nav } from "@/components/Nav";
 import { StepUpHost } from "@/components/StepUpHost";
 import { TestModeBanner } from "@/components/TestModeBanner";
@@ -22,7 +24,13 @@ export async function generateMetadata({ params }: { params: Promise<{ locale: s
     title: "Chalito",
     description: t("description"),
     manifest: "/manifest.webmanifest",
-    icons: { icon: "/icons/icon-192.png", apple: "/icons/icon-192.png" },
+    icons: {
+      icon: [
+        { url: "/icons/favicon-32.png", sizes: "32x32", type: "image/png" },
+        { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      ],
+      apple: { url: "/icons/apple-touch-icon.png", sizes: "180x180" },
+    },
     appleWebApp: { capable: true, title: "Chalito", statusBarStyle: "default" },
   };
 }
@@ -39,6 +47,9 @@ export default async function LocaleLayout({
   const { locale } = await params;
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
+  // Per-request CSP nonce (src/proxy.ts): reading the request makes every page render dynamically,
+  // which is what lets Next stamp the nonce on its scripts.
+  await headers();
   return (
     <html lang={locale}>
       <body>
@@ -49,6 +60,7 @@ export default async function LocaleLayout({
               <DevModeBanner />
               <Nav />
               <main className="mx-auto max-w-3xl px-4 py-6">{children}</main>
+              <Footer />
               <StepUpHost />
             </ChalitoProvider>
           </UiBridge>

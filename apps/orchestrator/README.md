@@ -132,6 +132,7 @@ can't read either table.
 | `DATABASE_URL`, `DATABASE_ROLE` | Postgres as `chalito_server` (`DATABASE_ROLE` when the login only holds it with SET). |
 | `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | Device token verification. |
 | `CHALYB_BASE_URL`, `CHALITO_ADMIN_TOKEN` | Hub admit/settle/balance. |
+| `HUB_RESERVE_BASIS` | `pre_margin` (default) or `post_margin`: what an admit's `est_tokens` means at the hub (GO_LIVE 1.6a). |
 | `ANTHROPIC_API_KEY` | Chalito's managed Claude key, from Secret Manager. |
 | `OPENAI_API_KEY`, `XAI_API_KEY` | Optional managed keys; without one, that provider's participants are skipped. |
 | `GOOGLE_CLOUD_PROJECT` | Gemini on Vertex (`global`, ADC); without it, the low profile's companion uses Claude. |

@@ -1,0 +1,93 @@
+diff --git a/supabase/migrations/0053_chalito_device_fence.sql b/supabase/migrations/0053_chalito_device_fence.sql
+new file mode 100644
+index 0000000..c37ca2b
+--- /dev/null
++++ b/supabase/migrations/0053_chalito_device_fence.sql
+@@ -0,0 +1,87 @@
++-- =====================================================================
++-- Chalyb — fence Chalito's device users out of the hub.
++--
++-- Chalito (an engine on this project, schemas `chalito` / `chalito_private`)
++-- makes each paired device a Supabase Auth user of THIS project, marked by
++-- raw_app_meta_data.chalito = {owner, device_id, role}, set server-side by
++-- Chalito's api through the Admin API (never by the device). Those users are
++-- not hub people:
++--
++-- (a) no profile: tg_handle_new_user returns early for them. Without this, a
++--     device user created first on a fresh project would even become
++--     SUPER_ADMIN (0006). Same body as 0006 plus the guard at the top.
++-- (b) no hub data: a RESTRICTIVE policy on every RLS table in `public` (and
++--     storage.objects) refuses a JWT whose app_metadata carries `chalito`.
++--     Restrictive policies AND with the existing permissive ones, so nothing
++--     changes for real hub users. Tables created later need the same policy
++--     (one line, see below), or re-run this DO block.
++--
++-- Chalito's realtime policies only apply to `chalito:` topics; hub channels
++-- must not use that prefix. Idempotent.
++-- =====================================================================
++
++create or replace function public.tg_handle_new_user()
++returns trigger language plpgsql security definer set search_path = public as $$
++declare
++  v_existing_count int;
++  v_role user_role;
++  v_super_admin_emails text;
++  v_email_in_allowlist boolean := false;
++begin
++  -- Chalito device / pairing-watch users (raw_app_meta_data.chalito, set server-side by
++  -- Chalito's api through the Admin API): never a hub profile, role, org or tier.
++  if new.raw_app_meta_data ? 'chalito' then
++    return new;
++  end if;
++
++  -- Count rows BEFORE this insert; 0 = this is the first user ever.
++  select count(*) into v_existing_count from public.profiles;
++
++  -- Promotion logic:
++  -- 1. First profile ever -> SUPER_ADMIN (founder bootstrap).
++  -- 2. Otherwise -> VIEWER (the default).
++  -- The runtime env-var allowlist in getSessionUser() still wins at request
++  -- time, but this DB-side default means an admin always exists.
++  if v_existing_count = 0 then
++    v_role := 'SUPER_ADMIN';
++  else
++    v_role := 'VIEWER';
++  end if;
++
++  insert into public.profiles (id, email, full_name, avatar_url, role, org_id, tier)
++  values (
++    new.id,
++    new.email,
++    coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name'),
++    new.raw_user_meta_data->>'avatar_url',
++    v_role,
++    '00000000-0000-0000-0000-000000000001'::uuid,  -- demo org from 0002 seed
++    'FREE'
++  )
++  on conflict (id) do nothing;
++  return new;
++end;
++$$;
++
++
++-- (b) Restrictive fence on every RLS-enabled table in public, plus storage.objects.
++do $$
++declare
++  t record;
++begin
++  for t in
++    select format('%I.%I', n.nspname, c.relname) as tbl
++    from pg_class c join pg_namespace n on n.oid = c.relnamespace
++    where c.relkind in ('r', 'p') and c.relrowsecurity
++      and (n.nspname = 'public' or (n.nspname = 'storage' and c.relname = 'objects'))
++  loop
++    execute format('drop policy if exists chalito_device_fence on %s', t.tbl);
++    execute format($p$create policy chalito_device_fence on %s as restrictive for all to authenticated
++      using (not coalesce((auth.jwt() -> 'app_metadata') ? 'chalito', false))
++      with check (not coalesce((auth.jwt() -> 'app_metadata') ? 'chalito', false))$p$, t.tbl);
++  end loop;
++end
++$$;
++-- A new hub table later: create policy chalito_device_fence on public.<table> as restrictive
++--   for all to authenticated using (not coalesce((auth.jwt() -> 'app_metadata') ? 'chalito', false))
++--   with check (not coalesce((auth.jwt() -> 'app_metadata') ? 'chalito', false));

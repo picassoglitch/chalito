@@ -42,10 +42,13 @@ const setup = async () => {
     const { status } = (await res.json()) as { status: string };
     return { status };
   };
+  /** A poll with no new row (the scheduled sweep, or a client asking again). */
+  const poll = () =>
+    h.app.request("/v1/decisions/apr_1/check", { method: "POST", headers: { authorization: "Bearer phone-token" } });
   const sign = (b: DecisionBody, signer: string, keys: SigningKeyPair) =>
     signEnvelope("chalito.decision.v1", b, signer, keys.secretKey);
   const status = () => h.store.approvals[0]!.status;
-  return { h, phone, tablet, body, answer, sign, status };
+  return { h, phone, tablet, body, answer, poll, sign, status };
 };
 
 describe("Mesa decisions resolve only on a verified signature", () => {
@@ -71,12 +74,14 @@ describe("Mesa decisions resolve only on a verified signature", () => {
     expect(await s.answer("dev_phone", forged)).toEqual({ status: "pending" });
     expect(await s.answer("dev_phone", { garbage: true })).toEqual({ status: "pending" });
     expect(s.status()).toBe("pending");
+    // Each rejected attempt (its own row) is audited once.
     expect(s.h.audits.map((a) => [a.action, a.meta.reason])).toEqual([
       ["decision.invalid_signature", "invalid_signature"],
+      ["decision.invalid_signature", "malformed"],
     ]);
-    // Re-polling doesn't re-audit the same rejected answer.
-    await s.answer("dev_phone", forged);
-    expect(s.h.audits.filter((a) => a.action === "decision.invalid_signature")).toHaveLength(1);
+    // Re-polling doesn't re-audit the same rejected rows.
+    await s.poll();
+    expect(s.h.audits.filter((a) => a.action === "decision.invalid_signature")).toHaveLength(2);
     // A signature by another device's key, claiming to be the phone, is invalid too.
     const s2 = await setup();
     expect(await s2.answer("dev_phone", await s2.sign(await s2.body(), "dev_phone", s2.tablet))).toEqual({
@@ -86,6 +91,20 @@ describe("Mesa decisions resolve only on a verified signature", () => {
     expect(await s.answer("dev_tablet", await s.sign(await s.body(), "dev_tablet", s.tablet))).toEqual({
       status: "approved",
     });
+  });
+
+  it("a device's rejected attempt doesn't block its next, valid one (each attempt is its own row)", async () => {
+    const s = await setup();
+    // A bad attempt from the phone (signed by another key): audited, nothing resolves.
+    expect(await s.answer("dev_phone", await s.sign(await s.body(), "dev_phone", s.tablet))).toEqual({
+      status: "pending",
+    });
+    expect(s.h.audits.map((a) => a.action)).toEqual(["decision.invalid_signature"]);
+    // The same phone tries again, properly signed: that row resolves it.
+    expect(await s.answer("dev_phone", await s.sign(await s.body({ allow: true }), "dev_phone", s.phone))).toEqual({
+      status: "approved",
+    });
+    expect(s.h.audits.map((a) => a.action)).toEqual(["decision.invalid_signature", "decision.resolved"]);
   });
 
   it("a revoked signer is refused", async () => {

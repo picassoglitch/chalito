@@ -12,6 +12,13 @@ export interface CallRef {
   callSid: string;
   locale: "es" | "en";
   exp: number;
+  /**
+   * The call_lines the call was placed for (frozen at DTMF 1). Only these can be answered on the
+   * call: the binding is server-side, whatever the voice model picks.
+   */
+  lids: string[];
+  /** The call's voice bound (also Twilio's Dial timeLimit): what the session may bill at most. */
+  maxSec: number;
 }
 
 const mac = (secret: string, body: string) =>
@@ -30,7 +37,16 @@ export const verifyCallRef = (secret: string, token: string | undefined, nowMs: 
   if (want.length !== got.length || !timingSafeEqual(want, got)) return null;
   try {
     const ref = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as CallRef;
-    return typeof ref.exp === "number" && ref.exp > nowMs && /^CA[0-9a-f]{32}$/.test(ref.callSid) ? ref : null;
+    return typeof ref.exp === "number" &&
+      ref.exp > nowMs &&
+      /^CA[0-9a-f]{32}$/.test(ref.callSid) &&
+      Number.isInteger(ref.maxSec) &&
+      ref.maxSec > 0 &&
+      Array.isArray(ref.lids) &&
+      ref.lids.length <= 10 &&
+      ref.lids.every((l) => typeof l === "string")
+      ? ref
+      : null;
   } catch {
     return null;
   }

@@ -26,6 +26,20 @@ Persistent channels carry no content. Nothing here can approve anything.
 
 **Why the webhooks live here and not in `api`:** the notifier holds the provider secrets and owns the call flow. ADR 0011 puts the inbound webhook (acks and opt-outs) with the notifier. Phone verification (Twilio Verify OTP, Geo Permissions, the charges acknowledgement) is user-facing, so it lives in `apps/api/src/phone` under `/v1/phone`.
 
+### From the database: the notify outbox
+
+Agents, the orchestrator and the api write to Postgres, not to Pub/Sub. So the database queues messages for the notifier itself (migration `20261004003050`): `chalito_private.notify_outbox`, written by triggers in the same transaction as the source row, with an idempotent key per source. The sources:
+- `approvals`: pending → `notify` (LOW/MED → L2, HIGH → L3, CRITICAL → L4); resolved → `ack`; expired → `approval_expired`;
+- `session_events` of type `question.asked` → `session_question` at L3;
+- `room_events` of the message kinds → an L1 nudge to each addressed co-member;
+- `notifications` rows written by anyone but the notifier. The notifier marks its own transactions with `chalito.origin = notifier`, so nothing loops.
+
+**Delivery** goes through the same path as `notifications` (quiet hours, caps, dedupe):
+- `POST /internal/notify-poke`: pg_net calls it right after the commit with `{id, ts}`, signed `X-Chalito-Poke-Signature` = hex HMAC-SHA256 of `"<ts>.<id>"` with `NOTIFY_POKE_SECRET` (Vault `chalito_notify_poke_secret`), valid for ±5 minutes.
+- `POST /tasks/drain-notify`: Cloud Scheduler every minute, Google OIDC as `SCHEDULER_SA_EMAIL`. It picks up whatever a poke missed.
+
+Rows are claimed with a 60 s lease (`FOR UPDATE SKIP LOCKED`), so a poke and the drain never both deliver one, and a replayed poke is a no-op. Failures back off from 30 s to 1 h. After 10 attempts, or for an invalid message, a row goes `dead` and is alerted (`notifier.outbox_dead`). `mesa_starting` isn't queued yet: it needs a timer, not a trigger.
+
 ### Messages
 
 `notifications` carries one of these:
@@ -52,9 +66,11 @@ The call uses `<Gather input="dtmf speech" language="es-MX|en-US" numDigits="1" 
 
 | Input | What happens |
 |---|---|
-| **1** | Ack, then `<Dial><Sip>REALTIME_SIP_URI</Sip>`. Without it, "open your app". |
+| **1** | Ack, then `<Dial timeLimit="…"><Sip>REALTIME_SIP_URI</Sip>`, bounded by this month's voice minutes (at most 20 min). The signed `X-Chalito-Ref` freezes the waiting items the call is for: only those can be answered on it (R-H3). Without voice, "open your app". |
 | **2** | Snooze: re-call 1 min before a Mesa, else +10 min. |
 | **3** | Dismiss (ack). |
+
+The voice agent gets the items, labels and lines as JSON inside a `<data>` block, under a rule that data is never instructions (R-H3). Call voice is admitted on the hub and metered on the server (`packages/billing` README, "Voice sessions").
 
 Spoken digits and words work too.
 
@@ -97,6 +113,7 @@ Presence contract with the agent and desktop app: `chalito.devices.presence = {"
 | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API: system-user token and sender number id. |
 | `META_APP_SECRET`, `META_VERIFY_TOKEN` | Webhook signature and verification. |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` | Calls and SMS (US local number by default, decision #17). |
+| `NOTIFY_POKE_SECRET` | Optional: turns on the notify outbox routes (`/internal/notify-poke`, `/tasks/drain-notify`). Same value as the Vault secret `chalito_notify_poke_secret` in nexo-ai. |
 | `REALTIME_SIP_URI` | Optional: `sip:<proj>@sip.api.openai.com;transport=tls;secure=true`. Setting it turns voice on and requires the next four. |
 | `OPENAI_API_KEY`, `OPENAI_WEBHOOK_SECRET` | Realtime SIP call control and the project webhook secret (`whsec_…`). |
 | `VOICE_REF_SECRET` | Signs the `X-Chalito-Ref` SIP header that ties an OpenAI call to its Twilio call. |

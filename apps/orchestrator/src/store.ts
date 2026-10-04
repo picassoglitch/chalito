@@ -62,6 +62,8 @@ export interface MesaStore extends DecisionStore {
     spend?: TurnSpend,
   ): Promise<"ok" | "duplicate">;
   createDecisionApproval(owner: string, a: DecisionApproval): Promise<void>;
+  /** Usage events on their own (when the turn write failed after a paid call); idempotent on source_id. */
+  enqueueUsage(owner: string, events: (HubUsageEvent | null)[]): Promise<void>;
 
   putBrainKey(owner: string, row: BrainKeyRow, wrapped: string | null): Promise<void>;
   deleteBrainKey(owner: string, provider: BrainProviderId): Promise<boolean>;
@@ -82,8 +84,10 @@ export class MemoryMesaStore implements MesaStore {
     reason?: string;
     expiresAt: number;
   })[] = [];
-  /** approval_decisions rows: what clients inserted (signed or not). */
-  decisions: { owner: string; aid: string; signer: string; decision: unknown }[] = [];
+  /** approval_decisions rows: what clients inserted (signed or not), each attempt its own row. */
+  decisions: { owner: string; aid: string; signer: string; decision: unknown; id?: string }[] = [];
+  /** A row's id (tests may push rows without one: their position stands in). */
+  #idOf = (x: (typeof this.decisions)[number]) => x.id ?? `row_${this.decisions.indexOf(x)}`;
   /** Client devices' pub_sign (b64url), and which are revoked. */
   signKeys = new Map<string, string>();
   revoked = new Set<string>();
@@ -128,6 +132,9 @@ export class MemoryMesaStore implements MesaStore {
     }
     return "ok" as const;
   }
+  async enqueueUsage(_owner: string, events: (HubUsageEvent | null)[]) {
+    for (const e of events) if (e && !this.outbox.some((x) => x.source_id === e.source_id)) this.outbox.push(e);
+  }
   async createDecisionApproval(owner: string, a: DecisionApproval) {
     this.approvals.push({ ...structuredClone(a), owner, status: "pending", expiresAt: this.now() + 10 * 60_000 });
   }
@@ -146,7 +153,7 @@ export class MemoryMesaStore implements MesaStore {
         requestId: a.tid,
         answers: this.decisions
           .filter((x) => x.owner === a.owner && x.aid === a.aid)
-          .map((x) => ({ signer: x.signer, decision: x.decision })),
+          .map((x) => ({ id: this.#idOf(x), signer: x.signer, decision: x.decision })),
       }))
       .filter((p) => p.answers.length > 0);
   }
@@ -161,9 +168,11 @@ export class MemoryMesaStore implements MesaStore {
     );
   }
   /** Mirrors the SQL function's re-checks (minus the signature, which the caller verified). */
-  async resolveDecision(owner: string, aid: string, signer: string) {
+  async resolveDecision(owner: string, aid: string, signer: string, id: string) {
     const a = this.approvals.find((x) => x.owner === owner && x.aid === aid);
-    const row = this.decisions.find((x) => x.owner === owner && x.aid === aid && x.signer === signer);
+    const row = this.decisions.find(
+      (x) => x.owner === owner && x.aid === aid && x.signer === signer && this.#idOf(x) === id,
+    );
     const body = (row?.decision as { body?: { allow?: unknown; requestId?: unknown } })?.body;
     if (!a || a.status !== "pending" || a.expiresAt <= this.now() || !row || this.revoked.has(`${owner}/${signer}`))
       return null;

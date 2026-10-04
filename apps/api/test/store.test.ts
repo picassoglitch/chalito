@@ -164,3 +164,22 @@ describe("equip (server-only: clients have no write on equipped)", () => {
     ).toBe(404);
   });
 });
+
+describe("R-L9: store odds and ends", () => {
+  it("an admit with a balance short of the price is refused (no_tokens), the reservation cancelled", async () => {
+    const { call, store } = storeSetup();
+    hubState.remaining = 1000;
+    const res = await call("POST", "/purchase", { cosmeticId: "star_cape", purchaseId: PID });
+    expect(res).toMatchObject({ status: 402, json: { error: "no_tokens" } });
+    expect(store.outbox).toHaveLength(0);
+    expect(hubCalls.at(-1)!.body).toMatchObject({ outcome: "cancelled" });
+  });
+
+  it("prototype keys are not catalog items", async () => {
+    const { call } = storeSetup();
+    for (const id of ["__proto__", "constructor", "tostring"]) {
+      expect((await call("POST", "/purchase", { cosmeticId: id, purchaseId: PID })).status).toBe(404);
+      expect((await call("POST", "/equip", { companionId: CID, slot: "head", cosmeticId: id })).status).toBe(404);
+    }
+  });
+});

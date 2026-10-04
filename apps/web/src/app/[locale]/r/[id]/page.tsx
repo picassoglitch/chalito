@@ -1,13 +1,18 @@
 import { notFound } from "next/navigation";
-import { getTranslations, setRequestLocale } from "next-intl/server";
-import { Stub } from "@/components/Stub";
+import { setRequestLocale } from "next-intl/server";
+import { LiveGate } from "@/components/LiveGate";
+import { Room } from "@/components/Room";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-export default async function Page({ params }: { params: Promise<{ locale: string; id: string }> }) {
+/** /(en/)r/{roomId}: a room (deep links from invites and notifications land here). */
+export default async function RoomPage({ params }: { params: Promise<{ locale: string; id: string }> }) {
   const { locale, id } = await params;
   setRequestLocale(locale);
   if (!ID.test(id)) notFound();
-  const t = await getTranslations("deeplinks");
-  return <Stub title={t("room", { id })} />;
+  return (
+    <LiveGate>
+      <Room roomId={id} />
+    </LiveGate>
+  );
 }

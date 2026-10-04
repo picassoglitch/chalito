@@ -1,0 +1,4 @@
+# Status of the public legal pages (/privacidad, /terminos). The pages show a "Borrador" banner
+# until counsel has reviewed them and the owner sets `reviewed: true` (docs/LEGAL_CHECKLIST.md).
+schemaVersion: 1
+reviewed: false

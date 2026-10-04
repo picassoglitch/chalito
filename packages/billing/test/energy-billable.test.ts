@@ -4,7 +4,7 @@ import { isBillable, usageEvent, type BillingMode, type UsageOrigin } from "../s
 import { admitManaged, outOfEnergy } from "../src/energy.js";
 import { HubClient } from "../src/hub.js";
 import { MemoryOutbox, drainOutbox } from "../src/outbox.js";
-import { hubMock } from "./hub-mock.js";
+import { HUB_TOKEN, hubMock } from "./hub-mock.js";
 
 const { server, calls, state } = hubMock();
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
@@ -15,7 +15,7 @@ beforeEach(() => {
   state.admit = defaultAdmit;
 });
 
-const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: "t" });
+const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: HUB_TOKEN });
 const request = {
   external_user_id: "u1",
   external_job_id: "turn-1",
@@ -93,7 +93,7 @@ describe("out of energy, in character", () => {
     });
     const down = new HubClient({
       baseUrl: "https://www.chalyb.com",
-      token: "t",
+      token: HUB_TOKEN,
       fetch: async () => {
         throw new Error("down");
       },

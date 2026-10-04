@@ -12,7 +12,7 @@ import { MemoryStoreRepo } from "../src/store/repo.js";
 
 export const RID = "44444444-4444-4444-8444-444444444444";
 export const hubCalls: { path: string; body: Record<string, unknown> }[] = [];
-export const hubState: { mode: "ok" | "no_tokens" | "down" } = { mode: "ok" };
+export const hubState: { mode: "ok" | "no_tokens" | "down"; remaining: number } = { mode: "ok", remaining: 5_000_000 };
 const server = setupServer(
   http.post("https://www.chalyb.com/api/engines/chalito/usage/admit", async ({ request }) => {
     hubCalls.push({ path: "admit", body: (await request.json()) as Record<string, unknown> });
@@ -27,7 +27,7 @@ const server = setupServer(
             boost_fee_tokens: 0,
             limits: {},
             balance: {
-              remaining: 5_000_000,
+              remaining: hubState.remaining,
               reserved: 0,
               unlimited: false,
               monthlyAllocation: 5_000_000,
@@ -49,6 +49,7 @@ afterAll(() => server.close());
 beforeEach(() => {
   hubCalls.length = 0;
   hubState.mode = "ok";
+  hubState.remaining = 5_000_000;
 });
 
 export const CID = "chl_aaaaaaaaaaaaaaaaaaaaaaaaaa";

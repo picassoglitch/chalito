@@ -1,8 +1,18 @@
+import { PostgresNotifyOutbox } from "./notify-outbox.js";
+import { installConsoleRedaction, redact, redactDeep } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { GoogleAuth } from "google-auth-library";
 import postgres from "postgres";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, PostgresOutbox, compedFrom, enqueueUsage } from "@chalito/billing";
+import {
+  HubClient,
+  HubStreamUsage,
+  PostgresOutbox,
+  PostgresVoiceSessions,
+  compedFrom,
+  enqueueUsage,
+  parseReserveBasis,
+} from "@chalito/billing";
 import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { createApp } from "./app.js";
 import { hubCommsBilling } from "./billing.js";
@@ -21,9 +31,13 @@ const env = (name: string): string => {
   return v;
 };
 
+// Every log line and stray console call is redacted (R-M9).
+installConsoleRedaction();
+const line = (severity: string, msg: string, meta?: Record<string, unknown>) =>
+  JSON.stringify({ severity, msg: redact(msg), ...(meta ? (redactDeep(meta) as object) : {}) });
 const log: Logger = {
-  info: (msg, meta) => process.stdout.write(`${JSON.stringify({ severity: "INFO", msg, ...meta })}\n`),
-  error: (msg, meta) => process.stderr.write(`${JSON.stringify({ severity: "ERROR", msg, ...meta })}\n`),
+  info: (msg, meta) => process.stdout.write(`${line("INFO", msg, meta)}\n`),
+  error: (msg, meta) => process.stderr.write(`${line("ERROR", msg, meta)}\n`),
 };
 
 const base = env("PUBLIC_BASE_URL").replace(/\/$/, "");
@@ -34,8 +48,25 @@ const sql = postgres(env("DATABASE_URL"), {
   // Least privilege (security review S2): act as chalito_server when the login holds it with SET.
   ...(process.env.DATABASE_ROLE ? { connection: { role: process.env.DATABASE_ROLE } } : {}),
 });
+// What est_tokens means at the hub; an unknown value stops the service here, not at the first admit.
+const reserveBasis = parseReserveBasis(process.env.HUB_RESERVE_BASIS);
 const hub = new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") });
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
+
+const voiceSessions = new PostgresVoiceSessions(sql);
+const desktopVoice = new HubStreamUsage({
+  hub,
+  prices: loadPrices(),
+  model: loadModels().voice.desktop.model,
+  reserveBasis,
+  now: Date.now,
+});
+
+const twilio = twilioClient({
+  accountSid: env("TWILIO_ACCOUNT_SID"),
+  authToken: env("TWILIO_AUTH_TOKEN"),
+  from: env("TWILIO_FROM"),
+});
 
 const app = createApp(
   {
@@ -46,11 +77,7 @@ const app = createApp(
       privateKey: env("VAPID_PRIVATE_KEY"),
     }),
     whatsapp: whatsappSender({ token: env("WHATSAPP_TOKEN"), phoneNumberId: env("WHATSAPP_PHONE_NUMBER_ID"), config }),
-    twilio: twilioClient({
-      accountSid: env("TWILIO_ACCOUNT_SID"),
-      authToken: env("TWILIO_AUTH_TOKEN"),
-      from: env("TWILIO_FROM"),
-    }),
+    twilio,
     scheduler: cloudTasksScheduler({
       project: env("GOOGLE_CLOUD_PROJECT"),
       location: env("TASKS_LOCATION"),
@@ -73,8 +100,26 @@ const app = createApp(
       enqueue: (owner, events) => enqueueUsage(sql, owner, events),
       prices: loadPrices(),
       voiceModel: loadModels().voice.call.model,
+      reserveBasis,
       now: Date.now,
       alert: (msg, meta) => log.error(msg, { ...meta, alert: true }),
+      // Voice sessions (calls here, desktop in apps/api) are metered on the server; never-ended
+      // ones are billed in full by the drain task (R-H6, R-M8).
+      voiceSessions,
+      desktopVoiceEvent: (sess, seconds, total) =>
+        desktopVoice.event({
+          owner: sess.owner,
+          admissionId: sess.reservationId,
+          kind: "voice.seconds",
+          seconds,
+          sourceId: `${sess.sourceId}:${total}`,
+        }),
+      // A desktop call that stopped heart-beating is hung up at OpenAI as well (needs only the key).
+      // A phone call's Twilio leg (at the cap, from the sweep, and on revoke via the OpenAI leg).
+      endPhoneCall: (callSid: string) => twilio.endCall(callSid),
+      ...(process.env.OPENAI_API_KEY
+        ? { hangupCall: (callId: string) => openaiRealtime({ apiKey: env("OPENAI_API_KEY") }).hangupCall(callId) }
+        : {}),
     }),
   },
   {
@@ -87,6 +132,16 @@ const app = createApp(
     tasks: { email: env("TASKS_SA_EMAIL"), audience: `${base}/tasks/tick`, queueName: env("TASKS_QUEUE") },
     twilioAuthToken: env("TWILIO_AUTH_TOKEN"),
     drain: { audience: `${base}/tasks/drain-usage`, email: env("SCHEDULER_SA_EMAIL") },
+    // The database's notify outbox: pg_net pokes (HMAC) and the per-minute drain (OIDC).
+    ...(process.env.NOTIFY_POKE_SECRET
+      ? {
+          notify: {
+            store: new PostgresNotifyOutbox(sql),
+            pokeSecret: env("NOTIFY_POKE_SECRET"),
+            drain: { audience: `${base}/tasks/drain-notify`, email: env("SCHEDULER_SA_EMAIL") },
+          },
+        }
+      : {}),
     metaAppSecret: env("META_APP_SECRET"),
     metaVerifyToken: env("META_VERIFY_TOKEN"),
     ...(process.env.REALTIME_SIP_URI

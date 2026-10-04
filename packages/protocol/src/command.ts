@@ -11,6 +11,7 @@ import {
   SessionId,
   Uid,
 } from "./common.js";
+import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
@@ -70,6 +71,11 @@ export const CommandBody = z
     issuedAt: EpochMs,
     expiresAt: EpochMs,
     payload: CommandPayload,
+    /**
+     * A passkey assertion over SHA-256(JCS(this body without stepUp)), like a Decision's. Required
+     * by agents to revoke ANOTHER client while any trusted client has a passkey (review R-L1).
+     */
+    stepUp: StepUp.optional(),
   })
   // Upper bound only: an already-expired command still parses, so the agent can reject it as "expired".
   .refine((b) => b.expiresAt - b.issuedAt <= COMMAND_TTL_MS, {
@@ -86,15 +92,21 @@ export type SignedCommand = z.infer<typeof SignedCommand>;
  * Restricted to prompting/answering; the agent applies its origin policy and never
  * Developer-mode auto-approve to the resulting turn.
  */
-export const RelayedCommand = z.object({
-  relayedBy: z.enum(["mcp-gateway", "notifier"]),
-  body: CommandBody.refine(
-    (b) =>
-      (b.origin.startsWith("mcp:") || b.origin.startsWith("call:")) &&
-      (b.payload.type === "session.prompt" || b.payload.type === "session.answer"),
-    { message: "relayed commands may only prompt or answer, from mcp:* or call:* origins" },
-  ),
-});
+export const RelayedCommand = z
+  .object({
+    relayedBy: z.enum(["mcp-gateway", "notifier"]),
+    body: CommandBody,
+  })
+  // Each relay carries only its own origin (review R-L2): the MCP gateway relays `mcp:*` prompts,
+  // the notifier relays `call:*` prompts (a spoken answer becomes a prompt). Nothing relays a
+  // session.answer, and an unsigned relay can't carry a step-up.
+  .refine(
+    ({ relayedBy, body }) =>
+      (relayedBy === "mcp-gateway" ? body.origin.startsWith("mcp:") : body.origin.startsWith("call:")) &&
+      body.payload.type === "session.prompt" &&
+      body.stepUp === undefined,
+    { message: "relays carry only session.prompt from their own origin (mcp-gateway: mcp:*, notifier: call:*)" },
+  );
 export type RelayedCommand = z.infer<typeof RelayedCommand>;
 
 export const CommandEnvelope = z.union([SignedCommand, RelayedCommand]);

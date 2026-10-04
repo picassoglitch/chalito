@@ -1,3 +1,5 @@
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { chooseSecretStore, EncryptedFileSecretStore } from "./secrets-file.js";
 import { KeyringStore, type SecretStore } from "./secrets.js";
 
@@ -10,9 +12,12 @@ import { KeyringStore, type SecretStore } from "./secrets.js";
  *   (passphrase from `CHALITO_SECRETS_PASSPHRASE`), so E2E runs can use a scratch HOME and
  *   never touch the real keychain. Not meant for production installs.
  *
- * The passphrase comes from `CHALITO_SECRETS_PASSPHRASE`, else the interactive `prompt`
- * (the CLI). The daemon has no prompt, so a headless install must provide it in the
- * service environment.
+ * The passphrase, in order (review R-L12: a headless install shouldn't need it in an environment):
+ * 1. the systemd credential `chalito-secrets-passphrase` ($CREDENTIALS_DIRECTORY, set up by
+ *    `chalito service install --passphrase-file`);
+ * 2. `CHALITO_SECRETS_PASSPHRASE_FILE`: a file only its owner can read (0600);
+ * 3. `CHALITO_SECRETS_PASSPHRASE` (dev/test);
+ * 4. the interactive `prompt` (the CLI).
  */
 export const openSecretStore = async (opts: {
   env: Record<string, string | undefined>;
@@ -22,10 +27,25 @@ export const openSecretStore = async (opts: {
   probe?: () => Promise<boolean | "addon_missing">;
 }): Promise<SecretStore> => {
   const passphrase = async (): Promise<string> => {
+    const credDir = opts.env.CREDENTIALS_DIRECTORY;
+    if (credDir) {
+      const fromCred = readPassphrase(join(credDir, "chalito-secrets-passphrase"), false);
+      if (fromCred) return fromCred;
+    }
+    const file = opts.env.CHALITO_SECRETS_PASSPHRASE_FILE;
+    if (file) {
+      const problem = passphraseFileProblem(file);
+      if (problem) throw new Error(`CHALITO_SECRETS_PASSPHRASE_FILE ${file}: ${problem}.`);
+      const fromFile = readPassphrase(file, true);
+      if (fromFile) return fromFile;
+    }
     const fromEnv = opts.env.CHALITO_SECRETS_PASSPHRASE;
     if (fromEnv) return fromEnv;
     if (opts.prompt) return opts.prompt();
-    throw new Error("The encrypted secrets file needs a passphrase: set CHALITO_SECRETS_PASSPHRASE.");
+    throw new Error(
+      "The encrypted secrets file needs a passphrase: install the service with --passphrase-file " +
+        "(a systemd credential), or set CHALITO_SECRETS_PASSPHRASE_FILE to a 0600 file.",
+    );
   };
   const override = opts.env.CHALITO_SECRETS;
   if (override) {
@@ -41,4 +61,30 @@ export const openSecretStore = async (opts: {
   });
   if (chosen.kind === "file") opts.warn(chosen.warning);
   return chosen.store;
+};
+
+/** Why a passphrase file can't be used (missing, not a regular file, or readable by others), or null. */
+export const passphraseFileProblem = (path: string): string | null => {
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    return "it doesn't exist";
+  }
+  if (!st.isFile()) return "it isn't a regular file";
+  if (process.platform !== "win32") {
+    if ((st.mode & 0o077) !== 0) return "group or others can read it (chmod 600)";
+    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return "you don't own it";
+  }
+  return null;
+};
+
+const readPassphrase = (path: string, required: boolean): string | null => {
+  try {
+    const v = readFileSync(path, "utf8").replace(/\r?\n$/, "");
+    return v.length > 0 ? v : null;
+  } catch (err) {
+    if (required) throw err;
+    return null;
+  }
 };

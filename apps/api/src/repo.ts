@@ -36,6 +36,15 @@ export interface ApiRepo {
     at: number,
     by: string | null,
   ): Promise<"revoked" | "already_revoked" | "not_found">;
+  /** Revokes every active client of the owner except `keep`, in one statement; returns their ids. */
+  revokeOtherClients(owner: string, keep: string, at: number): Promise<string[]>;
+  /** Active (unrevoked) agent device ids. */
+  activeAgents(owner: string): Promise<string[]>;
+  /** Queues a command for an agent (chalito.commands, as the server). false if the id exists. */
+  queueCommand(
+    owner: string,
+    c: { targetDeviceId: string; id: string; env: unknown; fromDeviceId: string; expiresAt: number },
+  ): Promise<boolean>;
   /**
    * Atomic: only while the account has no active (unrevoked) client, creates the first
    * client and stores the recovery hash.
@@ -206,7 +215,10 @@ export interface IdentityIssuer {
   /** A credential that can only watch one pairing code. */
   mintPairingWatch(codeId: string): Promise<string>;
   verify(token: string): Promise<IdentityClaims>;
-  disableDevice(deviceId: string): Promise<void>;
+  /** false when the ban could not be applied (logged; RLS and the revoked flag still cut the device off). */
+  disableDevice(deviceId: string): Promise<boolean>;
+  /** Deletes the device's Auth user (account deletion). Missing users count as deleted. */
+  deleteDevice(deviceId: string): Promise<void>;
   /** Deletes a pairing watch's credential, if the backend keeps one per code. */
   releasePairingWatch?(codeId: string): Promise<void>;
 }

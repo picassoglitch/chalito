@@ -236,5 +236,19 @@ describe.skipIf(!url)("PostgresMesaStore", () => {
     expect((await run("a2")).resolved).toEqual([]);
     expect(await status("a2")).toBe("pending");
     expect(audits).toEqual(["decision.invalid_signature", "decision.resolved", "decision.invalid_signature"]);
+
+    // Migration 003510: the same device's rejected attempt doesn't block its next, valid one.
+    await admin`update chalito.devices set revoked = false where device_id = ${phone}`;
+    await mk("a3");
+    await insert("a3", phone, {
+      ctx: "chalito.decision.v1",
+      signerDeviceId: phone,
+      body: await body("a3"),
+      sig: "A".repeat(86),
+    });
+    expect((await run("a3")).resolved).toEqual([]);
+    await insert("a3", phone, await signEnvelope("chalito.decision.v1", await body("a3"), phone, keys.secretKey));
+    expect((await run("a3")).resolved).toEqual([{ owner, aid: "a3", status: "approved", signer: phone }]);
+    expect(await status("a3")).toBe("approved");
   });
 });

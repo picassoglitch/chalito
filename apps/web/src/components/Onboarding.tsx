@@ -1,11 +1,11 @@
 "use client";
+import { SignInLink } from "./SignInLink";
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { CompanionNameField, CompanionPicker, DEFAULT_COMPANION, SETTINGS, type SettingContext } from "@chalito/ui";
 import { Link, useRouter } from "@/i18n/navigation";
 import { env } from "@/lib/env";
 import { sessionTier, useSession } from "@/lib/session";
-import { hubLaunchUrl } from "@/lib/hub";
 import { DEV_BACKEND } from "@/lib/env";
 import { useChalito } from "./ChalitoProvider";
 import { PasskeyEnroll } from "./PasskeyEnroll";
@@ -26,6 +26,7 @@ type BillingMode = "byo" | "energy" | "both";
 
 export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
   const t = useTranslations("onboarding");
+  const tl = useTranslations("legal");
   const tc = useTranslations("common");
   const ti = useTranslations("integrations");
   const router = useRouter();
@@ -42,7 +43,7 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
   const next = async () => {
     if (i < STEPS.length - 1) return setI(i + 1);
     await finishOnboarding(values);
-    router.push("/");
+    router.push("/inicio");
   };
   // The dev/test backend stands in for a signed-in session.
   const signedIn = session.status === "signed_in" || (DEV_BACKEND && status === "ready");
@@ -67,11 +68,21 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
         ) : (
           <div className="grid gap-3">
             <p>{t("signIn.body")}</p>
-            {hubLaunchUrl() ? (
-              <a className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white" href={hubLaunchUrl()!}>
-                {t("signIn.cta")}
-              </a>
-            ) : null}
+            <SignInLink>{t("signIn.cta")}</SignInLink>
+            <p className="text-sm text-neutral-600" data-testid="legal-consent">
+              {tl.rich("onboarding", {
+                terms: (chunks) => (
+                  <Link href="/terminos" className="underline">
+                    {chunks}
+                  </Link>
+                ),
+                privacy: (chunks) => (
+                  <Link href="/privacidad" className="underline">
+                    {chunks}
+                  </Link>
+                ),
+              })}
+            </p>
           </div>
         )
       ) : null}

@@ -227,3 +227,84 @@ describe("RoomFeed (pointer-driven, no polling)", () => {
     expect(f.queries.at(-1)).toBe(5); // resumes after the highest rev seen
   });
 });
+
+describe("RoomFeed leaves the room when the device is no longer in it (review R-L14)", () => {
+  const fakeDb = (members: Set<string>) => {
+    let handler: ((msg: { payload?: unknown }) => void) | null = null;
+    const removed: unknown[] = [];
+    const db = {
+      realtime: { setAuth: async () => undefined },
+      channel: () => {
+        const ch = {
+          on: (_t: string, _f: unknown, cb: (msg: { payload?: unknown }) => void) => ((handler = cb), ch),
+          subscribe: () => ch,
+        };
+        return ch;
+      },
+      removeChannel: async (ch: unknown) => void removed.push(ch),
+      from: (table: string) => ({
+        select: () => ({
+          eq: (_c: string, _room: string) =>
+            table === "room_members"
+              ? {
+                  eq: async (_c2: string, companion: string) => ({
+                    data: members.has(companion) ? [{}] : [],
+                    error: null,
+                  }),
+                }
+              : { gt: () => ({ order: async () => ({ data: [], error: null }) }) },
+        }),
+      }),
+    } as unknown as RoomsDb;
+    return { db, removed, send: (payload: unknown) => handler?.({ payload }) };
+  };
+  const setup = async (members: Set<string>) => {
+    const f = fakeDb(members);
+    const statuses: string[] = [];
+    const feed = new RoomFeed(
+      f.db,
+      "r1",
+      () => undefined,
+      (s) => statuses.push(s),
+      { companionId: "chl_me" },
+    );
+    await feed.start();
+    return { ...f, feed, statuses };
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+
+  it("its own `kicked` pointer stops the feed", async () => {
+    const s = await setup(new Set(["chl_me"]));
+    s.send({ table: "room_members", op: "kicked", key: { room_id: "r1", companion_id: "chl_other" } });
+    await tick();
+    expect(s.feed.ended).toBe(false);
+    s.send({ table: "room_members", op: "kicked", key: { room_id: "r1", companion_id: "chl_me" } });
+    await tick();
+    expect(s.feed.ended).toBe(true);
+    expect(s.statuses).toContain("KICKED");
+    expect(s.removed).toHaveLength(1);
+  });
+
+  it("a membership change or a rekey re-checks membership (one RLS read) and stops if it's gone", async () => {
+    const members = new Set(["chl_me"]);
+    const s = await setup(members);
+    s.send({ table: "rooms", op: "update", key: { room_id: "r1" } });
+    await tick();
+    expect(s.feed.ended).toBe(false);
+    members.delete("chl_me");
+    s.send({ table: "room_members", op: "delete", key: { room_id: "r1", companion_id: "chl_me" } });
+    await tick();
+    expect(s.feed.ended).toBe(true);
+    expect(s.statuses).toEqual(["KICKED"]);
+  });
+
+  it("a dissolved room stops the feed; later pointers are ignored", async () => {
+    const s = await setup(new Set(["chl_me"]));
+    s.send({ table: "rooms", op: "dissolve", key: { room_id: "r1" } });
+    await tick();
+    s.send({ table: "room_events", op: "insert" });
+    await tick();
+    expect(s.statuses).toEqual(["DISSOLVED"]);
+    expect(s.feed.reads).toBe(0);
+  });
+});

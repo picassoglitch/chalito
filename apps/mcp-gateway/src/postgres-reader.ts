@@ -58,11 +58,14 @@ export class PostgresGatewayReader implements GatewayReader {
         recommendations: number;
       }[]
     >`
-      select aid, sid, device_id, kind, risk, origin, step_up_required, created_at, expires_at,
-             jsonb_array_length(recommendations)::int as recommendations
-      from chalito.approvals
-      where owner = ${owner} and status = 'pending' and expires_at > ${new Date(now)}
-      order by created_at
+      select a.aid, a.sid, a.device_id, a.kind, a.risk, a.origin, a.step_up_required, a.created_at, a.expires_at,
+             jsonb_array_length(a.recommendations)::int as recommendations
+      from chalito.approvals a
+      where a.owner = ${owner} and a.status = 'pending' and a.expires_at > ${new Date(now)}
+        -- Never a revoked agent's (the orchestrator's decisions have no device row).
+        and not exists (select 1 from chalito.devices d
+                        where d.owner = a.owner and d.device_id = a.device_id and d.revoked)
+      order by a.created_at
       limit 50`;
     return rows.map((r) => ({
       aid: r.aid,
@@ -79,21 +82,29 @@ export class PostgresGatewayReader implements GatewayReader {
   }
 
   async session(owner: string, sid: string) {
+    // The gateway sees sessions only through chalito_private.gateway_sessions (adapter and state,
+    // never the rest of doc; migration 002800).
     const [r] = await this.sql<
-      { sid: string; device_id: string; name: string | null; doc: Record<string, unknown>; updated_at: Date | null }[]
+      {
+        sid: string;
+        device_id: string;
+        name: string | null;
+        adapter: string | null;
+        state: string | null;
+        updated_at: Date | null;
+      }[]
     >`
-      select s.sid, s.device_id, d.name, s.doc, s.updated_at
-      from chalito.sessions s
+      select s.sid, s.device_id, d.name, s.adapter, s.state, s.updated_at
+      from chalito_private.gateway_sessions s
       left join chalito.devices d on d.owner = s.owner and d.device_id = s.device_id
-      where s.owner = ${owner} and s.sid = ${sid}`;
+      where s.owner = ${owner} and s.sid = ${sid} and not coalesce(d.revoked, false)`;
     if (!r) return null;
-    const str = (v: unknown) => (typeof v === "string" ? v : null);
     return {
       sid: r.sid,
       deviceId: r.device_id,
       deviceName: r.name,
-      adapter: str(r.doc.adapter),
-      state: str(r.doc.state),
+      adapter: r.adapter,
+      state: r.state,
       updatedAt: ms(r.updated_at),
     };
   }
@@ -101,7 +112,8 @@ export class PostgresGatewayReader implements GatewayReader {
   async sharedCard(owner: string, sid: string) {
     const [r] = await this.sql<{ card: Record<string, unknown> }[]>`
       select p.card from chalito.session_card_plain p
-      where p.owner = ${owner} and p.sid = ${sid}
+      join chalito.devices d on d.owner = p.owner and d.device_id = p.device_id
+      where p.owner = ${owner} and p.sid = ${sid} and not d.revoked
         and chalito_private.mcp_sharing_on(p.owner, p.sid, p.device_id)`;
     return r?.card ?? null;
   }
@@ -114,7 +126,7 @@ export class PostgresGatewayReader implements GatewayReader {
 
   async sessionAgent(owner: string, sid: string) {
     const [r] = await this.sql<{ device_id: string; pub_box: string }[]>`
-      select d.device_id, d.pub_box from chalito.sessions s
+      select d.device_id, d.pub_box from chalito_private.gateway_sessions s
       join chalito.devices d on d.owner = s.owner and d.device_id = s.device_id
       where s.owner = ${owner} and s.sid = ${sid} and d.role = 'agent' and not d.revoked`;
     return r ? { deviceId: r.device_id, pubBox: r.pub_box } : null;

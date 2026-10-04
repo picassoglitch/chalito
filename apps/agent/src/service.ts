@@ -27,7 +27,15 @@ export const launchdPlist = (bin: string, logDir: string) => `<?xml version="1.0
 </plist>
 `;
 
-export const systemdUnit = (bin: string) => `[Unit]
+/** The systemd credential the daemon reads its secrets passphrase from (never the environment). */
+export const PASSPHRASE_CREDENTIAL = "chalito-secrets-passphrase";
+
+/**
+ * Headless installs give the passphrase as a systemd credential (LoadCredential=), not as
+ * Environment=: the unit file never holds it, and the service sees it only under
+ * $CREDENTIALS_DIRECTORY (review R-L12).
+ */
+export const systemdUnit = (bin: string, opts: { passphraseFile?: string } = {}) => `[Unit]
 Description=Chalito agent
 After=network-online.target
 
@@ -37,7 +45,7 @@ ExecStart="${bin}" run
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
-
+${opts.passphraseFile ? `LoadCredential=${PASSPHRASE_CREDENTIAL}:${opts.passphraseFile}\n` : ""}
 [Install]
 WantedBy=default.target
 `;
@@ -68,7 +76,7 @@ export interface ServicePlan {
 export const servicePlan = (
   platform: NodeJS.Platform,
   bin: string,
-  opts: { home?: string; uid?: number; user?: string } = {},
+  opts: { home?: string; uid?: number; user?: string; passphraseFile?: string } = {},
 ): ServicePlan => {
   const home = opts.home ?? homedir();
   if (platform === "darwin") {
@@ -83,7 +91,12 @@ export const servicePlan = (
   if (platform === "linux") {
     const unit = join(home, ".config", "systemd", "user", "chalito-agent.service");
     return {
-      files: [{ path: unit, content: systemdUnit(bin) }],
+      files: [
+        {
+          path: unit,
+          content: systemdUnit(bin, opts.passphraseFile ? { passphraseFile: opts.passphraseFile } : {}),
+        },
+      ],
       install: [
         ["systemctl", "--user", "daemon-reload"],
         ["systemctl", "--user", "enable", "--now", "chalito-agent.service"],

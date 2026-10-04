@@ -23,6 +23,8 @@ export class PostgresStore implements NotifierStore {
   withUser<T>(uid: string, fn: (tx: UserTx) => Promise<T>): Promise<T> {
     return this.sql.begin(async (tx) => {
       await tx`select pg_advisory_xact_lock(hashtext(${`chalito.notifier:${uid}`}))`;
+      // The notify-outbox triggers skip the notifier's own writes (no loop back into the outbox).
+      await tx`select set_config('chalito.origin', 'notifier', true)`;
       return fn({
         prefs: async () => {
           const [u] = await tx<UserRow[]>`
@@ -90,9 +92,13 @@ export class PostgresStore implements NotifierStore {
     return r?.id ?? null;
   }
 
+  /** Only active devices' subscriptions: nothing, not even a count, goes to a revoked device. */
   async pushSubscriptions(uid: string): Promise<PushSubscriptionRecord[]> {
     const rows = await this.sql<{ endpoint: string; p256dh: string; auth: string }[]>`
-      select endpoint, p256dh, auth from chalito.push_subscriptions where owner = ${uid}`;
+      select p.endpoint, p.p256dh, p.auth
+      from chalito.push_subscriptions p
+      join chalito.devices d on d.owner = p.owner and d.device_id = p.device_id
+      where p.owner = ${uid} and not d.revoked`;
     return rows.map((r) => ({ endpoint: r.endpoint, keys: { p256dh: r.p256dh, auth: r.auth } }));
   }
 
@@ -110,15 +116,16 @@ export class PostgresStore implements NotifierStore {
       select (call_briefing ->> 'enabled')::boolean as enabled from chalito.users where id = ${uid}`;
     const callBriefingEnabled = u?.enabled === true;
     const rows = await this.sql<
-      { device_label: string; session_label: string; line: string; device_id: string; sid: string }[]
+      { lid: string; device_label: string; session_label: string; line: string; device_id: string; sid: string }[]
     >`
-      select d.name as device_label, coalesce(s.doc ->> 'label', cl.sid) as session_label, cl.line, cl.device_id, cl.sid
+      select cl.lid, d.name as device_label, coalesce(s.doc ->> 'label', cl.sid) as session_label, cl.line, cl.device_id, cl.sid
       from chalito.call_lines cl
       join chalito.devices d on d.owner = cl.owner and d.device_id = cl.device_id
       left join chalito.sessions s on s.owner = cl.owner and s.sid = cl.sid
-      where cl.owner = ${uid} and cl.expires_at > now()
+      where cl.owner = ${uid} and cl.expires_at > now() and not d.revoked
       order by cl.created_at limit 10`;
     const items: CallItem[] = rows.map((r) => ({
+      lid: r.lid,
       deviceLabel: r.device_label,
       sessionLabel: r.session_label,
       deviceId: r.device_id,
@@ -134,7 +141,7 @@ export class PostgresStore implements NotifierStore {
       from chalito.approvals a
       join chalito.devices d on d.owner = a.owner and d.device_id = a.device_id
       left join chalito.sessions s on s.owner = a.owner and s.sid = a.sid
-      where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now()
+      where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now() and not d.revoked
       order by a.created_at limit 10`;
     return rows.map((r) => ({ aid: r.aid, deviceLabel: r.device_label, sessionLabel: r.session_label }));
   }
@@ -174,12 +181,15 @@ export class PostgresStore implements NotifierStore {
   }
 
   async noteOnce(uid: string, n: NotificationRow) {
-    await this.sql`
+    await this.sql.begin(async (tx) => {
+      await tx`select set_config('chalito.origin', 'notifier', true)`;
+      await tx`
       insert into chalito.notifications
         (owner, nid, level, source, urgency, counts, deep_link, coalesce_key, state, step, next_at, channels, created_at)
-      values (${uid}, ${n.nid}, ${n.level ?? "L1"}, ${n.source}, ${n.urgency}, ${this.sql.json(n.counts as never)},
+      values (${uid}, ${n.nid}, ${n.level ?? "L1"}, ${n.source}, ${n.urgency}, ${tx.json(n.counts as never)},
               ${n.deepLink}, ${n.coalesceKey}, ${n.state}, ${n.step}, null, ${n.channels}, ${new Date(n.createdAt)})
       on conflict (owner, nid) do nothing`;
+    });
   }
 
   async claimCallRef(refHash: string, expiresAt: number) {

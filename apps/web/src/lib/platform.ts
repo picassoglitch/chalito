@@ -15,7 +15,9 @@ import type { IntroducedAgent } from "@chalito/protocol";
 import { httpMcp, type McpApi } from "./mcp";
 import { apiPhone, type ChannelSetter } from "./phone";
 import { supabase } from "./supabase";
+import { httpStore, type StoreApi } from "./store";
 import { httpUsage, type UsageApi } from "./usage";
+import { httpAccount, type AccountApi } from "./account";
 
 /**
  * Everything the app shell needs from the outside world. Production builds it from env (this
@@ -35,6 +37,10 @@ export interface Platform {
   assertPasskey(token: () => Promise<string | null>): Promise<Record<string, unknown>>;
   /** GET /v1/usage/daily (orchestrator) as this device. */
   usage(token: () => Promise<string | null>): UsageApi;
+  /** /v1/store (catalog, purchase, equip) as whoever is signed in (person or device). */
+  store(token: () => Promise<string | null>): StoreApi;
+  /** /v1/account/* (deletion and export) as whoever is signed in (person or device). */
+  account(token: () => Promise<string | null>): AccountApi;
   /** The api as whoever the bearer is (/v1/endorse: the person on a new browser, the device on a trusted one). */
   api(token: () => Promise<string | null>): ApiClient;
   /** Hears the endorsement pointer on `chalito:pairing:<codeId>` with the code's scoped watch token. */
@@ -61,6 +67,8 @@ export const productionPlatform = (): Platform => ({
     (await assertWithServerChallenge(httpApi({ baseUrl: env.apiBase, token }))) as unknown as Record<string, unknown>,
   api: (token) => httpApi({ baseUrl: env.apiBase, token }),
   usage: (token) => httpUsage(env.orchestratorBase, token),
+  store: (token) => httpStore(env.apiBase, token),
+  account: (token) => httpAccount(env.apiBase, token),
   endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),
   saveDeviceKeys,
   passkeyAssertion: (ref) => stepUpWithPasskey(ref),

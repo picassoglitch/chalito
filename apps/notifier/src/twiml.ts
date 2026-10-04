@@ -20,7 +20,9 @@ export const briefingTwiml = (script: BriefingScript, voice: string, gatherUrl: 
 };
 
 /** DTMF 1: bridge to the companion over SIP (OpenAI Realtime; D-014). */
-export const connectTwiml = (sipUri: string) => doc(`<Dial><Sip>${escapeXml(sipUri)}</Sip></Dial>`);
+/** Bridges to the Realtime SIP endpoint; Twilio hangs up after `timeLimitSec` (R-M8: no unbounded calls). */
+export const connectTwiml = (sipUri: string, timeLimitSec: number) =>
+  doc(`<Dial timeLimit="${Math.max(1, Math.floor(timeLimitSec))}"><Sip>${escapeXml(sipUri)}</Sip></Dial>`);
 
 export const sayAndHangup = (text: string, voice: string, locale: Locale) =>
   doc(`<Say voice="${escapeXml(voice)}" language="${LANG[locale]}">${escapeXml(text)}</Say><Hangup/>`);

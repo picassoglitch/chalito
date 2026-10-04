@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { canonicalize } from "@chalito/crypto";
 import { generateShortCode, hashShortCode, normalizeShortCode, verifyGlyph } from "@chalito/glyph";
@@ -10,10 +10,12 @@ import {
   PostRoomEventRequest,
   PromoteRoomEventRequest,
   RoomActorRequest,
+  RoomReportRequest,
   RotateRoomKeyRequest,
   SetRoomRetentionRequest,
   WrapRoomKeysRequest,
 } from "@chalito/protocol";
+import { MemoryBuckets } from "@chalito/guard";
 import type { z } from "zod";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
@@ -174,6 +176,42 @@ export const roomsRoutes = (deps: Deps & { rooms?: RoomsRepo }) => {
   });
 
   /** Leave: the room then needs a new epoch, installed by a remaining member's client (/rotate). */
+  /**
+   * Report an event and/or a member to the platform. Per reporter: a burst of 10, then 20 an hour
+   * (shared across instances when the api has the Postgres buckets); a repeat for the same
+   * target returns the existing report (200) instead of a new one.
+   */
+  const reportBuckets = deps.rateBuckets ?? new MemoryBuckets();
+  app.post("/:roomId/reports", async (c) => {
+    const p = principal(c);
+    const b = await parse(RoomReportRequest, await json(c));
+    const key = createHash("sha256").update(`room.report:${p.owner}`).digest("hex");
+    if (!(await reportBuckets.take(key, 10, 20 / 3600, deps.now()))) return fail(429, "rate_limited");
+    const roomId = c.req.param("roomId");
+    const r = await run(() =>
+      repo().report({
+        uid: p.owner,
+        companion: b.companionId,
+        roomId,
+        reportId: `rpt_${randomUUID().replace(/-/g, "")}`,
+        eventId: b.eventId ?? null,
+        member: b.memberCompanionId ?? null,
+        reason: b.reason,
+        note: b.note ?? null,
+        plaintext: b.attachPlaintext === true ? (b.attachedPlaintext ?? null) : null,
+      }),
+    );
+    if (!r.duplicate)
+      await deps.audit.record({
+        action: "room.reported",
+        owner: p.owner,
+        actor: p.uid,
+        target: roomId,
+        meta: { reportId: r.reportId, reason: b.reason, plaintextAttached: b.attachPlaintext === true },
+      });
+    return c.json({ reportId: r.reportId, duplicate: r.duplicate }, r.duplicate ? 200 : 201);
+  });
+
   app.post("/:roomId/leave", async (c) => {
     const p = principal(c);
     const b = await parse(RoomActorRequest, await json(c));

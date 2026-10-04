@@ -18,6 +18,10 @@ export interface StoreDeps {
 /** A store.purchase is already a price (D-030): the hub bills ceil(cost / 4), so cost = tokens × 4. */
 export const MICROS_PER_TOKEN = 4;
 
+/** Own keys only: `__proto__`, `constructor` and friends match the id pattern but aren't items (R-L9). */
+const itemOf = (catalog: CatalogConfig, id: string) =>
+  Object.hasOwn(catalog.cosmetics, id) ? catalog.cosmetics[id] : undefined;
+
 const PurchaseId = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
 const CosmeticId = z.string().regex(/^[a-z0-9_]{1,64}$/);
 const Purchase = z.object({ cosmeticId: CosmeticId, purchaseId: PurchaseId });
@@ -58,7 +62,7 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
     const body = Purchase.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
     const { cosmeticId, purchaseId } = body.data;
-    const item = store.catalog.cosmetics[cosmeticId];
+    const item = itemOf(store.catalog, cosmeticId);
     if (!item) return fail(404, "unknown_cosmetic");
 
     if (item.free) {
@@ -89,6 +93,11 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
     } catch (err) {
       if (err instanceof HubUnavailable) return fail(503, "hub_unavailable");
       throw err;
+    }
+    // An admit is not a balance check: a balance short of the price is no_tokens too (R-L9).
+    if (admit.allowed && !admit.balance.unlimited && admit.balance.remaining < price) {
+      await store.hub.settle({ reservation_id: admit.reservation_id, outcome: "cancelled" });
+      return c.json({ error: "no_tokens", chips: [{ label: "¿Por qué?", href: "/creditos" }] }, 402);
     }
     if (!admit.allowed) {
       if (admit.reason === "no_tokens")
@@ -135,7 +144,7 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
     if (!body.success) return fail(400, "bad_request");
     const { companionId, slot, cosmeticId } = body.data;
     if (cosmeticId !== null) {
-      const item = store.catalog.cosmetics[cosmeticId];
+      const item = itemOf(store.catalog, cosmeticId);
       if (!item) return fail(404, "unknown_cosmetic");
       if (item.slot !== slot) return fail(400, "wrong_slot");
       if (item.free) await store.repo.grantFree(p.owner, cosmeticId);

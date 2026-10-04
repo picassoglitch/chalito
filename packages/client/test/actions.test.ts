@@ -243,6 +243,106 @@ describe("ClientActions commands", () => {
     ]);
   });
 
+  it("revoking ANOTHER client binds a step-up to the exact command; revoking oneself doesn't ask (review R-L1)", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const { agent, db, actions, me } = await setup({
+      stepUp: async (_a, unsigned) => {
+        seen.push(unsigned!);
+        return { method: "platform_biometric" as const, at: 1 };
+      },
+    });
+    await actions.revokeClient(agent.deviceId, "dev_lostphone");
+    const body = (db.rows("commands")[0]!.env as { body: CommandBody }).body;
+    expect(body.stepUp).toEqual({ method: "platform_biometric", at: 1 });
+    // The ceremony saw the final body minus stepUp: cid, nonce, times and payload included.
+    const { stepUp: _s, ...unsigned } = body;
+    expect(seen).toEqual([unsigned]);
+
+    await actions.revokeClient(agent.deviceId, me.deviceId);
+    expect(seen).toHaveLength(1);
+    expect((db.rows("commands")[1]!.env as { body: CommandBody }).body.stepUp).toBeUndefined();
+  });
+
+  it("revokeAll: one signed, stepped-up revoke per (trusted computer, other client), then the server's assertion; nothing written directly", async () => {
+    const order: string[] = [];
+    const { agent, db, actions, live, me } = await setup({
+      stepUp: async (a) => (order.push(`cmd:${a.aid}`), { method: "platform_biometric" as const, at: 1 }),
+    });
+    const row = (deviceId: string, role: string, extra: Record<string, unknown> = {}) => ({
+      owner: OWNER,
+      device_id: deviceId,
+      role,
+      kind: role === "agent" ? "desktop" : "web",
+      platform: "linux",
+      name: deviceId,
+      revoked: false,
+      dev_mode: { on: false, toggles: [], since: null },
+      last_seen_at: new Date().toISOString(),
+      ...extra,
+    });
+    db.seed("devices", row(agent.deviceId, "agent"));
+    db.seed("devices", row("dev_untrusted_pc", "agent"));
+    db.seed("devices", row(me.deviceId, "client"));
+    db.seed("devices", row("dev_phone", "client"));
+    db.seed("devices", row("dev_tablet", "client"));
+    db.seed("devices", row("dev_gone", "client", { revoked: true }));
+    await live.resync();
+
+    const posted: { path: string; body: { stepUp: unknown; commands: { body: CommandBody }[] } }[] = [];
+    const api = {
+      post: async <T>(path: string, body: unknown) => {
+        posted.push({ path, body: body as never });
+        return { ok: true, revoked: ["dev_phone", "dev_tablet"], commandsQueued: 2, refused: [], banFailed: [] } as T;
+      },
+    };
+    const r = await actions.revokeAll({
+      api,
+      stepUp: async () => (order.push("server"), { id: "assertion" }),
+    });
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.path).toBe("/v1/devices/revoke-all");
+    expect(posted[0]!.body.stepUp).toEqual({ id: "assertion" });
+    const cmds = posted[0]!.body.commands.map((c) => c.body);
+    expect(cmds.map((b) => [b.targetDeviceId, (b.payload as { clientDeviceId: string }).clientDeviceId])).toEqual([
+      [agent.deviceId, "dev_phone"],
+      [agent.deviceId, "dev_tablet"],
+    ]);
+    expect(cmds.every((b) => b.stepUp !== undefined && b.origin === `client:${me.deviceId}`)).toBe(true);
+    // Each command is stepped up first; the server assertion is the last prompt, right before sending.
+    expect(order).toEqual(["cmd:revoke:dev_phone", "cmd:revoke:dev_tablet", "server"]);
+    expect(db.rows("commands")).toHaveLength(0);
+    expect(r).toEqual({
+      revoked: ["dev_phone", "dev_tablet"],
+      commandsQueued: 2,
+      refused: [],
+      banFailed: [],
+      notified: [agent.deviceId],
+      untrusted: ["dev_untrusted_pc"],
+    });
+  });
+
+  it("revokeAll: a cancelled passkey sends nothing", async () => {
+    const { agent, db, actions, live } = await setup();
+    db.seed("devices", { owner: OWNER, device_id: agent.deviceId, role: "agent", revoked: false, name: "d" });
+    await live.resync();
+    let posted = 0;
+    await expect(
+      actions.revokeAll({
+        api: { post: async <T>() => (posted++, {} as T) },
+        stepUp: async () => {
+          throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
+        },
+      }),
+    ).rejects.toThrow("cancelled");
+    expect(posted).toBe(0);
+  });
+
+  it("without a passkey on this device the revoke goes out plain (the agent decides)", async () => {
+    const { agent, db, actions } = await setup({ stepUp: async () => null });
+    await actions.revokeClient(agent.deviceId, "dev_lostphone");
+    expect((db.rows("commands")[0]!.env as { body: CommandBody }).body.stepUp).toBeUndefined();
+  });
+
   it("there is NO way to turn Developer mode (or a toggle) on, or to loosen policy, from a client", () => {
     const methods = Object.getOwnPropertyNames(ClientActions.prototype);
     expect(methods.filter((m) => /enable|turnon|devmodeon|toggleon|loosen|bypass/i.test(m))).toEqual([]);

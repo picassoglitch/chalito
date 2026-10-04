@@ -43,8 +43,7 @@ from (values ('dad', 'dad_phone', 'client'), ('dad', 'dad_agent', 'agent'), ('so
              ('stranger', 'str_phone', 'client')) v(o, d, r);
 insert into chalito.companions (owner, companion_id, name) values
   ('dad', 'chl_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'Papá'), ('son', 'chl_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'Hijo'), ('stranger', 'chl_cccccccccccccccccccccccccc', 'Otro');
-insert into chalito.companion_directory (companion_id, owner, display_name) values
-  ('chl_aaaaaaaaaaaaaaaaaaaaaaaaaa', 'dad', 'Papá'), ('chl_bbbbbbbbbbbbbbbbbbbbbbbbbb', 'son', 'Hijo'), ('chl_cccccccccccccccccccccccccc', 'stranger', 'Otro');
+-- The companions trigger writes their directory rows (migration 20261004003040).
 
 -- ================================================================ create / invite / join (as the api)
 set local role chalito_server;

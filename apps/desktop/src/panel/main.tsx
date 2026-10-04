@@ -8,6 +8,7 @@ import { petContext } from "../lib/pet-context.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
+import { relayRevoked } from "../lib/revoked-relay.js";
 import { shell } from "../lib/shell.js";
 import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { UpdateController, tauriUpdater } from "../lib/updates.js";
@@ -62,7 +63,9 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     };
   }, []);
   const client = conn?.client ?? null;
-  const ptt = useMemo(() => new PushToTalk(unavailableVoice), []);
+  const ptt = useMemo(() => new PushToTalk(conn?.voice ?? unavailableVoice), [conn]);
+  // R-L14: this device was revoked. The room window drops its keys and decrypted events now.
+  useEffect(() => (client ? relayRevoked(client.live, () => sh.sendDeviceRevoked()) : undefined), [client, sh]);
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);
@@ -107,6 +110,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       canStepUp={conn?.canStepUp ?? false}
       signIn={<SignIn controller={controller} />}
       ipc={ipc}
+      rooms={conn?.rooms ?? null}
       ptt={ptt}
       settings={view.values}
       onSetting={(k, v) => store.set(k, v)}

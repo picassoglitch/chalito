@@ -18,6 +18,13 @@ import { enrollDesktop } from "./enrollment.js";
 import { SignInController } from "./sign-in.js";
 import { SsoFlow, exchange } from "./sso.js";
 import { platformAuthenticatorAvailable } from "./stepup.js";
+import type { RoomsDb } from "@chalito/rooms";
+import { companionIdFor } from "./companion.js";
+import { roomSeen } from "./room-seen.js";
+import { roomsSource, type RoomsSource } from "./rooms-source.js";
+import { shell } from "./shell.js";
+import type { VoiceProvider } from "./voice.js";
+import { webrtcVoice } from "./webrtc-voice.js";
 
 export interface DesktopEnv {
   supabaseUrl: string;
@@ -39,12 +46,13 @@ export const readEnv = (e: Record<string, string | undefined> = import.meta.env)
 };
 
 /** This device's account binding (public identifiers only). */
-interface Stored {
+export interface Stored {
   owner: string;
   passkey: { credentialId: string; rpId: string } | null;
 }
 const STORED_KEY = "chalito-desktop-account";
-const loadStored = (): Stored | null => {
+/** This device's account binding, as the panel saved it (any window of the app can read it). */
+export const loadStored = (): Stored | null => {
   try {
     const v = JSON.parse(localStorage.getItem(STORED_KEY) ?? "null") as Stored | null;
     return typeof v?.owner === "string" ? v : null;
@@ -64,6 +72,10 @@ export interface Connected {
   client: ChalitoClient;
   /** A passkey is enrolled on this device: HIGH/CRITICAL can be approved here. */
   canStepUp: boolean;
+  /** Push-to-talk voice as this device (WebRTC, SDP proxied by the api). */
+  voice: VoiceProvider;
+  /** Salas: this companion's rooms; each opens in the room window. */
+  rooms: RoomsSource;
 }
 
 /**
@@ -101,6 +113,8 @@ export const createSession = async (
       keys,
       owner,
       storage,
+      // One auth client: the voice calls below read the same device session it refreshes.
+      create: () => sb,
       signIn: {
         kind: "device",
         deviceId: keys.deviceId,
@@ -108,7 +122,26 @@ export const createSession = async (
       },
       stepUp: passkeyStepUp(passkey) as StepUpProvider,
     });
-    onConnected({ client, canStepUp: passkey !== null });
+    onConnected({
+      client,
+      canStepUp: passkey !== null,
+      rooms: roomsSource({
+        db: sb as unknown as RoomsDb,
+        api,
+        companionId: () => companionIdFor(sb, owner),
+        seen: roomSeen(),
+        open: (roomId) => shell().openRoom(roomId),
+      }),
+      voice: webrtcVoice({
+        apiBase: env.apiBase,
+        token,
+        play: (stream) => {
+          const audio = new Audio();
+          audio.autoplay = true;
+          audio.srcObject = stream;
+        },
+      }),
+    });
   };
 
   const controller = new SignInController({

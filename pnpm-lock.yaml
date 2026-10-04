@@ -8,12 +8,33 @@ importers:
 
   .:
     devDependencies:
+      '@chalito/avatar':
+        specifier: workspace:*
+        version: link:packages/avatar
+      '@chalito/avatar-three':
+        specifier: workspace:*
+        version: link:packages/avatar-three
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:packages/config
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:packages/roster
+      '@chalito/scene':
+        specifier: workspace:*
+        version: link:packages/scene
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.12.0(jiti@2.7.0))
+      '@playwright/test':
+        specifier: ^1.63.0
+        version: 1.63.0
       '@types/node':
         specifier: ^22.20.5
         version: 22.20.5
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       eslint:
         specifier: ^10.12.0
         version: 10.12.0(jiti@2.7.0)
@@ -23,9 +44,18 @@ importers:
       globals:
         specifier: ^17.13.0
         version: 17.13.0
+      pixelmatch:
+        specifier: ^7.2.0
+        version: 7.2.0
       prettier:
         specifier: ^3.9.9
         version: 3.9.9
+      sharp:
+        specifier: ^0.35.5
+        version: 0.35.5(@types/node@22.20.5)
+      three:
+        specifier: 0.186.1
+        version: 0.186.1
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
@@ -59,6 +89,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/redact':
+        specifier: workspace:*
+        version: link:../../packages/redact
       '@napi-rs/keyring':
         specifier: ^2.1.0
         version: 2.1.0
@@ -105,15 +138,24 @@ importers:
       '@chalito/glyph':
         specifier: workspace:*
         version: link:../../packages/glyph
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/redact':
+        specifier: workspace:*
+        version: link:../../packages/redact
       '@chalito/releases':
         specifier: workspace:*
         version: link:../../packages/releases
       '@google-cloud/pubsub':
         specifier: ^6.1.0
         version: 6.1.0
+      '@google-cloud/storage':
+        specifier: ^8.2.0
+        version: 8.2.0
       '@hono/node-server':
         specifier: ^2.1.3
         version: 2.1.3(hono@4.13.12)
@@ -129,12 +171,18 @@ importers:
       hono:
         specifier: ^4.13.12
         version: 4.13.12
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
       libphonenumber-js:
         specifier: ^1.13.14
         version: 1.13.14
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -160,12 +208,18 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/redact':
+        specifier: workspace:*
+        version: link:../../packages/redact
       '@google-cloud/storage':
         specifier: ^8.2.0
         version: 8.2.0
       sharp:
         specifier: ^0.35.5
         version: 0.35.5(@types/node@22.20.5)
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -193,6 +247,15 @@ importers:
       '@chalito/releases':
         specifier: workspace:*
         version: link:../../packages/releases
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../../packages/roster
+      '@chalito/scene':
+        specifier: workspace:*
+        version: link:../../packages/scene
       '@chalito/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -263,9 +326,15 @@ importers:
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/redact':
+        specifier: workspace:*
+        version: link:../../packages/redact
       '@hono/node-server':
         specifier: ^2.1.3
         version: 2.1.3(hono@4.13.12)
@@ -278,6 +347,9 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -312,9 +384,15 @@ importers:
       '@chalito/escalation':
         specifier: workspace:*
         version: link:../../packages/escalation
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/redact':
+        specifier: workspace:*
+        version: link:../../packages/redact
       '@hono/node-server':
         specifier: ^2.1.3
         version: 2.1.3(hono@4.13.12)
@@ -330,6 +408,9 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       web-push:
         specifier: ^3.6.7
         version: 3.6.7
@@ -364,9 +445,15 @@ importers:
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/redact':
+        specifier: workspace:*
+        version: link:../../packages/redact
       '@google/genai':
         specifier: 2.27.0
         version: 2.27.0(@modelcontextprotocol/sdk@1.32.0(zod@4.6.5))
@@ -391,6 +478,9 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -398,6 +488,58 @@ importers:
       msw:
         specifier: ^3.0.2
         version: 3.0.2(@types/node@22.20.5)(typescript@5.9.3)(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
+  apps/rehearsal:
+    dependencies:
+      '@chalito/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@chalito/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
+      '@chalito/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@chalito/client-keys':
+        specifier: workspace:*
+        version: link:../../packages/client-keys
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@chalito/glyph':
+        specifier: workspace:*
+        version: link:../../packages/glyph
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
+      '@modelcontextprotocol/client':
+        specifier: 2.3.0
+        version: 2.3.0
+      '@supabase/supabase-js':
+        specifier: ^2.117.2
+        version: 2.117.2(@opentelemetry/api@1.9.1)
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
+      msw:
+        specifier: ^3.0.2
+        version: 3.0.2(@types/node@22.20.5)(typescript@5.9.3)(vite@8.3.2(@types/node@22.20.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+      web-push:
+        specifier: ^3.6.7
+        version: 3.6.7
+    devDependencies:
+      '@types/web-push':
+        specifier: ^3.6.4
+        version: 3.6.4
 
   apps/web:
     dependencies:
@@ -410,6 +552,9 @@ importers:
       '@chalito/client-keys':
         specifier: workspace:*
         version: link:../../packages/client-keys
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
@@ -419,6 +564,18 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/releases':
+        specifier: workspace:*
+        version: link:../../packages/releases
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../../packages/roster
+      '@chalito/scene':
+        specifier: workspace:*
+        version: link:../../packages/scene
       '@chalito/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -654,6 +811,15 @@ importers:
         specifier: ^4.10.2
         version: 4.10.2
 
+  packages/guard:
+    dependencies:
+      hono:
+        specifier: ^4.13.12
+        version: 4.13.12
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+
   packages/protocol:
     dependencies:
       zod:
@@ -663,6 +829,8 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+
+  packages/redact: {}
 
   packages/releases:
     dependencies:
@@ -714,6 +882,28 @@ importers:
         specifier: workspace:*
         version: link:../config
 
+  packages/scene:
+    dependencies:
+      '@chalito/avatar-three':
+        specifier: workspace:*
+        version: link:../avatar-three
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../roster
+      three:
+        specifier: 0.186.1
+        version: 0.186.1
+    devDependencies:
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/three':
+        specifier: 0.186.0
+        version: 0.186.0
+
   packages/ui:
     dependencies:
       '@chalito/brand':
@@ -722,6 +912,12 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../rooms
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../roster
       libphonenumber-js:
         specifier: ^1
         version: 1.13.14
@@ -3516,6 +3712,10 @@ packages:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
 
+  pixelmatch@7.2.0:
+    resolution: {integrity: sha512-xhcb4yHu9sM/G7foGzoLtXYcC0zHEaOXXjRKhGup0fw78Nf2Tkiapv4EQyMzrbcmQPsllAI7DbFY2UT7PlI9Pg==}
+    hasBin: true
+
   pkce-challenge@5.0.1:
     resolution: {integrity: sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==}
     engines: {node: '>=16.20.0'}
@@ -3529,6 +3729,10 @@ packages:
     resolution: {integrity: sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg==}
     engines: {node: '>=20'}
     hasBin: true
+
+  pngjs@7.0.0:
+    resolution: {integrity: sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow==}
+    engines: {node: '>=14.19.0'}
 
   po-parser@2.2.0:
     resolution: {integrity: sha512-NdTrKgh0oO7+y+RFX8KKhOB438x/j94UGXEFzl/7pHH0JjWSn42iJ9tgmPksIO6n1JKDHmNDcejPJfKspljB9g==}
@@ -6699,6 +6903,10 @@ snapshots:
 
   picomatch@4.0.7: {}
 
+  pixelmatch@7.2.0:
+    dependencies:
+      pngjs: 7.0.0
+
   pkce-challenge@5.0.1: {}
 
   playwright-core@1.63.0: {}
@@ -6706,6 +6914,8 @@ snapshots:
   playwright@1.63.0:
     dependencies:
       playwright-core: 1.63.0
+
+  pngjs@7.0.0: {}
 
   po-parser@2.2.0: {}
 

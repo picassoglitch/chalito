@@ -1,11 +1,19 @@
+import { installConsoleRedaction } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { PubSub } from "@google-cloud/pubsub";
 import { createClient } from "@supabase/supabase-js";
+import { PostgresBuckets } from "@chalito/guard";
 import { createApp } from "./app.js";
 import { GcsReleaseStore } from "./releases/gcs.js";
+import { PostgresAuditSink, teeAudit } from "./postgres/audit.js";
+import { Storage } from "@google-cloud/storage";
+import { GcsAccountFiles } from "./account/files.js";
+import type { AccountDeps } from "./account/routes.js";
+import { PostgresAccountStore } from "./account/store.js";
+import { googleOidcVerifier } from "./lib/oidc.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, HubStreamUsage, compedFrom, enqueueUsage } from "@chalito/billing";
+import { HubClient, HubStreamUsage, PostgresVoiceSessions, compedFrom, parseReserveBasis } from "@chalito/billing";
 import { loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
@@ -21,11 +29,15 @@ import type { StoreDeps } from "./store/routes.js";
 import { pgVoiceCap } from "./voice/caps.js";
 import type { VoiceDeps } from "./voice/routes.js";
 
+// Every stray console call is redacted (R-M9).
+installConsoleRedaction();
 const env = (name: string): string => {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is required`);
   return v;
 };
+// What est_tokens means at the hub; an unknown value stops the service here, not at the first admit.
+const reserveBasis = parseReserveBasis(process.env.HUB_RESERVE_BASIS);
 
 /**
  * Data backend (ADR 0017): the hub's Postgres through a server connection (DATABASE_URL,
@@ -41,6 +53,9 @@ const backend = (): {
   phone?: PhoneDeps;
   voice?: VoiceDeps;
   store?: StoreDeps;
+  rateBuckets: PostgresBuckets;
+  serverAudit: PostgresAuditSink;
+  account?: AccountDeps;
 } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
@@ -55,7 +70,6 @@ const backend = (): {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
     mcp: new PostgresMcpStore(sql),
-    rooms: new PostgresRoomsRepo(sql),
     // Desktop push-to-talk when OpenAI is configured, admitted and metered through the hub.
     ...(process.env.OPENAI_API_KEY
       ? {
@@ -63,15 +77,16 @@ const backend = (): {
             provider: openaiRealtime({ apiKey: env("OPENAI_API_KEY") }),
             hub: new HubStreamUsage({
               hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
-              enqueue: (owner, events) => enqueueUsage(sql, owner, events),
               prices: loadPrices(),
               model: loadModels().voice.desktop.model,
+              reserveBasis,
               now: Date.now,
             }),
             model: loadModels().voice.desktop.model,
             voiceName: process.env.REALTIME_VOICE ?? "marin",
             tokenSecret: env("VOICE_TOKEN_SECRET"),
             cap: pgVoiceCap(sql, loadPlans(), compedFrom(process.env.OWNER_UIDS)),
+            sessions: new PostgresVoiceSessions(sql),
           },
         }
       : {}),
@@ -98,6 +113,36 @@ const backend = (): {
           },
         }
       : {}),
+    rooms: new PostgresRoomsRepo(sql),
+    rateBuckets: new PostgresBuckets(sql),
+    serverAudit: new PostgresAuditSink(sql),
+    // Account deletion and export (ARCO) when the export bucket is configured.
+    ...(process.env.ACCOUNT_EXPORT_BUCKET
+      ? {
+          account: {
+            store: new PostgresAccountStore(sql),
+            files: new GcsAccountFiles(new Storage(), {
+              exportBucket: env("ACCOUNT_EXPORT_BUCKET"),
+              prefixes: [
+                ...(process.env.AVATAR_BUCKET
+                  ? [
+                      { bucket: env("AVATAR_BUCKET"), prefix: (o: string) => `avatars/${o}/` },
+                      { bucket: env("AVATAR_BUCKET"), prefix: (o: string) => `uploads/${o}/` },
+                    ]
+                  : []),
+                ...(process.env.RECORDS_BUCKET
+                  ? [{ bucket: env("RECORDS_BUCKET"), prefix: (o: string) => `records/${o}/` }]
+                  : []),
+              ],
+            }),
+            scheduler: {
+              audience: `${env("API_PUBLIC_URL").replace(/\/$/, "")}/tasks/account-deletions`,
+              email: env("SCHEDULER_SA_EMAIL"),
+            },
+            verifyOidc: googleOidcVerifier(),
+          },
+        }
+      : {}),
   };
 };
 
@@ -106,7 +151,7 @@ const backend = (): {
 const usePubSub = process.env.K_SERVICE !== undefined || process.env.PUBSUB_EMULATOR_HOST !== undefined;
 const topic = usePubSub ? new PubSub().topic(process.env.AUDIT_TOPIC ?? "audit") : null;
 
-const audit: AuditSink = {
+const streamAudit: AuditSink = {
   async record(e) {
     const entry = { ...e, t: new Date().toISOString() };
     if (topic) await topic.publishMessage({ json: entry });
@@ -114,14 +159,27 @@ const audit: AuditSink = {
   },
 };
 
+const { serverAudit, ...data } = backend();
+// Every event goes to the stream; owner-scoped ones also to chalito.server_audit (the audit views).
+const audit = teeAudit(streamAudit, serverAudit);
+
 const app = createApp({
-  ...backend(),
+  ...data,
   audit,
   config: {
     ssoSecret: env("CHALITO_SSO_SECRET"),
     adminToken: env("CHALITO_ADMIN_TOKEN"),
     recoveryCooldownMs: Number(process.env.RECOVERY_COOLDOWN_MS ?? 60 * 60 * 1000),
     skewMs: 60_000,
+    trustedProxies: Number(process.env.TRUSTED_PROXIES ?? 0),
+    corsOrigins: [
+      process.env.CHALITO_WEB_ORIGIN ?? "https://chalito.chalyb.com",
+      // The Tauri webview's origins (macOS/Linux, then Windows).
+      ...(process.env.CHALITO_DESKTOP_ORIGINS ?? "tauri://localhost,http://tauri.localhost,https://tauri.localhost")
+        .split(",")
+        .map((o) => o.trim())
+        .filter(Boolean),
+    ],
   },
   now: Date.now,
   // ADR 0014: signed download URLs from the private releases bucket, signed as the release signer.

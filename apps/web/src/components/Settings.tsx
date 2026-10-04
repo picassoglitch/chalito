@@ -5,6 +5,8 @@ import { useChalito } from "./ChalitoProvider";
 import { useLocale, useTranslations } from "next-intl";
 import { Link, getPathname } from "@/i18n/navigation";
 import { useSettings } from "./useSettings";
+import { PushOptIn } from "./PushOptIn";
+import { AccountDeletion } from "./AccountDeletion";
 
 export const Settings = () => {
   const t = useTranslations("settings");
@@ -25,6 +27,7 @@ export const Settings = () => {
           {tw(`error.${error}`)}
         </p>
       ) : null}
+      <PushOptIn />
       <Link href="/conexiones" className="w-fit text-emerald-700 underline">
         {tw("connectedApps")}
       </Link>
@@ -37,6 +40,7 @@ export const Settings = () => {
         usageHref={getPathname({ href: "/uso", locale })}
         phoneVerifier={phoneVerifier}
       />
+      <AccountDeletion />
     </div>
   );
 };

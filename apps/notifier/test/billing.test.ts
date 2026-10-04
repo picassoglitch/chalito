@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { signStandardWebhook } from "@chalito/adapters/voice";
+import {
+  callCostMicros,
+  reserveTokens,
+  smsCostMicros,
+  voiceSecondsCostMicros,
+  whatsappCostMicros,
+} from "@chalito/billing";
+import { loadModels, loadPrices } from "@chalito/config";
 import { smsSegments, twilioDestination } from "../src/billing.js";
 import { twilioSignature } from "../src/signatures.js";
 import {
@@ -22,6 +30,7 @@ afterAll(() => server.close());
 beforeEach(() => {
   for (const list of Object.values(cap)) list.length = 0;
   hubState.admit = "allowed";
+  hubState.remaining = 10_000;
 });
 
 const UID = "hub-user-1";
@@ -153,9 +162,20 @@ describe("paid channels go through the hub", () => {
     h.setClock(NOON_MX + 90_000); // a 90-second conversation
     h.sockets[0]!.close();
     await new Promise((r) => setTimeout(r, 20));
-    const voice = h.outbox.rows.map((r) => r.event).find((e) => e.kind === "voice.seconds")!;
+    // Metered on the server (R-M8): one session row, billed in one go at close, settled.
+    const [voice] = h.voiceSessions.events;
     // 90 s × $0.03/min + 2 SIP minutes × $0.004.
-    expect([voice.amount, voice.cost_usd_micros, voice.source_id]).toEqual([90, 45_000 + 8_000, "voice-call:call_v"]);
+    expect([voice!.kind, voice!.amount, voice!.cost_usd_micros, voice!.source_id.split(":")[1]]).toEqual([
+      "voice.seconds",
+      90,
+      45_000 + 8_000,
+      "90",
+    ]);
+    expect([...h.voiceSessions.sessions.values()][0]).toMatchObject({
+      channel: "call",
+      deviceId: callSid,
+      endedAt: NOON_MX + 90_000,
+    });
   });
 });
 
@@ -187,7 +207,7 @@ describe("outbox drain endpoint", () => {
       ).status,
     ).toBe(401);
     const ok = await post(await googleToken({ aud: `${BASE}/tasks/drain-usage`, email: SCHEDULER_SA }));
-    expect(await ok.json()).toEqual({ sent: 1, retried: 0, dead: 0 });
+    expect(await ok.json()).toEqual({ sent: 1, retried: 0, dead: 0, voiceSessionsSwept: 0, callsEndedAtCap: 0 });
     expect(
       (cap.hub.find((c) => c.path === "usage")!.body.events as { source_id: string }[]).map((e) => e.source_id),
     ).toEqual(["wa:x"]);
@@ -205,5 +225,53 @@ describe("helpers", () => {
       "US",
       "other:ES",
     ]);
+  });
+});
+
+describe("R-L9: comms admits", () => {
+  it("re-admitting the same send (a Cloud Tasks retry) uses the same hub job id; an empty balance is no_tokens", async () => {
+    const h = billed();
+    const a = await h.deps.billing!.admit(UID, "sms", "n1", "MX", "2");
+    const b = await h.deps.billing!.admit(UID, "sms", "n1", "MX", "2");
+    expect(a).toEqual(b);
+    const jobs = cap.hub.filter((x) => x.path === "admit").map((x) => x.body.external_job_id);
+    expect(jobs).toEqual(["sms:n1:2", "sms:n1:2"]);
+    hubState.remaining = 0;
+    expect(await h.deps.billing!.admit(UID, "sms", "n1", "MX", "3")).toEqual({ ok: false, reason: "no_tokens" });
+    expect(cap.hub.at(-1)).toMatchObject({ path: "settle", body: { outcome: "cancelled" } });
+  });
+});
+
+describe("paid channels reserve on HUB_RESERVE_BASIS", () => {
+  const prices = loadPrices();
+  const callModel = loadModels().voice.call.model;
+  const mx = twilioDestination("MX");
+  const costs = {
+    "whatsapp.message": whatsappCostMicros(prices, "MX"),
+    "call.briefing":
+      callCostMicros(prices, { seconds: 300, destination: mx, sip: true }) +
+      voiceSecondsCostMicros(prices, callModel, 300),
+    "sms.message": smsCostMicros(prices, "MX", 2),
+    // Voice on a 60 s call: OpenAI voice seconds plus one SIP-interface minute.
+    "voice.call":
+      voiceSecondsCostMicros(prices, callModel, 60) + Math.ceil((prices.twilio.perMinute.sipInterface ?? 0) * 1e6),
+  };
+
+  it.each(["pre_margin", "post_margin"] as const)("%s: WhatsApp, SMS, the call and its voice", async (basis) => {
+    const h = setup({ billing: true, reserveBasis: basis });
+    h.store.prefs.set(UID, prefs());
+    h.store.subs.set(UID, [pushSubscription("https://push.example.test/a")]);
+    await h.publish({ v: 1, type: "notify", uid: UID, item: item({ level: "L4" }) });
+    await drive(h);
+    expect(await h.deps.billing!.openCallVoice(UID, { callSid: `CA${"f".repeat(32)}`, maxSeconds: 60 })).toMatchObject({
+      ok: true,
+    });
+    const admits = cap.hub.filter((c) => c.path === "admit").map((c) => [c.body.operation, c.body.est_tokens]);
+    expect(admits).toEqual(
+      (["whatsapp.message", "call.briefing", "sms.message", "voice.call"] as const).map((op) => [
+        op,
+        reserveTokens(costs[op], basis),
+      ]),
+    );
   });
 });

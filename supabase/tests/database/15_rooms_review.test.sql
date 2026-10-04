@@ -23,8 +23,7 @@ insert into chalito.devices (owner, device_id, role, kind, platform, name, pub_s
 values ('rr-mom', 'rr_phone', 'client', 'phone', 'ios', 'Phone', 'p', 'p', 'f', 'first_client', md5('rr_phone')::uuid, false),
        ('rr-mom', 'rr_old', 'client', 'phone', 'ios', 'Old', 'p', 'p', 'f', 'first_client', md5('rr_old')::uuid, true);
 insert into chalito.companions (owner, companion_id, name) values ('rr-mom', 'chl_dddddddddddddddddddddddddd', 'Mamá');
-insert into chalito.companion_directory (companion_id, owner, display_name)
-values ('chl_dddddddddddddddddddddddddd', 'rr-mom', 'Mamá');
+-- The companions trigger writes its directory row (migration 20261004003040).
 
 -- ================================================================ R-L4
 select pg_temp.as_device('rr-mom', 'rr_phone', 'client');

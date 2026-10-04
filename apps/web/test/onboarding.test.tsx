@@ -98,7 +98,7 @@ describe("onboarding", () => {
     expect(step()).toBe("passkey");
     expect(screen.getByText(/Cuando emparejes tu computadora/)).toBeTruthy();
     click("Terminar");
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/"));
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/inicio"));
     expect(localStorage.getItem("chalito.onboarded.v1")).toBe("true");
     const saved = JSON.parse(localStorage.getItem("chalito.settings.v1")!);
     expect(saved).toMatchObject({

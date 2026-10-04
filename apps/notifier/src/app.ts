@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto";
+import { processOutbox, verifyPoke, type NotifyOutboxStore, type OutboxMessage } from "./notify-outbox.js";
+import { guard } from "@chalito/guard";
+import { NOTIFIER_ROUTES } from "./limits.js";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
@@ -13,7 +16,7 @@ import {
   Urgency,
 } from "@chalito/protocol";
 import type { EscalationEvent } from "@chalito/escalation";
-import { capNote, voiceMinutesLeft } from "./caps.js";
+import { capNote, voiceSecondsLeft } from "./caps.js";
 import { handleEvent, type NotifierDeps } from "./executor.js";
 import type { OidcExpectation, OidcVerifier } from "./oidc.js";
 import { metaSignatureValid, twilioSignatureValid } from "./signatures.js";
@@ -25,6 +28,8 @@ import { callSession, type CallContext } from "./voice/call-session.js";
 import { verifyStandardWebhook, type VoiceProvider } from "@chalito/adapters/voice";
 
 export interface AppConfig {
+  /** Proxies in front of Cloud Run that append to X-Forwarded-For (default 0). */
+  trustedProxies?: number;
   pubsub: OidcExpectation & { notificationsAudience: string; roomEventsAudience: string };
   tasks: OidcExpectation & { queueName: string };
   twilioAuthToken: string;
@@ -32,6 +37,12 @@ export interface AppConfig {
   metaVerifyToken: string;
   /** Cloud Scheduler → POST /tasks/drain-usage (Google OIDC). */
   drain?: OidcExpectation;
+  /**
+   * The database's notify outbox (migration 20261004003050): pg_net pokes on
+   * POST /internal/notify-poke (HMAC with NOTIFY_POKE_SECRET) and Cloud Scheduler's
+   * POST /tasks/drain-notify (Google OIDC). Unset: both routes are 404.
+   */
+  notify?: { store: NotifyOutboxStore; pokeSecret: string; drain: OidcExpectation };
   /** OpenAI Realtime calls (ADR 0005/0011). Unset: DTMF 1 tells the user to open the app. */
   voice?: VoiceConfig;
 }
@@ -118,9 +129,41 @@ export const waToE164 = (from: string) => {
   return digits.length === 13 && digits.startsWith("521") ? `+52${digits.slice(3)}` : `+${digits}`;
 };
 
+/** The longest a call's voice leg may run (Twilio Dial timeLimit), whatever minutes are left. */
+export const MAX_CALL_VOICE_SEC = 20 * 60;
+
+/** Constant-time comparison of a presented secret with the configured one (R-L10). */
+const sameSecret = (got: string | undefined, want: string) => {
+  if (!got || !want) return false;
+  const a = createHash("sha256").update(got).digest();
+  const b = createHash("sha256").update(want).digest();
+  return timingSafeEqual(a, b);
+};
+
+/**
+ * Desktop and call voice share the month's minutes, and a call's own seconds are billed only when
+ * it closes: each drain (every minute) ends the calls that have used what was left. Twilio's
+ * timeLimit (minutes left at DTMF 1) still bounds a call when nothing else is talking.
+ */
+export const endCallsAtCap = async (deps: NotifierDeps) => {
+  if (!deps.billing || !deps.caps) return 0;
+  let ended = 0;
+  for (const s of await deps.billing.openCallVoices()) {
+    const elapsed = Math.floor((deps.now() - s.startedAt) / 1000);
+    if (elapsed < (await voiceSecondsLeft(deps, s.owner))) continue;
+    await deps.billing.hangUpCallVoice(s);
+    await capNote(deps, s.owner, "voice").catch(() => undefined);
+    deps.log.info("voice.call_capped", { sourceId: s.sourceId });
+    ended++;
+  }
+  return ended;
+};
+
 export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVerifier) => {
   const app = new Hono();
   const voice = (locale: "es" | "en") => deps.config.voices[locale];
+  // First: per-IP rate limits and body caps for every route (src/limits.ts).
+  app.use("*", guard(NOTIFIER_ROUTES, { now: deps.now, trustedProxies: cfg.trustedProxies ?? 0 }));
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 
@@ -170,6 +213,45 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
     return c.body(null, 204);
   });
 
+  // ---- The database's notify outbox (pg_net poke + scheduled drain) -------------------
+  /** One outbox row through the same path as Pub/Sub `notifications`. */
+  const handleOutbox = async (row: OutboxMessage): Promise<"ok" | "invalid"> => {
+    const msg = NotifierMessage.safeParse(row.message);
+    if (!msg.success || msg.data.uid !== row.owner) return "invalid";
+    await handleEvent(deps, msg.data.uid, toEvent(msg.data));
+    return "ok";
+  };
+  const runOutbox = async (claim: { id?: number; limit: number }) => {
+    const n = cfg.notify!;
+    const rows = await n.store.claim({ ...claim, now: deps.now(), leaseMs: 60_000 });
+    return processOutbox({
+      store: n.store,
+      rows,
+      now: deps.now,
+      handle: handleOutbox,
+      alert: (msg, meta) => deps.log.error(msg, { ...meta, alert: true }),
+    });
+  };
+  const PokeBody = z.object({ id: z.number().int().positive(), ts: z.number().int().positive() });
+
+  /** pg_net, right after the source row commits: deliver that one row now. A replay is a no-op. */
+  app.post("/internal/notify-poke", async (c) => {
+    if (!cfg.notify) return c.text("not found", 404);
+    const body = PokeBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: "bad_request" }, 400);
+    if (!verifyPoke(cfg.notify.pokeSecret, c.req.header("x-chalito-poke-signature"), body.data, deps.now()))
+      return c.json({ error: "unauthorized" }, 401);
+    return c.json(await runOutbox({ id: body.data.id, limit: 1 }));
+  });
+
+  /** Cloud Scheduler, every minute: whatever a poke missed. */
+  app.post("/tasks/drain-notify", async (c) => {
+    if (!cfg.notify) return c.text("not found", 404);
+    if (!(await verifyOidc(c.req.header("authorization"), cfg.notify.drain)))
+      return c.json({ error: "unauthorized" }, 401);
+    return c.json(await runOutbox({ limit: 100 }));
+  });
+
   // ---- Cloud Tasks ladder ticks (OIDC + queue header) --------------------------------
   app.post("/tasks/tick", async (c) => {
     const ok =
@@ -208,7 +290,8 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
     if (choice === "connect") {
       await handleEvent(deps, uid, { type: "ack", via: "call", nid });
       const callSid = p.CallSid ?? "";
-      const voiceLeft = await voiceMinutesLeft(deps, uid);
+      const secondsLeft = await voiceSecondsLeft(deps, uid);
+      const voiceLeft = secondsLeft > 0;
       if (!voiceLeft) await capNote(deps, uid, "voice");
       if (!cfg.voice || !voiceLeft || !/^CA[0-9a-f]{32}$/.test(callSid))
         return twiml(
@@ -218,8 +301,20 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
             locale,
           ),
         );
-      const ref = signCallRef(cfg.voice.refSecret, { uid, nid, callSid, locale, exp: deps.now() + 2 * 60_000 });
-      return twiml(connectTwiml(`${cfg.voice.sipUri}?X-Chalito-Ref=${ref}`));
+      // Freeze what the call is for: only these waiting items can be answered on it.
+      const lids = (await deps.store.callItems(uid)).items.slice(0, 10).map((it) => it.lid);
+      // Hard bound on the voice leg: this month's minutes left, at most MAX_CALL_VOICE_SEC.
+      const maxSec = Math.floor(Math.min(MAX_CALL_VOICE_SEC, secondsLeft));
+      const ref = signCallRef(cfg.voice.refSecret, {
+        uid,
+        nid,
+        callSid,
+        locale,
+        exp: deps.now() + 2 * 60_000,
+        lids,
+        maxSec,
+      });
+      return twiml(connectTwiml(`${cfg.voice.sipUri}?X-Chalito-Ref=${ref}`, maxSec));
     }
     if (choice === "snooze") {
       await handleEvent(deps, uid, { type: "snooze", nid });
@@ -281,7 +376,8 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
   app.post("/tasks/drain-usage", async (c) => {
     if (!deps.billing || !cfg.drain) return c.text("not found", 404);
     if (!(await verifyOidc(c.req.header("authorization"), cfg.drain))) return c.json({ error: "unauthorized" }, 401);
-    return c.json(await deps.billing.drain());
+    const drained = await deps.billing.drain();
+    return c.json({ ...drained, callsEndedAtCap: await endCallsAtCap(deps) });
   });
 
   // ---- OpenAI Realtime SIP (Standard Webhooks signature) -----------------------------
@@ -328,24 +424,48 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
       locale: ref.locale,
       companionName: name ?? "Chalito",
       callBriefingEnabled,
-      items: items.slice(0, 10),
+      // Server-side binding: only the items frozen into the signed ref at DTMF 1.
+      items: items.filter((it) => ref.lids.includes(it.lid)).slice(0, 10),
       approvals,
     };
+    // Admitted and metered on the server before the voice starts (R-M8): a session row bounded by
+    // the call's maxSec, billed in one transaction on close, and swept in full if this instance dies.
+    const metered = deps.billing
+      ? await deps.billing.openCallVoice(ref.uid, { callSid: ref.callSid, maxSeconds: ref.maxSec })
+      : null;
+    if (metered && !metered.ok) {
+      deps.log.info("voice.call_rejected", { callId, reason: metered.reason });
+      await v.provider.rejectCall(callId, 603);
+      return c.body(null, 200);
+    }
     await v.provider.acceptCall(callId, callSession(ctx, v.model, v.voiceName));
+    // With the call id on the session, the cap check, the sweep and a revoke can hang it up.
+    if (metered?.ok)
+      await deps
+        .billing!.connectedCallVoice(ref.uid, metered.sourceId, callId)
+        .catch((err: unknown) =>
+          deps.log.error("voice.call_id_failed", { callId, error: err instanceof Error ? err.message : "error" }),
+        );
     const { url, headers } = v.provider.callSocket(callId);
     // The call outlives this request: Cloud Run needs CPU always allocated for the notifier.
-    const startedAt = deps.now();
     void runCallAgent(deps, v.openSocket(url, headers), ctx)
-      .then(() => deps.billing?.recordVoice(ref.uid, { callId, seconds: (deps.now() - startedAt) / 1000 }))
       .catch((err: unknown) =>
         deps.log.error("voice.agent_failed", { callId, error: err instanceof Error ? err.message : "error" }),
-      );
+      )
+      .finally(() => {
+        if (metered?.ok)
+          void deps
+            .billing!.closeCallVoice(ref.uid, metered.sourceId)
+            .catch((err: unknown) =>
+              deps.log.error("voice.meter_failed", { callId, error: err instanceof Error ? err.message : "error" }),
+            );
+      });
     return c.body(null, 200);
   });
 
   // ---- WhatsApp Cloud API (X-Hub-Signature-256 over the raw body) -------------------
   app.get("/webhooks/whatsapp", (c) =>
-    c.req.query("hub.mode") === "subscribe" && c.req.query("hub.verify_token") === cfg.metaVerifyToken
+    c.req.query("hub.mode") === "subscribe" && sameSecret(c.req.query("hub.verify_token"), cfg.metaVerifyToken)
       ? c.text(c.req.query("hub.challenge") ?? "")
       : c.text("forbidden", 403),
   );

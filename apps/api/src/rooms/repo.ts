@@ -149,6 +149,26 @@ export class PostgresRoomsRepo {
     });
   }
 
+  /** A member's report (chalito_private.room_report): dedupes per reporter and target. */
+  report(a: {
+    uid: string;
+    companion: string;
+    roomId: string;
+    reportId: string;
+    eventId: string | null;
+    member: string | null;
+    reason: string;
+    note: string | null;
+    plaintext: string | null;
+  }): Promise<{ reportId: string; duplicate: boolean }> {
+    return mapped(async () => {
+      const [r] = await this.sql<{ report_id: string; duplicate: boolean }[]>`
+        select * from chalito_private.room_report(${a.uid}, ${a.companion}, ${a.roomId}, ${a.reportId}, ${a.eventId},
+          ${a.member}, ${a.reason}, ${a.note}, ${a.plaintext})`;
+      return { reportId: r!.report_id, duplicate: r!.duplicate };
+    });
+  }
+
   leave(a: { uid: string; companion: string; roomId: string }) {
     return mapped(async () => {
       await this.sql`select chalito_private.room_leave(${a.uid}, ${a.companion}, ${a.roomId})`;

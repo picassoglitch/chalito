@@ -255,6 +255,14 @@ export class LiveStore {
   // ---- pointers & pulls -------------------------------------------------------------
 
   #onPointer(p: unknown): void {
+    // This device was revoked (review R-L14): sent straight to its own topic, since the usual
+    // fan-out skips revoked devices and RLS then hides its own row. Close everything at once;
+    // apps stop their room feeds on the "revoked" status.
+    const ptr = p as { table?: unknown; op?: unknown; key?: { device_id?: unknown } } | null;
+    if (ptr?.table === "device_revoked" && ptr.op === "revoked" && ptr.key?.device_id === this.keys.deviceId) {
+      void this.#revoked();
+      return;
+    }
     const table = (p as { table?: unknown } | null)?.table;
     if (typeof table === "string" && (TABLES as readonly string[]).includes(table)) void this.#pull(table as Table);
   }
@@ -457,6 +465,13 @@ export class LiveStore {
   }
 
   // ---- snapshot ---------------------------------------------------------------------
+
+  async #revoked(): Promise<void> {
+    this.#status = "revoked";
+    this.#publish();
+    if (this.#channel) await this.db.removeChannel(this.#channel).catch(() => undefined);
+    this.#channel = null;
+  }
 
   #setStatus(s: Snapshot["status"]): void {
     if (this.#status === "revoked") return;

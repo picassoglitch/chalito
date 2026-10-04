@@ -1,6 +1,7 @@
-export { safeNextPath } from "./safe-next.js";
+export { APP_HOME, safeNextPath } from "./safe-next.js";
 export { UiTextProvider, useUiText, type Translate } from "./text.js";
-export { COMPANIONS, DEFAULT_COMPANION, type CompanionId } from "./companions.js";
+export { COMPANIONS, DEFAULT_COMPANION, companionName, type CompanionId } from "./companions.js";
+export { RosterAssetsProvider, useRosterAsset } from "./roster-assets.js";
 export {
   DEFAULT_SETTINGS,
   RENDER_QUALITIES,
@@ -24,3 +25,15 @@ export {
   type SettingKey,
   type Shell,
 } from "./settings/registry.js";
+export {
+  JoinRoomForm,
+  RoomComposer,
+  RoomEnded,
+  RoomEventList,
+  RoomMembers,
+  RoomReportDialog,
+  memberLabel,
+  type ReportReason,
+  type ReportTarget,
+  type RoomEndReason,
+} from "./rooms.js";

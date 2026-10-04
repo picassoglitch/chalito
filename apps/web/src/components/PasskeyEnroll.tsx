@@ -10,13 +10,32 @@ import { useChalito } from "./ChalitoProvider";
 export const PasskeyEnroll = () => {
   const t = useTranslations("live.passkey");
   const { passkey } = useChalito();
-  const [state, setState] = useState<"idle" | "busy" | "cancelled" | "error">("idle");
+  const [state, setState] = useState<"idle" | "busy" | "done" | "cancelled" | "replace_refused" | "error">("idle");
   if (!passkey.available) return <p className="text-sm text-neutral-600">{t("afterPairing")}</p>;
   if (passkey.enrolled)
     return (
-      <p data-testid="passkey-enrolled" className="text-emerald-800">
-        {t("enrolled")}
-      </p>
+      <div className="grid gap-2">
+        <p data-testid="passkey-enrolled" className="text-emerald-800">
+          {state === "done" ? t("replaced") : t("enrolled")}
+        </p>
+        {/* R-M11: changing it asks for the current passkey first. */}
+        <button
+          data-testid="passkey-replace"
+          className="w-fit rounded-lg border px-3 py-1.5 text-sm disabled:opacity-50"
+          disabled={state === "busy"}
+          onClick={() => {
+            setState("busy");
+            void passkey.enroll().then((r) => setState(r === "ok" ? "done" : r));
+          }}
+        >
+          {t("replace")}
+        </button>
+        {state === "cancelled" || state === "replace_refused" || state === "error" ? (
+          <p role="alert" data-testid="passkey-replace-error" className="text-sm text-red-800">
+            {t(state === "replace_refused" ? "replaceRefused" : state)}
+          </p>
+        ) : null}
+      </div>
     );
   return (
     <section
@@ -31,7 +50,7 @@ export const PasskeyEnroll = () => {
         disabled={state === "busy"}
         onClick={() => {
           setState("busy");
-          void passkey.enroll().then((r) => setState(r === "ok" ? "idle" : r));
+          void passkey.enroll().then((r) => setState(r === "ok" ? "idle" : r === "replace_refused" ? "error" : r));
         }}
       >
         {t("create")}

@@ -3,6 +3,7 @@ import { Hono, type Context } from "hono";
 import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from "@simplewebauthn/server";
 import { fromB64url, randomNonce } from "@chalito/crypto";
 import { CommandBody, RelayedCommand, SealedEnvelope } from "@chalito/protocol";
+import { MemoryBuckets } from "@chalito/guard";
 import { z } from "zod";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
@@ -100,7 +101,7 @@ type OAuthErrorCode =
   | "invalid_token"
   | "insufficient_scope";
 
-const oauthError = (c: Context, error: OAuthErrorCode, description: string, status: 400 | 401 | 403 = 400) =>
+const oauthError = (c: Context, error: OAuthErrorCode, description: string, status: 400 | 401 | 403 | 429 = 400) =>
   c.json({ error, error_description: description }, status, { "cache-control": "no-store" });
 
 const parseScopes = (raw: string | undefined): McpScope[] | null => {
@@ -108,6 +109,10 @@ const parseScopes = (raw: string | undefined): McpScope[] | null => {
   if (!parts.every(isMcpScope)) return null;
   return [...new Set(parts)] as McpScope[];
 };
+
+/** prompt_session per grant: a burst of 10, then 30 an hour. */
+const PROMPT_BURST = 10;
+const PROMPT_REFILL = 30 / 3600;
 
 const ORIGIN_OF = { claude: "mcp:claude", chatgpt: "mcp:chatgpt" } as const;
 
@@ -117,6 +122,7 @@ export const oauthRoutes = (
   opts: { fetchCimd?: typeof fetch; webauthn?: WebAuthnConfig } = {},
 ) => {
   const app = new Hono<AuthEnv>();
+  const promptBuckets = deps.rateBuckets ?? new MemoryBuckets();
   const wa = opts.webauthn ?? webauthnConfigFromEnv();
   const store = (): McpStore => deps.mcp ?? fail(503, "mcp_unavailable");
   const limiter = rateLimit({ capacity: 30, refillPerSec: 1, now: deps.now });
@@ -312,7 +318,8 @@ export const oauthRoutes = (
       lastUsedAt: null,
       revokedAt: null,
     });
-    const code = newSecret(32);
+    // Prefixed so redaction recognizes Chalito's own secrets in any log or text (R-M9).
+    const code = `chalito_ac_${newSecret(32)}`;
     await store().putCode({
       codeHash: sha256hex(code),
       owner: p.owner,
@@ -352,8 +359,8 @@ export const oauthRoutes = (
 
   // ---------------------------------------------------------------- token
   const issue = async (g: { owner: string; cid: string; clientId: string; scopes: McpScope[] }) => {
-    const access = newSecret(32);
-    const refresh = newSecret(32);
+    const access = `chalito_at_${newSecret(32)}`;
+    const refresh = `chalito_rt_${newSecret(32)}`;
     const now = deps.now();
     const base = {
       owner: g.owner,
@@ -584,6 +591,12 @@ export const oauthRoutes = (
     if (t instanceof Response) return t;
     if (t.provider === "other")
       return oauthError(c, "insufficient_scope", "session:prompt needs a Claude or ChatGPT connector", 403);
+    // Per-grant cap (review R-M13): a prompt-injected conversation can't flood sessions.
+    // Shared across instances when the api has the Postgres buckets.
+    if (
+      !(await promptBuckets.take(sha256hex(`mcp.prompt:${t.owner}:${t.cid}`), PROMPT_BURST, PROMPT_REFILL, deps.now()))
+    )
+      return oauthError(c, "invalid_request", "too many prompts for this connector; try again later", 429);
     const b = z
       .object({
         cid: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/),

@@ -15,7 +15,12 @@ export const SessionsList = () => {
   const { sessions } = useLive();
   return (
     <div className="grid gap-4">
-      <h1 className="text-2xl font-bold">{t("title")}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold">{t("title")}</h1>
+        <Link href="/sesiones/nueva" className="rounded-lg bg-emerald-700 px-4 py-2 text-white">
+          {t("new")}
+        </Link>
+      </div>
       {sessions.length === 0 ? <p>{t("empty")}</p> : null}
       <ul className="grid gap-3">
         {sessions.map((s) => (

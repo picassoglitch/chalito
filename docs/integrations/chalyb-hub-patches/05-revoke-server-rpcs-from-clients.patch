@@ -1,0 +1,46 @@
+diff --git a/supabase/migrations/0054_revoke_server_rpcs_from_clients.sql b/supabase/migrations/0054_revoke_server_rpcs_from_clients.sql
+new file mode 100644
+index 0000000..d134fbd
+--- /dev/null
++++ b/supabase/migrations/0054_revoke_server_rpcs_from_clients.sql
+@@ -0,0 +1,40 @@
++-- Server-only RPCs: take them back from anon and authenticated.
++--
++-- These SECURITY DEFINER functions are meant for the server (service_role)
++-- only, and their migrations say so with `revoke all ... from public`. On
++-- Supabase that is not enough: the project's default privileges grant
++-- EXECUTE on every new function in `public` to anon and authenticated
++-- directly, not through PUBLIC, so both roles can still call them through
++-- PostgREST (/rest/v1/rpc/<name>) with the publishable key. For admit_usage
++-- and settle_usage_reservation that means reserving or settling against any
++-- user id; the compute_*, metrics and cost functions read every user's usage.
++--
++-- grant_token_pack, clawback_token_pack, adjust_token_bonus_balance and
++-- check_contact_rate_limit already revoke from anon and authenticated by name.
++-- is_admin() stays callable: RLS policies run it as the caller. Trigger
++-- functions can't be called through RPC.
++--
++-- usage_margin_percent() never had its PUBLIC grant revoked (0046); it's only
++-- read inside the usage_events_price trigger, which runs as its owner.
++
++revoke all on function public.usage_margin_percent() from public;
++
++revoke execute on function public.admit_usage(uuid, uuid, text, text, text, text, bigint, bigint, numeric, numeric, integer, jsonb) from anon, authenticated;
++revoke execute on function public.settle_usage_reservation(uuid, uuid, text) from anon, authenticated;
++revoke execute on function public.usage_balance(uuid) from anon, authenticated;
++revoke execute on function public.expire_usage_reservations(uuid) from anon, authenticated;
++revoke execute on function public.usage_margin_percent() from anon, authenticated;
++revoke execute on function public.engine_usage_metrics(uuid, timestamptz, timestamptz) from anon, authenticated;
++revoke execute on function public.compute_engine_royalties(timestamptz, timestamptz) from anon, authenticated;
++revoke execute on function public.compute_platform_token_stats(timestamptz, timestamptz) from anon, authenticated;
++revoke execute on function public.usage_cost_by_model(timestamptz, timestamptz) from anon, authenticated;
++
++grant execute on function public.admit_usage(uuid, uuid, text, text, text, text, bigint, bigint, numeric, numeric, integer, jsonb) to service_role;
++grant execute on function public.settle_usage_reservation(uuid, uuid, text) to service_role;
++grant execute on function public.usage_balance(uuid) to service_role;
++grant execute on function public.expire_usage_reservations(uuid) to service_role;
++grant execute on function public.usage_margin_percent() to service_role;
++grant execute on function public.engine_usage_metrics(uuid, timestamptz, timestamptz) to service_role;
++grant execute on function public.compute_engine_royalties(timestamptz, timestamptz) to service_role;
++grant execute on function public.compute_platform_token_stats(timestamptz, timestamptz) to service_role;
++grant execute on function public.usage_cost_by_model(timestamptz, timestamptz) to service_role;

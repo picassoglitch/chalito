@@ -68,6 +68,32 @@ describe("release workflow", () => {
     expect(code).toContain('[ -n "$v" ] || continue');
   });
 
+  it("public app config: from repo variables (never secrets); a release refuses to build unwired", () => {
+    const step = code.slice(code.indexOf("name: Public app config"), code.indexOf("name: Build\n"));
+    expect(step.length).toBeGreaterThan(0);
+    expect(code.indexOf("name: Public app config")).toBeLessThan(code.indexOf("name: Build\n"));
+    expect(step).toContain("W_SUPABASE_URL: ${{ vars.SUPABASE_URL }}");
+    expect(step).toContain("W_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}");
+    expect(code).not.toMatch(/secrets\.SUPABASE/);
+    expect(step).toMatch(/sb_secret_\*/);
+    // Unwired: a release exits 1; a dry run warns and labels its artifact.
+    expect(step).toMatch(
+      /elif \[ "\$DRY_RUN" = true \]; then[\s\S]*::warning::[\s\S]*else[\s\S]*::error::[\s\S]*exit 1/,
+    );
+    expect(code).toContain("release-${{ matrix.os }}${{ steps.wiring.outputs.wired != 'true' && '-unwired' || '' }}");
+    expect(code).toMatch(/unwired build; not drafting/);
+  });
+
+  it("the webview CSP lets the desktop reach the api the release builds point at", () => {
+    const api = /\n {2}CHALITO_API_BASE: (https:\/\/[^\s/]+)/.exec(yml)?.[1];
+    expect(api).toBeTruthy();
+    const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+      app: { security: { csp: string } };
+    };
+    const connect = conf.app.security.csp.split(";").find((d) => d.trim().startsWith("connect-src"))!;
+    expect(connect.trim().split(/\s+/)).toContain(api);
+  });
+
   it("macOS: installs the darwin-x64 keyring addon (lockfile-pinned) and smoke-tests both arches before the sidecar", () => {
     const keyring = code.indexOf("name: darwin-x64 keyring addon (explicit)");
     const smoke = code.indexOf("name: Smoke the compiled agent");

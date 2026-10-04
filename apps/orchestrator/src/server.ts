@@ -1,7 +1,8 @@
+import { installConsoleRedaction, redact, redactDeep } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { createClient } from "@supabase/supabase-js";
 import postgres from "postgres";
-import { HubClient, compedFrom } from "@chalito/billing";
+import { HubClient, compedFrom, parseReserveBasis } from "@chalito/billing";
 import { loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { createOrchestrator } from "./app.js";
 import { SupabaseAuthn } from "./auth.js";
@@ -15,6 +16,8 @@ import { googleOidcVerifier } from "./oidc.js";
 import { hubEntitlements } from "./entitlements.js";
 import { PostgresMesaStore } from "./postgres-store.js";
 
+// Every log line and stray console call is redacted (R-M9).
+installConsoleRedaction();
 const env = (name: string): string => {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is required`);
@@ -45,6 +48,8 @@ const managed: Partial<Record<BrainProviderId, Brain>> = {
 const store = new PostgresMesaStore(sql);
 const wrapper = new CloudKmsWrapper(env("BRAIN_KEYS_KMS_KEY"));
 const hub = new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") });
+// What est_tokens means at the hub; an unknown value stops the service here, not at the first admit.
+const reserveBasis = parseReserveBasis(process.env.HUB_RESERVE_BASIS);
 
 const app = createOrchestrator({
   authn: new SupabaseAuthn(supabase.auth),
@@ -68,6 +73,7 @@ const app = createOrchestrator({
   brains: { managed, byo: byoBrains({ store, wrapper }) },
   models: loadModels(),
   prices: loadPrices(),
+  reserveBasis,
   entitlements: hubEntitlements({
     sql,
     hub,
@@ -76,7 +82,7 @@ const app = createOrchestrator({
     now: Date.now,
   }),
   now: Date.now,
-  log: (msg, meta) => console.error(JSON.stringify({ msg, ...meta })),
+  log: (msg, meta) => console.error(JSON.stringify({ msg: redact(msg), ...(redactDeep(meta ?? {}) as object) })),
 });
 
 const port = Number(process.env.PORT ?? 8080);

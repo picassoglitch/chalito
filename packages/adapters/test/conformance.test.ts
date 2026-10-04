@@ -1,5 +1,6 @@
-import { ClaudeCodeAdapter, fakeClaudeCode, type FakeStep } from "../src/claude-code/index.js";
-import { APPROVAL_POLICY, CodexAdapter, fakeCodex, type FakeCodexStep } from "../src/codex/index.js";
+import { ClaudeCodeAdapter } from "../src/claude-code/index.js";
+import { APPROVAL_POLICY, CodexAdapter } from "../src/codex/index.js";
+import { fakeClaudeCode, fakeCodex, type FakeCodexStep, type FakeStep } from "../src/testing.js";
 import { runConformance, type ConformanceStep } from "./conformance.js";
 
 const target = (input: Record<string, unknown>) => String(input.command ?? input.file_path ?? "");

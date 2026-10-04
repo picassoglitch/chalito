@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { verifyEnvelope, type SignedEnvelope } from "@chalito/crypto";
 import type { Cloud, FetchFn } from "../src/cloud.js";
 import { pinClaude } from "../src/claude-pin.js";
@@ -22,6 +22,14 @@ import { createLogger } from "../src/redact.js";
 import { DeviceRevokedError } from "../src/device-auth.js";
 import { MemorySecretStore, SECRET_NAMES } from "../src/secrets.js";
 import { MemoryStore } from "../src/store.js";
+import { TrustStore } from "../src/trust-store.js";
+import {
+  TrustedClientList,
+  generateBoxKeyPair,
+  generateSigningKeyPair,
+  toB64url,
+  deriveDeviceId,
+} from "@chalito/crypto";
 
 const NOW = 1_790_000_000_000;
 
@@ -329,6 +337,42 @@ describe("chalito run (daemon)", () => {
     await d.done;
     expect(s.logs.find((l) => l.msg === "device.revoked")).toMatchObject({ action: "stopping" });
     expect(s.logs.find((l) => l.msg === "agent.stopping")).toMatchObject({ reason: "device_revoked" });
+  });
+
+  it("a phone revoked server-side while the agent was offline is dropped on reconnect (review R-H5)", async () => {
+    const s = await setup();
+    const phoneKey = await generateSigningKeyPair();
+    const phone = {
+      deviceId: await deriveDeviceId(phoneKey.publicKey),
+      pubSign: await toB64url(phoneKey.publicKey),
+      pubBox: await toB64url((await generateBoxKeyPair()).publicKey),
+    };
+    const other = { ...phone, deviceId: `${phone.deviceId.slice(0, -1)}x` };
+    const store = new TrustStore(s.dir, s.id.sign, s.id.deviceId);
+    const list = new TrustedClientList(s.id.deviceId);
+    await list.addConfirmed(phone, NOW);
+    await list.addConfirmed(other, NOW);
+    await store.save(list);
+    // While this computer was off, the account revoked the phone (the revoke command expired).
+    s.store.revokedDevices.add(phone.deviceId);
+
+    const d = await runDaemon(s.deps);
+    await vi.waitFor(async () => {
+      const loaded = await store.load();
+      expect(loaded.list.has(phone.deviceId)).toBe(false);
+      expect(loaded.list.isRemoved(phone.deviceId)).toBe(true);
+      expect(loaded.list.has(other.deviceId)).toBe(true);
+    });
+    expect(s.logs.find((l) => l.msg === "trust.client_revoked")).toMatchObject({ clientDeviceId: phone.deviceId });
+    expect(s.store.deviceEvents).toContainEqual(
+      expect.objectContaining({ type: "trust.client_revoked", clientDeviceId: phone.deviceId }),
+    );
+    expect(s.store.audits.some((a) => a.type === "trust.client_revoked")).toBe(true);
+
+    // And while running, a devices pointer drops the next one.
+    s.store.revokeInDirectory(other.deviceId);
+    await vi.waitFor(async () => expect((await store.load()).list.has(other.deviceId)).toBe(false));
+    await d.stop();
   });
 
   it("presence: a heartbeat writes lastSeenAt every 5 minutes while running", async () => {
