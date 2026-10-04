@@ -45,8 +45,17 @@ const PHONE = `int-phone-${run}`;
 const email = (device: string) => `${device}@devices.chalito.invalid`;
 
 /** Server-side SQL as chalito_server (what the API does), against the local stack only. */
+/**
+ * `supabase db query` runs ONE statement per call (a prepared statement), so the role switch
+ * and the seed statements go inside a single DO block, as supabase/scripts/smoke-data-api.sh
+ * does. `set local` keeps the role to that call's transaction.
+ */
 const serverSql = (sql: string) =>
-  execFileSync("supabase", ["db", "query", "--local", `set role chalito_server; ${sql}`], { stdio: "pipe" });
+  execFileSync(
+    "supabase",
+    ["db", "query", "--local", `do $srv$ begin set local role chalito_server; ${sql} end $srv$`],
+    { stdio: "pipe" },
+  );
 const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
 
 const waitFor = async (cond: () => boolean, ms = 10_000) => {
