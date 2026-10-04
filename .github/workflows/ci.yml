@@ -168,3 +168,40 @@ jobs:
           quiet: true
           # `terraform plan` via Workload Identity Federation is added once the owner
           # creates the WIF pool for this repo (OPS); until then CI runs without credentials.
+
+  # M7 desktop (Tauri v2): unsigned debug bundles on all three OSes, the Rust hit-test unit
+  # tests and the desktop front-end tests. No signing, no publishing (ADR 0014 comes later).
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundles: deb
+          - os: windows-latest
+            bundles: nsis
+          - os: macos-latest
+            bundles: app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux webview and tray libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @chalito/desktop --filter @chalito/avatar-three test
+      # Builds dist/ first (beforeBuildCommand); generate_context! embeds it, so cargo test comes after.
+      - run: pnpm tauri build --debug --bundles ${{ matrix.bundles }}
+        working-directory: apps/desktop
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
