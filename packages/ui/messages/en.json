@@ -40,7 +40,9 @@
       "body": "You're signed in. Go back to the desktop app to finish signing in.",
       "open": "Open Chalito"
     },
-    "rateLimited": "Too many attempts. Wait a moment, then sign in again."
+    "rateLimited": "Too many attempts. Wait a moment, then sign in again.",
+    "unsolicited": "This sign-in link wasn't started from Chalito in this browser, so we didn't use it. To sign in, start here.",
+    "continue": "Sign in with Chalyb"
   },
   "onboarding": {
     "title": "Get started",
@@ -281,13 +283,21 @@
         "step_up_cancelled": "Cancelled: nothing was sent.",
         "expired": "Expired: denied",
         "not_pending": "Already resolved.",
-        "other": "We couldn't send your answer."
+        "other": "We couldn't send your answer.",
+        "unverified_request": "Can't approve: the request isn't verified."
       },
       "openSession": "Open the session",
       "notFound": "We couldn't find that approval.",
       "loading": "Loading…",
       "needsPasskey": "To approve high-risk actions, protect this device with your passkey.",
-      "enrolPasskey": "Create passkey"
+      "enrolPasskey": "Create passkey",
+      "truncated": "…(truncated)",
+      "truncatedN": "…(truncated, {n} more characters)",
+      "hiddenChars": "Contains invisible characters that can change how the text looks; they're shown here as ⟦U+…⟧.",
+      "fullInput": "See exactly what will run",
+      "mustExpand": "The summary is cut: open the full content before approving.",
+      "unverified": "Unverified",
+      "unverifiedNote": "Your computer didn't sign this request, or it doesn't match what it signed. It can't be approved; you can deny it."
     },
     "inbox": {
       "title": "Inbox",
@@ -378,14 +388,17 @@
       "revokeConfirm": "Remove {name}? It won't be able to approve anything.",
       "revokeYes": "Yes, remove",
       "cancel": "Cancel",
-      "revokeSent": "Removal sent to your computers.",
       "failed": "We couldn't send it.",
       "add": "Add a device",
       "notices": {
         "title": "Security notices",
         "missingStepUp": "{computer} refused a new device because the approval didn't include your passkey. Approve it again with your passkey.",
         "refused": "{computer} refused a new device: the approval wasn't valid. Approve it again."
-      }
+      },
+      "revokeFailed": "We couldn't revoke it. Nothing changed; try again.",
+      "revokedServer": "{name} was revoked: it can no longer sign in to your account or send anything to your computers.",
+      "revokeAgentOnline": "{agent}: removed it from its list.",
+      "revokeAgentOffline": "{agent}: offline. Its access is already closed on the server, and {agent} will drop it from its list as soon as it reconnects."
     },
     "settings": {
       "server": "Your settings are saved to your account.",
@@ -410,7 +423,10 @@
       "enrolled": "This device has a passkey.",
       "afterPairing": "Once you pair your computer, we'll ask you to create a passkey on this device.",
       "cancelled": "You cancelled the passkey; you can try again.",
-      "error": "We couldn't create the passkey. Try again."
+      "error": "We couldn't create the passkey. Try again.",
+      "replace": "Change passkey",
+      "replaceRefused": "To change your passkey, confirm with the current one first. Lost it? Add this device again.",
+      "replaced": "Done: your new passkey protects your approvals."
     }
   },
   "mcp": {

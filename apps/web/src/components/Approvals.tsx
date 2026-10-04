@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { ActionError, type ApprovalView } from "@chalito/client";
 import { Link } from "@/i18n/navigation";
+import { approvalText } from "@/lib/approval-text";
 import { useChalito, useLive, useNow } from "./ChalitoProvider";
 
 const RISK_STYLE: Record<ApprovalView["risk"], string> = {
@@ -41,7 +42,19 @@ export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
   const pending = a.status === "pending" && !expired;
   // HIGH/CRITICAL approvals need this device's passkey; without one, say so instead of failing.
   const needsPasskey = (a.stepUpRequired || a.risk === "HIGH" || a.risk === "CRITICAL") && !passkey.enrolled;
-  const details = a.details as { toolName?: string; summary?: string; reasons?: string[] } | null;
+  const details = a.details as {
+    toolName?: string;
+    summary?: string;
+    reasons?: string[];
+    input?: unknown;
+    summaryTruncated?: boolean;
+  } | null;
+  const text = details ? approvalText(details) : null;
+  // R-M10: a cut summary can't be approved until the person has seen the whole input.
+  const [expanded, setExpanded] = useState(false);
+  const mustExpand = !!text?.truncated && !expanded;
+  // ADR 0019 (R-H1): only a request the agent signed can be allowed; denying always works.
+  const unverified = !a.verified;
 
   const decide = async (allow: boolean) => {
     if (!client) return;
@@ -53,7 +66,16 @@ export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
     } catch (err) {
       const code = err instanceof ActionError ? err.code : "error";
       setNote(
-        t(`error.${code === "step_up_cancelled" || code === "expired" || code === "not_pending" ? code : "other"}`),
+        t(
+          `error.${
+            code === "step_up_cancelled" ||
+            code === "expired" ||
+            code === "not_pending" ||
+            code === "unverified_request"
+              ? code
+              : "other"
+          }`,
+        ),
       );
     } finally {
       setBusy(false);
@@ -70,6 +92,14 @@ export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
       <header className="flex items-center gap-2">
         <RiskBadge risk={a.risk} />
         <span className="font-medium">{details?.toolName ?? t("unknownTool")}</span>
+        {unverified ? (
+          <span
+            data-testid="unverified"
+            className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-900"
+          >
+            {t("unverified")}
+          </span>
+        ) : null}
         {pending ? (
           <span data-testid="countdown" className="ml-auto font-mono text-sm tabular-nums" aria-label={t("expiresIn")}>
             {mmss(a.expiresAt - now)}
@@ -78,7 +108,32 @@ export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
       </header>
       {details ? (
         <div className="grid gap-1 text-sm">
-          <p className="break-words font-mono">{details.summary}</p>
+          <p className="break-words font-mono" data-testid="approval-summary">
+            {text!.summary.text}
+            {text!.truncated ? (
+              <span data-testid="approval-truncated" className="ml-1 rounded bg-amber-100 px-1 text-amber-900">
+                {text!.hiddenChars !== null ? t("truncatedN", { n: text!.hiddenChars }) : t("truncated")}
+              </span>
+            ) : null}
+          </p>
+          {text!.summary.hidden || text!.full?.hidden ? (
+            <p role="note" data-testid="approval-hidden-chars" className="text-amber-900">
+              {t("hiddenChars")}
+            </p>
+          ) : null}
+          {text!.full ? (
+            <details
+              className="rounded-lg bg-neutral-50 p-2"
+              onToggle={(e) => e.currentTarget.open && setExpanded(true)}
+            >
+              <summary className="cursor-pointer" data-testid="approval-expand">
+                {t("fullInput")}
+              </summary>
+              <pre data-testid="approval-full" className="mt-2 whitespace-pre-wrap break-words font-mono text-xs">
+                {text!.full.text}
+              </pre>
+            </details>
+          ) : null}
           {details.reasons?.length ? <p className="text-neutral-600">{details.reasons.join(" · ")}</p> : null}
         </div>
       ) : (
@@ -98,10 +153,21 @@ export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
               </Link>
             </p>
           ) : null}
+          {unverified ? (
+            <p data-testid="unverified-note" className="text-sm text-red-900">
+              {t("unverifiedNote")}
+            </p>
+          ) : null}
+          {mustExpand ? (
+            <p data-testid="must-expand" className="text-sm text-amber-900">
+              {t("mustExpand")}
+            </p>
+          ) : null}
           <div className="flex gap-2">
             <button
               className="rounded-lg bg-emerald-700 px-4 py-2 text-white disabled:opacity-50"
-              disabled={busy || needsPasskey}
+              disabled={busy || needsPasskey || mustExpand || unverified}
+              data-testid="approve"
               onClick={() => void decide(true)}
             >
               {t("approve")}

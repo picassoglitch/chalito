@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { hasLocale, NextIntlClientProvider } from "next-intl";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -45,6 +46,9 @@ export default async function LocaleLayout({
   const { locale } = await params;
   if (!hasLocale(routing.locales, locale)) notFound();
   setRequestLocale(locale);
+  // Per-request CSP nonce (src/proxy.ts): reading the request makes every page render dynamically,
+  // which is what lets Next stamp the nonce on its scripts.
+  await headers();
   return (
     <html lang={locale}>
       <body>

@@ -15,7 +15,12 @@ import { SharingToggle } from "./SharingToggle";
 export const Devices = () => {
   const t = useTranslations("live.devices");
   const { devices } = useLive();
-  const { client, deviceId: me } = useChalito();
+  const { client, deviceId: me, revokeDevice } = useChalito();
+  /** Per-computer outcome of the last revoke: delivered now, or offline (its access is already cut). */
+  const [revoked, setRevoked] = useState<{
+    name: string;
+    agents: { name: string; online: boolean; sent: boolean }[];
+  } | null>(null);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const agents = devices.filter((d) => d.role === "agent" && !d.revoked);
@@ -35,12 +40,23 @@ export const Devices = () => {
     }
   };
 
-  /** A client is revoked on every agent that trusts this device (each removes it from its local list). */
+  /**
+   * Review R-H5: first the SERVER (the device's account is disabled and its sessions end, so it
+   * can't reach any computer through Chalito again), then a signed revokeClient to every computer
+   * so each drops the key from its local trust list.
+   */
   const revoke = async (d: DeviceView) => {
-    if (!client) return;
-    const results = await Promise.allSettled(agents.map((a) => client.actions.revokeClient(a.deviceId, d.deviceId)));
+    if (!client || !revokeDevice) return;
+    setNote(null);
+    setRevoked(null);
+    const server = await revokeDevice(d.deviceId);
     setConfirming(null);
-    setNote(results.some((r) => r.status === "fulfilled") ? t("revokeSent") : t("failed"));
+    if (server !== "ok") return setNote(t("revokeFailed"));
+    const results = await Promise.allSettled(agents.map((a) => client.actions.revokeClient(a.deviceId, d.deviceId)));
+    setRevoked({
+      name: d.name,
+      agents: agents.map((a, i) => ({ name: a.name, online: a.online, sent: results[i]!.status === "fulfilled" })),
+    });
   };
 
   return (
@@ -146,6 +162,20 @@ export const Devices = () => {
           </li>
         ))}
       </ul>
+      {revoked ? (
+        <div role="status" data-testid="revoke-result" className="grid gap-1 rounded-lg bg-neutral-100 p-3 text-sm">
+          <p className="font-medium">{t("revokedServer", { name: revoked.name })}</p>
+          <ul className="grid gap-0.5">
+            {revoked.agents.map((a) => (
+              <li key={a.name} data-testid="revoke-agent" data-online={a.online}>
+                {a.online && a.sent
+                  ? t("revokeAgentOnline", { agent: a.name })
+                  : t("revokeAgentOffline", { agent: a.name })}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {note ? <p role="status">{note}</p> : null}
     </div>
   );

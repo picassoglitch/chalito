@@ -40,7 +40,9 @@
       "body": "Entraste con tu cuenta. Vuelve a la app de escritorio para terminar de entrar.",
       "open": "Abrir Chalito"
     },
-    "rateLimited": "Demasiados intentos, espera un momento y vuelve a entrar."
+    "rateLimited": "Demasiados intentos, espera un momento y vuelve a entrar.",
+    "unsolicited": "Este enlace de acceso no se abrió desde Chalito en este navegador, así que no lo usamos. Para entrar, empieza aquí.",
+    "continue": "Entrar con Chalyb"
   },
   "onboarding": {
     "title": "Primeros pasos",
@@ -281,13 +283,21 @@
         "step_up_cancelled": "Cancelado: no se envió nada.",
         "expired": "Expiró: denegada",
         "not_pending": "Ya se resolvió.",
-        "other": "No pudimos enviar tu respuesta."
+        "other": "No pudimos enviar tu respuesta.",
+        "unverified_request": "No se puede aprobar: la solicitud no está verificada."
       },
       "openSession": "Ver la sesión",
       "notFound": "No encontramos esa aprobación.",
       "loading": "Cargando…",
       "needsPasskey": "Para aprobar acciones de riesgo alto, protege este dispositivo con tu passkey.",
-      "enrolPasskey": "Crear passkey"
+      "enrolPasskey": "Crear passkey",
+      "truncated": "…(truncado)",
+      "truncatedN": "…(truncado, faltan {n} caracteres)",
+      "hiddenChars": "Contiene caracteres invisibles que pueden cambiar cómo se ve el texto; aquí se muestran como ⟦U+…⟧.",
+      "fullInput": "Ver lo que se va a ejecutar, completo",
+      "mustExpand": "El resumen está cortado: abre el contenido completo antes de aprobar.",
+      "unverified": "Sin verificar",
+      "unverifiedNote": "Tu computadora no firmó esta solicitud, o no coincide con lo que firmó. No se puede aprobar; puedes denegarla."
     },
     "inbox": {
       "title": "Bandeja",
@@ -378,14 +388,17 @@
       "revokeConfirm": "¿Retirar {name}? Ya no podrá aprobar nada.",
       "revokeYes": "Sí, retirar",
       "cancel": "Cancelar",
-      "revokeSent": "Retiro enviado a tus computadoras.",
       "failed": "No pudimos enviarlo.",
       "add": "Añadir un dispositivo",
       "notices": {
         "title": "Avisos de seguridad",
         "missingStepUp": "{computer} rechazó un dispositivo nuevo porque la aprobación no tenía tu llave de acceso. Apruébalo otra vez con la llave de acceso.",
         "refused": "{computer} rechazó un dispositivo nuevo: la aprobación no era válida. Apruébalo otra vez."
-      }
+      },
+      "revokeFailed": "No pudimos retirarlo. No se cambió nada; vuelve a intentarlo.",
+      "revokedServer": "{name} fue retirado: ya no puede entrar a tu cuenta ni enviar nada a tus computadoras.",
+      "revokeAgentOnline": "{agent}: lo quitó de su lista.",
+      "revokeAgentOffline": "{agent}: sin conexión. Su acceso ya está cerrado en el servidor, y {agent} lo quitará de su lista en cuanto se conecte."
     },
     "settings": {
       "server": "Tus ajustes se guardan en tu cuenta.",
@@ -410,7 +423,10 @@
       "enrolled": "Este dispositivo ya tiene passkey.",
       "afterPairing": "Cuando emparejes tu computadora te pediremos crear una passkey en este dispositivo.",
       "cancelled": "Cancelaste la passkey; puedes intentarlo de nuevo.",
-      "error": "No pudimos crear la passkey. Inténtalo de nuevo."
+      "error": "No pudimos crear la passkey. Inténtalo de nuevo.",
+      "replace": "Cambiar llave de acceso",
+      "replaceRefused": "Para cambiar tu llave de acceso, confirma primero con la actual. ¿La perdiste? Vuelve a agregar este dispositivo.",
+      "replaced": "Listo: tu nueva llave de acceso protege tus aprobaciones."
     }
   },
   "mcp": {

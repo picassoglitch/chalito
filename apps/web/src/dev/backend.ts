@@ -97,6 +97,11 @@ export interface DevControls {
     risk: "LOW" | "MED" | "HIGH" | "CRITICAL";
     ttlMs?: number;
     summary?: string;
+    /** The tool input as the agent saw it (the summary may cut it, R-M10). */
+    input?: unknown;
+    toolName?: string;
+    /** Sealed WITHOUT the agent's signed request (ADR 0019): the browser must show it unverified. */
+    unverified?: boolean;
   }): Promise<void>;
   setDevMode(on: boolean, toggles?: string[]): void;
   askQuestion(questionId: string, question: string, options: string[]): Promise<void>;
@@ -104,6 +109,14 @@ export interface DevControls {
   agentInbox: { type: string; text?: unknown }[];
   /** The browser's current Supabase session (who the app is signed in as). */
   session(): { access_token: string; role: unknown } | null;
+  /** The current passkey fails its assertion (R-M11 replace). */
+  losePasskey(): void;
+  /** The agent stops reading commands and shows as offline. */
+  sleepAgent(): void;
+  /** The agent reconnects and, like apps/agent (R-H5), drops clients the directory marks revoked. */
+  wakeAgent(): void;
+  /** Whether the agent dropped this client from its local trust list. */
+  agentDropped(deviceId: string): boolean;
   /** Revokes THIS browser device (as another trusted device would). */
   revokeMe(): void;
   /** GET /v1/usage/daily: "normal" (comms under target), "over" (above), "empty", or "error". */
@@ -278,12 +291,18 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
 
   /** What a real agent seals (ADR 0019): details + its signature over {request, detailsHash}. */
   const detailsHashes = new Map<string, string>();
-  const signedApproval = async (aid: string, risk: string, created: number, ttlMs: number, summary?: string) => {
+  const signedApproval = async (
+    aid: string,
+    risk: string,
+    created: number,
+    ttlMs: number,
+    o: { summary?: string; input?: unknown; toolName?: string } = {},
+  ) => {
     const details = {
       v: 1,
-      toolName: risk === "HIGH" ? "Bash" : "Write",
-      summary: summary ?? (risk === "HIGH" ? "Bash: rm -rf dist" : "Write: notes.txt"),
-      input: risk === "HIGH" ? { command: "rm -rf dist" } : { file_path: "notes.txt" },
+      toolName: o.toolName ?? (risk === "HIGH" ? "Bash" : "Write"),
+      summary: o.summary ?? (risk === "HIGH" ? "Bash: rm -rf dist" : "Write: notes.txt"),
+      input: o.input ?? (risk === "HIGH" ? { command: "rm -rf dist" } : { file_path: "notes.txt" }),
       reasons: risk === "HIGH" ? ["deletes files"] : [],
       origin: `client:${me.deviceId}`,
     };
@@ -313,7 +332,15 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     return { details, request };
   };
 
-  const seedApproval: DevControls["seedApproval"] = async ({ aid, risk, ttlMs = 10 * 60 * 1000, summary }) => {
+  const seedApproval: DevControls["seedApproval"] = async ({
+    aid,
+    risk,
+    ttlMs = 10 * 60 * 1000,
+    summary,
+    input,
+    toolName,
+    unverified,
+  }) => {
     const created = Date.now();
     db.insert("approvals", {
       owner: OWNER,
@@ -326,7 +353,12 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       origin: `client:${me.deviceId}`,
       step_up_required: risk === "HIGH" || risk === "CRITICAL",
       // ADR 0019: like apps/agent, seal the details WITH the agent's signed request over them.
-      details_ct: await sealToBoth(await signedApproval(aid, risk, created, ttlMs, summary), `approval:${aid}`),
+      details_ct: await sealToBoth(
+        unverified
+          ? { details: (await signedApproval(aid, risk, created, ttlMs, { summary, input, toolName })).details }
+          : await signedApproval(aid, risk, created, ttlMs, { summary, input, toolName }),
+        `approval:${aid}`,
+      ),
       status: "pending",
       created_at: iso(created),
       expires_at: iso(created + ttlMs),
@@ -358,6 +390,10 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   });
 
   // ---- the simulated agent ----------------------------------------------------------
+  let agentAsleep = false;
+  /** R-M11: the current passkey can't assert (lost or wrong authenticator). */
+  let currentPasskeyLost = false;
+  const agentDropped = new Set<string>();
   const trusted = new Map([[me.deviceId, await fromB64url(me.pubSign)]]);
   db.onWrite((w) => {
     if (!w.byClient) return;
@@ -405,6 +441,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
         return;
       }
       if (w.table === "commands" && w.op === "insert") {
+        if (agentAsleep) return; // a sleeping agent never sees it (commands expire)
         const env = w.row.env as Parameters<typeof verifyEnvelope>[0];
         const check = await verifyEnvelope(env, "chalito.command.v1", trusted);
         db.remove("commands", (r) => r.id === w.row.id); // the agent consumes its commands
@@ -448,10 +485,10 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
             });
           }
           case "device.revokeClient":
-            return db.update("devices", (r) => r.device_id === p.clientDeviceId, {
-              revoked: true,
-              revoked_at: iso(Date.now()),
-            });
+            // The agent's LOCAL trust list (the server row is /v1/devices/revoke's).
+            trusted.delete(p.clientDeviceId as string);
+            agentDropped.add(p.clientDeviceId as string);
+            return;
         }
       }
     })();
@@ -533,6 +570,21 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     },
     agentInbox,
     session: () => (db.session ? { access_token: db.session.access_token, role: role() } : null),
+    losePasskey: () => void (currentPasskeyLost = true),
+    sleepAgent: () => {
+      agentAsleep = true;
+      db.update("devices", (r) => r.device_id === agent.deviceId, { last_seen_at: iso(Date.now() - 3_600_000) });
+    },
+    agentDropped: (id) => agentDropped.has(id),
+    wakeAgent: () => {
+      agentAsleep = false;
+      db.update("devices", (r) => r.device_id === agent.deviceId, { last_seen_at: iso(Date.now()) });
+      for (const r of db.rows("devices"))
+        if (r.role === "client" && r.revoked) {
+          trusted.delete(r.device_id as string);
+          agentDropped.add(r.device_id as string);
+        }
+    },
     revokeMe: () =>
       db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true, revoked_at: iso(Date.now()) }),
   };
@@ -810,6 +862,15 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
             if (su.assertion?.credentialId !== passkeyRef()!.credentialId) throw fail(401, "step_up_failed");
           }
           await endorse(c, b.endorsement as Endorsement, me.deviceId);
+          return { ok: true } as T;
+        }
+        case "/v1/devices/revoke": {
+          needRole("client");
+          const id = b.deviceId as string;
+          const row = db.rows("devices").find((r) => r.device_id === id);
+          if (!row) throw fail(404, "not_found");
+          if (row.revoked) return { ok: true, alreadyRevoked: true } as T;
+          db.update("devices", (r) => r.device_id === id, { revoked: true, revoked_at: iso(Date.now()) });
           return { ok: true } as T;
         }
         case "/v1/devices/endorsed": {
@@ -1116,7 +1177,14 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       ),
       signature: "ZGV2",
     }),
-    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
+    // /v1/webauthn/register, simulated with R-M11's rule: replacing needs the current passkey.
+    enrollPasskey: async () => {
+      const current = passkeyRef();
+      db.clientWrites.push({ table: "api", op: "webauthn/register", row: { replace: current !== null } });
+      if (current && currentPasskeyLost)
+        throw Object.assign(new Error("current_passkey_failed"), { status: 401, code: "current_passkey_failed" });
+      savePasskeyRef({ credentialId: current ? "dev-passkey-2" : "dev-passkey", rpId: window.location.hostname });
+    },
     assertPasskey: () => assertPasskey(),
   };
 };

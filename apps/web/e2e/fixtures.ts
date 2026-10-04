@@ -1,4 +1,4 @@
-import { test as base, type Page } from "@playwright/test";
+import { test as base, type BrowserContext, type Page } from "@playwright/test";
 
 export const SUPABASE = "http://127.0.0.1:54399";
 export const API = "http://127.0.0.1:8799";
@@ -64,6 +64,11 @@ export const signedIn = async (page: Page) => {
     [STORAGE_KEY, fakeSession()] as const,
   );
 };
+
+/** A sign-in this browser started: the state nonce cookie Chalito sets before the hub launch (R-M1). */
+export const SSO_STATE = "s".repeat(43);
+export const startedSignIn = (context: BrowserContext, state = SSO_STATE) =>
+  context.addCookies([{ name: "chalito_sso_state", value: state, url: "http://127.0.0.1:3100" }]);
 
 export const test = base.extend<{ guarded: void }>({
   guarded: [

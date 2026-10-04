@@ -1,4 +1,4 @@
-import { API, expect, test } from "./fixtures";
+import { API, expect, startedSignIn, test } from "./fixtures";
 
 const STATE = "Abc_Def-123456789012345678901234567890abcde".slice(0, 43);
 
@@ -60,6 +60,7 @@ test("loopback redirect works too, and a normal web sign-in afterwards is unaffe
     `http://127.0.0.1:53682/auth/sso?token=t1&state=${STATE}`,
   );
   // The cookie was consumed: the next /auth/sso is an ordinary web sign-in (exchange called).
+  await startedSignIn(page.context());
   let exchanged = 0;
   await page.route(
     `${API}/sso/exchange`,

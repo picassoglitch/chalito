@@ -51,6 +51,11 @@ interface Ctx {
   addDevice: AddDevice | null;
   /** Token usage (/uso), read as this device; null until paired. */
   usage: UsageApi | null;
+  /**
+   * Revokes a device on the SERVER (/v1/devices/revoke: its account is disabled and its sessions
+   * end), before the signed per-agent commands (review R-H5). Null until paired.
+   */
+  revokeDevice: ((deviceId: string) => Promise<"ok" | "failed">) | null;
   /** The store (/tienda) and the companion it dresses; null when signed out. */
   store: StoreApi | null;
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
@@ -83,7 +88,8 @@ const sharingReader =
     return data?.enabled === true;
   };
 
-export type EnrollResult = "ok" | "cancelled" | "error";
+/** `replace_refused`: the api wants the CURRENT passkey to replace it (R-M11) and didn't get it. */
+export type EnrollResult = "ok" | "cancelled" | "replace_refused" | "error";
 export interface PasskeyState {
   /** A paired device can enrol one. */
   available: boolean;
@@ -112,6 +118,7 @@ const INITIAL: Ctx = {
   usage: null,
   store: null,
   readCompanion: null,
+  revokeDevice: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -331,7 +338,13 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
               try {
                 await platform.enrollPasskey(keys.keys, token);
               } catch (err) {
-                return (err as { name?: string } | null)?.name === "NotAllowedError" ? "cancelled" : "error";
+                const e = err as { name?: string; code?: string } | null;
+                if (e?.name === "NotAllowedError") return "cancelled";
+                if (
+                  ["current_passkey_required", "current_passkey_failed", "authenticator_cloned"].includes(e?.code ?? "")
+                )
+                  return "replace_refused";
+                return "error";
               }
               setCtx((c) => ({ ...c, passkey: { ...c.passkey, enrolled: true } }));
               return "ok";
@@ -341,6 +354,14 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           newDevice: null,
           addDevice: addDevice(platform, keys, owner, token),
           usage: platform.usage(token),
+          revokeDevice: async (deviceId: string) => {
+            try {
+              await platform.api(token).post("/v1/devices/revoke", { deviceId });
+              return "ok" as const;
+            } catch {
+              return "failed" as const;
+            }
+          },
         });
       } catch (err) {
         if (err instanceof DeviceRevokedError) {

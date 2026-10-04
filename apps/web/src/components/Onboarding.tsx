@@ -1,11 +1,11 @@
 "use client";
+import { SignInLink } from "./SignInLink";
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { CompanionNameField, CompanionPicker, DEFAULT_COMPANION, SETTINGS, type SettingContext } from "@chalito/ui";
 import { Link, useRouter } from "@/i18n/navigation";
 import { env } from "@/lib/env";
 import { sessionTier, useSession } from "@/lib/session";
-import { hubLaunchUrl } from "@/lib/hub";
 import { DEV_BACKEND } from "@/lib/env";
 import { useChalito } from "./ChalitoProvider";
 import { PasskeyEnroll } from "./PasskeyEnroll";
@@ -67,11 +67,7 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
         ) : (
           <div className="grid gap-3">
             <p>{t("signIn.body")}</p>
-            {hubLaunchUrl() ? (
-              <a className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white" href={hubLaunchUrl()!}>
-                {t("signIn.cta")}
-              </a>
-            ) : null}
+            <SignInLink>{t("signIn.cta")}</SignInLink>
           </div>
         )
       ) : null}
