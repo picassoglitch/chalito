@@ -20,6 +20,7 @@
     "@chalito/crypto": "workspace:*",
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
+    "@chalito/releases": "workspace:*",
     "@chalito/rooms": "workspace:*",
     "@chalito/roster": "workspace:*",
     "@chalito/ui": "workspace:*",
