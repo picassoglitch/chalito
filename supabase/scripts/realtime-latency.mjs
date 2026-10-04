@@ -92,6 +92,9 @@ const deviceClient = (token) => {
 };
 /** Joins a private topic and records every broadcast on it. */
 const join = async (client, topic) => {
+  // Hand the session token to Realtime BEFORE joining: with the accessToken callback alone the
+  // socket can send the join before the token arrives, and the join is then authorized as anon.
+  await client.realtime.setAuth();
   const inbox = [];
   let status = "PENDING";
   let reason = "";
@@ -130,6 +133,66 @@ const diagnose = async (token, topic) => {
     `diagnose ${topic}: token=${JSON.stringify({ sub: claims.sub, aud: claims.aud, role: claims.role, app_metadata: claims.app_metadata })}`,
   );
   log(`diagnose ${topic}: row=${JSON.stringify(row)} checks=${JSON.stringify(checks)}`);
+  log(`diagnose ${topic}: probes=${JSON.stringify(await realtimeProbes(claims, topic))}`);
+};
+
+/**
+ * Realtime's own join check, replicated: in one transaction (rolled back) the admin connection
+ * inserts a broadcast and a presence message for the topic, then switches to the token's role,
+ * claims and topic and reads them back through RLS (can_read), and tries an insert as the user
+ * (can_write). Each probe runs in a savepoint so one error doesn't hide the others.
+ */
+const realtimeProbes = async (claims, topic) => {
+  const out = {};
+  await db
+    .begin(async (tx) => {
+      await tx`insert into realtime.messages (topic, extension, payload, event, private)
+               values (${topic}, 'broadcast', '{}', 'probe', true), (${topic}, 'presence', '{}', 'probe', true)`;
+      await tx`select set_config('request.jwt.claims', ${JSON.stringify(claims)}, true),
+                      set_config('realtime.topic', ${topic}, true),
+                      set_config('request.jwt.claim.sub', ${claims.sub ?? ""}, true),
+                      set_config('request.jwt.claim.role', ${claims.role ?? ""}, true)`;
+      await tx`set local role authenticated`;
+      const probe = async (name, fn) => {
+        try {
+          out[name] = await tx.savepoint(fn);
+        } catch (err) {
+          out[name] = `error: ${err.message}`;
+        }
+      };
+      await probe(
+        "read_broadcast",
+        async (sp) =>
+          (
+            await sp`select count(*)::int as n from realtime.messages where topic = realtime.topic() and extension = 'broadcast'`
+          )[0].n,
+      );
+      await probe(
+        "read_presence",
+        async (sp) =>
+          (
+            await sp`select count(*)::int as n from realtime.messages where topic = realtime.topic() and extension = 'presence'`
+          )[0].n,
+      );
+      await probe(
+        "read_any",
+        async (sp) =>
+          (
+            await sp`select count(*)::int as n from realtime.messages where topic = realtime.topic()
+                  and extension in ('broadcast', 'presence')`
+          )[0].n,
+      );
+      await probe("write_broadcast", async (sp) => {
+        await sp`insert into realtime.messages (topic, extension, payload, event, private)
+                 values (realtime.topic(), 'broadcast', '{}', 'probe', true)`;
+        return "allowed";
+      });
+      throw Object.assign(new Error("rollback"), { rollback: true });
+    })
+    .catch((err) => {
+      if (!err.rollback) out.setup_error = err.message;
+    });
+  return out;
 };
 const must = (res, what) => {
   if (res.error) fail(`${what}: ${res.error.message}`);
@@ -193,6 +256,14 @@ if (agentCh.status() !== "SUBSCRIBED") {
   await diagnose(agent.holder.token, `chalito:device:${AGENT}`);
   fail(`agent could not join its own topic (${agentCh.status()})`);
 }
+log(
+  `probes for the device topic (joined OK): ${JSON.stringify(
+    await realtimeProbes(
+      JSON.parse(Buffer.from(agent.holder.token.split(".")[1], "base64url").toString("utf8")),
+      `chalito:device:${AGENT}`,
+    ),
+  )}`,
+);
 const otherOwn = await join(other.client, `chalito:device:${XAGENT}`);
 if (otherOwn.status() !== "SUBSCRIBED") fail(`other owner's agent could not join its own topic (${otherOwn.status()})`);
 const otherSpy = await join(other.client, `chalito:device:${AGENT}`);

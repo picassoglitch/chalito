@@ -1,6 +1,6 @@
 # ADR 0006: Phone-first pairing and the agent's local trusted-client list
 
-- Status: Accepted (M0); implemented in M2/M3
+- Status: Accepted (M0); implemented in M2/M3. **The Firestore and Firebase Auth parts are superseded by [ADR 0017](0017-data-layer-supabase.md)**: pairing codes live in `chalito.pairing_codes`, the agent waits on the private `chalito:pairing:<code>` topic, and devices and pairing watches sign in as Supabase Auth users (magic-link token hashes from the api). The ceremony itself (key binding, fingerprints, the local trusted list) is unchanged.
 
 ## Decision
 **The phone is trusted client #1.** Pairing is a two-way, key-bound ceremony.

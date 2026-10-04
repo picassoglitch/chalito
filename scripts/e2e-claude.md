@@ -2,7 +2,7 @@
 
 This runbook is for one manual run on Aldo's machine, using his own Anthropic API key and his own Claude Code install, driven through `chalito-agent`. The automated tests use a fake Claude Code; this run is the only check against the real binary. Record the results at the end of this file (see "Results").
 
-Expect about 45 minutes. The run uses the Firestore and Auth emulators by default. Using the dev cloud instead requires the owner's go first, because it is externally visible.
+Expect about 45 minutes. The run uses the local Supabase stack (`supabase start`) by default. Using the dev cloud instead requires the owner's go first, because it is externally visible.
 
 ## What this proves
 - Every tool call goes through Chalito's PreToolUse gate, including calls Claude Code would have auto-approved itself.
@@ -20,7 +20,7 @@ Expect about 45 minutes. The run uses the Firestore and Auth emulators by defaul
 | Node 22 + pnpm, the repo built at the M3 head | `pnpm i && pnpm -r build` (or the compiled binary from `m3-build`) |
 | A running OS keychain (macOS Keychain, GNOME Keyring/KWallet on Linux) | `chalito keys set anthropic` succeeds. Without a reachable keychain (headless Linux) the agent falls back to the passphrase-encrypted `~/.chalito/secrets.enc` and warns. |
 | A **real terminal** you type in | `pair`, `keys`, `claude pin`, `policy edit`, `devmode` and `service` refuse piped stdin and refuse to run inside an agent session (`CHALITO_SESSION` set). Run them yourself, not through a script or an AI tool. |
-| **Emulators** (default): Java 21+ for the Firebase emulators, then `pnpm firebase emulators:start --only firestore,auth --project demo-chalito`, plus `apps/api` running locally against them (step 1) | Firestore on 8080, Auth on 9099; `curl localhost:8787/healthz` → `{"ok":true}` |
+| **Local Supabase stack** (default): Docker + the Supabase CLI, then `supabase start` in the repo (applies `supabase/migrations`), plus `apps/api` running locally against it (step 1) | `supabase status` shows API on 54321; `curl localhost:8787/healthz` → `{"ok":true}` |
 | *Or* **dev cloud**: `api.chalito.chalyb.com` deployed | needs the owner's go (externally visible) |
 | The **test phone**: `scripts/e2e-phone.ts`, which holds a test client key in `~/.chalito-e2e-phone.json`, signs commands and decisions, and opens sealed details | `pnpm tsx scripts/e2e-phone.ts help` |
 | A throwaway workspace, e.g. `~/chalito-e2e-ws` with `git init` and a `README.md` | — |
@@ -42,20 +42,28 @@ The CLI prints a warning when `CHALITO_SECRETS` is in use. Never set it on a rea
 Put this in every terminal you use (api, agent, test phone):
 
 ```sh
-# Endpoints. For the emulators, point the agent, the api and the test phone at them.
-export CHALITO_API_BASE=http://localhost:8787            # the local api (not 8080: that's Firestore)
-export CHALITO_FIREBASE_PROJECT_ID=demo-chalito
-export CHALITO_FIREBASE_API_KEY=fake-api-key              # emulator accepts any value
-export CHALITO_FIREBASE_DATABASE_ID=chalito
-export FIRESTORE_EMULATOR_HOST=localhost:8080
-export FIREBASE_AUTH_EMULATOR_HOST=localhost:9099
+# Endpoints: the local Supabase stack, for the agent, the api and the test phone.
+eval "$(supabase status -o env)"                          # API_URL, DB_URL, ANON/PUBLISHABLE and SERVICE_ROLE keys (local only)
+export CHALITO_API_BASE=http://localhost:8787            # the local api
+export SUPABASE_URL=$API_URL
+export SUPABASE_PUBLISHABLE_KEY=${PUBLISHABLE_KEY:-$ANON_KEY}
 export CHALITO_SSO_SECRET=local-e2e-sso-secret            # shared by the api and the test phone (enrol)
 ```
 
-Start the api against the emulators. It listens on 8787 by default. Off Cloud Run, audit records go to its stdout; they go to Pub/Sub only if you also run the Pub/Sub emulator and set `PUBSUB_EMULATOR_HOST`, which is optional here.
+The hub user you'll act as is a Supabase Auth user of the (local) hub project. Create one and keep its id for step 2:
 
 ```sh
-GOOGLE_CLOUD_PROJECT=demo-chalito CHALITO_ADMIN_TOKEN=local-e2e-admin pnpm --filter @chalito/api start
+HUB_UID=$(curl -s -X POST "$API_URL/auth/v1/admin/users" \
+  -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" -H "content-type: application/json" \
+  -d '{"email":"aldo-e2e@example.invalid","email_confirm":true}' | jq -r .id)
+echo "$HUB_UID"
+```
+
+Start the api against the stack. It listens on 8787 by default. Off Cloud Run, audit records go to its stdout; they go to Pub/Sub only if you also run the Pub/Sub emulator and set `PUBSUB_EMULATOR_HOST`, which is optional here.
+
+```sh
+DATABASE_URL=$DB_URL DATABASE_ROLE=chalito_server SUPABASE_SECRET_KEY=$SERVICE_ROLE_KEY \
+  CHALITO_ADMIN_TOKEN=local-e2e-admin pnpm --filter @chalito/api start
 ```
 
 Then store the API key. Type it at the prompt; don't pipe it in (piped input is refused):
@@ -75,7 +83,7 @@ Also check the guards once:
 
 1. Enrol the test phone as the user's first device. It exchanges a locally signed hub SSO token, then calls `POST /v1/devices/first`:
    ```sh
-   pnpm tsx scripts/e2e-phone.ts enrol --uid aldo-e2e
+   pnpm tsx scripts/e2e-phone.ts enrol --uid "$HUB_UID"
    ```
 2. Run `chalito pair`. It prints a short code and this computer's fingerprint, then waits.
 3. Claim with the test phone. It resolves the code, verifies the glyph signature, shows the computer's fingerprint for you to compare, and claims:
@@ -114,7 +122,7 @@ chalito run 2>&1 | tee ~/chalito-e2e.log
 Wait for `agent.ready` with `workspaces: 1`. The log is JSON lines and redacted: no keys, tokens, emails or full phone numbers. Spot-check that as you go.
 
 **Depends on** (tracked in `m3-agent`):
-- **Emulator support in the daemon:** `FIRESTORE_EMULATOR_HOST` and `FIREBASE_AUTH_EMULATOR_HOST` connect the agent to the emulators.
+- **Local stack support in the daemon:** `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` fill the `supabase` block of the config before pairing; `chalito pair` then signs them into `~/.chalito/config.json`.
 - **Init logging:** the adapter should log the SDK `system/init` fields `apiKeySource`, `permissionMode`, `claude_code_version` and `mcp_servers` once per session (`adapter.init`). Steps 5.6 and 5.7 read them from there.
 
 ## 4. Start a session from the test client
@@ -137,14 +145,14 @@ The prompt asks Claude to do the steps in section 5 one at a time and wait after
 
 > In this repo: 1) list the files and show git status; 2) create notes.txt with "hola"; 3) delete notes.txt with rm; 4) run `sudo true`; then stop.
 
-Check that `session.started`, then `session.state: running`, appear in `users/{uid}/sessions/{sid}/events`, and that the Session Card updates (sealed; open it with the test client).
+Check that `session.started`, then `session.state: running`, appear in `chalito.session_events` for that sid, and that the Session Card updates (sealed; open it with the test client).
 
 ## 5. What to verify
 
 **This step is the only place the real `claude` binary is exercised.** Everything else is covered without it:
 - agent-core and the adapter run against the in-process fake Claude Code (`apps/agent/test/agent.test.ts`, `packages/adapters`);
 - daemon wiring runs with injected fakes (`daemon.test.ts`);
-- the Firestore path runs in the emulator tests.
+- the Supabase path runs in the `supabase` CI job (`apps/agent/test/*.int.test.ts`, `apps/api/test/*.pg.test.ts`).
 
 There is no stand-in binary and no test-only adapter switch in the daemon, by design: an env-selectable fake in production would be an attack surface. What only this run can show is how the real CLI and SDK behave: hook delivery, init metadata, interrupts, and settings isolation.
 
@@ -179,10 +187,10 @@ Also check the security-review items that need a real install (`docs/reviews/m3-
 - **#9 (project settings are not loaded):** put a `SessionStart` hook that runs `touch /tmp/chalito-hook-ran` in `~/chalito-e2e-ws/.claude/settings.json`, and add `"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}`. Start a new session. Expected, since the adapter passes `settingSources: []`:
   - `/tmp/chalito-hook-ran` does **not** appear;
   - the session still reaches the API, because the base URL was ignored.
-- **#12 (gate errors fail closed):** in `acceptEdits`, stop **your own** api (not shared emulators) and ask for an edit to `.github/workflows/x.yml`. It must **not** be written, and Claude receives "Chalito: gate error".
+- **#12 (gate errors fail closed):** in `acceptEdits`, stop **your own** api (not a shared one) and ask for an edit to `.github/workflows/x.yml`. It must **not** be written, and Claude receives "Chalito: gate error".
 - **P2-4 (interrupt and origin):** while a turn is running, send `e2e-phone.ts interrupt --sid <sid>`. Record whether the SDK emitted a `result` after the interrupt; the log shows `session.state` going to `idle` if it did. Then send a new prompt and check that the next turn's tool calls are gated normally.
 - **P2-5 (`CLAUDE.md` symlink):** `ln -s ~/.ssh/known_hosts ~/chalito-e2e-ws/CLAUDE.md` (a harmless file outside the workspace), start a session, and ask Claude what its project instructions say. It must not know the file's contents. Remove the link afterwards.
-- **Claude pin:** stop the daemon. Copy the binary (`cp "$(which claude)" /tmp/claude-copy`), `chalito claude pin /tmp/claude-copy`, then append a byte to the copy (`printf x >> /tmp/claude-copy`) and start the daemon. It must refuse with "Claude Code doesn't match the one you pinned". Re-pin the real binary (`chalito claude pin`) and delete the copy.
+- **Claude pin:** stop the daemon. Copy the binary (`cp "$(which claude)" /tmp/claude-copy`), `chalito claude pin /tmp/claude-copy`, then append a byte to the copy (`printf x >> /tmp/claude-copy`) and start the daemon. It must refuse with "Claude Code updated itself: run `chalito claude pin` again". Re-pin the real binary (`chalito claude pin`) and delete the copy.
 
 ## 6. Revoke and clean up
 

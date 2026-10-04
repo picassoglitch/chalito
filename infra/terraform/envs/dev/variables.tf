@@ -36,9 +36,3 @@ variable "api_service_account" {
   type        = string
   default     = ""
 }
-
-variable "enable_firebase" {
-  description = "Add Firebase to Chalyb's GCP project (project-wide; owner decision #33)."
-  type        = bool
-  default     = false
-}
