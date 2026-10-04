@@ -66,6 +66,15 @@ export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(opts: { 
       return true;
     },
     getDeviceWebAuthn: async (a, d) => creds.get(`${a}/${d}`) ?? null,
+    // Like the real repo: the counter must move forward unless both are 0 (passkeys without one).
+    bumpWebAuthnCounter: async (a, d, _id, counter) => {
+      const c = creds.get(`${a}/${d}`);
+      if (!c) return "not_found";
+      if (counter === 0 && c.counter === 0) return "ok";
+      if (counter <= c.counter) return "cloned";
+      creds.set(`${a}/${d}`, { ...c, counter });
+      return "ok";
+    },
   };
   let clock = 1_790_000_000_000;
   const audit = new MemoryAudit();

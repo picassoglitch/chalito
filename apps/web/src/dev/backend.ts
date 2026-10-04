@@ -18,7 +18,9 @@ import {
   fromB64url,
   generateBoxKeyPair,
   generateSigningKeyPair,
+  fingerprint,
   openJson,
+  randomNonce,
   sealJson,
   sha256,
   signEnvelope,
@@ -28,15 +30,25 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import type { ClientKeys, ConnectOptions } from "@chalito/client";
-import { memoryStorage } from "@chalito/client";
-import type { SealedEnvelope } from "@chalito/protocol";
+import type { ClientKeys, EndorseWatch } from "@chalito/client";
+import {
+  ApiError,
+  type TrustedAgent,
+  endorseGlyph,
+  generateDeviceKeys,
+  signDeviceRegistration,
+  type ApiClient,
+} from "@chalito/client-keys";
+import { generateShortCode } from "@chalito/glyph";
+import { EndorsementBody } from "@chalito/protocol";
+import type { DeviceRegistration, Endorsement, GlyphPayload, SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
-import type { SettingsDb } from "@/lib/settings-store";
+import type { Platform } from "@/lib/platform";
 import type { ChannelSetter } from "@/lib/phone";
 import type { Connector, ConsentRequest, McpApi } from "@/lib/mcp";
 import { confirmStepUp } from "@/components/StepUpHost";
 import { passkeyRef, savePasskeyRef } from "@/lib/keys";
+import { parseUsage, type UsageApi } from "@/lib/usage";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -88,21 +100,48 @@ export interface DevControls {
   askQuestion(questionId: string, question: string, options: string[]): Promise<void>;
   /** What the agent received, opened with its key (prompts, answers). */
   agentInbox: { type: string; text?: unknown }[];
+  /** The browser's current Supabase session (who the app is signed in as). */
+  session(): { access_token: string; role: unknown } | null;
+  /** Revokes THIS browser device (as another trusted device would). */
+  revokeMe(): void;
+  /** GET /v1/usage/daily: "normal" (comms under target), "over" (above), "empty", or "error". */
+  setUsage(mode: "normal" | "over" | "empty" | "error"): void;
+  /** /v1/endorse: the other side of "Añadir un dispositivo" / "Esperando aprobación". */
+  endorse: {
+    /** A new browser of the owner opens a code (for this trusted browser to approve). */
+    newBrowser(name?: string): Promise<{
+      codeId: string;
+      shortCode: string;
+      deviceId: string;
+      fingerprint: string;
+      glyph: GlyphPayload;
+    }>;
+    /** Who endorsed that code (and the computers it introduced), if anyone. */
+    endorsementOf(codeId: string): { signer: string; newDeviceId: string; agents: string[] } | null;
+    /** "Navegador del trabajo" approves this (new) browser's code, introducing the agent (ADR 0018). */
+    approveFromOther(shortCode: string, introduce?: "agent" | "tampered" | "none"): Promise<void>;
+    /** The agent refused an endorsement (its device event, R-L13). */
+    refusedByAgent(clientDeviceId: string, reason: string): void;
+  };
 }
 
-export const startDevBackend = async (): Promise<{
-  connectOptions: ConnectOptions;
-  phoneVerifier: PhoneVerifier;
-  settingsDb: SettingsDb;
-  channels: ChannelSetter;
-  /** Stub of client-keys registerPasskey: records a reference, no authenticator. */
-  enrollPasskey: () => Promise<void>;
-  mcp: McpApi;
-  assertPasskey: () => Promise<Record<string, unknown>>;
-  controls: DevControls;
-}> => {
+/** DEV/TEST: whether this browser counts as paired (localStorage "chalito.dev.paired", default yes). */
+export const DEV_PAIRED_KEY = "chalito.dev.paired";
+const devPaired = () => {
+  try {
+    return window.localStorage.getItem(DEV_PAIRED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+};
+
+export const startDevBackend = async (): Promise<Platform & { controls: DevControls }> => {
   const db = new FakeDb();
-  const me = await newDevice();
+  // This browser's identity. A new browser gets a fresh one when it asks to be endorsed (/vincular).
+  let me = await newDevice();
+  /** Whether `me` trusts the agent's key: confirmed by its glyph, or introduced by an endorser (ADR 0018). */
+  let mePairedWithAgent = true;
+  let meAgentVia: "glyph" | "endorsement" = "glyph";
   const agent = await newDevice();
   const now = Date.now();
   const agentInbox: DevControls["agentInbox"] = [];
@@ -175,6 +214,9 @@ export const startDevBackend = async (): Promise<{
       last_seen_at: iso(now),
       dev_mode: { on: false, toggles: [], since: null },
       policy_hash: null,
+      pub_sign: d.pubSign,
+      pub_box: d.pubBox,
+      last_event: null,
     });
   db.insert("users", {
     id: OWNER,
@@ -197,7 +239,15 @@ export const startDevBackend = async (): Promise<{
     charges_notice_ack_at: null,
   });
   device(agent, "agent", "Laptop de Aldo", "laptop", "linux");
-  device(me, "client", "Este teléfono", "phone", "ios");
+  // A new (unpaired) browser has no device row until it is endorsed.
+  if (devPaired()) device(me, "client", "Este teléfono", "phone", "ios");
+  // DEV/TEST: start with this browser already revoked ("chalito.dev.revoked" = "1").
+  try {
+    if (window.localStorage.getItem("chalito.dev.revoked") === "1")
+      db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true });
+  } catch {
+    /* storage unavailable */
+  }
   const other = await newDevice();
   device(other, "client", "Navegador del trabajo", "web", "web");
   db.insert("connections", {
@@ -397,9 +447,14 @@ export const startDevBackend = async (): Promise<{
   });
 
   // ---- this browser's keys (stub of packages/client-keys) ------------------------------
-  const keys: ClientKeys = {
-    deviceId: me.deviceId,
-    pubBox: me.pubBox,
+  const agentFingerprint = await fingerprint(agent.sign.publicKey);
+  const keys: ClientKeys & { trustedAgents(): TrustedAgent[] } = {
+    get deviceId() {
+      return me.deviceId;
+    },
+    get pubBox() {
+      return me.pubBox;
+    },
     sign: (ctx, body) => signEnvelope(ctx, body, me.deviceId, me.sign.secretKey),
     open: (env, aad) => openJson(env, me.deviceId, me.box, aad),
     seal: async (value, recipients, aad) => {
@@ -407,14 +462,46 @@ export const startDevBackend = async (): Promise<{
       for (const [id, k] of Object.entries(recipients)) r[id] = await fromB64url(k);
       return sealJson(value, r, aad) as Promise<SealedEnvelope>;
     },
-    trustedAgentBoxKey: (id) => (id === agent.deviceId ? agent.pubBox : null),
-    trustedAgentSignKey: (id) => (id === agent.deviceId ? agent.pubSign : null),
+    trustedAgentBoxKey: (id) => (id === agent.deviceId && mePairedWithAgent ? agent.pubBox : null),
+    // ADR 0019: the same local-trust rule for the agent's signing key.
+    trustedAgentSignKey: (id) => (id === agent.deviceId && mePairedWithAgent ? agent.pubSign : null),
+    trustedAgents: () =>
+      mePairedWithAgent
+        ? [
+            {
+              deviceId: agent.deviceId,
+              pubSign: agent.pubSign,
+              pubBox: agent.pubBox,
+              fingerprint: agentFingerprint,
+              label: "Laptop de Aldo",
+              confirmedAt: now,
+              via: meAgentVia,
+            },
+          ]
+        : [],
   };
 
-  const controls: DevControls = {
+  // ---- sessions: the person's (hub SSO) until this browser signs in as its own device -------
+  const personSession = {
+    access_token: "dev-person-token",
+    user: { id: OWNER, app_metadata: { chalito: { role: "user", tier: "pro" } } },
+  };
+  const deviceSession = (deviceId: string) => ({
+    access_token: `dev-device-token-${deviceId}`,
+    user: {
+      id: `auth_${deviceId}`,
+      app_metadata: { chalito: { role: "client", owner: OWNER, device_id: deviceId } },
+    },
+  });
+  db.setSession(personSession);
+  const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
+
+  const controls: Omit<DevControls, "endorse" | "setUsage"> & Partial<Pick<DevControls, "endorse" | "setUsage">> = {
     marker: DEV_MARKER,
     owner: OWNER,
-    me: me.deviceId,
+    get me() {
+      return me.deviceId;
+    },
     agent: agent.deviceId,
     other: other.deviceId,
     sid: SID,
@@ -433,8 +520,11 @@ export const startDevBackend = async (): Promise<{
       await session({ state: "waiting_input", openQuestion: question });
     },
     agentInbox,
+    session: () => (db.session ? { access_token: db.session.access_token, role: role() } : null),
+    revokeMe: () =>
+      db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true, revoked_at: iso(Date.now()) }),
   };
-  (window as unknown as { __chalitoDev: DevControls }).__chalitoDev = controls;
+  (window as unknown as { __chalitoDev: typeof controls }).__chalitoDev = controls;
 
   // The api + Twilio Verify, simulated (apps/api/src/phone/routes.ts): /start needs the charges
   // acknowledgement; /check takes 123456, refuses a number on another account, and on success
@@ -534,6 +624,7 @@ export const startDevBackend = async (): Promise<{
       return view;
     },
     approve: async (id, scopes, assertion) => {
+      if (role() !== "client") return "forbidden"; // requireAuth(["client"])
       const r = requests.get(id);
       if (!r) return "not_found";
       if (!passkeyRef()) return "no_passkey";
@@ -568,6 +659,7 @@ export const startDevBackend = async (): Promise<{
       return true;
     },
     setSharing: async ({ sessionId, deviceId, enabled, plaintextAck }) => {
+      if (role() !== "client") return "forbidden"; // requireAuth(["client"])
       if (!!sessionId === !!deviceId) return "error";
       if (enabled && plaintextAck !== true) return "error";
       const scope = sessionId ? "session" : "device";
@@ -596,25 +688,344 @@ export const startDevBackend = async (): Promise<{
     return { id: lastAssertion.value, type: "public-key" };
   };
 
-  return {
-    phoneVerifier,
-    channels,
-    mcp,
-    assertPasskey,
-    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
-    controls,
-    settingsDb: db.client({ access_token: "dev-access" }, OWNER) as unknown as SettingsDb,
-    connectOptions: {
-      url: "http://dev.invalid",
-      publishableKey: "dev",
-      keys,
-      owner: OWNER,
-      storage: memoryStorage(),
-      // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
-      stepUp: async ({ risk }) =>
-        passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
-      signIn: { kind: "sso", exchange: async () => ({ token_hash: "dev" }) },
-      create: () => db.client({ access_token: "dev-access" }, OWNER),
+  // ---- /v1/endorse + /v1/devices/endorsed (apps/api), simulated --------------------------
+  // The browser runs the real client code (packages/client endorsementChannel, client-keys
+  // resolveForEndorsement / approveEndorsement / enrollEndorsed) against these routes.
+  interface Code {
+    codeId: string;
+    shortCode: string;
+    registration: DeviceRegistration;
+    expiresAt: number;
+    endorsement: Endorsement | null;
+    taken: boolean;
+  }
+  const codes = new Map<string, Code>();
+  const watchers = new Map<string, Set<() => void>>();
+  /** Trusted clients' signing keys (who may endorse): this browser and "Navegador del trabajo". */
+  const clients = new Map([
+    [me.deviceId, await fromB64url(me.pubSign)],
+    [other.deviceId, await fromB64url(other.pubSign)],
+  ]);
+  const fail = (status: number, code: string) => new ApiError(status, code);
+  const needRole = (want: "user" | "client") => {
+    if (role() !== want) throw fail(403, "forbidden");
+  };
+  const live = (c: Code | undefined): Code => {
+    if (!c) throw fail(404, "not_found");
+    if (c.expiresAt <= Date.now()) throw fail(410, "expired");
+    return c;
+  };
+  const pointer = (codeId: string) => watchers.get(codeId)?.forEach((f) => f());
+  const openCode = async (registration: DeviceRegistration): Promise<Code> => {
+    const chk = await verifyEnvelope(
+      registration,
+      "chalito.device-register.v1",
+      new Map([[registration.body.deviceId, await fromB64url(registration.body.pubSign)]]),
+    );
+    if (!chk.ok || registration.body.owner !== OWNER) throw fail(400, "bad_registration");
+    const c: Code = {
+      codeId: (await randomNonce()).slice(0, 22),
+      shortCode: await generateShortCode(),
+      registration,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      endorsement: null,
+      taken: false,
+    };
+    codes.set(c.codeId, c);
+    return c;
+  };
+  /** Records a signed endorsement on a code, as POST /v1/endorse/approve does after its checks. */
+  const endorse = async (c: Code, endorsement: Endorsement, signer: string) => {
+    if (c.endorsement) throw fail(409, "already_endorsed");
+    const key = clients.get(signer);
+    const row = db.rows("devices").find((r) => r.device_id === signer);
+    if (!key || !row || row.revoked) throw fail(403, "endorser_not_trusted");
+    if (endorsement.signerDeviceId !== signer) throw fail(403, "signer_mismatch");
+    const chk = await verifyEnvelope(endorsement, "chalito.endorsement.v1", new Map([[signer, key]]));
+    const reg = c.registration.body;
+    const b = endorsement.body;
+    if (
+      !chk.ok ||
+      b.uid !== OWNER ||
+      b.newDeviceId !== reg.deviceId ||
+      b.pubSign !== reg.pubSign ||
+      b.pubBox !== reg.pubBox
+    )
+      throw fail(400, "endorsement_mismatch");
+    c.endorsement = endorsement;
+    pointer(c.codeId);
+  };
+  const api: ApiClient = {
+    post: async <T>(path: string, body: unknown): Promise<T> => {
+      const b = body as Record<string, unknown>;
+      db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...b } });
+      switch (path) {
+        case "/v1/endorse/codes": {
+          needRole("user");
+          const c = await openCode(b.registration as DeviceRegistration);
+          return {
+            codeId: c.codeId,
+            shortCode: c.shortCode,
+            expiresAt: c.expiresAt,
+            watchToken: `dev-watch-${c.codeId}`,
+          } as T;
+        }
+        case "/v1/endorse/take": {
+          needRole("user");
+          const c = live(codes.get(b.codeId as string));
+          if (!c.endorsement) throw fail(409, "not_endorsed");
+          if (c.taken) throw fail(409, "already_taken");
+          c.taken = true;
+          return { endorsement: c.endorsement } as T;
+        }
+        case "/v1/endorse/resolve": {
+          needRole("client");
+          const c = live(
+            "codeId" in b
+              ? codes.get(b.codeId as string)
+              : [...codes.values()].find((x) => x.shortCode === b.shortCode),
+          );
+          if (c.endorsement) throw fail(409, "already_endorsed");
+          return { codeId: c.codeId, registration: c.registration, expiresAt: c.expiresAt } as T;
+        }
+        case "/v1/endorse/approve": {
+          needRole("client");
+          const c = live(codes.get(b.codeId as string));
+          if (passkeyRef()) {
+            // R-L13: the passkey assertion is inside the signed endorsement body.
+            const su = (b.endorsement as { body: { stepUp?: { assertion?: { credentialId?: unknown } } } }).body.stepUp;
+            if (!su) throw fail(401, "step_up_required");
+            if (su.assertion?.credentialId !== passkeyRef()!.credentialId) throw fail(401, "step_up_failed");
+          }
+          await endorse(c, b.endorsement as Endorsement, me.deviceId);
+          return { ok: true } as T;
+        }
+        case "/v1/devices/endorsed": {
+          needRole("user");
+          const reg = b.registration as DeviceRegistration;
+          const e = b.endorsement as Endorsement;
+          const c = [...codes.values()].find((x) => x.registration.body.deviceId === reg.body.deviceId);
+          if (!c?.endorsement || c.endorsement.sig !== e.sig) throw fail(400, "endorsement_mismatch");
+          if (db.rows("devices").some((r) => r.device_id === reg.body.deviceId)) throw fail(409, "device_exists");
+          const pub = await fromB64url(reg.body.pubSign);
+          trusted.set(reg.body.deviceId, pub); // the agent verifies the endorsement locally
+          clients.set(reg.body.deviceId, pub);
+          db.insert("devices", {
+            owner: OWNER,
+            device_id: reg.body.deviceId,
+            role: "client",
+            kind: reg.body.kind,
+            platform: reg.body.platform,
+            name: reg.body.name,
+            revoked: false,
+            last_seen_at: iso(Date.now()),
+            dev_mode: { on: false, toggles: [], since: null },
+            policy_hash: null,
+            pub_sign: reg.body.pubSign,
+            pub_box: reg.body.pubBox,
+            last_event: null,
+          });
+          window.localStorage.setItem(DEV_PAIRED_KEY, "1");
+          const hash = `dev-magiclink-${reg.body.deviceId}-endorsed`;
+          db.tokenHashes.set(hash, deviceSession(reg.body.deviceId));
+          return { customToken: hash, deviceId: reg.body.deviceId } as T;
+        }
+      }
+      throw fail(404, "not_found");
     },
+  };
+  // Realtime on chalito:pairing:<codeId>: a pointer on approve, and one on join (resync).
+  const endorseWatch: EndorseWatch = async (codeId, _token, onPointer) => {
+    const set = watchers.get(codeId) ?? new Set();
+    set.add(onPointer);
+    watchers.set(codeId, set);
+    setTimeout(onPointer, 0);
+    return () => set.delete(onPointer);
+  };
+  controls.endorse = {
+    refusedByAgent: (id, reason) => refusedByAgent(id, reason),
+    newBrowser: async (name = "Firefox en Linux") => {
+      const k = await generateDeviceKeys();
+      const registration = await signDeviceRegistration(k, {
+        owner: OWNER,
+        kind: "web",
+        platform: "web",
+        name,
+        now: Date.now(),
+      });
+      const c = await openCode(registration);
+      return {
+        codeId: c.codeId,
+        shortCode: c.shortCode,
+        deviceId: k.deviceId,
+        fingerprint: await fingerprint(k.sign.publicKey),
+        glyph: await endorseGlyph(k, c, { label: name, now: Date.now() }),
+      };
+    },
+    endorsementOf: (codeId) => {
+      const e = codes.get(codeId)?.endorsement;
+      return e
+        ? {
+            signer: e.signerDeviceId,
+            newDeviceId: e.body.newDeviceId,
+            agents: (e.body.agents ?? []).map((a) => a.deviceId),
+          }
+        : null;
+    },
+    approveFromOther: async (shortCode, introduce = "agent") => {
+      const c = live([...codes.values()].find((x) => x.shortCode === shortCode));
+      const reg = c.registration.body;
+      // ADR 0018: "Navegador del trabajo" introduces the agent it trusts ("tampered": with a wrong box key).
+      const introduced =
+        introduce === "none"
+          ? undefined
+          : [
+              {
+                deviceId: agent.deviceId,
+                pubSign: agent.pubSign,
+                pubBox: introduce === "tampered" ? other.pubBox : agent.pubBox,
+                fingerprint: agentFingerprint,
+              },
+            ];
+      const body = EndorsementBody.parse({
+        v: 1,
+        uid: OWNER,
+        newDeviceId: reg.deviceId,
+        pubSign: reg.pubSign,
+        pubBox: reg.pubBox,
+        issuedAt: Date.now(),
+        ...(introduced ? { agents: introduced } : {}),
+      });
+      const e = (await signEnvelope(
+        "chalito.endorsement.v1",
+        body,
+        other.deviceId,
+        other.sign.secretKey,
+      )) as Endorsement;
+      await endorse(c, e, other.deviceId);
+    },
+  };
+  const refusedByAgent = (clientDeviceId: string, reason: string) =>
+    db.update("devices", (r) => r.device_id === agent.deviceId, {
+      last_event: {
+        v: 1,
+        type: "trust.endorsement_refused",
+        deviceId: agent.deviceId,
+        clientDeviceId,
+        endorsedBy: me.deviceId,
+        reason,
+        t: Date.now(),
+      },
+    });
+  const saveDeviceKeys = async (k: { deviceId: string; sign: SigningKeyPair; box: BoxKeyPair }) => {
+    me = { ...k, pubSign: await toB64url(k.sign.publicKey), pubBox: await toB64url(k.box.publicKey) };
+    mePairedWithAgent = false;
+    meAgentVia = "glyph";
+  };
+  // ADR 0018: the browser stores the computers its endorser introduced (vetted by the web code).
+  const trustIntroduced = async (_k: unknown, agents: { deviceId: string }[], endorsedBy: string) => {
+    db.clientWrites.push({
+      table: "local",
+      op: "trustIntroduced",
+      row: { agents: agents.map((a) => a.deviceId), endorsedBy },
+    });
+    if (agents.some((a) => a.deviceId === agent.deviceId)) {
+      mePairedWithAgent = true;
+      meAgentVia = "endorsement";
+    }
+  };
+
+  // ---- GET /v1/usage/daily (apps/orchestrator), simulated: same shape, costs included --------
+  let usageMode: "normal" | "over" | "empty" | "error" = "normal";
+  controls.setUsage = (m) => void (usageMode = m);
+  const usage: UsageApi = async (days) => {
+    db.clientWrites.push({ table: "api", op: "usage/daily", row: { days } });
+    if (role() !== "client" || usageMode === "error") return "error";
+    const n = Math.min(31, Math.max(1, days));
+    const DAY = 86_400_000;
+    const today = Math.floor(Date.now() / DAY) * DAY;
+    const list = Array.from({ length: n }, (_, i) => {
+      const day = new Date(today - (n - 1 - i) * DAY).toISOString().slice(0, 10);
+      const on = usageMode !== "empty" && i % 7 !== 3; // a quiet day each week
+      const work = on ? 40_000 + ((i * 7919) % 25_000) : 0;
+      const comms = on ? Math.round(work * (usageMode === "over" ? 0.18 : 0.06)) : 0;
+      const byo = on && i % 2 === 0 ? 12_000 + ((i * 104_729) % 9_000) : 0;
+      return {
+        day,
+        managed: {
+          work: { tokens: work, costUsdMicros: work * 3 },
+          comms: { tokens: comms, costUsdMicros: comms * 3 },
+        },
+        byo: { tokens: byo, estCostUsdMicros: byo * 3 },
+      };
+    });
+    const sum = (f: (x: (typeof list)[number]) => number) => list.reduce((a, x) => a + f(x), 0);
+    const work = sum((x) => x.managed.work.costUsdMicros);
+    const comms = sum((x) => x.managed.comms.costUsdMicros);
+    return parseUsage({
+      days: list,
+      totals: {
+        managedTokens: sum((x) => x.managed.work.tokens + x.managed.comms.tokens),
+        managedCostUsdMicros: work + comms,
+        commsCostUsdMicros: comms,
+        byoTokens: sum((x) => x.byo.tokens),
+      },
+      commsOverheadRatio: work + comms > 0 ? comms / (work + comms) : null,
+      target: 0.1,
+    })!;
+  };
+
+  // /v1/devices/token, simulated: the signature over the refresh challenge is the authentication.
+  const sb = db.client(OWNER);
+  return {
+    controls: controls as DevControls,
+    db: sb,
+    url: "http://dev.invalid",
+    publishableKey: "dev",
+    loadDeviceKeys: async () =>
+      devPaired()
+        ? {
+            keys: keys as ClientKeys & {
+              sign: typeof keys.sign;
+              deviceId: string;
+              trustedAgents: () => TrustedAgent[];
+            },
+            // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
+            stepUp: async ({ risk }) =>
+              passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
+            forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
+          }
+        : null,
+    deviceLogin: (k, owner) => async () => {
+      const body = { v: 1 as const, owner, deviceId: k.deviceId, nonce: "n".repeat(22), issuedAt: Date.now() };
+      const challenge = await k.sign("chalito.refresh-challenge.v1", body);
+      const ok = await verifyEnvelope(challenge as never, "chalito.refresh-challenge.v1", trusted);
+      const row = db.rows("devices").find((r) => r.device_id === k.deviceId);
+      if (!row || row.revoked !== false)
+        throw Object.assign(new Error("device_revoked"), { status: 403, code: "device_revoked" });
+      if (!ok.ok) throw Object.assign(new Error("bad_signature"), { status: 401, code: "bad_signature" });
+      const hash = `dev-magiclink-${k.deviceId}-${Math.random().toString(36).slice(2)}`;
+      db.tokenHashes.set(hash, deviceSession(k.deviceId));
+      db.clientWrites.push({ table: "api", op: "devices/token", row: { deviceId: k.deviceId } });
+      return hash;
+    },
+    phone: () => ({ verifier: phoneVerifier, channels }),
+    mcp: () => mcp,
+    api: () => api,
+    usage: () => usage,
+    endorseWatch,
+    saveDeviceKeys,
+    trustIntroduced,
+    // The dev authenticator: a stand-in assertion over the challenge (the mock api checks the id).
+    passkeyAssertion: (ref) => async (challenge) => ({
+      credentialId: ref.credentialId,
+      authenticatorData: "ZGV2",
+      clientDataJSON: await toB64url(
+        new TextEncoder().encode(JSON.stringify({ type: "webauthn.get", challenge: await toB64url(challenge) })),
+      ),
+      signature: "ZGV2",
+    }),
+    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
+    assertPasskey: () => assertPasskey(),
   };
 };

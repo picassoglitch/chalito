@@ -1,20 +1,32 @@
 "use client";
-import { createContext, useContext, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { connect, type ChalitoClient, type Snapshot } from "@chalito/client";
+import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { DeviceRevokedError, connect, ensureSession, type ChalitoClient, type Snapshot } from "@chalito/client";
+import type { EndorseTarget } from "@chalito/client-keys";
 import type { PhoneVerifier } from "@chalito/ui";
-import { env } from "@/lib/env";
-import { assertWithServerChallenge, httpApi } from "@chalito/client-keys";
-import { enrollPasskey, loadDeviceKeys, passkeyRef } from "@/lib/keys";
-import { httpMcp, type McpApi } from "@/lib/mcp";
-import { apiPhone } from "@/lib/phone";
+import type { DeviceKeys } from "@/lib/keys";
+import {
+  approveTarget,
+  resolveTarget,
+  waitForEndorsement,
+  type AddError,
+  type DirectoryRow,
+  type Resolved,
+  type WaitError,
+  type Waiting,
+} from "@/lib/endorse";
+import { markEndorsed, passkeyRef } from "@/lib/keys";
+import type { McpApi } from "@/lib/mcp";
+import type { UsageApi } from "@/lib/usage";
+import type { Platform } from "@/lib/platform";
+import type { Session, SessionState } from "@/lib/session";
 import { SettingsStore, type SettingsDb } from "@/lib/settings-store";
-import { useSession } from "@/lib/session";
-import { supabase } from "@/lib/supabase";
 
-export type ConnStatus = "loading" | "signed_out" | "unpaired" | "error" | "ready";
+export type ConnStatus = "loading" | "signed_out" | "unpaired" | "revoked" | "error" | "ready";
 
 interface Ctx {
   status: ConnStatus;
+  /** The Supabase session this browser holds: the person's (before pairing) or this device's own. */
+  session: SessionState;
   client: ChalitoClient | null;
   /** This browser's device id (from its keys), when paired. */
   deviceId: string | null;
@@ -29,6 +41,20 @@ interface Ctx {
   assertPasskey: (() => Promise<Record<string, unknown>>) | null;
   /** Whether a session's or device's card is shared with connected apps (chalito.mcp_sharing, RLS read). */
   readSharing: ((scope: "session" | "device", target: string) => Promise<boolean>) | null;
+  /**
+   * "Esperando aprobación": this browser is signed in as the person but not trusted yet. Opens a
+   * code for a trusted device to approve; on success this browser signs in as itself. Null otherwise.
+   */
+  newDevice: ((name: string) => Promise<Waiting | { error: WaitError }>) | null;
+  /** "Añadir un dispositivo": a trusted (ready) browser endorses another one. Null otherwise. */
+  addDevice: AddDevice | null;
+  /** Token usage (/uso), read as this device; null until paired. */
+  usage: UsageApi | null;
+}
+
+export interface AddDevice {
+  resolve(input: { glyph: unknown } | { shortCode: string }): Promise<Resolved>;
+  approve(target: EndorseTarget): Promise<{ ok: true } | { ok: false; reason: AddError }>;
 }
 
 type SharingDb = {
@@ -68,6 +94,7 @@ const unavailable: PhoneVerifier = {
 };
 const INITIAL: Ctx = {
   status: "loading",
+  session: { status: "loading" },
   client: null,
   deviceId: null,
   phoneVerifier: unavailable,
@@ -76,6 +103,9 @@ const INITIAL: Ctx = {
   mcp: null,
   assertPasskey: null,
   readSharing: null,
+  newDevice: null,
+  addDevice: null,
+  usage: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -92,112 +122,248 @@ const withProposal = (v: PhoneVerifier, settings: SettingsStore): PhoneVerifier 
   check: (e164, code) => v.check(e164, code),
 });
 
+/** The account (hub user id): the person's own id, or the owner a device session carries. */
+export const ownerOf = (s: Session): string => {
+  const c = (s.user?.app_metadata as { chalito?: { owner?: unknown } } | undefined)?.chalito;
+  return typeof c?.owner === "string" ? c.owner : (s.user?.id ?? "");
+};
+
+/** The person's own session (hub SSO), as opposed to a device's (role client). */
+const isPersonSession = (s: Session): boolean =>
+  (s.user?.app_metadata as { chalito?: { role?: unknown } } | undefined)?.chalito?.role !== "client";
+
+const loadPlatform = async (): Promise<Platform> => {
+  // DEV/TEST ONLY (never on Vercel; see next.config.ts): the mock backend. The env read is inlined
+  // so webpack sees `if (false)` in normal builds and never emits src/dev.
+  if (process.env.NEXT_PUBLIC_CHALITO_DEV_BACKEND === "1") return (await import("@/dev/backend")).startDevBackend();
+  return (await import("@/lib/platform")).productionPlatform();
+};
+
 /**
- * Connects this browser device to its owner's live data (packages/client `connect()`): signed
- * in (hub SSO session) + this device's keys (packages/client-keys). Without keys, the screens
- * ask to pair the device instead of showing data.
+ * Connects this browser to its owner's data. Before pairing it uses the person's own session
+ * (hub SSO): onboarding, settings, consent viewing. Once this browser holds device keys, it signs
+ * in as ITSELF (packages/client ensureSession kind "device", deviceLogin from client-keys): live
+ * data, decisions, consent approval and sharing all use that device session. A revoked device
+ * lands on the "revoked" state and forgets the agents it trusted.
  */
-export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
-  const session = useSession();
-  const [ctx, setCtx] = useState<Ctx>(INITIAL);
-  const passkeyState = (enroll: () => Promise<void>): PasskeyState => ({
-    available: true,
-    enrolled: passkeyRef() !== null,
-    enroll: async () => {
-      try {
-        await enroll();
-      } catch (err) {
-        return (err as { name?: string } | null)?.name === "NotAllowedError" ? "cancelled" : "error";
-      }
-      setCtx((c) => ({ ...c, passkey: { ...c.passkey, enrolled: true } }));
-      return "ok";
+type DirectoryDb = {
+  from(t: string): {
+    select(c: string): {
+      eq(c: string, v: unknown): PromiseLike<{ data: Record<string, unknown>[] | null; error: unknown }>;
+    };
+  };
+};
+/** The account's devices directory (RLS), for vetting introduced computers (ADR 0018). */
+const readDirectory = async (db: unknown, owner: string): Promise<DirectoryRow[]> => {
+  const { data, error } = await (db as DirectoryDb)
+    .from("devices")
+    .select("device_id, role, revoked, pub_sign, pub_box, name")
+    .eq("owner", owner);
+  if (error || !data) throw new Error("directory");
+  return data.map((r) => ({
+    deviceId: String(r.device_id),
+    role: r.role === "agent" ? "agent" : "client",
+    revoked: r.revoked !== false,
+    pubSign: String(r.pub_sign ?? ""),
+    pubBox: String(r.pub_box ?? ""),
+    name: String(r.name ?? ""),
+  }));
+};
+
+const newDevice =
+  (platform: Platform, owner: string, token: () => Promise<string | null>) =>
+  async (name: string): Promise<Waiting | { error: WaitError }> => {
+    const w = await waitForEndorsement({
+      api: platform.api(token),
+      watch: platform.endorseWatch,
+      save: (k) => platform.saveDeviceKeys(k),
+      owner,
+      name,
+      // Read with the person's session, before this browser switches to its own.
+      directory: () => readDirectory(platform.db, owner),
+      trustIntroduced: (k, agents, by) => platform.trustIntroduced(k, agents, by),
+    });
+    if ("error" in w) return w;
+    return {
+      ...w,
+      // Enrolled: from now on this browser is its own device user, not the person's session. The
+      // auth change reruns the connection, which now finds trusted keys.
+      result: w.result.then(async (r) => {
+        if (!r.ok) return r;
+        markEndorsed(r.deviceId);
+        try {
+          await ensureSession(platform.db.auth as never, {
+            kind: "device",
+            deviceId: r.deviceId,
+            login: async () => r.customToken,
+          });
+        } catch {
+          return { ok: false, reason: "failed" } as const;
+        }
+        return r;
+      }),
+    };
+  };
+
+const addDevice = (
+  platform: Platform,
+  keys: DeviceKeys,
+  owner: string,
+  token: () => Promise<string | null>,
+): AddDevice => {
+  const api = platform.api(token);
+  return {
+    resolve: (input) => resolveTarget(api, input, Date.now()),
+    approve: (target) => {
+      // Required when this device has a passkey: it signs the endorsement body itself (R-L13).
+      const ref = passkeyRef();
+      return approveTarget(api, keys.keys, target, {
+        owner,
+        now: Date.now(),
+        ...(ref ? { stepUp: platform.passkeyAssertion(ref) } : {}),
+        // ADR 0018: the new browser can prompt these computers right away.
+        agents: keys.keys.trustedAgents(),
+      });
     },
-  });
+  };
+};
+
+export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
+  const [ctx, setCtx] = useState<Ctx>(INITIAL);
+  const [platform, setPlatform] = useState<Platform | null>(null);
+  const [session, setSession] = useState<SessionState>({ status: "loading" });
+  /** Once the device sign-in starts, session churn (its own sign-out/sign-in) must not restart it. */
+  const deviceMode = useRef(false);
+  const clientRef = useRef<ChalitoClient | null>(null);
+  const keysRef = useRef<DeviceKeys | null>(null);
 
   useEffect(() => {
     let alive = true;
-    let client: ChalitoClient | null = null;
-    const done = (c: Ctx) => alive && setCtx(c);
+    void loadPlatform()
+      .then((p) => alive && setPlatform(p))
+      .catch(() => alive && setCtx({ ...INITIAL, status: "error" }));
+    return () => {
+      alive = false;
+      void clientRef.current?.close();
+    };
+  }, []);
+
+  // The browser's Supabase session.
+  useEffect(() => {
+    if (!platform) return;
+    const auth = platform.db.auth as unknown as {
+      getSession(): Promise<{ data: { session: Session | null } }>;
+      onAuthStateChange(cb: (e: string, s: Session | null) => void): {
+        data: { subscription: { unsubscribe(): void } };
+      };
+    };
+    let alive = true;
+    void auth.getSession().then(({ data }) => {
+      if (alive) setSession(data.session ? { status: "signed_in", session: data.session } : { status: "signed_out" });
+    });
+    const { data } = auth.onAuthStateChange((_e, s) =>
+      setSession(s ? { status: "signed_in", session: s } : { status: "signed_out" }),
+    );
+    return () => {
+      alive = false;
+      data.subscription.unsubscribe();
+    };
+  }, [platform]);
+
+  useEffect(() => setCtx((c) => ({ ...c, session })), [session]);
+
+  useEffect(() => {
+    if (!platform || deviceMode.current || session.status === "loading") return;
+    let alive = true;
+    const done = (c: Omit<Ctx, "session">) => alive && setCtx((prev) => ({ ...c, session: prev.session }));
     void (async () => {
-      // DEV/TEST ONLY (never on Vercel; see next.config.ts): mock backend and stub keys. The env
-      // read is inlined (not DEV_BACKEND) so webpack sees `if (false)` and never emits src/dev.
-      if (process.env.NEXT_PUBLIC_CHALITO_DEV_BACKEND === "1") {
-        const dev = await import("@/dev/backend");
-        const b = await dev.startDevBackend();
-        client = await connect(b.connectOptions);
-        const settings = new SettingsStore(b.settingsDb, b.controls.owner, b.channels);
-        return done({
-          status: "ready",
-          client,
-          deviceId: b.connectOptions.keys.deviceId,
-          phoneVerifier: withProposal(b.phoneVerifier, settings),
-          settings,
-          passkey: passkeyState(b.enrollPasskey),
-          mcp: b.mcp,
-          assertPasskey: b.assertPasskey,
-          readSharing: sharingReader(b.settingsDb),
-        });
-      }
-      if (session.status === "loading") return;
       if (session.status === "signed_out") return done({ ...INITIAL, status: "signed_out" });
-      const owner = session.session.user?.id ?? "";
-      const phone = apiPhone(env.apiBase, async () => {
-        const { data } = await supabase().auth.getSession();
-        return data.session?.access_token ?? null;
-      });
-      const settings = new SettingsStore(supabase() as unknown as SettingsDb, owner, phone.channels);
-      const verifier = withProposal(phone.verifier, settings);
-      const apiToken = async () => (await supabase().auth.getSession()).data.session?.access_token ?? null;
-      // NOTE: consent approval and sharing are client-role routes: they need this device's own
-      // session (device sign-in), which arrives with the pairing slice. Until then the person's
-      // session is used and those two calls answer "forbidden".
-      const mcp = httpMcp(env.apiBase, apiToken);
-      const keys = await loadDeviceKeys();
-      if (!keys) return done({ ...INITIAL, status: "unpaired", phoneVerifier: verifier, settings, mcp });
+      const owner = ownerOf(session.session);
+      const token = async () =>
+        ((await platform.db.auth.getSession()) as { data: { session: Session | null } }).data.session?.access_token ??
+        null;
+      const phone = platform.phone(token);
+      const settings = new SettingsStore(platform.db as unknown as SettingsDb, owner, phone.channels);
+      const base = {
+        phoneVerifier: withProposal(phone.verifier, settings),
+        settings,
+        mcp: platform.mcp(token),
+        readSharing: sharingReader(platform.db),
+      };
+      const keys = await platform.loadDeviceKeys();
+      if (!keys)
+        return done({
+          ...INITIAL,
+          ...base,
+          status: "unpaired",
+          newDevice: isPersonSession(session.session) ? newDevice(platform, owner, token) : null,
+        });
+      keysRef.current = keys;
+      deviceMode.current = true;
       try {
-        client = await connect({
-          url: env.supabaseUrl,
-          publishableKey: env.supabaseAnonKey,
+        const client = await connect({
+          url: platform.url,
+          publishableKey: platform.publishableKey,
           keys: keys.keys,
           owner,
           stepUp: keys.stepUp,
-          signIn: {
-            kind: "sso",
-            exchange: async () => {
-              throw new Error("signed out");
-            },
-          },
+          signIn: { kind: "device", deviceId: keys.keys.deviceId, login: platform.deviceLogin(keys.keys, owner) },
+          create: () => platform.db,
         });
-        const token = async () => (await supabase().auth.getSession()).data.session?.access_token ?? null;
+        clientRef.current = client;
         done({
+          ...base,
           status: "ready",
           client,
           deviceId: keys.keys.deviceId,
-          phoneVerifier: verifier,
-          settings,
-          passkey: passkeyState(() => enrollPasskey(keys.keys, env.apiBase, token)),
-          mcp,
-          readSharing: sharingReader(supabase()),
-          assertPasskey: async () =>
-            (await assertWithServerChallenge(httpApi({ baseUrl: env.apiBase, token }))) as unknown as Record<
-              string,
-              unknown
-            >,
+          passkey: {
+            available: true,
+            enrolled: passkeyRef() !== null,
+            enroll: async () => {
+              try {
+                await platform.enrollPasskey(keys.keys, token);
+              } catch (err) {
+                return (err as { name?: string } | null)?.name === "NotAllowedError" ? "cancelled" : "error";
+              }
+              setCtx((c) => ({ ...c, passkey: { ...c.passkey, enrolled: true } }));
+              return "ok";
+            },
+          },
+          assertPasskey: () => platform.assertPasskey(token),
+          newDevice: null,
+          addDevice: addDevice(platform, keys, owner, token),
+          usage: platform.usage(token),
         });
-      } catch {
-        done({ ...INITIAL, status: "error", phoneVerifier: verifier, settings, mcp });
+      } catch (err) {
+        if (err instanceof DeviceRevokedError) {
+          await keys.forget().catch(() => undefined);
+          return done({ ...INITIAL, ...base, status: "revoked" });
+        }
+        deviceMode.current = false;
+        done({ ...INITIAL, ...base, status: "error" });
       }
     })();
     return () => {
       alive = false;
-      void client?.close();
     };
-  }, [session.status]);
+  }, [platform, session]);
+
+  // Revoked while connected (the live store saw this device's row revoked): forget its trust too.
+  useEffect(() => {
+    const client = ctx.client;
+    if (!client) return;
+    return client.live.subscribe(() => {
+      if (client.live.getSnapshot().status === "revoked") void keysRef.current?.forget().catch(() => undefined);
+    });
+  }, [ctx.client]);
 
   return <Chalito.Provider value={ctx}>{children}</Chalito.Provider>;
 };
 
 export const useChalito = () => useContext(Chalito);
+
+/** The browser's session (the person's, or this device's once paired). */
+export const useSession = (): SessionState => useContext(Chalito).session;
 
 const EMPTY_SNAPSHOT: Snapshot = {
   status: "idle",

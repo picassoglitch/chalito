@@ -34,7 +34,23 @@ const logWrite = (w: { table: string; op: string; row: Row }) => {
   }
 };
 
+/** A Supabase Auth session as the fake hands it out. */
+export interface FakeSession {
+  access_token: string;
+  user: { id: string; app_metadata: Record<string, unknown> };
+}
+
 export class FakeDb {
+  /** The browser's current session (one per page, like supabase-js with persistent storage). */
+  session: FakeSession | null = null;
+  readonly #authListeners = new Set<(e: string, s: FakeSession | null) => void>();
+  /** Magic-link token hashes the fake api issued, and the session each opens. */
+  readonly tokenHashes = new Map<string, FakeSession>();
+
+  setSession(s: FakeSession | null): void {
+    this.session = s;
+    for (const l of this.#authListeners) queueMicrotask(() => l(s ? "SIGNED_IN" : "SIGNED_OUT", s));
+  }
   readonly tables = new Map<string, Row[]>();
   /** Every row the browser wrote, as written (for the ciphertext-only check). */
   readonly clientWrites: { table: string; op: string; row: Row }[] = [];
@@ -139,7 +155,7 @@ export class FakeDb {
   }
 
   /** The BrowserSupabase shape connect() expects. */
-  client(session: { access_token: string }, owner = ""): BrowserSupabase {
+  client(owner = ""): BrowserSupabase {
     const from = (table: string) => {
       const st: {
         op: "select" | "insert" | "update" | "delete";
@@ -206,11 +222,20 @@ export class FakeDb {
       return api;
     };
     const auth = {
-      getSession: async () => ({ data: { session }, error: null }),
-      verifyOtp: async () => ({ data: { session }, error: null }),
-      setSession: async () => ({ data: { session }, error: null }),
-      onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => undefined } } }),
-      signOut: async () => undefined,
+      getSession: async () => ({ data: { session: this.session }, error: null }),
+      verifyOtp: async ({ token_hash }: { token_hash: string }) => {
+        const s = this.tokenHashes.get(token_hash);
+        this.tokenHashes.delete(token_hash); // single use
+        if (!s) return { data: { session: null }, error: { message: "Token has expired or is invalid" } };
+        this.setSession(s);
+        return { data: { session: s }, error: null };
+      },
+      setSession: async () => ({ data: { session: this.session }, error: null }),
+      onAuthStateChange: (cb: (e: string, s: FakeSession | null) => void) => {
+        this.#authListeners.add(cb);
+        return { data: { subscription: { unsubscribe: () => this.#authListeners.delete(cb) } } };
+      },
+      signOut: async () => this.setSession(null),
     };
     return {
       from,

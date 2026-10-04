@@ -35,10 +35,14 @@ export const takeNext = (): string | null => {
   return allowedNext(raw);
 };
 
+/** One hub launch per page: effects that re-run (or a double tap) must not start a second one. */
+let launching = false;
+
 /** "Entrar con Chalyb" that comes back to `path` afterwards. */
 export const signInAndReturn = (path: string): void => {
   const launch = hubLaunchUrl();
-  if (!launch) return;
+  if (!launch || launching) return;
+  launching = true;
   rememberNext(path);
   window.location.assign(launch);
 };

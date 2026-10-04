@@ -33,7 +33,13 @@
     "working": "Signing you in to Chalito…",
     "failed": "We couldn't open your session. Sign in again from Chalyb.",
     "missingToken": "The sign-in link is missing. Sign in from Chalyb.",
-    "retry": "Back to Chalyb"
+    "retry": "Back to Chalyb",
+    "desktop": {
+      "title": "Open Chalito to finish",
+      "body": "You're signed in. Go back to the desktop app to finish signing in.",
+      "open": "Open Chalito"
+    },
+    "rateLimited": "Too many attempts. Wait a moment, then sign in again."
   },
   "onboarding": {
     "title": "Get started",
@@ -179,7 +185,8 @@
       "tier": "Tier: {tier}",
       "unknown": "Unknown tier",
       "trial": "Trial until {date}",
-      "manage": "Manage on Chalyb"
+      "manage": "Manage on Chalyb",
+      "usage": "See your usage"
     },
     "renderQuality": {
       "label": "Animation quality",
@@ -235,9 +242,11 @@
       "loading": "Connecting…",
       "signed_out": "Sign in with your Chalyb account to see your sessions and approvals.",
       "signIn": "Sign in with Chalyb",
-      "unpaired": "This device isn't paired yet. Pair it from the desktop app to approve and see your sessions.",
+      "unpaired": "This browser isn't trusted yet. Approve it from a trusted device or pair it from the desktop app.",
       "error": "We couldn't connect. Try again in a moment.",
-      "revoked": "This device was removed from your account. Pair it again from a trusted device."
+      "revoked": "This device was removed from your account. Pair it again from a trusted device.",
+      "repair": "Pair again",
+      "link": "Use this browser"
     },
     "devMode": {
       "banner": "Developer mode ACTIVE.",
@@ -374,7 +383,13 @@
       "revokeYes": "Yes, remove",
       "cancel": "Cancel",
       "revokeSent": "Removal sent to your computers.",
-      "failed": "We couldn't send it."
+      "failed": "We couldn't send it.",
+      "add": "Add a device",
+      "notices": {
+        "title": "Security notices",
+        "missingStepUp": "{computer} refused a new device because the approval didn't include your passkey. Approve it again with your passkey.",
+        "refused": "{computer} refused a new device: the approval wasn't valid. Approve it again."
+      }
     },
     "settings": {
       "server": "Your settings are saved to your account.",
@@ -445,6 +460,113 @@
       "confirm": "Share",
       "cancel": "Cancel",
       "failed": "We couldn't change it."
+    }
+  },
+  "endorse": {
+    "wait": {
+      "title": "Use this browser",
+      "body": "To see and approve your sessions here, a device you already trust has to approve this browser.",
+      "nameLabel": "Name for this browser",
+      "start": "Show code",
+      "loading": "Connecting…",
+      "signInFirst": "First sign in with your Chalyb account in this browser.",
+      "signIn": "Sign in with Chalyb",
+      "unavailable": "This browser can't be added right now. Try again in a moment.",
+      "waitingTitle": "Waiting for approval",
+      "waitingBody": "On your phone or another trusted browser, open Devices → Add a device and scan this ring or type the code.",
+      "glyphLabel": "Ring to scan from a trusted device",
+      "orType": "or type this code:",
+      "fingerprint": "This browser's fingerprint:",
+      "expiresIn": "Expires in {minutes}:{seconds}",
+      "whereToApprove": "Before approving, check the fingerprint is the same on both devices.",
+      "cancel": "Cancel",
+      "doneTitle": "All set",
+      "doneBody": "This browser is now trusted. To send instructions to a computer, pair it with that computer too.",
+      "doneCta": "Go to the inbox",
+      "error": {
+        "expired": "The code expired. Show a new one.",
+        "cancelled": "Cancelled.",
+        "unavailable": "This browser can't be added right now. Try again in a moment.",
+        "endorsement_mismatch": "The approval isn't for this browser. Try again.",
+        "endorser_not_trusted": "The device that approved is no longer trusted.",
+        "device_exists": "This browser was already registered. Show a new code.",
+        "rejected": "The approval wasn't accepted. Try again.",
+        "failed": "Something went wrong. Try again."
+      },
+      "doneIntroduced": "You can send instructions to {computers} right away: your other device introduced them.",
+      "doneDropped": "{computer}: we couldn't confirm it. Pair it with its ring to send it instructions."
+    },
+    "add": {
+      "title": "Add a device",
+      "body": "On the new device, sign in to your account and open “Use this browser”. Then scan its ring or type its code.",
+      "codeLabel": "Code",
+      "find": "Find",
+      "scan": {
+        "start": "Scan ring",
+        "starting": "Opening the camera…",
+        "scanning": "Point the camera at the ring.",
+        "denied": "No permission to use the camera. Type the code.",
+        "unavailable": "The camera isn't available. Type the code."
+      },
+      "kind": {
+        "phone": "Phone",
+        "web": "Browser"
+      },
+      "compare": "Check this fingerprint matches the one on the new device:",
+      "expiresIn": "Expires in {minutes}:{seconds}",
+      "withPasskey": "We'll ask for your passkey when you approve.",
+      "withoutPasskey": "That device will be able to approve actions just like this one.",
+      "approve": "Approve",
+      "notMine": "Not mine",
+      "done": "Done: {name} is now trusted.",
+      "back": "Back to Devices",
+      "error": {
+        "invalid_code": "That code isn't valid. Check it.",
+        "not_found": "We couldn't find that code. Check it or show a new one.",
+        "expired": "The code expired. Show a new one on the other device.",
+        "wrong_account": "That device belongs to another account.",
+        "same_device": "That's this same device.",
+        "already_endorsed": "That code was already approved.",
+        "step_up": "Your passkey is needed to approve. Try again.",
+        "not_trusted": "This device is no longer trusted.",
+        "tampered": "The details don't match. Don't approve it; show a new code.",
+        "failed": "Something went wrong. Try again.",
+        "passkey_cloned": "Your passkey looks copied, so nothing was approved. Check your devices and create a new passkey."
+      }
+    }
+  },
+  "usage": {
+    "title": "Your usage",
+    "range": "Period",
+    "days": "{n} days",
+    "loading": "Loading…",
+    "error": "We couldn't load your usage.",
+    "retry": "Try again",
+    "intro": "Tokens per day (UTC). Days without usage count as zero.",
+    "empty": "No usage in this period yet.",
+    "tokens": "{n} tokens",
+    "chalito": {
+      "title": "Chalito tokens",
+      "work": "Work",
+      "comms": "Communication",
+      "chartLabel": "Chalito tokens per day, last {days} days: work and communication"
+    },
+    "share": {
+      "title": "Communication",
+      "none": "No Chalito usage in this period.",
+      "value": "{share} of what Chalito used (target: under {target})",
+      "under": "Within target: nearly everything goes to the work.",
+      "over": "Above target: alerts, messages and calls are using more than expected.",
+      "chartLabel": "Communication per day against the {target} target"
+    },
+    "byo": {
+      "title": "Your keys",
+      "body": "Usage with your own provider keys. It uses no Chalito tokens.",
+      "chartLabel": "Tokens with your keys per day, last {days} days"
+    },
+    "table": {
+      "title": "See by day",
+      "day": "Day"
     }
   }
 }
