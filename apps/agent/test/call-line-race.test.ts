@@ -15,6 +15,7 @@ import {
   TrustedClientList,
   generateBoxKeyPair,
   generateSigningKeyPair,
+  openJson,
   randomNonce,
   sealJson,
   signEnvelope,
@@ -83,7 +84,7 @@ describe("approval call lines", () => {
       saveTrust: async () => undefined,
       nonces: new MemoryNonceStore(),
       owner: OWNER,
-      self: { deviceId: agentId, pubBox: await toB64url(agentBox.publicKey), box: agentBox },
+      self: { deviceId: agentId, pubBox: await toB64url(agentBox.publicKey), box: agentBox, sign: agentSign },
       home: "/home/aldo",
       locale: () => "es",
       now: Date.now,
@@ -119,6 +120,13 @@ describe("approval call lines", () => {
     // The phone decides the moment the approval exists (before the slow call line lands).
     await waitFor(() => store.pendingApprovals().length === 1);
     const a = store.pendingApprovals()[0]!;
+    // ADR 0019: the phone opens the details and answers for exactly the hash the agent signed.
+    const opened = await openJson<{ request: { body: { detailsHash: string } } }>(
+      a.detailsCt,
+      phoneId,
+      phoneBox,
+      `approval:${a.aid}`,
+    );
     const decision = await signEnvelope(
       "chalito.decision.v1",
       {
@@ -131,6 +139,7 @@ describe("approval call lines", () => {
         nonce: await randomNonce(),
         issuedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
+        detailsHash: opened.request.body.detailsHash,
       },
       phoneId,
       phoneSign.secretKey,

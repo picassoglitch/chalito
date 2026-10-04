@@ -1,5 +1,10 @@
 import type { ReleaseStore } from "./releases/gcs.js";
+import type { PhoneDeps } from "./phone/routes.js";
+import type { StoreDeps } from "./store/routes.js";
+import type { VoiceDeps } from "./voice/routes.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
+import type { McpStore } from "./oauth/model.js";
+import type { RoomsRepo } from "./rooms/repo.js";
 
 export interface AuditEvent {
   action: string;
@@ -27,12 +32,22 @@ export interface ApiConfig {
 
 export interface Deps {
   repo: ApiRepo;
+  /** OAuth server + MCP gateway writes (M10); those routes answer 503 without it. */
+  mcp?: McpStore;
+  /** Rooms (M11); routes answer 503 without it. */
+  rooms?: RoomsRepo;
   identity: IdentityIssuer;
   audit: AuditSink;
   /** The private releases bucket (ADR 0014). Unset (dev, tests): /releases isn't mounted. */
   releases?: ReleaseStore;
   config: ApiConfig;
   now: () => number;
+  /** Phone verification and channel opt-ins (/v1/phone), when Twilio Verify is configured. */
+  phone?: PhoneDeps;
+  /** Desktop push-to-talk (/v1/voice), when OpenAI is configured. */
+  voice?: VoiceDeps;
+  /** The pay-to-dress store (/v1/store), when the hub is configured. */
+  store?: StoreDeps;
 }
 
 export class MemoryAudit implements AuditSink {

@@ -1,0 +1,19 @@
+{
+  "name": "@chalito/avatar-jobs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/job.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "roster:generate": "tsx scripts/generate-roster.ts",
+    "roster:build": "tsx scripts/build-roster.ts"
+  },
+  "dependencies": {
+    "@chalito/protocol": "workspace:*",
+    "@google-cloud/storage": "^8.2.0",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.5"
+  }
+}

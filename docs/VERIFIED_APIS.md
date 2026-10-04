@@ -433,6 +433,36 @@ Method: read-only. Sources are official docs fetched on 2026-10-03, plus a shall
   - Source: https://openai.com/brand/ (403, checked 2026-10-03)
 - **Implication:** "Chalito" contains neither "ChatGPT" nor "GPT", which is fine. Avoid names like "ChatGPT for X" or "XGPT". Use descriptive referential phrasing, for example "Works with ChatGPT/Codex".
 
+### 8. Brain APIs for the Mesa: forced function calls and usage (checked 2026-10-03)
+
+The orchestrator makes every brain answer through ONE forced function, `respond`. The shapes below were verified for that contract and for pricing usage correctly.
+
+- **OpenAI Responses API** (`openai` npm 7.27.0, `POST https://api.openai.com/v1/responses`):
+  - Tool: `{type: "function", name, description, parameters (JSON Schema), strict}`.
+  - Force one function: `tool_choice: {type: "function", name}`.
+  - Output item: `{type: "function_call", id, call_id, name, arguments}`, where `arguments` is a **JSON string**.
+  - System prompt: `instructions`. Also `max_output_tokens`, `store`, and `prompt_cache_key` (cache routing).
+  - Usage: `input_tokens`, `input_tokens_details.{cached_tokens, cache_write_tokens}`, `output_tokens` (includes `output_tokens_details.reasoning_tokens`).
+  - **`cached_tokens` and `cache_write_tokens` are parts of `input_tokens`.** The docs' cost example is `ordinary = input_tokens − cached_tokens − cache_write_tokens`.
+  - Source: https://developers.openai.com/api/docs/guides/function-calling ; https://developers.openai.com/api/docs/guides/prompt-caching ; SDK typings `resources/responses/responses.d.ts` (`ResponseUsage.InputTokensDetails`).
+- **xAI Responses API** (`POST https://api.x.ai/v1/responses`, OpenAI-compatible, used with the `openai` SDK and `baseURL`):
+  - Tool: `{type: "function", name, parameters}`.
+  - Force one function: `tool_choice: {type: "function", name}`. The guide also shows the Chat Completions form `{type: "function", function: {name}}`; the Responses reference uses the flat form.
+  - Output: `{type: "function_call", name, arguments: string, call_id}`.
+  - Usage: `input_tokens`, `input_tokens_details.cached_tokens` (**a subset of `input_tokens`**), `output_tokens`, `cost_in_usd_ticks`.
+  - No cache-write charge is documented.
+  - Source: https://docs.x.ai/developers/rest-api-reference/inference/responses ; https://docs.x.ai/docs/guides/function-calling ; https://docs.x.ai/developers/advanced-api-usage/prompt-caching/usage-and-pricing
+- **Gemini via `@google/genai`** (2.27.0):
+  - Call: `ai.models.generateContent({model, contents, config: {systemInstruction, maxOutputTokens, tools: [{functionDeclarations: [{name, description, parametersJsonSchema}]}], toolConfig: {functionCallingConfig: {mode: "ANY", allowedFunctionNames: [name]}}}})`.
+  - The call comes back in `response.functionCalls[i].args`, an object.
+  - Usage: `usageMetadata.{promptTokenCount, cachedContentTokenCount, candidatesTokenCount, thoughtsTokenCount}`. **`promptTokenCount` includes the cached tokens** ("still the total effective prompt size … includes the number of tokens in the cached content"). Thinking tokens are billed at the output rate.
+  - Endpoints:
+    - Vertex with `{vertexai: true, project, location: "global"}` (D-012; Cloud Run ADC). In express mode (`{vertexai: true, apiKey}`), `@google/genai` calls `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/<model>:generateContent`.
+    - A Gemini API key (BYO) calls `https://generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`.
+  - The ai.google.dev guide now leads with an "interactions" API (`client.interactions.create`, `tool_choice: "any"`). We use the stable `models.generateContent` surface, which is also Vertex's.
+  - Source: https://ai.google.dev/gemini-api/docs/function-calling ; https://ai.google.dev/api/generate-content ; SDK typings `dist/genai.d.ts` (`FunctionCallingConfig`, `FunctionCallingConfigMode`, `GenerateContentResponseUsageMetadata`); request URLs observed with msw.
+- **Chalyb hub, trial state** (read-only, chalyb `a5733df`): `GET /api/engines/{slug}/usage/balance` returns `{ok, balance: TokenBalance}` = `{remaining, unlimited, monthlyAllocation, bonus, monthlyUsed, reserved, periodStart}`. Admit returns the same balance. **Neither exposes a trial flag**, so Chalito keeps `hubTrialActive: false` (D-026 is still open on the hub side).
+
 ### Deviations from the prompt
 
 - Docs moved: `developers.openai.com/codex/app-server` now redirects to `learn.chatgpt.com/docs/app-server`.

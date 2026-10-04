@@ -71,6 +71,13 @@ export interface TrustedAgent {
   fingerprint: string;
   label: string;
   confirmedAt: number;
+  /**
+   * How this client came to trust the agent: its own glyph check (default), or introduced by the
+   * client that endorsed it (ADR 0018, checked against the devices directory). A later glyph
+   * check upgrades it.
+   */
+  via?: "glyph" | "endorsement";
+  endorsedBy?: string;
 }
 
 /**

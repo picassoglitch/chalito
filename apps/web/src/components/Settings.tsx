@@ -1,8 +1,9 @@
 "use client";
-import { useTranslations } from "next-intl";
 import { SettingsPanel } from "@chalito/ui";
 import { env } from "@/lib/env";
 import { useChalito } from "./ChalitoProvider";
+import { useLocale, useTranslations } from "next-intl";
+import { Link, getPathname } from "@/i18n/navigation";
 import { useSettings } from "./useSettings";
 
 export const Settings = () => {
@@ -11,6 +12,7 @@ export const Settings = () => {
   const ti = useTranslations("integrations");
   const { phoneVerifier } = useChalito();
   const { values, set, error, persisted } = useSettings();
+  const locale = useLocale();
   if (!values) return null;
   return (
     <div className="grid gap-6">
@@ -23,12 +25,16 @@ export const Settings = () => {
           {tw(`error.${error}`)}
         </p>
       ) : null}
+      <Link href="/conexiones" className="w-fit text-emerald-700 underline">
+        {tw("connectedApps")}
+      </Link>
       <SettingsPanel
         shell="web"
         values={values}
         onChange={set}
         providerLabel={(p) => ti(`${p}.name`)}
         hubPlansUrl={env.hubUrl || "#"}
+        usageHref={getPathname({ href: "/uso", locale })}
         phoneVerifier={phoneVerifier}
       />
     </div>

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { MemoryNonceStore, TrustedClientList, fromB64url, openJson, sealJson } from "@chalito/crypto";
+import {
+  MemoryNonceStore,
+  TrustedClientList,
+  canonicalize,
+  fromB64url,
+  openJson,
+  sealJson,
+  sha256,
+  signEnvelope,
+  utf8,
+} from "@chalito/crypto";
 import { CommandBody, CommandPayload, type DecisionBody } from "@chalito/protocol";
 import { ActionError, ClientActions } from "../src/actions.js";
 import type { StepUpProvider } from "../src/keys.js";
@@ -12,7 +22,10 @@ const setup = async (opts: { stepUp?: StepUpProvider; trustAgent?: boolean } = {
   const me = await newDevice();
   const agent = await newDevice();
   const db = new FakeSupabase();
-  const keys = testKeys(me, opts.trustAgent === false ? {} : { [agent.deviceId]: agent.pubBox });
+  const keys =
+    opts.trustAgent === false
+      ? testKeys(me)
+      : testKeys(me, { [agent.deviceId]: agent.pubBox }, { [agent.deviceId]: agent.pubSign });
   const live = new LiveStore(db, keys, OWNER);
   const stepUps: unknown[] = [];
   const actions = new ClientActions(db, keys, live, {
@@ -25,13 +38,49 @@ const setup = async (opts: { stepUp?: StepUpProvider; trustAgent?: boolean } = {
   return { me, agent, db, live, actions, trust, stepUps };
 };
 
+/** What a real agent seals (ADR 0019): the details plus its signed request over them. */
+const signedPayload = async (
+  agent: Device,
+  aid: string,
+  o: { risk?: string; stepUpRequired?: boolean; requestId?: string; details?: Record<string, unknown> } = {},
+) => {
+  const details = o.details ?? { v: 1, toolName: "Edit", summary: "Edit: notes.txt", reasons: [], origin: "local" };
+  const detailsHash = [...(await sha256(utf8(canonicalize(details))))]
+    .map((x) => x.toString(16).padStart(2, "0"))
+    .join("");
+  const request = await signEnvelope(
+    "chalito.approval.v1",
+    {
+      v: 1,
+      aid,
+      requestId: o.requestId ?? `r-${aid}`,
+      sid: "s1",
+      deviceId: agent.deviceId,
+      kind: "tool",
+      risk: o.risk ?? "MED",
+      stepUpRequired: o.stepUpRequired ?? false,
+      origin: "local",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 600_000,
+      detailsHash,
+    },
+    agent.deviceId,
+    agent.sign.secretKey,
+  );
+  return { details, request, detailsHash };
+};
+
 const seedApproval = async (
   db: FakeSupabase,
   agent: Device,
   me: Device,
   aid: string,
   extra: Record<string, unknown> = {},
+  payload?: unknown,
 ) => {
+  const risk = (extra.risk as string | undefined) ?? "MED";
+  const sealedPayload =
+    payload ?? (await signedPayload(agent, aid, { risk, stepUpRequired: extra.step_up_required === true }));
   db.seed("approvals", {
     owner: OWNER,
     aid,
@@ -42,7 +91,7 @@ const seedApproval = async (
     risk: "MED",
     origin: "local",
     step_up_required: false,
-    details_ct: await sealJson({ toolName: "Edit" }, { [me.deviceId]: await fromB64url(me.pubBox) }, `approval:${aid}`),
+    details_ct: await sealJson(sealedPayload, { [me.deviceId]: await fromB64url(me.pubBox) }, `approval:${aid}`),
     status: "pending",
     created_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 600_000).toISOString(),
@@ -220,5 +269,58 @@ describe("ClientActions.ackNotification", () => {
     expect(Object.keys(op.body as object).sort()).toEqual(["acked_at", "acked_via", "state"]);
     expect(db.rows("notifications")[0]).toMatchObject({ state: "acked", acked_via: "app" });
     await tick();
+  });
+});
+
+describe("R-H1: only what the agent signed can be allowed (ADR 0019)", () => {
+  it("a verified approval shows the SIGNED risk/step-up (not the row's) and the decision carries the hash", async () => {
+    const { me, agent, db, live, actions } = await setup();
+    const p = await signedPayload(agent, "v1", { risk: "HIGH", stepUpRequired: true });
+    // The row's plaintext columns were tampered with (LOW, no step-up).
+    await seedApproval(db, agent, me, "v1", { risk: "LOW", step_up_required: false }, p);
+    await live.resync();
+    expect(live.approval("v1")).toMatchObject({
+      verified: true,
+      risk: "HIGH",
+      stepUpRequired: true,
+      detailsHash: p.detailsHash,
+    });
+    await actions.decide("v1", true);
+    const body = (db.rows("approval_decisions")[0]!.decision as { body: DecisionBody }).body;
+    expect(body.detailsHash).toBe(p.detailsHash);
+  });
+
+  it.each([
+    [
+      "the server swapped the details (no agent signature)",
+      async (_agent: Device) => ({ details: { v: 1, summary: "Read: README.md", reasons: [], origin: "local" } }),
+    ],
+    [
+      "details edited after signing",
+      async (agent: Device) => ({
+        ...(await signedPayload(agent, "u1")),
+        details: { v: 1, summary: "Read: README.md", reasons: [], origin: "local" },
+      }),
+    ],
+    [
+      "a signed payload replayed from another approval",
+      async (agent: Device) => signedPayload(agent, "other-aid", { requestId: "r-u1" }),
+    ],
+    ["signed by a key this client doesn't trust", async () => signedPayload(await newDevice(), "u1")],
+  ] as const)("%s: unverified, can only be denied", async (_n, make) => {
+    const { me, agent, db, live, actions } = await setup();
+    await seedApproval(db, agent, me, "u1", {}, await make(agent));
+    await live.resync();
+    expect(live.approval("u1")).toMatchObject({ verified: false, detailsHash: null });
+    await expect(actions.decide("u1", true)).rejects.toMatchObject({ code: "unverified_request" });
+    await actions.decide("u1", false);
+    expect((db.rows("approval_decisions")[0]!.decision as { body: DecisionBody }).body.allow).toBe(false);
+  });
+
+  it("an agent this client doesn't trust at all: unverified", async () => {
+    const { me, agent, db, live } = await setup({ trustAgent: false });
+    await seedApproval(db, agent, me, "t1");
+    await live.resync();
+    expect(live.approval("t1")?.verified).toBe(false);
   });
 });

@@ -26,6 +26,8 @@ export interface SettingContext {
   providerLabel: (provider: string) => string;
   /** Where plans and credits are managed: the Chalyb hub. Prices never live in Chalito code. */
   hubPlansUrl: string;
+  /** Where this shell shows token usage (the PWA's /uso), if it has such a page. */
+  usageHref?: string;
   /** Sends and checks phone codes (the api in the PWA, a mock in tests). */
   phoneVerifier: PhoneVerifier;
 }
@@ -53,6 +55,11 @@ const PlanCredits = ({ ctx }: { ctx: SettingContext }) => {
     <Labelled k="planCredits">
       <p>{tier ? t("planCredits.tier", { tier }) : t("planCredits.unknown")}</p>
       {trialEndsAt ? <p className="text-sm text-neutral-600">{t("planCredits.trial", { date: trialEndsAt })}</p> : null}
+      {ctx.usageHref ? (
+        <a className="text-emerald-700 underline" href={ctx.usageHref} data-testid="usage-link">
+          {t("planCredits.usage")}
+        </a>
+      ) : null}
       <a className="text-emerald-700 underline" href={ctx.hubPlansUrl} rel="noopener">
         {t("planCredits.manage")}
       </a>

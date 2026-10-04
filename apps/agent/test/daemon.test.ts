@@ -9,6 +9,7 @@ import { ConfigTamperedError, chalitoDir, writeConfig, readConfig, configPath } 
 import {
   CLAUDE_MISSING,
   CLAUDE_PIN_FAILED,
+  ENDORSEMENT_SYNC_MS,
   PRESENCE_HEARTBEAT_MS,
   OnboardingError,
   defaultAdapters,
@@ -171,7 +172,7 @@ describe("chalito run (daemon)", () => {
   it("refreshes the device token on a timer (~50 min)", async () => {
     const s = await setup();
     const d = await runDaemon(s.deps);
-    expect(s.refreshEvery).toEqual([4 * 60 * 1000, PRESENCE_HEARTBEAT_MS]);
+    expect(s.refreshEvery).toEqual([4 * 60 * 1000, PRESENCE_HEARTBEAT_MS, ENDORSEMENT_SYNC_MS]);
     s.refreshers[0]!();
     await new Promise((r) => setTimeout(r, 10));
     expect(s.tokens).toEqual(["token-1", "token-2"]);

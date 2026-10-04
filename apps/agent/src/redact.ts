@@ -40,7 +40,16 @@ export const redactDeep = (v: unknown): unknown => {
 };
 
 /** Fixed-format DeviceEvent fields that redaction must not touch. */
-const DEVICE_EVENT_VERBATIM = new Set(["v", "type", "deviceId", "policyHash", "t"]);
+const DEVICE_EVENT_VERBATIM = new Set([
+  "v",
+  "type",
+  "deviceId",
+  "policyHash",
+  "t",
+  "clientDeviceId",
+  "endorsedBy",
+  "reason",
+]);
 export const DEVICE_EVENT_MAX_STRING = 64;
 
 const capStrings = (v: unknown, max: number): unknown => {

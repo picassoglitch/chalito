@@ -24,7 +24,9 @@ export class ActionError extends Error {
       | "step_up_cancelled"
       | "unknown_session"
       | "untrusted_agent"
-      | "not_allowed",
+      | "not_allowed"
+      /** ADR 0019: the agent's signed request didn't verify here; only a deny is possible. */
+      | "unverified_request",
     message?: string,
   ) {
     super(message ?? code);
@@ -98,6 +100,8 @@ export class ClientActions {
     const a = this.live.approval(aid);
     if (!a) throw new ActionError("unknown_approval");
     if (a.status !== "pending") throw new ActionError("not_pending");
+    // ADR 0019 (R-H1): only what the agent signed can be allowed; a deny is always possible.
+    if (allow && !a.verified) throw new ActionError("unverified_request");
     const now = this.#now();
     if (a.expiresAt <= now) throw new ActionError("expired");
 
@@ -113,6 +117,7 @@ export class ClientActions {
       nonce: b64Nonce(),
       issuedAt: now,
       expiresAt: Math.min(a.expiresAt, now + APPROVAL_TTL_MS),
+      ...(a.detailsHash ? { detailsHash: a.detailsHash } : {}),
       ...(opts.choice !== undefined ? { choice: opts.choice } : {}),
     });
     let body = base;

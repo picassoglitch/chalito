@@ -1,8 +1,24 @@
-import { deriveDeviceId, fingerprint, fromB64url, randomNonce, toB64url, verifyEnvelope } from "@chalito/crypto";
+import {
+  deriveDeviceId,
+  fingerprint,
+  fromB64url,
+  randomNonce,
+  stepUpChallenge,
+  toB64url,
+  verifyEnvelope,
+} from "@chalito/crypto";
 import { signGlyph, verifyGlyph } from "@chalito/glyph";
-import { EndorsementBody, GlyphPayload, ResolveEndorseCodeResponse, type DeviceRegistration } from "@chalito/protocol";
+import {
+  EndorsementBody,
+  GlyphPayload,
+  ResolveEndorseCodeResponse,
+  type DeviceRegistration,
+  type Endorsement,
+  type IntroducedAgent,
+} from "@chalito/protocol";
 import { ApiError, type ApiClient } from "./api.js";
-import type { DeviceKeys } from "./keys.js";
+import type { DeviceKeys, TrustedAgent } from "./keys.js";
+import type { StepUpAssertion } from "./signing.js";
 import type { DeviceSigner } from "./webauthn.js";
 
 /**
@@ -109,33 +125,120 @@ export const resolveForEndorsement = async (
 
 /**
  * Trusted client, after the person compared the fingerprint: sign the endorsement for exactly
- * the resolved keys and post it. `stepUp` (a server-challenged passkey assertion, e.g.
- * `() => assertWithServerChallenge(api)`) is required by the api when this device has a passkey.
+ * the resolved keys (with this device's passkey assertion over it, when it has a passkey) and
+ * post it.
  */
 export const approveEndorsement = async (
   api: ApiClient,
   signer: DeviceSigner,
   target: Pick<EndorseTarget, "codeId" | "registration">,
-  o: { uid: string; now: number; stepUp?: () => Promise<unknown> },
+  o: {
+    uid: string;
+    now: number;
+    /**
+     * This device's passkey (e.g. `stepUpWithPasskey(ref)`), REQUIRED when it has one: the
+     * assertion is made over SHA-256(JCS(endorsement body without stepUp)) and goes into the
+     * body, so the api and every agent verify the same proof (R-L13, ADR 0018).
+     */
+    stepUp?: StepUpAssertion;
+    /**
+     * ADR 0018: this client's trusted agents, introduced to the new client (and the only
+     * agents that will accept it). Only glyph-confirmed ones are passed on: no trust chains.
+     */
+    agents?: readonly TrustedAgent[];
+  },
 ): Promise<void> => {
   const reg = target.registration.body;
   if (reg.owner !== o.uid) throw new EndorseError("owner_mismatch");
   if (reg.deviceId === signer.deviceId) throw new EndorseError("self_endorsement");
-  const endorsement = await signer.sign(
-    "chalito.endorsement.v1",
-    EndorsementBody.parse({
-      v: 1,
-      uid: o.uid,
-      newDeviceId: reg.deviceId,
-      pubSign: reg.pubSign,
-      pubBox: reg.pubBox,
-      issuedAt: o.now,
-    }),
-  );
-  const stepUp = o.stepUp ? await o.stepUp() : undefined;
+  const base = EndorsementBody.parse({
+    v: 1,
+    uid: o.uid,
+    newDeviceId: reg.deviceId,
+    pubSign: reg.pubSign,
+    pubBox: reg.pubBox,
+    issuedAt: o.now,
+    ...(o.agents
+      ? {
+          agents: o.agents
+            .filter((a) => a.via !== "endorsement")
+            .slice(0, 32)
+            .map((a) => ({ deviceId: a.deviceId, pubSign: a.pubSign, pubBox: a.pubBox, fingerprint: a.fingerprint })),
+        }
+      : {}),
+  });
+  // A cancelled passkey prompt rejects here, before anything is signed or sent.
+  const body = o.stepUp
+    ? EndorsementBody.parse({
+        ...base,
+        stepUp: { method: "webauthn", at: o.now, assertion: await o.stepUp(await stepUpChallenge(base)) },
+      })
+    : base;
+  const endorsement = await signer.sign("chalito.endorsement.v1", body);
   try {
-    await api.post("/v1/endorse/approve", { codeId: target.codeId, endorsement, ...(stepUp ? { stepUp } : {}) });
+    await api.post("/v1/endorse/approve", { codeId: target.codeId, endorsement });
   } catch (err) {
     throw new EndorseError(err instanceof ApiError ? err.code : "failed");
   }
+};
+
+/** A row of the account's devices directory (`chalito.devices`, read under RLS). Cloud data. */
+export interface DirectoryDevice {
+  deviceId: string;
+  role: "agent" | "client";
+  revoked: boolean;
+  pubSign: string;
+  pubBox: string;
+}
+
+export type DroppedAgent = {
+  deviceId: string;
+  reason: "not_in_directory" | "not_an_agent" | "revoked" | "key_mismatch" | "fingerprint_mismatch";
+};
+
+export type IntroductionCheck =
+  | { ok: true; agents: IntroducedAgent[]; dropped: DroppedAgent[] }
+  | { ok: false; reason: "endorser_unknown" | "bad_signature" | "not_for_this_device" };
+
+/**
+ * ADR 0018, the new client's side: which introduced agents to trust. The endorsement must verify
+ * against the endorser's key in the directory and be for exactly this device's keys; then each
+ * listed agent must match its directory row (active agent, same keys) and its fingerprint and
+ * id must derive from its key. Two independent sources must agree, so a server-side key swap
+ * for an agent (or a tampered list) gets nothing trusted.
+ */
+export const introducedAgents = async (
+  e: Endorsement,
+  self: { uid: string; deviceId: string; pubSign: string; pubBox: string },
+  directory: readonly DirectoryDevice[],
+): Promise<IntroductionCheck> => {
+  const endorser = directory.find((d) => d.deviceId === e.signerDeviceId);
+  if (!endorser || endorser.revoked || endorser.role !== "client") return { ok: false, reason: "endorser_unknown" };
+  const sig = await verifyEnvelope(
+    e,
+    "chalito.endorsement.v1",
+    new Map([[endorser.deviceId, await fromB64url(endorser.pubSign)]]),
+  );
+  if (!sig.ok) return { ok: false, reason: "bad_signature" };
+  const b = e.body;
+  if (b.uid !== self.uid || b.newDeviceId !== self.deviceId || b.pubSign !== self.pubSign || b.pubBox !== self.pubBox)
+    return { ok: false, reason: "not_for_this_device" };
+  const agents: IntroducedAgent[] = [];
+  const dropped: DroppedAgent[] = [];
+  for (const a of b.agents ?? []) {
+    const row = directory.find((d) => d.deviceId === a.deviceId);
+    let reason: DroppedAgent["reason"] | null = null;
+    if (!row) reason = "not_in_directory";
+    else if (row.role !== "agent") reason = "not_an_agent";
+    else if (row.revoked) reason = "revoked";
+    else if (row.pubSign !== a.pubSign || row.pubBox !== a.pubBox) reason = "key_mismatch";
+    else {
+      const pub = await fromB64url(a.pubSign);
+      if ((await fingerprint(pub)) !== a.fingerprint || (await deriveDeviceId(pub)) !== a.deviceId)
+        reason = "fingerprint_mismatch";
+    }
+    if (reason) dropped.push({ deviceId: a.deviceId, reason });
+    else agents.push(a);
+  }
+  return { ok: true, agents, dropped };
 };

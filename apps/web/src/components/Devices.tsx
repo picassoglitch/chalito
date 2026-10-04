@@ -2,8 +2,11 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import type { DeviceView } from "@chalito/client";
+import { DeviceEvent } from "@chalito/protocol";
+import { Link } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { PasskeyEnroll } from "./PasskeyEnroll";
+import { SharingToggle } from "./SharingToggle";
 
 /**
  * Devices: online/offline, Developer mode, revoke. Developer mode can only be turned OFF here
@@ -16,6 +19,11 @@ export const Devices = () => {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const agents = devices.filter((d) => d.role === "agent" && !d.revoked);
+  // R-L13 / ADR 0018: a computer that refused an endorsement says so (never silent).
+  const refusals = agents.flatMap((d) => {
+    const e = DeviceEvent.safeParse(d.lastEvent);
+    return e.success && e.data.type === "trust.endorsement_refused" ? [{ agent: d, event: e.data }] : [];
+  });
 
   const send = async (f: () => Promise<unknown>, ok: string) => {
     setNote(null);
@@ -37,8 +45,41 @@ export const Devices = () => {
 
   return (
     <div className="grid gap-4">
-      <h1 className="text-2xl font-bold">{t("title")}</h1>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-2xl font-bold">{t("title")}</h1>
+        <Link
+          href="/dispositivos/nuevo"
+          data-testid="add-device-link"
+          className="ml-auto rounded-lg bg-emerald-700 px-3 py-1.5 text-sm text-white"
+        >
+          {t("add")}
+        </Link>
+      </div>
       <PasskeyEnroll />
+      {refusals.length ? (
+        <section
+          aria-labelledby="sec-notices"
+          className="grid gap-1 rounded-xl border border-amber-300 bg-amber-50 p-4"
+        >
+          <h2 id="sec-notices" className="font-semibold">
+            {t("notices.title")}
+          </h2>
+          <ul className="grid gap-1 text-sm">
+            {refusals.map(({ agent, event }) => (
+              <li
+                key={`${agent.deviceId}:${event.clientDeviceId}`}
+                role="alert"
+                data-testid="endorse-refused"
+                data-reason={event.reason}
+              >
+                {t(event.reason === "missing_step_up" ? "notices.missingStepUp" : "notices.refused", {
+                  computer: agent.name,
+                })}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <ul className="grid gap-3">
         {devices.map((d) => (
           <li
@@ -57,6 +98,7 @@ export const Devices = () => {
                 {d.revoked ? t("revoked") : d.online ? t("online") : t("offline")}
               </span>
             </div>
+            {d.role === "agent" && !d.revoked ? <SharingToggle scope="device" target={d.deviceId} /> : null}
             {d.devMode.on ? (
               <div data-testid="devmode-controls" className="grid gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-900">
                 <p className="font-semibold">{t("devModeOn", { toggles: d.devMode.toggles.join(", ") })}</p>

@@ -62,7 +62,7 @@ select is(pg_temp.count($$select 1 from (select 1 from chalito.devices where dev
   'S2: chalito_server may lock devices for update (revocation)');
 select throws_ok($$delete from chalito.devices where device_id = 'sr_agent2'$$, '42501', null,
   'S2: chalito_server has no grants beyond what the server does (no device delete)');
-select throws_ok($$select * from chalito.mesas$$, '42501', null, 'S2: nor on the stub tables');
+select throws_ok($$select * from chalito.reminders$$, '42501', null, 'S2: nor on the stub tables');
 select throws_ok($$select * from chalito_private.rate_buckets$$, '42501', null, 'S2: nor on internal bookkeeping');
 reset role;
 
@@ -130,6 +130,9 @@ select ok((select expires_at <= now() + interval '10 minutes' from chalito.comma
 
 -- ================================================================ S7: rate buckets
 delete from chalito_private.rate_buckets;  -- start from full buckets (S9 above spent tokens)
+-- Freeze refill for this check: the bucket refills by wall clock, so a slow runner would refill
+-- a token mid-burst and let the 31st insert through. (Rolled back with the test transaction.)
+update chalito_private.rate_limits set per_second = 0.000001 where tbl = 'commands';
 select pg_temp.as_device('sr-user', 'sr_phone', 'client');
 select lives_ok($t$ do $b$ begin
   for i in 1..30 loop

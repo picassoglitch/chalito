@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sanitizeDeviceEvent } from "./redact.js";
-import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
+import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent, SessionCard } from "@chalito/protocol";
 
 /**
  * Everything the agent reads from or writes to the cloud. Supabase in production
@@ -25,10 +25,36 @@ export interface AgentStore {
   /** Durable, create-only audit trail: users/{uid}/devices/{deviceId}/audit/{eid}. `meta` is already redacted. */
   audit(entry: AuditEntry): Promise<void>;
 
+  /**
+   * ADR 0018: the account's endorsements, each with the endorsed device's directory state.
+   * Cloud data: only `TrustedClientList.addEndorsed` (a signature from a locally trusted
+   * client) decides anything.
+   */
+  listEndorsements(): Promise<EndorsementRow[]>;
+  /** Called when an endorsement is stored (pointer) and after every resync. */
+  watchEndorsements(onChange: () => void): () => void;
+
   /** users/{uid}.callBriefing.enabled (user setting; local policy must also allow it). */
   callBriefingEnabled(): Promise<boolean>;
   writeCallLine(id: string, line: CallLine): Promise<void>;
   deleteCallLine(id: string): Promise<void>;
+
+  /** MCP card sharing (migration 001800): on for this session, or for this whole device. Off by default. */
+  mcpSharingOn(sid: string): Promise<boolean>;
+  /**
+   * The plaintext copy of a session card for MCP, only while sharing is on (RLS refuses it
+   * otherwise). Turning sharing off deletes it in the database.
+   */
+  writeSharedCard(sid: string, card: SessionCard): Promise<void>;
+}
+
+export interface EndorsementRow {
+  deviceId: string;
+  endorsement: unknown;
+  /** The endorsed device is revoked in the directory (or missing). */
+  revoked: boolean;
+  /** Its passkey binding (signed by its own key), if it enrolled one. */
+  webauthnBinding: unknown;
 }
 
 export interface AuditEntry {
@@ -49,8 +75,28 @@ export class MemoryStore implements AgentStore {
   audits: AuditEntry[] = [];
   callLines = new Map<string, CallLine>();
   briefingEnabled = true;
+  /** Sessions (or "device") with MCP card sharing on, and the plaintext cards written for them. */
+  sharing = new Set<string>();
+  sharedCards = new Map<string, SessionCard>();
   #approvalWatchers = new Map<string, (d: unknown) => void>();
   #commandWatcher: ((id: string, doc: Record<string, unknown>) => void) | null = null;
+  endorsements: EndorsementRow[] = [];
+  #endorsementWatcher: (() => void) | null = null;
+
+  async listEndorsements() {
+    return this.endorsements.map((e) => ({ ...e }));
+  }
+  watchEndorsements(cb: () => void) {
+    this.#endorsementWatcher = cb;
+    return () => {
+      this.#endorsementWatcher = null;
+    };
+  }
+  /** Test hook: the cloud stores an endorsement and points the agent at it. */
+  pushEndorsement(row: EndorsementRow) {
+    this.endorsements.push(row);
+    this.#endorsementWatcher?.();
+  }
   commands = new Map<string, Record<string, unknown>>();
 
   async createApproval(req: ApprovalRequest) {
@@ -94,6 +140,13 @@ export class MemoryStore implements AgentStore {
   }
   async writeCallLine(id: string, line: CallLine) {
     this.callLines.set(id, line);
+  }
+  async mcpSharingOn(sid: string) {
+    return this.sharing.has(sid) || this.sharing.has("device");
+  }
+  async writeSharedCard(sid: string, card: SessionCard) {
+    if (!(await this.mcpSharingOn(sid))) throw new Error("sharing is off"); // as RLS would refuse it
+    this.sharedCards.set(sid, card);
   }
   async deleteCallLine(id: string) {
     this.callLines.delete(id);

@@ -39,10 +39,19 @@ export const registerPasskey = async (
   device: DeviceSigner,
   ceremonies: Ceremonies = browserCeremonies,
   now: () => number = Date.now,
+  opts: {
+    /**
+     * R-M11: this device already has a passkey. Replacing it needs an assertion by the CURRENT
+     * one over a fresh server challenge (the api refuses otherwise with
+     * `current_passkey_required`). Lost the old passkey? Re-enrol the device instead.
+     */
+    replace?: boolean;
+  } = {},
 ) => {
+  const currentAssertion = opts.replace ? await assertWithServerChallenge(api, ceremonies) : undefined;
   const { options } = await api.post<{ options: PublicKeyCredentialCreationOptionsJSON }>(
     "/v1/webauthn/register/options",
-    {},
+    currentAssertion ? { currentAssertion } : {},
   );
   const response = await ceremonies.create(options);
   const { credential } = await api.post<{ credential: WebAuthnCredentialRef }>("/v1/webauthn/register/verify", {

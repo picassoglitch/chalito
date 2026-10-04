@@ -8,6 +8,28 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000;
 export const ApprovalKind = z.enum(["tool", "decision"]);
 export const ApprovalStatus = z.enum(["pending", "approved", "denied", "expired", "rejected_invalid"]);
 
+/** Bidi/format (Cf) and control (Cc) characters: they can hide or reorder text on screen (R-M10). */
+const INVISIBLE = /[\p{Cf}\p{Cc}]/gu;
+export const SUMMARY_MAX = 300;
+
+/**
+ * The one way to build an approval summary (R-M10, ADR 0019): format and control characters
+ * become spaces (bidi overrides can't reorder a command), and anything past `max` is cut with
+ * an explicit `… (+N chars)` marker and `truncated: true`, so the screen never silently shows a
+ * harmless prefix of a longer command.
+ */
+export const approvalSummary = (
+  toolName: string,
+  input: unknown,
+  max = SUMMARY_MAX,
+): { summary: string; truncated: boolean } => {
+  const raw = `${toolName}: ${typeof input === "string" ? input : (JSON.stringify(input) ?? "")}`;
+  const clean = raw.replace(INVISIBLE, " ");
+  const chars = [...clean];
+  if (chars.length <= max) return { summary: clean, truncated: false };
+  return { summary: `${chars.slice(0, max).join("")}… (+${chars.length - max} chars)`, truncated: true };
+};
+
 /**
  * The cleartext body of an approval, sealed to every trusted client key.
  * Never stored or relayed in plaintext.
@@ -15,8 +37,16 @@ export const ApprovalStatus = z.enum(["pending", "approved", "denied", "expired"
 export const ApprovalDetails = z.object({
   v: z.literal(1),
   toolName: z.string().max(128).optional(),
-  /** Human summary built by the agent (e.g. "Editar 3 archivos en api/"). */
-  summary: z.string().max(500),
+  /**
+   * Human summary built by the agent with `approvalSummary` (e.g. "Bash: git push …"). No
+   * bidi/format/control characters, enforced here (R-M10).
+   */
+  summary: z
+    .string()
+    .max(500)
+    .refine((s) => !/[\p{Cf}\p{Cc}]/u.test(s), { message: "summary contains format or control characters" }),
+  /** The summary was cut: clients require the full input to be expanded before an allow. */
+  summaryTruncated: z.boolean().optional(),
   /** Tool input as the agent saw it (paths, command text, diff preview). */
   input: z.unknown().optional(),
   reasons: z.array(z.string().max(200)).max(10).default([]),
@@ -26,6 +56,38 @@ export const ApprovalDetails = z.object({
   options: z.array(z.string().max(120)).max(6).optional(),
 });
 export type ApprovalDetails = z.infer<typeof ApprovalDetails>;
+
+const Hex64 = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * ADR 0019 (R-H1): what the agent signs for every approval. `detailsHash` =
+ * hex(SHA-256(JCS(details))) over the exact plaintext it seals; clients show the SIGNED risk
+ * and step-up, and decisions carry the hash back.
+ */
+export const ApprovalRequestBody = z.object({
+  v: z.literal(1),
+  aid: ApprovalId,
+  requestId: Id,
+  sid: SessionId,
+  /** The agent that asks (the signer). */
+  deviceId: DeviceId,
+  kind: ApprovalKind,
+  risk: RiskTier,
+  stepUpRequired: z.boolean(),
+  origin: Origin,
+  createdAt: EpochMs,
+  expiresAt: EpochMs,
+  detailsHash: Hex64,
+});
+export const SignedApprovalRequest = signed("chalito.approval.v1", ApprovalRequestBody);
+export type SignedApprovalRequest = z.infer<typeof SignedApprovalRequest>;
+
+/** What `detailsCt` opens to (ADR 0019): the details plus the agent's signed request. */
+export const SealedApprovalPayload = z.object({
+  details: ApprovalDetails,
+  request: SignedApprovalRequest,
+});
+export type SealedApprovalPayload = z.infer<typeof SealedApprovalPayload>;
 
 /** Firestore `users/{uid}/approvals/{aid}` as written by the device agent. */
 export const ApprovalRequest = z
@@ -98,6 +160,12 @@ export const DecisionBody = z
     issuedAt: EpochMs,
     expiresAt: EpochMs,
     stepUp: StepUp.optional(),
+    /**
+     * ADR 0019 (R-H1): the `detailsHash` of the agent-signed request the client verified and
+     * showed. Covered by the signature and the passkey step-up; agents reject a decision
+     * without it or with another hash.
+     */
+    detailsHash: Hex64.optional(),
     /** Optional choice for kind=decision approvals. */
     choice: z.number().int().min(0).max(5).optional(),
   })
