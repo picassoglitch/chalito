@@ -202,6 +202,8 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
     const banFailed: string[] = [];
     for (const id of revoked) {
       if (!(await deps.identity.disableDevice(id))) banFailed.push(id);
+      // The desktop panel is a client: end (bill and hang up) its open voice session too.
+      if (deps.voice) await endDeviceVoice(deps, deps.voice, p.owner, id);
       await deps.audit.record({
         action: "device.revoked",
         owner: p.owner,

@@ -11,6 +11,7 @@ import {
 } from "@chalito/crypto";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { CommandBody, type DeviceDoc, type SignedCommand } from "@chalito/protocol";
+import { MemoryVoiceSessions } from "@chalito/billing";
 import { MemoryAudit, type Deps } from "../src/deps.js";
 import type { ApiRepo, StoredWebAuthnCredential, WebAuthnChallenge } from "../src/repo.js";
 import { deviceRoutes } from "../src/routes/devices.js";
@@ -100,6 +101,9 @@ const setup = async () => {
   const mem = memoryRepo(devices);
   const audit = new MemoryAudit();
   const banned: string[] = [];
+  const voiceSessions = new MemoryVoiceSessions();
+  const settled: string[] = [];
+  const hungUp: string[] = [];
   const tokens: Record<string, { uid: string; role: string; owner: string; deviceId: string }> = {
     phone: { uid: `d_${phone.deviceId}`, role: "client", owner: o, deviceId: phone.deviceId },
     tablet: { uid: `d_${tablet.deviceId}`, role: "client", owner: o, deviceId: tablet.deviceId },
@@ -117,6 +121,24 @@ const setup = async () => {
     audit,
     config: { ssoSecret: "s", adminToken: "a", recoveryCooldownMs: 1, skewMs: 60_000 },
     now: () => NOW,
+    // Desktop voice: the panel is a client, so its open session ends with it (billed, hung up).
+    voice: {
+      sessions: voiceSessions,
+      hub: {
+        event: (p: { owner: string; admissionId: string; seconds: number; sourceId: string }) => ({
+          source_id: p.sourceId,
+          kind: "voice.seconds",
+          provider: "openai",
+          external_user_id: p.owner,
+          amount: p.seconds,
+          cost_usd_micros: p.seconds * 500,
+          occurred_at: new Date(NOW).toISOString(),
+          reservation_id: p.admissionId,
+        }),
+        settle: async (p: { admissionId: string }) => void settled.push(p.admissionId),
+      },
+      provider: { hangupCall: async (id: string) => void hungUp.push(id) },
+    },
   } as unknown as Deps;
   const app = new Hono().route("/v1/devices", deviceRoutes(deps, WA)).route("/v1/webauthn", webauthnRoutes(deps, WA));
   const post = async (path: string, body: unknown, token: string) => {
@@ -154,7 +176,25 @@ const setup = async () => {
       by.deviceId,
       by.sign.secretKey,
     ) as Promise<SignedCommand>;
-  return { o, phone, tablet, web, agent, agent2, devices, mem, audit, banned, post, enrolPasskey, stepUp, revokeCmd };
+  return {
+    o,
+    phone,
+    tablet,
+    web,
+    agent,
+    agent2,
+    devices,
+    mem,
+    audit,
+    banned,
+    voiceSessions,
+    settled,
+    hungUp,
+    post,
+    enrolPasskey,
+    stepUp,
+    revokeCmd,
+  };
 };
 
 describe("POST /v1/devices/revoke-all", () => {
@@ -214,5 +254,31 @@ describe("POST /v1/devices/revoke-all", () => {
     expect(r.json.commandsQueued).toBe(0);
     expect(r.json.refused).toHaveLength(5);
     expect(s.mem.commands).toEqual([]);
+  });
+
+  it("ends the revoked clients' open desktop voice (billed to now, hung up, settled), not the caller's", async () => {
+    const s = await setup();
+    await s.enrolPasskey();
+    const RID = "66666666-6666-4666-8666-666666666666";
+    const open = (deviceId: string, sourceId: string, startedAt: number) =>
+      s.voiceSessions.open({
+        sourceId,
+        owner: s.o,
+        channel: "desktop",
+        deviceId,
+        reservationId: RID,
+        model: "m",
+        startedAt,
+        maxSeconds: 1800,
+        callId: `rtc_${deviceId.slice(0, 6)}`,
+      });
+    await open(s.tablet.deviceId, `voice_${"a".repeat(32)}`, NOW - 90_000);
+    const r = await s.post("/v1/devices/revoke-all", { stepUp: await s.stepUp() }, "phone");
+    expect(r.status).toBe(200);
+    const tablet = s.voiceSessions.sessions.get(`voice_${"a".repeat(32)}`)!;
+    expect(tablet.endedAt).toBe(NOW);
+    expect(s.voiceSessions.events.map((e) => e.amount)).toEqual([90]);
+    expect(s.hungUp).toEqual([`rtc_${s.tablet.deviceId.slice(0, 6)}`]);
+    expect(s.settled).toEqual([RID]);
   });
 });
