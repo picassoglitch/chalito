@@ -15,7 +15,7 @@ test("onboarding completes with 'Saltar' on the companion step and lands with th
   await page.getByRole("button", { name: "Continuar" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Protege tus aprobaciones");
   await page.getByRole("button", { name: "Terminar" }).click();
-  await expect(page).toHaveURL(/127\.0\.0\.1:3100\/$/);
+  await expect(page).toHaveURL(/127\.0\.0\.1:3100\/inicio$/);
   await expect(page.getByTestId("home-companion")).toHaveText("Tu compañero: Chalito");
 });
 

@@ -30,6 +30,49 @@
     "signIn": "Entrar con Chalyb",
     "companion": "Tu compañero: {name}"
   },
+  "landing": {
+    "download": "Descargar",
+    "signIn": "Entrar con Chalyb",
+    "toInbox": "Ir a tu bandeja",
+    "roster": {
+      "title": "Elige a tu compañero",
+      "body": "Seis personajes para empezar. Puedes cambiarlo cuando quieras."
+    },
+    "tryon": {
+      "title": "Vístelo a tu gusto",
+      "body": "Ropa y efectos de la tienda. Solo cambian cómo se ve, nunca lo que puede hacer."
+    },
+    "together": {
+      "title": "Salas compartidas",
+      "body": "Tu compañero y los de tu familia o equipo, en una misma sala."
+    },
+    "recharge": {
+      "title": "Cuando se cansa, te avisa",
+      "body": "Si se queda sin energía, lo básico sigue funcionando: tus aprobaciones y avisos. Para lo demás, lo recargas."
+    },
+    "plans": {
+      "title": "Planes",
+      "soon": "Disponible pronto",
+      "perMonth": "{price} al mes",
+      "devices": "{n, plural, one {# dispositivo} other {# dispositivos}}",
+      "sessions": "{n, plural, one {# sesión a la vez} other {# sesiones a la vez}}",
+      "voiceMinutes": "{n} minutos de voz al mes",
+      "rooms": "{n, plural, one {# sala} other {# salas}}",
+      "solo": {
+        "title": "Solo Chalito",
+        "body": "Solo el compañero, sin el resto de Chalyb."
+      },
+      "hub": {
+        "title": "Con tu plan de Chalyb",
+        "body": "Los planes de Chalyb incluyen Chalito.",
+        "free": "Chalyb Gratis",
+        "pro": "Chalyb Pro",
+        "vip": "Chalyb VIP",
+        "includes": "Incluye Chalito {tier}",
+        "byo": "Con tus propias llaves de IA"
+      }
+    }
+  },
   "sso": {
     "working": "Entrando a Chalito…",
     "failed": "No pudimos abrir tu sesión. Vuelve a entrar desde Chalyb.",

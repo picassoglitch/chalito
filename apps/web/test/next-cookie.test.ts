@@ -19,7 +19,7 @@ describe("chalito_next (the hub drops `next`)", () => {
       "/en/auth/sso",
       null,
     ])
-      expect(allowedNext(bad), String(bad)).toBe("/");
+      expect(allowedNext(bad), String(bad)).toBe("/inicio");
   });
 
   it("remembers once and clears on read", () => {
@@ -33,7 +33,7 @@ describe("chalito_next (the hub drops `next`)", () => {
     for (const v of ["https%3A%2F%2Fevil.example%2F", "%2F%2Fevil.example", "%2Fapi%2Fx", "%E0%A4%A"]) {
       document.cookie = `${NEXT_COOKIE}=${v}; Path=/`;
       const got = takeNext();
-      expect(got === "/" || got === null, v).toBe(true);
+      expect(got === "/inicio" || got === null, v).toBe(true);
     }
   });
 });
@@ -57,6 +57,6 @@ describe("SSO state nonce (login CSRF, review R-M1)", () => {
   });
   it("dot-segment and encoded-slash nexts never survive as a return path", () => {
     for (const bad of ["/.//evil.example", "/%2e//evil.example", "/a/..//evil.example", "/%2F%2Fevil.example"])
-      expect(allowedNext(bad)).toBe("/");
+      expect(allowedNext(bad)).toBe("/inicio");
   });
 });

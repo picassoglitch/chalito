@@ -1,6 +1,7 @@
 "use client";
 import { SignInLink } from "./SignInLink";
 import { useEffect, useRef, useState } from "react";
+import { APP_HOME } from "@chalito/ui";
 import { useTranslations } from "next-intl";
 import { handoffUrl, type DesktopHandoff } from "@/lib/desktop-sso";
 import { env } from "@/lib/env";
@@ -61,7 +62,7 @@ export const SsoLanding = () => {
         // The token's own `next` wins; else where the person was going before the hub sign-in
         // (the hub drops `next`, so Chalito remembered it in the chalito_next cookie).
         const remembered = takeNext();
-        if (r.ok) window.location.replace(next ? r.next : (remembered ?? "/"));
+        if (r.ok) window.location.replace(next ? r.next : (remembered ?? APP_HOME));
         else
           setFailed(r.reason === "missing_token" ? "missing" : r.reason === "rate_limited" ? "rate_limited" : "failed");
       });
@@ -90,7 +91,7 @@ export const SsoLanding = () => {
     return (
       <div className="grid gap-3" role="alert" data-testid="sso-unsolicited">
         <p>{t("unsolicited")}</p>
-        <SignInLink returnTo={returnTo ?? "/"}>{t("continue")}</SignInLink>
+        <SignInLink returnTo={returnTo ?? APP_HOME}>{t("continue")}</SignInLink>
       </div>
     );
   return (

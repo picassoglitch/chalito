@@ -1,4 +1,4 @@
-import { safeNextPath } from "@chalito/ui";
+import { APP_HOME, safeNextPath } from "@chalito/ui";
 import { hubLaunchUrl } from "./hub";
 
 /**
@@ -13,7 +13,7 @@ const MAX_AGE_S = 600;
 /** A same-origin app path to come back to; never the api, Next internals or the SSO page itself. */
 export const allowedNext = (raw: string | null | undefined): string => {
   const p = safeNextPath(raw);
-  return /^\/(api|_next|_vercel)(\/|$)|^\/(en\/)?auth\/sso(\/|$|\?)/.test(p) ? "/" : p;
+  return /^\/(api|_next|_vercel)(\/|$)|^\/(en\/)?auth\/sso(\/|$|\?)/.test(p) ? APP_HOME : p;
 };
 
 export const rememberNext = (path: string): void => {

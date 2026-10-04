@@ -57,7 +57,7 @@ describe("completeSso", () => {
         { token: "t", next },
         { apiBase: "", fetch: okFetch({ customToken: "h", owner: "hub-user-1" }), auth: fakeAuth() },
       );
-      expect(r).toEqual({ ok: true, next: "/" });
+      expect(r).toEqual({ ok: true, next: "/inicio" });
     }
   });
 

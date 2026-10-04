@@ -8,6 +8,7 @@ export const routing = defineRouting({
   localeDetection: false,
   pathnames: {
     "/": "/",
+    "/inicio": "/inicio",
     "/bienvenida": { es: "/bienvenida", en: "/welcome" },
     "/ajustes": { es: "/ajustes", en: "/settings" },
     "/uso": { es: "/uso", en: "/usage" },
