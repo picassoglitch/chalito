@@ -9,6 +9,7 @@ import { ConfigTamperedError, chalitoDir, writeConfig, readConfig, configPath } 
 import {
   CLAUDE_MISSING,
   CLAUDE_PIN_FAILED,
+  PRESENCE_HEARTBEAT_MS,
   OnboardingError,
   defaultAdapters,
   runDaemon,
@@ -45,7 +46,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     configPath(dir),
-    JSON.stringify({ apiBase: "https://api.test", firebase: { projectId: "demo", apiKey: "k" } }),
+    JSON.stringify({ apiBase: "https://api.test", supabase: { url: "http://127.0.0.1:54321", publishableKey: "k" } }),
   );
   if (opts.paired !== false)
     writeConfig(
@@ -170,7 +171,7 @@ describe("chalito run (daemon)", () => {
   it("refreshes the device token on a timer (~50 min)", async () => {
     const s = await setup();
     const d = await runDaemon(s.deps);
-    expect(s.refreshEvery).toEqual([4 * 60 * 1000]);
+    expect(s.refreshEvery).toEqual([4 * 60 * 1000, PRESENCE_HEARTBEAT_MS]);
     s.refreshers[0]!();
     await new Promise((r) => setTimeout(r, 10));
     expect(s.tokens).toEqual(["token-1", "token-2"]);
@@ -327,5 +328,17 @@ describe("chalito run (daemon)", () => {
     await d.done;
     expect(s.logs.find((l) => l.msg === "device.revoked")).toMatchObject({ action: "stopping" });
     expect(s.logs.find((l) => l.msg === "agent.stopping")).toMatchObject({ reason: "device_revoked" });
+  });
+
+  it("presence: a heartbeat writes lastSeenAt every 5 minutes while running", async () => {
+    let t = NOW;
+    const s = await setup();
+    const d = await runDaemon({ ...s.deps, now: () => t });
+    expect(PRESENCE_HEARTBEAT_MS).toBe(5 * 60 * 1000);
+    t = NOW + PRESENCE_HEARTBEAT_MS;
+    s.refreshers[1]!();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(s.store.device.lastSeenAt).toBe(NOW + PRESENCE_HEARTBEAT_MS);
+    await d.stop();
   });
 });

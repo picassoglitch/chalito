@@ -3,8 +3,8 @@ import { sanitizeDeviceEvent } from "./redact.js";
 import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
 
 /**
- * Everything the agent reads from or writes to the cloud. Firestore in production
- * (firestore-store.ts), in memory for tests. The agent never trusts what it reads here
+ * Everything the agent reads from or writes to the cloud. Supabase in production
+ * (supabase-store.ts), in memory for tests. The agent never trusts what it reads here
  * beyond what a signature from its local trusted list proves.
  */
 export interface AgentStore {

@@ -409,8 +409,8 @@ describe("chalito CLI", () => {
         {
           ...readConfig(c.dir, {
             CHALITO_API_BASE: "https://api.test",
-            CHALITO_FIREBASE_PROJECT_ID: "p",
-            CHALITO_FIREBASE_API_KEY: "k",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
             LANG: "en_US",
           }),
           owner: "hub-user-1",

@@ -68,7 +68,7 @@ describe("POST /v1/devices/token", () => {
     const client = await setup("client");
     expect((await client.token()).status).toBe(200);
     expect(client.released).toEqual([]);
-    const firebaseLike = await setup("agent", false);
-    expect((await firebaseLike.token()).status).toBe(200);
+    const noWatchRelease = await setup("agent", false);
+    expect((await noWatchRelease.token()).status).toBe(200);
   });
 });

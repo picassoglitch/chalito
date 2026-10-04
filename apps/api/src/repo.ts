@@ -3,8 +3,8 @@ import type { DeviceDoc, HubTenantStatus, PairingCodeDoc } from "@chalito/protoc
 import type { RecoveryHash } from "./lib/recovery.js";
 
 /**
- * Everything the API routes read or write, and nothing more. Firestore today
- * (firestore/repo.ts); a Postgres implementation can back the same interface. Methods
+ * Everything the API routes read or write, and nothing more. Backed by Postgres on the
+ * hub's Supabase project (postgres/repo.ts, ADR 0017). Methods
  * that must be atomic say so: implement them as one transaction.
  */
 export interface ApiRepo {
@@ -106,7 +106,8 @@ export interface IdentityClaims {
 }
 
 /**
- * Mints and checks the credentials the API hands out (Firebase custom tokens today).
+ * Mints and checks the credentials the API hands out (Supabase Auth users per device and
+ * pairing watch; magic-link token hashes the clients exchange for a session).
  * `verify` must reject revoked credentials; `disableDevice` makes a device's existing
  * credentials stop working.
  */

@@ -6,10 +6,6 @@ output "artifact_registry" {
   value = module.artifact_registry.repository
 }
 
-output "firestore_database" {
-  value = module.firestore.database_id
-}
-
 output "topics" {
   value = module.pubsub.topic_ids
 }
