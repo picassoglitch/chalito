@@ -2,23 +2,30 @@
 
 How a person moves between the Chalyb hub and Chalito, and what each side owns (brief §5 M15, ADR 0016, D-025). This document describes what the code does today on branch `all`. Where the brief asked for something different, the gap is flagged. There's no Chalyb code here; the hub-side work is listed in §6 and in `docs/integrations/CHALYB_ENGINE.md`.
 
-## 1. Status and the flag
+## 1. Status: off, and the one switch
 
 **The brief:** a hand-off interface "with a verifier flag that ships off" (§0.11).
 
-**What happened:** the owner made Chalito a Chalyb engine with the hub link **on** (decision #18, D-025, ADR 0016). The SSO exchange and tenant routes are part of the api and always mounted.
+**Decision (coordinator, 2026-10-04):** no new flag. The hub's engine row is the only switch:
+- it ships `coming_soon` and stays that way until the owner flips it to `active` (CHALYB_ENGINE.md §2, §9);
+- the owner made Chalito a Chalyb engine with the hub link (decision #18, D-025, ADR 0016), so the api routes are always mounted;
+- what keeps the integration dark is the hub, not a Chalito setting.
 
-**No hand-off feature flag exists in the code.** A search of every branch finds none. What keeps the integration dark today:
-- the hub engine row ships `coming_soon` and only the owner flips it to `active` (CHALYB_ENGINE.md §2, §9);
-- `CHALITO_SSO_SECRET` and `CHALITO_ADMIN_TOKEN` exist only once the owner creates them. The api refuses to start without them (`apps/api/src/server.ts`);
-- `NEXT_PUBLIC_HUB_URL` unset hides every hub link in the web app (`apps/web/src/lib/hub.ts` returns null).
+**What "off" (`coming_soon`) means on each surface:**
 
-**Proposed, not implemented:** `CHALYB_HANDOFF_ENABLED`, default `false`, read by the api.
-- When false, `POST /sso/exchange` and `POST /tenants*` answer `404`.
-- The web hides "Entrar con Chalyb" and the hub plan and credit links.
-- Safety features never depend on it: approvals, revocation and Developer-mode off keep working.
+| Surface | While the row is `coming_soon` |
+|---|---|
+| Hub catalog and launch | The hub doesn't offer Chalito, and `/auth/launch/chalito` doesn't mint launch tokens for regular users. No one arrives at `chalito.chalyb.com/auth/sso` with a token. |
+| `POST /sso/exchange` (api) | Mounted. Without a hub-signed token (`CHALITO_SSO_SECRET`) it answers 401, and replays answer 409. Nothing is created. |
+| `POST /tenants`, `/tenants/:id/status` (api) | Mounted. The hub doesn't call them, and anything else gets 401 without the engine bearer (`CHALITO_ADMIN_TOKEN`). |
+| Web (`chalito.chalyb.com`) | Loads. Signed out, a visitor is sent to the hub's launch route, which doesn't serve Chalito yet. With `NEXT_PUBLIC_HUB_URL` unset, every hub link is hidden (`apps/web/src/lib/hub.ts`). |
+| Usage and billing | No tenants means no admits, no usage events and no settles. The outbox stays empty. |
+| Desktop app | Its SSO uses the same hub launch, so sign-in isn't possible. Approvals and other local safety features don't depend on the hub. |
+| Safety | Never depends on the switch: approvals, revocation and turning Developer mode off work the same either way. |
 
-This needs an owner call (§7). Until then, the effective switch is the engine row status.
+**What turns it on:**
+1. The owner flips the row to `active` on the hub.
+2. The two shared secrets exist: `CHALITO_SSO_SECRET` and `CHALITO_ADMIN_TOKEN` (docs/OPS.md §1, §5).
 
 ## 2. Hub → Chalito: launch and SSO
 
@@ -134,7 +141,6 @@ These go in the Chalyb repo, on its own PR, with the owner's go. Items 1–5 mat
 
 ## 7. Open questions for the owner
 
-- **The flag:** keep the engine-row status as the only switch, or add `CHALYB_HANDOFF_ENABLED` (default off) in the api and web?
 - **`ref` values:** confirm the scheme in §3 and whether the hub records it.
 - **Solo reporting:** which field carries a Solo or bundle tier (item 5 above)?
 - **Token signing:** stay on HMAC (the hub's contract) or ask the hub for Ed25519 (the brief)?

@@ -61,6 +61,17 @@ The details are in `docs/integrations/CHALYB_ENGINE.md`. These changes go in `pi
 
 Nothing here is committed. Each value goes into Secret Manager in Chalyb's project and is mounted only on the services listed.
 
+**Wiring:** `infra/terraform/envs/dev/main.tf` creates the containers and mounts each one under the env name the code reads (R-L12). `packages/config/test/terraform-env.test.ts` fails if a required name is missing or misnamed. Containers to fill:
+- `chalito-database-url`, `chalito-gateway-database-url`;
+- `chalito-gateway-token`, `chalito-supabase-secret-key`;
+- `chalito-vapid-private-key`, `chalito-openai-webhook-secret`, `chalito-voice-ref-secret`;
+- the Twilio, Meta, OpenAI, Anthropic and xAI ones, and `chalito-owner-uids`.
+
+**Set by variables:**
+- `hub_admin_token_secret`: the id of Chalyb's `CHALITO_ADMIN_TOKEN` secret. The engine module grants the notifier and orchestrator access to it.
+- `notifier_public_url` and `orchestrator_public_url`;
+- `supabase_url`, `vapid_public_key`, `realtime_sip_uri`.
+
 | Secret / env | Services | Where to get it |
 |---|---|---|
 | `CHALITO_SSO_SECRET` | api | Shared with the hub (`chalito-sso-secret`; Vercel env on the hub) |

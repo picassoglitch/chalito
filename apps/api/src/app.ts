@@ -1,3 +1,4 @@
+import { errorMessage } from "@chalito/redact";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { guard } from "@chalito/guard";
@@ -43,7 +44,7 @@ export const createApp = (deps: Deps) => {
   if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
-    console.error("[api] unhandled", err instanceof Error ? err.message : "error");
+    console.error("[api] unhandled", errorMessage(err));
     return c.json({ error: "internal" }, 500);
   });
   return app;

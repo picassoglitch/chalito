@@ -6,7 +6,7 @@ import type { NotifierStore } from "./store.js";
 /**
  * A spoken answer on a call becomes a text prompt to one session, relayed with origin
  * `call:<CallSid>` (ADR 0011). That is the only thing speech can produce: a RelayedCommand,
- * which the protocol restricts to session.prompt / session.answer from mcp:/call: origins, and
+ * which the protocol restricts to session.prompt from mcp:/call: origins (R-L2), and
  * which the agent never lets auto-approve anything. There is no code path to a Decision.
  */
 export const relaySpokenAnswer = async (

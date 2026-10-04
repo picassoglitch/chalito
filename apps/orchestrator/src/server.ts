@@ -1,3 +1,4 @@
+import { installConsoleRedaction, redact, redactDeep } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { createClient } from "@supabase/supabase-js";
 import postgres from "postgres";
@@ -15,6 +16,8 @@ import { googleOidcVerifier } from "./oidc.js";
 import { hubEntitlements } from "./entitlements.js";
 import { PostgresMesaStore } from "./postgres-store.js";
 
+// Every log line and stray console call is redacted (R-M9).
+installConsoleRedaction();
 const env = (name: string): string => {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is required`);
@@ -76,7 +79,7 @@ const app = createOrchestrator({
     now: Date.now,
   }),
   now: Date.now,
-  log: (msg, meta) => console.error(JSON.stringify({ msg, ...meta })),
+  log: (msg, meta) => console.error(JSON.stringify({ msg: redact(msg), ...(redactDeep(meta ?? {}) as object) })),
 });
 
 const port = Number(process.env.PORT ?? 8080);

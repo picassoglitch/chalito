@@ -22,6 +22,7 @@ afterAll(() => server.close());
 beforeEach(() => {
   for (const list of Object.values(cap)) list.length = 0;
   hubState.admit = "allowed";
+  hubState.remaining = 10_000;
 });
 
 const UID = "hub-user-1";
@@ -216,5 +217,19 @@ describe("helpers", () => {
       "US",
       "other:ES",
     ]);
+  });
+});
+
+describe("R-L9: comms admits", () => {
+  it("re-admitting the same send (a Cloud Tasks retry) uses the same hub job id; an empty balance is no_tokens", async () => {
+    const h = billed();
+    const a = await h.deps.billing!.admit(UID, "sms", "n1", "MX", "2");
+    const b = await h.deps.billing!.admit(UID, "sms", "n1", "MX", "2");
+    expect(a).toEqual(b);
+    const jobs = cap.hub.filter((x) => x.path === "admit").map((x) => x.body.external_job_id);
+    expect(jobs).toEqual(["sms:n1:2", "sms:n1:2"]);
+    hubState.remaining = 0;
+    expect(await h.deps.billing!.admit(UID, "sms", "n1", "MX", "3")).toEqual({ ok: false, reason: "no_tokens" });
+    expect(cap.hub.at(-1)).toMatchObject({ path: "settle", body: { outcome: "cancelled" } });
   });
 });

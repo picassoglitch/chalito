@@ -1,8 +1,11 @@
+import { installConsoleRedaction } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { GatewayApi } from "./api-client.js";
 import { createGateway } from "./app.js";
 import { PostgresGatewayReader, gatewaySql } from "./postgres-reader.js";
 
+// Every stray console call is redacted (R-M9).
+installConsoleRedaction();
 const env = (name: string): string => {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is required`);

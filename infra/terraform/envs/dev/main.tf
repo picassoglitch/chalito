@@ -126,9 +126,17 @@ module "secrets" {
     "chalito-meta-wa-phone-id"      = [local.notifier]
     "chalito-meta-wa-access-token"  = [local.notifier]
     "chalito-meta-wa-app-secret"    = concat([local.notifier], local.api_list)
-    "chalito-meta-wa-verify-token"  = local.api_list
+    "chalito-meta-wa-verify-token"  = concat([local.notifier], local.api_list)
     "chalito-owner-uids"            = concat([local.orchestrator, local.notifier], local.api_list)
     "chalito-owner-default-phone"   = local.api_list
+    # R-L12: everything the services require, by the names the code reads (see secret_env below).
+    "chalito-database-url"          = [local.orchestrator, local.notifier]
+    "chalito-gateway-database-url"  = [local.mcp]
+    "chalito-gateway-token"         = concat([local.mcp], local.api_list)
+    "chalito-supabase-secret-key"   = [local.orchestrator]
+    "chalito-vapid-private-key"     = [local.notifier]
+    "chalito-openai-webhook-secret" = [local.notifier]
+    "chalito-voice-ref-secret"      = [local.notifier]
   }
 
   depends_on = [module.service_accounts]
@@ -177,16 +185,41 @@ module "orchestrator" {
   service_account = local.orchestrator
   invokers        = ["serviceAccount:${local.push}"]
   labels          = local.labels
-  env = {
-    VERTEX_LOCATION = "global"
-  }
-  secret_env = {
-    ANTHROPIC_API_KEY = "chalito-anthropic-api-key"
-    OPENAI_API_KEY    = "chalito-openai-api-key"
-    XAI_API_KEY       = "chalito-xai-api-key"
-  }
+  env = merge({
+    VERTEX_LOCATION       = "global"
+    GOOGLE_CLOUD_PROJECT  = var.project_id
+    CHALYB_BASE_URL       = "https://www.chalyb.com"
+    CHALITO_WEB_ORIGIN    = "https://${var.domain}"
+    BRAIN_KEYS_KMS_KEY    = module.kms.byo_key_id
+    SCHEDULER_SA_EMAIL    = local.push
+    SUPABASE_URL          = var.supabase_url
+    ORCHESTRATOR_BASE_URL = var.orchestrator_public_url
+  })
+  secret_env = merge({
+    ANTHROPIC_API_KEY   = "chalito-anthropic-api-key"
+    OPENAI_API_KEY      = "chalito-openai-api-key"
+    XAI_API_KEY         = "chalito-xai-api-key"
+    DATABASE_URL        = "chalito-database-url"
+    SUPABASE_SECRET_KEY = "chalito-supabase-secret-key"
+    OWNER_UIDS          = "chalito-owner-uids"
+  }, local.hub_bearer)
 
   depends_on = [module.secrets, module.service_accounts]
+}
+
+# BYO brain keys are envelope-encrypted with the byo key (BRAIN_KEYS_KMS_KEY): the orchestrator
+# may use it, nothing else.
+resource "google_kms_crypto_key_iam_member" "orchestrator_byo" {
+  crypto_key_id = module.kms.byo_key_id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${local.orchestrator}"
+
+  depends_on = [module.service_accounts]
+}
+
+locals {
+  # CHALITO_ADMIN_TOKEN is Chalyb's secret (engine module), which grants these services access.
+  hub_bearer = var.hub_admin_token_secret == "" ? {} : { CHALITO_ADMIN_TOKEN = var.hub_admin_token_secret }
 }
 
 module "notifier" {
@@ -197,16 +230,37 @@ module "notifier" {
   service_account = local.notifier
   invokers        = ["serviceAccount:${local.push}"]
   labels          = local.labels
-  env = {
-  }
-  secret_env = {
-    TWILIO_ACCOUNT_SID      = "chalito-twilio-account-sid"
-    TWILIO_AUTH_TOKEN       = "chalito-twilio-auth-token"
-    TWILIO_FROM_NUMBER      = "chalito-twilio-from-number"
-    META_WA_PHONE_NUMBER_ID = "chalito-meta-wa-phone-id"
-    META_WA_ACCESS_TOKEN    = "chalito-meta-wa-access-token"
-    OPENAI_API_KEY          = "chalito-openai-api-key"
-  }
+  # Call agents outlive the webhook request that starts them (apps/notifier README).
+  cpu_always = true
+  env = merge({
+    GOOGLE_CLOUD_PROJECT = var.project_id
+    CHALYB_BASE_URL      = "https://www.chalyb.com"
+    APP_URL              = "https://${var.domain}"
+    PUBLIC_BASE_URL      = var.notifier_public_url
+    PUBSUB_SA_EMAIL      = local.push
+    TASKS_SA_EMAIL       = local.push
+    SCHEDULER_SA_EMAIL   = local.push
+    TASKS_LOCATION       = var.region
+    TASKS_QUEUE          = "chalito-escalation"
+    VAPID_SUBJECT        = "https://${var.domain}"
+    VAPID_PUBLIC_KEY     = var.vapid_public_key
+  }, var.realtime_sip_uri == "" ? {} : { REALTIME_SIP_URI = var.realtime_sip_uri })
+  # Names as the code reads them (R-L12: TWILIO_FROM, WHATSAPP_*, META_*).
+  secret_env = merge({
+    DATABASE_URL             = "chalito-database-url"
+    TWILIO_ACCOUNT_SID       = "chalito-twilio-account-sid"
+    TWILIO_AUTH_TOKEN        = "chalito-twilio-auth-token"
+    TWILIO_FROM              = "chalito-twilio-from-number"
+    WHATSAPP_PHONE_NUMBER_ID = "chalito-meta-wa-phone-id"
+    WHATSAPP_TOKEN           = "chalito-meta-wa-access-token"
+    META_APP_SECRET          = "chalito-meta-wa-app-secret"
+    META_VERIFY_TOKEN        = "chalito-meta-wa-verify-token"
+    OPENAI_API_KEY           = "chalito-openai-api-key"
+    OPENAI_WEBHOOK_SECRET    = "chalito-openai-webhook-secret"
+    VOICE_REF_SECRET         = "chalito-voice-ref-secret"
+    VAPID_PRIVATE_KEY        = "chalito-vapid-private-key"
+    OWNER_UIDS               = "chalito-owner-uids"
+  }, local.hub_bearer)
 
   depends_on = [module.secrets]
 }
@@ -222,9 +276,16 @@ module "mcp_gateway" {
   public          = true
   labels          = local.labels
   env = {
+    CHALITO_API_URL      = var.api_url
+    CHALITO_API_ISSUER   = var.api_url
+    CHALITO_MCP_RESOURCE = "https://mcp.${var.domain}/mcp"
+  }
+  secret_env = {
+    DATABASE_URL          = "chalito-gateway-database-url"
+    CHALITO_GATEWAY_TOKEN = "chalito-gateway-token"
   }
 
-  depends_on = [module.service_accounts]
+  depends_on = [module.secrets, module.service_accounts]
 }
 
 # ---- Push subscriptions ---------------------------------------------------------

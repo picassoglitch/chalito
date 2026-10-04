@@ -1,3 +1,4 @@
+import { installConsoleRedaction } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { PubSub } from "@google-cloud/pubsub";
 import { createClient } from "@supabase/supabase-js";
@@ -23,6 +24,8 @@ import type { StoreDeps } from "./store/routes.js";
 import { pgVoiceCap } from "./voice/caps.js";
 import type { VoiceDeps } from "./voice/routes.js";
 
+// Every stray console call is redacted (R-M9).
+installConsoleRedaction();
 const env = (name: string): string => {
   const v = process.env[name];
   if (!v) throw new Error(`${name} is required`);

@@ -13,6 +13,7 @@
     "@chalito/crypto": "workspace:*",
     "@chalito/guard": "workspace:*",
     "@chalito/protocol": "workspace:*",
+    "@chalito/redact": "workspace:*",
     "@hono/node-server": "^2.1.3",
     "@modelcontextprotocol/server": "2.3.0",
     "hono": "^4.13.12",
