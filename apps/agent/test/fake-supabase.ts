@@ -71,9 +71,10 @@ export class FakeSupabase implements RealtimeClient {
       body?: Row;
       filters: [string, unknown][];
       gts: [string, number][];
+      ins: [string, readonly unknown[]][];
       order?: string;
       single: boolean;
-    } = { op: "select", filters: [], gts: [], single: false };
+    } = { op: "select", filters: [], gts: [], ins: [], single: false };
     const exec = (): SupaResult => {
       this.ops.push({ table, op: state.op, filters: [...state.filters], body: state.body });
       if (this.#failNext) {
@@ -82,7 +83,9 @@ export class FakeSupabase implements RealtimeClient {
         return { data: null, error };
       }
       const match = (r: Row) =>
-        state.filters.every(([k, v]) => r[k] === v) && state.gts.every(([k, v]) => Number(r[k]) > v);
+        state.filters.every(([k, v]) => r[k] === v) &&
+        state.gts.every(([k, v]) => Number(r[k]) > v) &&
+        state.ins.every(([k, vs]) => vs.includes(r[k]));
       const rows = this.rows(table);
       switch (state.op) {
         case "insert":
@@ -112,6 +115,7 @@ export class FakeSupabase implements RealtimeClient {
       delete: () => ((state.op = "delete"), q),
       eq: (c, v) => (state.filters.push([c, v]), q),
       gt: (c, v) => (state.gts.push([c, Number(v)]), q),
+      in: (c, vs) => (state.ins.push([c, vs]), q),
       order: (c) => ((state.order = c), q),
       maybeSingle: () => ((state.single = true), q),
       then: (ok, bad) => Promise.resolve().then(exec).then(ok, bad),

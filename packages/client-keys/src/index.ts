@@ -28,3 +28,6 @@ export {
   revokeDevice,
 } from "./pairing.js";
 export type { PairingDisplay, ScanResult, ClaimRequest } from "./pairing.js";
+export { deviceLogin } from "./device-login.js";
+export { EndorseError, approveEndorsement, endorseGlyph, introducedAgents, resolveForEndorsement } from "./endorse.js";
+export type { DirectoryDevice, DroppedAgent, EndorseTarget, IntroductionCheck } from "./endorse.js";

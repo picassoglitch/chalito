@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { ApiRepo } from "../../src/repo.js";
-import { RACERS, agentFor, count, device, owner, pairingCode, recovery } from "./fixtures.js";
+import {
+  RACERS,
+  agentFor,
+  count,
+  device,
+  endorseCode,
+  endorsementFor,
+  owner,
+  pairingCode,
+  recovery,
+} from "./fixtures.js";
 
 /**
  * Behaviour every ApiRepo must have, whatever the backend. Each test uses fresh owners and
@@ -459,6 +469,126 @@ export const runApiRepoContract = (
           const d = await repo.getDevice(o, code.agentDeviceId);
           expect(d === null).toBe(o !== winner);
         }
+      });
+    });
+
+    describe("passkey sign counter", () => {
+      const withPasskey = async (repo: ApiRepo, counter = 0) => {
+        const o = await seededOwner(repo);
+        const d = await device(o);
+        await repo.createDevice(o, d);
+        const credentialId = `cred-${owner()}`;
+        await repo.setDeviceWebAuthn(o, d.deviceId, {
+          credentialId,
+          publicKey: "pk",
+          rpId: "chalito.chalyb.com",
+          counter,
+          transports: ["internal"],
+          createdAt: 1,
+        });
+        return { o, d, credentialId };
+      };
+
+      it("moves forward only; a counter that doesn't advance is reported as cloned and not written", async () => {
+        const repo = await makeRepo();
+        const { o, d, credentialId } = await withPasskey(repo, 5);
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 6)).toBe("ok");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 6)).toBe("cloned");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 3)).toBe("cloned");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 0)).toBe("cloned");
+        expect((await repo.getDeviceWebAuthn(o, d.deviceId))?.counter).toBe(6);
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, "other-cred", 9)).toBe("not_found");
+      });
+
+      it("authenticators without a counter (always 0) are fine", async () => {
+        const repo = await makeRepo();
+        const { o, d, credentialId } = await withPasskey(repo, 0);
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 0)).toBe("ok");
+        expect(await repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 0)).toBe("ok");
+      });
+
+      it(`of ${RACERS} concurrent assertions with the same counter, exactly one is accepted`, async () => {
+        const repo = await makeRepo();
+        const { o, d, credentialId } = await withPasskey(repo, 1);
+        const results = await Promise.all(
+          Array.from({ length: RACERS }, () => repo.bumpWebAuthnCounter(o, d.deviceId, credentialId, 2)),
+        );
+        expect(count(results, "ok")).toBe(1);
+        expect(count(results, "cloned")).toBe(RACERS - 1);
+      });
+    });
+
+    describe("endorsement handoff", () => {
+      it("createEndorseCode: once per code id and per short code; found by either", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const code = await endorseCode(o);
+        expect(await repo.createEndorseCode(code)).toBe("created");
+        expect(await repo.createEndorseCode(code)).toBe("exists");
+        expect(await repo.createEndorseCode({ ...(await endorseCode(o)), shortCodeHash: code.shortCodeHash })).toBe(
+          "exists",
+        );
+        const found = await repo.findEndorseCode(code.codeId);
+        expect(found).toMatchObject({
+          codeId: code.codeId,
+          owner: o,
+          newDeviceId: code.registration.body.deviceId,
+          registration: code.registration,
+          endorsement: null,
+          endorsedByDeviceId: null,
+          takenAt: null,
+          expiresAt: code.expiresAt,
+        });
+        expect(await repo.findEndorseCodeByShortHash(code.shortCodeHash)).toEqual(found);
+        expect(await repo.findEndorseCode("nope_nope_nope_nope_00")).toBeNull();
+      });
+
+      it("approve: only the owner's live code, and exactly one of N concurrent approvals wins", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const other = await seededOwner(repo);
+        const code = await endorseCode(o);
+        await repo.createEndorseCode(code);
+        const e = await endorsementFor(code, "dev_phone");
+        const at = { endorsement: e, endorsedByDeviceId: "dev_phone", endorsedAt: Date.now() };
+        expect(await repo.approveEndorseCode(code.codeId, other, at, Date.now())).toBe("not_found");
+        expect(await repo.approveEndorseCode(code.codeId, o, at, code.expiresAt)).toBe("expired");
+        const results = await Promise.all(
+          Array.from({ length: RACERS }, () => repo.approveEndorseCode(code.codeId, o, at, Date.now())),
+        );
+        expect(count(results, "ok")).toBe(1);
+        expect(count(results, "already_endorsed")).toBe(RACERS - 1);
+        expect(await repo.findEndorseCode(code.codeId)).toMatchObject({
+          endorsement: e,
+          endorsedByDeviceId: "dev_phone",
+        });
+      });
+
+      it("take: not before the endorsement, only the owner, exactly once among N racers, not after expiry", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const code = await endorseCode(o);
+        await repo.createEndorseCode(code);
+        expect(await repo.takeEndorsement(code.codeId, o, Date.now())).toEqual({ ok: false, reason: "not_endorsed" });
+        const e = await endorsementFor(code, "dev_phone");
+        await repo.approveEndorseCode(
+          code.codeId,
+          o,
+          { endorsement: e, endorsedByDeviceId: "dev_phone", endorsedAt: Date.now() },
+          Date.now(),
+        );
+        expect(await repo.takeEndorsement(code.codeId, "someone-else", Date.now())).toEqual({
+          ok: false,
+          reason: "not_found",
+        });
+        expect(await repo.takeEndorsement(code.codeId, o, code.expiresAt)).toEqual({ ok: false, reason: "expired" });
+        const results = await Promise.all(
+          Array.from({ length: RACERS }, () => repo.takeEndorsement(code.codeId, o, Date.now())),
+        );
+        const oks = results.filter((r) => r.ok);
+        expect(oks).toEqual([{ ok: true, endorsement: e }]);
+        expect(results.filter((r) => !r.ok && r.reason === "already_taken")).toHaveLength(RACERS - 1);
+        expect((await repo.findEndorseCode(code.codeId))?.takenAt).not.toBeNull();
       });
     });
   });

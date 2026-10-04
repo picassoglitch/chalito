@@ -1,6 +1,23 @@
-import { randomUUID } from "node:crypto";
-import { stepUpChallenge, verifyWebAuthnAssertion, type NonceStore, type TrustedClientList } from "@chalito/crypto";
-import { ApprovalRequest, Decision, type Origin, type ResolutionReason, type RiskTier } from "@chalito/protocol";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  canonicalize,
+  signEnvelope,
+  stepUpChallenge,
+  verifyWebAuthnAssertion,
+  type NonceStore,
+  type SigningKeyPair,
+  type TrustedClientList,
+} from "@chalito/crypto";
+import {
+  ApprovalDetails,
+  ApprovalRequest,
+  ApprovalRequestBody,
+  Decision,
+  approvalSummary,
+  type Origin,
+  type ResolutionReason,
+  type RiskTier,
+} from "@chalito/protocol";
 import type { Sealer } from "./sealing.js";
 import type { AgentStore } from "./store.js";
 
@@ -17,6 +34,8 @@ export interface ApprovalDeps {
   sealer: Sealer;
   owner: string;
   deviceId: string;
+  /** This agent's signing key: every approval request is signed (ADR 0019, R-H1). */
+  signer: SigningKeyPair;
   now: () => number;
   ttlMs: () => number;
   /** Audit sink for rejected decisions (invalid, untrusted, replayed, …). */
@@ -70,16 +89,49 @@ export class ApprovalManager {
     risk: RiskTier;
     stepUp: boolean;
     origin: Origin;
-    details: { toolName: string; summary: string; input: unknown; reasons: string[] };
+    /** The summary is built here (R-M10: no format/control characters, explicit truncation). */
+    details: { toolName: string; input: unknown; reasons: string[] };
     onRequested?: (aid: string, expiresAt: number) => void;
   }): Promise<ApprovalOutcome> {
-    const { store, trust, nonces, sealer, owner, deviceId, now, ttlMs, audit } = this.deps;
+    const { store, trust, nonces, sealer, owner, deviceId, signer, now, ttlMs, audit } = this.deps;
     if (Object.keys(trust().recipients()).length === 0) return { allow: false, reason: "untrusted_signer" };
 
     const aid = randomUUID();
     const requestId = randomUUID();
     const createdAt = now();
     const expiresAt = createdAt + ttlMs();
+    // ADR 0019: the exact plaintext the clients will show, its hash, and our signature over the
+    // request (risk, step-up, hash). Both travel sealed; clients verify against our key.
+    const { summary, truncated } = approvalSummary(input.details.toolName, input.details.input);
+    const details = ApprovalDetails.parse({
+      v: 1,
+      toolName: input.details.toolName,
+      summary,
+      ...(truncated ? { summaryTruncated: true } : {}),
+      input: input.details.input,
+      reasons: input.details.reasons,
+      origin: input.origin,
+    });
+    const detailsHash = createHash("sha256").update(canonicalize(details)).digest("hex");
+    const request = await signEnvelope(
+      "chalito.approval.v1",
+      ApprovalRequestBody.parse({
+        v: 1,
+        aid,
+        requestId,
+        sid: input.sid,
+        deviceId,
+        kind: "tool",
+        risk: input.risk,
+        stepUpRequired: input.stepUp,
+        origin: input.origin,
+        createdAt,
+        expiresAt,
+        detailsHash,
+      }),
+      deviceId,
+      signer.secretKey,
+    );
     const req = ApprovalRequest.parse({
       v: 1,
       aid,
@@ -91,7 +143,7 @@ export class ApprovalManager {
       risk: input.risk,
       origin: input.origin,
       stepUpRequired: input.stepUp,
-      detailsCt: await sealer.seal({ v: 1, ...input.details, origin: input.origin }, `approval:${aid}`),
+      detailsCt: await sealer.seal({ details, request }, `approval:${aid}`),
       status: "pending",
       createdAt,
       expiresAt,
@@ -128,6 +180,17 @@ export class ApprovalManager {
             return;
           }
           const d = parsed.data.body;
+          // ADR 0019: an allow must be for exactly what we signed (a swapped details_ct shows the
+          // person something else and can never yield a usable allow). A deny is always fine.
+          if (d.allow && d.detailsHash !== detailsHash) {
+            audit({
+              type: "approval.decision_rejected",
+              aid,
+              reason: "details_mismatch",
+              signer: parsed.data.signerDeviceId,
+            });
+            return;
+          }
           if (input.stepUp && d.allow) {
             const failure = await stepUpFailure(
               trust(),

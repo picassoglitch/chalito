@@ -174,3 +174,74 @@ jobs:
           quiet: true
           # `terraform plan` via Workload Identity Federation is added once the owner
           # creates the WIF pool for this repo (OPS); until then CI runs without credentials.
+
+  # M7 desktop (Tauri v2): unsigned debug bundles on all three OSes, the Rust hit-test unit
+  # tests and the desktop front-end tests. No signing, no publishing (ADR 0014 comes later).
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundles: deb
+          - os: windows-latest
+            bundles: nsis
+          - os: macos-latest
+            bundles: app
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux webview and tray libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev build-essential
+      # rustup is preinstalled on hosted runners; retry because static.rust-lang.org
+      # occasionally drops a request (seen on the first run of this job).
+      - name: Rust stable
+        shell: bash
+        run: |
+          for i in 1 2 3 4; do
+            rustup toolchain install stable --profile minimal && break
+            [ "$i" = 4 ] && exit 1
+            sleep $((i * 10))
+          done
+          rustup default stable
+          rustc --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @chalito/desktop --filter @chalito/avatar-three test
+      # Builds dist/ first (beforeBuildCommand); generate_context! embeds it, so cargo test comes after.
+      - run: pnpm tauri build --debug --bundles ${{ matrix.bundles }}
+        working-directory: apps/desktop
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+      # The dev-only SSO loopback (loopback.rs) must not exist in release builds: a cfg test
+      # compiled in release, then a grep for its marker in both binaries (the debug one proves
+      # the grep can find it).
+      - name: Release build has no SSO loopback
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo test --release --lib dev_loopback
+          cargo build --release
+          grep -aq CHALITO_DEV_SSO_LOOPBACK target/debug/chalito-desktop
+          if grep -aq CHALITO_DEV_SSO_LOOPBACK target/release/chalito-desktop; then
+            echo "release binary contains the dev SSO loopback" >&2
+            exit 1
+          fi
+      # Not committed yet: the first green run's lockfile is the one to pin (text file only).
+      - name: Upload Cargo.lock
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cargo.lock
+          path: apps/desktop/src-tauri/Cargo.lock
+          if-no-files-found: error
+          retention-days: 14

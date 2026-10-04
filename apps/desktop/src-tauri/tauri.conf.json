@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Chalito",
+  "version": "0.0.0",
+  "identifier": "com.chalyb.chalito",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "pet",
+        "url": "pet.html",
+        "title": "Chalito",
+        "width": 360,
+        "height": 420,
+        "resizable": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false,
+        "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "panel",
+        "url": "panel.html",
+        "title": "Chalito",
+        "width": 960,
+        "height": 720,
+        "minWidth": 480,
+        "minHeight": 480,
+        "visible": false,
+        "center": true
+      },
+      {
+        "label": "room",
+        "url": "room.html",
+        "title": "Chalito",
+        "width": 1024,
+        "height": 640,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://*.supabase.co wss://*.supabase.co"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["chalito"]
+      }
+    }
+  }
+}

@@ -1,4 +1,5 @@
-import type { SealedEnvelope, SessionCard } from "@chalito/protocol";
+import { canonicalize, fromB64url, sha256, utf8, verifyEnvelope } from "@chalito/crypto";
+import { SealedApprovalPayload, type SealedEnvelope, type SessionCard } from "@chalito/protocol";
 import type { ClientKeys } from "./keys.js";
 import { deviceTopic, must, type SupaChannel, type SupaClient } from "./supa.js";
 
@@ -11,14 +12,27 @@ export interface ApprovalView {
   agentDeviceId: string;
   requestId: string;
   kind: "tool" | "decision";
+  /** When `verified`: the value the agent SIGNED; otherwise the row's (unverified) column. */
   risk: "LOW" | "MED" | "HIGH" | "CRITICAL";
   origin: string;
+  /** When `verified`: signed by the agent. */
   stepUpRequired: boolean;
+  /**
+   * ADR 0019 (R-H1): the details were opened, the agent's signature over the request verifies
+   * against its LOCALLY trusted key, the signed aid/requestId/agent match this row, and the
+   * signed hash matches the details. Only a verified approval can be allowed.
+   */
+  verified: boolean;
+  /** The signed hash a decision must carry back (null unless verified). */
+  detailsHash: string | null;
   status: "pending" | "approved" | "denied" | "expired" | "rejected_invalid";
   reason: string | null;
   createdAt: number;
   expiresAt: number;
-  /** Opened details (tool, summary, input, reasons), or null when this device isn't a recipient. */
+  /**
+   * Opened details (tool, summary, summaryTruncated, input, reasons), or null when this device
+   * isn't a recipient. Unverified details are shown as such.
+   */
   details: Record<string, unknown> | null;
   rev: number;
 }
@@ -73,6 +87,11 @@ export interface DeviceView {
   lastSeenAt: number | null;
   devMode: { on: boolean; toggles: string[]; since: number | null };
   policyHash: string | null;
+  /**
+   * The device's latest DeviceEvent as it published it (agent-written, display only: e.g. ADR
+   * 0018's `trust.endorsement_refused`). Unvalidated cloud data: parse before use.
+   */
+  lastEvent: unknown;
   rev: number;
 }
 
@@ -325,7 +344,7 @@ export class LiveStore {
 
   async #approval(r: Row): Promise<ApprovalView> {
     const aid = String(r.aid);
-    return {
+    const base = {
       aid,
       sid: String(r.sid),
       agentDeviceId: String(r.device_id),
@@ -338,9 +357,51 @@ export class LiveStore {
       reason: (r.reason as string | null) ?? null,
       createdAt: ms(r.created_at),
       expiresAt: ms(r.expires_at),
-      details: await this.#open<Record<string, unknown>>(r.details_ct, `approval:${aid}`),
       rev: num(r.rev),
     };
+    const opened = await this.#open<unknown>(r.details_ct, `approval:${aid}`);
+    const checked = await this.#verifyApproval(opened, base);
+    if (!checked) {
+      // Unverified: show what was opened (legacy or unsigned payloads), but it can only be denied.
+      const legacy =
+        opened && typeof opened === "object" ? ((opened as { details?: unknown }).details ?? opened) : null;
+      return {
+        ...base,
+        verified: false,
+        detailsHash: null,
+        details: (legacy as Record<string, unknown> | null) ?? null,
+      };
+    }
+    return {
+      ...base,
+      risk: checked.request.risk,
+      stepUpRequired: checked.request.stepUpRequired,
+      origin: checked.request.origin,
+      verified: true,
+      detailsHash: checked.request.detailsHash,
+      details: checked.details as Record<string, unknown>,
+    };
+  }
+
+  /** ADR 0019: the agent's signed request, against this client's own trust in that agent. */
+  async #verifyApproval(opened: unknown, row: { aid: string; requestId: string; agentDeviceId: string }) {
+    const p = SealedApprovalPayload.safeParse(opened);
+    if (!p.success) return null;
+    const pubSign = this.keys.trustedAgentSignKey?.(row.agentDeviceId);
+    if (!pubSign) return null;
+    const { details, request } = p.data;
+    if (request.signerDeviceId !== row.agentDeviceId) return null;
+    const sig = await verifyEnvelope(
+      request,
+      "chalito.approval.v1",
+      new Map([[row.agentDeviceId, await fromB64url(pubSign)]]),
+    );
+    if (!sig.ok) return null;
+    const b = request.body;
+    if (b.aid !== row.aid || b.requestId !== row.requestId || b.deviceId !== row.agentDeviceId) return null;
+    const hash = [...(await sha256(utf8(canonicalize(details))))].map((x) => x.toString(16).padStart(2, "0")).join("");
+    if (hash !== b.detailsHash) return null;
+    return { details, request: b };
   }
 
   async #session(r: Row): Promise<SessionView> {
@@ -390,6 +451,7 @@ export class LiveStore {
       lastSeenAt: last,
       devMode: { on: dm.on === true, toggles: dm.toggles ?? [], since: dm.since ?? null },
       policyHash: (r.policy_hash as string | null) ?? null,
+      lastEvent: r.last_event ?? null,
       rev: num(r.rev),
     };
   }

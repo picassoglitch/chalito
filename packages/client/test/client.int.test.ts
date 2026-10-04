@@ -2,7 +2,8 @@
  * The browser client against the LOCAL Supabase stack (`supabase start`), run by the
  * `supabase` CI job (`eval "$(supabase status -o env)"` → API_URL, ANON_KEY,
  * SERVICE_ROLE_KEY). Two devices, both Supabase Auth users with app_metadata.chalito:
- *   agent  writes a session and an approval sealed to the browser;
+ *   agent  writes a session and an approval sealed to the browser (ADR 0019: the details plus
+ *          its signed request, which the browser verifies against the agent key it trusts);
  *   client (this package) sees it live, opens it, and inserts a signed Decision that the
  *          agent's local TrustedClientList verifies.
  * Rows are seeded as chalito_server through one DO block per `supabase db query` call.
@@ -12,7 +13,17 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient as createSupabase, type SupabaseClient } from "@supabase/supabase-js";
-import { MemoryNonceStore, TrustedClientList, fromB64url, openJson, sealJson } from "@chalito/crypto";
+import {
+  MemoryNonceStore,
+  TrustedClientList,
+  canonicalize,
+  fromB64url,
+  openJson,
+  sealJson,
+  sha256,
+  signEnvelope,
+  utf8,
+} from "@chalito/crypto";
 import type { CommandBody, CommandPayload } from "@chalito/protocol";
 import { connect, memoryStorage, type ChalitoClient } from "../src/auth.js";
 import { newDevice, testKeys, type Device } from "./helpers.js";
@@ -100,7 +111,7 @@ describe.skipIf(!LOCAL)("browser client ⇄ agent on the local stack", () => {
     client = await connect({
       url: API_URL,
       publishableKey: ANON,
-      keys: testKeys(browser, { [agent.deviceId]: agent.pubBox }),
+      keys: testKeys(browser, { [agent.deviceId]: agent.pubBox }, { [agent.deviceId]: agent.pubSign }),
       owner: OWNER,
       signIn: { kind: "device", deviceId: browser.deviceId, login: () => tokenHash(browser.deviceId) },
       stepUp: async () => ({ method: "platform_biometric", at: Date.now() }),
@@ -125,8 +136,33 @@ describe.skipIf(!LOCAL)("browser client ⇄ agent on the local stack", () => {
 
   it("opens an approval sealed to it and sends a Decision the agent verifies", async () => {
     const aid = `a-${run}`;
+    // What a real agent seals (ADR 0019): the details plus its signed request over their hash.
+    const details = { v: 1, toolName: "Bash", summary: "pnpm install", reasons: [], origin: "local" };
+    const detailsHash = [...(await sha256(utf8(canonicalize(details))))]
+      .map((x) => x.toString(16).padStart(2, "0"))
+      .join("");
+    const now = Date.now();
+    const request = await signEnvelope(
+      "chalito.approval.v1",
+      {
+        v: 1,
+        aid,
+        requestId: `r-${run}`,
+        sid: `s-${run}`,
+        deviceId: agent.deviceId,
+        kind: "tool",
+        risk: "MED",
+        stepUpRequired: false,
+        origin: "local",
+        createdAt: now,
+        expiresAt: now + 5 * 60_000,
+        detailsHash,
+      },
+      agent.deviceId,
+      agent.sign.secretKey,
+    );
     const details_ct = await sealJson(
-      { toolName: "Bash", summary: "pnpm install" },
+      { details, request },
       { [browser.deviceId]: await fromB64url(browser.pubBox), [agent.deviceId]: await fromB64url(agent.pubBox) },
       `approval:${aid}`,
     );
@@ -142,11 +178,11 @@ describe.skipIf(!LOCAL)("browser client ⇄ agent on the local stack", () => {
       step_up_required: false,
       details_ct,
       status: "pending",
-      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+      expires_at: new Date(now + 5 * 60_000).toISOString(),
     });
     expect(error).toBeNull();
     await waitFor(() => !!client.live.approval(aid));
-    expect(client.live.approval(aid)!.details).toEqual({ toolName: "Bash", summary: "pnpm install" });
+    expect(client.live.approval(aid)).toMatchObject({ verified: true, detailsHash, details });
 
     await client.actions.decide(aid, true);
     let decision: unknown;
