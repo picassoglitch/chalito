@@ -9,21 +9,24 @@
 #   2. refuse unless every URL it got points at the branch, never at $NEXO_AI_REF;
 #   3. optional: the hub's migrations first (HUB_DIR = an export of picassoglitch/chalyb, e.g.
 #      `git -C ~/chalyb archive d467b02 | tar -x -C /tmp/hub`), so hub tables and its ledger exist;
-#   4. Chalito's migrations: `supabase db push` (what GO_LIVE 2.4 runs), or --method psql (each file
-#      in its own transaction, no ledger), see "Ledger" below;
+#   4. Chalito's migrations, by --method:
+#        hub   (GO_LIVE 2.4, recommended) copied into a temporary copy of HUB_DIR and pushed with the
+#              hub's, one push, one ledger; needs HUB_DIR;
+#        push  `supabase db push` from this repo;
+#        psql  each file in its own transaction, no ledger;
 #   5. pgTAP (`supabase test db`) and the beta rehearsal (apps/rehearsal) against the branch;
 #   6. a pass/fail table; the branch is deleted unless --keep.
 #
 # Ledger: nexo-ai's supabase_migrations ledger holds the hub's versions (Chalyb docs/infra/supabase.md).
 # `supabase db push` refuses when the database has versions the local folder doesn't, so with
-# HUB_DIR set, step 4's push is expected to fail the same way GO_LIVE 2.4 would. That's what this
-# dry run is for; --method psql shows the migrations themselves apply.
+# HUB_DIR set, --method push is expected to fail the way GO_LIVE 2.4 describes; --method hub is the
+# recommended path.
 #
 # Never targets the main project: every command gets the branch's own URL, checked first.
 # Needs: supabase CLI (2.119+), jq, pnpm; psql for --method psql.
 set -euo pipefail
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; }
 
 YES=0 KEEP=0 METHOD=push
 while [ $# -gt 0 ]; do
@@ -36,7 +39,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-case "$METHOD" in push | psql) ;; *) echo "--method must be push or psql" >&2; exit 2 ;; esac
+case "$METHOD" in hub | push | psql) ;; *) echo "--method must be hub, push or psql" >&2; exit 2 ;; esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN_REF="${NEXO_AI_REF:-}"
@@ -49,6 +52,7 @@ if ! [[ "$MAIN_REF" =~ $REF_RE ]]; then
   exit 2
 fi
 if ! [[ "$BRANCH" =~ ^[a-z0-9-]{3,40}$ ]]; then echo "BRANCH must be 3-40 of [a-z0-9-]" >&2; exit 2; fi
+if [ "$METHOD" = hub ] && [ -z "$HUB_DIR" ]; then echo "--method hub needs HUB_DIR" >&2; exit 2; fi
 if [ -n "$HUB_DIR" ] && [ ! -d "$HUB_DIR/supabase/migrations" ]; then
   echo "HUB_DIR has no supabase/migrations: $HUB_DIR" >&2; exit 2
 fi
@@ -121,15 +125,28 @@ case "$DB_URL" in
 esac
 record "branch $BRANCH_REF" PASS
 
-if [ -n "$HUB_DIR" ]; then
+if [ "$METHOD" = hub ]; then
+  echo "== 3+4. hub and Chalito migrations in one push (a temporary copy of $HUB_DIR)"
+  WORK="$(mktemp -d)"
+  cp -R "$HUB_DIR/." "$WORK/"
+  cp "$ROOT"/supabase/migrations/*.sql "$WORK/supabase/migrations/"
+  if (cd "$WORK" && supabase db push --db-url "$DB_URL" --include-all --yes); then
+    record "hub + chalito migrations" PASS
+  else
+    record "hub + chalito migrations" FAIL
+  fi
+  rm -rf "$WORK"
+elif [ -n "$HUB_DIR" ]; then
   echo "== 3. hub migrations ($HUB_DIR)"
   if (cd "$HUB_DIR" && supabase db push --db-url "$DB_URL" --yes); then record "hub migrations" PASS; else record "hub migrations" FAIL; fi
 else
   record "hub migrations" SKIP
 fi
 
-echo "== 4. Chalito migrations ($METHOD)"
-if [ "$METHOD" = push ]; then
+if [ "$METHOD" = hub ]; then
+  :
+elif [ "$METHOD" = push ]; then
+  echo "== 4. Chalito migrations (push)"
   if (cd "$ROOT" && supabase db push --db-url "$DB_URL" --yes); then
     record "chalito migrations (push)" PASS
   else
@@ -137,6 +154,7 @@ if [ "$METHOD" = push ]; then
     echo "hint: if the push refused remote versions it doesn't have, that is the shared ledger (see the header)." >&2
   fi
 else
+  echo "== 4. Chalito migrations (psql)"
   ok=PASS
   for f in "$ROOT"/supabase/migrations/*.sql; do
     psql "$DB_URL" -v ON_ERROR_STOP=1 -q -1 -f "$f" >/dev/null || { echo "failed: $f" >&2; ok=FAIL; break; }
