@@ -59,3 +59,29 @@ test("R-M11: changing the passkey asks for the current one; without it nothing c
   await expect(page.getByTestId("passkey-replace-error")).toContainText("confirma primero con la actual");
   expect(await ref()).toBe("dev-passkey-2");
 });
+
+test("sign out everywhere else: needs a passkey; revokes every other client server-side and tells each computer", async ({
+  page,
+}) => {
+  await ready(page, "/dispositivos");
+  const { other } = await ids(page);
+  await expect(page.getByTestId("everywhere-needs-passkey")).toBeVisible();
+  await page.getByRole("button", { name: "Crear passkey" }).click();
+  await expect(page.getByTestId("passkey-enrolled")).toBeVisible();
+
+  await page.getByTestId("everywhere").click();
+  await expect(page.getByText("¿Cerrar sesión en todos los demás teléfonos y navegadores?")).toBeVisible();
+  await page.getByTestId("everywhere-yes").click();
+  // Each signed revoke to a computer is stepped up (R-L1), then the server's assertion.
+  await page.getByRole("dialog").getByRole("button", { name: "Confirmar" }).click();
+  await expect(page.getByTestId("everywhere-result")).toContainText("Se cerró la sesión en 1 dispositivo.");
+  await expect(page.getByTestId("everywhere-agent")).toHaveText("Laptop de Aldo: los quitó de su lista.");
+
+  const writes = await clientWrites(page);
+  const call = writes.find((w) => w.op === "devices/revoke-all")!;
+  expect((call.row.commands as unknown[]).length).toBe(1);
+  expect((await rows(page, "devices")).find((d) => d.device_id === other)?.revoked).toBe(true);
+  await expect.poll(() => dev(page, "agentDropped", other)).toBe(true);
+  // This browser stays signed in.
+  await expect(page.locator(`[data-device="${other}"]`).getByTestId("presence")).toHaveText("Retirado");
+});
