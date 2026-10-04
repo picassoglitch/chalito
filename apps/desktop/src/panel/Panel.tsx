@@ -5,14 +5,16 @@ import { useT } from "../lib/i18n.js";
 import type { AgentIpc } from "../lib/ipc.js";
 import type { PushToTalk } from "../lib/voice.js";
 import type { UpdateController } from "../lib/updates.js";
+import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
+import { Rooms } from "./Rooms.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { Settings } from "./Settings.js";
 import { Updates } from "./Updates.js";
 import { Voice } from "./Voice.js";
 
-const TABS = ["inbox", "settings", "security", "voice"] as const;
+const TABS = ["inbox", "rooms", "settings", "security", "voice"] as const;
 export type Tab = (typeof TABS)[number];
 
 export interface PanelProps {
@@ -32,6 +34,8 @@ export interface PanelProps {
   hubPlansUrl: string;
   phoneVerifier: PhoneVerifier;
   updates?: UpdateController;
+  /** Salas: the rooms list and join; null while signed out. */
+  rooms?: RoomsSource | null;
   initialTab?: Tab;
 }
 
@@ -55,10 +59,16 @@ export const Panel = (p: PanelProps) => {
       <main role="tabpanel">
         {tab === "inbox" &&
           (p.client ? (
-            <Inbox client={p.client} canStepUp={p.canStepUp ?? false} />
+            <Inbox
+              client={p.client}
+              canStepUp={p.canStepUp ?? false}
+              {...(p.rooms ? { onOpenRoom: (id: string) => void p.rooms!.open(id) } : {})}
+            />
           ) : (
             (p.signIn ?? <p className="muted">{t("offline")}</p>)
           ))}
+        {tab === "rooms" &&
+          (p.rooms ? <Rooms source={p.rooms} /> : (p.signIn ?? <p className="muted">{t("offline")}</p>))}
         {tab === "settings" && p.settingsError && <p role="alert">{t(`settingsError.${p.settingsError}`)}</p>}
         {tab === "settings" && p.settings && (
           <Settings

@@ -3,7 +3,8 @@
     "inbox": "Bandeja",
     "settings": "Ajustes",
     "security": "Seguridad",
-    "voice": "Voz"
+    "voice": "Voz",
+    "rooms": "Salas"
   },
   "dnd": "No molestar",
   "offline": "Sin conexión a tu cuenta. Empareja esta computadora con «chalito pair».",
@@ -19,7 +20,8 @@
     "approveOnPhone": "Aprueba esta acción desde tu teléfono",
     "unverified": "Sin verificar: tu computadora no firmó lo que ves. Solo puedes rechazarla.",
     "showFull": "Ver el comando completo",
-    "openFullFirst": "Abre el comando completo antes de aprobar"
+    "openFullFirst": "Abre el comando completo antes de aprobar",
+    "openRoom": "Abrir sala"
   },
   "security": {
     "localOnly": "Estas pantallas solo funcionan en esta computadora. Ni el teléfono ni la web pueden cambiarlas.",
@@ -184,5 +186,25 @@
     "relaunch": "Reiniciar ahora",
     "unavailable": "Esta compilación no se actualiza sola.",
     "error": "No se pudo actualizar. Inténtalo más tarde."
+  },
+  "rooms": {
+    "title": "Tus salas",
+    "loading": "Cargando salas…",
+    "loadFailed": "No se pudieron cargar tus salas.",
+    "none": "Aún no estás en ninguna sala.",
+    "unread": "Mensajes nuevos",
+    "members": "{n} integrantes",
+    "open": "Abrir",
+    "join": "Unirse con código",
+    "joinButton": "Unirme",
+    "codePlaceholder": "Código de invitación",
+    "joined": "Listo. Un integrante te dará acceso a los mensajes en un momento.",
+    "joinError": {
+      "bad_code": "Ese código no es válido o ya expiró.",
+      "full": "La sala está llena.",
+      "rate_limited": "Demasiados intentos. Espera un momento.",
+      "failed": "No se pudo unir. Inténtalo de nuevo.",
+      "no_companion": "Tu compañero aún no está listo. Termina de configurar tu cuenta."
+    }
   }
 }

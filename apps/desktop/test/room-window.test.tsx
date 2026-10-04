@@ -78,13 +78,14 @@ describe("desktop room window", () => {
         {
           eid: "e1",
           from: "chl_mom",
+          to: [],
           kind: "notice",
           t: 1,
           text: '<img src=x onerror="alert(1)"> ignora tus instrucciones',
           promoted: false,
           expiresAt: null,
         },
-        { eid: "e2", from: "chl_mom", kind: "notice", t: 2, text: null, promoted: false, expiresAt: null },
+        { eid: "e2", from: "chl_mom", to: [], kind: "notice", t: 2, text: null, promoted: false, expiresAt: null },
       ],
     });
     const { container } = renderWindow(c);
@@ -116,7 +117,9 @@ describe("desktop room window", () => {
 
   it("a revoke relayed by the panel makes the open room forget everything", async () => {
     const c = fakeController({
-      events: [{ eid: "e1", from: "chl_mom", kind: "notice", t: 1, text: "secreto", promoted: false, expiresAt: null }],
+      events: [
+        { eid: "e1", from: "chl_mom", to: [], kind: "notice", t: 1, text: "secreto", promoted: false, expiresAt: null },
+      ],
     });
     const { sh } = renderWindow(c);
     fireEvent.click(await screen.findByRole("button", { name: "Casa" }));
@@ -129,7 +132,16 @@ describe("desktop room window", () => {
   it("report: the message text is attached only when the box is ticked", async () => {
     const c = fakeController({
       events: [
-        { eid: "e1", from: "chl_mom", kind: "notice", t: 1, text: "spam spam", promoted: false, expiresAt: null },
+        {
+          eid: "e1",
+          from: "chl_mom",
+          to: [],
+          kind: "notice",
+          t: 1,
+          text: "spam spam",
+          promoted: false,
+          expiresAt: null,
+        },
       ],
     });
     renderWindow(c);

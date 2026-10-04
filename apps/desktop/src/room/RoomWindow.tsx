@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { RoomController, myRooms, type RoomSummary } from "@chalito/rooms";
 import { useT } from "../lib/i18n.js";
 import type { RoomWindowDeps } from "../lib/room-window.js";
+import { roomSeen } from "../lib/room-seen.js";
 import type { DesktopShell } from "../lib/shell.js";
 import { RoomBody } from "./RoomBody.js";
 
@@ -15,7 +16,9 @@ export interface RoomWindowProps {
   pruneMs?: number;
 }
 
-const defaultController = (deps: RoomWindowDeps, roomId: string) => new RoomController({ ...deps, roomId });
+const seen = roomSeen();
+const defaultController = (deps: RoomWindowDeps, roomId: string) =>
+  new RoomController({ ...deps, roomId, onSeen: (rev) => seen.mark(roomId, rev) });
 
 /**
  * The desktop room window: the rooms this companion is in, and one room at a time through the

@@ -66,12 +66,19 @@ const ApprovalRow = ({
   );
 };
 
+/** A room event's deep link (/r/<roomId>, as the notifier writes it): the room to open. */
+export const roomOf = (n: { source: string; deepLink: string }): string | null =>
+  n.source === "room_event" ? (/^\/(?:en\/)?r\/([A-Za-z0-9_-]{1,128})$/.exec(n.deepLink)?.[1] ?? null) : null;
+
 export const Inbox = ({
   client,
   canStepUp,
+  onOpenRoom,
 }: {
   client: Pick<ChalitoClient, "live" | "actions">;
   canStepUp: boolean;
+  /** Room event notifications deep-link into the room window. */
+  onOpenRoom?: (roomId: string) => void;
 }) => {
   const t = useT();
   const snap = useSyncExternalStore(client.live.subscribe, client.live.getSnapshot);
@@ -113,6 +120,16 @@ export const Inbox = ({
                 <span>
                   {n.level} · {n.source}
                 </span>
+                {onOpenRoom && roomOf(n) && (
+                  <button
+                    onClick={() => {
+                      onOpenRoom(roomOf(n)!);
+                      void run(client.actions.ackNotification(n.nid));
+                    }}
+                  >
+                    {t("inbox.openRoom")}
+                  </button>
+                )}
                 <button onClick={() => void run(client.actions.ackNotification(n.nid))}>{t("inbox.ack")}</button>
               </li>
             ))}
