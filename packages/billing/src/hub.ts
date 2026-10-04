@@ -76,9 +76,12 @@ export class HubClient {
     return HubAdmitResponse.parse(await res.json());
   }
 
-  /** Reports up to 100 events. Never throws for HTTP outcomes; the outbox decides what to do. */
-  async usage(events: HubUsageEvent[]): Promise<UsageResult> {
-    const batch = HubUsageBatch.parse({ events });
+  /**
+   * Reports up to 100 events for ONE user (the hub takes `external_user_id` at the top level).
+   * Never throws for HTTP outcomes; the outbox decides what to do.
+   */
+  async usage(externalUserId: string, events: HubUsageEvent[]): Promise<UsageResult> {
+    const batch = HubUsageBatch.parse({ external_user_id: externalUserId, events });
     let res: Response;
     try {
       res = await this.#call("POST", "/usage", batch);

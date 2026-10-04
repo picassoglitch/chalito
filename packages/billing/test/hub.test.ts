@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { HubClient, HubUnavailable } from "../src/hub.js";
 import { usageEvent } from "../src/billable.js";
-import { hubMock } from "./hub-mock.js";
+import { HUB_TOKEN, hubMock } from "./hub-mock.js";
 
 const { server, calls, state } = hubMock();
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
@@ -11,7 +11,7 @@ beforeEach(() => {
   state.usageStatus = 200;
 });
 
-const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: "chalito-admin-token" });
+const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: HUB_TOKEN });
 const event = (i = 0) =>
   usageEvent(
     { owner: "u1", billingMode: "managed", origin: "whatsapp.message" },
@@ -27,10 +27,10 @@ const event = (i = 0) =>
 
 describe("HubClient (engine contract)", () => {
   it("only talks to https://www.chalyb.com, with the engine bearer", async () => {
-    expect(() => new HubClient({ baseUrl: "https://evil.example", token: "t" })).toThrow(
+    expect(() => new HubClient({ baseUrl: "https://evil.example", token: HUB_TOKEN })).toThrow(
       /must be https:\/\/www\.chalyb\.com/,
     );
-    expect(() => new HubClient({ baseUrl: "http://www.chalyb.com", token: "t" })).toThrow();
+    expect(() => new HubClient({ baseUrl: "http://www.chalyb.com", token: HUB_TOKEN })).toThrow();
     expect(() => new HubClient({ baseUrl: "https://www.chalyb.com", token: "" })).toThrow();
     await hub.admit({
       external_user_id: "u1",
@@ -50,25 +50,38 @@ describe("HubClient (engine contract)", () => {
   });
 
   it("classifies usage outcomes: ok, retry (network, 5xx, 408, 429), dead (other 4xx)", async () => {
-    expect(await hub.usage([event()])).toEqual({ status: "ok" });
+    expect(await hub.usage("u1", [event()])).toEqual({ status: "ok" });
     for (const s of [500, 503, 408, 429] as const) {
       state.usageStatus = s;
-      expect((await hub.usage([event()])).status).toBe("retry");
+      expect((await hub.usage("u1", [event()])).status).toBe("retry");
     }
     state.usageStatus = "network";
-    expect(await hub.usage([event()])).toMatchObject({ status: "retry", httpStatus: null });
+    expect(await hub.usage("u1", [event()])).toMatchObject({ status: "retry", httpStatus: null });
     for (const s of [400, 401, 403, 409, 422] as const) {
       state.usageStatus = s;
-      expect(await hub.usage([event()])).toMatchObject({ status: "dead", httpStatus: s });
+      expect(await hub.usage("u1", [event()])).toMatchObject({ status: "dead", httpStatus: s });
     }
   });
 
-  it("sends at most 100 events per batch, each with cost_usd_micros", async () => {
-    await expect(hub.usage(Array.from({ length: 101 }, (_, i) => event(i)))).rejects.toThrow();
-    await hub.usage(Array.from({ length: 100 }, (_, i) => event(i)));
-    const sent = (calls.at(-1)!.body as { events: Record<string, unknown>[] }).events;
-    expect(sent).toHaveLength(100);
-    expect(sent.every((e) => typeof e.cost_usd_micros === "number")).toBe(true);
+  it("sends one user's events (top-level external_user_id, ≤100), each with cost_usd_micros", async () => {
+    await expect(
+      hub.usage(
+        "u1",
+        Array.from({ length: 101 }, (_, i) => event(i)),
+      ),
+    ).rejects.toThrow();
+    // Another user's event in the batch is refused before it leaves.
+    await expect(hub.usage("u2", [event()])).rejects.toThrow(/external_user_id/);
+    expect(
+      await hub.usage(
+        "u1",
+        Array.from({ length: 100 }, (_, i) => event(i)),
+      ),
+    ).toEqual({ status: "ok" });
+    const body = calls.at(-1)!.body as { external_user_id: string; events: Record<string, unknown>[] };
+    expect(body.external_user_id).toBe("u1");
+    expect(body.events).toHaveLength(100);
+    expect(body.events.every((e) => typeof e.cost_usd_micros === "number")).toBe(true);
   });
 
   it("settle reports a closed reservation (409) separately", async () => {

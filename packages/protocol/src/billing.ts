@@ -157,8 +157,16 @@ export const HubUsageEvent = z
   );
 export type HubUsageEvent = z.infer<typeof HubUsageEvent>;
 
-/** At most 100 events per POST /usage. */
-export const HubUsageBatch = z.object({ events: z.array(HubUsageEvent).min(1).max(100) });
+/**
+ * POST /usage: ONE user per request, at the top level, at most 100 events (chalyb
+ * `src/app/api/engines/[slug]/usage/route.ts`, `body.external_user_id`; the same on main 3f27ef3
+ * and a5733df). Events keep their own external_user_id for our outbox; it must match.
+ */
+export const HubUsageBatch = z
+  .object({ external_user_id: z.string().min(1), events: z.array(HubUsageEvent).min(1).max(100) })
+  .refine((b) => b.events.every((e) => e.external_user_id === b.external_user_id), {
+    message: "every event in a usage batch belongs to the batch's external_user_id",
+  });
 
 export const HubSettle = z.object({
   reservation_id: z.string().uuid(),
