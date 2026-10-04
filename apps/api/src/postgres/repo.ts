@@ -196,6 +196,22 @@ export class PostgresRepo implements ApiRepo {
     };
   }
 
+  async bumpWebAuthnCounter(owner: string, deviceId: string, credentialId: string, counter: number) {
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx<{ webauthn_counter: string | number }[]>`
+        select webauthn_counter from chalito.devices
+        where owner = ${owner} and device_id = ${deviceId} and webauthn_credential_id = ${credentialId}
+        for update`;
+      if (!row) return "not_found" as const;
+      const stored = Number(row.webauthn_counter);
+      if (counter === 0 && stored === 0) return "ok" as const;
+      if (counter <= stored) return "cloned" as const;
+      await tx`update chalito.devices set webauthn_counter = ${counter}
+               where owner = ${owner} and device_id = ${deviceId}`;
+      return "ok" as const;
+    });
+  }
+
   async setDeviceWebAuthnBinding(owner: string, deviceId: string, binding: unknown) {
     const rows = await this.sql`
       update chalito.devices set webauthn_binding = ${this.sql.json(binding as never)}

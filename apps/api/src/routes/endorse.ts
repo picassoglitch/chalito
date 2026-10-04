@@ -124,7 +124,7 @@ export const endorseRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFro
       if (!stepUp) return fail(401, "step_up_required");
       const challenge = await deps.repo.takeWebAuthnChallenge(p.owner, endorser.deviceId, "assert", deps.now());
       if (!challenge) return fail(401, "step_up_failed");
-      const verified = await verifyAuthenticationResponse({
+      const counter = await verifyAuthenticationResponse({
         response: stepUp as unknown as AuthenticationResponseJSON,
         expectedChallenge: challenge,
         expectedOrigin: wa.origins,
@@ -132,15 +132,34 @@ export const endorseRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFro
         credential: {
           id: cred.credentialId,
           publicKey: new Uint8Array(await fromB64url(cred.publicKey)),
-          counter: cred.counter,
+          // The counter check is the repo's atomic compare below (it also catches concurrent
+          // assertions and raises the clone alert), so the library doesn't pre-empt it.
+          counter: 0,
           transports: cred.transports as never,
         },
         requireUserVerification: true,
       }).then(
-        (r) => r.verified && r.authenticationInfo.credentialID === cred.credentialId,
-        () => false,
+        (r) =>
+          r.verified && r.authenticationInfo.credentialID === cred.credentialId
+            ? r.authenticationInfo.newCounter
+            : null,
+        () => null,
       );
-      if (!verified) return fail(401, "step_up_failed");
+      if (counter === null) return fail(401, "step_up_failed");
+      const bumped = await deps.repo.bumpWebAuthnCounter(p.owner, endorser.deviceId, cred.credentialId, counter);
+      if (bumped === "cloned") {
+        // A sign counter that didn't move forward: a copy of this passkey may exist. Refuse and alert.
+        await deps.audit.record({
+          action: "webauthn.clone_suspected",
+          owner: p.owner,
+          actor: p.uid,
+          target: endorser.deviceId,
+          meta: { credentialId: cred.credentialId, stored: cred.counter, reported: counter, during: "endorse.approve" },
+        });
+        console.warn("[api] passkey sign counter did not advance; refusing (possible cloned authenticator)");
+        return fail(403, "authenticator_cloned");
+      }
+      if (bumped === "not_found") return fail(401, "step_up_failed");
     }
 
     const res = await deps.repo.approveEndorseCode(

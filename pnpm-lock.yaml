@@ -139,6 +139,9 @@ importers:
       '@chalito/client-keys':
         specifier: workspace:*
         version: link:../../packages/client-keys
+      '@chalito/glyph':
+        specifier: workspace:*
+        version: link:../../packages/glyph
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
