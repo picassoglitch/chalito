@@ -13,6 +13,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  web-e2e:
+    # The web app's Playwright suite: two production builds (as shipped, and with the
+    # dev/test-only mock backend), every api/Supabase call mocked; nothing live.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @chalito/web exec playwright install --with-deps chromium
+      - name: Playwright (desktop + phone viewports)
+        run: pnpm --filter @chalito/web e2e
+        env:
+          CI: "1"
+      - name: The shipped build contains no dev/test mock backend
+        working-directory: apps/web
+        run: |
+          if grep -rlE "CHALITO_DEV_BACKEND_DO_NOT_SHIP|__chalitoDev" .next/e2e-shell/static .next/e2e-shell/server; then
+            echo "dev/test mock backend found in the shipped build" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: apps/web/test-results
+          retention-days: 7
+
   node:
     runs-on: ubuntu-latest
     steps:
@@ -92,12 +124,13 @@ jobs:
       - run: pnpm --filter @chalito/billing test:pg
         env:
           CHALITO_DB_ROLE: chalito_server
-      - name: Agent SupabaseStore integration
+      - name: Agent SupabaseStore and browser client integration
         run: |
           eval "$(supabase status -o env)"
           export API_URL ANON_KEY SERVICE_ROLE_KEY
           export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
           pnpm --filter @chalito/agent test:supabase
+          pnpm --filter @chalito/client test:supabase
       # Realtime delivery (supabase-js against the local stack).
       - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
       - run: node supabase/scripts/realtime-latency.mjs

@@ -1,10 +1,11 @@
 import { spawn as nodeSpawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Origin, RemotePermissionMode } from "@chalito/protocol";
 import type { AdapterEvent, Question, SessionAdapter, SessionHandle, SessionStartOptions, ToolCall } from "../core.js";
+import { allowedEnv } from "../env.js";
 
 /**
  * Codex adapter over `codex app-server` on stdio (VERIFIED_APIS §1, D-021): newline-delimited
@@ -39,7 +40,11 @@ export const DEFAULT_CODEX_VERSIONS: CodexVersionRange = { min: "0.160.0", below
 export interface CodexConfig {
   /** The user's own Codex install (never bundled). Defaults to `codex` on PATH. */
   codexPath?: string;
-  /** BYO OpenAI API key from the OS keychain; logged in with `account/login/start {type:"apiKey"}`. */
+  /**
+   * BYO OpenAI API key from the OS keychain. Passed only in the child's environment through an
+   * env-key model provider (like the SIWC plan token), never via `account/login/start`, which
+   * would persist it to CODEX_HOME/auth.json (review R-L12).
+   */
   apiKey?: string;
   /**
    * ChatGPT plan through OpenAI's official Sign in with ChatGPT (D-003, ADR 0004). The agent owns
@@ -110,14 +115,26 @@ export const HARDENING_OVERRIDES = [
   "features.computer_use=false",
 ];
 
-/** Credentials that would take precedence over the configured auth. */
-const STRIPPED_ENV = ["OPENAI_API_KEY", "CODEX_API_KEY", "ACCESS_TOKEN"];
+/** The variable that carries a BYO API key into the child, and only there. */
+export const BYO_KEY_ENV = "CHALITO_OPENAI_API_KEY";
+
+/** `-c` overrides for a BYO API key: an env-key provider, so Codex never logs in or stores it. */
+export const API_KEY_OVERRIDES = [
+  'model_provider="chalito_openai_key"',
+  'model_providers.chalito_openai_key.name="OpenAI"',
+  'model_providers.chalito_openai_key.base_url="https://api.openai.com/v1"',
+  `model_providers.chalito_openai_key.env_key="${BYO_KEY_ENV}"`,
+  'model_providers.chalito_openai_key.wire_api="responses"',
+  "model_providers.chalito_openai_key.requires_openai_auth=false",
+  "model_providers.chalito_openai_key.supports_websockets=false",
+];
 
 export const codexLaunch = (
   config: CodexConfig,
 ): { command: string; args: string[]; env: Record<string, string | undefined> } => {
-  const env = { ...(config.env ?? process.env) };
-  for (const k of STRIPPED_ENV) delete env[k];
+  // An allowlist, never the daemon's whole environment (review R-L12): no Chalito secrets, no
+  // passphrase, no other providers' keys reach a model-driven process and its children.
+  const env = allowedEnv(config.env ?? process.env);
   env.CODEX_HOME = config.codexHome ?? join(homedir(), ".chalito", "codex");
   const args = ["app-server", "--listen", "stdio://"];
   for (const o of HARDENING_OVERRIDES) args.push("-c", o);
@@ -125,15 +142,33 @@ export const codexLaunch = (
     if (!config.chatgptPlanEnabled) throw new Error("ChatGPT plan usage is not enabled for this user");
     env.ACCESS_TOKEN = config.chatgptPlan.accessToken;
     for (const o of CHATGPT_PLAN_OVERRIDES) args.push("-c", o);
-  } else if (!config.apiKey) {
+  } else if (config.apiKey) {
+    env[BYO_KEY_ENV] = config.apiKey;
+    for (const o of API_KEY_OVERRIDES) args.push("-c", o);
+  } else {
     throw new Error("Codex needs an API key or a ChatGPT plan token");
   }
   return { command: config.codexPath ?? "codex", args, env };
 };
 
+/**
+ * Earlier versions logged in with `account/login/start {type:"apiKey"}`, which stored the key in
+ * CODEX_HOME/auth.json. Nothing stores it now; remove any leftover copy.
+ */
+export const removeStoredCredentials = (codexHome: string) => {
+  try {
+    rmSync(join(codexHome, "auth.json"), { force: true });
+  } catch {
+    /* best effort */
+  }
+};
+
 const spawnTransport: CodexSpawn = (command, args, env, cwd) => {
   // Codex refuses a CODEX_HOME that doesn't exist.
-  if (env.CODEX_HOME) mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
+  if (env.CODEX_HOME) {
+    mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
+    removeStoredCredentials(env.CODEX_HOME);
+  }
   const child = nodeSpawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   child.on("error", () => lines.close());
@@ -513,9 +548,6 @@ export class CodexAdapter implements SessionAdapter {
       });
       checkCodexVersion(init.userAgent ?? "", this.config.versions);
       send({ method: "initialized" });
-      if (!this.config.chatgptPlan) {
-        await request("account/login/start", { type: "apiKey", apiKey: this.config.apiKey });
-      }
       // No cwd here (see APPROVAL_POLICY): app-server uses the process cwd.
       const threadParams = {
         approvalPolicy: APPROVAL_POLICY,

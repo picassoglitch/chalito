@@ -12,11 +12,13 @@ import {
   randomNonce,
   sealJson,
   signEnvelope,
+  stepUpChallenge,
   toB64url,
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
 import type { CommandPayload, DecisionBody } from "@chalito/protocol";
+import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { AgentCore, type PolicyHolder } from "../src/agent-core.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
@@ -61,7 +63,13 @@ const harness = async (
   const phone = await device("dev_phone");
   const store = new MemoryStore();
   const trust = new TrustedClientList(agent.id);
-  await trust.addConfirmed({ deviceId: phone.id, pubSign: phone.pubSign, pubBox: phone.pubBox }, Date.now());
+  // The phone's passkey, recorded at the local reverse check (D-019): HIGH allows need its assertion.
+  const passkey = new SoftAuthenticator({ origin: "https://chalito.chalyb.com" });
+  const passkeyRef = { credentialId: passkey.credentialId, publicKey: passkey.publicKey, rpId: "chalito.chalyb.com" };
+  await trust.addConfirmed(
+    { deviceId: phone.id, pubSign: phone.pubSign, pubBox: phone.pubBox, webauthn: passkeyRef },
+    Date.now(),
+  );
 
   let policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }], ...opts.policy };
   const policyChanges: string[] = [];
@@ -158,7 +166,15 @@ const harness = async (
   };
   const decide = async (
     allow: boolean,
-    o: { stepUp?: boolean; signer?: Device; aid?: string; requestId?: string; nonce?: string } = {},
+    o: {
+      stepUp?: boolean;
+      /** Replaces the passkey step-up (negative tests). */
+      customStepUp?: (body: DecisionBody) => Promise<DecisionBody["stepUp"]>;
+      signer?: Device;
+      aid?: string;
+      requestId?: string;
+      nonce?: string;
+    } = {},
   ) => {
     const pending = store.pendingApprovals().at(-1)!;
     const body: DecisionBody = {
@@ -171,8 +187,12 @@ const harness = async (
       nonce: o.nonce ?? (await randomNonce()),
       issuedAt: Date.now(),
       expiresAt: Date.now() + 60_000,
-      ...(o.stepUp ? { stepUp: { method: "platform_biometric" as const, at: Date.now() } } : {}),
     };
+    if (o.customStepUp) body.stepUp = await o.customStepUp(body);
+    else if (o.stepUp) {
+      const assertion = await passkey.stepUp(passkeyRef.rpId)(await stepUpChallenge(body));
+      body.stepUp = { method: "webauthn", at: Date.now(), assertion };
+    }
     const signer = o.signer ?? phone;
     const env = await signEnvelope("chalito.decision.v1", body, signer.id, signer.sign.secretKey);
     store.attachDecision(pending.aid, env);
@@ -193,6 +213,8 @@ const harness = async (
     devMode,
     policyChanges,
     sealed,
+    passkey,
+    passkeyRef,
     getPolicy: () => policy,
   };
 };
@@ -265,6 +287,54 @@ describe("signed approvals end to end (fake Claude Code)", () => {
     expect(h.fake.run.ran).toHaveLength(0);
     await h.decide(true, { stepUp: true });
     await waitFor(() => h.fake.run.ran.length === 1);
+  });
+
+  it("HIGH step-up must be a passkey assertion this agent can verify (D-019)", async () => {
+    const h = await harness({ turns: pushTurn });
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    // Self-asserted method: no longer enough.
+    await h.decide(true, { customStepUp: async () => ({ method: "platform_biometric", at: Date.now() }) });
+    // An assertion made for a different decision (here: the opposite verdict).
+    await h.decide(true, {
+      customStepUp: async (b) => ({
+        method: "webauthn",
+        at: Date.now(),
+        assertion: await h.passkey.stepUp(h.passkeyRef.rpId)(await stepUpChallenge({ ...b, allow: false })),
+      }),
+    });
+    // A different authenticator claiming the recorded credential id.
+    const rogue = new SoftAuthenticator({ origin: "https://chalito.chalyb.com" });
+    await h.decide(true, {
+      customStepUp: async (b) => ({
+        method: "webauthn",
+        at: Date.now(),
+        assertion: {
+          ...(await rogue.stepUp("chalito.chalyb.com")(await stepUpChallenge(b))),
+          credentialId: h.passkeyRef.credentialId,
+        },
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.fake.run.ran).toHaveLength(0);
+    const rejected = h.logs.filter((l) => l.includes("missing_step_up"));
+    expect(rejected.some((l) => l.includes("no_webauthn_assertion"))).toBe(true);
+    expect(rejected.some((l) => l.includes("assertion_wrong_challenge"))).toBe(true);
+    expect(rejected.some((l) => l.includes("assertion_bad_signature"))).toBe(true);
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.fake.run.ran.length === 1);
+  });
+
+  it("a trusted client without a recorded passkey can't approve HIGH", async () => {
+    const h = await harness({ turns: pushTurn });
+    const second = await device("dev_tablet");
+    await h.trust.addConfirmed({ deviceId: second.id, pubSign: second.pubSign, pubBox: second.pubBox }, Date.now());
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    await h.decide(true, { signer: second, stepUp: true });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.fake.run.ran).toHaveLength(0);
+    expect(h.logs.some((l) => l.includes("no_passkey_recorded"))).toBe(true);
   });
 
   it("a revoked phone's decision is rejected even when the server still delivers it", async () => {

@@ -1,7 +1,8 @@
-import type { Endorsement } from "@chalito/protocol";
+import type { Endorsement, WebAuthnBinding } from "@chalito/protocol";
 import { fromB64url } from "./encoding.js";
 import type { NonceStore } from "./nonce.js";
-import { verifyEnvelope, type SignedEnvelope } from "./sign.js";
+import { verifyDetached, verifyEnvelope, type SignedEnvelope } from "./sign.js";
+import type { WebAuthnCredentialRef } from "./webauthn.js";
 
 export interface TrustedClient {
   deviceId: string;
@@ -10,7 +11,35 @@ export interface TrustedClient {
   /** How the device learned to trust this key. Never "server". */
   via: "local_confirmation" | "endorsement";
   addedAt: number;
+  /**
+   * The client's passkey, recorded on this device at the local reverse check (D-019). HIGH and
+   * CRITICAL approvals from this client need an assertion verified against it.
+   */
+  webauthn?: WebAuthnCredentialRef;
 }
+
+export type BindingCheck =
+  | { ok: true; credential: WebAuthnCredentialRef }
+  | { ok: false; reason: "wrong_context" | "wrong_device" | "invalid_signature" | "expected_rp_mismatch" };
+
+/**
+ * Verifies a passkey binding against a device key the caller already trusts (the phone key
+ * just confirmed at the reverse check, or an endorsed client's key): the binding must be
+ * signed by that key, name that device and, if given, the expected relying party.
+ */
+export const verifyWebAuthnBinding = async (
+  binding: WebAuthnBinding,
+  expected: { deviceId: string; pubSign: string; rpId?: string },
+): Promise<BindingCheck> => {
+  if (binding.ctx !== "chalito.webauthn-binding.v1") return { ok: false, reason: "wrong_context" };
+  if (binding.body.deviceId !== expected.deviceId || binding.signerDeviceId !== expected.deviceId)
+    return { ok: false, reason: "wrong_device" };
+  if (expected.rpId && binding.body.rpId !== expected.rpId) return { ok: false, reason: "expected_rp_mismatch" };
+  const ok = await verifyDetached(binding.ctx, binding.body, binding.sig, await fromB64url(expected.pubSign));
+  if (!ok) return { ok: false, reason: "invalid_signature" };
+  const { credentialId, publicKey, rpId } = binding.body;
+  return { ok: true, credential: { credentialId, publicKey, rpId } };
+};
 
 export type DecisionCheck =
   | { ok: true; signerDeviceId: string }
@@ -65,21 +94,76 @@ export class TrustedClientList {
     return Object.fromEntries([...this.#clients.values()].map((c) => [c.deviceId, c.pubBox]));
   }
 
-  /** After the user confirmed the client's fingerprint on this device. */
+  /** After the user confirmed the client's fingerprint (and, if shown, its passkey) on this device. */
   async addConfirmed(c: Omit<TrustedClient, "via" | "addedAt">, now: number): Promise<void> {
     await this.#put({ ...c, via: "local_confirmation", addedAt: now });
   }
 
-  /** A new client vouched for by a client already in this list. */
-  async addEndorsed(e: Endorsement, now: number, maxAgeMs = 24 * 60 * 60 * 1000): Promise<boolean> {
+  /** The passkey recorded for a trusted client, if any. */
+  webauthnFor(deviceId: string): WebAuthnCredentialRef | undefined {
+    return this.#clients.get(deviceId)?.webauthn;
+  }
+
+  /**
+   * Records (or replaces) a trusted client's passkey. Call it only after a local confirmation on
+   * this device, never because the cloud said so. False if the client isn't trusted here.
+   */
+  setWebAuthn(deviceId: string, credential: WebAuthnCredentialRef): boolean {
+    const c = this.#clients.get(deviceId);
+    if (!c) return false;
+    this.#clients.set(deviceId, { ...c, webauthn: credential });
+    return true;
+  }
+
+  /**
+   * Records a client's passkey from its binding, verified against the key THIS list holds for
+   * that client (never a key the cloud supplies). False if the client isn't trusted here or
+   * the binding doesn't verify.
+   */
+  async attachWebAuthnBinding(
+    binding: WebAuthnBinding,
+    rpId?: string,
+  ): Promise<BindingCheck | { ok: false; reason: "untrusted_client" }> {
+    const c = this.#clients.get(binding.body.deviceId);
+    if (!c) return { ok: false, reason: "untrusted_client" };
+    const check = await verifyWebAuthnBinding(binding, {
+      deviceId: c.deviceId,
+      pubSign: c.pubSign,
+      ...(rpId ? { rpId } : {}),
+    });
+    if (check.ok) this.#clients.set(c.deviceId, { ...c, webauthn: check.credential });
+    return check;
+  }
+
+  /**
+   * A new client vouched for by a client already in this list. Its passkey binding (signed by
+   * the NEW client's key) may come along; a binding that doesn't verify against that key
+   * rejects the whole endorsement.
+   */
+  async addEndorsed(
+    e: Endorsement,
+    now: number,
+    maxAgeMs = 24 * 60 * 60 * 1000,
+    webauthnBinding?: WebAuthnBinding | null,
+  ): Promise<boolean> {
     const res = await verifyEnvelope(e, "chalito.endorsement.v1", this.#keys);
     if (!res.ok || now - e.body.issuedAt > maxAgeMs || e.body.issuedAt > now + 60_000) return false;
+    let webauthn: WebAuthnCredentialRef | undefined;
+    if (webauthnBinding) {
+      const check = await verifyWebAuthnBinding(webauthnBinding, {
+        deviceId: e.body.newDeviceId,
+        pubSign: e.body.pubSign,
+      });
+      if (!check.ok) return false;
+      webauthn = check.credential;
+    }
     await this.#put({
       deviceId: e.body.newDeviceId,
       pubSign: e.body.pubSign,
       pubBox: e.body.pubBox,
       via: "endorsement",
       addedAt: now,
+      ...(webauthn ? { webauthn } : {}),
     });
     return true;
   }

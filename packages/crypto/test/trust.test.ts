@@ -140,3 +140,19 @@ describe("TrustedClientList", () => {
     expect((await again.verifyDecision(await decide(phone), expected, now, new MemoryNonceStore())).ok).toBe(true);
   });
 });
+
+describe("TrustedClientList passkeys", () => {
+  it("records a passkey only for a locally trusted client and keeps it through toJSON/fromJSON", async () => {
+    const List = TrustedClientList;
+    const list = new List("dev_agent");
+    const cred = { credentialId: "cid", publicKey: "pk", rpId: "chalito.chalyb.com" };
+    expect(list.setWebAuthn("dev_phone", cred)).toBe(false);
+    await list.addConfirmed({ deviceId: "dev_phone", pubSign: "A".repeat(43), pubBox: "B".repeat(43) }, 1);
+    expect(list.webauthnFor("dev_phone")).toBeUndefined();
+    expect(list.setWebAuthn("dev_phone", cred)).toBe(true);
+    const back = await List.fromJSON("dev_agent", list.toJSON());
+    expect(back.webauthnFor("dev_phone")).toEqual(cred);
+    back.remove("dev_phone");
+    expect(back.webauthnFor("dev_phone")).toBeUndefined();
+  });
+});

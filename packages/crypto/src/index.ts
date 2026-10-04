@@ -11,5 +11,7 @@ export { generateRoomKey, wrapRoomKey, unwrapRoomKey, rotateRoomKey, roomSeal, r
 export type { WrappedRoomKey } from "./room.js";
 export { randomNonce, MemoryNonceStore } from "./nonce.js";
 export type { NonceStore } from "./nonce.js";
-export { TrustedClientList } from "./trust.js";
-export type { TrustedClient, DecisionCheck } from "./trust.js";
+export { TrustedClientList, verifyWebAuthnBinding } from "./trust.js";
+export type { TrustedClient, DecisionCheck, BindingCheck } from "./trust.js";
+export { verifyWebAuthnAssertion, stepUpChallenge, parseCoseKey, sha256 } from "./webauthn.js";
+export type { WebAuthnCredentialRef, WebAuthnAssertionInput, AssertionCheck } from "./webauthn.js";

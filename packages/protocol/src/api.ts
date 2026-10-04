@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DeviceId, DeviceKind, EpochMs, Fingerprint, Platform, PubBox, PubSign, ReplayNonce, Uid } from "./common.js";
-import { Endorsement, signed } from "./crypto.js";
+import { Endorsement, WebAuthnBinding, signed } from "./crypto.js";
 import { GlyphPayload, ShortCode } from "./glyph.js";
 
 /**
@@ -114,6 +114,8 @@ export const PairingCodeDoc = z.object({
   /** Phone's keys, so the desktop can show the phone fingerprint for the reverse check. */
   claimerPubSign: PubSign.nullable(),
   claimerPubBox: PubBox.nullable(),
+  /** The claimer's passkey binding (signed by its device key), for the agent's reverse check. */
+  claimerWebauthnBinding: WebAuthnBinding.nullable().default(null),
   expiresAt: EpochMs,
 });
 export type PairingCodeDoc = z.infer<typeof PairingCodeDoc>;
@@ -142,3 +144,6 @@ export const DeviceDoc = z.object({
 export type DeviceDoc = z.infer<typeof DeviceDoc>;
 
 export const ApiError = z.object({ error: z.string(), message: z.string().optional() });
+
+/** POST /v1/webauthn/register/bind: the device's signed binding for the passkey it just registered. */
+export const WebAuthnBindRequest = z.object({ binding: WebAuthnBinding });
