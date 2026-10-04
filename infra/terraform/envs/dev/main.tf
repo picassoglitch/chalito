@@ -15,6 +15,7 @@ locals {
     "iamcredentials.googleapis.com",
     "eventarc.googleapis.com",
     "workflows.googleapis.com",
+    "cloudscheduler.googleapis.com",
   ]
 
   service_accounts = {
@@ -140,6 +141,8 @@ module "secrets" {
     "chalito-vapid-private-key"     = [local.notifier]
     "chalito-openai-webhook-secret" = [local.notifier]
     "chalito-voice-ref-secret"      = [local.notifier]
+    # Same value as the Vault secret chalito_notify_poke_secret in nexo-ai (migration 003050).
+    "chalito-notify-poke-secret" = [local.notifier]
   }
 
   depends_on = [module.service_accounts]
@@ -261,6 +264,7 @@ module "notifier" {
     OPENAI_API_KEY           = "chalito-openai-api-key"
     OPENAI_WEBHOOK_SECRET    = "chalito-openai-webhook-secret"
     VOICE_REF_SECRET         = "chalito-voice-ref-secret"
+    NOTIFY_POKE_SECRET       = "chalito-notify-poke-secret"
     VAPID_PRIVATE_KEY        = "chalito-vapid-private-key"
     OWNER_UIDS               = "chalito-owner-uids"
   }, local.hub_bearer)

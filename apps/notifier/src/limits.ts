@@ -18,6 +18,10 @@ export const NOTIFIER_ROUTES: RouteTable = {
   "POST /pubsub/notifications": google,
   "POST /pubsub/room-events": google,
   "POST /tasks/tick": google,
+  // pg_net pokes from the database (Supabase egress), one per queued notification.
+  "POST /internal/notify-poke": { capacity: 3000, refillPerSec: 200, bodyBytes: 1 * KB },
+  // Cloud Scheduler, once a minute.
+  "POST /tasks/drain-notify": { capacity: 30, refillPerSec: 0.5, bodyBytes: 4 * KB },
   // Cloud Scheduler, once a minute.
   "POST /tasks/drain-usage": { capacity: 30, refillPerSec: 0.5, bodyBytes: 4 * KB },
   "POST /webhooks/twilio/gather": provider(32 * KB),

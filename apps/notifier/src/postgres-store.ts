@@ -23,6 +23,8 @@ export class PostgresStore implements NotifierStore {
   withUser<T>(uid: string, fn: (tx: UserTx) => Promise<T>): Promise<T> {
     return this.sql.begin(async (tx) => {
       await tx`select pg_advisory_xact_lock(hashtext(${`chalito.notifier:${uid}`}))`;
+      // The notify-outbox triggers skip the notifier's own writes (no loop back into the outbox).
+      await tx`select set_config('chalito.origin', 'notifier', true)`;
       return fn({
         prefs: async () => {
           const [u] = await tx<UserRow[]>`
@@ -175,12 +177,15 @@ export class PostgresStore implements NotifierStore {
   }
 
   async noteOnce(uid: string, n: NotificationRow) {
-    await this.sql`
+    await this.sql.begin(async (tx) => {
+      await tx`select set_config('chalito.origin', 'notifier', true)`;
+      await tx`
       insert into chalito.notifications
         (owner, nid, level, source, urgency, counts, deep_link, coalesce_key, state, step, next_at, channels, created_at)
-      values (${uid}, ${n.nid}, ${n.level ?? "L1"}, ${n.source}, ${n.urgency}, ${this.sql.json(n.counts as never)},
+      values (${uid}, ${n.nid}, ${n.level ?? "L1"}, ${n.source}, ${n.urgency}, ${tx.json(n.counts as never)},
               ${n.deepLink}, ${n.coalesceKey}, ${n.state}, ${n.step}, null, ${n.channels}, ${new Date(n.createdAt)})
       on conflict (owner, nid) do nothing`;
+    });
   }
 
   async claimCallRef(refHash: string, expiresAt: number) {

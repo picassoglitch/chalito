@@ -89,7 +89,7 @@ export const RoomWindow = ({
         <RoomPane
           controller={controller}
           me={deps!.companionId}
-          resolveMembers={(m) => sceneMembersFor(deps!.db, m)}
+          resolveMembers={(m) => sceneMembersFor(deps!.db, m, deps!.catalog)}
           stage={stage}
         />
       </div>
