@@ -6,6 +6,8 @@ export interface IdentityHarness {
   issuer: IdentityIssuer;
   /** Turns a minted credential into the bearer a client would send (e.g. Firebase: sign in, take the ID token). */
   toBearer(minted: string): Promise<string>;
+  /** An owner id mintUser accepts (Supabase: a real hub user). Defaults to a random id. */
+  makeOwner?: () => Promise<string>;
 }
 
 /** Behaviour every IdentityIssuer must have. */
@@ -20,8 +22,8 @@ export const runIdentityContract = (name: string, make: () => IdentityHarness | 
     });
 
     it("a user credential verifies with role user and no device id", async () => {
-      const { issuer, toBearer } = await make();
-      const o = owner();
+      const { issuer, toBearer, makeOwner } = await make();
+      const o = makeOwner ? await makeOwner() : owner();
       const claims = await issuer.verify(await toBearer(await issuer.mintUser(o, "pro")));
       expect(claims).toMatchObject({ role: "user", owner: o });
       expect(claims.deviceId).toBeUndefined();
@@ -32,6 +34,15 @@ export const runIdentityContract = (name: string, make: () => IdentityHarness | 
       const claims = await issuer.verify(await toBearer(await issuer.mintPairingWatch(`code_${Date.now()}`)));
       expect(claims.role).toBe("pairing");
       expect(claims.deviceId).toBeUndefined();
+    });
+
+    it("minting the same device twice gives the same identity", async () => {
+      const { issuer, toBearer } = await make();
+      const o = owner();
+      const id = `dev_twice${Date.now()}`;
+      const a = await issuer.verify(await toBearer(await issuer.mintDevice(o, id, "client")));
+      const b = await issuer.verify(await toBearer(await issuer.mintDevice(o, id, "client")));
+      expect(b).toEqual(a);
     });
 
     it("garbage and empty bearers are rejected", async () => {
