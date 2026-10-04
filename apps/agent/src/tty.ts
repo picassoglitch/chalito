@@ -3,7 +3,7 @@ import { createInterface, type Interface } from "node:readline";
 /** Terminal I/O for the CLI. Streams are injected so tests can script the answers. */
 export interface TtyIo {
   input: NodeJS.ReadableStream & { isTTY?: boolean; setRawMode?: (on: boolean) => unknown };
-  output: NodeJS.WritableStream;
+  output: NodeJS.WritableStream & { isTTY?: boolean };
 }
 
 /**
