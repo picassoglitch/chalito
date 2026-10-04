@@ -73,7 +73,14 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
     );
     const policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }] };
     const fake = fakeClaudeCode([[{ tool: "Edit", input: { file_path: `${WS}/src/a.ts` } }]]);
-    const store = new SupabaseStore(agentDb as unknown as SupaClient, OWNER, agentId);
+    // Every channel status (and any Realtime error) goes into the failure message of each wait.
+    const realtimeLog: string[] = [];
+    const log = createLogger((l) => {
+      const j = JSON.parse(l) as { msg: string; status?: string; error?: string | null };
+      if (j.msg.startsWith("realtime.")) realtimeLog.push(`${j.msg} ${j.status ?? ""} ${j.error ?? ""}`.trim());
+    });
+    const explain = () => `realtime (agent channel): ${realtimeLog.join(" | ") || "no status yet"}`;
+    const store = new SupabaseStore(agentDb as unknown as SupaClient, OWNER, agentId, { log });
     const core = new AgentCore({
       store,
       adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
@@ -113,7 +120,8 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
       }
       await store.close();
     });
-    await new Promise((r) => setTimeout(r, 1500)); // channel join
+    await store.joined();
+    await waitFor(() => realtimeLog.some((l) => l.startsWith("realtime.subscribed")), 15_000, explain);
 
     // The phone sends a signed session.start.
     const cid = `cmd-${run}`;
@@ -139,20 +147,24 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
       .from("commands")
       .insert({ owner: OWNER, target_device_id: agentId, id: cid, env, from_device_id: phoneId });
     expect(sent.error).toBeNull();
-    await waitFor(() => handled.length === 1);
+    await waitFor(() => handled.length === 1, 15_000, explain);
     expect(handled[0]).toMatch(/:true$/);
 
     // The approval appears; the phone inserts its signed decision row.
     let aid = "";
     let requestId = "";
-    await waitFor(async () => {
-      const { data } = await phoneDb.from("approvals").select("aid, request_id, status").eq("owner", OWNER);
-      const a = data?.[0];
-      if (!a) return false;
-      aid = a.aid;
-      requestId = a.request_id;
-      return true;
-    });
+    await waitFor(
+      async () => {
+        const { data } = await phoneDb.from("approvals").select("aid, request_id, status").eq("owner", OWNER);
+        const a = data?.[0];
+        if (!a) return false;
+        aid = a.aid;
+        requestId = a.request_id;
+        return true;
+      },
+      15_000,
+      explain,
+    );
     expect(fake.run.ran).toHaveLength(0);
     const decision = await signEnvelope(
       "chalito.decision.v1",
@@ -174,19 +186,27 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
       .from("approval_decisions")
       .insert({ owner: OWNER, aid, signer_device_id: phoneId, decision });
     expect(decided.error).toBeNull();
-    await waitFor(() => fake.run.ran.length === 1);
-    await waitFor(async () => {
-      const { data } = await phoneDb.from("approvals").select("status").eq("aid", aid).single();
-      return data?.status === "approved";
-    });
+    await waitFor(() => fake.run.ran.length === 1, 15_000, explain);
+    await waitFor(
+      async () => {
+        const { data } = await phoneDb.from("approvals").select("status").eq("aid", aid).single();
+        return data?.status === "approved";
+      },
+      15_000,
+      explain,
+    );
 
     // The command was consumed; the call line published for the waiting approval is gone.
     const { data: left } = await agentDb.from("commands").select("id").eq("id", cid);
     expect(left).toEqual([]);
-    await waitFor(async () => {
-      const { data } = await agentDb.from("call_lines").select("lid").eq("owner", OWNER);
-      return (data ?? []).length === 0;
-    });
+    await waitFor(
+      async () => {
+        const { data } = await agentDb.from("call_lines").select("lid").eq("owner", OWNER);
+        return (data ?? []).length === 0;
+      },
+      15_000,
+      explain,
+    );
   });
 
   it("writes the durable audit trail (agent entries and device events), redacted", async () => {
