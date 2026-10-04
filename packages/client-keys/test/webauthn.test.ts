@@ -5,15 +5,25 @@ import {
   verifyRegistrationResponse,
 } from "@simplewebauthn/server";
 import { describe, expect, it } from "vitest";
-import { toB64url, verifyWebAuthnAssertion } from "@chalito/crypto";
-import { assertWithServerChallenge, registerPasskey, stepUpWithPasskey, type ApiClient } from "../src/index.js";
+import { toB64url, verifyWebAuthnAssertion, verifyWebAuthnBinding } from "@chalito/crypto";
+import type { WebAuthnBinding } from "@chalito/protocol";
+import {
+  DeviceClientKeys,
+  assertWithServerChallenge,
+  generateDeviceKeys,
+  publicKeys,
+  registerPasskey,
+  stepUpWithPasskey,
+  type ApiClient,
+} from "../src/index.js";
 import { SoftAuthenticator } from "../src/testing/soft-authenticator.js";
 
 const RP = "chalito.chalyb.com";
 const ORIGIN = `https://${RP}`;
 
 /** The API's three WebAuthn routes, played by @simplewebauthn/server. */
-const serverApi = () => {
+const serverApi = (device: { deviceId: string; pubSign: string }) => {
+  const bindings: WebAuthnBinding[] = [];
   let challenge = "";
   const stored: { publicKey?: Uint8Array; id?: string; counter?: number } = {};
   const api: ApiClient = {
@@ -58,10 +68,24 @@ const serverApi = () => {
         challenge = options.challenge;
         return { options } as never;
       }
+      if (path === "/v1/webauthn/register/bind") {
+        // As the api does: the binding must be signed by the caller's DEVICE key and match the credential.
+        const binding = (body as { binding: WebAuthnBinding }).binding;
+        const check = await verifyWebAuthnBinding(binding, {
+          deviceId: device.deviceId,
+          pubSign: device.pubSign,
+          rpId: RP,
+        });
+        if (!check.ok) throw new Error(`bad binding: ${check.reason}`);
+        if (binding.body.credentialId !== stored.id || binding.body.publicKey !== (await toB64url(stored.publicKey!)))
+          throw new Error("binding credential mismatch");
+        bindings.push(binding);
+        return { ok: true } as never;
+      }
       throw new Error(path);
     },
   };
-  return { api, stored, challenge: () => challenge };
+  return { api, stored, bindings, challenge: () => challenge };
 };
 
 describe.each([[-7 as const], [-8 as const]])(
@@ -69,9 +93,14 @@ describe.each([[-7 as const], [-8 as const]])(
   (alg) => {
     it("registers a passkey the server verifies, and its assertions verify on the server and on the agent", async () => {
       const auth = new SoftAuthenticator({ origin: ORIGIN, alg });
-      const srv = serverApi();
-      const credential = await registerPasskey(srv.api, auth);
+      const dk = await generateDeviceKeys();
+      const keys = await DeviceClientKeys.create(dk);
+      const srv = serverApi({ deviceId: dk.deviceId, pubSign: (await publicKeys(dk)).pubSign });
+      const credential = await registerPasskey(srv.api, keys, auth);
       expect(credential).toEqual({ credentialId: auth.credentialId, publicKey: auth.publicKey, rpId: RP });
+      // The device bound the passkey to its own key; an agent trusting that key accepts it.
+      expect(srv.bindings).toHaveLength(1);
+      expect(srv.bindings[0]!.body).toMatchObject({ v: 1, deviceId: dk.deviceId, ...credential });
 
       // Server-challenged assertion (security actions), verified by @simplewebauthn/server.
       const resp = await assertWithServerChallenge(srv.api, auth);
@@ -102,10 +131,16 @@ describe.each([[-7 as const], [-8 as const]])(
     });
 
     it("an authenticator without user verification is refused at registration", async () => {
-      const srv = serverApi();
+      const dk = await generateDeviceKeys();
+      const srv = serverApi({ deviceId: dk.deviceId, pubSign: (await publicKeys(dk)).pubSign });
       await expect(
-        registerPasskey(srv.api, new SoftAuthenticator({ origin: ORIGIN, alg, flags: 0x01 })),
+        registerPasskey(
+          srv.api,
+          await DeviceClientKeys.create(dk),
+          new SoftAuthenticator({ origin: ORIGIN, alg, flags: 0x01 }),
+        ),
       ).rejects.toThrow();
+      expect(srv.bindings).toHaveLength(0);
     });
   },
 );
