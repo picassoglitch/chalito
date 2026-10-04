@@ -409,3 +409,16 @@ describe("Claude Code adapter", () => {
     ]);
   });
 });
+
+describe("claudeEnv secrets", () => {
+  it("never passes Chalito's own secrets settings to Claude", async () => {
+    const { claudeEnv } = await import("../src/claude-code/index.js");
+    const env = claudeEnv(
+      { PATH: "/bin", CHALITO_SECRETS: "file:/x", CHALITO_SECRETS_PASSPHRASE: "hunter2" },
+      "sk-ant-test",
+    );
+    expect(env).not.toHaveProperty("CHALITO_SECRETS");
+    expect(env).not.toHaveProperty("CHALITO_SECRETS_PASSPHRASE");
+    expect(JSON.stringify(env)).not.toContain("hunter2");
+  });
+});
