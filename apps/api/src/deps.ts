@@ -1,4 +1,5 @@
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
+import type { McpStore } from "./oauth/model.js";
 
 export interface AuditEvent {
   action: string;
@@ -26,6 +27,8 @@ export interface ApiConfig {
 
 export interface Deps {
   repo: ApiRepo;
+  /** OAuth server + MCP gateway writes (M10); those routes answer 503 without it. */
+  mcp?: McpStore;
   identity: IdentityIssuer;
   audit: AuditSink;
   config: ApiConfig;
