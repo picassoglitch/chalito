@@ -54,6 +54,15 @@ service cloud.firestore {
           allow read, delete: if activeAgent(uid) && deviceId == myDeviceId();
           allow update: if false;
         }
+
+        // Durable audit trail: append-only, written by the device about itself.
+        match /audit/{eid} {
+          allow read: if member(uid);
+          allow create: if activeAgent(uid) && deviceId == myDeviceId()
+            && request.resource.data.deviceId == myDeviceId()
+            && request.resource.data.keys().hasOnly(["t", "type", "meta", "source", "deviceId"]);
+          allow update, delete: if false;
+        }
       }
 
       match /endorsements/{eid} { allow read: if member(uid); allow write: if false; }

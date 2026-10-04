@@ -48,4 +48,32 @@ describe("Claude Code permission mode", () => {
   it("the remote mode type cannot express the unattended modes", () => {
     for (const m of FORBIDDEN) expect(RemotePermissionMode.safeParse(m).success).toBe(false);
   });
+
+  it("refuses bogus modes at runtime and never forwards them to the SDK", async () => {
+    for (const bogus of [...FORBIDDEN, "garbage", "", undefined]) {
+      const fake = fakeClaudeCode([[{ say: "ok" }]]);
+      const adapter = new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} });
+      const base = {
+        sid: "s1",
+        cwd: "/ws",
+        prompt: "hola",
+        origin: "local" as const,
+        gate: async () => ({ allow: true as const }),
+        askUser: async () => ({}),
+        onEvent: () => {},
+      };
+      await expect(
+        adapter.start({ ...base, permissionMode: bogus as unknown as RemotePermissionMode }),
+      ).rejects.toThrow(/Refused permission mode/);
+      expect(fake.run.options).toBeUndefined();
+
+      const h = await adapter.start({ ...base, permissionMode: "default" });
+      await expect(h.setPermissionMode(bogus as unknown as RemotePermissionMode)).rejects.toThrow(
+        /Refused permission mode/,
+      );
+      expect(fake.run.modes).toEqual(["default"]);
+      h.close();
+      await h.done;
+    }
+  });
 });

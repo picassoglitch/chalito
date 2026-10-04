@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, HookCallback, Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { isSignedOrigin, type Origin, type RemotePermissionMode } from "@chalito/protocol";
+import { RemotePermissionMode, isSignedOrigin, type Origin } from "@chalito/protocol";
 import {
   InputQueue,
   type Question,
@@ -36,8 +36,22 @@ export interface ClaudeCodeConfig {
   queryFn?: QueryFn;
   /** Base environment (defaults to process.env). */
   env?: Record<string, string | undefined>;
+  /** Called once per session with the SDK's init metadata (for the `adapter.init` log). */
+  onInit?: (info: ClaudeCodeInitInfo) => void;
   /** Injected in tests; reads the workspace CLAUDE.md. */
   readFile?: (path: string) => Promise<string>;
+}
+
+export interface ClaudeCodeInitInfo {
+  sid: string;
+  providerSessionId: string;
+  /** "ANTHROPIC_API_KEY" proves the BYO key is in use; anything else is a misconfiguration. */
+  apiKeySource: string;
+  permissionMode: string;
+  claude_code_version: string;
+  /** Server names only. */
+  mcp_servers: string[];
+  model: string;
 }
 
 /** Cap on the CLAUDE.md text appended to the system prompt. */
@@ -75,6 +89,17 @@ export const claudeEnv = (
   return env;
 };
 
+type InitMessage = Partial<Extract<SDKMessage, { type: "system"; subtype: "init" }>> & { session_id: string };
+const isInit = (m: SDKMessage): m is SDKMessage & InitMessage =>
+  m.type === "system" && (m as { subtype?: string }).subtype === "init";
+
+/** Types aren't enough at runtime: anything outside default|plan|acceptEdits is refused, never forwarded. */
+const checkedMode = (mode: unknown): RemotePermissionMode => {
+  const r = RemotePermissionMode.safeParse(mode);
+  if (!r.success) throw new Error(`Refused permission mode ${JSON.stringify(String(mode)).slice(0, 40)}`);
+  return r.data;
+};
+
 const userMessage = (text: string): SDKUserMessage => ({
   type: "user",
   message: { role: "user", content: text },
@@ -87,6 +112,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
   constructor(private readonly config: ClaudeCodeConfig) {}
 
   async start(opts: SessionStartOptions): Promise<SessionHandle> {
+    const startMode = checkedMode(opts.permissionMode);
     const input = new InputQueue<SDKUserMessage>();
     // The origin of the turn the SDK is running. A prompt queued mid-turn must not change the
     // running turn's origin, so queued origins apply only at the turn boundary (`result`). If
@@ -152,7 +178,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     const options: Options = {
       cwd: opts.cwd,
       // Always explicit: an omitted mode may resolve to `auto` in SDK ≥ 0.3.286.
-      permissionMode: opts.permissionMode,
+      permissionMode: startMode,
       allowDangerouslySkipPermissions: false,
       settingSources,
       strictMcpConfig: true,
@@ -179,7 +205,20 @@ export class ClaudeCodeAdapter implements SessionAdapter {
 
     const done = (async () => {
       try {
+        let initLogged = false;
         for await (const msg of q) {
+          if (!initLogged && this.config.onInit && isInit(msg)) {
+            initLogged = true;
+            this.config.onInit({
+              sid: opts.sid,
+              providerSessionId: msg.session_id,
+              apiKeySource: String(msg.apiKeySource ?? "unknown"),
+              permissionMode: String(msg.permissionMode ?? "unknown"),
+              claude_code_version: String(msg.claude_code_version ?? "unknown"),
+              mcp_servers: (msg.mcp_servers ?? []).map((m) => m.name),
+              model: String(msg.model ?? "unknown"),
+            });
+          }
           this.#map(msg, opts);
           if ((msg as { type: string }).type === "result") turnEnded();
         }
@@ -210,7 +249,7 @@ export class ClaudeCodeAdapter implements SessionAdapter {
         opts.onEvent({ type: "state", state: "interrupted" });
       },
       setPermissionMode: async (mode) => {
-        await q.setPermissionMode(mode);
+        await q.setPermissionMode(checkedMode(mode));
       },
       close: () => input.close(),
       done,

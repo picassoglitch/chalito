@@ -265,4 +265,41 @@ describe("Claude Code adapter", () => {
       expect(lowerTrustOrigin("mcp:claude", "call:CA1")).toBe("mcp:claude");
     });
   });
+
+  it("reports the SDK init metadata once per session through onInit", async () => {
+    const fake = fakeClaudeCode([[{ say: "uno" }], [{ say: "dos" }]]);
+    const inits: unknown[] = [];
+    const adapter = new ClaudeCodeAdapter({
+      apiKey: "sk-ant-test",
+      queryFn: fake.queryFn,
+      env: {},
+      onInit: (i) => inits.push(i),
+    });
+    const events: AdapterEvent[] = [];
+    const h = await adapter.start({
+      sid: "s1",
+      cwd: "/ws",
+      prompt: "hola",
+      origin: "local",
+      permissionMode: "default",
+      gate: async () => ({ allow: true }),
+      askUser: async () => ({}),
+      onEvent: (e) => events.push(e),
+    });
+    await waitFor(() => events.some((e) => e.type === "state" && e.state === "idle"));
+    h.prompt("otra", "local");
+    h.close();
+    await h.done;
+    expect(inits).toEqual([
+      {
+        sid: "s1",
+        providerSessionId: "fake-session-1",
+        apiKeySource: "ANTHROPIC_API_KEY",
+        permissionMode: "default",
+        claude_code_version: "2.9.0-fake",
+        mcp_servers: ["fake-mcp"],
+        model: "claude-fake",
+      },
+    ]);
+  });
 });

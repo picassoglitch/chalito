@@ -105,6 +105,28 @@ describe("commands", () => {
   });
 });
 
+describe("audit trail", () => {
+  const entry = (deviceId = "agent1") => ({ t: 1, type: "command.rejected", meta: {}, source: "agent", deviceId });
+  const at = (role: string, dev: string, path = "agent1/audit/e1") =>
+    doc(as(role, U, dev), `users/${U}/devices/${path}`);
+  it("the active agent appends entries about itself; members read them", async () => {
+    await assertSucceeds(setDoc(at("agent", "agent1"), entry()));
+    await assertSucceeds(getDoc(doc(as("client", U, "phone1"), `users/${U}/devices/agent1/audit/e1`)));
+  });
+  it("entries can't be updated or deleted, even by the agent", async () => {
+    await assertSucceeds(setDoc(at("agent", "agent1"), entry()));
+    await assertFails(updateDoc(at("agent", "agent1"), { type: "x" }));
+    await assertFails(deleteDoc(at("agent", "agent1")));
+  });
+  it("no one else writes a device's audit: other agents, revoked agents, clients, extra fields", async () => {
+    await assertFails(setDoc(at("agent", "oldagent", "oldagent/audit/e1"), entry("oldagent")));
+    await assertFails(setDoc(at("client", "phone1"), entry()));
+    await assertFails(setDoc(at("agent", "agent1"), entry("phone1")));
+    await assertFails(setDoc(at("agent", "agent1"), { ...entry(), extra: true }));
+    await assertFails(getDoc(doc(as("client", "someone-else", "phoneX"), `users/${U}/devices/agent1/audit/e1`)));
+  });
+});
+
 describe("devices", () => {
   it("devMode and policyHash are written only by the device itself", async () => {
     await assertSucceeds(

@@ -521,3 +521,40 @@ describe("the Codex sandbox ceiling is enforced remotely", () => {
     ).toEqual({ ok: true });
   });
 });
+
+describe("durable audit trail", () => {
+  it("routes agent audits and device events to store.audit, redacted", async () => {
+    const h = await harness();
+    await h.command({ type: "devmode.on" });
+    await waitFor(() => h.store.audits.filter((a) => a.type === "remote_enable.rejected").length === 2);
+    const sources = h.store.audits.filter((a) => a.type === "remote_enable.rejected").map((a) => a.source);
+    expect(sources.sort()).toEqual(["agent", "deviceEvent"]);
+    await h.command({ type: "session.prompt", sid: "nope", promptCt: await h.sealed(2, "x") });
+    await waitFor(() => h.store.audits.some((a) => a.type === "command.rejected"));
+  });
+
+  it("a failing audit write is logged, never thrown", async () => {
+    const h = await harness();
+    h.store.audit = async () => {
+      throw new Error("offline");
+    };
+    expect((await h.command({ type: "session.interrupt", sid: "nope" })).reason).toBe("unknown_session");
+    await waitFor(() => h.logs.some((l) => l.includes("audit write failed")));
+  });
+
+  it("audit meta is redacted before it reaches the store", async () => {
+    const h = await harness();
+    const secret = "sk-ant-abcdefghijklmnop";
+    await h.command({
+      type: "session.start",
+      adapter: "claude-code",
+      workspaceLabel: "chalito",
+      promptCt: await h.sealed(1, "x"),
+      permissionMode: `bypass ${secret}`,
+    });
+    await waitFor(() => h.store.audits.some((a) => a.source === "agent" && a.type === "remote_enable.rejected"));
+    const entry = h.store.audits.find((a) => a.source === "agent" && a.type === "remote_enable.rejected")!;
+    expect(String(entry.meta.attempted)).toContain("bypass");
+    expect(JSON.stringify(entry)).not.toContain(secret);
+  });
+});

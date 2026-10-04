@@ -28,7 +28,7 @@ import {
   presetPolicy,
   type Policy,
 } from "./policy/index.js";
-import type { Logger } from "./redact.js";
+import { redactDeep, type Logger } from "./redact.js";
 import { Sealer } from "./sealing.js";
 import type { AgentStore } from "./store.js";
 
@@ -504,8 +504,20 @@ export class AgentCore {
     return { ok: false, reason };
   }
 
+  /** Logs and writes the durable audit trail (fire-and-forget; a failed write is logged, never thrown). */
   #audit(type: string, meta: Record<string, unknown>): void {
     this.d.log.warn(type, meta);
+    void this.d.store
+      .audit({
+        eid: randomUUID(),
+        t: this.d.now(),
+        type,
+        meta: redactDeep(meta) as Record<string, unknown>,
+        source: "agent",
+      })
+      .catch((err: unknown) =>
+        this.d.log.error("audit write failed", { type, error: err instanceof Error ? err.message : "error" }),
+      );
   }
 
   /** policyHash helper for reporting. */
