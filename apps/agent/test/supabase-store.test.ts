@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { PairingCodeDoc, type AgentEvent, type ApprovalRequest, type CallLine } from "@chalito/protocol";
+import {
+  PairingCodeDoc,
+  type AgentEvent,
+  type ApprovalRequest,
+  type CallLine,
+  type SessionCard,
+} from "@chalito/protocol";
 import {
   SUPABASE_REFRESH_MS,
   apiTokenSource,
@@ -299,6 +305,23 @@ describe("SupabaseStore: writes through the Data API", () => {
     expect(await store.callBriefingEnabled()).toBe(true);
   });
 
+  it("MCP sharing: session or device switch; the shared card is inserted once, then updated", async () => {
+    const { db, store } = setup();
+    expect(await store.mcpSharingOn("s1")).toBe(false);
+    db.seed("mcp_sharing", { owner: OWNER, scope: "session", target: "s9", enabled: true });
+    db.seed("mcp_sharing", { owner: OWNER, scope: "session", target: "s1", enabled: false });
+    expect(await store.mcpSharingOn("s1")).toBe(false);
+    db.seed("mcp_sharing", { owner: OWNER, scope: "device", target: DEV, enabled: true });
+    expect(await store.mcpSharingOn("s1")).toBe(true);
+
+    const card = { v: 1, sid: "s1", goal: "uno" } as unknown as SessionCard;
+    await store.writeSharedCard("s1", card);
+    await store.writeSharedCard("s1", { ...card, goal: "dos" });
+    const rows = db.rows("session_card_plain");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ owner: OWNER, sid: "s1", device_id: DEV, card: { goal: "dos" } });
+  });
+
   it("call lines: insert with the line text and expiry; delete by key (errors swallowed)", async () => {
     const { db, store } = setup();
     const line: CallLine = {
@@ -511,5 +534,33 @@ describe("Realtime auth before join (realtime-js 2.117: setAuth is async)", () =
     await cloud.refresh();
     order.push("refreshed");
     expect(order).toEqual(["setAuth:jwt-1", "refreshed"]);
+  });
+});
+
+describe("SupabaseStore: endorsements (ADR 0018)", () => {
+  it("lists the account's endorsements with each endorsed device's directory state", async () => {
+    const { db, store } = setup();
+    db.seed("endorsements", { owner: OWNER, device_id: "dev_desk", endorsement: { e: 1 } });
+    db.seed("endorsements", { owner: OWNER, device_id: "dev_gone", endorsement: { e: 2 } });
+    db.seed("endorsements", { owner: "someone-else", device_id: "dev_x", endorsement: { e: 3 } });
+    db.seed("devices", { owner: OWNER, device_id: "dev_desk", revoked: false, webauthn_binding: { b: 1 } });
+    expect(await store.listEndorsements()).toEqual([
+      { deviceId: "dev_desk", endorsement: { e: 1 }, revoked: false, webauthnBinding: { b: 1 } },
+      // A device missing from the directory counts as revoked.
+      { deviceId: "dev_gone", endorsement: { e: 2 }, revoked: true, webauthnBinding: null },
+    ]);
+  });
+
+  it("an endorsements or devices pointer, and every resync, wakes the watcher", async () => {
+    const { db, store } = setup();
+    let n = 0;
+    store.watchEndorsements(() => n++);
+    await tick();
+    const after = n; // the initial SUBSCRIBED resync
+    expect(after).toBeGreaterThanOrEqual(1);
+    db.broadcast(`chalito:device:${DEV}`, { table: "endorsements", op: "insert", key: { device_id: "dev_desk" } });
+    db.broadcast(`chalito:device:${DEV}`, { table: "devices", op: "update", key: { device_id: "dev_desk" } });
+    await tick();
+    expect(n).toBe(after + 2);
   });
 });

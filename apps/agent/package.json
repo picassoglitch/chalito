@@ -25,6 +25,8 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@chalito/client-keys": "workspace:*",
+    "@simplewebauthn/server": "14.0.3",
     "@types/libsodium-wrappers-sumo": "^0.8.2",
     "fast-check": "^4.10.2"
   }

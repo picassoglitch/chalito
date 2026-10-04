@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "sign-in",
+  "description": "Panel only: read chalito:// deep links and open the Chalyb hub in the system browser for SSO.",
+  "windows": ["panel"],
+  "permissions": [
+    "deep-link:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://chalyb.com/*"
+        },
+        {
+          "url": "https://*.chalyb.com/*"
+        }
+      ]
+    }
+  ]
+}

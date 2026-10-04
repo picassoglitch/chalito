@@ -2,12 +2,16 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Deps } from "./deps.js";
 import { deviceRoutes } from "./routes/devices.js";
+import { endorseRoutes } from "./routes/endorse.js";
 import { hubRoutes } from "./routes/hub.js";
 import { phoneRoutes } from "./phone/routes.js";
 import { voiceRoutes } from "./voice/routes.js";
 import { pairingRoutes } from "./routes/pairing.js";
 import { recoveryRoutes } from "./routes/recovery.js";
 import { storeRoutes } from "./store/routes.js";
+import { roomsRoutes } from "./routes/rooms.js";
+import { webauthnRoutes } from "./routes/webauthn.js";
+import { oauthRoutes } from "./routes/oauth.js";
 
 export const createApp = (deps: Deps) => {
   const app = new Hono();
@@ -16,10 +20,14 @@ export const createApp = (deps: Deps) => {
   app.route("/", hubRoutes(deps));
   app.route("/v1/devices", deviceRoutes(deps));
   app.route("/v1/pairing", pairingRoutes(deps));
+  app.route("/v1/endorse", endorseRoutes(deps));
   app.route("/v1/recovery", recoveryRoutes(deps));
+  app.route("/v1/webauthn", webauthnRoutes(deps));
+  app.route("/", oauthRoutes(deps));
   if (deps.phone) app.route("/v1/phone", phoneRoutes(deps, deps.phone));
   if (deps.voice) app.route("/v1/voice", voiceRoutes(deps, deps.voice));
   if (deps.store) app.route("/v1/store", storeRoutes(deps, deps.store));
+  app.route("/v1/rooms", roomsRoutes(deps));
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
     console.error("[api] unhandled", err instanceof Error ? err.message : "error");

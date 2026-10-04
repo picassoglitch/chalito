@@ -62,7 +62,7 @@ select is(pg_temp.count($$select 1 from (select 1 from chalito.devices where dev
   'S2: chalito_server may lock devices for update (revocation)');
 select throws_ok($$delete from chalito.devices where device_id = 'sr_agent2'$$, '42501', null,
   'S2: chalito_server has no grants beyond what the server does (no device delete)');
-select throws_ok($$select * from chalito.mesas$$, '42501', null, 'S2: nor on the stub tables');
+select throws_ok($$select * from chalito.reminders$$, '42501', null, 'S2: nor on the stub tables');
 select throws_ok($$select * from chalito_private.rate_buckets$$, '42501', null, 'S2: nor on internal bookkeeping');
 reset role;
 

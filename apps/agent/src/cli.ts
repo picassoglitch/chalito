@@ -26,7 +26,7 @@ import { FilePolicyHolder, parsePolicyYaml, policyToYaml } from "./policy-file.j
 import { isTighterOrEqual, policyHash } from "./policy/index.js";
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
 import { openSecretStore } from "./secret-choice.js";
-import { SECRET_NAMES, type SecretStore } from "./secrets.js";
+import { KeyringUnavailableError, SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
 import { TrustStore } from "./trust-store.js";
 import { LineReader, isYes, readHidden, type TtyIo } from "./tty.js";
@@ -663,6 +663,11 @@ if (isEntry) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err: unknown) => {
+      // A broken keychain addon is the person's problem to fix (reinstall): say so plainly.
+      if (err instanceof KeyringUnavailableError) {
+        console.error(err.message);
+        process.exit(3);
+      }
       console.error(err);
       process.exit(1);
     },

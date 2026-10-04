@@ -1,6 +1,14 @@
 import { existsSync } from "node:fs";
 import { hostname as osHostname } from "node:os";
-import { TrustedClientList, deriveDeviceId, fingerprint, fromB64url, randomNonce } from "@chalito/crypto";
+import {
+  TrustedClientList,
+  deriveDeviceId,
+  fingerprint,
+  fromB64url,
+  randomNonce,
+  verifyWebAuthnBinding,
+  type WebAuthnCredentialRef,
+} from "@chalito/crypto";
 import { signGlyph } from "@chalito/glyph";
 import { CreatePairingCodeResponse, PAIRING_TTL_MS, PairingCodeDoc } from "@chalito/protocol";
 import { postJson, supabasePairingWatcher, type FetchFn, type PairingWatcher } from "./cloud.js";
@@ -18,6 +26,9 @@ const COPY = {
     thisFp: (fp: string) => `Huella de esta computadora: ${fp}\n`,
     expires: (min: number) => `El código vence en ${min} minutos. Esperando a tu teléfono…\n`,
     claimed: (fp: string) => `\nTu teléfono reclamó esta computadora. Huella del teléfono:\n\n    ${fp}\n\n`,
+    passkey: (id: string) => `Llave de acceso (passkey) del teléfono: ${id}\n\n`,
+    noPasskey:
+      "Este teléfono aún no tiene llave de acceso: no podrá aprobar acciones de riesgo ALTO hasta que la registre y vuelvas a emparejar.\n\n",
     confirm: "¿Coincide con la huella que muestra tu teléfono? [s/N] ",
     paired: "Listo: esta computadora confía en tu teléfono. Instala el servicio con `chalito service install`.\n",
     rejected:
@@ -34,6 +45,9 @@ const COPY = {
     thisFp: (fp: string) => `This computer's fingerprint: ${fp}\n`,
     expires: (min: number) => `The code expires in ${min} minutes. Waiting for your phone…\n`,
     claimed: (fp: string) => `\nYour phone claimed this computer. Phone fingerprint:\n\n    ${fp}\n\n`,
+    passkey: (id: string) => `Phone passkey: ${id}\n\n`,
+    noPasskey:
+      "This phone has no passkey yet: it can't approve HIGH-risk actions until it registers one and you pair again.\n\n",
     confirm: "Does it match the fingerprint your phone shows? [y/N] ",
     paired: "Done: this computer trusts your phone. Install the service with `chalito service install`.\n",
     rejected: "Nothing was added. If you don't recognise that phone, revoke this computer from a trusted phone.\n",
@@ -64,6 +78,10 @@ export interface PairDeps {
   platform?: NodeJS.Platform;
   kind?: "desktop" | "laptop";
 }
+
+/** A short, human-comparable form of a credential id (the phone shows the same). */
+export const shortPasskeyId = (credentialId: string) =>
+  credentialId.length <= 12 ? credentialId : `${credentialId.slice(0, 6)}…${credentialId.slice(-4)}`;
 
 export type PairResult =
   | { ok: true; owner: string; deviceId: string; phoneDeviceId: string }
@@ -171,7 +189,22 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
     return { ok: false, reason: "bad_claim" };
   }
 
+  // The phone's passkey, bound to the phone key the user is about to confirm (signed by that
+  // key, never by the server). A binding that doesn't verify is a bad claim.
+  let passkey: WebAuthnCredentialRef | null = null;
+  if (claimed.claimerWebauthnBinding) {
+    const check = await verifyWebAuthnBinding(claimed.claimerWebauthnBinding, {
+      deviceId: claimedByDeviceId,
+      pubSign: claimerPubSign,
+    });
+    if (!check.ok) {
+      deps.out(c.rejected);
+      return { ok: false, reason: "bad_claim" };
+    }
+    passkey = check.credential;
+  }
   deps.out(c.claimed(await fingerprint(await fromB64url(claimerPubSign))));
+  deps.out(passkey ? c.passkey(shortPasskeyId(passkey.credentialId)) : c.noPasskey);
   if (!(await deps.confirm(c.confirm))) {
     deps.out(c.rejected);
     return { ok: false, reason: "rejected_locally" };
@@ -193,6 +226,7 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
   }
   const list = reset ? new TrustedClientList(id.deviceId) : loaded.list;
   await list.addConfirmed({ deviceId: claimedByDeviceId, pubSign: claimerPubSign, pubBox: claimerPubBox }, now());
+  if (passkey) list.setWebAuthn(claimedByDeviceId, passkey);
   await trustStore.save(list);
   writeConfig(deps.dir, { ...base, owner, deviceId: id.deviceId }, id.sign);
   deps.out(c.paired);

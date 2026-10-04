@@ -1,0 +1,125 @@
+{
+  "tabs": {
+    "inbox": "Inbox",
+    "settings": "Settings",
+    "security": "Security",
+    "voice": "Voice"
+  },
+  "dnd": "Do not disturb",
+  "offline": "Not connected to your account. Pair this computer with “chalito pair”.",
+  "inbox": {
+    "empty": "Nothing pending.",
+    "approvals": "Approvals",
+    "notifications": "Notices",
+    "approve": "Approve",
+    "deny": "Deny",
+    "ack": "Seen",
+    "risk": "{risk} risk",
+    "error": "Couldn't send: {reason}",
+    "approveOnPhone": "Approve this action from your phone",
+    "unverified": "Unverified: your computer didn't sign what you see. You can only deny it.",
+    "showFull": "Show the full command",
+    "openFullFirst": "Open the full command before approving"
+  },
+  "security": {
+    "localOnly": "These screens only work on this computer. Neither your phone nor the web can change them.",
+    "unavailable": "The local agent isn't answering. Make sure the Chalito service is running.",
+    "pairing": {
+      "title": "Pairing check",
+      "none": "No phone is waiting for confirmation.",
+      "compare": "Compare this fingerprint with the one your phone “{label}” shows.",
+      "passkey": "Passkey: {id}",
+      "match": "They match",
+      "mismatch": "They don't match"
+    },
+    "policy": {
+      "title": "Policy",
+      "chain": "Version {seq} · {hash}",
+      "allow": "allow",
+      "ask": "ask",
+      "deny": "block"
+    },
+    "devmode": {
+      "title": "Developer mode",
+      "active": "Developer mode ACTIVE",
+      "off": "Off",
+      "enable": "Turn on",
+      "disable": "Turn off",
+      "step1": "Turn on {toggle}? This would allow, for example:",
+      "step2": "Confirm once more:",
+      "step3": "Read and accept the liability. Type “{phrase}” to continue.",
+      "accept": "I accept the liability",
+      "continue": "Continue",
+      "cancel": "Cancel",
+      "confirm": "Turn on (asks for your password)",
+      "failed": "Not turned on: {reason}"
+    },
+    "notices": {
+      "title": "Security notices",
+      "missingStepUp": "“{computer}” refused a new device: the device that approved it didn't use its passkey. Approve it again from your phone with your passkey.",
+      "refused": "“{computer}” refused a new device because its approval couldn't be verified. Approve it again from a trusted device."
+    }
+  },
+  "voice": {
+    "hold": "Hold to talk",
+    "connecting": "Connecting…",
+    "listening": "Listening…",
+    "unavailable": "Voice isn't available yet."
+  },
+  "room": {
+    "soon": "Your room is coming soon."
+  },
+  "integrations": {
+    "anthropic": {
+      "name": "Anthropic"
+    },
+    "openai": {
+      "name": "OpenAI"
+    },
+    "xai": {
+      "name": "xAI"
+    },
+    "google": {
+      "name": "Google"
+    }
+  },
+  "settingsError": {
+    "rejected": "The server didn't accept that change.",
+    "failed": "Couldn't save. Check your connection."
+  },
+  "signIn": {
+    "intro": "Sign in with your Chalyb account to see what's pending here.",
+    "start": "Sign in",
+    "notConfigured": "Sign-in isn't configured in this build.",
+    "browser": "Finish signing in in your browser. You'll come back here automatically.",
+    "reopen": "Open again",
+    "cancel": "Cancel",
+    "exchanging": "Checking…",
+    "endorsing": "Open Chalito on a trusted device (your phone) and approve this computer.",
+    "ready": "Done: this computer is now trusted.",
+    "noPasskey": "This computer has no passkey: HIGH or CRITICAL actions are approved from your phone.",
+    "retry": "Try again",
+    "errors": {
+      "expired": "Sign-in timed out. Try again.",
+      "missing_token": "The return link wasn't valid.",
+      "exchange_failed": "Couldn't verify your account.",
+      "token_replayed": "That link was already used. Sign in again.",
+      "bad_response": "Unexpected server response.",
+      "verify_failed": "Couldn't open your session.",
+      "channel_unavailable": "This computer can't be approved from another device yet.",
+      "cancelled": "Cancelled.",
+      "endorsement_mismatch": "The approval doesn't match this computer.",
+      "endorser_not_trusted": "The approving device isn't trusted.",
+      "device_exists": "This computer is already registered.",
+      "rejected": "The server refused the registration.",
+      "failed": "Something went wrong. Try again.",
+      "open_failed": "Couldn't open the browser.",
+      "malformed": "Invalid link.",
+      "wrong_target": "Invalid link.",
+      "no_pending": "No sign-in in progress.",
+      "state_mismatch": "Invalid link.",
+      "duplicate_param": "Invalid link."
+    },
+    "glyph": "Code to scan with your phone"
+  }
+}

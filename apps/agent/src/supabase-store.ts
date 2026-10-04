@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
+import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent, SessionCard } from "@chalito/protocol";
 import type { Logger } from "./redact.js";
 import { redactDeep, sanitizeDeviceEvent } from "./redact.js";
-import type { AgentStore, AuditEntry } from "./store.js";
+import type { AgentStore, AuditEntry, EndorsementRow } from "./store.js";
 
 /**
  * The slice of supabase-js the agent uses (schema `chalito`). Narrow on purpose: unit tests
@@ -19,6 +19,7 @@ export interface SupaQuery extends PromiseLike<SupaResult> {
   delete(): SupaQuery;
   eq(column: string, value: unknown): SupaQuery;
   gt(column: string, value: unknown): SupaQuery;
+  in(column: string, values: readonly unknown[]): SupaQuery;
   order(column: string, opts?: { ascending?: boolean }): SupaQuery;
   maybeSingle(): SupaQuery;
 }
@@ -182,6 +183,8 @@ export class SupabaseStore implements AgentStore {
         await this.#fetchCommand(p.key.id);
       } else if (p.table === "approval_decisions" && typeof aid === "string" && this.#approvalWatchers.has(aid)) {
         await this.#fetchDecisions(aid);
+      } else if (p.table === "endorsements" || p.table === "devices") {
+        this.#endorsementHandler?.();
       }
     } catch (err) {
       this.#log?.error("realtime.fetch_failed", {
@@ -221,6 +224,7 @@ export class SupabaseStore implements AgentStore {
         // Fallback: a watcher registered after those revs were seen.
         for (const aid of [...this.#approvalWatchers.keys()]) await this.#fetchDecisions(aid);
       }
+      this.#endorsementHandler?.();
     } catch (err) {
       this.#log?.error("realtime.resync_failed", { error: err instanceof Error ? err.message : "error" });
     }
@@ -356,6 +360,47 @@ export class SupabaseStore implements AgentStore {
     await this.#write("merge session", () => this.db.rpc("session_merge", { p_sid: sid, p_patch: patch }));
   }
 
+  // ---- endorsements (ADR 0018) ---------------------------------------------------
+
+  #endorsementHandler: (() => void) | null = null;
+
+  watchEndorsements(onChange: () => void) {
+    this.#endorsementHandler = onChange;
+    this.#ensureChannel();
+    return () => {
+      this.#endorsementHandler = null;
+    };
+  }
+
+  async listEndorsements(): Promise<EndorsementRow[]> {
+    const rows = await must<{ device_id: string; endorsement: unknown }[]>(
+      "list endorsements",
+      this.db.from("endorsements").select("device_id, endorsement").eq("owner", this.owner),
+    );
+    if (!rows?.length) return [];
+    const devices = await must<{ device_id: string; revoked: boolean; webauthn_binding: unknown }[]>(
+      "endorsed devices",
+      this.db
+        .from("devices")
+        .select("device_id, revoked, webauthn_binding")
+        .eq("owner", this.owner)
+        .in(
+          "device_id",
+          rows.map((r) => r.device_id),
+        ),
+    );
+    const byId = new Map((devices ?? []).map((d) => [d.device_id, d]));
+    return rows.map((r) => {
+      const d = byId.get(r.device_id);
+      return {
+        deviceId: r.device_id,
+        endorsement: r.endorsement,
+        revoked: !d || d.revoked,
+        webauthnBinding: d?.webauthn_binding ?? null,
+      };
+    });
+  }
+
   // ---- commands ------------------------------------------------------------------
 
   watchCommands(onCommand: (id: string, doc: Record<string, unknown>) => void) {
@@ -422,6 +467,43 @@ export class SupabaseStore implements AgentStore {
       this.db.from("users").select("call_briefing").eq("id", this.owner).maybeSingle(),
     );
     return row?.call_briefing?.enabled === true;
+  }
+
+  async mcpSharingOn(sid: string) {
+    const rows = await must<{ scope: string; target: string }[]>(
+      "read mcp sharing",
+      this.db.from("mcp_sharing").select("scope,target").eq("owner", this.owner).eq("enabled", true),
+    );
+    return (rows ?? []).some(
+      (r) => (r.scope === "session" && r.target === sid) || (r.scope === "device" && r.target === this.deviceId),
+    );
+  }
+
+  /** Update-or-insert (the client may update only `card`/`updated_at`, so no PostgREST upsert). */
+  async writeSharedCard(sid: string, card: SessionCard) {
+    const doc = JSON.parse(JSON.stringify(card)) as Record<string, unknown>;
+    const update = () =>
+      this.#write("update shared card", () =>
+        this.db
+          .from("session_card_plain")
+          .update({ card: doc, updated_at: iso(Date.now()) })
+          .eq("owner", this.owner)
+          .eq("sid", sid),
+      );
+    const existing = await must<{ sid: string } | null>(
+      "read shared card",
+      this.db.from("session_card_plain").select("sid").eq("owner", this.owner).eq("sid", sid).maybeSingle(),
+    );
+    if (existing) return void (await update());
+    try {
+      await this.#write("insert shared card", () =>
+        this.db.from("session_card_plain").insert({ owner: this.owner, sid, device_id: this.deviceId, card: doc }),
+      );
+    } catch (err) {
+      if (err instanceof SupabaseError && err.code === "23505")
+        await update(); // raced another write
+      else throw err;
+    }
   }
 
   async writeCallLine(id: string, line: CallLine) {

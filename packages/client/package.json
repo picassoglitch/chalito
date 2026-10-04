@@ -1,0 +1,26 @@
+{
+  "name": "@chalito/client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./settings": "./src/settings-entry.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:supabase": "vitest run -c vitest.supabase.config.ts"
+  },
+  "dependencies": {
+    "@chalito/crypto": "workspace:*",
+    "@chalito/protocol": "workspace:*",
+    "@chalito/ui": "workspace:*",
+    "@supabase/supabase-js": "^2.117.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "fake-indexeddb": "^6.2.5",
+    "react": "^19.3.0"
+  }
+}

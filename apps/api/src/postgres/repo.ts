@@ -1,6 +1,16 @@
 import postgres, { type Sql, type TransactionSql } from "postgres";
-import type { DeviceDoc, PairingCodeDoc } from "@chalito/protocol";
-import type { ApiRepo, StoredRecovery, TenantRecord, TenantStatus } from "../repo.js";
+import type { DeviceDoc, DeviceRegistration, Endorsement, PairingCodeDoc } from "@chalito/protocol";
+import type {
+  ApiRepo,
+  EndorseCodeRecord,
+  NewEndorseCode,
+  StoredRecovery,
+  StoredWebAuthnCredential,
+  TenantRecord,
+  TenantStatus,
+  WebAuthnChallenge,
+  WebAuthnPurpose,
+} from "../repo.js";
 
 /**
  * ApiRepo over the `chalito` schema (supabase/migrations). Runs as `chalito_server` (least
@@ -128,6 +138,88 @@ export class PostgresRepo implements ApiRepo {
     });
   }
 
+  // ---- WebAuthn ----
+
+  async putWebAuthnChallenge(c: WebAuthnChallenge) {
+    await this.sql`
+      insert into chalito_private.webauthn_challenges (owner, device_id, purpose, challenge, expires_at)
+      values (${c.owner}, ${c.deviceId}, ${c.purpose}, ${c.challenge}, ${ts(c.expiresAt)})
+      on conflict (owner, device_id, purpose)
+        do update set challenge = excluded.challenge, expires_at = excluded.expires_at`;
+  }
+
+  async takeWebAuthnChallenge(owner: string, deviceId: string, purpose: WebAuthnPurpose, now: number) {
+    // One statement: concurrent takers can't both get the same challenge.
+    const [row] = await this.sql<{ challenge: string; expires_at: Date }[]>`
+      delete from chalito_private.webauthn_challenges
+      where owner = ${owner} and device_id = ${deviceId} and purpose = ${purpose}
+      returning challenge, expires_at`;
+    return row && row.expires_at.getTime() > now ? row.challenge : null;
+  }
+
+  async setDeviceWebAuthn(owner: string, deviceId: string, cred: StoredWebAuthnCredential) {
+    const rows = await this.sql`
+      update chalito.devices
+      set webauthn_credential_id = ${cred.credentialId}, webauthn_public_key = ${cred.publicKey},
+          webauthn_rp_id = ${cred.rpId}, webauthn_counter = ${cred.counter},
+          webauthn_transports = ${cred.transports}, webauthn_created_at = ${ts(cred.createdAt)},
+          webauthn_binding = null
+      where owner = ${owner} and device_id = ${deviceId}
+      returning device_id`;
+    return rows.length > 0;
+  }
+
+  async getDeviceWebAuthn(owner: string, deviceId: string) {
+    const [r] = await this.sql<
+      {
+        webauthn_credential_id: string | null;
+        webauthn_public_key: string;
+        webauthn_rp_id: string;
+        webauthn_counter: string | number;
+        webauthn_transports: string[] | null;
+        webauthn_created_at: Date;
+        webauthn_binding: unknown;
+      }[]
+    >`
+      select webauthn_credential_id, webauthn_public_key, webauthn_rp_id, webauthn_counter,
+             webauthn_transports, webauthn_created_at, webauthn_binding
+      from chalito.devices where owner = ${owner} and device_id = ${deviceId}`;
+    if (!r?.webauthn_credential_id) return null;
+    return {
+      credentialId: r.webauthn_credential_id,
+      publicKey: r.webauthn_public_key,
+      rpId: r.webauthn_rp_id,
+      counter: Number(r.webauthn_counter),
+      transports: r.webauthn_transports ?? [],
+      createdAt: r.webauthn_created_at.getTime(),
+      binding: r.webauthn_binding ?? null,
+    };
+  }
+
+  async bumpWebAuthnCounter(owner: string, deviceId: string, credentialId: string, counter: number) {
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx<{ webauthn_counter: string | number }[]>`
+        select webauthn_counter from chalito.devices
+        where owner = ${owner} and device_id = ${deviceId} and webauthn_credential_id = ${credentialId}
+        for update`;
+      if (!row) return "not_found" as const;
+      const stored = Number(row.webauthn_counter);
+      if (counter === 0 && stored === 0) return "ok" as const;
+      if (counter <= stored) return "cloned" as const;
+      await tx`update chalito.devices set webauthn_counter = ${counter}
+               where owner = ${owner} and device_id = ${deviceId}`;
+      return "ok" as const;
+    });
+  }
+
+  async setDeviceWebAuthnBinding(owner: string, deviceId: string, binding: unknown) {
+    const rows = await this.sql`
+      update chalito.devices set webauthn_binding = ${this.sql.json(binding as never)}
+      where owner = ${owner} and device_id = ${deviceId} and not revoked and webauthn_credential_id is not null
+      returning device_id`;
+    return rows.length > 0;
+  }
+
   async saveEndorsement(owner: string, newDeviceId: string, endorsement: unknown, at: number) {
     await this.sql`
       insert into chalito.endorsements (owner, device_id, endorsement, created_at)
@@ -221,6 +313,7 @@ export class PostgresRepo implements ApiRepo {
       claimedByDeviceId: string;
       claimerPubSign: string;
       claimerPubBox: string;
+      claimerWebauthnBinding?: unknown;
       claimedAt: number;
     },
     build: (code: PairingCodeDoc) => Promise<DeviceDoc>,
@@ -236,9 +329,68 @@ export class PostgresRepo implements ApiRepo {
       await tx`
         update chalito.pairing_codes set claimed = true, owner = ${claim.owner},
           claimed_by_device_id = ${claim.claimedByDeviceId}, claimer_pub_sign = ${claim.claimerPubSign},
-          claimer_pub_box = ${claim.claimerPubBox}, claimed_at = ${ts(claim.claimedAt)}
+          claimer_pub_box = ${claim.claimerPubBox}, claimed_at = ${ts(claim.claimedAt)},
+          claimer_webauthn_binding = ${claim.claimerWebauthnBinding ? this.sql.json(claim.claimerWebauthnBinding as never) : null}
         where code_id = ${codeId}`;
       return { ok: true as const, agentDeviceId: agent.deviceId };
+    });
+  }
+
+  // ---- endorsement handoff -------------------------------------------------------------
+
+  async createEndorseCode(r: NewEndorseCode) {
+    const rows = await this.sql`
+      insert into chalito.endorse_codes
+        (code_id, short_code_hash, owner, new_device_id, registration, expires_at, watch_auth_user_id)
+      values (${r.codeId}, ${r.shortCodeHash}, ${r.owner}, ${r.registration.body.deviceId},
+              ${this.sql.json(r.registration as never)}, ${ts(r.expiresAt)}, ${this.#authUser("pairing", r.codeId)})
+      on conflict do nothing
+      returning code_id`;
+    return rows.length ? ("created" as const) : ("exists" as const);
+  }
+
+  async findEndorseCode(codeId: string) {
+    const [row] = await this.sql<EndorseRow[]>`select * from chalito.endorse_codes where code_id = ${codeId}`;
+    return row ? toEndorseCode(row) : null;
+  }
+
+  async findEndorseCodeByShortHash(shortCodeHash: string) {
+    const [row] = await this.sql<EndorseRow[]>`
+      select * from chalito.endorse_codes where short_code_hash = ${shortCodeHash}`;
+    return row ? toEndorseCode(row) : null;
+  }
+
+  async approveEndorseCode(
+    codeId: string,
+    owner: string,
+    e: { endorsement: Endorsement; endorsedByDeviceId: string; endorsedAt: number },
+    now: number,
+  ) {
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx<EndorseRow[]>`
+        select * from chalito.endorse_codes where code_id = ${codeId} and owner = ${owner} for update`;
+      if (!row) return "not_found" as const;
+      if (row.endorsement) return "already_endorsed" as const;
+      if (row.expires_at.getTime() <= now) return "expired" as const;
+      await tx`
+        update chalito.endorse_codes set endorsement = ${tx.json(e.endorsement as never)},
+          endorsed_by_device_id = ${e.endorsedByDeviceId}, endorsed_at = ${ts(e.endorsedAt)}
+        where code_id = ${codeId}`;
+      return "ok" as const;
+    });
+  }
+
+  async takeEndorsement(codeId: string, owner: string, now: number) {
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx<EndorseRow[]>`
+        select * from chalito.endorse_codes where code_id = ${codeId} and owner = ${owner} for update`;
+      if (!row) return { ok: false as const, reason: "not_found" as const };
+      if (row.taken_at) return { ok: false as const, reason: "already_taken" as const };
+      if (row.expires_at.getTime() <= now) return { ok: false as const, reason: "expired" as const };
+      if (!row.endorsement) return { ok: false as const, reason: "not_endorsed" as const };
+      await tx`update chalito.endorse_codes set taken_at = ${ts(now)}, watch_auth_user_id = null
+               where code_id = ${codeId}`;
+      return { ok: true as const, endorsement: row.endorsement as Endorsement };
     });
   }
 }
@@ -334,8 +486,35 @@ interface PairingRow {
   claimed_by_device_id: string | null;
   claimer_pub_sign: string | null;
   claimer_pub_box: string | null;
+  claimer_webauthn_binding?: unknown;
   expires_at: Date;
 }
+
+interface EndorseRow {
+  code_id: string;
+  short_code_hash: string;
+  owner: string;
+  new_device_id: string;
+  registration: DeviceRegistration;
+  endorsement: Endorsement | null;
+  endorsed_by_device_id: string | null;
+  endorsed_at: Date | null;
+  taken_at: Date | null;
+  expires_at: Date;
+}
+
+const toEndorseCode = (r: EndorseRow): EndorseCodeRecord => ({
+  codeId: r.code_id,
+  shortCodeHash: r.short_code_hash,
+  owner: r.owner,
+  newDeviceId: r.new_device_id,
+  registration: r.registration,
+  endorsement: r.endorsement,
+  endorsedByDeviceId: r.endorsed_by_device_id,
+  endorsedAt: ms(r.endorsed_at),
+  takenAt: ms(r.taken_at),
+  expiresAt: r.expires_at.getTime(),
+});
 
 const toPairingCode = (r: PairingRow): PairingCodeDoc => ({
   v: 1,
@@ -350,6 +529,7 @@ const toPairingCode = (r: PairingRow): PairingCodeDoc => ({
   claimedByDeviceId: r.claimed_by_device_id,
   claimerPubSign: r.claimer_pub_sign,
   claimerPubBox: r.claimer_pub_box,
+  claimerWebauthnBinding: (r.claimer_webauthn_binding ?? null) as PairingCodeDoc["claimerWebauthnBinding"],
   expiresAt: r.expires_at.getTime(),
 });
 
