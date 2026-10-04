@@ -7,6 +7,7 @@ import type { AdapterEvent, Question, SessionStartOptions, ToolCall } from "../s
 import {
   APPROVAL_POLICY,
   CHATGPT_PLAN_OVERRIDES,
+  HARDENING_OVERRIDES,
   checkCodexVersion,
   codexVersionFromUserAgent,
   CodexAdapter,
@@ -25,6 +26,8 @@ import { loadTranscript, replay, type TranscriptEntry } from "./replay.js";
 // 550eb50, not recorded from a real binary. It MUST be re-recorded against a real `codex app-server`
 // in the tested version range before M4 closes.
 const transcript = loadTranscript(new URL("./fixtures/codex-transcript.synthetic.jsonl", import.meta.url));
+
+const LAUNCH_ARGS = ["app-server", "--listen", "stdio://", ...HARDENING_OVERRIDES.flatMap((o) => ["-c", o])];
 
 const session = (
   config: CodexConfig,
@@ -81,7 +84,7 @@ describe("Codex adapter: recorded app-server transcript", () => {
 
     expect(r.state.mismatches).toEqual([]);
     expect(r.finished()).toBe(true);
-    expect(r.state.spawned).toEqual({ command: "codex", args: ["app-server", "--listen", "stdio://"] });
+    expect(r.state.spawned).toEqual({ command: "codex", args: LAUNCH_ARGS });
 
     expect(calls.map((c) => [c.toolUseId, c.toolName, c.input, c.origin])).toEqual([
       ["item_3", "Bash", { command: "pnpm test", cwd: "/ws" }, "client:phone1"],
@@ -191,7 +194,7 @@ describe("Codex adapter: launch and auth", () => {
     await h.done;
     expect(fake.run.spawned).toEqual({
       command: "/opt/codex/bin/codex",
-      args: ["app-server", "--listen", "stdio://"],
+      args: LAUNCH_ARGS,
       env: { PATH: "/usr/bin", CODEX_HOME: join(homedir(), ".chalito", "codex") },
       cwd: "/ws",
     });
@@ -221,6 +224,7 @@ describe("Codex adapter: launch and auth", () => {
       "app-server",
       "--listen",
       "stdio://",
+      ...HARDENING_OVERRIDES.flatMap((o) => ["-c", o]),
       ...CHATGPT_PLAN_OVERRIDES.flatMap((o) => ["-c", o]),
     ]);
     expect(fake.run.spawned?.env).toEqual({
@@ -395,9 +399,11 @@ describe("Codex adapter: approvals and sandbox", () => {
             ? { thread: { id: "thr_1" } }
             : m.method === "turn/start"
               ? { turn: { id: "t1" } }
-              : m.method === "initialize"
-                ? { userAgent: "chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm-256color (chalito; 0.0.0)" }
-                : {};
+              : m.method === "mcpServerStatus/list"
+                ? { data: [] }
+                : m.method === "initialize"
+                  ? { userAgent: "chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm-256color (chalito; 0.0.0)" }
+                  : {};
         out.push(JSON.stringify({ id: m.id, result }));
         if (m.method === "turn/start") setTimeout(() => out.close(), 5);
       },
@@ -460,11 +466,7 @@ describe("Codex adapter: isolated CODEX_HOME", () => {
       { cwd },
     );
     await expect(start()).rejects.toMatchObject({ code: "adapter_crash" });
-    expect(readFileSync(report, "utf8").split("\n").slice(0, 3)).toEqual([
-      codexHome,
-      cwd,
-      "app-server --listen stdio://",
-    ]);
+    expect(readFileSync(report, "utf8").split("\n").slice(0, 3)).toEqual([codexHome, cwd, LAUNCH_ARGS.join(" ")]);
     expect(statSync(codexHome).mode & 0o777).toBe(0o700);
     expect(existsSync(join(home, ".codex"))).toBe(false);
   });
@@ -491,13 +493,66 @@ describe("Codex adapter: version pin", () => {
   });
 
   it("an untested app-server fails start before any login and stops the process", async () => {
-    const fake = fakeCodex([], undefined, "chalito/0.150.0 (Ubuntu 24.4.0; x86_64) xterm (chalito; 0.0.0)");
+    const fake = fakeCodex([], undefined, {
+      userAgent: "chalito/0.150.0 (Ubuntu 24.4.0; x86_64) xterm (chalito; 0.0.0)",
+    });
     const { start, events } = session({ apiKey: "k", spawn: fake.spawn, env: {} });
     await expect(start()).rejects.toMatchObject({
       code: "unsupported_version",
       message: expect.stringMatching(/Codex 0\.150\.0 is outside the tested range/),
     });
     expect(fake.run.received.map((m) => m.method)).toEqual(["initialize"]);
+    expect(events).toEqual([]);
+  });
+});
+
+describe("Codex adapter: tools that skip approvals", () => {
+  it("launches with web search, view_image and the MCP-backed and code-running features off", async () => {
+    expect(HARDENING_OVERRIDES).toEqual(
+      expect.arrayContaining([
+        'web_search="disabled"',
+        "features.view_image=false",
+        "features.apps=false",
+        "features.plugins=false",
+        "features.enable_mcp_apps=false",
+        "features.js_repl=false",
+        "features.code_mode=false",
+        "features.browser_use=false",
+        "features.computer_use=false",
+      ]),
+    );
+    const fake = fakeCodex([[{ say: "ok" }]]);
+    const { start, states } = session({ apiKey: "k", spawn: fake.spawn, env: {} });
+    const h = await start();
+    await waitFor(() => states().includes("idle"));
+    h.close();
+    await h.done;
+    const args = fake.run.spawned!.args;
+    for (const o of HARDENING_OVERRIDES) expect(args[args.indexOf(o) - 1]).toBe("-c");
+    expect(fake.run.received.map((m) => m.method).slice(3, 6)).toEqual([
+      "thread/start",
+      "mcpServerStatus/list",
+      "turn/start",
+    ]);
+    expect(fake.run.received[4]?.params).toEqual({ threadId: "thr_fake_1", detail: "toolsAndAuthOnly" });
+    expect(fake.run.violations).toEqual([]);
+  });
+
+  it("the fake flags a launch without the overrides", () => {
+    const fake = fakeCodex([]);
+    fake.spawn("codex", ["app-server", "--listen", "stdio://"], {}, "/ws").close();
+    expect(fake.run.violations).toContain('missing -c web_search="disabled"');
+    expect(fake.run.violations).toContain("missing -c features.view_image=false");
+  });
+
+  it("refuses to run when Codex has MCP servers configured, before any turn", async () => {
+    const fake = fakeCodex([[{ say: "never" }]], undefined, { mcpServers: ["corp-db", "github"] });
+    const { start, events } = session({ apiKey: "k", spawn: fake.spawn, env: {} });
+    await expect(start()).rejects.toMatchObject({
+      code: "mcp_not_allowed",
+      message: expect.stringContaining("MCP servers configured outside Chalito (corp-db, github)"),
+    });
+    expect(fake.run.received.some((m) => m.method === "turn/start")).toBe(false);
     expect(events).toEqual([]);
   });
 });

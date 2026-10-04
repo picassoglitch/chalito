@@ -75,6 +75,41 @@ export const CHATGPT_PLAN_OVERRIDES = [
   "model_providers.openai_chatgpt_plan.supports_websockets=false",
 ];
 
+/**
+ * Tools that act without an approval request are switched off on every launch. `-c` overrides
+ * are the runtime layer, the highest-precedence config layer (config/src/loader/mod.rs, layer
+ * list), so user, system and project config can't turn them back on. Checked in openai/codex
+ * codex-rs at 550eb50:
+ * - `web_search` (config/src/config_toml.rs `ConfigToml.web_search`, WebSearchMode): wins over the
+ *   web_search_* feature flags (core/src/config/mod.rs `resolve_web_search_mode`). Managed
+ *   requirements can't force it back on: `allowed_web_search_modes` always accepts `disabled`
+ *   (config/src/config_requirements.rs).
+ * - `features.view_image` (features/src/lib.rs `Feature::ViewImage`; the tool is only registered
+ *   when enabled, core/src/tools/spec_plan.rs). Reads images anywhere without asking.
+ * - Also off: apps/plugins/MCP apps (MCP-backed tools), js_repl, code_mode, browser_use and
+ *   computer_use, which run outside the command/patch approval path.
+ * If managed requirements pin one of these features on, config loading fails
+ * (core/src/config/managed_features.rs `validate_explicit_feature_settings_in_config_toml`) and the
+ * session fails closed instead of running with it.
+ * MCP servers can't be masked this way: layers deep-merge (config/src/merge.rs
+ * `merge_toml_values`), so `mcp_servers={}` doesn't remove servers from system, admin or cloud
+ * layers. The adapter checks `mcpServerStatus/list` after thread/start instead and refuses to run.
+ */
+export const HARDENING_OVERRIDES = [
+  'web_search="disabled"',
+  "features.web_search_request=false",
+  "features.web_search_cached=false",
+  "features.standalone_web_search=false",
+  "features.view_image=false",
+  "features.apps=false",
+  "features.plugins=false",
+  "features.enable_mcp_apps=false",
+  "features.js_repl=false",
+  "features.code_mode=false",
+  "features.browser_use=false",
+  "features.computer_use=false",
+];
+
 /** Credentials that would take precedence over the configured auth. */
 const STRIPPED_ENV = ["OPENAI_API_KEY", "CODEX_API_KEY", "ACCESS_TOKEN"];
 
@@ -85,6 +120,7 @@ export const codexLaunch = (
   for (const k of STRIPPED_ENV) delete env[k];
   env.CODEX_HOME = config.codexHome ?? join(homedir(), ".chalito", "codex");
   const args = ["app-server", "--listen", "stdio://"];
+  for (const o of HARDENING_OVERRIDES) args.push("-c", o);
   if (config.chatgptPlan) {
     if (!config.chatgptPlanEnabled) throw new Error("ChatGPT plan usage is not enabled for this user");
     env.ACCESS_TOKEN = config.chatgptPlan.accessToken;
@@ -127,6 +163,13 @@ const spawnTransport: CodexSpawn = (command, args, env, cwd) => {
  * `thread_start_task` (app-server/src/request_processors/thread_processor.rs) persists
  * `trust_level = "trusted"` when a request has a cwd and the sandbox can write it, which would
  * load the repo's own `.codex/` rules and hooks. The process is spawned in the session cwd instead.
+ * An untrusted project's config can't weaken any of this either: the cwd, tree and repo
+ * `.codex/` layers are "loaded but disabled when untrusted" (config/src/loader/mod.rs layer list,
+ * `ProjectTrustContext::disabled_reason_for_decision`: "project-local config, hooks, and exec
+ * policies"), and disabled layers are skipped by `ConfigLayerStack::layers_low_to_high`
+ * (config/src/state.rs), which both `effective_config` and `load_exec_policy` iterate. Even a
+ * trusted project sits below the runtime `-c` layer. Residual: trust can still be granted by
+ * system, admin or cloud config (a `[projects]` entry), which is the machine admin's choice.
  */
 export const APPROVAL_POLICY = "untrusted";
 
@@ -484,6 +527,25 @@ export class CodexAdapter implements SessionAdapter {
         opts.resume ? { threadId: opts.resume, ...threadParams } : threadParams,
       );
       threadId = r.thread.id;
+      // MCP tool calls bypass the command/patch approvals and can't be masked by config (see
+      // HARDENING_OVERRIDES). Chalito's CODEX_HOME defines none, so any server here comes from
+      // system, admin or cloud config, or a plugin. Residual: Codex has already started stdio
+      // servers for the thread by the time we can list them.
+      const mcp = await request<{ data?: { name: string }[] }>("mcpServerStatus/list", {
+        threadId,
+        detail: "toolsAndAuthOnly",
+      });
+      const servers = (mcp.data ?? []).map((s) => s.name);
+      if (servers.length > 0) {
+        throw Object.assign(
+          new Error(
+            `Codex has MCP servers configured outside Chalito (${servers.join(", ")}). Their tool calls ` +
+              "skip Chalito's approvals, so Chalito won't run Codex with them. Remove them from the " +
+              "system or managed Codex config.",
+          ),
+          { code: "mcp_not_allowed" },
+        );
+      }
     } catch (err) {
       closed = startFailed = true;
       t.close();

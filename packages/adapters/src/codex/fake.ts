@@ -1,5 +1,5 @@
 import { InputQueue } from "../core.js";
-import type { CodexSpawn, CodexTransport } from "./adapter.js";
+import { HARDENING_OVERRIDES, type CodexSpawn, type CodexTransport } from "./adapter.js";
 
 /**
  * Fake `codex app-server`: a scripted stand-in that speaks the same JSONL protocol (no "jsonrpc"
@@ -49,11 +49,22 @@ export const fakeCodex = (
     interrupted: 0,
     violations: [],
   },
-  /** What initialize reports; the adapter checks the version in it. */
-  userAgent = "chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm-256color (chalito; 0.0.0)",
+  options: {
+    /** What initialize reports; the adapter checks the version in it. */
+    userAgent?: string;
+    /** MCP servers the effective config defines (system, admin or cloud layers, plugins). */
+    mcpServers?: string[];
+  } = {},
 ): { spawn: CodexSpawn; run: FakeCodexRun } => {
+  const userAgent = options.userAgent ?? "chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm-256color (chalito; 0.0.0)";
   const spawn: CodexSpawn = (command, args, env, cwd) => {
     run.spawned = { command, args, env, cwd };
+    // Every hardening override must be on the command line as `-c <override>`.
+    for (const o of HARDENING_OVERRIDES) {
+      const i = args.indexOf(o);
+      if (i < 1 || args[i - 1] !== "-c") run.violations.push(`missing -c ${o}`);
+    }
+    let mcpChecked = false;
     const out = new InputQueue<string>();
     const emit = (m: Msg) => out.push(JSON.stringify(m));
     const waiting = new Map<number | string, (result: unknown) => void>();
@@ -200,7 +211,15 @@ export const fakeCodex = (
             id: m.id,
             result: { thread: { id: m.method === "thread/resume" ? p.threadId : threadId, turns: [] } },
           });
+        case "mcpServerStatus/list":
+          if (p.threadId === undefined) run.violations.push("mcpServerStatus/list without threadId");
+          mcpChecked = true;
+          return emit({
+            id: m.id,
+            result: { data: (options.mcpServers ?? []).map((name) => ({ name, tools: {} })), nextCursor: null },
+          });
         case "turn/start": {
+          if (!mcpChecked) run.violations.push("turn/start before the MCP server check");
           run.sandboxes.push(p.sandboxPolicy);
           run.policies.push(p.approvalPolicy);
           if (p.approvalPolicy !== "untrusted")

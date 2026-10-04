@@ -7,6 +7,7 @@ export {
   codexLaunch,
   codexVersionFromUserAgent,
   DEFAULT_CODEX_VERSIONS,
+  HARDENING_OVERRIDES,
   sandboxModeFor,
   sandboxPolicyFor,
 } from "./adapter.js";
