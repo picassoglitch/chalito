@@ -1,6 +1,7 @@
 import type { EmotionTag } from "@chalito/protocol";
 import type { EmotionGesture } from "@chalito/avatar";
 import { ROSTER, type RosterId } from "@chalito/roster";
+import type { RoomEventKind } from "@chalito/protocol";
 
 /**
  * What the Solo landing shows, rendered by the real runtime (avatar driver + card avatar) with
@@ -31,6 +32,14 @@ export interface Scene {
   h: number;
   seed: number;
   actors: Actor[];
+  /**
+   * A room scene (@chalito/scene's RoomScene): the actors are the members (in order), and these
+   * room events (times from the scene start) drive the portal and the choreography.
+   */
+  room?: {
+    roomId: string;
+    events: { eid: string; from: number; to: number[]; kind: RoomEventKind; at: number }[];
+  };
   /** Animated scenes: frames per second and length; stills render one frame at `posterAt`. */
   anim?: { fps: number; durationMs: number };
   posterAt: number;
@@ -130,30 +139,23 @@ export const SCENES: Scene[] = [
     posterAt: 1800,
   },
   {
-    id: "together-tito-canela",
-    alt: { es: "Tito y Canela juntos", en: "Tito and Canela together" },
+    id: "room-portal",
+    alt: {
+      es: "Luna llega a la sala por el portal y Chalito va a saludarla",
+      en: "Luna arrives in the room through the portal and Chalito walks over to greet her",
+    },
     w: 560,
-    h: 420,
-    seed: 41,
-    actors: [
-      {
-        roster: "tito",
-        x: -0.42,
-        beats: [
-          { at: 0, emotion: { tag: "happy", intensity: 0.7 } },
-          { at: 700, gesture: "nod" },
-        ],
-      },
-      {
-        roster: "canela",
-        x: 0.42,
-        beats: [
-          { at: 0, emotion: { tag: "surprised", intensity: 0.5 } },
-          { at: 1200, gesture: "wave" },
-        ],
-      },
-    ],
-    anim: { fps: 10, durationMs: 3000 },
-    posterAt: 1500,
+    h: 360,
+    seed: 0,
+    actors: [{ roster: "chalito" }, { roster: "luna", cosmetics: ["flower_crown"] }],
+    room: {
+      roomId: "room_showcase",
+      events: [
+        { eid: "e1", from: 1, to: [], kind: "enter", at: 500 },
+        { eid: "e2", from: 0, to: [1], kind: "notice", at: 3400 },
+      ],
+    },
+    anim: { fps: 10, durationMs: 7000 },
+    posterAt: 5600,
   },
 ];

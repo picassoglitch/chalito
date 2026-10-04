@@ -20,6 +20,9 @@ importers:
       '@chalito/roster':
         specifier: workspace:*
         version: link:packages/roster
+      '@chalito/scene':
+        specifier: workspace:*
+        version: link:packages/scene
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.12.0(jiti@2.7.0))
@@ -817,6 +820,28 @@ importers:
       '@chalito/config':
         specifier: workspace:*
         version: link:../config
+
+  packages/scene:
+    dependencies:
+      '@chalito/avatar-three':
+        specifier: workspace:*
+        version: link:../avatar-three
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../roster
+      three:
+        specifier: 0.186.1
+        version: 0.186.1
+    devDependencies:
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../config
+      '@types/three':
+        specifier: 0.186.0
+        version: 0.186.0
 
   packages/ui:
     dependencies:

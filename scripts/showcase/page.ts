@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import { AvatarDriver, CreatureBinding, createCardAvatar, type CardItem } from "@chalito/avatar-three";
 import { EMOTION_DRAWING } from "@chalito/roster";
+import { RoomScene, type RoomSceneMember, type SceneEvent } from "@chalito/scene";
 import type { Beat } from "./scenes.js";
 
 export interface PageActor {
@@ -20,6 +21,8 @@ export interface PageJob {
   h: number;
   seed: number;
   actors: PageActor[];
+  /** A RoomScene job: members and events at epoch `base` + scene time. */
+  room?: { roomId: string; base: number; members: RoomSceneMember[]; events: SceneEvent[] };
 }
 
 interface Live {
@@ -34,6 +37,7 @@ let renderer: THREE.WebGLRenderer | null = null;
 let scene: THREE.Scene | null = null;
 let camera: THREE.PerspectiveCamera | null = null;
 let live: Live[] = [];
+let room: { scene: RoomScene; base: number } | null = null;
 
 const loader = new THREE.TextureLoader();
 const load = (url: string) => loader.loadAsync(url);
@@ -41,7 +45,27 @@ const load = (url: string) => loader.loadAsync(url);
 const showcase = {
   async load(job: PageJob) {
     renderer?.dispose();
+    room?.scene.dispose();
+    room = null;
+    // A fresh canvas per job: a WebGL context can't be shared between two renderers.
+    document.querySelector("canvas")?.replaceWith(document.createElement("canvas"));
     const canvas = document.querySelector("canvas")!;
+    if (job.room) {
+      canvas.style.width = `${job.w}px`;
+      canvas.style.height = `${job.h}px`;
+      const scene = new RoomScene({
+        canvas,
+        roomId: job.room.roomId,
+        assetBase: "/roster/",
+        quality: "alto",
+        preserveDrawingBuffer: true,
+      });
+      scene.setMembers(job.room.members);
+      scene.pushEvents(job.room.events);
+      await scene.ready();
+      room = { scene, base: job.room.base };
+      return;
+    }
     canvas.width = job.w;
     canvas.height = job.h;
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
@@ -76,6 +100,10 @@ const showcase = {
 
   /** Renders the scene at time `t` (ms, non-decreasing) and returns the canvas as a PNG data URL. */
   frame(t: number): string {
+    if (room) {
+      room.scene.renderAt(room.base + t);
+      return document.querySelector("canvas")!.toDataURL("image/png");
+    }
     for (const l of live) {
       while (l.next < l.beats.length && l.beats[l.next]!.at <= t) {
         const b = l.beats[l.next++]!;

@@ -12,17 +12,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
 import pixelmatch from "pixelmatch";
 import sharp from "sharp";
-import { chromium } from "@playwright/test";
 import { loadCatalog } from "@chalito/config";
-import { placeOnCard, type CardAnchor } from "@chalito/roster";
+import { placeOnCard, type CardAnchor, type CardPlacement } from "@chalito/roster";
+import type { CosmeticSlot } from "@chalito/protocol";
 import type { PageActor, PageJob } from "./showcase/page.js";
+import { bundle, launchSoftwareGl, serve } from "./showcase/browser.js";
 import { SCENES, type Scene } from "./showcase/scenes.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,6 +29,8 @@ const ROSTER_DIR = join(ROOT, "packages/roster");
 const OUT_DIR = join(ROOT, "apps/web/public/showcase");
 /** Simulation step: every scene is stepped from t = 0 at this rate, whatever it captures. */
 const STEP_MS = 1000 / 60;
+/** Room scenes run on a fixed epoch (a wander-bucket boundary), so the seeded wander is pinned too. */
+const ROOM_BASE_MS = 1_760_000_016_000;
 /** Tolerance for --check: a pixel differs if any channel is off by more than this… */
 const CHANNEL_TOLERANCE = 0.1;
 /** …and a render drifts if more than this share of its pixels differ. */
@@ -107,31 +108,36 @@ const jobFor = async (s: Scene): Promise<PageJob> => {
       beats: a.beats ?? [],
     });
   }
-  return { w: s.w, h: s.h, seed: s.seed, actors };
-};
-
-// ---------------------------------------------------------------- page + server
-const serve = async (bundle: string): Promise<{ server: Server; url: string }> => {
-  const types: Record<string, string> = { ".webp": "image/webp", ".png": "image/png", ".js": "text/javascript" };
-  const server = createServer((req, res) => {
-    const path = decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname);
-    let body: Buffer | string | null = null;
-    if (path === "/")
-      body = `<!doctype html><html><body style="margin:0;background:transparent"><canvas></canvas><script src="/page.js"></script></body></html>`;
-    else if (path === "/page.js") body = bundle;
-    else if (path.startsWith("/roster/") && !path.includes("..")) {
-      const f = join(ROSTER_DIR, path.slice("/roster/".length));
-      if (existsSync(f)) body = readFileSync(f);
-    }
-    if (body === null) {
-      res.writeHead(404).end();
-      return;
-    }
-    res.writeHead(200, { "content-type": types[extname(path)] ?? "text/html" }).end(body);
-  });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const addr = server.address() as { port: number };
-  return { server, url: `http://127.0.0.1:${addr.port}/` };
+  if (!s.room) return { w: s.w, h: s.h, seed: s.seed, actors };
+  // Room scenes: RoomScene loads the cards itself; it needs ids, avatars and catalog placements.
+  const id = (i: number) => `chl_showcase${String.fromCharCode(97 + i).repeat(18)}`;
+  const cosmetics = catalog.cosmetics as Record<string, { slot: CosmeticSlot; art: string; card: CardPlacement }>;
+  return {
+    w: s.w,
+    h: s.h,
+    seed: s.seed,
+    actors: [],
+    room: {
+      roomId: s.room.roomId,
+      base: ROOM_BASE_MS,
+      members: s.actors.map((a, i) => ({
+        companionId: id(i),
+        avatar: a.roster,
+        cosmetics: (a.cosmetics ?? []).map((c) => ({
+          slot: cosmetics[c]!.slot,
+          art: cosmetics[c]!.art,
+          card: cosmetics[c]!.card,
+        })),
+      })),
+      events: s.room.events.map((e) => ({
+        eid: e.eid,
+        fromCompanionId: id(e.from),
+        to: e.to.map(id),
+        kind: e.kind,
+        t: ROOM_BASE_MS + e.at,
+      })),
+    },
+  };
 };
 
 // ---------------------------------------------------------------- render
@@ -143,19 +149,9 @@ interface Rendered {
 }
 
 const renderAll = async (scenes: Scene[]): Promise<Rendered[]> => {
-  const bundled = await build({
-    entryPoints: [join(ROOT, "scripts/showcase/page.ts")],
-    bundle: true,
-    write: false,
-    format: "iife",
-    platform: "browser",
-    target: "es2022",
-    logLevel: "silent",
-  });
-  const { server, url } = await serve(bundled.outputFiles[0]!.text);
-  const browser = await chromium.launch({
-    args: ["--use-angle=swiftshader", "--use-gl=angle", "--enable-unsafe-swiftshader", "--disable-gpu-rasterization"],
-  });
+  const bundled = await bundle(join(ROOT, "scripts/showcase/page.ts"));
+  const { server, url } = await serve(bundled, ROSTER_DIR);
+  const browser = await launchSoftwareGl();
   try {
     const page = await browser.newPage({ deviceScaleFactor: 1, viewport: { width: 800, height: 800 } });
     await page.goto(url);
