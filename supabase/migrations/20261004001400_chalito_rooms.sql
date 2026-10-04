@@ -321,10 +321,10 @@ begin
   where short_code_hash = p_hash or glyph_payload_hash = p_hash
   for update;
   if not found or inv.expires_at <= now() then perform chalito_private.room_fail('PT404', 'invite not found'); end if;
-  if inv.uses >= inv.max_uses then perform chalito_private.room_fail('PT410', 'invite used'); end if;
   if exists (select 1 from chalito.room_members where room_id = inv.room_id and companion_id = p_companion) then
     perform chalito_private.room_fail('PT409', 'already a member');
   end if;
+  if inv.uses >= inv.max_uses then perform chalito_private.room_fail('PT410', 'invite used'); end if;
   perform pg_advisory_xact_lock(hashtext('chalito.room:' || inv.room_id));
   if (select count(*) from chalito.room_members where room_id = inv.room_id) >= coalesce(p_member_limit, 0) then
     perform chalito_private.room_fail('PT402', 'member limit for this plan');
