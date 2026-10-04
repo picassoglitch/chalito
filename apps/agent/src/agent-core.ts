@@ -26,6 +26,7 @@ import {
   originAllowed,
   policyHash,
   presetPolicy,
+  type ClassifyContext,
   type Policy,
 } from "./policy/index.js";
 import { redact, redactDeep, type Logger } from "./redact.js";
@@ -53,6 +54,8 @@ export interface AgentCoreDeps {
   now: () => number;
   log: Logger;
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
+  /** Host facts for the classifier's hard floor (agent binaries, service files, the session's PATH dirs). */
+  classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
 }
 
 interface Session {
@@ -370,7 +373,7 @@ export class AgentCore {
     return async (gated: ToolCall) => {
       const call = s.turnOriginFloor ? { ...gated, origin: lowerTrust(gated.origin, s.turnOriginFloor) } : gated;
       const policy = this.d.policy.get();
-      const classification = classifyToolCall(call.toolName, call.input, { policy, home: this.d.home, cwd: s.cwd });
+      const classification = classifyToolCall(call.toolName, call.input, this.#classifyContext(policy, s));
       const decision = decide({
         classification,
         origin: call.origin,
@@ -434,6 +437,10 @@ export class AgentCore {
     };
   }
 
+  #classifyContext(policy: Policy, s: Session): ClassifyContext {
+    return { policy, home: this.d.home, cwd: s.cwd, ...this.d.classifyExtras?.() };
+  }
+
   async #onAdapterEvent(s: Session, e: AdapterEvent): Promise<void> {
     switch (e.type) {
       case "started":
@@ -448,7 +455,7 @@ export class AgentCore {
         return;
       case "tool_started": {
         const policy = this.d.policy.get();
-        const c = classifyToolCall(e.toolName, e.input, { policy, home: this.d.home, cwd: s.cwd });
+        const c = classifyToolCall(e.toolName, e.input, this.#classifyContext(policy, s));
         await this.#event(s, {
           type: "tool.started",
           toolUseId: e.toolUseId,

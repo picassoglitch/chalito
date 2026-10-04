@@ -5,6 +5,8 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 import { createApp } from "./app.js";
 import type { AuditSink } from "./deps.js";
+import { FirebaseIssuer } from "./firestore/identity.js";
+import { FirestoreRepo } from "./firestore/repo.js";
 
 const env = (name: string): string => {
   const v = process.env[name];
@@ -28,8 +30,8 @@ const audit: AuditSink = {
 };
 
 const app = createApp({
-  db,
-  auth: getAuth(firebase),
+  repo: new FirestoreRepo(db),
+  identity: new FirebaseIssuer(getAuth(firebase)),
   audit,
   config: {
     ssoSecret: env("CHALITO_SSO_SECRET"),

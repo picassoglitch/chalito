@@ -56,17 +56,25 @@ export const CommandPayload = z.discriminatedUnion("type", [
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;
 
-export const CommandBody = z.object({
-  v: z.literal(1),
-  cid: Id,
-  uid: Uid,
-  targetDeviceId: DeviceId,
-  origin: Origin,
-  nonce: ReplayNonce,
-  issuedAt: EpochMs,
-  expiresAt: EpochMs,
-  payload: CommandPayload,
-});
+/** Commands live at most 10 minutes, so the nonce window the agent must remember is bounded. */
+export const COMMAND_TTL_MS = 10 * 60 * 1000;
+
+export const CommandBody = z
+  .object({
+    v: z.literal(1),
+    cid: Id,
+    uid: Uid,
+    targetDeviceId: DeviceId,
+    origin: Origin,
+    nonce: ReplayNonce,
+    issuedAt: EpochMs,
+    expiresAt: EpochMs,
+    payload: CommandPayload,
+  })
+  // Upper bound only: an already-expired command still parses, so the agent can reject it as "expired".
+  .refine((b) => b.expiresAt - b.issuedAt <= COMMAND_TTL_MS, {
+    message: "commands expire within 10 minutes of being issued",
+  });
 export type CommandBody = z.infer<typeof CommandBody>;
 
 /** A command signed by a trusted client (origin `client:<id>`). */

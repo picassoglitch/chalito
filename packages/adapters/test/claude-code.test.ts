@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AdapterEvent, ToolCall } from "../src/core.js";
 import {
@@ -131,20 +134,59 @@ describe("Claude Code adapter", () => {
     await h.done;
   });
 
-  it("isolates repo settings: settingSources [] and the workspace CLAUDE.md appended to the system prompt", async () => {
+  /** Starts a one-turn session in `cwd` and returns the options the SDK received. */
+  const optionsFor = async (cwd: string) => {
     const fake = fakeClaudeCode([[{ say: "ok" }]]);
-    const adapter = new ClaudeCodeAdapter({
-      apiKey: "sk-ant-test",
-      queryFn: fake.queryFn,
-      env: {},
-      readFile: async (p) => {
-        if (p === "/ws/CLAUDE.md") return "Usa pnpm.";
-        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      },
-    });
+    const adapter = new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} });
     const h = await adapter.start({
       sid: "s1",
-      cwd: "/ws",
+      cwd,
+      prompt: "hola",
+      origin: "local",
+      permissionMode: "default",
+      gate: async () => ({ allow: true }),
+      askUser: async () => ({}),
+      onEvent: () => {},
+    });
+    await waitFor(() => fake.run.options !== undefined);
+    h.close();
+    await h.done;
+    return fake.run.options!;
+  };
+  const workspace = () => mkdtempSync(join(tmpdir(), "chalito-ws-"));
+
+  it("only loads a CLAUDE.md that is a regular file inside the workspace (no symlinks out, size-capped)", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "chalito-home-"));
+    mkdirSync(join(outside, ".ssh"));
+    writeFileSync(join(outside, ".ssh", "id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----");
+
+    const linked = workspace();
+    symlinkSync(join(outside, ".ssh", "id_ed25519"), join(linked, "CLAUDE.md"));
+    expect((await optionsFor(linked)).systemPrompt).toBeUndefined();
+
+    const linkedDir = workspace();
+    symlinkSync(join(outside, ".ssh"), join(linkedDir, ".claude"));
+    writeFileSync(join(outside, ".ssh", "CLAUDE.md"), "from ~/.ssh");
+    expect((await optionsFor(linkedDir)).systemPrompt).toBeUndefined();
+
+    const huge = workspace();
+    writeFileSync(join(huge, "CLAUDE.md"), "x".repeat(64 * 1024 + 1));
+    expect((await optionsFor(huge)).systemPrompt).toBeUndefined();
+
+    const nested = workspace();
+    mkdirSync(join(nested, ".claude"));
+    writeFileSync(join(nested, ".claude", "CLAUDE.md"), "Usa pnpm.");
+    expect((await optionsFor(nested)).systemPrompt).toMatchObject({ append: expect.stringContaining("Usa pnpm.") });
+  });
+
+  it("isolates repo settings: settingSources [] and the workspace CLAUDE.md appended to the system prompt", async () => {
+    const ws = workspace();
+    writeFileSync(join(ws, "CLAUDE.md"), "Usa pnpm.");
+    const fake = fakeClaudeCode([[{ say: "ok" }]]);
+    const adapter = new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} });
+    const h = await adapter.start({
+      sid: "s1",
+      cwd: ws,
       prompt: "hola",
       origin: "local",
       permissionMode: "default",
@@ -160,18 +202,40 @@ describe("Claude Code adapter", () => {
     await h.done;
   });
 
-  it("strips env that could redirect the API key", () => {
+  it("passes only allowlisted env, marks the session and pins the API key", () => {
     const env = claudeEnv(
       {
         PATH: "/usr/bin",
+        HOME: "/home/aldo",
+        LANG: "es_MX.UTF-8",
+        LC_ALL: "es_MX.UTF-8",
+        HTTPS_PROXY: "http://proxy:3128",
+        SystemRoot: "C:\\Windows",
         ANTHROPIC_BASE_URL: "https://evil.example",
         ANTHROPIC_CUSTOM_HEADERS: "X-Leak: 1",
-        ANTHROPIC_BEDROCK_BASE_URL: "https://evil.example",
-        CLAUDE_CODE_API_KEY_HELPER_TTL_MS: "1",
+        ANTHROPIC_AUTH_TOKEN: "x",
+        CLAUDE_CODE_OAUTH_TOKEN: "subscription",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        AWS_SECRET_ACCESS_KEY: "aws",
+        GITHUB_TOKEN: "ghp_x",
+        OPENAI_API_KEY: "sk-openai",
+        NODE_OPTIONS: "--require /tmp/evil.js",
+        ANTHROPIC_API_KEY: "old",
+        CHALITO_SESSION: "0",
+        UNSET: undefined,
       },
       "sk-ant-test",
     );
-    expect(env).toEqual({ PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-test" });
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/home/aldo",
+      LANG: "es_MX.UTF-8",
+      LC_ALL: "es_MX.UTF-8",
+      HTTPS_PROXY: "http://proxy:3128",
+      SystemRoot: "C:\\Windows",
+      CHALITO_SESSION: "1",
+      ANTHROPIC_API_KEY: "sk-ant-test",
+    });
   });
 
   it("denies the tool when the gate throws (fails closed)", async () => {
@@ -258,6 +322,48 @@ describe("Claude Code adapter", () => {
       await h.done;
     });
 
+    it("a queued mcp prompt lowers the running client turn at once", async () => {
+      const { fake, origins, release, started } = held(
+        [
+          [
+            { tool: "Read", input: { file_path: "/ws/a" } },
+            { tool: "Bash", input: { command: "ls" } },
+          ],
+        ],
+        "client:phone1",
+      );
+      const h = await started;
+      await waitFor(() => origins.length === 1);
+      h.prompt("desde MCP", "mcp:claude");
+      release();
+      await waitFor(() => fake.run.ran.length === 2);
+      expect(origins).toEqual(["client:phone1", "mcp:claude"]);
+      h.close();
+      await h.done;
+    });
+
+    it("interrupt ends the turn: a queued mcp prompt runs as mcp, and the stale result doesn't raise it", async () => {
+      const { fake, origins, release, started } = held(
+        [
+          [{ tool: "Read", input: { file_path: "/ws/a" } }],
+          [{ tool: "Bash", input: { command: "ls" } }],
+          [{ tool: "Grep", input: { pattern: "x" } }],
+        ],
+        "client:phone1",
+      );
+      const h = await started;
+      await waitFor(() => origins.length === 1);
+      await h.interrupt();
+      h.prompt("desde MCP", "mcp:claude");
+      h.prompt("desde el teléfono", "client:phone1");
+      release();
+      await waitFor(() => origins.length === 3);
+      expect(origins).toEqual(["client:phone1", "mcp:claude", "client:phone1"]);
+      expect(fake.run.ran.map((r) => r.tool)).toEqual(["Bash", "Grep"]);
+      h.close();
+      await h.done;
+    });
+
     it("lowerTrustOrigin orders unsigned < client < local", () => {
       expect(lowerTrustOrigin("local", "client:p")).toBe("client:p");
       expect(lowerTrustOrigin("client:p", "mcp:claude")).toBe("mcp:claude");
@@ -301,5 +407,18 @@ describe("Claude Code adapter", () => {
         model: "claude-fake",
       },
     ]);
+  });
+});
+
+describe("claudeEnv secrets", () => {
+  it("never passes Chalito's own secrets settings to Claude", async () => {
+    const { claudeEnv } = await import("../src/claude-code/index.js");
+    const env = claudeEnv(
+      { PATH: "/bin", CHALITO_SECRETS: "file:/x", CHALITO_SECRETS_PASSPHRASE: "hunter2" },
+      "sk-ant-test",
+    );
+    expect(env).not.toHaveProperty("CHALITO_SECRETS");
+    expect(env).not.toHaveProperty("CHALITO_SECRETS_PASSPHRASE");
+    expect(JSON.stringify(env)).not.toContain("hunter2");
   });
 });

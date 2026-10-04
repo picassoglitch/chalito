@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { SigningKeyPair } from "@chalito/crypto";
 import type { PolicyHolder } from "./agent-core.js";
+import type { AnchorStore } from "./anchor.js";
 import { ensureChalitoDir } from "./config.js";
 import { signLocal, verifyLocal } from "./local-sig.js";
 import { DEFAULT_POLICY, Policy, policyHash } from "./policy/index.js";
@@ -38,7 +39,9 @@ export const parsePolicyYaml = (text: string): ParsedPolicy => {
 export interface FilePolicyOptions {
   /** Called after every change (set or confirmed local edit) with the new hash. */
   onChange?: (hash: string, via: PolicyChangeVia, policy: Policy) => void | Promise<void>;
-  /** policy.yaml doesn't match the signed lock: the edit is refused. */
+  /** Keychain rollback anchor; production always passes it. */
+  anchor?: AnchorStore;
+  /** policy.yaml doesn't match the signed lock (or the lock is older than the anchor): refused. */
   onTamper?: (info: { fileHash: string | null; inForceHash: string }) => void;
   log?: Logger;
   /** Debounce for file-watch events (editors write in several steps). */
@@ -56,7 +59,15 @@ export const DENY_ALL_POLICY: Policy = {
 interface Lock {
   policy: Policy;
   policyHash: string;
+  /** Monotonic; checked against the keychain anchor so an older signed lock can't come back. */
+  seq: number;
+  /** Hash of the policy this one replaced (GENESIS for the first). */
+  prevHash: string;
 }
+
+const GENESIS = "0".repeat(64);
+
+export type PolicyTamper = "unsigned_edit" | "rollback";
 
 /**
  * ~/.chalito/policy.yaml plus ~/.chalito/policy.lock, the agent-signed copy of the
@@ -64,36 +75,51 @@ interface Lock {
  * local confirmation) writes both. A yaml that doesn't match the lock is refused: the
  * signed policy stays in force (deny-all if there is none) and `policy.tampered` is
  * reported, so a shell write that slipped past the classifier can't loosen anything.
+ *
+ * Rollback: the lock carries `seq` + `prevHash`, and the keychain anchor remembers the
+ * latest `seq`/hash. A validly signed but older lock (a restored backup) is refused and
+ * the policy falls back to deny-all. This process also never accepts a lower `seq`
+ * than it has seen (in-memory high-water mark).
+ *
  * Created with the beta defaults (no workspaces) on first run. Writes are atomic, 0600.
  */
 export class FilePolicyHolder implements PolicyHolder {
   #policy: Policy;
   #hash: string;
-  #tampered = false;
+  #seq = 0;
+  #tampered: PolicyTamper | null = null;
   #watcher: FSWatcher | null = null;
   #timer: NodeJS.Timeout | null = null;
+  readonly #anchor: AnchorStore | undefined;
 
   constructor(
     readonly dir: string,
     private readonly keys: SigningKeyPair,
     private readonly opts: FilePolicyOptions = {},
   ) {
+    this.#anchor = opts.anchor;
     ensureChalitoDir(dir);
     let lock = this.#readLock();
     if (!existsSync(this.file)) {
       if (lock) this.#writeYaml(lock.policy);
-      else this.#seal(DEFAULT_POLICY);
+      else this.#seal(DEFAULT_POLICY, GENESIS, 0);
       lock = this.#readLock();
     }
     const parsed = parsePolicyYaml(readFileSync(this.file, "utf8"));
-    if (parsed.ok && lock && policyHash(parsed.policy) === lock.policyHash) {
+    const fileHash = parsed.ok ? policyHash(parsed.policy) : null;
+    if (lock && !this.#anchorAllows(lock)) {
+      this.#policy = DENY_ALL_POLICY;
+      this.#tampered = "rollback";
+    } else if (parsed.ok && lock && fileHash === lock.policyHash) {
       this.#policy = parsed.policy;
+      this.#accept(lock);
     } else {
       this.#policy = lock?.policy ?? DENY_ALL_POLICY;
-      this.#tampered = true;
+      if (lock) this.#accept(lock);
+      this.#tampered = "unsigned_edit";
     }
     this.#hash = policyHash(this.#policy);
-    if (this.#tampered) this.#reportTamper(parsed.ok ? policyHash(parsed.policy) : null);
+    if (this.#tampered) this.#reportTamper(fileHash);
   }
 
   get file(): string {
@@ -108,8 +134,16 @@ export class FilePolicyHolder implements PolicyHolder {
     return this.#hash;
   }
 
-  /** Whether the yaml on disk was refused (it differs from the signed policy in force). */
+  get seq(): number {
+    return this.#seq;
+  }
+
+  /** Whether what's on disk was refused (unsigned edit, or a rolled-back lock). */
   get tampered(): boolean {
+    return this.#tampered !== null;
+  }
+
+  get tamperReason(): PolicyTamper | null {
     return this.#tampered;
   }
 
@@ -119,9 +153,15 @@ export class FilePolicyHolder implements PolicyHolder {
 
   async set(p: Policy, via: PolicyChangeVia): Promise<void> {
     const policy = Policy.parse(p);
-    this.#seal(policy);
-    this.#tampered = false;
+    this.#seal(policy, this.#hash, Math.max(this.#seq, this.#anchor?.policy()?.seq ?? 0));
+    this.#tampered = null;
+    await this.#anchor?.flush();
     await this.#apply(policy, via);
+  }
+
+  /** Waits for the keychain anchor write of the latest seal. */
+  async flush(): Promise<void> {
+    await this.#anchor?.flush();
   }
 
   /** Starts watching the file for local edits. */
@@ -137,25 +177,33 @@ export class FilePolicyHolder implements PolicyHolder {
   }
 
   /**
-   * Re-reads yaml + lock. A signed change (another process ran `chalito policy edit`)
-   * is applied; an unsigned edit is refused and reported. Returns whether the policy changed.
+   * Re-reads yaml + lock. A newer signed change (another process ran `chalito policy edit`)
+   * is applied; an unsigned edit or an older lock is refused and reported. Returns whether
+   * the policy changed.
    */
   async reload(): Promise<boolean> {
+    await this.#anchor?.load();
     const lock = this.#readLock();
     const parsed = existsSync(this.file) ? parsePolicyYaml(readFileSync(this.file, "utf8")) : null;
     const fileHash = parsed?.ok ? policyHash(parsed.policy) : null;
+    if (lock && (lock.seq < this.#seq || !this.#anchorAllows(lock))) {
+      this.#tampered = "rollback";
+      this.#reportTamper(fileHash);
+      return false;
+    }
     if (parsed?.ok && lock && fileHash === lock.policyHash) {
-      this.#tampered = false;
+      this.#tampered = null;
+      this.#accept(lock);
       if (fileHash === this.#hash) return false;
       await this.#apply(parsed.policy, "local");
       return true;
     }
     if (fileHash === this.#hash && lock?.policyHash !== this.#hash) {
       // Only the lock went missing or bad; the yaml is the policy already in force. Re-seal it.
-      this.#seal(this.#policy);
+      this.#seal(this.#policy, this.#hash, Math.max(this.#seq, this.#anchor?.policy()?.seq ?? 0));
       return false;
     }
-    this.#tampered = true;
+    this.#tampered = "unsigned_edit";
     this.#reportTamper(fileHash);
     return false;
   }
@@ -166,39 +214,74 @@ export class FilePolicyHolder implements PolicyHolder {
     this.#watcher = null;
   }
 
+  /**
+   * No anchor yet: only a first (seq ≤ 1) or pre-anchor lock is accepted. Otherwise the
+   * lock must be newer than the anchor, or the anchor's own seq with the same hash.
+   */
+  #anchorAllows(lock: Lock): boolean {
+    if (!this.#anchor) return true;
+    const a = this.#anchor.policy();
+    if (!a) return lock.seq <= 1;
+    return lock.seq > a.seq || (lock.seq === a.seq && lock.policyHash === a.hash);
+  }
+
+  #accept(lock: Lock): void {
+    this.#seq = Math.max(this.#seq, lock.seq);
+    const a = this.#anchor?.policy();
+    if (this.#anchor && (!a || lock.seq > a.seq))
+      void this.#anchor
+        .setPolicy({ seq: lock.seq, hash: lock.policyHash })
+        .catch((err: unknown) =>
+          this.opts.log?.error("policy.anchor_write_failed", { error: err instanceof Error ? err.message : "error" }),
+        );
+  }
+
   #reportTamper(fileHash: string | null): void {
-    this.opts.log?.error("policy.tampered", { fileHash, inForceHash: this.#hash, file: this.file });
+    this.opts.log?.error("policy.tampered", {
+      reason: this.#tampered,
+      fileHash,
+      inForceHash: this.#hash,
+      file: this.file,
+    });
     this.opts.onTamper?.({ fileHash, inForceHash: this.#hash });
   }
 
   async #apply(policy: Policy, via: PolicyChangeVia): Promise<void> {
     this.#policy = policy;
     this.#hash = policyHash(policy);
-    this.opts.log?.info("policy.changed", { via, policyHash: this.#hash });
+    this.opts.log?.info("policy.changed", { via, policyHash: this.#hash, seq: this.#seq });
     await this.opts.onChange?.(this.#hash, via, policy);
   }
 
   #readLock(): Lock | null {
     if (!existsSync(this.lockFile)) return null;
     try {
-      const { sig, ...body } = JSON.parse(readFileSync(this.lockFile, "utf8")) as Lock & { sig: unknown };
+      const { sig, ...body } = JSON.parse(readFileSync(this.lockFile, "utf8")) as Partial<Lock> & { sig: unknown };
       if (!verifyLocal("chalito.policy-lock.v1", body, sig, this.keys.publicKey)) return null;
       const policy = Policy.parse(body.policy);
-      return policyHash(policy) === body.policyHash ? { policy, policyHash: body.policyHash } : null;
+      if (policyHash(policy) !== body.policyHash) return null;
+      // Locks written before seq existed count as seq 0.
+      return {
+        policy,
+        policyHash: body.policyHash,
+        seq: Number.isInteger(body.seq) ? body.seq! : 0,
+        prevHash: typeof body.prevHash === "string" ? body.prevHash : GENESIS,
+      };
     } catch {
       return null;
     }
   }
 
   /** Lock first, then yaml: both written synchronously, so a watcher never sees one without the other. */
-  #seal(p: Policy): void {
-    const body: Lock = { policy: p, policyHash: policyHash(p) };
+  #seal(p: Policy, prevHash: string, prevSeq: number): void {
+    const body: Lock = { policy: p, policyHash: policyHash(p), seq: prevSeq + 1, prevHash };
     const tmp = `${this.lockFile}.tmp`;
     writeFileSync(tmp, JSON.stringify({ ...body, sig: signLocal("chalito.policy-lock.v1", body, this.keys) }), {
       mode: 0o600,
     });
     renameSync(tmp, this.lockFile);
     this.#writeYaml(p);
+    this.#accept(body);
   }
 
   #writeYaml(p: Policy): void {
