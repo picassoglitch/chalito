@@ -270,10 +270,6 @@
     "stub": "Esta pantalla llega pronto.",
     "credits": "Créditos"
   },
-  "download": {
-    "title": "Descargar Chalito",
-    "body": "Las apps para Linux, Windows y macOS llegan pronto."
-  },
   "pwa": {
     "description": "Tu compañero que dirige a tu equipo de IA."
   },

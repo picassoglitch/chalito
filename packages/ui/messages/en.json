@@ -270,10 +270,6 @@
     "stub": "This screen is coming soon.",
     "credits": "Credits"
   },
-  "download": {
-    "title": "Download Chalito",
-    "body": "The Linux, Windows and macOS apps are coming soon."
-  },
   "pwa": {
     "description": "Your companion that runs your AI team."
   },
