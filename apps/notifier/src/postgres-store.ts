@@ -1,7 +1,14 @@
 import type { Sql } from "postgres";
 import type { Ladder, Presence, SentRecord, UserPrefs } from "@chalito/escalation";
 import type { RelayedCommand } from "@chalito/protocol";
-import type { CallItem, NotificationRow, NotifierStore, PushSubscriptionRecord, UserTx } from "./store.js";
+import type {
+  CallItem,
+  NotificationRow,
+  NotifierStore,
+  PendingApproval,
+  PushSubscriptionRecord,
+  UserTx,
+} from "./store.js";
 
 type Json = Record<string, unknown>;
 
@@ -101,8 +108,10 @@ export class PostgresStore implements NotifierStore {
     const [u] = await this.sql<{ enabled: boolean | null }[]>`
       select (call_briefing ->> 'enabled')::boolean as enabled from chalito.users where id = ${uid}`;
     const callBriefingEnabled = u?.enabled === true;
-    const rows = await this.sql<{ device_label: string; session_label: string; line: string }[]>`
-      select d.name as device_label, coalesce(s.doc ->> 'label', cl.sid) as session_label, cl.line
+    const rows = await this.sql<
+      { device_label: string; session_label: string; line: string; device_id: string; sid: string }[]
+    >`
+      select d.name as device_label, coalesce(s.doc ->> 'label', cl.sid) as session_label, cl.line, cl.device_id, cl.sid
       from chalito.call_lines cl
       join chalito.devices d on d.owner = cl.owner and d.device_id = cl.device_id
       left join chalito.sessions s on s.owner = cl.owner and s.sid = cl.sid
@@ -111,9 +120,28 @@ export class PostgresStore implements NotifierStore {
     const items: CallItem[] = rows.map((r) => ({
       deviceLabel: r.device_label,
       sessionLabel: r.session_label,
+      deviceId: r.device_id,
+      sid: r.sid,
       ...(callBriefingEnabled ? { line: r.line } : {}),
     }));
     return { callBriefingEnabled, items };
+  }
+
+  async pendingApprovals(uid: string): Promise<PendingApproval[]> {
+    const rows = await this.sql<{ aid: string; device_label: string; session_label: string }[]>`
+      select a.aid, d.name as device_label, coalesce(s.doc ->> 'label', a.sid) as session_label
+      from chalito.approvals a
+      join chalito.devices d on d.owner = a.owner and d.device_id = a.device_id
+      left join chalito.sessions s on s.owner = a.owner and s.sid = a.sid
+      where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now()
+      order by a.created_at limit 10`;
+    return rows.map((r) => ({ aid: r.aid, deviceLabel: r.device_label, sessionLabel: r.session_label }));
+  }
+
+  async companionName(uid: string) {
+    const [r] = await this.sql<{ name: string }[]>`
+      select name from chalito.companions where owner = ${uid} order by created_at limit 1`;
+    return r?.name ?? null;
   }
 
   async agentPubBox(uid: string, deviceId: string) {

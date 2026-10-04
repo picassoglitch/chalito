@@ -11,6 +11,7 @@
     "test:pg": "vitest run -c vitest.pg.config.ts"
   },
   "dependencies": {
+    "@chalito/adapters": "workspace:*",
     "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
     "@chalito/escalation": "workspace:*",
@@ -21,10 +22,12 @@
     "jose": "^6.2.12",
     "postgres": "^3.4.9",
     "web-push": "^3.6.7",
+    "ws": "^8.22.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.18.2",
     "msw": "^3.0.2"
   }
 }

@@ -3,7 +3,8 @@ import { SignJWT, exportJWK, generateKeyPair, createLocalJWKSet, type JWK } from
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import webpush from "web-push";
-import { loadEscalation } from "@chalito/config";
+import { openaiRealtime } from "@chalito/adapters/voice";
+import { loadEscalation, loadModels } from "@chalito/config";
 import type { UserPrefs } from "@chalito/escalation";
 import { createApp, type AppConfig } from "../src/app.js";
 import type { NotifierDeps } from "../src/executor.js";
@@ -21,11 +22,59 @@ export const QUEUE = "ladder-ticks";
 export const TWILIO_TOKEN = "twilio-auth-token-test";
 export const META_SECRET = "meta-app-secret-test";
 export const MIN = 60_000;
+/** Standard Webhooks secret format: whsec_ + base64. */
+export const OPENAI_WEBHOOK_SECRET = `whsec_${Buffer.from("openai-webhook-secret-test").toString("base64")}`;
+
+/** A scripted call WebSocket: the test plays OpenAI's side. */
+export class FakeSocket {
+  sent: Record<string, unknown>[] = [];
+  #open?: () => void;
+  #message?: (d: string) => void;
+  #close?: () => void;
+  constructor(
+    readonly url: string,
+    readonly headers: Record<string, string>,
+  ) {}
+  send(d: string) {
+    this.sent.push(JSON.parse(d) as Record<string, unknown>);
+  }
+  close() {
+    this.#close?.();
+  }
+  onOpen(cb: () => void) {
+    this.#open = cb;
+  }
+  onMessage(cb: (d: string) => void) {
+    this.#message = cb;
+  }
+  onClose(cb: () => void) {
+    this.#close = cb;
+  }
+  open() {
+    this.#open?.();
+  }
+  /** OpenAI calls a function; resolves after the agent has answered. */
+  async functionCall(name: string, args: unknown, callId = `call_${this.sent.length}`) {
+    const before = this.sent.length;
+    this.#message?.(
+      JSON.stringify({
+        type: "response.function_call_arguments.done",
+        call_id: callId,
+        name,
+        arguments: JSON.stringify(args),
+      }),
+    );
+    for (let i = 0; i < 200 && this.sent.length < before + 2; i++) await new Promise((r) => setTimeout(r, 5));
+    const out = this.sent[before] as { item: { output: string } };
+    return JSON.parse(out.item.output) as Record<string, unknown>;
+  }
+}
 /** 2026-10-05 12:00 in Mexico City. */
 export const NOON_MX = Date.UTC(2026, 9, 5, 18, 0, 0);
 
 /** Every provider request the notifier made, as the mocks saw it. */
 export interface Captured {
+  openai: { path: string; body: Record<string, unknown>; headers: Record<string, string> }[];
   whatsapp: { url: string; body: Record<string, unknown> }[];
   calls: Record<string, string>[];
   sms: Record<string, string>[];
@@ -71,9 +120,20 @@ export const prefs = (over: Partial<UserPrefs> = {}): UserPrefs => ({
 });
 
 export const mockServer = () => {
-  const cap: Captured = { whatsapp: [], calls: [], sms: [], tasks: [], push: [] };
+  const cap: Captured = { openai: [], whatsapp: [], calls: [], sms: [], tasks: [], push: [] };
   const goneEndpoints = new Set<string>();
   const server = setupServer(
+    http.post("https://api.openai.com/v1/*", async ({ request }) => {
+      const body = (await request.json()) as Record<string, unknown>;
+      cap.openai.push({
+        path: new URL(request.url).pathname,
+        body,
+        headers: Object.fromEntries(request.headers.entries()),
+      });
+      if (request.url.endsWith("/client_secrets"))
+        return HttpResponse.json({ value: "ek_test", expires_at: 1_790_000_060 });
+      return HttpResponse.json({});
+    }),
     http.post("https://graph.facebook.com/:version/:phoneId/messages", async ({ request }) => {
       cap.whatsapp.push({ url: request.url, body: (await request.json()) as Record<string, unknown> });
       return HttpResponse.json({ messages: [{ id: `wamid.${cap.whatsapp.length}` }] });
@@ -110,6 +170,7 @@ export const mockServer = () => {
 
 export const setup = (opts: { now?: () => number } = {}) => {
   const store = new MemoryStore();
+  const sockets: FakeSocket[] = [];
   const logs: { msg: string; meta?: Record<string, unknown> }[] = [];
   let clock = NOON_MX;
   const config = loadEscalation();
@@ -144,12 +205,25 @@ export const setup = (opts: { now?: () => number } = {}) => {
     twilioAuthToken: TWILIO_TOKEN,
     metaAppSecret: META_SECRET,
     metaVerifyToken: "meta-verify",
-    realtimeSipUri: "sip:proj_test@sip.api.openai.com;transport=tls;secure=true",
+    voice: {
+      provider: openaiRealtime({ apiKey: "sk-test" }),
+      webhookSecret: OPENAI_WEBHOOK_SECRET,
+      refSecret: "voice-ref-secret-test",
+      sipUri: "sip:proj_test@sip.api.openai.com;transport=tls;secure=true",
+      model: loadModels().voice.call.model,
+      voiceName: "marin",
+      openSocket: (url, headers) => {
+        const s = new FakeSocket(url, headers);
+        sockets.push(s);
+        return s;
+      },
+    },
   };
   const app = createApp(deps, cfg, googleOidcVerifier(createLocalJWKSet({ keys: [googleJwk] })));
   return {
     app,
     store,
+    sockets,
     deps,
     logs,
     setClock: (t: number) => void (clock = t),

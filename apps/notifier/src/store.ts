@@ -11,6 +11,16 @@ export interface CallItem {
   deviceLabel: string;
   sessionLabel: string;
   line?: string;
+  /** Where a spoken answer goes (answer_item); never read out. */
+  deviceId?: string;
+  sid?: string;
+}
+
+/** A pending approval the companion may re-push to the app (push_approval); it can't approve it. */
+export interface PendingApproval {
+  aid: string;
+  deviceLabel: string;
+  sessionLabel: string;
 }
 
 /** What the notifier reads and writes. Postgres in production (postgres-store.ts), memory in tests. */
@@ -28,6 +38,9 @@ export interface NotifierStore {
   optOut(uid: string, channel: "whatsapp" | "sms"): Promise<void>;
   /** Waiting items for the call briefing; lines only when the user enabled call briefing. */
   callItems(uid: string): Promise<{ callBriefingEnabled: boolean; items: CallItem[]; mesaTitle?: string }>;
+  pendingApprovals(uid: string): Promise<PendingApproval[]>;
+  /** The user's companion name for the voice persona (null: "Chalito"). */
+  companionName(uid: string): Promise<string | null>;
   /** Device public box key, to seal a relayed prompt for that agent. */
   agentPubBox(uid: string, deviceId: string): Promise<string | null>;
   insertRelayedCommand(
@@ -81,6 +94,8 @@ export class MemoryStore implements NotifierStore {
   presence = new Map<string, Presence>();
   notifications = new Map<string, NotificationRow>();
   commands: { uid: string; targetDeviceId: string; cid: string; env: RelayedCommand; expiresAt: number }[] = [];
+  approvals = new Map<string, PendingApproval[]>();
+  companions = new Map<string, string>();
   #locks = new Map<string, Promise<unknown>>();
 
   async withUser<T>(uid: string, fn: (tx: UserTx) => Promise<T>): Promise<T> {
@@ -142,6 +157,12 @@ export class MemoryStore implements NotifierStore {
   }
   async callItems(uid: string) {
     return this.calls.get(uid) ?? { callBriefingEnabled: false, items: [] };
+  }
+  async pendingApprovals(uid: string) {
+    return this.approvals.get(uid) ?? [];
+  }
+  async companionName(uid: string) {
+    return this.companions.get(uid) ?? null;
   }
   async agentPubBox(uid: string, deviceId: string) {
     return this.boxKeys.get(`${uid}/${deviceId}`) ?? null;

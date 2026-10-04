@@ -17,6 +17,10 @@ import type { OidcExpectation, OidcVerifier } from "./oidc.js";
 import { metaSignatureValid, twilioSignatureValid } from "./signatures.js";
 import { TEMPLATE } from "./template.js";
 import { connectTwiml, emptyTwiml, menuChoice, sayAndHangup } from "./twiml.js";
+import { runCallAgent, type CallSocketFactory } from "./voice/call-agent.js";
+import { UsedRefs, signCallRef, verifyCallRef } from "./voice/call-ref.js";
+import { callSession, type CallContext } from "./voice/call-session.js";
+import { verifyStandardWebhook, type VoiceProvider } from "@chalito/adapters/voice";
 
 export interface AppConfig {
   pubsub: OidcExpectation & { notificationsAudience: string; roomEventsAudience: string };
@@ -24,8 +28,23 @@ export interface AppConfig {
   twilioAuthToken: string;
   metaAppSecret: string;
   metaVerifyToken: string;
-  /** sip:<project>@sip.api.openai.com;transport=tls;secure=true, or unset until Realtime is wired. */
-  realtimeSipUri?: string;
+  /** OpenAI Realtime calls (ADR 0005/0011). Unset: DTMF 1 tells the user to open the app. */
+  voice?: VoiceConfig;
+}
+
+export interface VoiceConfig {
+  provider: VoiceProvider;
+  /** OpenAI project webhook secret (whsec_…), for realtime.call.incoming. */
+  webhookSecret: string;
+  /** Signs the X-Chalito-Ref that ties a SIP call to its Twilio call. */
+  refSecret: string;
+  /** sip:<proj>@sip.api.openai.com;transport=tls;secure=true */
+  sipUri: string;
+  /** models.yaml voice.call.model */
+  model: string;
+  /** OpenAI voice name. */
+  voiceName: string;
+  openSocket: CallSocketFactory;
 }
 
 /** An escalation item as published on `notifications`. Unknown fields are dropped. */
@@ -98,6 +117,7 @@ export const waToE164 = (from: string) => {
 export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVerifier) => {
   const app = new Hono();
   const voice = (locale: "es" | "en") => deps.config.voices[locale];
+  const usedRefs = new UsedRefs();
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 
@@ -184,15 +204,17 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
     const choice = menuChoice(p.Digits, p.SpeechResult);
     if (choice === "connect") {
       await handleEvent(deps, uid, { type: "ack", via: "call", nid });
-      return twiml(
-        cfg.realtimeSipUri
-          ? connectTwiml(cfg.realtimeSipUri)
-          : sayAndHangup(
-              locale === "es" ? "Abre tu app para responder. Hasta luego." : "Open your app to answer. Goodbye.",
-              voice(locale),
-              locale,
-            ),
-      );
+      const callSid = p.CallSid ?? "";
+      if (!cfg.voice || !/^CA[0-9a-f]{32}$/.test(callSid))
+        return twiml(
+          sayAndHangup(
+            locale === "es" ? "Abre tu app para responder. Hasta luego." : "Open your app to answer. Goodbye.",
+            voice(locale),
+            locale,
+          ),
+        );
+      const ref = signCallRef(cfg.voice.refSecret, { uid, nid, callSid, locale, exp: deps.now() + 2 * 60_000 });
+      return twiml(connectTwiml(`${cfg.voice.sipUri}?X-Chalito-Ref=${ref}`));
     }
     if (choice === "snooze") {
       await handleEvent(deps, uid, { type: "snooze", nid });
@@ -234,6 +256,61 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
       status: p.CallStatus ?? p.MessageStatus,
     });
     return c.body(null, 204);
+  });
+
+  // ---- OpenAI Realtime SIP (Standard Webhooks signature) -----------------------------
+  /**
+   * realtime.call.incoming: accept only calls carrying a valid X-Chalito-Ref (our own DTMF-1
+   * bridge), with the briefing context and the two call tools; reject everything else.
+   */
+  app.post("/webhooks/openai", async (c) => {
+    const raw = await c.req.text();
+    const v = cfg.voice;
+    if (!v) return c.text("not found", 404);
+    const ok = verifyStandardWebhook({
+      secret: v.webhookSecret,
+      id: c.req.header("webhook-id"),
+      timestamp: c.req.header("webhook-timestamp"),
+      signature: c.req.header("webhook-signature"),
+      body: raw,
+      nowMs: deps.now(),
+    });
+    if (!ok) return c.text("forbidden", 401);
+    const ev = JSON.parse(raw) as {
+      type?: string;
+      data?: { call_id?: string; sip_headers?: { name?: string; value?: string }[] };
+    };
+    if (ev.type !== "realtime.call.incoming" || !ev.data?.call_id) return c.body(null, 200);
+    const callId = ev.data.call_id;
+    const token = ev.data.sip_headers?.find((h) => h.name?.toLowerCase() === "x-chalito-ref")?.value;
+    const ref = verifyCallRef(v.refSecret, token, deps.now());
+    if (!ref || !usedRefs.claim(token!, ref.exp, deps.now())) {
+      deps.log.info("voice.call_rejected", { callId, reason: ref ? "reused" : "unknown" });
+      await v.provider.rejectCall(callId, 603);
+      return c.body(null, 200);
+    }
+    const [{ callBriefingEnabled, items }, approvals, name] = await Promise.all([
+      deps.store.callItems(ref.uid),
+      deps.store.pendingApprovals(ref.uid),
+      deps.store.companionName(ref.uid),
+    ]);
+    const ctx: CallContext = {
+      uid: ref.uid,
+      nid: ref.nid,
+      callSid: ref.callSid,
+      locale: ref.locale,
+      companionName: name ?? "Chalito",
+      callBriefingEnabled,
+      items: items.slice(0, 10),
+      approvals,
+    };
+    await v.provider.acceptCall(callId, callSession(ctx, v.model, v.voiceName));
+    const { url, headers } = v.provider.callSocket(callId);
+    // The call outlives this request: Cloud Run needs CPU always allocated for the notifier.
+    void runCallAgent(deps, v.openSocket(url, headers), ctx).catch((err: unknown) =>
+      deps.log.error("voice.agent_failed", { callId, error: err instanceof Error ? err.message : "error" }),
+    );
+    return c.body(null, 200);
   });
 
   // ---- WhatsApp Cloud API (X-Hub-Signature-256 over the raw body) -------------------
