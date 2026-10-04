@@ -113,5 +113,19 @@
       "duplicate_param": "Enlace no válido."
     },
     "glyph": "Código para escanear con tu teléfono"
+  },
+  "updates": {
+    "title": "Actualizaciones",
+    "check": "Buscar actualizaciones",
+    "checking": "Buscando…",
+    "current": "Tienes la versión más reciente.",
+    "available": "Hay una versión nueva: {version}.",
+    "install": "Descargar e instalar",
+    "downloading": "Descargando…",
+    "downloadingPct": "Descargando… {pct} %",
+    "ready": "La versión {version} está lista. Reinicia Chalito para usarla.",
+    "relaunch": "Reiniciar ahora",
+    "unavailable": "Esta compilación no se actualiza sola.",
+    "error": "No se pudo actualizar. Inténtalo más tarde."
   }
 }

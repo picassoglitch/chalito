@@ -1,0 +1,21 @@
+{
+  "title": "Download Chalito for your computer",
+  "detected": "We detected {os}.",
+  "choose": "Choose your system",
+  "os": { "windows": "Windows", "macos": "macOS", "linux": "Linux" },
+  "kinds": {
+    "nsis": "Installer (.exe)",
+    "dmg": "Disk image (.dmg, Apple silicon and Intel)",
+    "appimage": "AppImage (any distribution)",
+    "deb": ".deb package (Debian, Ubuntu)",
+    "rpm": ".rpm package (Fedora, openSUSE)"
+  },
+  "version": "Version {version}",
+  "size": "{mb} MB",
+  "checksum": "SHA-256",
+  "unsigned": "This version isn't signed yet. Your system may show a warning when you open it.",
+  "smartscreen": "The first time, Windows may show SmartScreen (\"Windows protected your PC\"): choose \"More info\", then \"Run anyway\".",
+  "mobile": "Chalito for computers is for Windows, macOS and Linux. On your phone, use the web app.",
+  "unavailable": "Downloads aren't available yet.",
+  "loading": "Loading…"
+}

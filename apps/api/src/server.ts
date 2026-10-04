@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { PubSub } from "@google-cloud/pubsub";
 import { createClient } from "@supabase/supabase-js";
 import { createApp } from "./app.js";
+import { GcsReleaseStore } from "./releases/gcs.js";
 import type { AuditSink } from "./deps.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
@@ -58,6 +59,10 @@ const app = createApp({
     skewMs: 60_000,
   },
   now: Date.now,
+  // ADR 0014: signed download URLs from the private releases bucket, signed as the release signer.
+  ...(process.env.CHALITO_RELEASES_BUCKET && process.env.CHALITO_RELEASES_SIGNER
+    ? { releases: new GcsReleaseStore(process.env.CHALITO_RELEASES_BUCKET, process.env.CHALITO_RELEASES_SIGNER) }
+    : {}),
 });
 
 // Cloud Run sets PORT; locally 8787 (the Supabase stack uses 543xx).

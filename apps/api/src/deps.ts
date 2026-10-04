@@ -1,3 +1,4 @@
+import type { ReleaseStore } from "./releases/gcs.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 
 export interface AuditEvent {
@@ -28,6 +29,8 @@ export interface Deps {
   repo: ApiRepo;
   identity: IdentityIssuer;
   audit: AuditSink;
+  /** The private releases bucket (ADR 0014). Unset (dev, tests): /releases isn't mounted. */
+  releases?: ReleaseStore;
   config: ApiConfig;
   now: () => number;
 }

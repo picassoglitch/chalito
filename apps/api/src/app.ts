@@ -6,6 +6,7 @@ import { endorseRoutes } from "./routes/endorse.js";
 import { hubRoutes } from "./routes/hub.js";
 import { pairingRoutes } from "./routes/pairing.js";
 import { recoveryRoutes } from "./routes/recovery.js";
+import { releasesRoutes } from "./routes/releases.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
 
 export const createApp = (deps: Deps) => {
@@ -18,6 +19,7 @@ export const createApp = (deps: Deps) => {
   app.route("/v1/endorse", endorseRoutes(deps));
   app.route("/v1/recovery", recoveryRoutes(deps));
   app.route("/v1/webauthn", webauthnRoutes(deps));
+  if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
     console.error("[api] unhandled", err instanceof Error ? err.message : "error");
