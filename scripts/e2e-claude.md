@@ -19,7 +19,7 @@ Expect about 45 minutes. The run uses the Firestore and Auth emulators by defaul
 | No claude.ai login that could take over | run `claude` once and type `/status`; whatever it shows, the agent strips `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` and pins `ANTHROPIC_API_KEY` |
 | Node 22 + pnpm, the repo built at the M3 head | `pnpm i && pnpm -r build` (or the compiled binary from `m3-build`) |
 | A running OS keychain (macOS Keychain, GNOME Keyring/KWallet on Linux) | `chalito keys set anthropic` succeeds. On headless Linux, use the encrypted-file fallback (`~/.chalito/secrets.enc`). |
-| **Emulators** (default): Java 21+ for the Firebase emulators, then `pnpm firebase emulators:start --only firestore,auth,pubsub --project demo-chalito`, plus `apps/api` running locally against them (step 1) | Firestore on 8080, Auth on 9099, Pub/Sub on 8085; `curl localhost:8787/healthz` → `{"ok":true}` |
+| **Emulators** (default): Java 21+ for the Firebase emulators, then `pnpm firebase emulators:start --only firestore,auth --project demo-chalito`, plus `apps/api` running locally against them (step 1) | Firestore on 8080, Auth on 9099; `curl localhost:8787/healthz` → `{"ok":true}` |
 | *Or* **dev cloud**: `api.chalito.chalyb.com` deployed | needs the owner's go (externally visible) |
 | The **test phone**: `scripts/e2e-phone.ts`, which holds a test client key in `~/.chalito-e2e-phone.json`, signs commands and decisions, and opens sealed details | `pnpm tsx scripts/e2e-phone.ts help` |
 | A throwaway workspace, e.g. `~/chalito-e2e-ws` with `git init` and a `README.md` | — |
@@ -41,12 +41,10 @@ export FIREBASE_AUTH_EMULATOR_HOST=localhost:9099
 export CHALITO_SSO_SECRET=local-e2e-sso-secret            # shared by the api and the test phone (enrol)
 ```
 
-Start the api against the emulators. Its audit sink publishes to the Pub/Sub topic `audit`, so create it on the emulator first:
+Start the api against the emulators. It listens on 8787 by default. Off Cloud Run, audit records go to its stdout; they go to Pub/Sub only if you also run the Pub/Sub emulator and set `PUBSUB_EMULATOR_HOST`, which is optional here.
 
 ```sh
-export PUBSUB_EMULATOR_HOST=localhost:8085 GOOGLE_CLOUD_PROJECT=demo-chalito
-(cd apps/api && node -e "new (require('@google-cloud/pubsub').PubSub)().createTopic('audit').then(()=>console.log('topic ok'))")
-PORT=8787 CHALITO_ADMIN_TOKEN=local-e2e-admin pnpm --filter @chalito/api start
+GOOGLE_CLOUD_PROJECT=demo-chalito CHALITO_ADMIN_TOKEN=local-e2e-admin pnpm --filter @chalito/api start
 ```
 
 Then store the API key:
