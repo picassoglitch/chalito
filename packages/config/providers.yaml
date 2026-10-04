@@ -1,0 +1,31 @@
+# How each provider can be connected (brief §5 M12, decisions #19, #26, #27).
+# Official paths only. Never a bridge into a consumer plan.
+schemaVersion: 1
+
+providers:
+  anthropic:
+    byoApiKey: true
+    subscriptionLocal: off # Agent SDK products may not offer claude.ai login without Anthropic approval (D-002)
+    mcpConnector: claude # Claude custom connectors (all plans; Free = 1)
+    managed: true
+  openai:
+    byoApiKey: true
+    subscriptionLocal: owner_only # Sign in with ChatGPT; "approved" once OpenAI approves (D-003)
+    mcpConnector: chatgpt # Developer mode: Plus/Pro/Business/Enterprise/Edu
+    managed: true
+  xai:
+    byoApiKey: true
+    subscriptionLocal: on # Grok Build login over ACP (D-022)
+    mcpConnector: none
+    managed: true
+  google:
+    byoApiKey: true
+    subscriptionLocal: off
+    mcpConnector: none
+    managed: true
+
+# Coding agents are always BYO, under the user's own auth, and never draw on the hub balance.
+codingAgents:
+  claude-code: { provider: anthropic, auth: [api_key] }
+  codex: { provider: openai, auth: [api_key, chatgpt_plan] }
+  grok-build: { provider: xai, auth: [api_key, grok_login] }

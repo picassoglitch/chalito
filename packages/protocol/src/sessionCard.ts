@@ -9,8 +9,7 @@ export const CARD_MAX_TOKENS = 300;
  * Cheap, deterministic token estimate (≈ 4 chars/token for mixed ES/EN JSON).
  * Used for schema-level guards; M9 cross-checks against a real tokenizer.
  */
-export const estimateTokens = (value: unknown): number =>
-  Math.ceil(JSON.stringify(value).length / 4);
+export const estimateTokens = (value: unknown): number => Math.ceil(JSON.stringify(value).length / 4);
 
 /**
  * Session Card: a ≤300-token summary built deterministically from AgentEvents

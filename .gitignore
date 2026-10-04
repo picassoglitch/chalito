@@ -12,3 +12,5 @@ coverage/
 *.tfstate
 *.tfstate.*
 src-tauri/target/
+terraform.tfvars
+backend.hcl

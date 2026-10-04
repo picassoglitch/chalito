@@ -1,5 +1,16 @@
 import { z } from "zod";
-import { Counts, DeepLink, DeviceId, EpochMs, Level, Locale, NotificationId, SessionId, Uid, Urgency } from "./common.js";
+import {
+  Counts,
+  DeepLink,
+  DeviceId,
+  EpochMs,
+  Level,
+  Locale,
+  NotificationId,
+  SessionId,
+  Uid,
+  Urgency,
+} from "./common.js";
 
 export const NotificationSource = z.enum([
   "approval",

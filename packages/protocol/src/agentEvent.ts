@@ -28,7 +28,18 @@ export const SessionState = z.enum([
 export type SessionState = z.infer<typeof SessionState>;
 
 /** Coarse tool category; plaintext-safe (never carries paths or command text). */
-export const ToolCategory = z.enum(["read", "search", "edit", "create", "delete", "shell", "web", "mcp", "git", "other"]);
+export const ToolCategory = z.enum([
+  "read",
+  "search",
+  "edit",
+  "create",
+  "delete",
+  "shell",
+  "web",
+  "mcp",
+  "git",
+  "other",
+]);
 
 const base = {
   v: z.literal(1),
@@ -111,7 +122,13 @@ export type AgentEvent = z.infer<typeof AgentEvent>;
 
 /** Device-level events (not tied to a session). */
 export const DeviceEvent = z.discriminatedUnion("type", [
-  z.object({ v: z.literal(1), type: z.literal("policy.changed"), deviceId: DeviceId, policyHash: z.string().regex(/^[0-9a-f]{64}$/), t: EpochMs }),
+  z.object({
+    v: z.literal(1),
+    type: z.literal("policy.changed"),
+    deviceId: DeviceId,
+    policyHash: z.string().regex(/^[0-9a-f]{64}$/),
+    t: EpochMs,
+  }),
   z.object({
     v: z.literal(1),
     type: z.literal("devmode.changed"),

@@ -18,8 +18,8 @@
 Library: libsodium (`libsodium-wrappers`, wasm/pure JS in every runtime, so there are no per-platform native crypto builds).
 
 ## Wire formats (fixed in `packages/protocol/src/crypto.ts`)
-- **`SealedEnvelope`** (multi-recipient). XChaCha20-Poly1305 encrypts the content with a random content key. The content key is wrapped to each recipient device with `crypto_box_seal`. Used for session events, approvals, prompts, Mesa turns and cards.
-- **`RoomSealed`**. XChaCha20-Poly1305 with the room key of `epoch`.
+- **`SealedEnvelope`** (multi-recipient). XChaCha20-Poly1305 encrypts the content with a random content key. The content key is wrapped to each recipient device with `crypto_box_seal`. Used for session events, approvals, prompts, Mesa turns and cards. The AEAD's associated data binds each ciphertext to its document (e.g. `approval:<aid>`), so a sealed blob can't be moved to another document.
+- **`RoomSealed`**. XChaCha20-Poly1305 with the room key of `epoch`, with associated data `chalito.room.v1:<roomId>:<epoch>`.
 - **Signatures.** Ed25519 over `utf8(ctx) ‖ 0x00 ‖ JCS(body)` (RFC 8785 canonical JSON) with a closed set of domain-separation contexts (`chalito.decision.v1`, `chalito.command.v1`, …). A signature for one purpose can't be replayed for another.
 
 ## Trust anchors live on the device, not in the cloud

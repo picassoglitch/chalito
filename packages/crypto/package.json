@@ -1,0 +1,21 @@
+{
+  "name": "@chalito/crypto",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@chalito/protocol": "workspace:*",
+    "libsodium-wrappers": "^0.8.4"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.8.2",
+    "fast-check": "^4.10.2"
+  }
+}

@@ -33,6 +33,9 @@ export const CompanionReply = z.object({
   emotion: Emotion,
   gesture: Gesture.default("none"),
   /** Inline chips such as "¿Por qué?" → /creditos. Never a modal. */
-  chips: z.array(z.object({ label: z.string().max(30), href: z.string().max(64) })).max(3).default([]),
+  chips: z
+    .array(z.object({ label: z.string().max(30), href: z.string().max(64) }))
+    .max(3)
+    .default([]),
 });
 export type CompanionReply = z.infer<typeof CompanionReply>;

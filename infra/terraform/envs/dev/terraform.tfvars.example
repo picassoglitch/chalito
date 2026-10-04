@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (git-ignored). Values come from the owner.
+project_id         = ""
+project_number     = ""
+region             = "us-central1"
+billing_account    = ""
+alert_email        = ""
+monthly_budget_usd = 0
+domain             = "chalito.chalyb.com"

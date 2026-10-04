@@ -1,0 +1,39 @@
+# Provider unit COSTS (what we pay), not customer prices. Verified 2026-10-03 (docs/VERIFIED_APIS.md).
+# Used to compute `cost_usd_micros` for every hub usage event. USD.
+schemaVersion: 1
+
+# Per 1M tokens.
+llm:
+  anthropic:
+    claude-opus-5-5: { input: 4.0, output: 20.0, cacheRead: 0.20, cacheWrite5m: 5.0, cacheWrite1h: 8.0 }
+    claude-sonnet-5-5: { input: 2.0, output: 10.0, cacheRead: 0.20, cacheWrite5m: 2.50, cacheWrite1h: 4.0 }
+    claude-haiku-4-5: { input: 1.0, output: 5.0, cacheRead: 0.10, cacheWrite5m: 1.25, cacheWrite1h: 2.0 }
+  openai:
+    gpt-5.6-luna: { input: 0.20, output: 1.20, cacheRead: 0.02, cacheWrite: 0.25 }
+    gpt-6-luna: { input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125 }
+  xai:
+    grok-4.7: { input: 2.00, output: 6.00, cacheRead: 0.50 }
+    grok-4.3: { input: 1.25, output: 2.50, cacheRead: 0.20 }
+  google:
+    gemini-3.1-flash-lite: { input: 0.25, output: 1.50, cacheRead: 0.025 }
+
+# Per 1M tokens (audio + text).
+realtime:
+  gpt-realtime-2.1-mini:
+    { audioIn: 10.0, audioCached: 0.30, audioOut: 20.0, textIn: 0.60, textCached: 0.06, textOut: 2.40 }
+
+twilio:
+  numberMonthly: { US_local: 1.15, MX_local: 6.25 }
+  perMinute: { MX_mobile: 0.0473, US: 0.0140, sipInterface: 0.0040, mediaStreams: 0.0044 }
+  gatherSpeech: 0.02 # per <Gather> with speech
+  tts: { neuralPer100Chars: 0.0032 }
+  verify: { perSuccess: 0.05 }
+  smsSegment: { MX: 0.1819 }
+
+whatsapp:
+  # Per delivered template message, by recipient market. Billed in-window too since 2026-10-01.
+  utility: { MX: 0.0085, NorthAmerica: 0.0034, LatamOther: 0.0113, ES: 0.02 }
+
+compute:
+  # Cloud Run us-central1, hub contract rates (micros per second).
+  cloudRunMicrosPerSecond: { standard: 88, boost: 208 }

@@ -48,7 +48,11 @@ export const MesaTurn = z.object({
   /** Only addressed participants are called (token efficiency). Empty = moderator decides. */
   addressed: z.array(ParticipantRef).max(8),
   outCt: SealedEnvelope,
-  usage: z.object({ in: z.number().int().nonnegative(), out: z.number().int().nonnegative(), cached: z.number().int().nonnegative() }),
+  usage: z.object({
+    in: z.number().int().nonnegative(),
+    out: z.number().int().nonnegative(),
+    cached: z.number().int().nonnegative(),
+  }),
   emotion: Emotion,
   t: EpochMs,
 });

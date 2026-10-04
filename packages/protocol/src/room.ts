@@ -80,11 +80,19 @@ export const RoomEventBody = z.discriminatedUnion("kind", [
     where: z.string().max(160).optional(),
     note: z.string().max(300).optional(),
   }),
-  z.object({ kind: z.literal("ask"), question: z.string().max(300), options: z.array(z.string().max(80)).min(2).max(6) }),
+  z.object({
+    kind: z.literal("ask"),
+    question: z.string().max(300),
+    options: z.array(z.string().max(80)).min(2).max(6),
+  }),
   z.object({ kind: z.literal("ack"), ref: Id, choice: z.number().int().min(0).max(5).optional() }),
   z.object({ kind: z.literal("enter") }),
   z.object({ kind: z.literal("leave") }),
-  z.object({ kind: z.literal("presence"), state: z.enum(["online", "away", "busy", "offline"]), urgencyBadge: Urgency.optional() }),
+  z.object({
+    kind: z.literal("presence"),
+    state: z.enum(["online", "away", "busy", "offline"]),
+    urgencyBadge: Urgency.optional(),
+  }),
 ]);
 export type RoomEventBody = z.infer<typeof RoomEventBody>;
 

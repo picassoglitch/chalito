@@ -1,0 +1,10 @@
+# Cosmetics (pay-to-dress, never pay-to-win). Prices only here; seed items free
+# until the owner sets prices (decision #16). Paid items go through the hub (D-030).
+schemaVersion: 1
+cosmetics:
+  viking_hat:
+    name: { es: Casco vikingo, en: Viking helmet }
+    slot: head
+    free: true
+    provenance: pending # art via Google AI Studio, logged in docs/ASSET_PROVENANCE.md
+drops: {}

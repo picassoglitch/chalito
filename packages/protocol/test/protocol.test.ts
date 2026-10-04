@@ -81,8 +81,12 @@ describe("remote surfaces can never widen the device", () => {
         .success,
     ).toBe(false);
     expect(
-      CommandPayload.safeParse({ type: "session.setPermissionMode", sid: "s1", permissionMode: "default", codexSandbox: "danger-full-access" })
-        .success,
+      CommandPayload.safeParse({
+        type: "session.setPermissionMode",
+        sid: "s1",
+        permissionMode: "default",
+        codexSandbox: "danger-full-access",
+      }).success,
     ).toBe(false);
   });
 
@@ -107,7 +111,9 @@ describe("remote surfaces can never widen the device", () => {
         payload,
       },
     });
-    expect(CommandEnvelope.safeParse(body("mcp:chatgpt", { type: "session.interrupt", sid: "s1" })).success).toBe(false);
+    expect(CommandEnvelope.safeParse(body("mcp:chatgpt", { type: "session.interrupt", sid: "s1" })).success).toBe(
+      false,
+    );
     expect(CommandEnvelope.safeParse(body("client:p1", { type: "devmode.off" })).success).toBe(false);
   });
 });
@@ -134,7 +140,14 @@ describe("decisions", () => {
 
 describe("content never leaks into metadata channels", () => {
   it("template vars are strict enums/integers", () => {
-    const base = { template: "chalito_pendientes_v1", locale: "es", total: 3, source: "approval", urgency: "high", linkId: "n1" };
+    const base = {
+      template: "chalito_pendientes_v1",
+      locale: "es",
+      total: 3,
+      source: "approval",
+      urgency: "high",
+      linkId: "n1",
+    };
     expect(OutboundTemplateVars.safeParse(base).success).toBe(true);
     expect(OutboundTemplateVars.safeParse({ ...base, text: "secret diff" }).success).toBe(false);
   });
@@ -178,7 +191,15 @@ describe("companion + cards", () => {
       updatedAt: now,
     };
     expect(SessionCard.safeParse(card).success).toBe(false);
-    expect(SessionCard.safeParse({ ...card, goal: "Agregar login", lastAction: undefined, openQuestion: undefined, blockers: [] }).success).toBe(true);
+    expect(
+      SessionCard.safeParse({
+        ...card,
+        goal: "Agregar login",
+        lastAction: undefined,
+        openQuestion: undefined,
+        blockers: [],
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -201,7 +222,15 @@ describe("hub contract", () => {
 
 describe("pay-to-dress, never pay-to-win", () => {
   it("entitlement inputs cannot include inventory", () => {
-    const input = { uid: "u1", hubTier: "pro", soloTier: null, hubTrialActive: false, hubBalanceRemaining: 0, comped: false, now };
+    const input = {
+      uid: "u1",
+      hubTier: "pro",
+      soloTier: null,
+      hubTrialActive: false,
+      hubBalanceRemaining: 0,
+      comped: false,
+      now,
+    };
     expect(EntitlementInputs.safeParse(input).success).toBe(true);
     expect(EntitlementInputs.safeParse({ ...input, inventory: ["viking_hat"] }).success).toBe(false);
   });
