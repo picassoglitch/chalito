@@ -65,4 +65,12 @@ describe("command lifetime cap (P2-6)", () => {
     expect(CommandBody.safeParse(body(t, t + 10 * 60_000 + 1)).success).toBe(false);
     expect(CommandBody.safeParse(body(t, t + 24 * 60 * 60_000)).success).toBe(false);
   });
+
+  it("a build whose keychain addon is missing refuses to start: no file store, no plaintext", async () => {
+    const warnings: string[] = [];
+    await expect(
+      openSecretStore({ env: {}, probe: async () => "addon_missing", warn: (m) => warnings.push(m) }),
+    ).rejects.toThrow(/won't store its keys anywhere else/);
+    expect(warnings).toEqual([]);
+  });
 });

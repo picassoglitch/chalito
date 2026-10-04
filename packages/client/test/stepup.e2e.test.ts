@@ -42,6 +42,7 @@ const setup = async (stepUp: (auth: SoftAuthenticator) => StepUpProvider, ttlMs 
     sealer: new Sealer(() => trust, { deviceId: agent.deviceId, pubBox: agent.pubBox }),
     owner: OWNER,
     deviceId: agent.deviceId,
+    signer: agent.sign,
     now: Date.now,
     ttlMs: () => ttlMs,
     audit: (e) => void audit.push(e),
@@ -49,7 +50,7 @@ const setup = async (stepUp: (auth: SoftAuthenticator) => StepUpProvider, ttlMs 
 
   // The browser's side.
   const db = new FakeSupabase();
-  const keys = testKeys(browser, { [agent.deviceId]: agent.pubBox });
+  const keys = testKeys(browser, { [agent.deviceId]: agent.pubBox }, { [agent.deviceId]: agent.pubSign });
   const live = new LiveStore(db, keys, OWNER);
   const actions = new ClientActions(db, keys, live, { stepUp: stepUp(auth) });
 
@@ -61,7 +62,7 @@ const setup = async (stepUp: (auth: SoftAuthenticator) => StepUpProvider, ttlMs 
       risk: "HIGH",
       stepUp: true,
       origin: `client:${browser.deviceId}`,
-      details: { toolName: "Bash", summary: "git push", input: { command: "git push" }, reasons: ["push"] },
+      details: { toolName: "Bash", input: { command: "git push" }, reasons: ["push"] },
       onRequested: (aid) => {
         void (async () => {
           const req = agentStore.approvals.get(aid)!;

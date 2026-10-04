@@ -28,6 +28,11 @@ export interface ClientKeys {
    * null. Prompts are sealed only to keys from here, never to a key the cloud lists.
    */
   trustedAgentBoxKey(agentDeviceId: string): string | null;
+  /**
+   * ADR 0019: the signing key (b64url) of an agent this client trusts locally, to verify the
+   * agent's signed approval requests. Optional: without it every approval shows as unverified.
+   */
+  trustedAgentSignKey?(agentDeviceId: string): string | null;
 }
 
 /**

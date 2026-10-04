@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import type { DeviceDoc, HubTenantStatus, PairingCodeDoc } from "@chalito/protocol";
+import type { DeviceDoc, DeviceRegistration, Endorsement, HubTenantStatus, PairingCodeDoc } from "@chalito/protocol";
 import type { RecoveryHash } from "./lib/recovery.js";
 
 /**
@@ -67,6 +67,18 @@ export interface ApiRepo {
   /** Records the device's passkey on its device record; false if the device doesn't exist. */
   setDeviceWebAuthn(owner: string, deviceId: string, cred: StoredWebAuthnCredential): Promise<boolean>;
   getDeviceWebAuthn(owner: string, deviceId: string): Promise<StoredWebAuthnCredential | null>;
+  /**
+   * Atomic, after a verified assertion: moves the passkey's sign counter forward. "cloned" when
+   * it didn't advance (new ≤ stored, unless both are 0: authenticators without a counter always
+   * report 0), the WebAuthn signal of a cloned authenticator; nothing is written then.
+   * "not_found" when the device no longer has this credential.
+   */
+  bumpWebAuthnCounter(
+    owner: string,
+    deviceId: string,
+    credentialId: string,
+    counter: number,
+  ): Promise<"ok" | "cloned" | "not_found">;
   /** Stores the device-signed binding for its current passkey (the route verified it). */
   setDeviceWebAuthnBinding(owner: string, deviceId: string, binding: unknown): Promise<boolean>;
 
@@ -99,6 +111,44 @@ export interface ApiRepo {
   ): Promise<
     { ok: true; agentDeviceId: string } | { ok: false; reason: "not_found" | "already_claimed" | "device_exists" }
   >;
+
+  // ---- endorsement handoff (/v1/endorse) ----
+  /** "exists" if the code id or short code hash is taken. */
+  createEndorseCode(r: NewEndorseCode): Promise<"created" | "exists">;
+  findEndorseCode(codeId: string): Promise<EndorseCodeRecord | null>;
+  findEndorseCodeByShortHash(shortCodeHash: string): Promise<EndorseCodeRecord | null>;
+  /** Atomic, single use: stores the endorsement only on a live, not yet endorsed code of `owner`. */
+  approveEndorseCode(
+    codeId: string,
+    owner: string,
+    e: { endorsement: Endorsement; endorsedByDeviceId: string; endorsedAt: number },
+    now: number,
+  ): Promise<"ok" | "not_found" | "expired" | "already_endorsed">;
+  /** Atomic, single use: hands the endorsement to the new device once. */
+  takeEndorsement(
+    codeId: string,
+    owner: string,
+    now: number,
+  ): Promise<
+    | { ok: true; endorsement: Endorsement }
+    | { ok: false; reason: "not_found" | "expired" | "not_endorsed" | "already_taken" }
+  >;
+}
+
+export interface NewEndorseCode {
+  codeId: string;
+  shortCodeHash: string;
+  owner: string;
+  registration: DeviceRegistration;
+  expiresAt: number;
+}
+
+export interface EndorseCodeRecord extends NewEndorseCode {
+  newDeviceId: string;
+  endorsement: Endorsement | null;
+  endorsedByDeviceId: string | null;
+  endorsedAt: number | null;
+  takenAt: number | null;
 }
 
 export type WebAuthnPurpose = "register" | "assert";

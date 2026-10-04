@@ -37,7 +37,12 @@ export const newDevice = async (): Promise<Device> => {
 };
 
 /** A real-crypto ClientKeys (what packages/client-keys will provide), for tests. */
-export const testKeys = (me: Device, trustedAgents: Record<string, string> = {}): ClientKeys => ({
+export const testKeys = (
+  me: Device,
+  trustedAgents: Record<string, string> = {},
+  /** ADR 0019: agentDeviceId → pubSign of agents whose signed approval requests verify here. */
+  trustedAgentSigns: Record<string, string> = {},
+): ClientKeys => ({
   deviceId: me.deviceId,
   pubBox: me.pubBox,
   sign: (ctx, body) => signEnvelope(ctx, body, me.deviceId, me.sign.secretKey),
@@ -48,6 +53,7 @@ export const testKeys = (me: Device, trustedAgents: Record<string, string> = {})
     return sealJson(value, keys, aad) as Promise<SealedEnvelope>;
   },
   trustedAgentBoxKey: (id) => trustedAgents[id] ?? null,
+  trustedAgentSignKey: (id) => trustedAgentSigns[id] ?? null,
 });
 
 interface Channel extends SupaChannel {

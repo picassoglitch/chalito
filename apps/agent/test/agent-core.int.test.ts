@@ -16,6 +16,7 @@ import {
   deriveDeviceId,
   generateBoxKeyPair,
   generateSigningKeyPair,
+  openJson,
   randomNonce,
   sealJson,
   signEnvelope,
@@ -102,7 +103,7 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
       saveTrust: async () => undefined,
       nonces: new MemoryNonceStore(),
       owner: OWNER,
-      self: { deviceId: agentId, pubBox: await toB64url(agentBox.publicKey), box: agentBox },
+      self: { deviceId: agentId, pubBox: await toB64url(agentBox.publicKey), box: agentBox, sign: agentSign },
       home: "/home/aldo",
       locale: () => "es",
       now: Date.now,
@@ -153,19 +154,31 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
     // The approval appears; the phone inserts its signed decision row.
     let aid = "";
     let requestId = "";
+    let detailsCt: unknown = null;
     await waitFor(
       async () => {
-        const { data } = await phoneDb.from("approvals").select("aid, request_id, status").eq("owner", OWNER);
+        const { data } = await phoneDb
+          .from("approvals")
+          .select("aid, request_id, status, details_ct")
+          .eq("owner", OWNER);
         const a = data?.[0];
         if (!a) return false;
         aid = a.aid;
         requestId = a.request_id;
+        detailsCt = a.details_ct;
         return true;
       },
       15_000,
       explain,
     );
     expect(fake.run.ran).toHaveLength(0);
+    // ADR 0019: answer for exactly the hash the agent signed (inside the sealed details).
+    const opened = await openJson<{ request: { body: { detailsHash: string } } }>(
+      detailsCt as never,
+      phoneId,
+      phoneBox,
+      `approval:${aid}`,
+    );
     const decision = await signEnvelope(
       "chalito.decision.v1",
       {
@@ -178,6 +191,7 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
         nonce: await randomNonce(),
         issuedAt: Date.now(),
         expiresAt: Date.now() + 60_000,
+        detailsHash: opened.request.body.detailsHash,
       },
       phoneId,
       phoneSign.secretKey,

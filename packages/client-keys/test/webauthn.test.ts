@@ -29,6 +29,20 @@ const serverApi = (device: { deviceId: string; pubSign: string }) => {
   const api: ApiClient = {
     async post(path, body) {
       if (path === "/v1/webauthn/register/options") {
+        // As the api does (R-M11): with a passkey on record, only an assertion by it may replace it.
+        if (stored.id) {
+          const current = (body as { currentAssertion?: never }).currentAssertion;
+          if (!current) throw new Error("current_passkey_required");
+          const v = await verifyAuthenticationResponse({
+            response: current,
+            expectedChallenge: challenge,
+            expectedOrigin: ORIGIN,
+            expectedRPID: RP,
+            credential: { id: stored.id, publicKey: stored.publicKey as Uint8Array<ArrayBuffer>, counter: 0 },
+            requireUserVerification: true,
+          });
+          if (!v.verified) throw new Error("current_passkey_failed");
+        }
         const options = await generateRegistrationOptions({
           rpName: "Chalito",
           rpID: RP,
@@ -144,3 +158,21 @@ describe.each([[-7 as const], [-8 as const]])(
     });
   },
 );
+
+describe("R-M11: replacing this device's passkey", () => {
+  it("needs the current passkey: without it the server refuses; with it the new one replaces it", async () => {
+    const dk = await generateDeviceKeys();
+    const keys = await DeviceClientKeys.create(dk);
+    const srv = serverApi({ deviceId: dk.deviceId, pubSign: (await publicKeys(dk)).pubSign });
+    const first = new SoftAuthenticator({ origin: ORIGIN });
+    const c1 = await registerPasskey(srv.api, keys, first);
+    const next = new SoftAuthenticator({ origin: ORIGIN });
+    // A plain re-registration (a thief with the session and device key, no passkey): refused.
+    await expect(registerPasskey(srv.api, keys, next)).rejects.toThrow(/current_passkey_required/);
+    // The person's replacement: the current passkey asserts first, then the new one is created.
+    const ceremonies = { create: (o: never) => next.create(o), get: (o: never) => first.get(o) };
+    const c2 = await registerPasskey(srv.api, keys, ceremonies, Date.now, { replace: true });
+    expect(c2.credentialId).toBe(next.credentialId);
+    expect(c2.credentialId).not.toBe(c1.credentialId);
+  });
+});
