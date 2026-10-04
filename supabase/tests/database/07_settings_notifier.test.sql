@@ -1,7 +1,7 @@
 -- Settings RPC (phone rule), companions RPC, connections, notifier tables.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(43);
+select plan(48);
 
 grant usage on schema extensions to chalito_server;
 
@@ -79,8 +79,16 @@ select throws_ok($$select chalito.update_my_settings('{"whatsapp_opt_in": true}'
   'phone rule: still no opt-in before the charges notice is acknowledged');
 select ok((chalito.update_my_settings('{"charges_notice_ack_at": true}') ->> 'charges_notice_ack_at') is not null,
   'phone rule: the ack is stamped with server time');
-select lives_ok($$select chalito.update_my_settings('{"whatsapp_opt_in": true, "calls_enabled": true, "sms_enabled": null}')$$,
-  'phone rule: then opt-ins are accepted');
+select throws_ok($$select chalito.update_my_settings('{"whatsapp_opt_in": true, "calls_enabled": true, "sms_enabled": null}')$$,
+  '42501', null, 'phone rule: clients never turn opt-ins on, the api does (/v1/phone/channels)');
+select pg_temp.logout();
+set local role chalito_server;
+select lives_ok($$update chalito.users set whatsapp_opt_in = true, calls_enabled = true where id = 'st-user'$$,
+  'phone rule: then the api''s opt-ins are accepted');
+reset role;
+select pg_temp.as_device('st-user', 'st_phone', 'client');
+select lives_ok($$select chalito.update_my_settings('{"calls_enabled": false}')$$, 'phone rule: clients may turn them off');
+select is((chalito.get_my_settings() ->> 'calls_enabled')::boolean, false, 'phone rule: and it sticks');
 select is(chalito.get_my_settings() ->> 'phone_e164', '+525512345678', 'phone: the owner reads it through the RPC');
 
 select pg_temp.as_user('st-user');
@@ -97,6 +105,8 @@ select ok((chalito.create_my_companion('Chalito', 'starter_owl') ->> 'companion_
 select throws_ok($$select chalito.create_my_companion('Otro', 'starter_cat')$$, '23505', null, 'companions: only one per owner');
 select throws_ok($$update chalito.companions set equipped = '{"head": "hat"}'$$, '42501', null, 'companions: equipping stays server only');
 select is(pg_temp.count($$select 1 from chalito.companions where avatar = 'starter_owl'$$), 1, 'companions: the avatar is recorded');
+select lives_ok($$update chalito.companions set avatar = 'starter_cat'$$, 'companions: the owner can change the avatar');
+select throws_ok($$update chalito.companions set avatar = 'Not An Id!'$$, '23514', null, 'companions: still a roster-shaped id');
 select pg_temp.as_user('st-other');
 select throws_ok($$select chalito.create_my_companion('X', 'Not An Id!')$$, '23514', null, 'companions: avatar must be a roster id');
 select pg_temp.logout();
