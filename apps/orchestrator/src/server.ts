@@ -11,6 +11,7 @@ import { GeminiBrain } from "./brains/gemini.js";
 import { ResponsesBrain } from "./brains/responses.js";
 import { byoBrains } from "./byo.js";
 import { CloudKmsWrapper } from "./kms.js";
+import { googleOidcVerifier } from "./oidc.js";
 import { hubEntitlements } from "./entitlements.js";
 import { PostgresMesaStore } from "./postgres-store.js";
 
@@ -49,6 +50,19 @@ const app = createOrchestrator({
   authn: new SupabaseAuthn(supabase.auth),
   store,
   wrapper,
+  // Audit to stdout (Cloud Logging): decision.resolved / decision.invalid_signature.
+  audit: (e) => process.stdout.write(`${JSON.stringify({ audit: { ...e, t: new Date().toISOString() } })}\n`),
+  ...(process.env.SCHEDULER_SA_EMAIL && process.env.ORCHESTRATOR_BASE_URL
+    ? {
+        sweep: {
+          verify: googleOidcVerifier(),
+          expect: {
+            audience: `${process.env.ORCHESTRATOR_BASE_URL}/tasks/sweep-decisions`,
+            email: process.env.SCHEDULER_SA_EMAIL,
+          },
+        },
+      }
+    : {}),
   hub,
   brains: { managed, byo: byoBrains({ store, wrapper }) },
   models: loadModels(),

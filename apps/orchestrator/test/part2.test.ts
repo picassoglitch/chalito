@@ -151,9 +151,11 @@ describe("decision_needed → a pending kind=decision approval the person signs"
     });
     const doc = h.store.turns.get(`${OWNER}/${h.mid}/${t.tid}`)!.doc;
     expect(doc.decisionNeeded).toBe(true);
-    // The store has no way to decide or resolve: only to create.
+    // The only way it resolves is resolveDecision, reached only after a verified signature
+    // (decisions.test.ts); a turn never resolves anything by itself.
     const methods = Object.getOwnPropertyNames(Object.getPrototypeOf(h.store));
-    expect(methods.filter((x) => /resolve|decide|approve|deny/i.test(x))).toEqual([]);
+    expect(methods.filter((x) => /resolve|decide|approve|deny/i.test(x))).toEqual(["resolveDecision"]);
+    expect(a.status).toBe("pending");
   });
 });
 

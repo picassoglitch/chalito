@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, describe, expect, it } from "vitest";
 import { usageEvent } from "@chalito/billing";
+import { generateSigningKeyPair, randomNonce, signEnvelope, toB64url } from "@chalito/crypto";
+import { processDecisions } from "../src/decisions.js";
 import type { MesaDoc } from "../src/core/mesa.js";
 import { PostgresMesaStore } from "../src/postgres-store.js";
 
@@ -171,5 +173,68 @@ describe.skipIf(!url)("PostgresMesaStore", () => {
         { day, billing: "byo", purpose: "work", tokens: 125, costUsdMicros: 7 },
       ]),
     );
+  });
+
+  it("decisions: a verified signature resolves through the SQL function; garbage and revoked signers don't", async () => {
+    const owner = `o-${randomUUID()}`;
+    const keys = await generateSigningKeyPair();
+    const dev = (n: string) => `dv${n}${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const phone = dev("p");
+    const thief = dev("t");
+    await admin.begin(async (tx) => {
+      await tx`insert into chalito.tenants (id) values (${owner})`;
+      await tx`insert into chalito.users (id, tenant_id) values (${owner}, ${owner})`;
+      await tx`insert into chalito.devices (owner, device_id, role, kind, platform, name, pub_sign, pub_box, fingerprint, enrolled_via)
+               values (${owner}, ${phone}, 'client', 'phone', 'ios', 'Phone', ${await toB64url(keys.publicKey)}, 'b', 'f', 'first_client'),
+                      (${owner}, ${thief}, 'client', 'phone', 'ios', 'Stolen', ${await toB64url(keys.publicKey)}, 'b', 'f', 'endorsement')`;
+    });
+    const mk = async (aid: string) =>
+      store.createDecisionApproval(owner, {
+        aid,
+        mid: "m1",
+        tid: `t_${aid}`,
+        origin: `client:${phone}`,
+        detailsCt: { alg: "xchacha20poly1305+sealedbox", nonce: "n", ct: "c", keys: {} },
+      });
+    const body = async (aid: string) => ({
+      v: 1 as const,
+      aid,
+      requestId: `t_${aid}`,
+      uid: owner,
+      targetDeviceId: "orchestrator",
+      allow: true,
+      nonce: await randomNonce(),
+      issuedAt: Date.now() - 1000,
+      expiresAt: Date.now() + 60_000,
+    });
+    const insert = (aid: string, signer: string, decision: unknown) =>
+      admin`insert into chalito.approval_decisions (owner, aid, signer_device_id, decision, rev)
+            values (${owner}, ${aid}, ${signer}, ${admin.json(decision as never)}, 1)`;
+    const audits: string[] = [];
+    const rejected = new Set<string>();
+    const run = (aid: string) =>
+      processDecisions({ store, now: Date.now, audit: (e) => void audits.push(e.action), rejected }, { owner, aid });
+    const status = async (aid: string) =>
+      (await admin`select status from chalito.approvals where owner = ${owner} and aid = ${aid}`)[0]!.status;
+
+    await mk("a1");
+    await insert("a1", thief, {
+      ctx: "chalito.decision.v1",
+      signerDeviceId: thief,
+      body: await body("a1"),
+      sig: "A".repeat(86),
+    });
+    expect((await run("a1")).resolved).toEqual([]);
+    expect(await status("a1")).toBe("pending");
+    await insert("a1", phone, await signEnvelope("chalito.decision.v1", await body("a1"), phone, keys.secretKey));
+    expect((await run("a1")).resolved).toEqual([{ owner, aid: "a1", status: "approved", signer: phone }]);
+    expect(await status("a1")).toBe("approved");
+
+    await mk("a2");
+    await insert("a2", phone, await signEnvelope("chalito.decision.v1", await body("a2"), phone, keys.secretKey));
+    await admin`update chalito.devices set revoked = true where device_id = ${phone}`;
+    expect((await run("a2")).resolved).toEqual([]);
+    expect(await status("a2")).toBe("pending");
+    expect(audits).toEqual(["decision.invalid_signature", "decision.resolved", "decision.invalid_signature"]);
   });
 });
