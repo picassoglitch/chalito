@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +28,7 @@ const run = (args: string[], env: Record<string, string> = {}) => {
   echo "SUPABASE_ANON_KEY=\\"anon\\""
   echo "SUPABASE_SERVICE_ROLE_KEY=\\"service\\""
 fi
+if [ "$1 $2" = "db push" ]; then echo "push-files $(ls supabase/migrations | tr '\\n' ' ')" >> "${log}"; fi
 exit 0`,
   );
   fake("pnpm", "exit 0");
@@ -92,6 +93,29 @@ describe("scripts/nexo-ai-dryrun.sh", () => {
     expect(steps.at(-1)).toBe("supabase branches delete");
     for (const c of r.calls.filter((c) => c.includes("--db-url"))) expect(c).toContain(BRANCH);
     expect(r.calls.filter((c) => c.includes("--db-url")).join("\n")).not.toContain(MAIN);
+  });
+
+  it("--method hub needs HUB_DIR", () => {
+    const r = run(["--yes", "--method", "hub"], { NEXO_AI_REF: MAIN });
+    expect(r.status).toBe(2);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("--method hub pushes the hub's and Chalito's files together, from a copy of HUB_DIR", () => {
+    const hub = mkdtempSync(join(tmpdir(), "hub-"));
+    mkdirSync(join(hub, "supabase/migrations"), { recursive: true });
+    writeFileSync(join(hub, "supabase/migrations/0001_hub.sql"), "select 1;");
+    const r = run(["--yes", "--method", "hub"], { NEXO_AI_REF: MAIN, HUB_DIR: hub });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/hub \+ chalito migrations\s+PASS/);
+    const pushes = r.calls.filter((c) => c.startsWith("supabase db push"));
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]).toContain("--include-all");
+    const files = r.calls.find((c) => c.startsWith("push-files"))!;
+    expect(files).toContain("0001_hub.sql");
+    expect(files).toContain("20261004000100_chalito_identity.sql");
+    // HUB_DIR itself is untouched.
+    expect(readdirSync(join(hub, "supabase/migrations"))).toEqual(["0001_hub.sql"]);
   });
 
   it("--keep leaves the branch", () => {

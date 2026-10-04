@@ -68,7 +68,7 @@ Chalito's tables live in schemas `chalito` and `chalito_private` on the hub's Su
 - **Exposed schemas:** add `chalito` to the Data API's exposed schemas (not `chalito_private`), and keep it out of pg_graphql introspection.
 - **Realtime "Allow public access" off:** Chalito's topics are private. Check that no hub feature relies on public channels before turning it off.
 - **pg_cron and pgcrypto:** Chalito's migrations create the extensions if missing and schedule `chalito-*` jobs (TTL purge, room purge, rate-limit buckets).
-- **Applying the migrations** (`supabase/migrations/2026100400*`) to nexo-ai is an owner action, after a dry run on a branch.
+- **Applying the migrations** (`supabase/migrations/2026100400*`) to nexo-ai is an owner action, after a dry run on a branch. The ledger is shared with the hub's migrations, so the recommendation is that the hub carries these files and pushes them itself (GO_LIVE "2.4 decision").
 
 ## 7b. Consumption routes must be on hub main
 `/usage/admit` and `/usage/settle` (and `reserved` in the balance) come from hub commit `a5733df` ("tier caps, job admission, boost lane"), which is on unmerged branches (`claude/consumption-caps`, `claude/rebuild-p6-*`), not on chalyb `main` as of 2026-10-04. Chalito's billing calls them, and treats a 404 from admit as "hub unavailable" → free_min. They must ship on the hub before Chalito goes live with managed AI.
