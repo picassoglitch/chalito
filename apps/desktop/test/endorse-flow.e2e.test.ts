@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * End to end, in process: the desktop panel becomes a trusted client through the real api
  * routes (/v1/endorse + /v1/devices/endorsed), the real client channel and the trusted
