@@ -1,9 +1,16 @@
 import * as THREE from "three";
 import { BehaviourMachine, type BehaviourOutput } from "@chalito/avatar";
 import { AvatarDriver, CreatureBinding, FrameLoop, createPlaceholder } from "@chalito/avatar-three";
+import type { EmotionTag } from "@chalito/protocol";
+import { RENDER_DEFAULTS, loadCardAssets, type QualityLevel } from "@chalito/scene";
 import { changedEnough, ndcToCanvas, toScreenHitBox, type Rect } from "../lib/hitbox.js";
 import type { PetContext } from "../lib/pet-context.js";
 import type { DesktopShell } from "../lib/shell.js";
+import { loadSettings } from "../lib/settings-local.js";
+import { PetLook, QualityResolver } from "./look.js";
+
+/** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
+const ROSTER_BASE = "/roster/";
 
 const box = new THREE.Box3();
 const corners = Array.from({ length: 8 }, () => new THREE.Vector3());
@@ -24,13 +31,16 @@ const projectBounds = (obj: THREE.Object3D, camera: THREE.Camera) => {
 };
 
 /**
- * The pet: a transparent three.js canvas with the placeholder creature (VRM roster art comes
- * in M8), the behaviour machine (focus only at L4) and the hit box for click-through.
+ * The pet: a transparent three.js canvas with the companion's roster card (the placeholder until
+ * it loads), the behaviour machine (focus only at L4) and the hit box for click-through. The
+ * render-quality slider (render.yaml) applies here as in the room view: bajo is the flat card
+ * impostor at 30 FPS without contact shadow; medio and alto run the driver's bob, squash and
+ * gestures; auto settles from the renderer and a short probe.
  */
 export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
   camera.position.set(0, 0.6, 3.2);
@@ -40,10 +50,62 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
   sun.position.set(1, 2, 2);
   scene.add(sun);
 
-  const pet = createPlaceholder();
-  scene.add(pet);
+  const placeholder = createPlaceholder();
+  scene.add(placeholder);
+  /** What the hit box follows: the placeholder, then the card. */
+  let pet: THREE.Object3D = placeholder;
   const driver = new AvatarDriver({ seed: 1 });
-  const creature = new CreatureBinding(pet);
+  const creature = new CreatureBinding(placeholder);
+  let look: PetLook | null = null;
+  let avatar: string | null = null;
+  const rendererName = () => {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    return String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+  };
+  const quality = new QualityResolver(rendererName);
+  const levelOf = (l: QualityLevel) => RENDER_DEFAULTS.levels[l];
+  const applyLevel = (l: QualityLevel) => {
+    const lv = levelOf(l);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, lv.pixelRatioMax));
+    look?.setLevel(lv);
+    if (loop && loop.fps !== lv.fpsCap) {
+      loop.stop();
+      loop = new FrameLoop(tick, lv.fpsCap);
+      loop.start();
+    }
+  };
+  let mood: EmotionTag = "neutral";
+  const emotion = (tag: EmotionTag, intensity: number, now: number) => {
+    mood = tag;
+    driver.setEmotion({ tag, intensity }, now);
+    look?.setEmotion(tag);
+  };
+
+  /** The slider and the companion come from the local settings the panel writes (any window). */
+  const applySettings = () => {
+    const s = loadSettings();
+    applyLevel(quality.set(s.renderQuality));
+    if (s.avatar === avatar) return;
+    avatar = s.avatar;
+    const want = avatar;
+    loadCardAssets(ROSTER_BASE, want).then(
+      (assets) => {
+        if (want !== avatar) return;
+        const next = new PetLook(assets, levelOf(quality.level));
+        next.setEmotion(mood);
+        if (look) {
+          scene.remove(look.root);
+          look.dispose();
+        } else scene.remove(placeholder);
+        look = next;
+        scene.add(next.root);
+        pet = next.root;
+      },
+      () => undefined, // no art: keep what's drawn
+    );
+  };
+  const onStorage = () => applySettings();
   const machine = new BehaviourMachine();
   let ctx: PetContext = { level: null, fullscreen: false, dnd: false, quietHours: false, lowEnergy: false };
   let acked = false;
@@ -60,21 +122,26 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
   resize();
   window.addEventListener("resize", resize);
 
-  const loop = new FrameLoop((now) => {
+  let loop: FrameLoop | null = null;
+  const tick = (now: number) => {
     const o = machine.update({ ...ctx, acked }, now);
     acked = false;
     if (o.state !== out?.state) {
       driver.setSleepy(o.state === "sleepy");
       if (o.gesture === "wave" || o.gesture === "yawn") driver.playGesture(o.gesture, now);
-      if (o.state === "knock" || o.state === "hop")
-        driver.setEmotion({ tag: "excited", intensity: o.state === "knock" ? 1 : 0.7 }, now);
-      else if (o.state === "glance") driver.setEmotion({ tag: "surprised", intensity: 0.4 }, now);
-      else driver.setEmotion({ tag: "neutral", intensity: 1 }, now);
+      if (o.state === "knock" || o.state === "hop") emotion("excited", o.state === "knock" ? 1 : 0.7, now);
+      else if (o.state === "glance") emotion("surprised", 0.4, now);
+      else if (o.state === "sleepy") emotion("tired", 1, now);
+      else emotion("neutral", 1, now);
     }
     if (o.requestFocus && !out?.requestFocus) void sh.focusPet("L4").catch(() => undefined);
     out = o;
-    creature.apply(driver.frame(now));
+    const frame = driver.frame(now);
+    if (look) look.apply(frame, now);
+    else creature.apply(frame);
     renderer.render(scene, camera);
+    const settled = quality.frame(now);
+    if (settled) applyLevel(settled);
 
     const hit = toScreenHitBox(
       ndcToCanvas(projectBounds(pet, camera), { width: window.innerWidth, height: window.innerHeight }),
@@ -84,8 +151,11 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
       sentBox = hit;
       void sh.setHitBox(hit).catch(() => undefined);
     }
-  }, 30);
+  };
+  loop = new FrameLoop(tick, levelOf(quality.level).fpsCap);
   loop.start();
+  applySettings();
+  window.addEventListener("storage", onStorage);
 
   // Clicks only arrive over the avatar (click-through elsewhere): acknowledge and open the panel.
   canvas.addEventListener("click", () => {
@@ -95,8 +165,10 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
   const offCtx = sh.onPetContext((c) => (ctx = c));
 
   return () => {
-    loop.stop();
+    loop?.stop();
     window.removeEventListener("resize", resize);
+    window.removeEventListener("storage", onStorage);
+    look?.dispose();
     void offCtx.then((f) => f());
     void sh.setHitBox(null);
     renderer.dispose();
