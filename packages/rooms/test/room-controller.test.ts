@@ -67,14 +67,15 @@ const fakeDb = () => {
 
 const tick = () => new Promise((r) => setTimeout(r, 15));
 
-const setup = async (o: { member?: boolean } = {}) => {
+const setup = async (o: { member?: boolean; owner?: boolean } = {}) => {
   const f = fakeDb();
   const box = await generateBoxKeyPair();
   const me = { deviceId: "dev_me", pubBox: await toB64url(box.publicKey) };
   const created = await newRoom({ roomId: ROOM, type: "family", name: "Casa", companionId: ME, myDevices: [me] });
   f.tables.rooms!.push({ room_id: ROOM, name: "Casa", type: "family" });
-  f.tables.room_members!.push({ room_id: ROOM, companion_id: MOM, role: "owner" });
-  if (o.member !== false) f.tables.room_members!.push({ room_id: ROOM, companion_id: ME, role: "member" });
+  f.tables.room_members!.push({ room_id: ROOM, companion_id: MOM, role: o.owner ? "member" : "owner" });
+  if (o.member !== false)
+    f.tables.room_members!.push({ room_id: ROOM, companion_id: ME, role: o.owner ? "owner" : "member" });
   f.tables.room_member_keys!.push({
     room_id: ROOM,
     device_id: "dev_me",
@@ -264,6 +265,19 @@ describe("RoomController (shared by the web and the desktop room views)", () => 
       ok: false,
       reason: "rate_limited",
     });
+  });
+  it("removeMember: the owner removes another member; a member, or removing yourself, is not_owner", async () => {
+    const s = await setup({ owner: true });
+    expect(await s.session.removeMember(ME)).toEqual({ ok: false, reason: "not_owner" });
+    expect(await s.session.removeMember(MOM)).toEqual({ ok: true });
+    expect(s.posted.at(-1)).toEqual({ path: `/v1/rooms/${ROOM}/members/${MOM}/remove`, body: { companionId: ME } });
+    expect(s.session.getSnapshot().members.map((m) => m.companionId)).toEqual([ME]);
+    s.failNext(403);
+    expect(await s.session.removeMember(MOM)).toEqual({ ok: false, reason: "not_owner" });
+
+    const m = await setup();
+    expect(await m.session.removeMember(MOM)).toEqual({ ok: false, reason: "not_owner" });
+    expect(m.posted).toEqual([]);
   });
 });
 

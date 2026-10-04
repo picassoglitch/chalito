@@ -175,6 +175,12 @@ export class PostgresRoomsRepo {
     });
   }
 
+  removeMember(a: { uid: string; companion: string; roomId: string; target: string }) {
+    return mapped(async () => {
+      await this.sql`select chalito_private.room_remove_member(${a.uid}, ${a.companion}, ${a.roomId}, ${a.target})`;
+    });
+  }
+
   rotate(a: {
     uid: string;
     companion: string;
