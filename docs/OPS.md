@@ -198,6 +198,12 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 
 **7. Claude Code is NOT bundled (what the person installs; how the agent detects it).**
 - The desktop installers ship the Chalito agent as a sidecar, but not Anthropic's `claude` CLI: about 250 MB per platform, its own updates and its own terms (VERIFIED_APIS §8).
+- The app runs that sidecar itself while it's open (`src-tauri/src/agent.rs`). It starts `chalito-agent run` once `~/.chalito/config.json` names an owner and a device, restarts it with backoff (1 s doubling to 5 min) when it crashes, and stops it on quit. Its output goes to the app's log folder (`agent.log`, rotated at 5 MB). It never runs a second agent: `run` exits 75 when one already holds `~/.chalito/agent.lock` (the OS service), and 78 when a setup step is missing, and then the app waits for the config to change.
+- Panel → Security → "Instalar el comando chalito" puts the sidecar on PATH as `chalito` after the person confirms (`src-tauri/src/cli_install.rs`):
+  - Linux: a `~/.local/bin/chalito` link. An AppImage's sidecar is first copied to `~/.local/share/chalito/`, and the app refreshes that copy at start.
+  - macOS: a `/usr/local/bin/chalito` link, through the administrator prompt. It's refused while the app runs from the DMG or a translocated copy.
+  - Windows: a `chalito.cmd` shim in `%LOCALAPPDATA%\Chalito\bin`, added to the user PATH.
+  - An existing `chalito` that isn't Chalito's is never replaced.
 - What the person does:
   1. Install Claude Code with Anthropic's official installer (https://code.claude.com/docs/en/setup).
   2. Then either run `chalito keys set anthropic` (if `claude` is on PATH and the computer is paired, the agent pins it automatically), or run `chalito claude pin [path]` in a terminal.

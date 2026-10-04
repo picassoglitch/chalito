@@ -9,6 +9,7 @@ import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
 import { relayRevoked } from "../lib/revoked-relay.js";
+import { localAgent } from "../lib/local-agent.js";
 import { shell } from "../lib/shell.js";
 import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { UpdateController, tauriUpdater } from "../lib/updates.js";
@@ -67,6 +68,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   // R-L14: this device was revoked. The room window drops its keys and decrypted events now.
   useEffect(() => (client ? relayRevoked(client.live, () => sh.sendDeviceRevoked()) : undefined), [client, sh]);
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
+  const agentApi = useMemo(localAgent, []);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);
   // Server-backed once the desktop has a session (new SettingsStore(supabase, owner)).
@@ -127,6 +129,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       hubPlansUrl={HUB_PLANS_URL}
       phoneVerifier={offlinePhoneVerifier}
       updates={updates}
+      localAgent={agentApi}
     />
   );
 };

@@ -1,3 +1,5 @@
+mod agent;
+mod cli_install;
 mod hittest;
 #[cfg(debug_assertions)]
 mod loopback;
@@ -5,8 +7,9 @@ mod loopback;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use agent::Supervisor;
 use hittest::{Activity, ClickThrough, Rect};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, RunEvent, State};
 
 /// Whether this build carries the dev-only SSO loopback (never in release; see loopback.rs).
 pub const DEV_LOOPBACK: bool = cfg!(debug_assertions);
@@ -62,6 +65,47 @@ fn touch_activity(state: State<'_, SharedState>) {
 #[tauri::command]
 fn idle_ms(state: State<'_, SharedState>) -> u64 {
     state.lock().map_or(u64::MAX, |s| s.activity.idle_ms(now_ms()))
+}
+
+/// The bundled agent's state (agent.rs), for the panel.
+#[tauri::command]
+fn agent_status(sup: State<'_, Supervisor>) -> agent::Status {
+    sup.status()
+}
+
+/// What installing the `chalito` command would do here (cli_install.rs), or that it's done.
+fn cli_input(app: &AppHandle) -> Option<cli_install::Input> {
+    let sidecar = agent::sidecar_path(&std::env::current_exe().ok()?)?;
+    Some(cli_install::Input {
+        os: cli_install::Os::current(),
+        sidecar,
+        home: app.path().home_dir().ok()?,
+        appimage: std::env::var_os("APPIMAGE").is_some(),
+        local_app_data: std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from),
+        path_env: std::env::var("PATH").unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+fn cli_status(app: AppHandle) -> cli_install::CliStatus {
+    cli_install::status(cli_input(&app).as_ref(), cli_install::Os::current())
+}
+
+/// Panel only, after the person confirmed there. Blocking work (the macOS admin prompt) runs
+/// off the main thread.
+#[tauri::command]
+async fn install_cli(app: AppHandle, window: tauri::Window) -> Result<cli_install::CliStatus, cli_install::InstallError> {
+    if window.label() != "panel" {
+        return Err(cli_install::InstallError::Failed);
+    }
+    let input = cli_input(&app).ok_or(cli_install::InstallError::NoSidecar)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let plan = cli_install::plan(&input)?;
+        cli_install::execute(&plan)?;
+        Ok(cli_install::status(Some(&input), input.os))
+    })
+    .await
+    .map_err(|_| cli_install::InstallError::Failed)?
 }
 
 /// ~30 Hz: read the global cursor, toggle click-through on change, note activity.
@@ -130,17 +174,48 @@ pub fn run() {
         focus_pet,
         touch_activity,
         idle_ms,
+        agent_status,
+        cli_status,
+        install_cli,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![set_hit_box, focus_pet, touch_activity, idle_ms]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        set_hit_box,
+        focus_pet,
+        touch_activity,
+        idle_ms,
+        agent_status,
+        cli_status,
+        install_cli
+    ]);
     builder
         .setup(move |app| {
             spawn_cursor_poll(app.handle().clone(), state.clone());
+            // The bundled agent runs while the app is open (release builds; none in dev).
+            let handle = app.handle();
+            let exe = std::env::current_exe().ok();
+            let sidecar = exe.as_deref().and_then(agent::sidecar_path);
+            let home = handle.path().home_dir()?;
+            let logs = handle.path().app_log_dir()?;
+            // An AppImage update replaced the sidecar: keep the installed `chalito` current.
+            if let Some(input) = cli_input(handle) {
+                if let Ok(plan) = cli_install::plan(&input) {
+                    cli_install::refresh_copy(&plan);
+                }
+            }
+            app.manage(Supervisor::start(sidecar, home, logs));
             Ok(())
         })
-        .run(context)
-        .expect("error while running the Chalito desktop app");
+        .build(context)
+        .expect("error while building the Chalito desktop app")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                if let Some(sup) = app.try_state::<Supervisor>() {
+                    sup.stop();
+                }
+            }
+        });
 }
 
 /// Whether the build carries an updater configuration (release overlay only).
