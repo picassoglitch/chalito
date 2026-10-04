@@ -43,16 +43,29 @@ export const verifySsoToken = (token: string, secret: string, nowMs: number): Ss
   };
 };
 
-/** Validates a post-SSO redirect: same-origin relative path only (no open redirect). */
+const NEXT_BASE = "https://chalito.invalid";
+const hasControl = (s: string) => [...s].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f);
+
+/**
+ * Validates a post-SSO redirect: a same-origin relative path only (no open redirect, review R-M1).
+ * Checked BEFORE and AFTER URL normalisation, because dot segments ("/.//evil.com",
+ * "/%2e//evil.com", "/a/..//evil.com") only become protocol-relative ("//evil.com") once
+ * normalised. No backslashes, control characters or encoded slashes/backslashes at all.
+ */
 export const safeNextPath = (next: string | null | undefined): string => {
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\") || /[\r\n]/.test(next))
-    return "/";
+  if (!next || !next.startsWith("/") || next.length > 2048) return "/";
+  if (next.includes("\\") || /%(2f|5c)/i.test(next) || hasControl(next)) return "/";
+  if (next.startsWith("//")) return "/";
+  let u: URL;
   try {
-    const u = new URL(next, "https://chalito.invalid");
-    return u.origin === "https://chalito.invalid" ? `${u.pathname}${u.search}${u.hash}` : "/";
+    u = new URL(next, NEXT_BASE);
   } catch {
     return "/";
   }
+  if (u.origin !== NEXT_BASE) return "/";
+  // After normalisation: exactly one leading slash.
+  if (!u.pathname.startsWith("/") || u.pathname.startsWith("//")) return "/";
+  return `${u.pathname}${u.search}${u.hash}`;
 };
 
 /** Stable per-tenant token returned on create and on 409 (no secret storage needed). */
