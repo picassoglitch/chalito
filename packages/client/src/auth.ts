@@ -183,6 +183,34 @@ export const createBrowserSupabase = (url: string, publishableKey: string, stora
     },
   }) as unknown as BrowserSupabase;
 
+/**
+ * The access token another context keeps fresh in the shared storage (e.g. the desktop panel
+ * window's client), or null when there is no session.
+ */
+export const storedAccessToken = (storage: AuthStorage) => async (): Promise<string | null> => {
+  try {
+    const s = JSON.parse((await storage.getItem(BROWSER_SESSION_KEY)) ?? "null") as { access_token?: unknown } | null;
+    return typeof s?.access_token === "string" ? s.access_token : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * A second client on the same device session that never signs in or refreshes: it borrows the
+ * token the owning context refreshes (two clients refreshing one rotating refresh token race and
+ * can sign the device out). For secondary windows such as the desktop room window.
+ */
+export const createBorrowedSupabase = (
+  url: string,
+  publishableKey: string,
+  accessToken: () => Promise<string | null>,
+): BrowserSupabase =>
+  createClient(url, publishableKey, {
+    db: { schema: "chalito" },
+    accessToken,
+  }) as unknown as BrowserSupabase;
+
 // ---------------------------------------------------------------- bootstrap
 
 export interface ConnectOptions {

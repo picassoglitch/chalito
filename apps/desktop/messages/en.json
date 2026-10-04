@@ -72,7 +72,51 @@
     "failed": "Couldn't connect voice. Try again."
   },
   "room": {
-    "soon": "Your room is coming soon."
+    "soon": "Your room is coming soon.",
+    "title": "Room",
+    "list": "Your rooms",
+    "loading": "Loading your rooms…",
+    "none": "You're not in any room yet.",
+    "signedOut": "Sign in from the panel to see your rooms.",
+    "revoked": "This device was revoked. Its rooms are no longer available here.",
+    "back": "← Rooms",
+    "members": "Members",
+    "you": "You",
+    "owner": "owner",
+    "compose": "Write a notice",
+    "send": "Send",
+    "leave": "Leave the room",
+    "report": "Report",
+    "reportReason": "Reason",
+    "reportNote": "Note (optional)",
+    "attachText": "Attach the message text (it leaves this device)",
+    "reportSend": "Send report",
+    "cancel": "Cancel",
+    "unreadable": "Can't be read on this device.",
+    "reasons": {
+      "spam": "Spam",
+      "abuse": "Abuse",
+      "impersonation": "Impersonation",
+      "other": "Other"
+    },
+    "reported": {
+      "ok": "Report sent.",
+      "duplicate": "You already reported this."
+    },
+    "ended": {
+      "kicked": "You're no longer in this room.",
+      "dissolved": "This room was dissolved.",
+      "revoked": "This device was revoked. The room closed here.",
+      "not_member": "You're not a member of this room."
+    },
+    "error": {
+      "not_member": "You're not a member of this room.",
+      "not_found": "The room no longer exists.",
+      "rate_limited": "Too many tries. Wait a moment.",
+      "ended": "The room ended.",
+      "no_key": "This device doesn't have the room key yet.",
+      "failed": "Something went wrong. Try again."
+    }
   },
   "integrations": {
     "anthropic": {

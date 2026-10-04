@@ -19,6 +19,7 @@
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@chalito/releases": "workspace:*",
+    "@chalito/rooms": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-deep-link": "2.6.1",

@@ -41,12 +41,13 @@ export const readEnv = (e: Record<string, string | undefined> = import.meta.env)
 };
 
 /** This device's account binding (public identifiers only). */
-interface Stored {
+export interface Stored {
   owner: string;
   passkey: { credentialId: string; rpId: string } | null;
 }
 const STORED_KEY = "chalito-desktop-account";
-const loadStored = (): Stored | null => {
+/** This device's account binding, as the panel saved it (any window of the app can read it). */
+export const loadStored = (): Stored | null => {
   try {
     const v = JSON.parse(localStorage.getItem(STORED_KEY) ?? "null") as Stored | null;
     return typeof v?.owner === "string" ? v : null;
