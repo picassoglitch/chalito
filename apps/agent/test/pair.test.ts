@@ -2,7 +2,14 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { deriveDeviceId, fingerprint, generateBoxKeyPair, generateSigningKeyPair, toB64url } from "@chalito/crypto";
+import {
+  deriveDeviceId,
+  fingerprint,
+  generateBoxKeyPair,
+  generateSigningKeyPair,
+  signEnvelope,
+  toB64url,
+} from "@chalito/crypto";
 import { verifyGlyph } from "@chalito/glyph";
 import type { GlyphPayload, PairingCodeDoc } from "@chalito/protocol";
 import { ApiRequestError, type FetchFn, type PairingWatcher } from "../src/cloud.js";
@@ -18,6 +25,7 @@ const phoneKeys = async () => {
   const sign = await generateSigningKeyPair();
   const box = await generateBoxKeyPair();
   return {
+    sign,
     deviceId: await deriveDeviceId(sign.publicKey),
     pubSign: await toB64url(sign.publicKey),
     pubBox: await toB64url(box.publicKey),
@@ -25,8 +33,32 @@ const phoneKeys = async () => {
   };
 };
 
+type Phone = Awaited<ReturnType<typeof phoneKeys>>;
+/** The phone's passkey binding, signed by `signer` (the phone itself unless forged). */
+const passkeyBinding = (phone: Phone, signer: Phone = phone) =>
+  signEnvelope(
+    "chalito.webauthn-binding.v1",
+    {
+      v: 1 as const,
+      deviceId: phone.deviceId,
+      credentialId: "cGFzc2tleS1pZC1vZi10aGUtcGhvbmU",
+      publicKey: "cHViLWtleQ",
+      rpId: "chalito.chalyb.com",
+      issuedAt: NOW,
+    },
+    phone.deviceId,
+    signer.sign.secretKey,
+  );
+
 /** The control plane + Firestore, played by the test. */
-const world = async (opts: { owner?: string; claim?: "valid" | "wrong_key" | "never"; ttlMs?: number } = {}) => {
+const world = async (
+  opts: {
+    owner?: string;
+    claim?: "valid" | "wrong_key" | "never";
+    ttlMs?: number;
+    passkey?: "valid" | "forged" | "none";
+  } = {},
+) => {
   const dir = mkdtempSync(join(tmpdir(), "chalito-pair-"));
   writeFileSync(
     configPath(dir),
@@ -65,6 +97,7 @@ const world = async (opts: { owner?: string; claim?: "valid" | "wrong_key" | "ne
           claimedByDeviceId: null,
           claimerPubSign: null,
           claimerPubBox: null,
+          claimerWebauthnBinding: null,
         };
         const doc: PairingCodeDoc = {
           v: 1,
@@ -77,6 +110,12 @@ const world = async (opts: { owner?: string; claim?: "valid" | "wrong_key" | "ne
           ...unclaimed,
           expiresAt: g.body.expiresAt,
         };
+        const binding =
+          opts.passkey === "valid"
+            ? await passkeyBinding(phone)
+            : opts.passkey === "forged"
+              ? await passkeyBinding(phone, other)
+              : null;
         setTimeout(() => onDoc(doc), 5);
         setTimeout(
           () =>
@@ -87,6 +126,7 @@ const world = async (opts: { owner?: string; claim?: "valid" | "wrong_key" | "ne
               claimedByDeviceId: claimer.deviceId,
               claimerPubSign: claimer.pubSign,
               claimerPubBox: claimer.pubBox,
+              claimerWebauthnBinding: binding,
             }),
           15,
         );
@@ -232,5 +272,35 @@ describe("chalito pair", () => {
     };
     await expect(runPair(deps)).rejects.toBeInstanceOf(ApiRequestError);
     await expect(runPair(deps)).rejects.toThrow("rate_limited");
+  });
+
+  it("records the phone's passkey from its binding, shown in the local confirmation", async () => {
+    const w = await world({ passkey: "valid" });
+    expect((await runPair(w.deps(true))).ok).toBe(true);
+    expect(w.out()).toContain("Llave de acceso (passkey) del teléfono: cGFzc2…vbmU");
+    const id = await loadOrCreateIdentity(w.secrets);
+    const trust = await new TrustStore(w.dir, id.sign, id.deviceId).load();
+    expect(trust.list.webauthnFor(w.phone.deviceId)).toEqual({
+      credentialId: "cGFzc2tleS1pZC1vZi10aGUtcGhvbmU",
+      publicKey: "cHViLWtleQ",
+      rpId: "chalito.chalyb.com",
+    });
+  });
+
+  it("a passkey binding signed by another key is refused: nothing is trusted", async () => {
+    const w = await world({ passkey: "forged" });
+    expect(await runPair(w.deps(true))).toEqual({ ok: false, reason: "bad_claim" });
+    expect(w.asked).toHaveLength(0);
+    expect(existsSync(join(w.dir, "trusted-clients.json"))).toBe(false);
+  });
+
+  it("without a passkey the phone is still paired, and the user is told it can't approve HIGH", async () => {
+    const w = await world({ passkey: "none" });
+    expect((await runPair(w.deps(true))).ok).toBe(true);
+    expect(w.out()).toMatch(/aún no tiene llave de acceso/);
+    const id = await loadOrCreateIdentity(w.secrets);
+    expect(
+      (await new TrustStore(w.dir, id.sign, id.deviceId).load()).list.webauthnFor(w.phone.deviceId),
+    ).toBeUndefined();
   });
 });

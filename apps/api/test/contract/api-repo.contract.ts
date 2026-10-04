@@ -239,6 +239,89 @@ export const runApiRepoContract = (
       });
     });
 
+    describe("WebAuthn (passkeys)", () => {
+      it("a challenge is single-use, per device and purpose, and expires", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const d = await device(o);
+        await repo.createDevice(o, d);
+        const put = (purpose: "register" | "assert", challenge: string, expiresAt = 2_000) =>
+          repo.putWebAuthnChallenge({ owner: o, deviceId: d.deviceId, purpose, challenge, expiresAt });
+        await put("register", "c1");
+        await put("register", "c2"); // replaces c1
+        await put("assert", "a1");
+        expect(await repo.takeWebAuthnChallenge(o, d.deviceId, "register", 1_000)).toBe("c2");
+        expect(await repo.takeWebAuthnChallenge(o, d.deviceId, "register", 1_000)).toBeNull();
+        expect(await repo.takeWebAuthnChallenge(o, d.deviceId, "assert", 3_000)).toBeNull(); // expired, and gone
+        expect(await repo.takeWebAuthnChallenge(o, d.deviceId, "assert", 1_000)).toBeNull();
+      });
+
+      it("only one of N concurrent takers gets the challenge", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const d = await device(o);
+        await repo.createDevice(o, d);
+        await repo.putWebAuthnChallenge({
+          owner: o,
+          deviceId: d.deviceId,
+          purpose: "register",
+          challenge: "c",
+          expiresAt: 2_000,
+        });
+        const got = await Promise.all(
+          Array.from({ length: RACERS }, () => repo.takeWebAuthnChallenge(o, d.deviceId, "register", 1_000)),
+        );
+        expect(count(got, "c")).toBe(1);
+      });
+
+      it("stores the passkey on the device record", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const d = await device(o);
+        const cred = {
+          credentialId: `cred-${o}`,
+          publicKey: "pQECAyYgASFYIA",
+          rpId: "chalito.chalyb.com",
+          counter: 0,
+          transports: ["internal"],
+          createdAt: 1_790_000_000_000,
+        };
+        expect(await repo.setDeviceWebAuthn(o, d.deviceId, cred)).toBe(false);
+        await repo.createDevice(o, d);
+        expect(await repo.getDeviceWebAuthn(o, d.deviceId)).toBeNull();
+        expect(await repo.setDeviceWebAuthn(o, d.deviceId, cred)).toBe(true);
+        expect(await repo.getDeviceWebAuthn(o, d.deviceId)).toEqual({ ...cred, binding: null });
+        expect((await repo.getDevice(o, d.deviceId))?.revoked).toBe(false);
+      });
+
+      it("stores the device-signed binding with the passkey; a new passkey clears it", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const d = await device(o);
+        await repo.createDevice(o, d);
+        const binding = {
+          ctx: "chalito.webauthn-binding.v1",
+          body: { v: 1, deviceId: d.deviceId },
+          signerDeviceId: d.deviceId,
+          sig: "x",
+        };
+        expect(await repo.setDeviceWebAuthnBinding(o, d.deviceId, binding)).toBe(false); // no passkey yet
+        const cred = {
+          credentialId: `cred2-${o}`,
+          publicKey: "pQECAyYgASFYIA",
+          rpId: "chalito.chalyb.com",
+          counter: 0,
+          transports: [],
+          createdAt: 1_790_000_000_000,
+        };
+        await repo.setDeviceWebAuthn(o, d.deviceId, cred);
+        expect(await repo.setDeviceWebAuthnBinding(o, d.deviceId, binding)).toBe(true);
+        expect((await repo.getDeviceWebAuthn(o, d.deviceId))?.binding).toEqual(binding);
+        await repo.setDeviceWebAuthn(o, d.deviceId, { ...cred, credentialId: `cred3-${o}` });
+        expect((await repo.getDeviceWebAuthn(o, d.deviceId))?.binding).toBeNull();
+      });
+    });
+
     describe("pairing codes", () => {
       it("createPairingCode once, then exists; found by short-code hash", async () => {
         const repo = await makeRepo();
@@ -258,6 +341,7 @@ export const runApiRepoContract = (
           claimedByDeviceId: "dev_phone",
           claimerPubSign: "ps",
           claimerPubBox: "pb",
+          claimerWebauthnBinding: { ctx: "chalito.webauthn-binding.v1", sig: "s" },
           claimedAt: 42,
         };
         expect(await repo.claimPairingCode(code.codeId, claim, () => agentFor(code, o, "dev_phone"))).toEqual({
@@ -277,6 +361,7 @@ export const runApiRepoContract = (
           claimedByDeviceId: "dev_phone",
           claimerPubSign: "ps",
           claimerPubBox: "pb",
+          claimerWebauthnBinding: { ctx: "chalito.webauthn-binding.v1", sig: "s" },
         });
         expect(await repo.claimPairingCode(code.codeId, claim, async () => agent)).toEqual({
           ok: false,

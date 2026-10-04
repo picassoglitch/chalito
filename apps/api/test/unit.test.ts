@@ -34,6 +34,36 @@ describe("hub SSO token", () => {
   });
 });
 
+describe("hub SSO token: one token, one session (review R-H2)", () => {
+  it("re-encodings of a used token are malformed, not a fresh single-use id", () => {
+    const t = mint(payload);
+    const a = verifySsoToken(t, secret, now);
+    expect(a.ok).toBe(true);
+    const sig = t.split(".")[1]!;
+    const last = sig.at(-1)!;
+    // Same 32 bytes, different spelling: padding, stray characters, the last character's spare bits.
+    // The last of 43 characters carries 4 data bits and 2 spare bits; setting a spare bit keeps the bytes.
+    const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const spareBits = sig.slice(0, -1) + B64.charAt(B64.indexOf(last) + 1);
+    expect(Buffer.from(spareBits, "base64url").equals(Buffer.from(sig, "base64url"))).toBe(true);
+    for (const v of [`${t}=`, `${t}==`, `${t}!`, `${t} `, `${t.split(".")[0]}.${spareBits}`]) {
+      const b = verifySsoToken(v, secret, now);
+      expect(b.ok && a.ok && b.sigHash !== a.sigHash).toBe(false);
+      expect(b).toEqual({ ok: false, reason: "malformed" });
+    }
+  });
+  it("the single-use id doesn't depend on the spelling at all", () => {
+    const t = mint(payload);
+    const a = verifySsoToken(t, secret, now);
+    const b = verifySsoToken(t, secret, now);
+    expect(a.ok && b.ok && a.sigHash === b.sigHash).toBe(true);
+  });
+  it("a padded base64 body is refused too", () => {
+    const [body, sig] = mint(payload).split(".");
+    expect(verifySsoToken(`${body}=.${sig}`, secret, now)).toEqual({ ok: false, reason: "malformed" });
+  });
+});
+
 describe("safeNextPath (no open redirect)", () => {
   it("keeps same-origin relative paths", () => {
     expect(safeNextPath("/en/a/abc?x=1")).toBe("/en/a/abc?x=1");

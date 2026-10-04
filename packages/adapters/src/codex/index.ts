@@ -1,6 +1,8 @@
 export * from "../core.js";
 export {
+  API_KEY_OVERRIDES,
   APPROVAL_POLICY,
+  BYO_KEY_ENV,
   CHATGPT_PLAN_OVERRIDES,
   checkCodexVersion,
   CodexAdapter,
@@ -8,6 +10,7 @@ export {
   codexVersionFromUserAgent,
   DEFAULT_CODEX_VERSIONS,
   HARDENING_OVERRIDES,
+  removeStoredCredentials,
   sandboxModeFor,
   sandboxPolicyFor,
 } from "./adapter.js";
