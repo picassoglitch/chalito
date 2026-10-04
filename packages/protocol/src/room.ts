@@ -180,3 +180,33 @@ export const PromoteRoomEventRequest = z.object({
 });
 
 export const SetRoomRetentionRequest = z.object({ companionId: CompanionId, retention: RoomRetention });
+
+/**
+ * POST /v1/rooms/:roomId/reports: a member reports an event and/or another member. Deduped per
+ * reporter and target (a repeat returns the same reportId). `attachedPlaintext` is the reporter's
+ * own decrypted copy of the event, sent only when they explicitly choose to attach it.
+ */
+export const RoomReportReason = z.enum(["spam", "abuse", "impersonation", "other"]);
+export const RoomReportRequest = z
+  .object({
+    companionId: CompanionId,
+    eventId: Id.optional(),
+    memberCompanionId: CompanionId.optional(),
+    reason: RoomReportReason,
+    note: z.string().max(500).optional(),
+    attachedPlaintext: z.string().min(1).max(4000).optional(),
+    /** Must be true when attachedPlaintext is present: the reporter opted in to send it. */
+    attachPlaintext: z.boolean().optional(),
+  })
+  .refine((r) => r.eventId !== undefined || r.memberCompanionId !== undefined, {
+    message: "report an event or a member",
+  })
+  .refine((r) => r.attachedPlaintext === undefined || r.attachPlaintext === true, {
+    message: "attachedPlaintext needs attachPlaintext: true (an explicit opt-in)",
+  })
+  .refine((r) => r.attachedPlaintext === undefined || r.eventId !== undefined, {
+    message: "attachedPlaintext is the reported event's text",
+  });
+export type RoomReportRequest = z.infer<typeof RoomReportRequest>;
+export const RoomReportResponse = z.object({ reportId: Id, duplicate: z.boolean() });
+export type RoomReportResponse = z.infer<typeof RoomReportResponse>;
