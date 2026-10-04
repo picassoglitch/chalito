@@ -24,9 +24,9 @@ export interface DecideInput {
 }
 
 /**
- * Turns a classification into allow / ask / deny. Developer-mode auto-approve applies
- * only to signed origins (local, client:*), never to mcp:* or call:* turns, and never
- * past the hard floor.
+ * Turns a classification into allow / ask / deny. Developer-mode auto-approve, `accept_edits`
+ * and LOW auto-allow of anything but a read apply only to signed origins (local, client:*),
+ * never to mcp:* or call:* turns, and never past the hard floor.
  */
 export const decide = ({
   classification: c,
@@ -43,6 +43,11 @@ export const decide = ({
   const has = (t: DevModeToggle) => devMode.on && signed && devMode.toggles.includes(t);
 
   if (permissionMode === "plan" && c.tier !== "LOW") return { action: "deny", reason: "plan_mode" };
+
+  // Unsigned turns (an MCP prompt, a phone answer) may read on their own, nothing more: no LOW
+  // auto-allow for runners and no accept_edits (review R-C1). HIGH/CRITICAL below already ask or
+  // deny for them, since Developer mode never applies to unsigned origins.
+  if (!signed && !c.readOnly && (c.tier === "LOW" || c.tier === "MED")) return { action: "ask", stepUp: false };
 
   switch (c.tier) {
     case "LOW":
