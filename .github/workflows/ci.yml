@@ -183,7 +183,8 @@ jobs:
       - name: Boot read-only, as non-root, without env
         run: |
           set +e
-          out=$(docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges chalito-${{ matrix.app }}:ci 2>&1)
+          # Read-only root; /tmp is the only writable path (tmpfs), as on Cloud Run's in-memory /tmp.
+          out=$(docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL --security-opt no-new-privileges chalito-${{ matrix.app }}:ci 2>&1)
           code=$?
           set -e
           echo "$out" | tail -5
