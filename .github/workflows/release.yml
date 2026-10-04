@@ -115,22 +115,36 @@ jobs:
     env:
       VERSION: ${{ needs.meta.outputs.version }}
       CHANNEL: ${{ needs.meta.outputs.channel }}
-      # Signing inputs. Absent secrets are empty strings: the plan then labels the build unsigned.
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
-      ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
-      ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPIMAGE_SIGN_KEY: ${{ secrets.APPIMAGE_SIGN_KEY }}
-      APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.APPIMAGETOOL_SIGN_PASSPHRASE }}
     steps:
       - uses: actions/checkout@v4
+      # Signing inputs, exported ONLY when set. A missing secret is an empty string, and the Tauri
+      # bundler treats a set-but-empty variable as present (`var_os("APPLE_CERTIFICATE")` →
+      # Some(""): it would import an empty certificate and fail the unsigned build). The plan
+      # below sees the same environment and labels the build unsigned.
+      - name: Signing environment (only the secrets that exist)
+        shell: bash
+        env:
+          S_AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          S_AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          S_AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          S_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          S_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          S_ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          S_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          S_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          S_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          S_APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          S_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          S_APPIMAGE_SIGN_KEY: ${{ secrets.APPIMAGE_SIGN_KEY }}
+          S_APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.APPIMAGETOOL_SIGN_PASSPHRASE }}
+        run: |
+          for k in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID ARTIFACT_SIGNING_ENDPOINT \
+            ARTIFACT_SIGNING_ACCOUNT ARTIFACT_SIGNING_PROFILE APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPIMAGE_SIGN_KEY APPIMAGETOOL_SIGN_PASSPHRASE; do
+            v="S_$k"; v="${!v}"
+            [ -n "$v" ] || continue
+            { echo "$k<<EOF_SIGNING_$k"; echo "$v"; echo "EOF_SIGNING_$k"; } >> "$GITHUB_ENV"
+          done
       - name: Linux webview, tray and packaging libraries
         if: matrix.os == 'linux'
         run: |
@@ -160,6 +174,50 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # ---- sidecar: the bun-compiled agent (lipo'd to universal on macOS) ----------
+      # pnpm installs only the host's optional prebuild (darwin-arm64 on macos-latest), and bun
+      # embeds a native addon only when that platform's package is installed: without this, the
+      # x64 half of the universal agent has no keyring. Pinned to the lockfile's version and
+      # integrity, next to @napi-rs/keyring where its loader resolves it.
+      - name: darwin-x64 keyring addon (explicit)
+        if: matrix.os == 'macos'
+        shell: bash
+        working-directory: apps/agent
+        run: |
+          main=$(node -p "require('fs').realpathSync(require.resolve('@napi-rs/keyring'))")
+          dir=$(dirname "$main")
+          while [ ! -f "$dir/package.json" ]; do dir=$(dirname "$dir"); done
+          ver=$(node -p "require('$dir/package.json').optionalDependencies['@napi-rs/keyring-darwin-x64']")
+          want=$(grep -A1 "^  '@napi-rs/keyring-darwin-x64@$ver':" "$GITHUB_WORKSPACE/pnpm-lock.yaml" | grep -o 'sha512-[^}]*' | tr -d ' ')
+          [ -n "$want" ] || { echo "no lockfile integrity for @napi-rs/keyring-darwin-x64@$ver" >&2; exit 1; }
+          dest="$(dirname "$dir")/keyring-darwin-x64"
+          mkdir -p "$RUNNER_TEMP/keyring-x64"
+          ( cd "$RUNNER_TEMP/keyring-x64" && npm pack "@napi-rs/keyring-darwin-x64@$ver" --json > pack.json )
+          got=$(node -p "require('$RUNNER_TEMP/keyring-x64/pack.json')[0].integrity")
+          [ "$got" = "$want" ] || { echo "integrity mismatch: $got != $want" >&2; exit 1; }
+          rm -rf "$dest" && mkdir -p "$dest"
+          tar -xzf "$RUNNER_TEMP/keyring-x64/"*.tgz -C "$dest" --strip-components=1
+          ls "$dest"/*.node
+      # The compiled agent loads its keyring addon and libsodium on every architecture we ship
+      # (x64 macOS under Rosetta). Exit 2 = addon loaded but no keychain backend (headless CI).
+      - name: Smoke the compiled agent
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            linux) targets="x86_64-unknown-linux-gnu" ;;
+            windows) targets="x86_64-pc-windows-msvc" ;;
+            macos)
+              targets="aarch64-apple-darwin x86_64-apple-darwin"
+              arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
+              ;;
+          esac
+          for t in $targets; do
+            pnpm --filter @chalito/agent build src/smoke.ts --target "$t"
+            bin="apps/agent/dist/chalito-agent-$t"; [ "${{ matrix.os }}" = windows ] && bin="$bin.exe"
+            run="$bin"; [ "$t" = x86_64-apple-darwin ] && run="arch -x86_64 $bin"
+            set +e; $run; code=$?; set -e
+            [ "$code" = 0 ] || [ "$code" = 2 ] || { echo "smoke failed for $t (exit $code)" >&2; exit 1; }
+            rm -f "$bin"
+          done
       - name: Build the agent sidecar
         shell: bash
         run: |
