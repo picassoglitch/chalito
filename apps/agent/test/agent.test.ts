@@ -553,6 +553,85 @@ describe("events and cards", () => {
   });
 });
 
+describe("revoking another client takes a passkey step-up (review R-L1)", () => {
+  const setup = async (o: { phonePasskey?: boolean } = {}) => {
+    const h = await harness();
+    const tablet = await device("dev_tablet");
+    await h.trust.addConfirmed({ deviceId: tablet.id, pubSign: tablet.pubSign, pubBox: tablet.pubBox }, Date.now());
+    if (o.phonePasskey === false) {
+      // A setup where no trusted client has a passkey yet.
+      h.trust.remove(h.phone.id);
+      await h.trust.addConfirmed(
+        { deviceId: h.phone.id, pubSign: h.phone.pubSign, pubBox: h.phone.pubBox },
+        Date.now(),
+      );
+    }
+    let n = 0;
+    const revoke = async (signer: Device, target: string, stepUp?: "valid" | "other_body") => {
+      const cid = `rv${++n}`;
+      const body: Record<string, unknown> = {
+        v: 1,
+        cid,
+        uid: OWNER,
+        targetDeviceId: h.agent.id,
+        origin: `client:${signer.id}`,
+        nonce: await randomNonce(),
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        payload: { type: "device.revokeClient", clientDeviceId: target },
+      };
+      if (stepUp) {
+        const challengeBody =
+          stepUp === "valid"
+            ? body
+            : { ...body, payload: { type: "device.revokeClient", clientDeviceId: "dev_other" } };
+        const assertion = await h.passkey.stepUp(h.passkeyRef.rpId)(await stepUpChallenge(challengeBody as never));
+        body.stepUp = { method: "webauthn", at: Date.now(), assertion };
+      }
+      const env = await signEnvelope("chalito.command.v1", body, signer.id, signer.sign.secretKey);
+      return h.core.handleCommand(cid, { env, fromDeviceId: signer.id });
+    };
+    return { h, tablet, revoke };
+  };
+
+  it("without a step-up it's refused and the client stays trusted", async () => {
+    const { h, tablet, revoke } = await setup();
+    expect(await revoke(h.phone, tablet.id)).toEqual({ ok: false, reason: "step_up_required" });
+    expect(h.trust.has(tablet.id)).toBe(true);
+  });
+
+  it("with the signer's passkey over this very command it goes through", async () => {
+    const { h, tablet, revoke } = await setup();
+    expect(await revoke(h.phone, tablet.id, "valid")).toEqual({ ok: true });
+    expect(h.trust.has(tablet.id)).toBe(false);
+  });
+
+  it("an assertion made for a different command doesn't count", async () => {
+    const { h, tablet, revoke } = await setup();
+    const r = await revoke(h.phone, tablet.id, "other_body");
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/^step_up_/);
+    expect(h.trust.has(tablet.id)).toBe(true);
+  });
+
+  it("a client without a passkey (e.g. a stolen tablet) can't remove the last passkey-bearing phone", async () => {
+    const { h, tablet, revoke } = await setup();
+    expect(await revoke(tablet, h.phone.id)).toEqual({ ok: false, reason: "step_up_required" });
+    expect(h.trust.has(h.phone.id)).toBe(true);
+  });
+
+  it("revoking oneself never needs a step-up", async () => {
+    const { tablet, revoke, h } = await setup();
+    expect(await revoke(tablet, tablet.id)).toEqual({ ok: true });
+    expect(h.trust.has(tablet.id)).toBe(false);
+  });
+
+  it("while no trusted client has a passkey, a plain revoke still works", async () => {
+    const { h, tablet, revoke } = await setup({ phonePasskey: false });
+    expect(await revoke(h.phone, tablet.id)).toEqual({ ok: true });
+  });
+});
+
 describe("MCP card sharing (opt-in)", () => {
   const twoTurns: FakeStep[][] = [[{ say: "voy a revisar src/login.ts" }], [{ say: "listo" }]];
   const sidOf = (h: Awaited<ReturnType<typeof harness>>) => [...h.core.sessions.keys()][0]!;

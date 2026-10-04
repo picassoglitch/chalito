@@ -194,6 +194,32 @@ describe("ClientActions commands", () => {
     ]);
   });
 
+  it("revoking ANOTHER client binds a step-up to the exact command; revoking oneself doesn't ask (review R-L1)", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const { agent, db, actions, me } = await setup({
+      stepUp: async (_a, unsigned) => {
+        seen.push(unsigned!);
+        return { method: "platform_biometric" as const, at: 1 };
+      },
+    });
+    await actions.revokeClient(agent.deviceId, "dev_lostphone");
+    const body = (db.rows("commands")[0]!.env as { body: CommandBody }).body;
+    expect(body.stepUp).toEqual({ method: "platform_biometric", at: 1 });
+    // The ceremony saw the final body minus stepUp: cid, nonce, times and payload included.
+    const { stepUp: _s, ...unsigned } = body;
+    expect(seen).toEqual([unsigned]);
+
+    await actions.revokeClient(agent.deviceId, me.deviceId);
+    expect(seen).toHaveLength(1);
+    expect((db.rows("commands")[1]!.env as { body: CommandBody }).body.stepUp).toBeUndefined();
+  });
+
+  it("without a passkey on this device the revoke goes out plain (the agent decides)", async () => {
+    const { agent, db, actions } = await setup({ stepUp: async () => null });
+    await actions.revokeClient(agent.deviceId, "dev_lostphone");
+    expect((db.rows("commands")[0]!.env as { body: CommandBody }).body.stepUp).toBeUndefined();
+  });
+
   it("there is NO way to turn Developer mode (or a toggle) on, or to loosen policy, from a client", () => {
     const methods = Object.getOwnPropertyNames(ClientActions.prototype);
     expect(methods.filter((m) => /enable|turnon|devmodeon|toggleon|loosen|bypass/i.test(m))).toEqual([]);

@@ -11,6 +11,7 @@ import {
   SessionId,
   Uid,
 } from "./common.js";
+import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
@@ -70,6 +71,11 @@ export const CommandBody = z
     issuedAt: EpochMs,
     expiresAt: EpochMs,
     payload: CommandPayload,
+    /**
+     * A passkey assertion over SHA-256(JCS(this body without stepUp)), like a Decision's. Required
+     * by agents to revoke ANOTHER client while any trusted client has a passkey (review R-L1).
+     */
+    stepUp: StepUp.optional(),
   })
   // Upper bound only: an already-expired command still parses, so the agent can reject it as "expired".
   .refine((b) => b.expiresAt - b.issuedAt <= COMMAND_TTL_MS, {
