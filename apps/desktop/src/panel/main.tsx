@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import type { ChalitoClient, Snapshot } from "@chalito/client";
+import type { Snapshot } from "@chalito/client";
 import type { PhoneVerifier } from "@chalito/ui";
 import { TextProviders, detectLocale } from "../lib/i18n.js";
 import { unavailableIpc, type AgentIpc } from "../lib/ipc.js";
@@ -11,6 +11,9 @@ import { DesktopSettings } from "../lib/settings-sync.js";
 import { shell } from "../lib/shell.js";
 import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { Panel } from "./Panel.js";
+import { SignIn } from "./SignIn.js";
+import { createSession, readEnv, type Connected } from "../lib/session.js";
+import type { SignInController } from "../lib/sign-in.js";
 
 const IDLE_AFTER_MS = 2 * 60 * 1000;
 const SIGNAL_POLL_MS = 5_000;
@@ -33,12 +36,31 @@ const loadDnd = () => {
 /**
  * The panel window owns the account connection and the agent IPC; the pet window only
  * renders. Every few seconds it recomputes the pet's context and the presence signals.
- * Signing in (hub SSO via the system browser + deep link) is a follow-up: until then
- * `client` is null, the inbox says it isn't connected and settings stay on this device.
- * Once signed in, settings go through @chalito/client's SettingsStore like the PWA's.
+ * Until signed in (hub SSO in the system browser → chalito:// deep link → endorsement by
+ * a trusted client), the inbox shows the sign-in flow and settings stay on this device.
+ * Server-backed settings (SettingsStore) switch on with the session (follow-up, with
+ * picassoglitch-37's settings move).
  */
-const App = ({ client, ipc }: { client: ChalitoClient | null; ipc: AgentIpc }) => {
+const App = ({ ipc }: { ipc: AgentIpc }) => {
   const sh = useMemo(shell, []);
+  const [conn, setConn] = useState<Connected | null>(null);
+  const [controller, setController] = useState<SignInController | null>(null);
+  useEffect(() => {
+    const env = readEnv();
+    if (!env) return;
+    let dispose: (() => void) | null = null;
+    let alive = true;
+    void createSession(env, (c) => alive && setConn(c)).then((s) => {
+      if (!alive) return s.dispose();
+      dispose = s.dispose;
+      setController(s.controller);
+    });
+    return () => {
+      alive = false;
+      dispose?.();
+    };
+  }, []);
+  const client = conn?.client ?? null;
   const ptt = useMemo(() => new PushToTalk(unavailableVoice), []);
   // Server-backed once the desktop has a session (new SettingsStore(supabase, owner)).
   const store = useMemo(() => new DesktopSettings(null), []);
@@ -78,6 +100,8 @@ const App = ({ client, ipc }: { client: ChalitoClient | null; ipc: AgentIpc }) =
   return (
     <Panel
       client={client}
+      canStepUp={conn?.canStepUp ?? false}
+      signIn={<SignIn controller={controller} />}
       ipc={ipc}
       ptt={ptt}
       settings={view.values}
@@ -103,7 +127,7 @@ document.documentElement.lang = locale;
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <TextProviders locale={locale}>
-      <App client={null} ipc={unavailableIpc} />
+      <App ipc={unavailableIpc} />
     </TextProviders>
   </StrictMode>,
 );

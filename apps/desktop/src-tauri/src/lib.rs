@@ -1,10 +1,15 @@
 mod hittest;
+#[cfg(debug_assertions)]
+mod loopback;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hittest::{Activity, ClickThrough, Rect};
 use tauri::{AppHandle, Manager, State};
+
+/// Whether this build carries the dev-only SSO loopback (never in release; see loopback.rs).
+pub const DEV_LOOPBACK: bool = cfg!(debug_assertions);
 
 const PET: &str = "pet";
 const POLL: Duration = Duration::from_millis(33);
@@ -98,13 +103,44 @@ fn prefer_xwayland() {}
 pub fn run() {
     prefer_xwayland();
     let state: SharedState = Arc::default();
-    tauri::Builder::default()
-        .manage(state.clone())
-        .invoke_handler(tauri::generate_handler![set_hit_box, focus_pet, touch_activity, idle_ms])
+    let builder = tauri::Builder::default()
+        // First: a second launch (e.g. the OS opening a chalito:// link) hands its arguments
+        // to this instance (the deep-link feature forwards the URL) and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(panel) = app.get_webview_window("panel") {
+                let _ = panel.show();
+                let _ = panel.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init())
+        .manage(state.clone());
+    #[cfg(debug_assertions)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        set_hit_box,
+        focus_pet,
+        touch_activity,
+        idle_ms,
+        loopback::sso_loopback
+    ]);
+    #[cfg(not(debug_assertions))]
+    let builder = builder.invoke_handler(tauri::generate_handler![set_hit_box, focus_pet, touch_activity, idle_ms]);
+    builder
         .setup(move |app| {
             spawn_cursor_poll(app.handle().clone(), state.clone());
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running the Chalito desktop app");
+}
+
+#[cfg(test)]
+mod tests {
+    /// Run in CI with `cargo test --release`: the loopback must not exist in release builds.
+    #[test]
+    fn dev_loopback_follows_debug_assertions() {
+        assert_eq!(super::DEV_LOOPBACK, cfg!(debug_assertions));
+        #[cfg(not(debug_assertions))]
+        assert!(!super::DEV_LOOPBACK, "release build with the dev SSO loopback");
+    }
 }

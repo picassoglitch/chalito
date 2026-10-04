@@ -1,12 +1,24 @@
 import { useState, useSyncExternalStore } from "react";
 import type { ChalitoClient } from "@chalito/client";
 import { useT } from "../lib/i18n.js";
+import { needsStepUp } from "../lib/stepup.js";
 
 const summary = (d: Record<string, unknown> | null, fallback: string): string =>
   typeof d?.summary === "string" ? d.summary : typeof d?.tool === "string" ? d.tool : fallback;
 
-/** Pending approvals and notices from the live store, the same rows the PWA shows. */
-export const Inbox = ({ client }: { client: Pick<ChalitoClient, "live" | "actions"> }) => {
+/**
+ * Pending approvals and notices from the live store, the same rows the PWA shows. Without a
+ * passkey on this device (e.g. WebKitGTK on Linux) a HIGH/CRITICAL approve can't carry its
+ * step-up: the row says to approve from the phone and offers no approve button (deny is
+ * always possible). The approval stays pending for the phone.
+ */
+export const Inbox = ({
+  client,
+  canStepUp,
+}: {
+  client: Pick<ChalitoClient, "live" | "actions">;
+  canStepUp: boolean;
+}) => {
   const t = useT();
   const snap = useSyncExternalStore(client.live.subscribe, client.live.getSnapshot);
   const [error, setError] = useState<string | null>(null);
@@ -31,7 +43,13 @@ export const Inbox = ({ client }: { client: Pick<ChalitoClient, "live" | "action
                 <strong>{summary(a.details, a.origin)}</strong>
                 <span className="muted">{t("inbox.risk", { risk: a.risk })}</span>
                 <div className="row">
-                  <button onClick={() => void run(client.actions.decide(a.aid, true))}>{t("inbox.approve")}</button>
+                  {needsStepUp(a) && !canStepUp ? (
+                    <span className="muted" data-phone-only>
+                      {t("inbox.approveOnPhone")}
+                    </span>
+                  ) : (
+                    <button onClick={() => void run(client.actions.decide(a.aid, true))}>{t("inbox.approve")}</button>
+                  )}
                   <button onClick={() => void run(client.actions.decide(a.aid, false))}>{t("inbox.deny")}</button>
                 </div>
               </li>

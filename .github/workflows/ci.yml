@@ -216,6 +216,20 @@ jobs:
       - run: pnpm tauri build --debug --bundles ${{ matrix.bundles }}
         working-directory: apps/desktop
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+      # The dev-only SSO loopback (loopback.rs) must not exist in release builds: a cfg test
+      # compiled in release, then a grep for its marker in both binaries (the debug one proves
+      # the grep can find it).
+      - name: Release build has no SSO loopback
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo test --release --lib dev_loopback
+          cargo build --release
+          grep -aq CHALITO_DEV_SSO_LOOPBACK target/debug/chalito-desktop
+          if grep -aq CHALITO_DEV_SSO_LOOPBACK target/release/chalito-desktop; then
+            echo "release binary contains the dev SSO loopback" >&2
+            exit 1
+          fi
       # Not committed yet: the first green run's lockfile is the one to pin (text file only).
       - name: Upload Cargo.lock
         if: runner.os == 'Linux'

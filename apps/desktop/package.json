@@ -18,6 +18,8 @@
     "@chalito/protocol": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/plugin-deep-link": "2.6.1",
+    "@tauri-apps/plugin-opener": "2.7.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "three": "0.186.1"

@@ -10,6 +10,9 @@ import { TextProviders } from "../src/lib/i18n.js";
 import { unavailableIpc, type AgentIpc, type DevModeState } from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
 import { Panel, type PanelProps, type Tab } from "../src/panel/Panel.js";
+import { SignIn } from "../src/panel/SignIn.js";
+import { SignInController } from "../src/lib/sign-in.js";
+import { SsoFlow } from "../src/lib/sso.js";
 
 afterEach(cleanup);
 
@@ -240,5 +243,73 @@ describe("panel: inbox", () => {
     renderPanel({ client: f.client }, "en");
     fireEvent.click(screen.getByText("Deny"));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn't send: step_up_cancelled");
+  });
+});
+
+describe("panel: step-up capability", () => {
+  const high = approval({ aid: "h1", risk: "HIGH", details: { summary: "git push --force" } });
+  const low = approval({ aid: "l1", risk: "LOW", details: { summary: "ls" } });
+
+  it("without a passkey: HIGH says approve from the phone (no approve button), deny stays", () => {
+    const f = fakeClient({ approvals: [high, low] });
+    const { container } = renderPanel({ client: f.client, canStepUp: false });
+    const row = container.querySelector('[data-aid="h1"]')!;
+    expect(row.querySelector("[data-phone-only]")!.textContent).toBe("Aprueba esta acción desde tu teléfono");
+    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Rechazar"]);
+    const lowRow = container.querySelector('[data-aid="l1"]')!;
+    expect([...lowRow.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Aprobar", "Rechazar"]);
+  });
+
+  it("with a passkey: HIGH can be approved here", () => {
+    const f = fakeClient({ approvals: [high] });
+    const { container } = renderPanel({ client: f.client, canStepUp: true }, "en");
+    expect(container.querySelector("[data-phone-only]")).toBeNull();
+    fireEvent.click(screen.getByText("Approve"));
+    expect(f.decide).toHaveBeenCalledWith("h1", true);
+  });
+});
+
+describe("panel: sign-in screen", () => {
+  it("not configured in this build", () => {
+    renderPanel({ signIn: <SignIn controller={null} /> }, "en");
+    expect(screen.getByText(/isn't configured/)).toBeTruthy();
+  });
+
+  it("walks the steps the controller reports", async () => {
+    const flow = new SsoFlow("https://chalyb.com/launch");
+    const opened: string[] = [];
+    let release: (d: unknown) => void = () => undefined;
+    const controller = new SignInController({
+      flow,
+      openUrl: async (u) => void opened.push(u),
+      exchange: async () => ({ ok: true, owner: "8a7a0d3c-5b5e-4a39-9d2b-2f8b1e0c4a11" }),
+      enroll: (_o, onDisplay) =>
+        new Promise((resolve) => {
+          onDisplay({ shortCode: "KQ7RM" });
+          release = () =>
+            resolve({ ok: true, deviceId: "d", customToken: "h", passkey: "unavailable", credential: null });
+        }),
+    });
+    const { container } = renderPanel({ signIn: <SignIn controller={controller} /> }, "en");
+    fireEvent.click(screen.getByText("Sign in"));
+    await waitFor(() => expect(container.querySelector('[data-sign-in="browser"]')).not.toBeNull());
+    const state = new URL(opened[0]!).searchParams.get("state")!;
+    void controller.handleUrl(`chalito://auth/sso?token=t&state=${state}`);
+    expect(await screen.findByText("KQ7RM")).toBeTruthy();
+    release(null);
+    expect(await screen.findByText(/HIGH or CRITICAL actions are approved from your phone/)).toBeTruthy();
+  });
+
+  it("shows the reason and a retry on error", async () => {
+    const controller = new SignInController({
+      flow: new SsoFlow("https://chalyb.com/launch"),
+      openUrl: () => Promise.reject(new Error("x")),
+      exchange: async () => ({ ok: false, reason: "exchange_failed" }),
+      enroll: async () => ({ ok: false, reason: "failed" }),
+    });
+    renderPanel({ signIn: <SignIn controller={controller} /> }, "en");
+    fireEvent.click(screen.getByText("Sign in"));
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn't open the browser.");
+    expect(screen.getByText("Try again")).toBeTruthy();
   });
 });
