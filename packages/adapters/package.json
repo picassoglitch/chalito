@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./claude-code": "./src/claude-code/index.ts",
+    "./codex": "./src/codex/index.ts",
     "./voice": "./src/voice/index.ts"
   },
   "scripts": {
