@@ -131,6 +131,9 @@
     "quietHours": {
       "label": "Quiet hours",
       "hint": "No calls or messages during these hours, except emergencies.",
+      "default": "Default hours",
+      "custom": "Custom",
+      "off": "No quiet hours",
       "from": "From",
       "to": "to"
     },
@@ -155,10 +158,10 @@
       "none": "You haven't connected any AI yet.",
       "notConnected": "Not connected",
       "mode": {
-        "api_key": "API key",
-        "subscription": "Your plan",
-        "managed": "Chalito energy",
-        "none": "Not connected"
+        "byo_api_key": "Your API key",
+        "byo_subscription_local": "Your plan",
+        "byo_mcp_connector": "Connector",
+        "managed": "Chalito energy"
       }
     },
     "planCredits": {
@@ -360,6 +363,18 @@
       "cancel": "Cancel",
       "revokeSent": "Removal sent to your computers.",
       "failed": "We couldn't send it."
+    },
+    "settings": {
+      "server": "Your settings are saved to your account.",
+      "device": "Sign in to save your settings; for now they're kept on this device.",
+      "error": {
+        "rejected": "Couldn't save: verify your phone and confirm that charges may apply first.",
+        "failed": "We couldn't save that change. Try again."
+      }
+    },
+    "notification": {
+      "opening": "Opening…",
+      "notFound": "That alert no longer exists or isn't yours."
     }
   }
 }

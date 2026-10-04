@@ -1,12 +1,9 @@
 "use client";
-import { useEffect, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { PRODUCT_NAME, formatCompanionTitle } from "@chalito/brand";
-import type { SettingsValues } from "@chalito/ui";
 import { Link } from "@/i18n/navigation";
-import { env } from "@/lib/env";
 import { hubLaunchUrl } from "@/lib/hub";
-import { loadSettings } from "@/lib/local";
+import { useSettings } from "./useSettings";
 import { useSession } from "@/lib/session";
 import type { AppLocale } from "@/i18n/routing";
 
@@ -15,8 +12,7 @@ export const Home = () => {
   const ts = useTranslations("settings");
   const locale = useLocale() as AppLocale;
   const session = useSession();
-  const [settings, setSettings] = useState<SettingsValues | null>(null);
-  useEffect(() => setSettings(loadSettings()), []);
+  const { values: settings } = useSettings();
   const title = settings
     ? formatCompanionTitle(settings.companionName.name, settings.companionName.isRenamed, locale)
     : null;

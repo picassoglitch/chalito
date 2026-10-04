@@ -3,7 +3,13 @@ import { getCountries, getCountryCallingCode, parsePhoneNumberFromString, type C
 import { formatCompanionTitle } from "@chalito/brand";
 import { COMPANIONS, type CompanionId } from "../companions.js";
 import { useUiText } from "../text.js";
-import { RENDER_QUALITIES, type ConnectionStatus, type PhoneVerifier, type RenderQuality } from "./values.js";
+import {
+  RENDER_QUALITIES,
+  type ConnectionStatus,
+  type PhoneVerifier,
+  type QuietHours,
+  type RenderQuality,
+} from "./values.js";
 
 /** "Pueden aplicar cargos" / "Charges may apply": shown wherever calls, SMS or WhatsApp are on. */
 export const ChargesNotice = () => {
@@ -284,44 +290,46 @@ export const CompanionNameField = ({
   );
 };
 
-export const QuietHoursField = ({
-  value,
-  onChange,
-}: {
-  value: { enabled: boolean; from: string; to: string };
-  onChange: (v: { enabled: boolean; from: string; to: string }) => void;
-}) => {
+export const QuietHoursField = ({ value, onChange }: { value: QuietHours; onChange: (v: QuietHours) => void }) => {
   const { t } = useUiText();
-  const fromId = useId();
-  const toId = useId();
+  const startId = useId();
+  const endId = useId();
   return (
-    <Toggle
-      label={t("quietHours.label")}
-      hint={t("quietHours.hint")}
-      checked={value.enabled}
-      onChange={(enabled) => onChange({ ...value, enabled })}
-    >
-      {value.enabled ? (
-        <div className="mt-2 flex items-center gap-2">
-          <label htmlFor={fromId}>{t("quietHours.from")}</label>
+    <fieldset className="grid gap-2">
+      <legend className="font-medium">{t("quietHours.label")}</legend>
+      <p className="text-sm text-neutral-600">{t("quietHours.hint")}</p>
+      {(["default", "custom", "off"] as const).map((m) => (
+        <label key={m} className="flex items-center gap-2">
           <input
-            id={fromId}
-            type="time"
-            className="rounded-md border px-2 py-1"
-            value={value.from}
-            onChange={(e) => onChange({ ...value, from: e.target.value })}
+            type="radio"
+            name="quiet-hours"
+            checked={value.mode === m}
+            onChange={() => onChange({ ...value, mode: m })}
           />
-          <label htmlFor={toId}>{t("quietHours.to")}</label>
+          {t(`quietHours.${m}`)}
+        </label>
+      ))}
+      {value.mode === "custom" ? (
+        <div className="flex items-center gap-2">
+          <label htmlFor={startId}>{t("quietHours.from")}</label>
           <input
-            id={toId}
+            id={startId}
             type="time"
             className="rounded-md border px-2 py-1"
-            value={value.to}
-            onChange={(e) => onChange({ ...value, to: e.target.value })}
+            value={value.start}
+            onChange={(e) => onChange({ ...value, start: e.target.value })}
+          />
+          <label htmlFor={endId}>{t("quietHours.to")}</label>
+          <input
+            id={endId}
+            type="time"
+            className="rounded-md border px-2 py-1"
+            value={value.end}
+            onChange={(e) => onChange({ ...value, end: e.target.value })}
           />
         </div>
       ) : null}
-    </Toggle>
+    </fieldset>
   );
 };
 

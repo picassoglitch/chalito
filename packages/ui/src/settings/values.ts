@@ -5,13 +5,26 @@ import { DEFAULT_COMPANION } from "../companions.js";
 export const RENDER_QUALITIES = ["auto", "bajo", "medio", "alto"] as const;
 export type RenderQuality = (typeof RENDER_QUALITIES)[number];
 
-export type ConnectionMode = "api_key" | "subscription" | "managed" | "none";
+/** chalito.connections doc.mode (valid_connection_doc in the settings migration). */
+export type ConnectionMode = "byo_api_key" | "byo_subscription_local" | "byo_mcp_connector" | "managed";
 
 export interface ConnectionStatus {
   /** Provider id from providers.yaml (anthropic, openai, xai, google). */
   provider: string;
+  /** The device that reported it (connections are per device + provider). */
+  deviceId?: string;
   mode: ConnectionMode;
   connected: boolean;
+}
+
+/**
+ * The notifier's tri-state (users.quiet_hours): `default` = the default window (null),
+ * `off` = no quiet hours ({"off": true}), `custom` = {start, end}.
+ */
+export interface QuietHours {
+  mode: "default" | "off" | "custom";
+  start: string;
+  end: string;
 }
 
 /** Every user setting, as the settings screens edit it. Secrets are never part of it. */
@@ -26,9 +39,10 @@ export interface SettingsValues {
   whatsapp: boolean;
   calls: boolean;
   callBriefing: boolean;
-  quietHours: { enabled: boolean; from: string; to: string };
+  quietHours: QuietHours;
   avatar: CompanionId;
   companionName: { name: string; isRenamed: boolean };
+  /** users.privacy_mode: true = "private" (the default), false = "cloud_assist". */
   privacyMode: boolean;
   connections: ConnectionStatus[];
   /** From the hub (read-only here): the tier label key and whether a trial is running. */
@@ -42,10 +56,10 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   whatsapp: false,
   calls: false,
   callBriefing: false,
-  quietHours: { enabled: false, from: "22:00", to: "08:00" },
+  quietHours: { mode: "default", start: "22:00", end: "08:00" },
   avatar: DEFAULT_COMPANION,
   companionName: { name: "", isRenamed: false },
-  privacyMode: false,
+  privacyMode: true,
   connections: [],
   planCredits: { tier: null, trialEndsAt: null },
   renderQuality: "auto",

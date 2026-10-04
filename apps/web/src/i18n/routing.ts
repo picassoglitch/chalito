@@ -20,6 +20,7 @@ export const routing = defineRouting({
     "/a/[id]": "/a/[id]",
     "/m/[id]": "/m/[id]",
     "/r/[id]": "/r/[id]",
+    "/n/[nid]": "/n/[nid]",
   },
 });
 

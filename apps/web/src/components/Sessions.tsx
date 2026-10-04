@@ -73,19 +73,27 @@ const openQuestions = (events: readonly EventView[]) => {
   return out;
 };
 
-const QuestionForm = ({ sid, q }: { sid: string; q: { questionId: string; questions: Question[] } }) => {
+const QuestionForm = ({
+  sid,
+  q,
+  onSent,
+}: {
+  sid: string;
+  q: { questionId: string; questions: Question[] };
+  onSent: () => void;
+}) => {
   const t = useTranslations("live.session");
   const { client } = useChalito();
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [sent, setSent] = useState(false);
-  if (sent) return <p role="status">{t("answerSent")}</p>;
   return (
     <form
       data-testid="question"
       className="grid gap-3 rounded-xl border border-sky-300 bg-sky-50 p-4"
       onSubmit={(e) => {
         e.preventDefault();
-        void client?.actions.answer(sid, q.questionId, answers).then(() => setSent(true));
+        // The agent clears the open question once it has the answer, unmounting this form;
+        // the confirmation lives in the session view.
+        void client?.actions.answer(sid, q.questionId, answers).then(onSent);
       }}
     >
       {q.questions.map((qq) => (
@@ -181,7 +189,7 @@ export const SessionDetail = ({ sid }: { sid: string }) => {
         <p className="text-sm text-neutral-600">{t("sealed")}</p>
       )}
       {pendingQuestions.map((q) => (
-        <QuestionForm key={q.questionId} sid={sid} q={q} />
+        <QuestionForm key={q.questionId} sid={sid} q={q} onSent={() => setNote(t("answerSent"))} />
       ))}
       <div className="flex flex-wrap items-center gap-2">
         <button

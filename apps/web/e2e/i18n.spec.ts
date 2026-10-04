@@ -41,8 +41,6 @@ test("localized slugs and the language switch", async ({ page }) => {
 test("deep-link stubs exist in both locales", async ({ page }) => {
   test.setTimeout(90_000);
   const links: [string, string][] = [
-    ["/a/apr_1", "Aprobación apr_1"],
-    ["/en/a/apr_1", "Approval apr_1"],
     ["/m/m1", "Mesa m1"],
     ["/r/r1", "Sala r1"],
     ["/en/r/r1", "Room r1"],
@@ -54,6 +52,9 @@ test("deep-link stubs exist in both locales", async ({ page }) => {
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(heading);
   }
   expect((await page.goto("/a/bad%20id"))?.status()).toBe(404);
+  // /a/<id> is a live screen: signed out, it asks you to sign in first.
+  await page.goto("/a/apr_1");
+  await expect(page.getByTestId("gate-signed_out")).toBeVisible();
 });
 
 test("the language switch keeps a deep link's id", async ({ page }) => {

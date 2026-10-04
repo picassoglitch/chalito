@@ -3,12 +3,34 @@ import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
+/**
+ * The dev/test mock backend (src/dev, NEXT_PUBLIC_CHALITO_DEV_BACKEND=1) must never reach a
+ * deployment: refuse to build with it anywhere on Vercel (production or preview).
+ */
+export const assertNoDevBackendOnVercel = (e: Record<string, string | undefined>) => {
+  if (e.NEXT_PUBLIC_CHALITO_DEV_BACKEND === "1" && (e.VERCEL || e.VERCEL_ENV))
+    throw new Error("NEXT_PUBLIC_CHALITO_DEV_BACKEND is a dev/test-only flag and can't be built on Vercel.");
+};
+assertNoDevBackendOnVercel(process.env);
+
 const config: NextConfig = {
   // Workspace packages ship TypeScript sources.
-  transpilePackages: ["@chalito/ui", "@chalito/brand", "@chalito/protocol", "@chalito/client"],
+  transpilePackages: [
+    "@chalito/ui",
+    "@chalito/brand",
+    "@chalito/protocol",
+    "@chalito/client",
+    "@chalito/client-keys",
+    "@chalito/crypto",
+  ],
   // providers.yaml is read at build/render time from packages/config.
   outputFileTracingIncludes: { "/**": ["../../packages/config/*.yaml"] },
   poweredByHeader: false,
+  // The e2e suite builds the plain app and the mock-backend app side by side.
+  distDir: process.env.NEXT_DIST_DIR ?? ".next",
+  // Always defined, so `process.env.NEXT_PUBLIC_CHALITO_DEV_BACKEND === "1"` is a build-time
+  // constant and webpack drops the dev backend (src/dev) from normal builds entirely.
+  env: { NEXT_PUBLIC_CHALITO_DEV_BACKEND: process.env.NEXT_PUBLIC_CHALITO_DEV_BACKEND === "1" ? "1" : "0" },
   // Workspace packages use NodeNext-style `./x.js` specifiers for TypeScript files. Turbopack
   // can't map those yet, so the web app builds with webpack (`next build --webpack`).
   webpack: (cfg) => {

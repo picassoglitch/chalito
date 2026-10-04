@@ -131,6 +131,9 @@
     "quietHours": {
       "label": "Horas de silencio",
       "hint": "No te llamamos ni escribimos en ese horario, salvo urgencias.",
+      "default": "Horario predeterminado",
+      "custom": "Personalizado",
+      "off": "Sin horas de silencio",
       "from": "De",
       "to": "a"
     },
@@ -155,10 +158,10 @@
       "none": "Aún no conectas ninguna IA.",
       "notConnected": "Sin conectar",
       "mode": {
-        "api_key": "API key",
-        "subscription": "Tu plan",
-        "managed": "Energía de Chalito",
-        "none": "Sin conectar"
+        "byo_api_key": "Tu API key",
+        "byo_subscription_local": "Tu plan",
+        "byo_mcp_connector": "Conector",
+        "managed": "Energía de Chalito"
       }
     },
     "planCredits": {
@@ -360,6 +363,18 @@
       "cancel": "Cancelar",
       "revokeSent": "Retiro enviado a tus computadoras.",
       "failed": "No pudimos enviarlo."
+    },
+    "settings": {
+      "server": "Tus ajustes se guardan en tu cuenta.",
+      "device": "Entra con tu cuenta para guardar tus ajustes; por ahora se guardan en este dispositivo.",
+      "error": {
+        "rejected": "No se pudo guardar: primero verifica tu teléfono y confirma que pueden aplicar cargos.",
+        "failed": "No pudimos guardar el cambio. Inténtalo de nuevo."
+      }
+    },
+    "notification": {
+      "opening": "Abriendo…",
+      "notFound": "Ese aviso ya no existe o no es tuyo."
     }
   }
 }

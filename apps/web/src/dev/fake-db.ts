@@ -22,6 +22,18 @@ export interface WriteEvent {
   byClient: boolean;
 }
 
+/** Client writes survive full page loads (redirects) through sessionStorage, for the e2e checks. */
+export const WRITE_LOG_KEY = "chalito.dev.clientWrites";
+const logWrite = (w: { table: string; op: string; row: Row }) => {
+  try {
+    const all = JSON.parse(sessionStorage.getItem(WRITE_LOG_KEY) ?? "[]") as unknown[];
+    all.push(w);
+    sessionStorage.setItem(WRITE_LOG_KEY, JSON.stringify(all));
+  } catch {
+    /* storage unavailable: in-memory only */
+  }
+};
+
 export class FakeDb {
   readonly tables = new Map<string, Row[]>();
   /** Every row the browser wrote, as written (for the ciphertext-only check). */
@@ -63,8 +75,68 @@ export class FakeDb {
     this.tables.set(table, keep);
   }
 
+  /**
+   * The settings RPCs (migration 20261004001100), with the same whitelist and the same CHECK:
+   * whatsapp/calls/sms need phone_verified_at AND charges_notice_ack_at.
+   */
+  rpc(owner: string, fn: string, args: Row = {}): { data: unknown; error: { message: string; code: string } | null } {
+    const users = this.rows("users");
+    const u = users.find((r) => r.id === owner)!;
+    const view = () => {
+      const { id: _id, tier: _tier, rev: _rev, ...rest } = u;
+      return structuredClone(rest);
+    };
+    const fail = (message: string, code: string) => ({ data: null, error: { message, code } });
+    if (fn === "get_my_settings") return { data: view(), error: null };
+    if (fn === "create_my_companion") {
+      if (this.rows("companions").some((c) => c.owner === owner)) return fail("chalito: companion_exists", "23505");
+      this.insert(
+        "companions",
+        {
+          owner,
+          companion_id: "chl_devcompanion",
+          name: args.p_name,
+          is_renamed: !!args.p_is_renamed,
+          avatar: args.p_avatar,
+        },
+        true,
+      );
+      return { data: { ok: true }, error: null };
+    }
+    if (fn !== "update_my_settings") return fail(`unknown rpc ${fn}`, "42883");
+    const p = args.p as Row;
+    const allowed = [
+      "locale",
+      "tz",
+      "call_briefing",
+      "quiet_hours",
+      "l4_quiet_override",
+      "privacy_mode",
+      "render_quality",
+      "whatsapp_opt_in",
+      "calls_enabled",
+      "sms_enabled",
+      "prefs",
+      "phone_pending_e164",
+      "charges_notice_ack_at",
+    ];
+    const next = { ...u };
+    for (const [k, v] of Object.entries(p)) {
+      if (!allowed.includes(k)) return fail(`chalito: ${k} is not a client setting`, "22023");
+      if (k === "prefs") next.prefs = { ...(u.prefs as Row), ...(v as Row) };
+      else if (k === "charges_notice_ack_at") next.charges_notice_ack_at = v ? new Date().toISOString() : null;
+      else next[k] = v;
+    }
+    const optedIn = next.whatsapp_opt_in === true || next.calls_enabled === true || next.sms_enabled === true;
+    if (optedIn && !(next.phone_verified_at && next.charges_notice_ack_at))
+      return fail('new row violates check constraint "users_opt_ins_need_verified_phone"', "23514");
+    this.clientWrites.push({ table: "users", op: "rpc:update_my_settings", row: structuredClone(p) });
+    this.update("users", (r) => r.id === owner, next, true);
+    return { data: view(), error: null };
+  }
+
   /** The BrowserSupabase shape connect() expects. */
-  client(session: { access_token: string }): BrowserSupabase {
+  client(session: { access_token: string }, owner = ""): BrowserSupabase {
     const from = (table: string) => {
       const st: {
         op: "select" | "insert" | "update" | "delete";
@@ -81,10 +153,12 @@ export class FakeDb {
         switch (st.op) {
           case "insert":
             this.clientWrites.push({ table, op: "insert", row: structuredClone(st.body!) });
+            logWrite({ table, op: "insert", row: st.body! });
             this.insert(table, st.body!, true);
             return { data: null, error: null };
           case "update":
             this.clientWrites.push({ table, op: "update", row: structuredClone(st.body!) });
+            logWrite({ table, op: "update", row: st.body! });
             this.update(table, match, st.body!, true);
             return { data: null, error: null };
           case "delete":
@@ -138,6 +212,7 @@ export class FakeDb {
     return {
       from,
       channel,
+      rpc: (fn: string, args?: Row) => Promise.resolve(this.rpc(owner, fn, args)),
       removeChannel: async (c: { __ch: Channel }) => ((c.__ch.removed = true), "ok"),
       removeAllChannels: async () => {
         for (const c of this.#channels) c.removed = true;

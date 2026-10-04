@@ -11,6 +11,19 @@ vi.mock("@/i18n/navigation", () => ({
   useRouter: () => ({ push }),
   Link: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a>,
 }));
+vi.mock("@/components/ChalitoProvider", () => ({
+  useChalito: () => ({
+    status: "signed_out",
+    client: null,
+    deviceId: null,
+    settings: null,
+    phoneVerifier: {
+      start: async () => ({ ok: true }),
+      check: async (_e: string, code: string) =>
+        code === "123456" ? { ok: true } : { ok: false, reason: "wrong_code" },
+    },
+  }),
+}));
 vi.mock("@/lib/session", () => ({
   useSession: () => ({ status: "signed_in", session: { user: { app_metadata: { chalito: { tier: "pro" } } } } }),
   sessionTier: () => "pro",
@@ -68,16 +81,26 @@ describe("onboarding", () => {
 
     expect(step()).toBe("phone");
     fireEvent.change(screen.getByLabelText("Número"), { target: { value: "55 1234 5678" } });
+    click("Enviar código");
+    fireEvent.change(await screen.findByLabelText("Código"), { target: { value: "123456" } });
+    click("Verificar");
+    expect(await screen.findByTestId("phone-verified")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Entiendo que pueden aplicar cargos."));
     fireEvent.click(screen.getByRole("switch", { name: /Avisos por WhatsApp/ }));
-    expect(screen.getByTestId("charges-notice").textContent).toBe("Pueden aplicar cargos.");
+    expect(screen.getAllByTestId("charges-notice")[0]!.textContent).toBe("Pueden aplicar cargos.");
     click("Continuar");
 
     expect(step()).toBe("pair");
     expect(screen.getByRole("link", { name: "Ir a Descargar" }).getAttribute("href")).toBe("/descargar");
     click("Terminar");
-    expect(push).toHaveBeenCalledWith("/");
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/"));
     expect(localStorage.getItem("chalito.onboarded.v1")).toBe("true");
     const saved = JSON.parse(localStorage.getItem("chalito.settings.v1")!);
-    expect(saved).toMatchObject({ avatar: "chalito", phone: "+525512345678", whatsapp: true });
+    expect(saved).toMatchObject({
+      avatar: "chalito",
+      phone: { e164: "+525512345678", verified: true },
+      chargesAck: true,
+      whatsapp: true,
+    });
   });
 });

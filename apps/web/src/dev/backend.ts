@@ -29,6 +29,7 @@ import type { ClientKeys, ConnectOptions } from "@chalito/client";
 import { memoryStorage } from "@chalito/client";
 import type { SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
+import type { SettingsDb } from "@/lib/settings-store";
 import { confirmStepUp } from "@/components/StepUpHost";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
@@ -63,6 +64,8 @@ export interface DevControls {
   owner: string;
   me: string;
   agent: string;
+  /** Another trusted client of the owner (for revoke). */
+  other: string;
   sid: string;
   db: FakeDb;
   /** Rows the browser wrote (commands, decisions, acks), as written. */
@@ -84,6 +87,7 @@ export interface DevControls {
 export const startDevBackend = async (): Promise<{
   connectOptions: ConnectOptions;
   phoneVerifier: PhoneVerifier;
+  settingsDb: SettingsDb;
   controls: DevControls;
 }> => {
   const db = new FakeDb();
@@ -161,8 +165,36 @@ export const startDevBackend = async (): Promise<{
       dev_mode: { on: false, toggles: [], since: null },
       policy_hash: null,
     });
+  db.insert("users", {
+    id: OWNER,
+    tier: "pro",
+    locale: "es",
+    tz: "America/Mexico_City",
+    call_briefing: { enabled: false },
+    quiet_hours: null,
+    l4_quiet_override: [],
+    privacy_mode: "private",
+    render_quality: "auto",
+    whatsapp_opt_in: false,
+    calls_enabled: false,
+    sms_enabled: null,
+    prefs: {},
+    phone_pending_e164: null,
+    phone_e164: null,
+    phone_country: null,
+    phone_verified_at: null,
+    charges_notice_ack_at: null,
+  });
   device(agent, "agent", "Laptop de Aldo", "laptop", "linux");
   device(me, "client", "Este teléfono", "phone", "ios");
+  const other = await newDevice();
+  device(other, "client", "Navegador del trabajo", "web", "web");
+  db.insert("connections", {
+    owner: OWNER,
+    device_id: agent.deviceId,
+    provider: "anthropic",
+    doc: { mode: "byo_api_key", connected: true },
+  });
   await session();
   await event("session.started", {
     adapter: "claude-code",
@@ -339,6 +371,7 @@ export const startDevBackend = async (): Promise<{
     owner: OWNER,
     me: me.deviceId,
     agent: agent.deviceId,
+    other: other.deviceId,
     sid: SID,
     db,
     clientWrites: () => db.clientWrites,
@@ -358,14 +391,24 @@ export const startDevBackend = async (): Promise<{
   };
   (window as unknown as { __chalitoDev: DevControls }).__chalitoDev = controls;
 
+  // The api + Twilio Verify, simulated: code 123456; on success the SERVER writes the verified phone.
   const phoneVerifier: PhoneVerifier = {
     start: async (e164) => (/^\+[1-9]\d{6,14}$/.test(e164) ? { ok: true } : { ok: false, reason: "invalid" }),
-    check: async (_e164, code) => (code === "123456" ? { ok: true } : { ok: false, reason: "wrong_code" }),
+    check: async (e164, code) => {
+      if (code !== "123456") return { ok: false, reason: "wrong_code" };
+      db.update("users", (r) => r.id === OWNER, {
+        phone_e164: e164,
+        phone_verified_at: new Date().toISOString(),
+        phone_pending_e164: null,
+      });
+      return { ok: true };
+    },
   };
 
   return {
     phoneVerifier,
     controls,
+    settingsDb: db.client({ access_token: "dev-access" }, OWNER) as unknown as SettingsDb,
     connectOptions: {
       url: "http://dev.invalid",
       publishableKey: "dev",
@@ -375,7 +418,7 @@ export const startDevBackend = async (): Promise<{
       stepUp: async ({ risk }) =>
         (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
       signIn: { kind: "sso", exchange: async () => ({ token_hash: "dev" }) },
-      create: () => db.client({ access_token: "dev-access" }),
+      create: () => db.client({ access_token: "dev-access" }, OWNER),
     },
   };
 };

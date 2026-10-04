@@ -9,6 +9,7 @@ export {
   type ConnectionMode,
   type ConnectionStatus,
   type PhoneVerifier,
+  type QuietHours,
   type RenderQuality,
   type SettingsValues,
 } from "./settings/values.js";

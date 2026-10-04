@@ -37,3 +37,13 @@ test("the launch token doesn't stay in the address bar", async ({ page }) => {
   await page.goto("/auth/sso?token=secret-launch-token&next=%2F");
   await expect(page).not.toHaveURL(/secret-launch-token/);
 });
+
+test("/n/<nid> signed out goes to the hub sign-in and comes back to the same link", async ({ page }) => {
+  let launched = "";
+  await page.route("https://hub.example/**", async (r) => {
+    launched = r.request().url();
+    await r.fulfill({ body: "hub" });
+  });
+  await page.goto("/n/n1");
+  await expect.poll(() => launched).toBe("https://hub.example/auth/launch/chalito?next=%2Fn%2Fn1");
+});

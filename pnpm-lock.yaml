@@ -133,6 +133,9 @@ importers:
       '@chalito/client':
         specifier: workspace:*
         version: link:../../packages/client
+      '@chalito/client-keys':
+        specifier: workspace:*
+        version: link:../../packages/client-keys
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto

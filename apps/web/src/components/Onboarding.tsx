@@ -1,20 +1,14 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
-import {
-  CompanionNameField,
-  CompanionPicker,
-  DEFAULT_COMPANION,
-  SETTINGS,
-  type SettingContext,
-  type SettingsValues,
-} from "@chalito/ui";
+import { CompanionNameField, CompanionPicker, DEFAULT_COMPANION, SETTINGS, type SettingContext } from "@chalito/ui";
 import { Link, useRouter } from "@/i18n/navigation";
 import { env } from "@/lib/env";
-import { loadSettings, markOnboarded, saveSettings } from "@/lib/local";
 import { sessionTier, useSession } from "@/lib/session";
 import { hubLaunchUrl } from "@/lib/hub";
+import { DEV_BACKEND } from "@/lib/env";
 import { useChalito } from "./ChalitoProvider";
+import { useSettings } from "./useSettings";
 
 /** One entry per coding agent in providers.yaml, with its official auth paths. */
 export interface AgentOption {
@@ -35,27 +29,23 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
   const ti = useTranslations("integrations");
   const router = useRouter();
   const session = useSession();
-  const { phoneVerifier } = useChalito();
+  const { phoneVerifier, status } = useChalito();
+  const { values, set, finishOnboarding } = useSettings();
   const [i, setI] = useState(0);
-  const [values, setValues] = useState<SettingsValues | null>(null);
   const [billing, setBilling] = useState<BillingMode>("byo");
   const [path, setPath] = useState<"guided" | "expert">("guided");
   const [open, setOpen] = useState<string | null>(null);
-  useEffect(() => setValues(loadSettings()), []);
   if (!values) return <p>{tc("loading")}</p>;
 
   const step: Step = STEPS[i]!;
-  const set: SettingContext["set"] = (k, v) => setValues((cur) => (cur ? { ...cur, [k]: v } : cur));
-  const next = () => {
-    saveSettings(values);
-    if (i < STEPS.length - 1) setI(i + 1);
-    else {
-      markOnboarded();
-      router.push("/");
-    }
+  const next = async () => {
+    if (i < STEPS.length - 1) return setI(i + 1);
+    await finishOnboarding(values);
+    router.push("/");
   };
-  const signedIn = session.status === "signed_in";
-  const tier = session.status === "signed_in" ? sessionTier(session.session) : null;
+  // The dev/test backend stands in for a signed-in session.
+  const signedIn = session.status === "signed_in" || (DEV_BACKEND && status === "ready");
+  const tier = values.planCredits.tier ?? (session.status === "signed_in" ? sessionTier(session.session) : null);
   const ctx: SettingContext = {
     values,
     set,
@@ -193,7 +183,6 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
             className="rounded-lg border px-4 py-2"
             onClick={() => {
               set("avatar", DEFAULT_COMPANION);
-              saveSettings({ ...values, avatar: DEFAULT_COMPANION });
               setI(i + 1);
             }}
           >
@@ -203,7 +192,7 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
         <button
           className="rounded-lg bg-emerald-700 px-4 py-2 text-white disabled:opacity-50"
           disabled={step === "signIn" && !signedIn}
-          onClick={next}
+          onClick={() => void next()}
         >
           {i === STEPS.length - 1 ? tc("finish") : tc("continue")}
         </button>
