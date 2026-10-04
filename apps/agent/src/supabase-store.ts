@@ -372,6 +372,21 @@ export class SupabaseStore implements AgentStore {
     };
   }
 
+  async revokedClients(deviceIds: string[]): Promise<string[]> {
+    if (deviceIds.length === 0) return [];
+    const rows = await must<{ device_id: string }[]>(
+      "revoked clients",
+      this.db
+        .from("devices")
+        .select("device_id")
+        .eq("owner", this.owner)
+        .eq("role", "client")
+        .eq("revoked", true)
+        .in("device_id", deviceIds),
+    );
+    return (rows ?? []).map((r) => r.device_id);
+  }
+
   async listEndorsements(): Promise<EndorsementRow[]> {
     const rows = await must<{ device_id: string; endorsement: unknown }[]>(
       "list endorsements",

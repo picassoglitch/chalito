@@ -182,5 +182,16 @@ export const DeviceEvent = z.discriminatedUnion("type", [
     reason: z.enum(["missing_step_up", "bad_step_up", "bad_binding", "bad_signature", "stale"]),
     t: EpochMs,
   }),
+  /**
+   * Review R-H5: this agent dropped a client it trusted because the account revoked it (for
+   * instance while this computer was offline and the revoke command expired).
+   */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("trust.client_revoked"),
+    deviceId: DeviceId,
+    clientDeviceId: DeviceId,
+    t: EpochMs,
+  }),
 ]);
 export type DeviceEvent = z.infer<typeof DeviceEvent>;

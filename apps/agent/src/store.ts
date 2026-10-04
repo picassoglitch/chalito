@@ -31,6 +31,8 @@ export interface AgentStore {
    * client) decides anything.
    */
   listEndorsements(): Promise<EndorsementRow[]>;
+  /** Of these client device ids, the ones the account's directory has revoked (review R-H5). */
+  revokedClients(deviceIds: string[]): Promise<string[]>;
   /** Called when an endorsement is stored (pointer) and after every resync. */
   watchEndorsements(onChange: () => void): () => void;
 
@@ -85,6 +87,16 @@ export class MemoryStore implements AgentStore {
 
   async listEndorsements() {
     return this.endorsements.map((e) => ({ ...e }));
+  }
+  /** Client devices the directory has revoked (test hook: the account revoked them). */
+  revokedDevices = new Set<string>();
+  async revokedClients(deviceIds: string[]) {
+    return deviceIds.filter((id) => this.revokedDevices.has(id));
+  }
+  /** Test hook: the account revokes a device and points the agent at the devices table. */
+  revokeInDirectory(deviceId: string) {
+    this.revokedDevices.add(deviceId);
+    this.#endorsementWatcher?.();
   }
   watchEndorsements(cb: () => void) {
     this.#endorsementWatcher = cb;
