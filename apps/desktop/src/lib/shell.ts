@@ -7,6 +7,8 @@ import type { PetContext } from "./pet-context.js";
 
 const PET_CONTEXT = "chalito://pet-context";
 const PET_ACK = "chalito://pet-ack";
+const OPEN_ROOM = "chalito://open-room";
+const DEVICE_REVOKED = "chalito://device-revoked";
 
 /**
  * Everything the webviews ask of the native side, behind one interface so components and
@@ -24,6 +26,15 @@ export interface DesktopShell {
   onPetContext(cb: (ctx: PetContext) => void): Promise<() => void>;
   sendPetAck(): Promise<void>;
   onPetAck(cb: () => void): Promise<() => void>;
+  /** Shows the room window on one room. */
+  openRoom(roomId: string): Promise<void>;
+  onOpenRoom(cb: (roomId: string) => void): Promise<() => void>;
+  /**
+   * The panel's LiveStore saw this device revoked (R-L14): the room window drops its keys and
+   * every decrypted event at once, without waiting for a token refresh to fail.
+   */
+  sendDeviceRevoked(): Promise<void>;
+  onDeviceRevoked(cb: () => void): Promise<() => void>;
 }
 
 export const tauriShell: DesktopShell = {
@@ -47,6 +58,13 @@ export const tauriShell: DesktopShell = {
   onPetContext: (cb) => listen<PetContext>(PET_CONTEXT, (e) => cb(e.payload)),
   sendPetAck: () => emitTo("panel", PET_ACK),
   onPetAck: (cb) => listen(PET_ACK, () => cb()),
+  openRoom: async (roomId) => {
+    await emitTo("room", OPEN_ROOM, roomId);
+    await tauriShell.showWindow("room");
+  },
+  onOpenRoom: (cb) => listen<string>(OPEN_ROOM, (e) => cb(e.payload)),
+  sendDeviceRevoked: () => emitTo("room", DEVICE_REVOKED),
+  onDeviceRevoked: (cb) => listen(DEVICE_REVOKED, () => cb()),
 };
 
 const none = () => Promise.resolve();
@@ -63,6 +81,10 @@ export const browserShell: DesktopShell = {
   onPetContext: noListen,
   sendPetAck: none,
   onPetAck: noListen,
+  openRoom: none,
+  onOpenRoom: noListen,
+  sendDeviceRevoked: none,
+  onDeviceRevoked: noListen,
 };
 
 export const shell = (): DesktopShell => (isTauri() ? tauriShell : browserShell);

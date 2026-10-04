@@ -244,6 +244,9 @@ importers:
       '@chalito/releases':
         specifier: workspace:*
         version: link:../../packages/releases
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
       '@chalito/ui':
         specifier: workspace:*
         version: link:../../packages/ui

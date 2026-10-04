@@ -72,7 +72,51 @@
     "failed": "No pude conectar la voz. Inténtalo de nuevo."
   },
   "room": {
-    "soon": "Tu cuarto llega pronto."
+    "soon": "Tu cuarto llega pronto.",
+    "title": "Sala",
+    "list": "Tus salas",
+    "loading": "Cargando tus salas…",
+    "none": "Aún no estás en ninguna sala.",
+    "signedOut": "Inicia sesión en el panel para ver tus salas.",
+    "revoked": "Este dispositivo fue revocado. Sus salas ya no están disponibles aquí.",
+    "back": "← Salas",
+    "members": "Integrantes",
+    "you": "Tú",
+    "owner": "administra",
+    "compose": "Escribe un aviso",
+    "send": "Enviar",
+    "leave": "Salir de la sala",
+    "report": "Reportar",
+    "reportReason": "Motivo",
+    "reportNote": "Nota (opcional)",
+    "attachText": "Adjuntar el texto del mensaje (sale de este dispositivo)",
+    "reportSend": "Enviar reporte",
+    "cancel": "Cancelar",
+    "unreadable": "No se puede leer en este dispositivo.",
+    "reasons": {
+      "spam": "Spam",
+      "abuse": "Abuso",
+      "impersonation": "Suplantación",
+      "other": "Otro"
+    },
+    "reported": {
+      "ok": "Reporte enviado.",
+      "duplicate": "Ya habías reportado esto."
+    },
+    "ended": {
+      "kicked": "Ya no estás en esta sala.",
+      "dissolved": "Esta sala se disolvió.",
+      "revoked": "Este dispositivo fue revocado. La sala se cerró aquí.",
+      "not_member": "No eres integrante de esta sala."
+    },
+    "error": {
+      "not_member": "No eres integrante de esta sala.",
+      "not_found": "La sala ya no existe.",
+      "rate_limited": "Demasiados intentos. Espera un momento.",
+      "ended": "La sala terminó.",
+      "no_key": "Este dispositivo aún no tiene la clave de la sala.",
+      "failed": "Algo falló. Inténtalo de nuevo."
+    }
   },
   "integrations": {
     "anthropic": {

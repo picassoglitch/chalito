@@ -63,6 +63,18 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   }, []);
   const client = conn?.client ?? null;
   const ptt = useMemo(() => new PushToTalk(conn?.voice ?? unavailableVoice), [conn]);
+  // R-L14: this device was revoked. The room window drops its keys and decrypted events now.
+  useEffect(() => {
+    if (!client) return;
+    let sent = false;
+    const check = () => {
+      if (sent || client.live.getSnapshot().status !== "revoked") return;
+      sent = true;
+      void sh.sendDeviceRevoked().catch(() => undefined);
+    };
+    check();
+    return client.live.subscribe(check);
+  }, [client, sh]);
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);
