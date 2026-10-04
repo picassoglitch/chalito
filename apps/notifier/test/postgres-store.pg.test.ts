@@ -247,6 +247,12 @@ if (!url) {
       expect(
         (await admin`select from_device_id from chalito.commands where owner = ${u} and id = 'c1'`)[0]?.from_device_id,
       ).toBe("notifier");
+
+      // A revoked agent: its call lines are gone (migration 003520) and its approvals aren't read out.
+      await admin`update chalito.devices set revoked = true where owner = ${u} and device_id = ${dev}`;
+      expect((await store.callItems(u)).items).toEqual([]);
+      expect(await admin`select lid from chalito.call_lines where owner = ${u}`).toHaveLength(0);
+      expect(await store.pendingApprovals(u)).toEqual([]);
     });
 
     it("voice call refs are single-use across instances", async () => {

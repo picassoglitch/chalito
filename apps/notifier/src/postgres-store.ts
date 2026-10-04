@@ -122,7 +122,7 @@ export class PostgresStore implements NotifierStore {
       from chalito.call_lines cl
       join chalito.devices d on d.owner = cl.owner and d.device_id = cl.device_id
       left join chalito.sessions s on s.owner = cl.owner and s.sid = cl.sid
-      where cl.owner = ${uid} and cl.expires_at > now()
+      where cl.owner = ${uid} and cl.expires_at > now() and not d.revoked
       order by cl.created_at limit 10`;
     const items: CallItem[] = rows.map((r) => ({
       lid: r.lid,
@@ -141,7 +141,7 @@ export class PostgresStore implements NotifierStore {
       from chalito.approvals a
       join chalito.devices d on d.owner = a.owner and d.device_id = a.device_id
       left join chalito.sessions s on s.owner = a.owner and s.sid = a.sid
-      where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now()
+      where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now() and not d.revoked
       order by a.created_at limit 10`;
     return rows.map((r) => ({ aid: r.aid, deviceLabel: r.device_label, sessionLabel: r.session_label }));
   }
