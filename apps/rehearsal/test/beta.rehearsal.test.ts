@@ -532,11 +532,12 @@ describe.skipIf(!READY)("6. a Mesa turn bills llm.tokens through the outbox → 
     expect(queued.length).toBeGreaterThan(0);
 
     // The CI database is shared with the earlier pg suites, whose rows may be due first: drain
-    // until this person's row has been delivered (or the hub refused it).
+    // until this person's row has been delivered (or the hub refused it). Rows are due on the
+    // database clock, so the drain uses the real time, not the rehearsal's fixed clock.
     const outbox = new PostgresOutbox(s.sql);
     const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: "engine-token" });
     for (let i = 0; i < 20; i++) {
-      await drainOutbox({ store: outbox, hub, now: s.now, alert: () => undefined, maxBatches: 20 });
+      await drainOutbox({ store: outbox, hub, now: () => Date.now() + 1_000, alert: () => undefined, maxBatches: 20 });
       if (rejected.length || usage.some((b) => b.external_user_id === p.owner)) break;
     }
     expect(rejected, "the hub refused the usage batch (HubClient must send a top-level external_user_id)").toEqual([]);
