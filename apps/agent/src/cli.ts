@@ -18,7 +18,8 @@ import {
   writeConfig,
   type AgentConfig,
 } from "./config.js";
-import { runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
+import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
+import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
 import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { osAuthFor, type StatFn } from "./os-auth.js";
@@ -298,13 +299,28 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     io = { ...io, secrets };
     switch (cmd) {
       case "run": {
-        const d = await (io.daemon ?? runDaemon)({
-          home: io.home,
-          env: io.env,
-          secrets,
-          fetch: io.fetch,
-          now: io.now,
-        });
+        let d: Daemon;
+        try {
+          d = await (io.daemon ?? runDaemon)({
+            home: io.home,
+            env: io.env,
+            secrets,
+            fetch: io.fetch,
+            now: io.now,
+          });
+        } catch (err) {
+          // Distinct codes so the desktop supervisor neither races another agent nor
+          // restarts in a loop while a setup step is missing.
+          if (err instanceof AlreadyRunningError) {
+            io.err(`${err.message}\n`);
+            return EXIT_ALREADY_RUNNING;
+          }
+          if (err instanceof OnboardingError) {
+            io.err(`${err.message}\n`);
+            return EXIT_NEEDS_SETUP;
+          }
+          throw err;
+        }
         await d.done;
         return 0;
       }

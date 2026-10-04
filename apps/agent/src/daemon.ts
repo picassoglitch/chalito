@@ -15,6 +15,7 @@ import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type Fetch
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
 import { DevMode, DevModeStore, type DevModeTamper } from "./devmode.js";
+import { acquireInstanceLock } from "./instance-lock.js";
 import { FileNonceStore } from "./nonce-store.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
@@ -88,6 +89,8 @@ export interface DaemonDeps {
   onSignal?: (sig: NodeJS.Signals, fn: () => void) => void;
   /** Off in tests that don't want fs watchers. */
   watchFiles?: boolean;
+  /** One agent per computer (instance-lock.ts); returns the release function. */
+  lock?: (dir: string) => () => void;
 }
 
 export interface Daemon {
@@ -173,6 +176,23 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const dir = ensureChalitoDir(chalitoDir(deps.home ?? homedir()), (fixed) =>
     log.warn("chalito_dir.permissions_tightened", { fixed, dirMode: "0700", fileMode: "0600" }),
   );
+  // Before anything else: a second agent (the OS service and the desktop app) exits here.
+  const releaseLock = (deps.lock ?? acquireInstanceLock)(dir);
+  try {
+    return await startDaemon(deps, env, log, dir, releaseLock);
+  } catch (err) {
+    releaseLock();
+    throw err;
+  }
+};
+
+const startDaemon = async (
+  deps: DaemonDeps,
+  env: Record<string, string | undefined>,
+  log: Logger,
+  dir: string,
+  releaseLock: () => void,
+): Promise<Daemon> => {
   const now = deps.now ?? Date.now;
   const secrets =
     deps.secrets ?? (await openSecretStore({ env, warn: (m) => log.warn("secrets.file_store", { message: m }) }));
@@ -471,6 +491,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
       s.handle.close();
     }
     await cloud.close().catch(() => undefined);
+    releaseLock();
     resolveDone();
     return done;
   };

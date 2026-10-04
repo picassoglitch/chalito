@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "@chalito/adapters/codex";
@@ -20,6 +20,7 @@ import {
   type DaemonDeps,
 } from "../src/daemon.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
+import { AlreadyRunningError, acquireInstanceLock, lockPath } from "../src/instance-lock.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { DeviceRevokedError } from "../src/device-auth.js";
@@ -333,6 +334,21 @@ describe("chalito run (daemon)", () => {
     adapter.config.onInit({ sid: "s1", apiKeySource: "ANTHROPIC_API_KEY", permissionMode: "default" });
     expect(logs[0]).toMatchObject({ msg: "adapter.init", sid: "s1", apiKeySource: "ANTHROPIC_API_KEY" });
     expect(defaultAdapters({ apiKey: null, claudePath: "/usr/bin/claude", log })).toEqual({});
+  });
+
+  it("one agent per computer: a second daemon is refused, and stop() frees the lock", async () => {
+    const s = await setup();
+    const d = await runDaemon(s.deps);
+    const other = { ...s.deps, lock: (dir: string) => acquireInstanceLock(dir, { pid: 999_999, isAlive: () => true }) };
+    await expect(runDaemon(other)).rejects.toBeInstanceOf(AlreadyRunningError);
+    await d.stop();
+    expect(existsSync(lockPath(s.dir))).toBe(false);
+  });
+
+  it("a daemon that fails to start leaves no lock behind", async () => {
+    const s = await setup({ claude: "missing" });
+    await expect(runDaemon(s.deps)).rejects.toBeInstanceOf(OnboardingError);
+    expect(existsSync(lockPath(s.dir))).toBe(false);
   });
 
   describe("Codex", () => {
