@@ -25,6 +25,7 @@ const NOW = 1_790_000_000_000;
 const memoryRepo = (devices: DeviceDoc[]) => {
   const challenges = new Map<string, WebAuthnChallenge>();
   const creds = new Map<string, StoredWebAuthnCredential>();
+  const notifications: Record<string, unknown>[] = [];
   const key = (o: string, d: string, p: string) => `${o}/${d}/${p}`;
   const repo: Partial<ApiRepo> = {
     getDevice: async (o, id) => devices.find((d) => d.owner === o && d.deviceId === id) ?? null,
@@ -40,6 +41,15 @@ const memoryRepo = (devices: DeviceDoc[]) => {
       return true;
     },
     getDeviceWebAuthn: async (o, d) => creds.get(`${o}/${d}`) ?? null,
+    bumpWebAuthnCounter: async (o, d, id, counter) => {
+      const c = creds.get(`${o}/${d}`);
+      if (!c || c.credentialId !== id) return "not_found";
+      if (counter === 0 && c.counter === 0) return "ok";
+      if (counter <= c.counter) return "cloned";
+      creds.set(`${o}/${d}`, { ...c, counter });
+      return "ok";
+    },
+    createNotification: async (_o, nid, doc) => void notifications.push({ nid, ...doc }),
     setDeviceWebAuthnBinding: async (o, d, binding) => {
       const c = creds.get(`${o}/${d}`);
       if (!c) return false;
@@ -47,7 +57,7 @@ const memoryRepo = (devices: DeviceDoc[]) => {
       return true;
     },
   };
-  return { repo: repo as ApiRepo, challenges, creds };
+  return { repo: repo as ApiRepo, challenges, creds, notifications };
 };
 
 const setup = async (opts: { now?: () => number; revoked?: boolean; phone?: Partial<DeviceDoc> } = {}) => {
@@ -165,7 +175,9 @@ describe("WebAuthn routes refuse", () => {
     const response = await auth.create(opts.json.options);
     expect((await s.post("/register/verify", { response })).status).toBe(201);
     expect((await s.post("/register/verify", { response })).json).toEqual({ error: "challenge_expired" });
-    const opts2 = await s.post("/register/options");
+    // Replacing it needs the current passkey (R-M11).
+    const a = await s.post("/assert/options");
+    const opts2 = await s.post("/register/options", { currentAssertion: await auth.get(a.json.options) });
     s.tick(61_000);
     expect((await s.post("/register/verify", { response: await auth.create(opts2.json.options) })).json).toEqual({
       error: "challenge_expired",
@@ -263,5 +275,66 @@ describe("passkey binding (chalito.webauthn-binding.v1)", () => {
       binding: await bind(k, { credentialId: "Y3JlZA", publicKey: "cHVi" }),
     });
     expect(res.status).toBe(409);
+  });
+});
+
+describe("R-M11: replacing a passkey needs the current one", () => {
+  const enrolled = async () => {
+    const s = await setup();
+    const auth = new SoftAuthenticator({ origin: ORIGIN });
+    const opts = await s.post("/register/options");
+    expect((await s.post("/register/verify", { response: await auth.create(opts.json.options) })).status).toBe(201);
+    return { s, auth };
+  };
+
+  it("without an assertion by the current passkey: refused, nothing changes", async () => {
+    const { s, auth } = await enrolled();
+    const r = await s.post("/register/options");
+    expect([r.status, r.json.error]).toEqual([409, "current_passkey_required"]);
+    expect([...s.mem.creds.values()][0]!.credentialId).toBe(auth.credentialId);
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "webauthn.replace_refused", meta: { reason: "required" } });
+  });
+
+  it("an assertion by another authenticator (the thief's), or without a fresh challenge: refused", async () => {
+    const { s } = await enrolled();
+    const thief = new SoftAuthenticator({ origin: ORIGIN });
+    const a = await s.post("/assert/options");
+    // The thief's own authenticator signs the fresh challenge (as if allowed).
+    const forged = await thief.get({
+      ...a.json.options,
+      allowCredentials: [{ id: thief.credentialId, type: "public-key" }],
+    });
+    const r = await s.post("/register/options", { currentAssertion: forged });
+    expect([r.status, r.json.error]).toEqual([401, "current_passkey_failed"]);
+    // The challenge was consumed: replaying even a valid-looking response has nothing to match.
+    const again = await s.post("/register/options", { currentAssertion: forged });
+    expect([again.status, again.json.error]).toEqual([401, "current_passkey_failed"]);
+  });
+
+  it("with the current passkey: replaced, and every device is told", async () => {
+    const { s, auth } = await enrolled();
+    const a = await s.post("/assert/options");
+    const opts = await s.post("/register/options", { currentAssertion: await auth.get(a.json.options) });
+    expect(opts.status).toBe(200);
+    const next = new SoftAuthenticator({ origin: ORIGIN });
+    expect((await s.post("/register/verify", { response: await next.create(opts.json.options) })).status).toBe(201);
+    expect([...s.mem.creds.values()][0]!.credentialId).toBe(next.credentialId);
+    expect(s.mem.notifications).toEqual([
+      expect.objectContaining({ source: "security", level: "L3", coalesceKey: `security:passkey:${s.phone.deviceId}` }),
+    ]);
+    expect(s.audit.events.at(-1)).toMatchObject({
+      action: "webauthn.replaced",
+      meta: { from: auth.credentialId, to: next.credentialId },
+    });
+  });
+
+  it("a cloned current passkey (counter didn't advance) is refused and flagged", async () => {
+    const { s, auth } = await enrolled();
+    const [key, cred] = [...s.mem.creds.entries()][0]!;
+    s.mem.creds.set(key, { ...cred, counter: 50 });
+    const a = await s.post("/assert/options");
+    const r = await s.post("/register/options", { currentAssertion: await auth.get(a.json.options) });
+    expect([r.status, r.json.error]).toEqual([403, "authenticator_cloned"]);
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "webauthn.clone_suspected" });
   });
 });
