@@ -12,6 +12,7 @@ import { enrollPasskey, loadDeviceKeys, saveDeviceKeys, type DeviceKeys } from "
 import { httpMcp, type McpApi } from "./mcp";
 import { apiPhone, type ChannelSetter } from "./phone";
 import { supabase } from "./supabase";
+import { httpUsage, type UsageApi } from "./usage";
 
 /**
  * Everything the app shell needs from the outside world. Production builds it from env (this
@@ -29,6 +30,8 @@ export interface Platform {
   mcp(token: () => Promise<string | null>): McpApi;
   enrollPasskey(keys: DeviceKeys["keys"], token: () => Promise<string | null>): Promise<void>;
   assertPasskey(token: () => Promise<string | null>): Promise<Record<string, unknown>>;
+  /** GET /v1/usage/daily (orchestrator) as this device. */
+  usage(token: () => Promise<string | null>): UsageApi;
   /** The api as whoever the bearer is (/v1/endorse: the person on a new browser, the device on a trusted one). */
   api(token: () => Promise<string | null>): ApiClient;
   /** Hears the endorsement pointer on `chalito:pairing:<codeId>` with the code's scoped watch token. */
@@ -50,6 +53,7 @@ export const productionPlatform = (): Platform => ({
   assertPasskey: async (token) =>
     (await assertWithServerChallenge(httpApi({ baseUrl: env.apiBase, token }))) as unknown as Record<string, unknown>,
   api: (token) => httpApi({ baseUrl: env.apiBase, token }),
+  usage: (token) => httpUsage(env.orchestratorBase, token),
   endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),
   saveDeviceKeys,
 });

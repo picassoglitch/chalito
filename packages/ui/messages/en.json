@@ -184,7 +184,8 @@
       "tier": "Tier: {tier}",
       "unknown": "Unknown tier",
       "trial": "Trial until {date}",
-      "manage": "Manage on Chalyb"
+      "manage": "Manage on Chalyb",
+      "usage": "See your usage"
     },
     "renderQuality": {
       "label": "Animation quality",
@@ -524,6 +525,40 @@
         "failed": "Something went wrong. Try again.",
         "passkey_cloned": "Your passkey looks copied, so nothing was approved. Check your devices and create a new passkey."
       }
+    }
+  },
+  "usage": {
+    "title": "Your usage",
+    "range": "Period",
+    "days": "{n} days",
+    "loading": "Loading…",
+    "error": "We couldn't load your usage.",
+    "retry": "Try again",
+    "intro": "Tokens per day (UTC). Days without usage count as zero.",
+    "empty": "No usage in this period yet.",
+    "tokens": "{n} tokens",
+    "chalito": {
+      "title": "Chalito tokens",
+      "work": "Work",
+      "comms": "Communication",
+      "chartLabel": "Chalito tokens per day, last {days} days: work and communication"
+    },
+    "share": {
+      "title": "Communication",
+      "none": "No Chalito usage in this period.",
+      "value": "{share} of what Chalito used (target: under {target})",
+      "under": "Within target: nearly everything goes to the work.",
+      "over": "Above target: alerts, messages and calls are using more than expected.",
+      "chartLabel": "Communication per day against the {target} target"
+    },
+    "byo": {
+      "title": "Your keys",
+      "body": "Usage with your own provider keys. It uses no Chalito tokens.",
+      "chartLabel": "Tokens with your keys per day, last {days} days"
+    },
+    "table": {
+      "title": "See by day",
+      "day": "Day"
     }
   }
 }
