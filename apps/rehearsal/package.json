@@ -1,0 +1,19 @@
+{
+  "name": "@chalito/rehearsal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:rehearsal": "vitest run -c vitest.rehearsal.config.ts"
+  },
+  "dependencies": {
+    "@chalito/client-keys": "workspace:*",
+    "@chalito/crypto": "workspace:*",
+    "@chalito/glyph": "workspace:*",
+    "@chalito/protocol": "workspace:*",
+    "@supabase/supabase-js": "^2.117.2",
+    "msw": "^3.0.2"
+  }
+}

@@ -165,6 +165,12 @@ jobs:
           export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
           pnpm --filter @chalito/agent test:supabase
           pnpm --filter @chalito/client test:supabase
+      # The beta rehearsal: the main paths end to end across api, agent, client, notifier and rooms on
+      # this stack (apps/rehearsal). Outside services are mocked at the network; nothing live.
+      - name: Beta rehearsal (cross-app, local stack)
+        run: pnpm --filter @chalito/rehearsal test:rehearsal
+        env:
+          CHALITO_DB_ROLE: chalito_server
       # Realtime delivery (supabase-js against the local stack).
       - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
       - run: node supabase/scripts/realtime-latency.mjs
