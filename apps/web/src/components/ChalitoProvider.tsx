@@ -24,6 +24,7 @@ import {
 import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
 import type { AccountApi } from "@/lib/account";
+import type { BalanceApi } from "@/lib/balance";
 import { disablePush, enablePush, type PushDb, type PushResult } from "@/lib/push";
 import { env } from "@/lib/env";
 import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
@@ -79,6 +80,8 @@ interface Ctx {
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
   /** Account deletion and export (/v1/account/*); null when signed out. Requesting needs `client`. */
   account: AccountApi | null;
+  /** The hub balance in tokens (/creditos); null when signed out. */
+  balance: BalanceApi | null;
   /** Web Push on this browser (its own push_subscriptions row, written as this device). Null until paired. */
   push: { enable: () => Promise<PushResult>; disable: () => Promise<PushResult> } | null;
 }
@@ -145,6 +148,7 @@ const INITIAL: Ctx = {
   revokeAll: null,
   push: null,
   account: null,
+  balance: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -330,6 +334,7 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         readSharing: sharingReader(platform.db),
         store: platform.store(token),
         account: platform.account(token),
+        balance: platform.balance(token),
         readCompanion: () => readCompanion(platform.db, owner),
       };
       const keys = await platform.loadDeviceKeys();

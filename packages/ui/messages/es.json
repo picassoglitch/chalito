@@ -840,6 +840,19 @@
       "recharge": "Recargas en Chalyb y los tokens nuevos se usan aquí de inmediato."
     },
     "recharge": "Recargar en Chalyb",
-    "usage": "Ver tu uso"
+    "usage": "Ver tu uso",
+    "balance": {
+      "title": "Tu saldo",
+      "loading": "Cargando…",
+      "remaining": "Te quedan {tokens} tokens",
+      "unlimited": "Tokens ilimitados",
+      "monthly": "Incluidos cada mes",
+      "bonus": "Extra",
+      "used": "Usados desde el {date}",
+      "reserved": "Apartados por trabajo en curso",
+      "tokens": "{tokens} tokens",
+      "unavailable": "Chalyb no respondió. Vuelve a intentarlo en un momento.",
+      "error": "No pudimos ver tu saldo."
+    }
   }
 }

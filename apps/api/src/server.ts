@@ -90,7 +90,7 @@ const backend = (): {
           },
         }
       : {}),
-    // The store buys from the hub balance, so it needs the hub.
+    // The store buys from the hub balance, and /creditos shows it, so both need the hub.
     ...(process.env.CHALYB_BASE_URL
       ? {
           store: {
@@ -98,6 +98,7 @@ const backend = (): {
             catalog: loadCatalog(),
             hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
           },
+          billing: { hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }) },
         }
       : {}),
     // Phone verification (Twilio Verify + Geo Permissions) when configured.

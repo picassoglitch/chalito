@@ -1,6 +1,7 @@
 import type { BucketStore } from "@chalito/guard";
 import type { PhoneDeps } from "./phone/routes.js";
 import type { AccountDeps } from "./account/routes.js";
+import type { BillingDeps } from "./billing/routes.js";
 import type { StoreDeps } from "./store/routes.js";
 import type { VoiceDeps } from "./voice/routes.js";
 import type { ReleaseStore } from "./releases/gcs.js";
@@ -56,6 +57,8 @@ export interface Deps {
   voice?: VoiceDeps;
   /** The pay-to-dress store (/v1/store), when the hub is configured. */
   store?: StoreDeps;
+  /** The owner's hub balance for /creditos (/v1/billing), when the hub is configured. */
+  billing?: BillingDeps;
 }
 
 export class MemoryAudit implements AuditSink {

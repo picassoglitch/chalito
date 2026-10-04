@@ -52,6 +52,7 @@ import { passkeyRef, savePasskeyRef } from "@/lib/keys";
 import { httpStore } from "@/lib/store";
 import { parseUsage, type UsageApi } from "@/lib/usage";
 import { httpAccount } from "@/lib/account";
+import { httpBalance } from "@/lib/balance";
 import { DEV_CATALOG } from "./catalog";
 import { sealRoomEvent, unwrapKeyring, wrapRoomKeyFor } from "@chalito/rooms";
 import { DEV_MARKER, FakeDb } from "./fake-db";
@@ -131,6 +132,8 @@ export interface DevControls {
     balance(): number;
     setBalance(tokens: number): void;
     failNextPurchase(how: "hub_unavailable" | "network"): void;
+    /** GET /v1/billing/balance: the hub answers, says unlimited (hub admins), or is down (503). */
+    setBalanceMode(mode: "ok" | "unlimited" | "down"): void;
     /** Purchases as the api recorded them (purchaseId → charged). */
     purchases(): Record<string, { cosmeticId: string; charged: number }>;
     seedCompanion(avatar: string): void;
@@ -1247,7 +1250,26 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     return reply(404, { error: "not_found" });
   }) as typeof fetch;
   const store = httpStore("http://dev.invalid", async () => db.session?.access_token ?? null, storeFetch);
+  // ---- GET /v1/billing/balance (apps/api src/billing/routes.ts), simulated: the store's balance --
+  let balanceMode: "ok" | "unlimited" | "down" = "ok";
+  const balanceFetch = (async () => {
+    db.clientWrites.push({ table: "api", op: "billing/balance", row: {} });
+    if (!role() || role() === "agent") return reply(403, { error: "forbidden" });
+    if (balanceMode === "down") return reply(503, { error: "hub_unavailable" });
+    const unlimited = balanceMode === "unlimited";
+    return reply(200, {
+      remaining: unlimited ? Number.MAX_SAFE_INTEGER : balance,
+      unlimited,
+      monthlyAllocation: 1_000_000,
+      bonus: 50_000,
+      monthlyUsed: 750_000,
+      reserved: 12_000,
+      periodStart: "2026-10-01T00:00:00.000Z",
+    });
+  }) as typeof fetch;
+  const balanceApi = httpBalance("http://dev.invalid", async () => db.session?.access_token ?? null, balanceFetch);
   controls.storeState = {
+    setBalanceMode: (m) => void (balanceMode = m),
     balance: () => balance,
     setBalance: (n) => void (balance = n),
     failNextPurchase: (how) => void (failNext = how),
@@ -1450,6 +1472,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     usage: () => usage,
     store: () => store,
     account: () => account,
+    balance: () => balanceApi,
     endorseWatch,
     saveDeviceKeys,
     trustIntroduced,

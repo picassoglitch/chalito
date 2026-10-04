@@ -92,6 +92,7 @@ export const API_ROUTES: RouteTable = {
   "GET /v1/store/catalog": user(60, 1, 0),
   "POST /v1/store/purchase": user(20, 0.5, 2 * KB),
   "POST /v1/store/equip": user(60, 1, 2 * KB),
+  "GET /v1/billing/balance": user(60, 1, 0),
 
   // Rooms (sealed payloads)
   "POST /v1/rooms": user(20, 0.2, MEDIUM),
