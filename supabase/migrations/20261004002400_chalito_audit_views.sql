@@ -51,6 +51,8 @@ as $$
     else 'other'
   end
 $$;
+-- Only what the views need: not PUBLIC (PostgreSQL's default), anon or chalito_gateway.
+revoke all on function chalito.audit_category(text) from public, anon;
 grant execute on function chalito.audit_category(text) to authenticated, chalito_server;
 
 create view chalito.audit_trail with (security_invoker = true) as
