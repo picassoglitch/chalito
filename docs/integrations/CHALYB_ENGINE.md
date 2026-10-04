@@ -68,6 +68,9 @@ Chalito's tables live in schemas `chalito` and `chalito_private` on the hub's Su
 - **pg_cron and pgcrypto:** Chalito's migrations create the extensions if missing and schedule `chalito-*` jobs (TTL purge, room purge, rate-limit buckets).
 - **Applying the migrations** (`supabase/migrations/2026100400*`) to nexo-ai is an owner action, after a dry run on a branch.
 
+## 7b. Consumption routes must be on hub main
+`/usage/admit` and `/usage/settle` (and `reserved` in the balance) come from hub commit `a5733df` ("tier caps, job admission, boost lane"), which is on unmerged branches (`claude/consumption-caps`, `claude/rebuild-p6-*`), not on chalyb `main` as of 2026-10-04. Chalito's billing calls them, and treats a 404 from admit as "hub unavailable" → free_min. They must ship on the hub before Chalito goes live with managed AI.
+
 ## 8. Engine launch: forward `next` (nice to have)
 `/auth/launch/<slug>` and `getEngineLaunchUrl` ignore a `next` path. Notification links (`/n/<nid>`) need to land on the right screen after sign-in. Chalito works around this with a first-party cookie it sets before redirecting to the hub. A native `next` (validated as a same-engine relative path and carried in the SSO token's `next`) would remove that.
 
