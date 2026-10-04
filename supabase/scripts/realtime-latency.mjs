@@ -105,6 +105,32 @@ const join = async (client, topic) => {
   await waitFor(() => status !== "PENDING" && status !== "CLOSED", 10_000);
   return { channel, inbox, status: () => (reason ? `${status}: ${reason}` : status) };
 };
+/**
+ * When a join is refused: evaluate, as `authenticated` with the token's real claims, every
+ * predicate the realtime.messages policies use, so the log says which one failed.
+ */
+const diagnose = async (token, topic) => {
+  const claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+  const code = topic.startsWith("chalito:pairing:") ? topic.slice("chalito:pairing:".length) : null;
+  const [row] = code
+    ? await db`select code_id, expires_at > now() as live, claimed, watch_auth_user_id::text as watch_user
+               from chalito.pairing_codes where code_id = ${code}`
+    : [null];
+  const [checks] = await db.begin(async (tx) => {
+    await tx`select set_config('request.jwt.claims', ${JSON.stringify(claims)}, true),
+                    set_config('realtime.topic', ${topic}, true)`;
+    await tx`set local role authenticated`;
+    return tx`select chalito.jwt_claims() as claims, chalito.jwt_role() as role,
+                     chalito.jwt_device_id() as device_id, chalito.jwt_pairing_code() as pairing_code,
+                     chalito_private.device_ok() as device_ok,
+                     chalito_private.pairing_watch_ok(chalito.jwt_pairing_code()) as pairing_watch_ok,
+                     chalito_private.realtime_topic_ok(${topic}) as topic_ok, realtime.topic() as realtime_topic`;
+  });
+  log(
+    `diagnose ${topic}: token=${JSON.stringify({ sub: claims.sub, aud: claims.aud, role: claims.role, app_metadata: claims.app_metadata })}`,
+  );
+  log(`diagnose ${topic}: row=${JSON.stringify(row)} checks=${JSON.stringify(checks)}`);
+};
 const must = (res, what) => {
   if (res.error) fail(`${what}: ${res.error.message}`);
   return res;
@@ -163,7 +189,10 @@ const phone = deviceClient(await sessionToken(deviceEmail(PHONE)));
 const other = deviceClient(await sessionToken(deviceEmail(XAGENT)));
 
 const agentCh = await join(agent.client, `chalito:device:${AGENT}`);
-if (agentCh.status() !== "SUBSCRIBED") fail(`agent could not join its own topic (${agentCh.status()})`);
+if (agentCh.status() !== "SUBSCRIBED") {
+  await diagnose(agent.holder.token, `chalito:device:${AGENT}`);
+  fail(`agent could not join its own topic (${agentCh.status()})`);
+}
 const otherOwn = await join(other.client, `chalito:device:${XAGENT}`);
 if (otherOwn.status() !== "SUBSCRIBED") fail(`other owner's agent could not join its own topic (${otherOwn.status()})`);
 const otherSpy = await join(other.client, `chalito:device:${AGENT}`);
@@ -205,7 +234,10 @@ log("isolation: another owner's device received nothing");
 // ---------------------------------------------------------------- 3. pairing topic
 const watch = deviceClient(await sessionToken(watchEmail(CODE)));
 const watchCh = await join(watch.client, `chalito:pairing:${CODE}`);
-if (watchCh.status() !== "SUBSCRIBED") fail(`pairing watcher could not join pairing:${CODE} (${watchCh.status()})`);
+if (watchCh.status() !== "SUBSCRIBED") {
+  await diagnose(watch.holder.token, `chalito:pairing:${CODE}`);
+  fail(`pairing watcher could not join chalito:pairing:${CODE} (${watchCh.status()})`);
+}
 const watchSpy = await join(watch.client, `chalito:device:${AGENT}`);
 if (watchSpy.status() === "SUBSCRIBED") fail("a pairing token joined a device topic");
 const tClaim = performance.now();

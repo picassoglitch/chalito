@@ -1,7 +1,7 @@
 -- Realtime broadcasts (per-device private topics, RLS on realtime.messages) and TTL cleanup.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(20);
+select plan(22);
 
 create function pg_temp.login(claims jsonb, topic text) returns void language plpgsql as $$
 begin
@@ -86,6 +86,22 @@ select pg_temp.login(jsonb_build_object('sub', md5('watch:rt_code')::uuid,
   'app_metadata', '{"chalito": {"role": "pairing", "pairing_code": "rt_code"}}'::jsonb), 'chalito:pairing:rt_code');
 select ok(pg_temp.count($$select 1 from realtime.messages where topic = 'chalito:pairing:rt_code'$$) > 0,
   'join: the pairing watcher receives on its code''s topic');
+-- The same join with a token shaped exactly as GoTrue issues it for the watcher's auth user.
+select pg_temp.logout();
+select set_config('request.jwt.claims', jsonb_build_object(
+  'aud', 'authenticated', 'exp', 1999999999, 'iat', 1790000000, 'iss', 'http://127.0.0.1:54321/auth/v1',
+  'sub', md5('watch:rt_code')::uuid, 'email', 'rt_code@pairing.chalito.invalid', 'phone', '',
+  'app_metadata', jsonb_build_object('provider', 'email', 'providers', jsonb_build_array('email'),
+    'chalito', jsonb_build_object('role', 'pairing', 'pairing_code', 'rt_code')),
+  'user_metadata', jsonb_build_object('email_verified', true), 'role', 'authenticated', 'aal', 'aal1',
+  'amr', jsonb_build_array(jsonb_build_object('method', 'otp', 'timestamp', 1790000000)),
+  'session_id', gen_random_uuid(), 'is_anonymous', false)::text, true);
+select set_config('realtime.topic', 'chalito:pairing:rt_code', true);
+set local role authenticated;
+select ok(chalito_private.realtime_topic_ok('chalito:pairing:rt_code'),
+  'join: GoTrue-shaped pairing-watcher claims pass realtime_topic_ok');
+select ok(pg_temp.count($$select 1 from realtime.messages where topic = 'chalito:pairing:rt_code'$$) > 0,
+  'join: and read the pairing topic');
 select pg_temp.as_device('user-1', 'rt_phone', 'client', 'chalito:device:rt_phone');
 select throws_ok($$insert into realtime.messages (topic, extension, payload, event, private)
   values ('chalito:device:rt_agent', 'broadcast', '{"forged": true}', 'commands', true)$$, '42501', null,
