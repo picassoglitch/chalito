@@ -74,10 +74,13 @@ export const PhoneField = ({
   value,
   onChange,
   verifier,
+  chargesAck,
 }: {
   value: PhoneValue;
   onChange: (v: PhoneValue) => void;
   verifier: PhoneVerifier;
+  /** The api refuses to send a code before the charges notice is acknowledged. */
+  chargesAck: boolean;
 }) => {
   const { t, locale } = useUiText();
   const parsed = value.e164 ? parsePhoneNumberFromString(value.e164) : undefined;
@@ -88,6 +91,7 @@ export const PhoneField = ({
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [channel, setChannel] = useState<"sms" | "call">("sms");
   const countryId = useId();
   const numberId = useId();
   const codeId = useId();
@@ -102,11 +106,19 @@ export const PhoneField = ({
     if (!p || !p.isValid()) return setError(t("phone.invalid"));
     setBusy(true);
     setError(null);
-    const r = await verifier.start(p.number);
+    const r = await verifier.start(p.number, { channel, locale });
     setBusy(false);
     if (!r.ok)
       return setError(
-        t(r.reason === "invalid" ? "phone.invalid" : r.reason === "rate_limited" ? "phone.rateLimited" : "phone.error"),
+        t(
+          r.reason === "invalid"
+            ? "phone.invalid"
+            : r.reason === "rate_limited"
+              ? "phone.rateLimited"
+              : r.reason === "charges_notice_required"
+                ? "needsAck"
+                : "phone.error",
+        ),
       );
     setPending(p.number);
     setCode("");
@@ -120,7 +132,7 @@ export const PhoneField = ({
     setBusy(false);
     if (!r.ok)
       return setError(
-        t(r.reason === "wrong_code" ? "phone.wrongCode" : r.reason === "expired" ? "phone.expired" : "phone.error"),
+        t(r.reason === "wrong_code" ? "phone.wrongCode" : r.reason === "in_use" ? "phone.inUse" : "phone.error"),
       );
     onChange({ e164: pending, verified: true });
     setStage("done");
@@ -209,12 +221,22 @@ export const PhoneField = ({
         aria-invalid={!!error}
         onChange={(e) => setNational(e.target.value)}
       />
-      <div className="grid gap-1 sm:col-span-2">
-        <p className="text-sm text-neutral-600">{t("phone.willSend")}</p>
+      <div className="grid gap-2 sm:col-span-2">
+        <fieldset className="flex flex-wrap gap-4 text-sm">
+          <legend className="sr-only">{t("phone.channel")}</legend>
+          {(["sms", "call"] as const).map((c) => (
+            <label key={c} className="flex items-center gap-1">
+              <input type="radio" name="otp-channel" checked={channel === c} onChange={() => setChannel(c)} />
+              {t(`phone.by.${c}`)}
+            </label>
+          ))}
+        </fieldset>
+        <p className="text-sm text-neutral-600">{t(channel === "sms" ? "phone.willSend" : "phone.willCall")}</p>
+        {!chargesAck ? <p className="text-sm text-amber-900">{t("needsAck")}</p> : null}
         <button
           type="button"
           className="w-fit rounded-md bg-emerald-700 px-3 py-1 text-white disabled:opacity-50"
-          disabled={busy || !national.trim()}
+          disabled={busy || !national.trim() || !chargesAck}
           onClick={() => void send()}
         >
           {t("phone.sendCode")}

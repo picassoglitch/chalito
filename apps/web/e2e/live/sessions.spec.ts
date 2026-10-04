@@ -10,6 +10,8 @@ test("session detail: card, timeline, prompt, answer, interrupt/resume, modes ca
   await expect(page.getByTestId("session-card")).toBeVisible();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Agregar notas al README");
   await expect(page.locator('[data-type="message.assistant"]').first()).toContainText("Primero necesito tu aprobación");
+  await expect(page.locator('[data-type="message.assistant"]').first()).toContainText("Agente");
+  await expect(page.locator('[data-type="session.started"]')).toContainText("Sesión iniciada");
 
   await expect(page.getByTestId("permission-mode").locator("option")).toHaveText([
     "Preguntar",

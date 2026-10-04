@@ -54,7 +54,10 @@ const Timeline = ({ events }: { events: readonly EventView[] }) => {
         const body = text(e.content);
         return (
           <li key={e.eid} data-testid="event" data-type={e.type} className="rounded-lg border bg-white p-2 text-sm">
-            <span className="font-medium">{t.has(`type.${e.type}`) ? t(`type.${e.type}`) : e.type}</span>
+            {/* Message keys can't contain "." (next-intl nesting): session.started → session_started. */}
+            <span className="font-medium">
+              {t.has(`type.${e.type.replace(/\./g, "_")}`) ? t(`type.${e.type.replace(/\./g, "_")}`) : e.type}
+            </span>
             {body ? <p className="mt-1 whitespace-pre-wrap">{body}</p> : null}
           </li>
         );

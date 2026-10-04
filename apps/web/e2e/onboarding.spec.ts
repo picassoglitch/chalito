@@ -12,6 +12,8 @@ test("onboarding completes with 'Saltar' on the companion step and lands with th
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Ponle nombre");
   for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Continuar" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Conecta tu computadora");
+  await page.getByRole("button", { name: "Continuar" }).click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Protege tus aprobaciones");
   await page.getByRole("button", { name: "Terminar" }).click();
   await expect(page).toHaveURL(/127\.0\.0\.1:3100\/$/);
   await expect(page.getByTestId("home-companion")).toHaveText("Tu compañero: Chalito");
@@ -34,6 +36,8 @@ test("the phone step locks calls and WhatsApp until the number is verified (EN)"
   await page.getByLabel("Country or region").selectOption("BR");
   await page.getByLabel("Number").fill("11 91234 5678");
   await expect(page.getByText("We'll text you a code to verify it.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send code" })).toBeDisabled();
+  await page.getByLabel("I understand that charges may apply.").check();
   await expect(page.getByRole("button", { name: "Send code" })).toBeEnabled();
   await expect(page.getByRole("switch", { name: /Calls/ })).toBeDisabled();
   await expect(page.getByRole("switch", { name: /WhatsApp alerts/ })).toBeDisabled();
