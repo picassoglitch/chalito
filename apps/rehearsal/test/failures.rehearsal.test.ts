@@ -260,6 +260,8 @@ describe.skipIf(!READY)("c. a phone revoked mid-approval", () => {
     const net = notifierMocks();
     const p = await s.person("mara");
     await s.enrolPasskey(p);
+    // Midday in the person's zone: quiet hours must not hold the pushes this scenario is about.
+    await s.sql`update chalito.users set tz = ${zoneAt(12)} where id = ${p.owner}`;
     const { device: web } = await s.endorseBrowser(p);
     const phoneEndpoint = await subscribePush(p.owner, p.phone);
     const webEndpoint = await subscribePush(p.owner, web);
