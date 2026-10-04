@@ -8,7 +8,8 @@
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:emulator": "vitest run -c vitest.emulator.config.ts"
+    "test:emulator": "vitest run -c vitest.emulator.config.ts",
+    "test:pg": "vitest run -c vitest.pg.config.ts"
   },
   "dependencies": {
     "@chalito/crypto": "workspace:*",
@@ -18,10 +19,11 @@
     "@hono/node-server": "^2.1.3",
     "firebase-admin": "^14.5.0",
     "hono": "^4.13.12",
+    "postgres": "^3.4.9",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "firebase": "^12.19.0",
-    "@firebase/rules-unit-testing": "^5.0.2"
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "firebase": "^12.19.0"
   }
 }

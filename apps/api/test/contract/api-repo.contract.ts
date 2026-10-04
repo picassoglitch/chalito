@@ -7,7 +7,23 @@ import { RACERS, agentFor, count, device, owner, pairingCode, recovery } from ".
  * ids, so the suite can run against a shared database. Point it at a new implementation
  * with `runApiRepoContract("PostgresRepo", () => new PostgresRepo(pool))`.
  */
-export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promise<ApiRepo>) => {
+export interface ApiRepoContractOptions {
+  /** Concurrent revokes: exactly one caller gets "revoked" (true for transactional backends). */
+  strictRevoke?: boolean;
+}
+
+/** A fresh owner whose user record exists (devices, recovery and notifications belong to a user). */
+const seededOwner = async (repo: ApiRepo) => {
+  const o = owner();
+  await repo.upsertUserFromSso(o, { tenantId: o, email: "a@b.mx", tier: "pro", lastSsoAt: 1 });
+  return o;
+};
+
+export const runApiRepoContract = (
+  name: string,
+  makeRepo: () => ApiRepo | Promise<ApiRepo>,
+  opts: ApiRepoContractOptions = {},
+) => {
   describe(`ApiRepo contract: ${name}`, () => {
     describe("tenants and users", () => {
       it("createTenant is created once, then exists", async () => {
@@ -69,7 +85,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
     describe("devices", () => {
       it("createDevice / getDevice round-trip; a taken id exists; owners are separate", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const d = await device(o);
         expect(await repo.getDevice(o, d.deviceId)).toBeNull();
         expect(await repo.createDevice(o, d)).toBe("created");
@@ -81,7 +97,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it("touchDevice sets lastSeenAt", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const d = await device(o);
         await repo.createDevice(o, d);
         await repo.touchDevice(o, d.deviceId, 1_790_000_123_000);
@@ -90,7 +106,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it("revokeDevice: not_found, then revoked once, then already_revoked (idempotent)", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const d = await device(o);
         expect(await repo.revokeDevice(o, d.deviceId, 5, "dev_x")).toBe("not_found");
         await repo.createDevice(o, d);
@@ -99,22 +115,23 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
         expect(await repo.getDevice(o, d.deviceId)).toMatchObject({ revoked: true, revokedAt: 5 });
       });
 
-      it("concurrent revokes all succeed and leave the device revoked", async () => {
+      it("concurrent revokes all succeed (exactly one revoked when strict) and leave the device revoked", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const d = await device(o);
         await repo.createDevice(o, d);
         const results = await Promise.all(
           Array.from({ length: RACERS }, (_, i) => repo.revokeDevice(o, d.deviceId, 10 + i, null)),
         );
-        expect(count(results, "revoked")).toBeGreaterThanOrEqual(1);
+        if (opts.strictRevoke) expect(count(results, "revoked")).toBe(1);
+        else expect(count(results, "revoked")).toBeGreaterThanOrEqual(1);
         expect(results.every((r) => r === "revoked" || r === "already_revoked")).toBe(true);
         expect((await repo.getDevice(o, d.deviceId))?.revoked).toBe(true);
       });
 
       it("saveEndorsement stores (and overwrites) without error", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         await repo.saveEndorsement(o, "dev_new", { body: { newDeviceId: "dev_new" }, sig: "x" }, 1);
         await repo.saveEndorsement(o, "dev_new", { body: { newDeviceId: "dev_new" }, sig: "y" }, 2);
       });
@@ -123,7 +140,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
     describe("enrollFirstClient (atomic)", () => {
       it("enrolls only while no active client exists, and stores the recovery hash", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         await repo.createDevice(o, await device(o, "agent")); // agents don't count
         const a = await device(o);
         expect(await repo.enrollFirstClient(o, a, recovery(1))).toBe("ok");
@@ -144,7 +161,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it(`exactly one of ${RACERS} concurrent first clients wins`, async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const racers = await Promise.all(Array.from({ length: RACERS }, () => device(o)));
         const results = await Promise.all(racers.map((d, i) => repo.enrollFirstClient(o, d, recovery(i))));
         expect(count(results, "ok")).toBe(1);
@@ -158,7 +175,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
     describe("recovery", () => {
       it("getRecovery is null until set; startRecovery records the cool-down", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         expect(await repo.getRecovery(o)).toBeNull();
         await repo.enrollFirstClient(o, await device(o), recovery(1));
         await repo.startRecovery(o, 9_000, 8_000);
@@ -167,7 +184,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it("completeRecovery creates the device and replaces the hash atomically", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         await repo.enrollFirstClient(o, await device(o), recovery(1));
         await repo.startRecovery(o, 9_000, 8_000);
         const d = await device(o, "client", { enrolledVia: "recovery" });
@@ -181,7 +198,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it(`exactly one of ${RACERS} concurrent completions of the same device wins`, async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         await repo.enrollFirstClient(o, await device(o), recovery(1));
         const d = await device(o, "client", { enrolledVia: "recovery" });
         const results = await Promise.all(
@@ -196,7 +213,27 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
     describe("notifications", () => {
       it("createNotification stores without error", async () => {
         const repo = await makeRepo();
-        await repo.createNotification(owner(), "recovery_1", { v: 1, nid: "recovery_1", level: "L3" });
+        const o = await seededOwner(repo);
+        const n = {
+          v: 1,
+          nid: "recovery_1",
+          uid: o,
+          level: "L3",
+          source: "security",
+          urgency: "critical",
+          counts: { approvals: 0, questions: 0, messages: 0, mesas: 0 },
+          deepLink: "/",
+          coalesceKey: "security:recovery",
+          state: "pending",
+          step: 0,
+          nextAt: null,
+          channels: ["desktop", "push", "whatsapp"],
+          createdAt: 1_790_000_000_000,
+          ackedAt: null,
+          ackedVia: null,
+        };
+        await repo.createNotification(o, "recovery_1", n);
+        await repo.createNotification(o, "recovery_1", { ...n, step: 1 });
       });
     });
 
@@ -212,7 +249,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it("claimPairingCode: not_found, then ok (device created, code claimed), then already_claimed", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const code = await pairingCode();
         const claim = {
           owner: o,
@@ -247,7 +284,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it("a throwing build aborts the claim and writes nothing", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const code = await pairingCode();
         await repo.createPairingCode(code);
         const claim = {
@@ -268,7 +305,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
 
       it("an existing agent device makes the claim device_exists and leaves the code unclaimed", async () => {
         const repo = await makeRepo();
-        const o = owner();
+        const o = await seededOwner(repo);
         const code = await pairingCode();
         await repo.createPairingCode(code);
         const agent = await agentFor(code, o, "dev_phone");
@@ -291,7 +328,7 @@ export const runApiRepoContract = (name: string, makeRepo: () => ApiRepo | Promi
         const repo = await makeRepo();
         const code = await pairingCode();
         await repo.createPairingCode(code);
-        const owners = Array.from({ length: RACERS }, () => owner());
+        const owners = await Promise.all(Array.from({ length: RACERS }, () => seededOwner(repo)));
         const results = await Promise.all(
           owners.map(async (o) =>
             repo.claimPairingCode(
