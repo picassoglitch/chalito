@@ -90,6 +90,11 @@ export class TrustedClientList {
     return this.#clients.delete(deviceId);
   }
 
+  /** Signature check of any signed envelope against this list only. */
+  async verifySigned<T>(env: SignedEnvelope<T>, ctx: Parameters<typeof verifyEnvelope>[1]) {
+    return verifyEnvelope(env, ctx, this.#keys);
+  }
+
   /** Full Decision check: signature by a locally trusted key, binding, expiry, single use. */
   async verifyDecision(
     env: SignedEnvelope<DecisionLike>,

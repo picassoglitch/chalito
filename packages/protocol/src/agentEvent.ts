@@ -41,6 +41,8 @@ export const ToolCategory = z.enum([
   "other",
 ]);
 
+export type ToolCategory = z.infer<typeof ToolCategory>;
+
 const base = {
   v: z.literal(1),
   eid: Id,

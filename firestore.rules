@@ -38,7 +38,7 @@ service cloud.firestore {
         allow read: if member(uid);
         // devMode and policyHash are written only by the device itself (brief §6).
         allow update: if activeAgent(uid) && deviceId == myDeviceId()
-          && onlyChanges(["lastSeenAt", "policyHash", "devMode", "status", "presence"]);
+          && onlyChanges(["lastSeenAt", "policyHash", "devMode", "status", "presence", "lastEvent"]);
         allow create, delete: if false;
 
         // Signed command envelopes from clients to an agent. The agent verifies the
