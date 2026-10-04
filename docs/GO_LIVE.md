@@ -137,6 +137,6 @@ From OPS §10 (M14). Until these are done, tag builds produce **draft, unsigned*
 
 - Bundle the services to JavaScript at build time (esbuild, with the config YAMLs copied beside the bundle) and drop tsx at runtime: faster cold starts, no `/tmp` need.
 - Rigged VRM avatars (D-060). Desktop panel passkey step-up (D-059). Native phone apps (decision #14).
-- M13 Solo landing with real renders (deferred, `docs/PLAN.md`).
+- A static landing: the M13 pages as a route group served statically with a hash-based Content-Security-Policy (no per-request nonce), for speed and a stricter CSP.
 - Hub: an Ed25519 launch token (CHALYB_HANDOFF §6.6), a `ref` on link-outs, a native `next` (§8).
 - SMS for the US (10DLC) if US testers need it.
