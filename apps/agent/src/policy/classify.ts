@@ -31,6 +31,12 @@ export interface ClassifyContext {
   cwd: string;
   /** Resolves symlinks so a link inside a workspace can't point outside it. */
   realpath?: (p: string) => string;
+  /** The agent's own executables (`process.execPath` of the compiled agent, the installed `chalito`). Running them is the hard floor. */
+  agentBinaries?: string[];
+  /** Files the agent's integrity depends on outside ~/.chalito: the service unit/plist/task XML, the agent binary, the pinned `claude`. Hard floor. */
+  protectedPaths?: string[];
+  /** Directories on the session's PATH. Writing into them (outside workspaces) is CRITICAL: it replaces what later commands run. */
+  pathDirs?: string[];
 }
 
 const RANK: Record<RiskTier, number> = { LOW: 0, MED: 1, HIGH: 2, CRITICAL: 3 };
@@ -55,15 +61,21 @@ export const defaultRealpath = (p: string): string => {
 const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
-/** What a glob or unresolved prefix could reach: the hard floor, credentials, or neither. */
-type Cover = "hard_floor" | "credentials" | null;
+/** What a glob or unresolved prefix could reach: the hard floor, credentials, a persistence path, or neither. */
+type Cover = "hard_floor" | "credentials" | "persistence" | null;
 
 interface Paths {
   home: string;
   resolve(p: string, cwd?: string): string;
   inWorkspace(abs: string): boolean;
   hardFloor(abs: string): boolean;
+  /** Why `abs` is the hard floor (~/.chalito, or an agent file outside it). */
+  floorReason(abs: string): string;
   sensitive(abs: string): boolean;
+  /** Shell startup files, autostart/service dirs and PATH dirs: writing there runs code later, outside the gate. */
+  persistence(abs: string): boolean;
+  /** The agent's own executables, resolved. */
+  agentBinaries: string[];
   configOrCi(abs: string): boolean;
   /** Whether a path that starts with `prefix` (then `next`, a glob/variable char) can land on a protected path. */
   covers(prefix: string, next: string, cwd: string): Cover;
@@ -99,11 +111,51 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     ".claude.json",
   ].map(h);
   const systemSecrets = ["/etc/shadow", "/etc/sudoers", "/etc/sudoers.d"];
+  const inWorkspace = (abs: string) => workspaces.some((w) => within(abs, w));
+  const protectedPaths = (ctx.protectedPaths ?? []).map((p) => real(resolve(expand(p))));
+  const agentBinaries = (ctx.agentBinaries ?? []).map((p) => real(resolve(expand(p))));
+  const floor = [chalito, ...protectedPaths, ...agentBinaries];
+  const startupFiles = [
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".config/fish/config.fish",
+    ".config/powershell/Microsoft.PowerShell_profile.ps1",
+    ".config/powershell/profile.ps1",
+    ".xprofile",
+    ".xinitrc",
+  ].map(h);
+  const startupDirs = [
+    ".local/bin",
+    "bin",
+    ".config/systemd/user",
+    ".config/autostart",
+    ".config/fish/conf.d",
+    "Library/LaunchAgents",
+    "Documents/PowerShell",
+    "Documents/WindowsPowerShell",
+    "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup",
+  ].map(h);
+  // PATH entries inside a workspace (node_modules/.bin, ./scripts) stay workspace paths.
+  const pathDirs = (ctx.pathDirs ?? [])
+    .filter((d) => isAbsolute(d) || d.startsWith("~"))
+    .map((d) => real(resolve(expand(d))))
+    .filter((d) => !inWorkspace(d) && d !== sep);
+  const persistDirs = [...startupDirs, ...pathDirs];
   return {
     home: ctx.home,
     resolve: res,
-    inWorkspace: (abs) => workspaces.some((w) => within(abs, w)),
-    hardFloor: (abs) => within(abs, chalito),
+    inWorkspace,
+    hardFloor: (abs) => floor.some((f) => within(abs, f)),
+    floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
+    persistence: (abs) => startupFiles.includes(abs) || persistDirs.some((d) => within(abs, d)),
+    agentBinaries,
     sensitive: (abs) =>
       sensitiveDirs.some((d) => within(abs, d)) ||
       sensitiveFiles.includes(abs) ||
@@ -144,8 +196,9 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
         if (!target.startsWith(abs)) return false;
         return !(dotSafe && target.slice(abs.length).startsWith("."));
       };
-      if (reaches(chalito)) return "hard_floor";
+      if (floor.some(reaches)) return "hard_floor";
       if ([...sensitiveDirs, ...sensitiveFiles, ...systemSecrets].some(reaches)) return "credentials";
+      if ([...startupFiles, ...persistDirs].some(reaches)) return "persistence";
       return null;
     },
   };
@@ -175,8 +228,8 @@ const raise = (out: Classification, tier: RiskTier, reason: string): void => {
   if (tier === "CRITICAL") crit(out).push(reason);
 };
 
-const markHardFloor = (out: Classification): void => {
-  raise(out, "CRITICAL", "touches ~/.chalito");
+const markHardFloor = (out: Classification, reason = "touches ~/.chalito"): void => {
+  raise(out, "CRITICAL", reason);
   out.hardFloor = true;
 };
 
@@ -199,14 +252,20 @@ const classifyPath = (
   out: Classification,
   cwd?: string,
   configAlways = false,
+  persistAlways = configAlways,
 ): void => {
   const abs = paths.resolve(raw, cwd);
   if (paths.hardFloor(abs)) {
-    markHardFloor(out);
+    markHardFloor(out, paths.floorReason(abs));
     return;
   }
   if (paths.sensitive(abs)) {
     raise(out, "CRITICAL", "credentials path");
+    return;
+  }
+  // Shell arguments of anything but a read-only tool count as writes here: whether `curl -o` or `ln` writes is a guess.
+  if ((write || persistAlways) && !paths.inWorkspace(abs) && paths.persistence(abs)) {
+    raise(out, "CRITICAL", "startup file or PATH directory");
     return;
   }
   if (!paths.inWorkspace(abs)) {
@@ -489,6 +548,36 @@ const INTERPRETERS: Record<string, string[]> = {
 /** Windows shells: not modelled yet, so anything they run is opaque. */
 const WINDOWS_SHELLS = new Set(["cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe"]);
 const SUDO = new Set(["sudo", "doas", "pkexec", "su"]);
+/** The agent's CLI names. A session must never drive the agent (pair, policy edit, keys, service). */
+const AGENT_NAMES = new Set(["chalito", "chalito-agent", "chalito.exe", "chalito-agent.exe"]);
+/** The CLI's source entry, run through node/tsx/bun from a checkout. */
+const AGENT_ENTRY = /(^|\/)apps\/agent\/src\/cli\.[cm]?[jt]s$/;
+/** Agent names as a token inside opaque code or a script string. */
+const AGENT_TOKEN = /(^|[\s'"`;|&(=,[])(chalito|chalito-agent)(?=$|[\s'"`;|&),\]])/;
+/** Commands that run another program named in their arguments (and aren't modelled as wrappers). */
+const LAUNCHERS = new Set([
+  "node",
+  "nodejs",
+  "bun",
+  "bunx",
+  "deno",
+  "tsx",
+  "ts-node",
+  "npx",
+  "pnpx",
+  "pnpm",
+  "npm",
+  "yarn",
+  "script",
+  "expect",
+  "unbuffer",
+  "setsid",
+  "nohup",
+  "open",
+  "start",
+  "launchctl",
+  "systemd-run",
+]);
 /** Options of sudo-like commands that take a value. */
 const SUDO_VALUE_OPTS = new Set(["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "-R", "--user"]);
 
@@ -649,6 +738,8 @@ interface WordOpts {
   write?: boolean;
   /** Unresolved remainder is ignored (prose: echo arguments, commit messages). */
   prose?: boolean;
+  /** The command only reads its operands (ls, cat, …): startup files and PATH dirs are just outside the workspace. */
+  readOnly?: boolean;
 }
 
 /**
@@ -665,7 +756,7 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
   }
   const cwd = st.cwd ?? paths.home;
   if (!e.unresolved && !e.glob) {
-    classifyPath(paths, e.text, opts.write ?? false, out, cwd, true);
+    classifyPath(paths, e.text, opts.write ?? false, out, cwd, true, !opts.readOnly);
     return;
   }
   const at = e.text.search(/[$`*?[{]/);
@@ -675,8 +766,10 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
   const tildeUser = /^~[^/]/.test(prefix);
   if (!tildeUser) {
     const cover = paths.covers(prefix, next, cwd);
-    if (cover === "hard_floor") return markHardFloor(out);
+    if (cover === "hard_floor") return markHardFloor(out, "may touch ~/.chalito or the agent's own files");
     if (cover === "credentials") return raise(out, "CRITICAL", "credentials path");
+    if (cover === "persistence" && (opts.write || (!opts.prose && !opts.readOnly)))
+      return raise(out, "CRITICAL", "startup file or PATH directory");
   }
   if (e.unresolved) {
     if (!opts.prose) raise(out, "HIGH", "unresolved variable or substitution");
@@ -684,7 +777,7 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
   }
   // Glob only: classify the directory the glob expands in.
   const dir = prefix === "" || prefix.endsWith("/") ? prefix || "." : dirname(prefix);
-  classifyPath(paths, dir, opts.write ?? false, out, cwd, true);
+  classifyPath(paths, dir, opts.write ?? false, out, cwd, true, !opts.readOnly);
 };
 
 const looksPathy = (s: string) => s.includes("/") || s.startsWith("~") || s.startsWith("$") || s.startsWith(".");
@@ -701,7 +794,8 @@ const producerCmd = new WeakMap<Segment, string>();
 const opaqueCode = (code: string | null, reason: string, out: Classification): void => {
   raise(out, "HIGH", reason);
   if (code === null) return;
-  if (/\.chalito(?![\w-])/.test(code)) markHardFloor(out);
+  if (AGENT_TOKEN.test(code)) markHardFloor(out, "runs the Chalito agent CLI");
+  else if (/\.chalito(?![\w-])/.test(code)) markHardFloor(out);
   else if (
     /\.(ssh|aws|gnupg|kube|docker|azure|password-store|netrc|git-credentials)\b|\.config\/(gcloud|gh)\b/.test(code)
   )
@@ -817,6 +911,31 @@ const classifySegment = (
   const args = words.slice(1);
   const texts = args.map((a) => a.text);
   producerCmd.set(seg, cmd);
+
+  // The agent's own CLI: directly, by path, or through a launcher (npx chalito, tsx apps/agent/src/cli.ts, script -c …).
+  const isAgent = (w: Word) => {
+    const e = expandWord(w, st, paths);
+    if (AGENT_NAMES.has(cmdName(e.text))) return true;
+    if (!looksPathy(e.text) || e.unresolved) return false;
+    const abs = paths.resolve(e.text, st.cwd ?? paths.home);
+    return paths.agentBinaries.includes(abs) || AGENT_ENTRY.test(abs);
+  };
+  if (isAgent(words[0]!)) return markHardFloor(out, "runs the Chalito agent CLI");
+  if (LAUNCHERS.has(cmd)) {
+    if (args.some(isAgent) || (texts.includes("@chalito/agent") && texts.some((t) => /(^|\/)cli\.[cm]?[jt]s$/.test(t))))
+      return markHardFloor(out, "runs the Chalito agent CLI");
+    // script -c "…", script -qc "…": a command line run in a pty.
+    if (cmd === "script") {
+      const cIdx = args.findIndex((a) => /^-[A-Za-z]*c$/.test(a.text) || a.text === "--command");
+      const inner = cIdx >= 0 ? texts[cIdx + 1] : texts.find((t) => t.startsWith("--command="))?.slice(10);
+      if (inner !== undefined) {
+        merge(out, classifyBash(inner, ctx, paths, { ...st, vars: new Map(st.vars) }), "MED");
+        if (out.hardFloor) return;
+      }
+    }
+    if (cmd === "expect" && texts.some((t) => AGENT_TOKEN.test(t)))
+      return markHardFloor(out, "runs the Chalito agent CLI");
+  }
   if (words[0]!.dyn && expandWord(words[0]!, st, paths).unresolved) raise(out, "HIGH", "dynamic command name");
 
   if (WINDOWS_SHELLS.has(cmd.toLowerCase())) {
@@ -898,6 +1017,7 @@ const classifySegment = (
   const prose = cmd === "echo" || cmd === "printf";
   const inPlace = (cmd === "sed" || cmd === "perl") && texts.some((t) => /^-[^-]*i/.test(t) || t === "--in-place");
   const writes = WRITERS.has(cmd) || inPlace;
+  const readOnly = READ_ONLY.has(cmd) && !writes;
   const network = NETWORK.has(cmd);
   const vcs = ["git", "gh", "hg", "jj", "svn"].includes(cmd);
   // curl -d @file, -F name=@file / name=<file: the file is read and sent.
@@ -914,17 +1034,18 @@ const classifySegment = (
         classifyWord({ text: value, dyn: a.dyn }, st, paths, out, {
           write: writes,
           prose: vcs && MESSAGE_FLAGS.has(t.slice(0, eq)),
+          readOnly,
         });
       } else if (/^-[A-Za-z]./.test(t) && looksPathy(t.slice(2))) {
         // Attached short-option value: -o/path, -C~/dir.
-        classifyWord({ text: t.slice(2), dyn: a.dyn }, st, paths, out, { write: writes });
+        classifyWord({ text: t.slice(2), dyn: a.dyn }, st, paths, out, { write: writes, readOnly });
       }
       if (vcs && MESSAGE_FLAGS.has(t) && args[i + 1]) i++; // the message itself is prose
       if (out.hardFloor) return;
       continue;
     }
     const value = unAt(t.includes("=") && network ? t.slice(t.indexOf("=") + 1).replace(/^[@<]/, "") : t);
-    classifyWord({ text: value, dyn: a.dyn }, st, paths, out, { write: writes, prose });
+    classifyWord({ text: value, dyn: a.dyn }, st, paths, out, { write: writes, prose, readOnly });
     if (out.hardFloor) return;
   }
   if (writes) raise(out, viaXargs ? "HIGH" : "MED", viaXargs ? "writes to paths read from input" : "writes files");
