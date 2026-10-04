@@ -11,7 +11,7 @@ import {
   signEnvelope,
   toB64url,
 } from "@chalito/crypto";
-import { syncEndorsements } from "../src/endorsement-sync.js";
+import { syncEndorsements, syncRevocations } from "../src/endorsement-sync.js";
 import { MemoryStore, type EndorsementRow } from "../src/store.js";
 import { TrustStore } from "../src/trust-store.js";
 
@@ -183,5 +183,41 @@ describe("trusted-clients.json with tombstones", () => {
     const sig = await signDetached("chalito.trusted-list.v1", { deviceId: SELF, clients: f.clients }, keys.secretKey);
     writeFileSync(store.file, JSON.stringify({ clients: f.clients, removed: ["x"], sig }));
     expect((await store.load()).tampered).toBe(true);
+  });
+});
+
+describe("revocations reconcile the local trust list (review R-H5)", () => {
+  const rev = (s: Awaited<ReturnType<typeof setup>>, onRevoked = vi.fn()) => ({
+    onRevoked,
+    run: () => syncRevocations({ store: s.store, trust: () => s.list, saveTrust: s.saveTrust, onRevoked }),
+  });
+
+  it("a trusted client the directory revoked is removed with a tombstone, saved and reported", async () => {
+    const s = await setup();
+    const r = rev(s);
+    expect(await r.run()).toEqual([]);
+    expect(s.saveTrust).not.toHaveBeenCalled();
+    s.store.revokedDevices.add(s.phone.deviceId);
+    s.store.revokedDevices.add("dev_not_trusted_here");
+    expect(await r.run()).toEqual([s.phone.deviceId]);
+    expect(s.list.has(s.phone.deviceId)).toBe(false);
+    expect(s.list.isRemoved(s.phone.deviceId)).toBe(true);
+    expect(s.saveTrust).toHaveBeenCalledTimes(1);
+    expect(r.onRevoked).toHaveBeenCalledWith(s.phone.deviceId);
+    // Idempotent: nothing left to do.
+    expect(await r.run()).toEqual([]);
+    expect(r.onRevoked).toHaveBeenCalledTimes(1);
+  });
+
+  it("the directory only ever removes trust: a revoked client's endorsements are dead too", async () => {
+    const s = await setup();
+    s.store.endorsements.push(await s.row());
+    await s.run(); // the phone endorsed the desk
+    expect(s.list.has(s.desk.deviceId)).toBe(true);
+    s.store.revokedDevices.add(s.desk.deviceId);
+    await rev(s).run();
+    expect(s.list.has(s.desk.deviceId)).toBe(false);
+    expect(await s.run()).toEqual([]); // its stored endorsement can't bring it back
+    expect(s.list.has(s.desk.deviceId)).toBe(false);
   });
 });

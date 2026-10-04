@@ -62,3 +62,36 @@ export const syncEndorsements = async (d: EndorsementSyncDeps): Promise<string[]
   if (added.length) await d.saveTrust();
   return added;
 };
+
+export interface RevocationSyncDeps {
+  store: Pick<AgentStore, "revokedClients">;
+  trust: () => TrustedClientList;
+  saveTrust: () => Promise<void>;
+  /** Audit + DeviceEvent for each client dropped. */
+  onRevoked: (deviceId: string) => void;
+}
+
+/**
+ * Review R-H5: reconcile the local trust list with the account's directory. A client this agent
+ * trusts but the directory marks revoked (the revoke command may have expired while this
+ * computer was offline) is removed locally with a tombstone, so neither it nor an endorsement of
+ * it is ever trusted again here (only a local re-pairing lifts a tombstone). Removing trust is
+ * the only change the directory can cause; it never adds anyone. Returns the ids removed.
+ */
+export const syncRevocations = async (d: RevocationSyncDeps): Promise<string[]> => {
+  const list = d.trust();
+  const trusted = list.toJSON().map((c) => c.deviceId);
+  if (trusted.length === 0) return [];
+  const revoked = await d.store.revokedClients(trusted);
+  const removed: string[] = [];
+  for (const id of revoked) {
+    if (!list.has(id)) continue;
+    list.remove(id);
+    removed.push(id);
+  }
+  if (removed.length) {
+    await d.saveTrust();
+    for (const id of removed) d.onRevoked(id);
+  }
+  return removed;
+};

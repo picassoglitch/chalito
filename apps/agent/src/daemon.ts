@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import { basename, delimiter } from "node:path";
 import { homedir } from "node:os";
@@ -18,7 +19,7 @@ import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, type Logger } from "./redact.js";
 import { which } from "./runner.js";
-import { syncEndorsements } from "./endorsement-sync.js";
+import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
@@ -287,32 +288,63 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const syncTrust = () => {
     if (syncing) return;
     syncing = true;
-    void syncEndorsements({
+    // Revocations first (R-H5): a client the account revoked stops being trusted here before
+    // anything it endorsed could be considered.
+    void syncRevocations({
       store: signedInStore,
       trust: () => trust,
       saveTrust: () => trustStore.save(trust),
-      now,
-      onAdded: (deviceId, endorsedBy) => log.info("trust.client_endorsed", { clientDeviceId: deviceId, endorsedBy }),
-      // R-L13: a refusal is never silent. Logged, audited, and published to the person's clients.
-      onRefused: (clientDeviceId, endorsedBy, reason) => {
-        log.warn("trust.endorsement_refused", { clientDeviceId, endorsedBy, reason });
+      onRevoked: (clientDeviceId) => {
+        log.warn("trust.client_revoked", { clientDeviceId, by: "directory" });
         const t = now();
         void signedInStore
-          .publishDeviceEvent({
-            v: 1,
-            type: "trust.endorsement_refused",
-            deviceId: id.deviceId,
-            clientDeviceId,
-            endorsedBy,
-            reason,
+          .audit({
+            eid: randomUUID(),
             t,
+            type: "trust.client_revoked",
+            meta: { clientDeviceId, by: "directory" },
+            source: "agent",
           })
+          .catch(() => undefined);
+        void signedInStore
+          .publishDeviceEvent({ v: 1, type: "trust.client_revoked", deviceId: id.deviceId, clientDeviceId, t })
           .catch((err: unknown) =>
-            log.warn("trust.refusal_report_failed", { error: err instanceof Error ? err.message : "error" }),
+            log.warn("trust.revocation_report_failed", { error: err instanceof Error ? err.message : "error" }),
           );
       },
-      reported: reportedRefusals,
     })
+      .catch((err: unknown) =>
+        log.warn("trust.revocation_sync_failed", { error: err instanceof Error ? err.message : "error" }),
+      )
+      .then(() =>
+        syncEndorsements({
+          store: signedInStore,
+          trust: () => trust,
+          saveTrust: () => trustStore.save(trust),
+          now,
+          onAdded: (deviceId, endorsedBy) =>
+            log.info("trust.client_endorsed", { clientDeviceId: deviceId, endorsedBy }),
+          // R-L13: a refusal is never silent. Logged, audited, and published to the person's clients.
+          onRefused: (clientDeviceId, endorsedBy, reason) => {
+            log.warn("trust.endorsement_refused", { clientDeviceId, endorsedBy, reason });
+            const t = now();
+            void signedInStore
+              .publishDeviceEvent({
+                v: 1,
+                type: "trust.endorsement_refused",
+                deviceId: id.deviceId,
+                clientDeviceId,
+                endorsedBy,
+                reason,
+                t,
+              })
+              .catch((err: unknown) =>
+                log.warn("trust.refusal_report_failed", { error: err instanceof Error ? err.message : "error" }),
+              );
+          },
+          reported: reportedRefusals,
+        }),
+      )
       .catch((err: unknown) =>
         log.warn("trust.endorsement_sync_failed", { error: err instanceof Error ? err.message : "error" }),
       )
