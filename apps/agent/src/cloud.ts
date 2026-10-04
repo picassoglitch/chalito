@@ -10,7 +10,7 @@ import { FirestoreStore } from "./firestore-store.js";
 import type { Identity } from "./identity.js";
 import type { Logger } from "./redact.js";
 import type { AgentStore } from "./store.js";
-import { SupabaseStore, type SupaClient } from "./supabase-store.js";
+import { SupabaseStore, pairingTopic, type SupaClient } from "./supabase-store.js";
 
 export type FetchFn = (
   url: string,
@@ -209,7 +209,7 @@ export const supabaseCloud = (
     refreshIntervalMs: tokens.refreshIntervalMs,
     refresh: async () => apply(await tokens.getToken()),
     store: (owner, deviceId) => {
-      const s = new SupabaseStore(client, owner, deviceId, opts.log);
+      const s = new SupabaseStore(client, owner, deviceId, opts.log ? { log: opts.log } : {});
       stores.push(s);
       return s;
     },
@@ -239,7 +239,7 @@ export const pairingRowToDoc = (r: Record<string, unknown>): Record<string, unkn
 });
 
 /**
- * Waits on `pairing:<code>` with the pairing-watch token (RLS lets it read only that topic
+ * Waits on `chalito:pairing:<code>` with the pairing-watch token (RLS lets it read only that topic
  * and that one row), then reads the row through the Data API. Reads once on SUBSCRIBED too,
  * in case the claim landed before the join.
  */
@@ -260,7 +260,7 @@ export const supabasePairingWatcher = (
       if (!error && data) onDoc(pairingRowToDoc(data as Record<string, unknown>));
     };
     const ch = client
-      .channel(`pairing:${codeId}`, { config: { private: true } })
+      .channel(pairingTopic(codeId), { config: { private: true } })
       .on("broadcast", { event: "*" }, () => void read())
       .subscribe((status) => {
         if (status === "SUBSCRIBED") void read();
