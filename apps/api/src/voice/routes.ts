@@ -134,6 +134,8 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
       store: voice.sessions,
       now,
       owner: p.owner,
+      // Desktop only: a phone call's voice is priced (voice + SIP minutes) and swept by the notifier.
+      channel: "desktop",
       event: eventFor,
       settle: (rid) => settle(p.owner, rid),
       hangup: (st) => hangup(voice, st.callId),

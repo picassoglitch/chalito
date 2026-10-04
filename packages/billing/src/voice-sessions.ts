@@ -56,7 +56,7 @@ export interface VoiceSessionStore {
     event: VoiceEventFor;
   }): Promise<AdvanceResult>;
   /** Open sessions past started + max + grace (never ended): the sweep bills them in full. */
-  stale(now: number, graceMs: number, owner?: string): Promise<VoiceSession[]>;
+  stale(now: number, graceMs: number, owner?: string, channel?: VoiceSession["channel"]): Promise<VoiceSession[]>;
   /** Records the call id of an open session (the api hangs that call up at the cap or on revoke). */
   setCallId(owner: string, sourceId: string, callId: string): Promise<boolean>;
   /** The owner's open sessions on one device (e.g. to hang them up when the device is revoked). */
@@ -78,6 +78,8 @@ export const sweepVoiceSessions = async (p: {
   now: number;
   graceMs?: number;
   owner?: string;
+  /** Only this channel's sessions (the api prices desktop voice only; calls are the notifier's). */
+  channel?: VoiceSession["channel"];
   event: VoiceEventFor;
   settle: (reservationId: string) => Promise<unknown>;
   /**
@@ -86,7 +88,7 @@ export const sweepVoiceSessions = async (p: {
    */
   hangup?: (s: VoiceSession) => Promise<unknown>;
 }) => {
-  const stale = await p.store.stale(p.now, p.graceMs ?? 120_000, p.owner);
+  const stale = await p.store.stale(p.now, p.graceMs ?? 120_000, p.owner, p.channel);
   for (const s of stale) {
     if (p.hangup) await p.hangup(s).catch(() => undefined);
     const r = await p.store.advance({
@@ -186,12 +188,13 @@ export class PostgresVoiceSessions implements VoiceSessionStore {
     })) as AdvanceResult;
   }
 
-  async stale(now: number, graceMs: number, owner?: string) {
+  async stale(now: number, graceMs: number, owner?: string, channel?: VoiceSession["channel"]) {
     const rows = await this.sql<Row[]>`
       select * from chalito_private.voice_sessions
       where ended_at is null
         and started_at + make_interval(secs => max_seconds) + make_interval(secs => ${graceMs / 1000}) < ${new Date(now)}
         ${owner ? this.sql`and owner = ${owner}` : this.sql``}
+        ${channel ? this.sql`and channel = ${channel}` : this.sql``}
       order by started_at limit 500`;
     return rows.map(fromRow);
   }
@@ -271,9 +274,13 @@ export class MemoryVoiceSessions implements VoiceSessionStore {
     };
   }
 
-  async stale(now: number, graceMs: number, owner?: string) {
+  async stale(now: number, graceMs: number, owner?: string, channel?: VoiceSession["channel"]) {
     return [...this.sessions.values()].filter(
-      (s) => s.endedAt === null && s.startedAt + s.maxSeconds * 1000 + graceMs < now && (!owner || s.owner === owner),
+      (s) =>
+        s.endedAt === null &&
+        s.startedAt + s.maxSeconds * 1000 + graceMs < now &&
+        (!owner || s.owner === owner) &&
+        (!channel || s.channel === channel),
     );
   }
 
