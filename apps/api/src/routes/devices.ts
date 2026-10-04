@@ -148,7 +148,7 @@ export const deviceRoutes = (deps: Deps) => {
     const body = RevokeDeviceRequest.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
     const res = await deps.repo.revokeDevice(p.owner, body.data.deviceId, deps.now(), p.deviceId);
-    if (res === "not_found") fail(404, "not_found");
+    if (res === "not_found") return fail(404, "not_found");
     if (res === "already_revoked") return c.json({ ok: true, alreadyRevoked: true });
     await deps.identity.disableDevice(body.data.deviceId);
     await deps.audit.record({ action: "device.revoked", owner: p.owner, actor: p.uid, target: body.data.deviceId });
