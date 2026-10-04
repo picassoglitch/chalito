@@ -2,7 +2,7 @@
   "v": 1,
   "generator": "scripts/render-showcase.ts",
   "renderer": "chromium (headless) + SwiftShader, three r186",
-  "source": "ff69422bd923766e88b31ceb7716ade3ac11c372",
+  "source": "fc11abbdeb7297ea9fae1be960185f5bb8127901",
   "assets": [
     {
       "id": "hero-chalito",
@@ -151,8 +151,8 @@
       "fps": 10,
       "frames": 30,
       "seed": 21,
-      "sha256": "390da7c3919551726bbcaf391b17a4454e9e5048abda2bb853d5850342df1d62",
-      "posterSha256": "9643370c80c07b964599903affccf6e9f60e72622efe02dc29f2f03aea6da6c3",
+      "sha256": "e75baf1ab117d2f4921aca35da31437f49b19316f975bdc558fcd5ae3709261a",
+      "posterSha256": "08038a3a9d7cb5317a3153fb58a7a8f41047337adbbdeb21137b1a07aa7bc75b",
       "alt": {
         "es": "Chalito con el casco vikingo",
         "en": "Chalito wearing the Viking helmet"
@@ -173,7 +173,7 @@
       "w": 300,
       "h": 420,
       "seed": 22,
-      "sha256": "6a30218a739787b1f5e8a936a8edc4311368c7660984c44a4194eeef3121d078",
+      "sha256": "59140363539d46f21dab58042925872a9be9b468511fb79b473eb79d7b35ecb4",
       "alt": {
         "es": "Luna con corona de flores y lentes redondos",
         "en": "Luna with a flower crown and round glasses"
