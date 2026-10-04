@@ -22,7 +22,7 @@ Chalyb's hub already runs on one Supabase project; its engines integrate through
 - **`chalito_private`** is **not** exposed. It holds the server-only tables (`private_recovery`, `sso_tokens`, `device_nonces`, and later purchases, subscriptions, credits, usage outbox) and every `security definer` helper. Supabase: never put a security-definer function in an exposed schema.
 - Nothing is granted to `anon`. The API, notifier and gateway write as `service_role`, as the Firestore Admin SDK did.
 - Tables mirror the Firestore model used so far: tenants, users, devices, endorsements, pairing_codes, commands, sessions, session_events, approvals, notifications, call_lines, audit, companions, inventory. The rest of brief §6 (mesas, rooms, records, connections, catalog, billing, …) exists as **deny-all stubs**: RLS on, no policies, no client grants. Each is annotated with the Firestore rule its milestone must port.
-- Ids stay opaque text (`chalito.id` domain = the protocol's `Id`). Times are `timestamptz`. Every pushed table has a `cursor` identity column for resync.
+- Ids stay opaque text (`chalito.id` domain = the protocol's `Id`). Times are `timestamptz`. Every pushed table has `rev`, taken from one shared sequence on every insert **and update**, for resync (`cursor` is the insertion order only, so it would miss updates).
 
 ### Identity and claims
 - Principals keep their Firestore shapes: `user` (web session), `client`, `agent` (devices), `pairing` (a watch token for one code). The Postgres `role` claim is always `authenticated`; Chalito's role is the `chalito_role` claim.
@@ -42,7 +42,7 @@ Chalyb's hub already runs on one Supabase project; its engines integrate through
 | devices update: the agent itself, `onlyChanges([lastSeenAt, policyHash, devMode, status, presence, lastEvent])` | `devices_self_update` + column grant (devMode/policyHash only by the device) |
 | approvals: client may change only `decision` while pending; agent only `status/resolvedAt/reason` | `approvals_update` (who) + `approvals_guard` trigger (which columns; RLS can't compare OLD and NEW) |
 | audit: create-only by the agent about itself, `hasOnly([t, type, meta, source, deviceId])` | `audit_agent_create` + column grant; `t` is overwritten with server time by a trigger; `meta` capped at 8 KB |
-| sessions/events: agent writes its own | as before. Stricter: an agent can't rewrite a session row another device owns |
+| sessions/events: agent writes its own (`setDoc(..., {merge: true})`) | as before, plus `chalito.session_merge(sid, patch)` (security invoker) for the merge. Stricter: an agent can't rewrite a session row another device owns |
 | notifications: client may change only `state/ackedAt/ackedVia` | column grant + `notifications_client_ack` |
 | callLines: agent creates/deletes its own; read by the notifier only | as before. The agent can see only the **key columns** of its own lines, because Postgres applies SELECT policies to a DELETE's WHERE |
 | private docs, inventory, equipping: server only | `chalito_private`, no grants; `companions` update grant excludes `equipped` |
@@ -56,11 +56,11 @@ TTL rows (`pairing_codes`, `commands`, `session_events`, `call_lines`, `sso_toke
     - commands go to the target agent;
     - approvals and notifications go to every active device;
     - sessions and events go to clients;
-    - device updates go to every active device. A device revoked by that update is not told.
+    - device updates go to every active device, except presence-only updates (`last_seen_at`, `presence`). A device revoked by that update is not told.
   - The pairing watcher has its own `pairing:<code>` topic.
-- **Payloads are pointers**: `{table, op, key, cursor}`. The device fetches the row through the Data API, under RLS, so content never rides the broadcast.
+- **Payloads are pointers**: `{table, op, key, rev}`. The device fetches the row through the Data API, under RLS, so content never rides the broadcast.
 - **Authorization** is RLS on `realtime.messages`: receive only on `device:<own id>` while `device_ok()`, or on `pairing:<own code>` while the code is live. There is no insert policy, so clients can't send on Chalito topics.
-- **Resync:** on SUBSCRIBED, read `cursor > last_cursor` per table. Broadcast Replay (at most 25 messages, private channels) is only a bonus; Postgres Changes has no replay.
+- **Resync:** on SUBSCRIBED, read `rev > last_rev` per table. Broadcast Replay (at most 25 messages, private channels) is only a bonus; Postgres Changes has no replay.
 
 ### Tokens (open: owner decides)
 Device tokens stay **5 minutes** long, minted by Chalito's API after the existing Ed25519 proof of possession. Never `service_role`. Claims: `iss`, `aud: authenticated`, `role: authenticated`, `sub`, `owner`, `device_id`, `chalito_role`, `exp`, `iat`.

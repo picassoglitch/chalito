@@ -85,6 +85,11 @@ jobs:
       - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,storage-api
       - run: supabase test db
       - run: supabase/scripts/smoke-data-api.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2
+      - run: node supabase/scripts/realtime-latency.mjs
       - if: always()
         run: supabase stop --no-backup
 

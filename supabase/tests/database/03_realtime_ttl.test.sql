@@ -46,7 +46,7 @@ select is(pg_temp.sent('device:rt_agent', 'commands'), 1, 'broadcast: a command 
 select is(pg_temp.sent('device:rt_phone', 'commands'), 0, 'broadcast: and to no one else');
 select is((select payload -> 'key' from realtime.messages where topic = 'device:rt_agent' and payload ->> 'table' = 'commands'),
   '{"id": "rt_c1", "target_device_id": "rt_agent"}'::jsonb, 'broadcast: the payload is a pointer, not the envelope');
-select ok((select (payload ->> 'cursor')::bigint from realtime.messages where topic = 'device:rt_agent'
+select ok((select (payload ->> 'rev')::bigint from realtime.messages where topic = 'device:rt_agent'
   and payload ->> 'table' = 'commands') is not null, 'broadcast: the payload carries the resync cursor');
 
 insert into chalito.approvals (owner, aid, device_id, sid, request_id, kind, risk, origin, step_up_required,
