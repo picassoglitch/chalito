@@ -99,6 +99,23 @@ Review: `docs/reviews/supabase-review.md` (origin/supa). Migration `202610040008
 | S8 | `session_events`, `approvals` and `call_lines` inserts require the `sid` to be a session row of the writing device. |
 | S9 | A `before insert` clamp for client rows: commands ≤ 10 min, call lines ≤ 30 min, events ≤ 7 days, approvals ≤ 10 min. `approvals.created_at` is server time and no longer client-grantable. |
 
+**S7 limits: defaults for the beta, owner to review.** They live in `chalito_private.rate_limits`, so changing them is an update to that table, not a migration of the trigger:
+
+| Table (client inserts) | Burst (capacity) | Refill per second |
+|---|---|---|
+| `commands` | 30 | 1 |
+| `sessions` | 30 | 1 |
+| `session_events` | 120 | 20 |
+| `approvals` | 30 | 2 |
+| `approval_decisions` | 30 | 2 |
+| `call_lines` | 20 | 1 |
+| `audit` | 60 | 5 |
+
+- `session_events` broadcast cap: 10 pointers per second per session (`chalito_private.event_broadcasts_per_second()`).
+- **Coalesced-flush lag:** events past the cap aren't broadcast individually. The session is marked dirty, and the next pointer for that session (any later event in a new second) covers them, because it carries the newest `rev`.
+  - If the burst is the last thing a session does, the trailing pointer comes from the pg_cron job `chalito-flush-coalesced`, which runs once a minute. So clients may see the tail of a burst **up to about 1 minute late** unless they resync sooner (on reconnect, or on a `sessions` pointer when the agent updates the card).
+  - Sub-minute pg_cron schedules (e.g. `'5 seconds'`) need Postgres ≥ 15.1.1.61 and a shared-project sign-off.
+
 Also merged in this round (requested separately):
 - `rev` (bumped on insert **and** update) replaces `cursor` for resync.
 - `chalito.session_merge(sid, patch)` (security invoker).

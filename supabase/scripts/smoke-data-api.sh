@@ -20,7 +20,9 @@ rest() { # rest <method> <path> <bearer>
     -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer $3" \
     -H "Accept-Profile: chalito" -H "Content-Profile: chalito"
 }
-server_sql() { supabase db query --local "set role chalito_server; $1" >/dev/null; }
+# `supabase db query` runs one prepared statement, so each server write is a single DO block that
+# switches to chalito_server for its own transaction.
+server_sql() { supabase db query --local "do \$srv\$ begin set local role chalito_server; $1 end \$srv\$" >/dev/null; }
 
 DEVICE_USER="$(cat /proc/sys/kernel/random/uuid)"
 server_sql "insert into chalito.tenants (id) values ('smoke-user');
