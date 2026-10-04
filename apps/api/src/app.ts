@@ -8,6 +8,7 @@ import { phoneRoutes } from "./phone/routes.js";
 import { voiceRoutes } from "./voice/routes.js";
 import { pairingRoutes } from "./routes/pairing.js";
 import { recoveryRoutes } from "./routes/recovery.js";
+import { releasesRoutes } from "./routes/releases.js";
 import { storeRoutes } from "./store/routes.js";
 import { roomsRoutes } from "./routes/rooms.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
@@ -23,6 +24,7 @@ export const createApp = (deps: Deps) => {
   app.route("/v1/endorse", endorseRoutes(deps));
   app.route("/v1/recovery", recoveryRoutes(deps));
   app.route("/v1/webauthn", webauthnRoutes(deps));
+  if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));
   app.route("/", oauthRoutes(deps));
   if (deps.phone) app.route("/v1/phone", phoneRoutes(deps, deps.phone));
   if (deps.voice) app.route("/v1/voice", voiceRoutes(deps, deps.voice));

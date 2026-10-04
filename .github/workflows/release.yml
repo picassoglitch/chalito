@@ -1,0 +1,380 @@
+# Desktop releases (ADR 0014, M14). Produces DRAFT GitHub releases only: nothing here ever
+# publishes. Promoting a draft and uploading latest.json to the releases bucket is the owner's
+# go (docs/OPS.md, "M14: downloadable apps").
+#
+#   - push of a `v*` tag → build, sign what can be signed, draft release
+#   - workflow_dispatch  → the same build as a dry run: artifacts only, no release
+#
+# Signing secrets may not exist yet. Every signing step skips cleanly without them and the
+# build is LABELLED unsigned (UNSIGNED_ file names, `unsigned` in latest.json, draft notes).
+# Without the real updater key, one THROWAWAY key is generated for the run (never committed,
+# never usable to update real installs) so the updater artifacts and manifest are still checked.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for the dry run (semver, no tag needed)"
+        required: true
+        default: "0.0.0-dryrun"
+      channel:
+        description: "Update channel"
+        type: choice
+        options: [beta, stable]
+        default: beta
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CHALITO_API_BASE: https://api.chalito.chalyb.com
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.m.outputs.version }}
+      channel: ${{ steps.m.outputs.channel }}
+      dry_run: ${{ steps.m.outputs.dry_run }}
+      updater_key: ${{ steps.key.outputs.kind }}
+    steps:
+      - id: m
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            v="${GITHUB_REF_NAME#v}"
+            # Pre-release versions (1.2.0-beta.1) go to the beta channel.
+            case "$v" in *-*) ch=beta ;; *) ch=stable ;; esac
+            dry=false
+          else
+            v="$INPUT_VERSION"; ch="$INPUT_CHANNEL"; dry=true
+          fi
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "bad version $v" >&2; exit 1; }
+          { echo "version=$v"; echo "channel=$ch"; echo "dry_run=$dry"; } >> "$GITHUB_OUTPUT"
+      - id: key
+        env:
+          REAL_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          REAL_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          if [ -n "$REAL_KEY" ]; then
+            [ -n "$REAL_PUBKEY" ] || { echo "TAURI_SIGNING_PRIVATE_KEY is set but vars.TAURI_UPDATER_PUBKEY is not" >&2; exit 1; }
+            echo "kind=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No updater key: this run uses a throwaway test key"
+            echo "kind=test" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.key.outputs.kind == 'test'
+        uses: actions/checkout@v4
+      - if: steps.key.outputs.kind == 'test'
+        uses: pnpm/action-setup@v4
+      - if: steps.key.outputs.kind == 'test'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: steps.key.outputs.kind == 'test'
+        run: |
+          pnpm install --frozen-lockfile --filter @chalito/desktop...
+          mkdir -p "$RUNNER_TEMP/test-key"
+          pnpm --filter @chalito/desktop exec tauri signer generate --ci -p "" -w "$RUNNER_TEMP/test-key/updater.key"
+      # Shared by the three builds of THIS run only (they must sign with one key); expires in a day.
+      - if: steps.key.outputs.kind == 'test'
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-test-key
+          path: ${{ runner.temp }}/test-key
+          retention-days: 1
+
+  desktop:
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04: the AppImage runs on distributions with an older glibc too.
+          - os: linux
+            runner: ubuntu-22.04
+            bundle: src-tauri/target/release/bundle
+          - os: windows
+            runner: windows-latest
+            bundle: src-tauri/target/release/bundle
+          - os: macos
+            runner: macos-latest
+            target: universal-apple-darwin
+            bundle: src-tauri/target/universal-apple-darwin/release/bundle
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      CHANNEL: ${{ needs.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      # Signing inputs, exported ONLY when set. A missing secret is an empty string, and the Tauri
+      # bundler treats a set-but-empty variable as present (`var_os("APPLE_CERTIFICATE")` →
+      # Some(""): it would import an empty certificate and fail the unsigned build). The plan
+      # below sees the same environment and labels the build unsigned.
+      - name: Signing environment (only the secrets that exist)
+        shell: bash
+        env:
+          S_AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          S_AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          S_AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          S_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          S_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          S_ARTIFACT_SIGNING_PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          S_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          S_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          S_APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          S_APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          S_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          S_APPIMAGE_SIGN_KEY: ${{ secrets.APPIMAGE_SIGN_KEY }}
+          S_APPIMAGETOOL_SIGN_PASSPHRASE: ${{ secrets.APPIMAGETOOL_SIGN_PASSPHRASE }}
+        run: |
+          for k in AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID ARTIFACT_SIGNING_ENDPOINT \
+            ARTIFACT_SIGNING_ACCOUNT ARTIFACT_SIGNING_PROFILE APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPIMAGE_SIGN_KEY APPIMAGETOOL_SIGN_PASSPHRASE; do
+            v="S_$k"; v="${!v}"
+            [ -n "$v" ] || continue
+            { echo "$k<<EOF_SIGNING_$k"; echo "$v"; echo "EOF_SIGNING_$k"; } >> "$GITHUB_ENV"
+          done
+      - name: Linux webview, tray and packaging libraries
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev build-essential rpm
+      - name: Rust stable
+        shell: bash
+        run: |
+          for i in 1 2 3 4; do
+            rustup toolchain install stable --profile minimal && break
+            [ "$i" = 4 ] && exit 1
+            sleep $((i * 10))
+          done
+          rustup default stable
+          if [ "${{ matrix.os }}" = macos ]; then rustup target add aarch64-apple-darwin x86_64-apple-darwin; fi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: pnpm install --frozen-lockfile
+
+      # ---- sidecar: the bun-compiled agent (lipo'd to universal on macOS) ----------
+      # pnpm installs only the host's optional prebuild (darwin-arm64 on macos-latest), and bun
+      # embeds a native addon only when that platform's package is installed: without this, the
+      # x64 half of the universal agent has no keyring. Pinned to the lockfile's version and
+      # integrity, next to @napi-rs/keyring where its loader resolves it.
+      - name: darwin-x64 keyring addon (explicit)
+        if: matrix.os == 'macos'
+        shell: bash
+        working-directory: apps/agent
+        run: |
+          main=$(node -p "require('fs').realpathSync(require.resolve('@napi-rs/keyring'))")
+          dir=$(dirname "$main")
+          while [ ! -f "$dir/package.json" ]; do dir=$(dirname "$dir"); done
+          ver=$(node -p "require('$dir/package.json').optionalDependencies['@napi-rs/keyring-darwin-x64']")
+          want=$(grep -A1 "^  '@napi-rs/keyring-darwin-x64@$ver':" "$GITHUB_WORKSPACE/pnpm-lock.yaml" | grep -o 'sha512-[^}]*' | tr -d ' ')
+          [ -n "$want" ] || { echo "no lockfile integrity for @napi-rs/keyring-darwin-x64@$ver" >&2; exit 1; }
+          dest="$(dirname "$dir")/keyring-darwin-x64"
+          mkdir -p "$RUNNER_TEMP/keyring-x64"
+          ( cd "$RUNNER_TEMP/keyring-x64" && npm pack "@napi-rs/keyring-darwin-x64@$ver" --json > pack.json )
+          got=$(node -p "require('$RUNNER_TEMP/keyring-x64/pack.json')[0].integrity")
+          [ "$got" = "$want" ] || { echo "integrity mismatch: $got != $want" >&2; exit 1; }
+          rm -rf "$dest" && mkdir -p "$dest"
+          tar -xzf "$RUNNER_TEMP/keyring-x64/"*.tgz -C "$dest" --strip-components=1
+          ls "$dest"/*.node
+      # The compiled agent loads its keyring addon and libsodium on every architecture we ship
+      # (x64 macOS under Rosetta). Exit 2 = addon loaded but no keychain backend (headless CI).
+      - name: Smoke the compiled agent
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            linux) targets="x86_64-unknown-linux-gnu" ;;
+            windows) targets="x86_64-pc-windows-msvc" ;;
+            macos)
+              targets="aarch64-apple-darwin x86_64-apple-darwin"
+              arch -x86_64 /usr/bin/true 2>/dev/null || sudo softwareupdate --install-rosetta --agree-to-license
+              ;;
+          esac
+          for t in $targets; do
+            pnpm --filter @chalito/agent build src/smoke.ts --target "$t"
+            bin="apps/agent/dist/chalito-agent-$t"; [ "${{ matrix.os }}" = windows ] && bin="$bin.exe"
+            run="$bin"; [ "$t" = x86_64-apple-darwin ] && run="arch -x86_64 $bin"
+            set +e; $run; code=$?; set -e
+            [ "$code" = 0 ] || [ "$code" = 2 ] || { echo "smoke failed for $t (exit $code)" >&2; exit 1; }
+            rm -f "$bin"
+          done
+      - name: Build the agent sidecar
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            linux) targets="x86_64-unknown-linux-gnu" ;;
+            windows) targets="x86_64-pc-windows-msvc" ;;
+            macos) targets="aarch64-apple-darwin x86_64-apple-darwin" ;;
+          esac
+          for t in $targets; do pnpm --filter @chalito/agent build src/cli.ts --target "$t"; done
+          pnpm --filter @chalito/desktop release sidecar --os ${{ matrix.os }} --agent-dist "$GITHUB_WORKSPACE/apps/agent/dist"
+
+      # ---- updater key --------------------------------------------------------------
+      - if: needs.meta.outputs.updater_key == 'test'
+        uses: actions/download-artifact@v4
+        with:
+          name: updater-test-key
+          path: ${{ runner.temp }}/updater
+      - name: Updater key
+        shell: bash
+        env:
+          KIND: ${{ needs.meta.outputs.updater_key }}
+          REAL_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          REAL_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          REAL_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/updater"
+          if [ "$KIND" = release ]; then
+            printf '%s' "$REAL_PUBKEY" > "$RUNNER_TEMP/updater/updater.key.pub"
+            { echo "TAURI_SIGNING_PRIVATE_KEY<<EOF_KEY"; echo "$REAL_KEY"; echo "EOF_KEY"; } >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$REAL_KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            { echo "TAURI_SIGNING_PRIVATE_KEY<<EOF_KEY"; cat "$RUNNER_TEMP/updater/updater.key"; echo; echo "EOF_KEY"; } >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          fi
+
+      # ---- plan: signing from the secrets that exist + the release config overlay -----
+      - name: macOS notarization key file
+        if: matrix.os == 'macos'
+        shell: bash
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if [ -n "$APPLE_API_PRIVATE_KEY" ]; then
+            printf '%s' "$APPLE_API_PRIVATE_KEY" > "$RUNNER_TEMP/AuthKey.p8"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+      - id: plan
+        name: Release plan
+        shell: bash
+        run: >
+          pnpm --filter @chalito/desktop release plan --os ${{ matrix.os }} --version "$VERSION" --channel "$CHANNEL"
+          --api "$CHALITO_API_BASE" --pubkey-file "$RUNNER_TEMP/updater/updater.key.pub"
+          --updater-key ${{ needs.meta.outputs.updater_key }}
+
+      - name: Azure Artifact Signing CLI
+        if: matrix.os == 'windows' && steps.plan.outputs.signed == 'true'
+        run: cargo install artifact-signing-cli --version 0.11.0 --locked
+      - name: AppImage GPG key
+        if: matrix.os == 'linux' && steps.plan.outputs.signed == 'true'
+        env:
+          APPIMAGE_GPG_PRIVATE_KEY: ${{ secrets.APPIMAGE_GPG_PRIVATE_KEY }}
+        run: printf '%s' "$APPIMAGE_GPG_PRIVATE_KEY" | gpg --batch --import
+
+      # ---- build ------------------------------------------------------------------------
+      - name: Build
+        shell: bash
+        working-directory: apps/desktop
+        run: pnpm tauri build --config src-tauri/tauri.release.conf.json ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      # ---- collect: verify updater signatures, label, hash ----------------------------------
+      - name: Collect artifacts
+        shell: bash
+        run: >
+          pnpm --filter @chalito/desktop release collect --os ${{ matrix.os }}
+          --bundle "$GITHUB_WORKSPACE/apps/desktop/${{ matrix.bundle }}" --out "$RUNNER_TEMP/out"
+          --label ${{ steps.plan.outputs.label }} --pubkey-file "$RUNNER_TEMP/updater/updater.key.pub"
+      - name: Unsigned builds are labelled unsigned
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/out"
+          label="${{ steps.plan.outputs.label }}"
+          grep -q "\"label\": \"$label\"" "artifacts-${{ matrix.os }}.json"
+          for f in *; do
+            case "$f" in artifacts-*.json) continue ;; esac
+            if [ "$label" = unsigned ]; then
+              case "$f" in UNSIGNED_*) ;; *) echo "unsigned build with an unlabelled file: $f" >&2; exit 1 ;; esac
+            else
+              case "$f" in UNSIGNED_*) echo "signed build labelled unsigned: $f" >&2; exit 1 ;; esac
+            fi
+          done
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+
+  draft:
+    needs: [meta, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      CHANNEL: ${{ needs.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @chalito/desktop...
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/dist
+          merge-multiple: true
+      - name: latest.json
+        run: |
+          pnpm --filter @chalito/desktop release manifest --channel "$CHANNEL" --version "$VERSION" \
+            --in "$RUNNER_TEMP/dist" --out "$RUNNER_TEMP/dist/latest.json"
+          cat "$RUNNER_TEMP/dist/latest.json"
+      - name: Draft notes
+        env:
+          KIND: ${{ needs.meta.outputs.updater_key }}
+        run: |
+          {
+            echo "Chalito $VERSION ($CHANNEL). DRAFT: publishing is the owner's go (docs/OPS.md)."
+            echo
+            node -e 'const m=require(process.argv[1]);for(const [os,u] of Object.entries(m.unsigned??{})) if(u) console.log(`- ${os}: UNSIGNED build`)' "$RUNNER_TEMP/dist/latest.json"
+            [ "$KIND" = test ] && echo "- updater: signed with a THROWAWAY test key; do not publish this draft"
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Dry run summary
+        if: needs.meta.outputs.dry_run == 'true'
+        run: |
+          echo "Dry run: no release created." | tee -a "$GITHUB_STEP_SUMMARY"
+          ls -la "$RUNNER_TEMP/dist" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: needs.meta.outputs.dry_run == 'true'
+        with:
+          name: dry-run-latest
+          path: ${{ runner.temp }}/dist/latest.json
+          retention-days: 14
+      # A draft only. There is deliberately no step that publishes or un-drafts a release.
+      - name: Draft release
+        if: needs.meta.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          files=$(find "$RUNNER_TEMP/dist" -maxdepth 1 -type f ! -name 'artifacts-*.json')
+          if gh release view "$tag" --json isDraft --jq .isDraft >/dev/null 2>&1; then
+            [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" = true ] || { echo "$tag is already published; not touching it" >&2; exit 1; }
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" --draft --verify-tag --title "Chalito $VERSION" \
+              --notes-file "$RUNNER_TEMP/notes.md" $( [ "$CHANNEL" = beta ] && echo --prerelease ) $files
+          fi

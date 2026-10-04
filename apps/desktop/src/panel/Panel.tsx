@@ -4,10 +4,12 @@ import type { PhoneVerifier, SettingContext, SettingsValues } from "@chalito/ui"
 import { useT } from "../lib/i18n.js";
 import type { AgentIpc } from "../lib/ipc.js";
 import type { PushToTalk } from "../lib/voice.js";
+import type { UpdateController } from "../lib/updates.js";
 import { Inbox } from "./Inbox.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { Settings } from "./Settings.js";
+import { Updates } from "./Updates.js";
 import { Voice } from "./Voice.js";
 
 const TABS = ["inbox", "settings", "security", "voice"] as const;
@@ -29,6 +31,7 @@ export interface PanelProps {
   onDnd: (on: boolean) => void;
   hubPlansUrl: string;
   phoneVerifier: PhoneVerifier;
+  updates?: UpdateController;
   initialTab?: Tab;
 }
 
@@ -65,6 +68,7 @@ export const Panel = (p: PanelProps) => {
             phoneVerifier={p.phoneVerifier}
           />
         )}
+        {tab === "settings" && p.updates && <Updates updates={p.updates} />}
         {tab === "security" && p.client && <SecurityNotices client={p.client} />}
         {tab === "security" && <Security ipc={p.ipc} />}
         {tab === "voice" && <Voice ptt={p.ptt} />}
