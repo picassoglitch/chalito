@@ -88,7 +88,7 @@ export interface ClientActionsOptions {
 
 /**
  * Everything a trusted client can DO, as signed rows written under RLS:
- * - decide: a signed Decision inserted into `approval_decisions` (one per signer);
+ * - decide: a signed Decision inserted into `approval_decisions` (insert-only; each attempt a row);
  * - commands: signed envelopes into `commands`, with any text sealed to the target agent's
  *   locally trusted box key (AAD `command:<cid>`);
  * - ackNotification.

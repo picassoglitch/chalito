@@ -233,13 +233,14 @@ select is(pg_temp.count($$select 1 from chalito.devices where owner = 'user-1'$$
 
 -- ================================================================ approvals
 -- Firestore: "a client may attach a decision only; the agent resolves only status fields". Since the
--- security review (S6) decisions are insert-only rows in approval_decisions, one per signer.
+-- security review (S6) decisions are insert-only rows in approval_decisions; since migration 003510
+-- each attempt is its own row (up to 5 per device), and none is ever replaced.
 select pg_temp.as_client('user-1', 'phone1');
 select lives_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
   values ('user-1', 'a1', 'phone1', '{"sig": "x"}')$$, 'approvals: a client attaches a decision while pending');
-select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
-  values ('user-1', 'a1', 'phone1', '{"sig": "again"}')$$, '23505', null,
-  'approvals: a signer''s decision can''t be replaced');
+select lives_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
+  values ('user-1', 'a1', 'phone1', '{"sig": "again"}')$$,
+  'approvals: another attempt is a new row (the first is never replaced)');
 select throws_ok($$update chalito.approval_decisions set decision = '{"sig": "y"}' where aid = 'a1'$$, '42501', null,
   'approvals: decisions are never updated');
 select throws_ok($$delete from chalito.approval_decisions where aid = 'a1'$$, '42501', null,
@@ -254,7 +255,7 @@ select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_de
 select pg_temp.as_agent('user-1', 'agent1');
 select throws_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
   values ('user-1', 'a1', 'agent1', '{"sig": "forged"}')$$, '42501', null, 'approvals: the agent can''t write a decision');
-select is(pg_temp.count($$select 1 from chalito.approval_decisions where aid = 'a1'$$), 1,
+select is(pg_temp.count($$select 1 from chalito.approval_decisions where aid = 'a1'$$), 2,
   'approvals: the agent reads the decisions');
 select throws_ok($$update chalito.approvals set expires_at = now() where aid = 'a1'$$, '42501', null,
   'approvals: the agent can''t touch other columns');

@@ -84,8 +84,10 @@ export class MemoryMesaStore implements MesaStore {
     reason?: string;
     expiresAt: number;
   })[] = [];
-  /** approval_decisions rows: what clients inserted (signed or not). */
-  decisions: { owner: string; aid: string; signer: string; decision: unknown }[] = [];
+  /** approval_decisions rows: what clients inserted (signed or not), each attempt its own row. */
+  decisions: { owner: string; aid: string; signer: string; decision: unknown; id?: string }[] = [];
+  /** A row's id (tests may push rows without one: their position stands in). */
+  #idOf = (x: (typeof this.decisions)[number]) => x.id ?? `row_${this.decisions.indexOf(x)}`;
   /** Client devices' pub_sign (b64url), and which are revoked. */
   signKeys = new Map<string, string>();
   revoked = new Set<string>();
@@ -151,7 +153,7 @@ export class MemoryMesaStore implements MesaStore {
         requestId: a.tid,
         answers: this.decisions
           .filter((x) => x.owner === a.owner && x.aid === a.aid)
-          .map((x) => ({ signer: x.signer, decision: x.decision })),
+          .map((x) => ({ id: this.#idOf(x), signer: x.signer, decision: x.decision })),
       }))
       .filter((p) => p.answers.length > 0);
   }
@@ -166,9 +168,11 @@ export class MemoryMesaStore implements MesaStore {
     );
   }
   /** Mirrors the SQL function's re-checks (minus the signature, which the caller verified). */
-  async resolveDecision(owner: string, aid: string, signer: string) {
+  async resolveDecision(owner: string, aid: string, signer: string, id: string) {
     const a = this.approvals.find((x) => x.owner === owner && x.aid === aid);
-    const row = this.decisions.find((x) => x.owner === owner && x.aid === aid && x.signer === signer);
+    const row = this.decisions.find(
+      (x) => x.owner === owner && x.aid === aid && x.signer === signer && this.#idOf(x) === id,
+    );
     const body = (row?.decision as { body?: { allow?: unknown; requestId?: unknown } })?.body;
     if (!a || a.status !== "pending" || a.expiresAt <= this.now() || !row || this.revoked.has(`${owner}/${signer}`))
       return null;

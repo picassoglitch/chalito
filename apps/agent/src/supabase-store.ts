@@ -94,9 +94,9 @@ export interface SupabaseStoreOptions {
  *   rate-limited write is retried with exponential backoff.
  * - One private Realtime channel, `chalito:device:<id>`, carries pointers for this device,
  *   shared by watchCommands and every watchApproval(aid).
- * - Decisions are insert-only rows in `approval_decisions`, one per signer (S6). Every
- *   distinct one is passed to the watcher in rev order; the agent verifies each and acts on
- *   the first valid one.
+ * - Decisions are insert-only rows in `approval_decisions` (S6), each attempt its own row (up
+ *   to 5 per signer, migration 003510). Every distinct one is passed to the watcher in rev
+ *   order; the agent verifies each and acts on the first valid one.
  * - Resync on every SUBSCRIBED (first join and each rejoin): rows with `rev` above the last
  *   one seen (commands, decisions), plus a re-read of each watched approval as a fallback.
  *   `rev` moves on every insert and update, so nothing missed while offline is lost.
