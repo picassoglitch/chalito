@@ -7,7 +7,7 @@ import { DevModeToggle } from "@chalito/protocol";
 import type { FetchFn, PairingWatcher } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, envLocale, isPaired, readConfig, type AgentConfig } from "./config.js";
 import { runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
-import { DevMode, DevModeStore } from "./devmode.js";
+import { ChainHeadStore, DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { osAuthFor } from "./os-auth.js";
 import { runPair } from "./pair.js";
@@ -318,7 +318,8 @@ const status = async (io: CliIo, dir: string, cfg: AgentConfig | null) => {
 
   if (hasIdentity && existsSync(dir)) {
     const id = await loadOrCreateIdentity(io.secrets);
-    const dm = new DevModeStore(dir, id.sign, id.deviceId).inspect();
+    const head = await new ChainHeadStore(io.secrets).load();
+    const dm = new DevModeStore(dir, id.sign, id.deviceId, head).inspect();
     row(
       "Developer mode",
       (dm.state.on ? `ACTIVE (${dm.state.toggles.join(", ")})` : "off") +
@@ -349,7 +350,7 @@ const devmode = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string
   try {
     const id = await loadOrCreateIdentity(io.secrets);
     const dm = new DevMode({
-      store: new DevModeStore(dir, id.sign, id.deviceId),
+      store: new DevModeStore(dir, id.sign, id.deviceId, await new ChainHeadStore(io.secrets).load()),
       osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale),
       prompter: new TtyPrompter(reader, io.out, locale),
       liability: loadLiabilityText(locale),

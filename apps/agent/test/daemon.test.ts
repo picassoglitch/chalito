@@ -5,7 +5,14 @@ import { describe, expect, it } from "vitest";
 import { verifyEnvelope, type SignedEnvelope } from "@chalito/crypto";
 import type { Cloud, FetchFn } from "../src/cloud.js";
 import { chalitoDir, writeConfig, readConfig, configPath } from "../src/config.js";
-import { CLAUDE_MISSING, OnboardingError, TOKEN_REFRESH_MS, runDaemon, type DaemonDeps } from "../src/daemon.js";
+import {
+  CLAUDE_MISSING,
+  OnboardingError,
+  TOKEN_REFRESH_MS,
+  defaultAdapters,
+  runDaemon,
+  type DaemonDeps,
+} from "../src/daemon.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
@@ -214,5 +221,42 @@ describe("chalito run (daemon)", () => {
     expect(s.logs.find((l) => l.msg === "trust.list_rejected")).toBeDefined();
     expect(s.logs.find((l) => l.msg === "agent.ready")).toMatchObject({ trustedClients: 0 });
     await d.stop();
+  });
+
+  it("publishes policy.tampered (found at load, queued until signed in) and devmode.tampered", async () => {
+    const s = await setup();
+    // Refused hand edit of the policy and a forged Developer-mode state, both before start.
+    await runDaemon(s.deps).then((d) => d.stop());
+    writeFileSync(join(s.dir, "policy.yaml"), "version: 1\n");
+    writeFileSync(join(s.dir, "devmode.json"), JSON.stringify({ on: true, toggles: ["allowSudo"], since: 1 }));
+    s.store.deviceEvents.length = 0;
+
+    const d = await runDaemon(s.deps);
+    await new Promise((r) => setTimeout(r, 10));
+    const types = s.store.deviceEvents.map((e) => e.type);
+    expect(types).toContain("policy.tampered");
+    expect(types).toContain("devmode.tampered");
+    expect(s.store.deviceEvents.find((e) => e.type === "devmode.tampered")).toMatchObject({
+      deviceId: s.id.deviceId,
+      reason: "state_signature",
+      t: NOW,
+    });
+    expect(s.store.deviceEvents.find((e) => e.type === "policy.tampered")).toMatchObject({
+      fileHash: null,
+      inForceHash: policyHash(DEFAULT_POLICY),
+    });
+    expect(s.store.device.devMode).toEqual({ on: false, toggles: [], since: null });
+    await d.stop();
+  });
+
+  it("the default Claude Code adapter logs the SDK init metadata (adapter.init)", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const log = createLogger((l) => void logs.push(JSON.parse(l)));
+    const adapter = defaultAdapters({ apiKey: "sk-ant-test-key-123456", claudePath: "/usr/bin/claude", log })[
+      "claude-code"
+    ] as unknown as { config: { onInit: (i: Record<string, unknown>) => void } };
+    adapter.config.onInit({ sid: "s1", apiKeySource: "ANTHROPIC_API_KEY", permissionMode: "default" });
+    expect(logs[0]).toMatchObject({ msg: "adapter.init", sid: "s1", apiKeySource: "ANTHROPIC_API_KEY" });
+    expect(defaultAdapters({ apiKey: null, claudePath: "/usr/bin/claude", log })).toEqual({});
   });
 });

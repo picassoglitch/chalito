@@ -3,12 +3,13 @@ import { homedir } from "node:os";
 import type { SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { loadLiabilityText } from "@chalito/config";
-import { MemoryNonceStore, type NonceStore, type TrustedClientList } from "@chalito/crypto";
-import type { AdapterKind } from "@chalito/protocol";
+import type { NonceStore, TrustedClientList } from "@chalito/crypto";
+import type { AdapterKind, DeviceEvent } from "@chalito/protocol";
 import { AgentCore } from "./agent-core.js";
 import { firebaseCloud, fetchDeviceToken, type Cloud, type FetchFn } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, type PairedConfig } from "./config.js";
-import { DevMode, DevModeStore } from "./devmode.js";
+import { ChainHeadStore, DevMode, DevModeStore, type DevModeTamper } from "./devmode.js";
+import { FileNonceStore } from "./nonce-store.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, type Logger } from "./redact.js";
@@ -67,8 +68,17 @@ export interface Daemon {
   readonly done: Promise<void>;
 }
 
-const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, claudePath }) =>
-  apiKey ? { "claude-code": new ClaudeCodeAdapter({ apiKey, claudePath }) } : {};
+export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, claudePath, log }) =>
+  apiKey
+    ? {
+        "claude-code": new ClaudeCodeAdapter({
+          apiKey,
+          claudePath,
+          // apiKeySource here proves the BYO key (not a claude.ai login) is in use.
+          onInit: (i) => log.info("adapter.init", { ...i }),
+        }),
+      }
+    : {};
 
 const repeat = (fn: () => void, ms: number) => {
   const t = setInterval(fn, ms);
@@ -102,9 +112,21 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const trust: TrustedClientList = loaded.list;
 
   // Late-bound: the policy file and Developer mode report through the store once signed in.
+  // Device events raised before that (tampering found at load) are queued.
   let store: AgentStore | null = null;
+  const queued: DeviceEvent[] = [];
+  const publish = (e: DeviceEvent) => {
+    if (!store) return void queued.push(e);
+    void store
+      .publishDeviceEvent(e)
+      .catch((err: unknown) =>
+        log.error("device_event.publish_failed", { type: e.type, error: err instanceof Error ? err.message : "error" }),
+      );
+  };
   const policy = new FilePolicyHolder(dir, id.sign, {
     log,
+    onTamper: ({ fileHash, inForceHash }) =>
+      publish({ v: 1, type: "policy.tampered", deviceId: id.deviceId, fileHash, inForceHash, t: now() }),
     onChange: async (hash) => {
       if (!store) return;
       await store.updateDevice({ policyHash: hash });
@@ -118,7 +140,8 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     },
   });
 
-  const devStore = new DevModeStore(dir, id.sign, id.deviceId);
+  const chainHead = await new ChainHeadStore(secrets).load();
+  const devStore = new DevModeStore(dir, id.sign, id.deviceId, chainHead);
   const devMode = new DevMode({
     store: devStore,
     // The daemon never turns anything on: that happens in `chalito devmode on` or the desktop app.
@@ -131,7 +154,17 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     liability: loadLiabilityText(cfg.locale),
     deviceId: id.deviceId,
     now,
-    emit: async (e) => (e.type === "devmode.tampered" ? log.error : log.warn)("audit", e),
+    emit: async (e) => {
+      if (e.type !== "devmode.tampered") return log.warn("audit", e);
+      log.error("audit", e);
+      publish({
+        v: 1,
+        type: "devmode.tampered",
+        deviceId: id.deviceId,
+        reason: e.reason as DevModeTamper,
+        t: now(),
+      });
+    },
   });
   const reportDevMode = async () => {
     if (!store) return;
@@ -157,6 +190,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   await cloud.signIn(await fetchDeviceToken(fetchFn, cfg, id, now()));
   store = cloud.store(cfg.owner, id.deviceId);
   const signedInStore = store;
+  for (const e of queued.splice(0)) publish(e);
 
   const core = new AgentCore({
     store: signedInStore,
@@ -165,7 +199,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     devMode,
     trust: () => trust,
     saveTrust: () => trustStore.save(trust),
-    nonces: deps.nonces ?? new MemoryNonceStore(),
+    nonces: deps.nonces ?? new FileNonceStore(dir, log),
     owner: cfg.owner,
     self: { deviceId: id.deviceId, pubBox: id.pubBox, box: id.box },
     home: deps.home ?? homedir(),
@@ -196,7 +230,8 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   };
   if (watchFiles)
     devWatcher = watch(dir, (_e, name) => {
-      if (name === null || name === "devmode.json") checkDevMode();
+      // Another process (`chalito devmode …`) also moved the keychain head: reload it first.
+      if (name === null || name === "devmode.json") void chainHead.load().then(checkDevMode, checkDevMode);
     });
 
   const refresh = every(() => {

@@ -5,6 +5,7 @@ import type { DevModeToggle, Locale } from "@chalito/protocol";
 import type { LiabilityText } from "@chalito/config";
 import type { SigningKeyPair } from "@chalito/crypto";
 import { signLocal, verifyLocal } from "./local-sig.js";
+import type { SecretStore } from "./secrets.js";
 import { DEVMODE_OFF, type DevModeState } from "./policy/decide.js";
 
 /** OS user authentication (macOS LocalAuthentication, Windows Hello, polkit/PAM on Linux). */
@@ -94,7 +95,49 @@ export interface DisableRecord {
 export type AuditRecord = LiabilityRecord | DisableRecord;
 type Unsealed<R> = R extends AuditRecord ? Omit<R, "prevHash" | "hash" | "sig"> : never;
 
-export type DevModeTamper = "state_signature" | "audit_chain" | "stale_state" | "toggle_unbacked";
+export type DevModeTamper = "state_signature" | "audit_chain" | "stale_state" | "toggle_unbacked" | "rollback";
+
+export interface ChainHead {
+  hash: string;
+  count: number;
+}
+
+/** Keychain entry holding the audit chain head (outside ~/.chalito, so a file restore can't move it back). */
+export const CHAIN_HEAD_SECRET = "devmode-chain-head";
+
+/**
+ * The audit chain head kept in the OS keychain. Reads are synchronous (from a cache
+ * filled by `load()`) because Developer-mode checks run inside synchronous policy reads;
+ * writes go through to the keychain.
+ */
+export class ChainHeadStore {
+  #head: ChainHead | null = null;
+
+  constructor(private readonly secrets: SecretStore) {}
+
+  /** (Re)loads the head from the keychain; call at startup and when another process may have moved it. */
+  async load(): Promise<this> {
+    const raw = await this.secrets.get(CHAIN_HEAD_SECRET);
+    try {
+      const j = raw ? (JSON.parse(raw) as ChainHead) : null;
+      this.#head = j && typeof j.hash === "string" && Number.isInteger(j.count) ? j : null;
+    } catch {
+      this.#head = null;
+    }
+    return this;
+  }
+
+  get(): ChainHead | null {
+    return this.#head;
+  }
+
+  async set(head: ChainHead): Promise<void> {
+    // Never move the remembered head backwards within this process.
+    if (this.#head && head.count < this.#head.count) return;
+    this.#head = head;
+    await this.secrets.set(CHAIN_HEAD_SECRET, JSON.stringify(head));
+  }
+}
 
 const GENESIS = "0".repeat(64);
 
@@ -108,10 +151,18 @@ const GENESIS = "0".repeat(64);
  * fails reads as OFF and is reported as tampering. A missing state file is plain OFF.
  */
 export class DevModeStore {
+  #pending: Promise<void> = Promise.resolve();
+
+  /**
+   * `head` is the keychain copy of the chain head. With it, truncating the audit log or
+   * restoring an older devmode.json + log pair reads as rollback (off). Production always
+   * passes it; tests of unrelated behaviour may omit it.
+   */
   constructor(
     readonly dir: string,
     private readonly keys: SigningKeyPair,
     private readonly deviceId: string,
+    private readonly head?: ChainHeadStore,
   ) {
     mkdirSync(join(dir, "audit"), { recursive: true, mode: 0o700 });
   }
@@ -141,6 +192,7 @@ export class DevModeStore {
       return { state: DEVMODE_OFF, tampered: "state_signature" };
     const records = this.#verifiedRecords();
     if (!records) return { state: DEVMODE_OFF, tampered: "audit_chain" };
+    if (!this.#containsKeychainHead(records)) return { state: DEVMODE_OFF, tampered: "rollback" };
     if (body.chainHead !== (records.at(-1)?.hash ?? GENESIS)) return { state: DEVMODE_OFF, tampered: "stale_state" };
 
     const state = body.state;
@@ -188,7 +240,29 @@ export class DevModeStore {
     const unsigned = { ...rec, prevHash, hash };
     const full = { ...unsigned, sig: signLocal("chalito.devmode-liability.v1", unsigned, this.keys) } as unknown as R;
     appendFileSync(this.#auditFile, `${JSON.stringify(full)}\n`, { mode: 0o600 });
+    if (this.head) {
+      const head = { hash: (full as AuditRecord).hash, count: this.records().length };
+      // A failed keychain write surfaces from flush() but doesn't block the next one.
+      this.#pending = this.#pending.catch(() => undefined).then(() => this.head!.set(head));
+    }
     return full;
+  }
+
+  /**
+   * The log may be longer than the keychain head (a write whose keychain update failed,
+   * or another process's append this one hasn't reloaded); it may never be shorter or
+   * diverge from it. No head while records exist means the head was removed.
+   */
+  #containsKeychainHead(records: AuditRecord[]): boolean {
+    if (!this.head) return true;
+    const h = this.head.get();
+    if (!h) return records.length === 0;
+    return records.length >= h.count && (h.count === 0 || records[h.count - 1]?.hash === h.hash);
+  }
+
+  /** Waits for the keychain write of the latest append. */
+  flush(): Promise<void> {
+    return this.#pending;
   }
 
   /** True when no line was edited, removed from the middle, or written without the agent key. */
@@ -269,6 +343,7 @@ export class DevMode {
       text: liability.text,
       t: now(),
     });
+    await store.flush();
     const state: DevModeState = {
       on: true,
       toggles: [...new Set([...cur.toggles, toggle])],
@@ -290,6 +365,7 @@ export class DevMode {
       by,
       t: this.deps.now(),
     });
+    await this.deps.store.flush();
     this.deps.store.write(DEVMODE_OFF);
     await this.deps.emit({ type: "devmode.changed", on: false, toggles: [], by });
     return DEVMODE_OFF;
@@ -305,6 +381,7 @@ export class DevMode {
       by,
       t: this.deps.now(),
     });
+    await this.deps.store.flush();
     const state: DevModeState = toggles.length ? { ...cur, toggles } : DEVMODE_OFF;
     this.deps.store.write(state);
     await this.deps.emit({ type: "devmode.changed", on: state.on, toggles: state.toggles, by });
