@@ -21,12 +21,15 @@ import { HUB, mocks } from "../../orchestrator/test/harness.js";
 import { approveEndorsement, introducedAgents, resolveForEndorsement, type TrustedAgent } from "@chalito/client-keys";
 import {
   TrustedClientList,
+  canonicalize,
   fingerprint,
   openJson,
   randomNonce,
   sealJson,
   signEnvelope,
+  sha256,
   stepUpChallenge,
+  utf8,
 } from "@chalito/crypto";
 import { CommandBody } from "@chalito/protocol";
 import {
@@ -39,7 +42,9 @@ import {
   wrapRoomKeyFor,
   type RoomsDb,
 } from "@chalito/rooms";
+import { mockServer as notifierMocks, pushSubscription } from "../../notifier/test/harness.js";
 import { startAgent, waitFor } from "./agent.js";
+import { createNotifier, middayZone } from "./notifier.js";
 import { GatewayApi } from "../../mcp-gateway/src/api-client.js";
 import { createGateway } from "../../mcp-gateway/src/app.js";
 import { PostgresGatewayReader, gatewaySql } from "../../mcp-gateway/src/postgres-reader.js";
@@ -222,24 +227,214 @@ describe.skipIf(!READY)("3. a second browser endorsed by the phone (step-up), wi
   });
 });
 
-describe.skip("4. HIGH tool → signed approval request → escalation → the phone approves with step-up", () => {
-  // Waits for the approvals → notifier hookup (no producer publishes approval notifications yet;
-  // -41 is building approvals trigger → notify_outbox → drain). Then: AgentCore with a scripted
-  // session (@chalito/adapters/testing) asks for a HIGH tool, the signed request is sealed, push
-  // then WhatsApp (msw) escalate, the phone verifies detailsHash and allows with its passkey, the
-  // tool runs; a forged allow doesn't.
-  it("pending the approvals → notifier hookup", () => {});
+describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation → the phone approves with step-up", () => {
+  const s = stack!;
+  // Web push, WhatsApp, Twilio and Cloud Tasks HTTP, mocked at the network (the notifier harness's).
+  const net = notifierMocks();
+  let agent: Awaited<ReturnType<typeof startAgent>> | null = null;
+  beforeAll(() => net.server.listen({ onUnhandledFrame: "bypass" }));
+  afterAll(async () => {
+    net.server.close();
+    await agent?.close();
+  });
+
+  it("the approval escalates push → WhatsApp; the phone checks detailsHash and allows with its passkey; a forged allow doesn't run the tool", async () => {
+    const p = await s.person("hugo");
+    await s.enrolPasskey(p);
+    const { device: agentDevice } = await s.pairAgent(p, "Laptop de Hugo");
+    const trust = new TrustedClientList(agentDevice.deviceId);
+    await trust.addConfirmed(
+      { deviceId: p.phone.deviceId, pubSign: p.phone.pubSign, pubBox: p.phone.pubBox, webauthn: p.credential! },
+      Date.now(),
+    );
+    const push: FakeStep[] = [{ tool: "Bash", input: { command: "git push origin main" } }];
+    const fake = fakeClaudeCode([push]);
+    agent = await startAgent({
+      owner: p.owner,
+      device: agentDevice,
+      trust,
+      adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
+    });
+
+    // The phone's web push subscription, written under RLS as the PWA does.
+    const sub = pushSubscription(`https://push.example.test/${randomUUID()}`);
+    const subRow = await p.phone.db.from("push_subscriptions").insert({
+      owner: p.owner,
+      device_id: p.phone.deviceId,
+      endpoint: sub.endpoint,
+      p256dh: sub.keys.p256dh,
+      auth: sub.keys.auth,
+    });
+    expect(subRow.error).toBeNull();
+    // WhatsApp: a verified number with the charges notice acknowledged (phone verification itself
+    // is the api's Twilio Verify flow, covered by phone.pg). Midday in the person's zone.
+    const e164 = `+5255${String(Math.floor(Math.random() * 1e8)).padStart(8, "0")}`;
+    await s.sql`update chalito.users set tz = ${middayZone()}, phone_e164 = ${e164}, phone_country = 'MX',
+      phone_verified_at = now(), charges_notice_ack_at = now(), whatsapp_opt_in = true where id = ${p.owner}`;
+    const notifier = createNotifier(s.sql);
+
+    // The phone starts a session; the agent's HIGH push asks for an approval.
+    const cid = `cmd_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const start = await signEnvelope(
+      "chalito.command.v1",
+      CommandBody.parse({
+        v: 1,
+        cid,
+        uid: p.owner,
+        targetDeviceId: agentDevice.deviceId,
+        origin: `client:${p.phone.deviceId}`,
+        nonce: await randomNonce(),
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        payload: {
+          type: "session.start",
+          adapter: "claude-code",
+          workspaceLabel: "app",
+          promptCt: await sealJson("publica", { [agentDevice.deviceId]: agentDevice.box.publicKey }, `command:${cid}`),
+          permissionMode: "default",
+        },
+      }),
+      p.phone.deviceId,
+      p.phone.sign.secretKey,
+    );
+    expect(
+      (
+        await p.phone.db.from("commands").insert({
+          owner: p.owner,
+          target_device_id: agentDevice.deviceId,
+          id: cid,
+          env: start,
+          from_device_id: p.phone.deviceId,
+        })
+      ).error,
+    ).toBeNull();
+    let approval: { aid: string; request_id: string; details_ct: unknown; risk: string } | null = null;
+    await waitFor(
+      async () => {
+        const { data } = await p.phone.db
+          .from("approvals")
+          .select("aid, request_id, details_ct, risk")
+          .eq("owner", p.owner)
+          .eq("status", "pending");
+        approval = (data?.[0] as typeof approval) ?? null;
+        return approval !== null;
+      },
+      20_000,
+      "the HIGH approval",
+    );
+    const a = approval!;
+    expect(a.risk).toBe("HIGH");
+
+    // The database queued its notification (trigger, same transaction); the pg_net poke delivers it.
+    const queued = await s.sql<{ id: string; message: { type: string; item?: { nid: string } } }[]>`
+      select id, message from chalito_private.notify_outbox where owner = ${p.owner} order by id`;
+    expect(queued.map((r) => r.message.type)).toContain("notify");
+    const row = queued.find((r) => r.message.type === "notify")!;
+    expect((await notifier.poke(Number(row.id))).status).toBe(200);
+    await waitFor(() => net.cap.push.some((x) => x.endpoint === sub.endpoint), 20_000, "the web push");
+    expect(net.cap.whatsapp).toHaveLength(0);
+
+    // Unanswered for 3 minutes: the ladder's WhatsApp rung (template only, counts, no content).
+    notifier.advance(3 * 60_000 + 1_000);
+    const nid = row.message.item!.nid;
+    expect((await notifier.tick(p.owner, nid)).status).toBeLessThan(300);
+    await waitFor(() => net.cap.whatsapp.length > 0, 20_000, "the WhatsApp message");
+    expect(JSON.stringify(net.cap.whatsapp[0]!.body)).not.toContain("git push");
+
+    // The phone opens the approval and checks that the hash the agent signed is of what it shows.
+    const opened = await openJson<{ details: Record<string, unknown>; request: { body: { detailsHash: string } } }>(
+      a.details_ct as never,
+      p.phone.deviceId,
+      p.phone.box,
+      `approval:${a.aid}`,
+    );
+    const shown = [...(await sha256(utf8(canonicalize(opened.details))))]
+      .map((x) => x.toString(16).padStart(2, "0"))
+      .join("");
+    expect(opened.request.body.detailsHash).toBe(shown);
+    const decision = async (signer: { deviceId: string; secretKey: Uint8Array }, stepUp: boolean) => {
+      const body = {
+        v: 1 as const,
+        aid: a.aid,
+        requestId: a.request_id,
+        uid: p.owner,
+        targetDeviceId: agentDevice.deviceId,
+        allow: true,
+        nonce: await randomNonce(),
+        issuedAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+        detailsHash: shown,
+      };
+      const full = stepUp
+        ? {
+            ...body,
+            stepUp: {
+              method: "webauthn" as const,
+              at: Date.now(),
+              assertion: await p.passkey!.stepUp(RP_ID)(await stepUpChallenge(body)),
+            },
+          }
+        : body;
+      return signEnvelope("chalito.decision.v1", full, signer.deviceId, signer.secretKey);
+    };
+    // A forged allow (a key the agent never trusted, claiming to be the phone) is ignored.
+    const forger = await keys();
+    await p.phone.db.from("approval_decisions").insert({
+      owner: p.owner,
+      aid: a.aid,
+      signer_device_id: p.phone.deviceId,
+      decision: await decision({ deviceId: p.phone.deviceId, secretKey: forger.sign.secretKey }, true),
+    });
+    await new Promise((r) => setTimeout(r, 2000));
+    expect(fake.run.ran).toHaveLength(0);
+    // The phone's own passkey-signed allow runs it.
+    await p.phone.db.from("approval_decisions").insert({
+      owner: p.owner,
+      aid: a.aid,
+      signer_device_id: p.phone.deviceId,
+      decision: await decision({ deviceId: p.phone.deviceId, secretKey: p.phone.sign.secretKey }, true),
+    });
+    await waitFor(() => fake.run.ran.length === 1, 20_000, "the tool to run");
+    expect(fake.run.ran[0]!.tool).toBe("Bash");
+
+    // Resolving the approval queues an ack; the scheduler's drain delivers it (the ladder stops).
+    await waitFor(
+      async () => {
+        const rows = await s.sql<{ message: { type: string } }[]>`
+          select message from chalito_private.notify_outbox where owner = ${p.owner}`;
+        return rows.some((r) => r.message.type === "ack");
+      },
+      20_000,
+      "the ack to be queued",
+    );
+    expect((await notifier.drainNotify()).status).toBe(200);
+    const left = await s.sql<{ status: string }[]>`
+      select status from chalito_private.notify_outbox where owner = ${p.owner}`;
+    expect(left.every((r) => r.status === "sent")).toBe(true);
+  });
 });
 
 describe.skipIf(!READY)("6. a Mesa turn bills llm.tokens through the outbox → drain → the hub", () => {
   const s = stack!;
   // The Claude API and the hub's admit/settle, mocked at the network (the orchestrator's harness).
   const m = mocks();
-  const usage: { events: HubUsageEvent[] }[] = [];
+  const usage: { external_user_id?: string; events: HubUsageEvent[] }[] = [];
+  const rejected: string[] = [];
   beforeAll(() => {
     m.server.use(
+      // As strict as the real hub (chalyb src/app/api/engines/[slug]/usage/route.ts): one user per
+      // request at the top level, at most 100 events.
       http.post(`${HUB}/usage`, async ({ request }) => {
-        usage.push((await request.json()) as { events: HubUsageEvent[] });
+        const body = (await request.json()) as { external_user_id?: unknown; events?: HubUsageEvent[] };
+        if (typeof body.external_user_id !== "string" || !body.external_user_id) {
+          rejected.push("external_user_id required");
+          return HttpResponse.json({ error: "external_user_id required" }, { status: 400 });
+        }
+        if (!Array.isArray(body.events) || body.events.length > 100) {
+          rejected.push("events: 1..100");
+          return HttpResponse.json({ error: "too many events" }, { status: 400 });
+        }
+        usage.push(body as { external_user_id: string; events: HubUsageEvent[] });
         return HttpResponse.json({ ok: true });
       }),
     );
@@ -315,14 +510,18 @@ describe.skipIf(!READY)("6. a Mesa turn bills llm.tokens through the outbox → 
     const queued = await s.sql`select source_id from chalito_private.usage_outbox where owner = ${p.owner}`;
     expect(queued.length).toBeGreaterThan(0);
 
-    const drained = await drainOutbox({
-      store: new PostgresOutbox(s.sql),
-      hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "engine-token" }),
-      now: s.now,
-      alert: () => undefined,
-    });
-    expect(drained.sent).toBeGreaterThan(0);
-    const mine = usage.flatMap((b) => b.events).filter((e) => e.external_user_id === p.owner);
+    // The CI database is shared with the earlier pg suites, whose rows may be due first: drain
+    // until this person's row has been delivered (or the hub refused it).
+    const outbox = new PostgresOutbox(s.sql);
+    const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: "engine-token" });
+    for (let i = 0; i < 20; i++) {
+      await drainOutbox({ store: outbox, hub, now: s.now, alert: () => undefined, maxBatches: 20 });
+      if (rejected.length || usage.some((b) => b.events.some((e) => e.external_user_id === p.owner))) break;
+    }
+    expect(rejected, "the hub refused the usage batch (HubClient must send a top-level external_user_id)").toEqual([]);
+    const batch = usage.find((b) => b.events.some((e) => e.external_user_id === p.owner))!;
+    expect(batch.external_user_id).toBe(p.owner);
+    const mine = batch.events.filter((e) => e.external_user_id === p.owner);
     expect(mine.map((e) => e.kind)).toContain("llm.tokens");
     const tokens = mine.find((e) => e.kind === "llm.tokens")!;
     expect(tokens.cost_usd_micros).toBeGreaterThan(0);
@@ -507,6 +706,23 @@ describe.skipIf(!READY)("8. revoke-all: the agent drops the other clients (R-H5)
   });
 });
 
+/** The gateway's reader, logging any error (the bearer gate reports them only as server_error). */
+const loudReader = <T extends object>(r: T): T =>
+  new Proxy(r, {
+    get(target, prop, recv) {
+      const v = Reflect.get(target, prop, recv) as unknown;
+      if (typeof v !== "function") return v;
+      return async (...args: unknown[]) => {
+        try {
+          return await (v as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+        } catch (err) {
+          console.error(`gateway reader ${String(prop)} failed:`, err);
+          throw err;
+        }
+      };
+    },
+  });
+
 describe.skipIf(!READY)(
   "5. an MCP connector (OAuth CIMD) prompts the session; its HIGH action asks the phone (R-C1)",
   () => {
@@ -632,7 +848,7 @@ describe.skipIf(!READY)(
 
       // The gateway (its read-only role on the database) relays prompt_session to the api.
       const gw = createGateway({
-        reader: new PostgresGatewayReader(gwSql),
+        reader: loudReader(new PostgresGatewayReader(gwSql)),
         api: new GatewayApi("http://api.rehearsal.invalid", GATEWAY_TOKEN, s.apiFetch),
         cfg: { resource: MCP_RESOURCE, issuer: API_ISSUER },
         now: Date.now,
