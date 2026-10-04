@@ -427,7 +427,8 @@
         "completed": "Terminada",
         "failed": "Falló",
         "interrupted": "Interrumpida"
-      }
+      },
+      "new": "Nueva sesión"
     },
     "session": {
       "notFound": "No encontramos esa sesión.",
@@ -571,6 +572,27 @@
         "approval": "Hay una aprobación esperándote.",
         "expired": "Expiró una aprobación: se denegó."
       }
+    },
+    "newSession": {
+      "title": "Nueva sesión",
+      "computer": "Computadora",
+      "online": "en línea",
+      "offline": "sin conexión",
+      "offlineNote": "Esa computadora está sin conexión. La sesión empieza cuando vuelva, si es dentro de unos minutos.",
+      "adapter": "Agente",
+      "workspace": "Espacio de trabajo",
+      "workspaceHint": "El nombre de una carpeta que permitiste en esa computadora. Chalito nunca ve sus rutas.",
+      "recent": "Usados antes",
+      "mode": "Modo",
+      "prompt": "Primer mensaje",
+      "promptPlaceholder": "¿Qué quieres que haga?",
+      "start": "Iniciar sesión",
+      "waiting": "Enviado. Esperando a que tu computadora la inicie…",
+      "timeout": "Tu computadora no la inició. Revisa que esté encendida, que ese espacio de trabajo exista y que el agente esté activado en ella.",
+      "untrusted": "Esta computadora no está emparejada con este dispositivo.",
+      "failed": "No pudimos enviarlo.",
+      "noComputers": "Aún no tienes una computadora vinculada.",
+      "download": "Descargar Chalito para tu computadora"
     }
   },
   "mcp": {

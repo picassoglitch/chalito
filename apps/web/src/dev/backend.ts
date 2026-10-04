@@ -66,6 +66,8 @@ interface Device {
 
 const OWNER = "dev-owner";
 const SID = "s_dev_1";
+/** The simulated computer's locally allowed workspaces (apps/agent policy.workspaces labels). */
+const AGENT_WORKSPACES = ["chalito", "web"];
 
 const newDevice = async (): Promise<Device> => {
   const sign = await generateSigningKeyPair();
@@ -183,6 +185,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   const agent = await newDevice();
   const now = Date.now();
   const agentInbox: DevControls["agentInbox"] = [];
+  let started = 0;
 
   const sealToBoth = async (value: unknown, aad: string) =>
     sealJson(
@@ -464,6 +467,40 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
         const p = body.payload;
         const open = (ct: unknown) => openJson(ct as SealedEnvelope, agent.deviceId, agent.box, `command:${body.cid}`);
         switch (p.type) {
+          case "session.start": {
+            // Like apps/agent: only a locally allowed workspace; a refusal is only in its own log.
+            if (!AGENT_WORKSPACES.includes(p.workspaceLabel as string)) return;
+            const text = await open(p.promptCt);
+            agentInbox.push({ type: p.type, text });
+            const sid = `s_dev_new_${++started}`;
+            const c = {
+              ...card,
+              sid,
+              cardVersion: 1,
+              adapter: p.adapter as typeof card.adapter,
+              label: p.workspaceLabel as string,
+              workspaceLabel: p.workspaceLabel as string,
+              state: "running",
+              goal: String(text).slice(0, 80),
+              lastAction: "Leyó tu mensaje",
+              pendingApprovals: 0,
+              updatedAt: Date.now(),
+            };
+            db.insert("sessions", {
+              owner: OWNER,
+              sid,
+              device_id: agent.deviceId,
+              doc: {
+                adapter: p.adapter,
+                label: p.workspaceLabel,
+                permissionMode: p.permissionMode,
+                state: "running",
+                card: { ct: await sealToBoth(c, `card:${sid}`) },
+              },
+              updated_at: iso(Date.now()),
+            });
+            return;
+          }
           case "session.prompt": {
             const text = await open(p.promptCt);
             agentInbox.push({ type: p.type, text });

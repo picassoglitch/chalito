@@ -427,7 +427,8 @@
         "completed": "Done",
         "failed": "Failed",
         "interrupted": "Interrupted"
-      }
+      },
+      "new": "New session"
     },
     "session": {
       "notFound": "We couldn't find that session.",
@@ -571,6 +572,27 @@
         "approval": "An approval is waiting for you.",
         "expired": "An approval expired: it was denied."
       }
+    },
+    "newSession": {
+      "title": "New session",
+      "computer": "Computer",
+      "online": "online",
+      "offline": "offline",
+      "offlineNote": "That computer is offline. The session starts when it's back, if that's within a few minutes.",
+      "adapter": "Agent",
+      "workspace": "Workspace",
+      "workspaceHint": "The name of a folder you allowed on that computer. Chalito never sees its paths.",
+      "recent": "Used before",
+      "mode": "Mode",
+      "prompt": "First message",
+      "promptPlaceholder": "What should it do?",
+      "start": "Start session",
+      "waiting": "Sent. Waiting for your computer to start it…",
+      "timeout": "Your computer didn't start it. Check that it's on, that the workspace exists and that the agent is turned on there.",
+      "untrusted": "This computer isn't paired with this device.",
+      "failed": "We couldn't send it.",
+      "noComputers": "You don't have a linked computer yet.",
+      "download": "Download Chalito for your computer"
     }
   },
   "mcp": {
