@@ -30,7 +30,7 @@ const world = async (opts: { owner?: string; claim?: "valid" | "wrong_key" | "ne
   const dir = mkdtempSync(join(tmpdir(), "chalito-pair-"));
   writeFileSync(
     configPath(dir),
-    JSON.stringify({ apiBase: "https://api.test", firebase: { projectId: "demo", apiKey: "k" } }),
+    JSON.stringify({ apiBase: "https://api.test", supabase: { url: "http://127.0.0.1:54321", publishableKey: "k" } }),
   );
   const phone = await phoneKeys();
   const other = await phoneKeys();

@@ -2,7 +2,6 @@ locals {
   labels = { app = "chalito" }
 
   services = [
-    "firestore.googleapis.com",
     "pubsub.googleapis.com",
     "cloudtasks.googleapis.com",
     "cloudkms.googleapis.com",
@@ -11,8 +10,6 @@ locals {
     "artifactregistry.googleapis.com",
     "secretmanager.googleapis.com",
     "aiplatform.googleapis.com",
-    "fcm.googleapis.com",
-    "identitytoolkit.googleapis.com",
     "billingbudgets.googleapis.com",
     "monitoring.googleapis.com",
     "iamcredentials.googleapis.com",
@@ -21,7 +18,7 @@ locals {
   service_accounts = {
     "chalito-orchestrator" = "Chalito orchestrator: router, Mesa moderator, usage metering"
     "chalito-notifier"     = "Chalito notifier: escalation, push, WhatsApp, Twilio"
-    "chalito-mcp-gateway"  = "Chalito MCP gateway: reduced scopes, read-only Firestore, no signing keys"
+    "chalito-mcp-gateway"  = "Chalito MCP gateway: reduced scopes, read-only data, no signing keys"
     "chalito-avatar-jobs"  = "Chalito avatar jobs: upload validation and conversion, no secrets"
     "chalito-pubsub-push"  = "Identity Pub/Sub uses to push to Chalito services"
   }
@@ -61,14 +58,6 @@ module "artifact_registry" {
   project_id    = var.project_id
   region        = var.region
   repository_id = "chalito"
-
-  depends_on = [module.project_services]
-}
-
-module "firestore" {
-  source     = "../../modules/firestore"
-  project_id = var.project_id
-  location   = var.region
 
   depends_on = [module.project_services]
 }
@@ -145,51 +134,6 @@ module "secrets" {
   depends_on = [module.service_accounts]
 }
 
-# ---- Firestore access, scoped to the `chalito` database only -------------------
-# Service accounts bypass security rules, so least privilege is enforced here: the MCP
-# gateway gets read-only access (its writes go through `api`), others read/write.
-locals {
-  db_condition = "resource.name == \"projects/${var.project_id}/databases/${module.firestore.database_id}\""
-  firestore_rw = concat([local.orchestrator, local.notifier], local.api_list)
-}
-
-resource "google_project_iam_member" "firestore_rw" {
-  for_each = toset(local.firestore_rw)
-
-  project = var.project_id
-  role    = "roles/datastore.user"
-  member  = "serviceAccount:${each.value}"
-
-  condition {
-    title      = "chalito-db-only"
-    expression = local.db_condition
-  }
-
-  depends_on = [module.service_accounts]
-}
-
-resource "google_project_iam_member" "firestore_mcp_read" {
-  project = var.project_id
-  role    = "roles/datastore.viewer"
-  member  = "serviceAccount:${local.mcp}"
-
-  condition {
-    title      = "chalito-db-only"
-    expression = local.db_condition
-  }
-
-  depends_on = [module.service_accounts]
-}
-
-# Only `api` mints Firebase custom tokens (signBlob on its own SA).
-resource "google_service_account_iam_member" "api_sign_blob" {
-  count = var.api_service_account == "" ? 0 : 1
-
-  service_account_id = "projects/${var.project_id}/serviceAccounts/${var.api_service_account}"
-  role               = "roles/iam.serviceAccountTokenCreator"
-  member             = "serviceAccount:${var.api_service_account}"
-}
-
 resource "google_project_iam_member" "notifier_tasks" {
   project = var.project_id
   role    = "roles/cloudtasks.enqueuer"
@@ -234,8 +178,7 @@ module "orchestrator" {
   invokers        = ["serviceAccount:${local.push}"]
   labels          = local.labels
   env = {
-    FIRESTORE_DATABASE = module.firestore.database_id
-    VERTEX_LOCATION    = "global"
+    VERTEX_LOCATION = "global"
   }
   secret_env = {
     ANTHROPIC_API_KEY = "chalito-anthropic-api-key"
@@ -255,7 +198,6 @@ module "notifier" {
   invokers        = ["serviceAccount:${local.push}"]
   labels          = local.labels
   env = {
-    FIRESTORE_DATABASE = module.firestore.database_id
   }
   secret_env = {
     TWILIO_ACCOUNT_SID      = "chalito-twilio-account-sid"
@@ -280,7 +222,6 @@ module "mcp_gateway" {
   public          = true
   labels          = local.labels
   env = {
-    FIRESTORE_DATABASE = module.firestore.database_id
   }
 
   depends_on = [module.service_accounts]
@@ -358,16 +299,6 @@ module "budget" {
   project_number  = var.project_number
   amount_usd      = var.monthly_budget_usd
   alert_email     = var.alert_email
-
-  depends_on = [module.project_services]
-}
-
-# Firebase on Chalyb's project: needed for custom-token sign-in (devices, PWA) and for
-# deploying Firestore rules. It is a project-wide change, so it's opt-in (decision #33).
-resource "google_firebase_project" "this" {
-  count    = var.enable_firebase ? 1 : 0
-  provider = google-beta
-  project  = var.project_id
 
   depends_on = [module.project_services]
 }

@@ -1,6 +1,7 @@
 # ADR 0002: Firestore listeners as the realtime event bus (no WebSocket gateway)
 
-- Status: Accepted (M0)
+- Status: **Superseded by [ADR 0017](0017-data-layer-supabase.md)** (Firestore cut-over). Realtime is now Supabase Broadcast from the database to private `chalito:device:<id>` topics, with pointer payloads and `rev` resync. Kept for history.
+- Originally: Accepted (M0)
 
 ## Context
 Agents, phones, desktops and rooms need sub-2-second fan-out. Options:

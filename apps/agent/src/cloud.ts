@@ -1,12 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import { deleteApp, initializeApp, type FirebaseApp } from "firebase/app";
-import { connectAuthEmulator, getAuth, signInWithCustomToken, type Auth } from "firebase/auth";
-import { connectFirestoreEmulator, doc, getFirestore, onSnapshot, type Firestore } from "firebase/firestore";
 import { randomNonce, signEnvelope } from "@chalito/crypto";
 import { ApiError, DeviceTokenResponse } from "@chalito/protocol";
 import type { AgentConfig, PairedConfig } from "./config.js";
-import { FirestoreStore } from "./firestore-store.js";
 import type { Identity } from "./identity.js";
 import type { Logger } from "./redact.js";
 import type { AgentStore } from "./store.js";
@@ -49,7 +44,8 @@ export const postJson = async (fetchFn: FetchFn, url: string, body: unknown): Pr
 
 /**
  * Device credential: a fresh signature over a one-time challenge, exchanged for a
- * Firebase custom token. Nothing bearer-like is stored on disk.
+ * device sign-in credential (a magic-link token_hash for its Supabase Auth user). Nothing
+ * bearer-like is stored on disk.
  */
 export const fetchDeviceToken = async (
   fetchFn: FetchFn,
@@ -83,42 +79,9 @@ export interface Cloud {
 /** Mints a device credential from Chalito's API (signed one-time challenge, see fetchDeviceToken). */
 export type MintToken = () => Promise<string>;
 
-/** Firebase custom tokens live an hour; refresh well before. */
-export const FIREBASE_REFRESH_MS = 50 * 60 * 1000;
-
-type Env = Record<string, string | undefined>;
-
-/**
- * A private Firebase app. With FIRESTORE_EMULATOR_HOST / FIREBASE_AUTH_EMULATOR_HOST set
- * (local e2e, scripts/e2e-claude.md) it talks to the emulators instead of production.
- */
-type FirebaseConfig = NonNullable<AgentConfig["firebase"]>;
 type SupabaseConfig = Pick<NonNullable<AgentConfig["supabase"]>, "url" | "publishableKey">;
 
-const firebaseClient = (cfg: FirebaseConfig, env: Env): { app: FirebaseApp; auth: Auth; db: Firestore } => {
-  const app = initializeApp({ apiKey: cfg.apiKey, projectId: cfg.projectId }, `chalito-${randomUUID()}`);
-  const auth = getAuth(app);
-  const db = getFirestore(app, cfg.databaseId);
-  if (env.FIREBASE_AUTH_EMULATOR_HOST)
-    connectAuthEmulator(auth, `http://${env.FIREBASE_AUTH_EMULATOR_HOST}`, { disableWarnings: true });
-  if (env.FIRESTORE_EMULATOR_HOST) {
-    const [host, port] = env.FIRESTORE_EMULATOR_HOST.split(":");
-    connectFirestoreEmulator(db, host || "127.0.0.1", Number(port || 8080));
-  }
-  return { app, auth, db };
-};
-
-export const firebaseCloud = (cfg: FirebaseConfig, mint: MintToken, env: Env = process.env): Cloud => {
-  const { app, auth, db } = firebaseClient(cfg, env);
-  return {
-    refreshIntervalMs: FIREBASE_REFRESH_MS,
-    refresh: async () => void (await signInWithCustomToken(auth, await mint())),
-    store: (owner, deviceId) => new FirestoreStore(db, owner, deviceId),
-    close: () => deleteApp(app),
-  };
-};
-
-/** Waits on pairingCodes/{codeId} with the single-doc watch token. */
+/** Waits on the pairing code with the single-code watch credential. */
 export interface PairingWatcher {
   watch(
     watchToken: string,
@@ -126,21 +89,6 @@ export interface PairingWatcher {
     onDoc: (data: Record<string, unknown>) => void,
   ): Promise<() => Promise<void>>;
 }
-
-export const firebasePairingWatcher = (cfg: FirebaseConfig, env: Env = process.env): PairingWatcher => ({
-  watch: async (watchToken, codeId, onDoc) => {
-    const { app, auth, db } = firebaseClient(cfg, env);
-    await signInWithCustomToken(auth, watchToken);
-    const unsub = onSnapshot(doc(db, `pairingCodes/${codeId}`), (snap) => {
-      const data = snap.data();
-      if (data) onDoc(data);
-    });
-    return async () => {
-      unsub();
-      await deleteApp(app);
-    };
-  },
-});
 
 // ---------------------------------------------------------------- Supabase (ADR 0017)
 

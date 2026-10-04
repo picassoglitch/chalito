@@ -3,7 +3,7 @@ import { fail } from "./errors.js";
 
 /**
  * In-memory token bucket per client IP and route group (brief §1: no separate cache
- * service). Cloud Run instances each keep their own buckets; global caps use Firestore (M15).
+ * service). Cloud Run instances each keep their own buckets; global caps belong in Postgres (M15).
  */
 export const rateLimit = (opts: { capacity: number; refillPerSec: number; now?: () => number }): MiddlewareHandler => {
   const buckets = new Map<string, { tokens: number; at: number }>();
