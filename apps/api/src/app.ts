@@ -1,5 +1,6 @@
 import { errorMessage } from "@chalito/redact";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { guard } from "@chalito/guard";
 import type { Deps } from "./deps.js";
@@ -19,6 +20,28 @@ import { storeRoutes } from "./store/routes.js";
 import { billingRoutes } from "./billing/routes.js";
 import { roomsRoutes } from "./routes/rooms.js";
 
+/** Browser-facing prefixes. Server-to-server routes (hub /tenants, scheduler /tasks, webhooks) get no CORS. */
+export const CORS_PATHS = ["/v1/*", "/sso/*", "/oauth/requests/*", "/releases/*"] as const;
+
+/**
+ * CORS for Chalito's own clients only: exact origins (no wildcard), bearer auth (no cookies, so no
+ * credentials), a short preflight cache. Any other origin gets no Access-Control-Allow-Origin, so
+ * browsers refuse to read the response.
+ */
+export const apiCors = (origins: readonly string[]) => {
+  // http(s) origins are normalised; custom schemes (tauri://localhost) have an opaque URL origin,
+  // so they're compared as written, minus a trailing slash.
+  const normal = (o: string) => (/^https?:\/\//.test(o) ? new URL(o).origin : o.replace(/\/+$/, ""));
+  const allowed = new Set(origins.map(normal));
+  return cors({
+    origin: (origin) => (allowed.has(origin) ? origin : null),
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type"],
+    credentials: false,
+    maxAge: 600,
+  });
+};
+
 export const createApp = (deps: Deps) => {
   const app = new Hono();
   // First: per-IP rate limits and body caps for every route (src/limits.ts).
@@ -30,6 +53,9 @@ export const createApp = (deps: Deps) => {
       ...(deps.config.trustedProxies !== undefined ? { trustedProxies: deps.config.trustedProxies } : {}),
     }),
   );
+  // Before the routes: a preflight carries no Authorization header and must not reach auth.
+  const origins = deps.config.corsOrigins ?? [];
+  if (origins.length > 0) for (const path of CORS_PATHS) app.use(path, apiCors(origins));
   app.get("/healthz", (c) => c.json({ ok: true }));
   // Chalyb engine contract: {admin_api_base}/tenants…, plus the SSO exchange.
   app.route("/", hubRoutes(deps));

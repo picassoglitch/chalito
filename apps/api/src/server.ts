@@ -173,6 +173,14 @@ const app = createApp({
     recoveryCooldownMs: Number(process.env.RECOVERY_COOLDOWN_MS ?? 60 * 60 * 1000),
     skewMs: 60_000,
     trustedProxies: Number(process.env.TRUSTED_PROXIES ?? 0),
+    corsOrigins: [
+      process.env.CHALITO_WEB_ORIGIN ?? "https://chalito.chalyb.com",
+      // The Tauri webview's origins (macOS/Linux, then Windows).
+      ...(process.env.CHALITO_DESKTOP_ORIGINS ?? "tauri://localhost,http://tauri.localhost,https://tauri.localhost")
+        .split(",")
+        .map((o) => o.trim())
+        .filter(Boolean),
+    ],
   },
   now: Date.now,
   // ADR 0014: signed download URLs from the private releases bucket, signed as the release signer.
