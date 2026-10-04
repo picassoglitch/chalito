@@ -8,6 +8,7 @@ import { pinClaude } from "../src/claude-pin.js";
 import { ConfigTamperedError, chalitoDir, writeConfig, readConfig, configPath } from "../src/config.js";
 import {
   CLAUDE_MISSING,
+  CLAUDE_PIN_FAILED,
   OnboardingError,
   TOKEN_REFRESH_MS,
   defaultAdapters,
@@ -203,7 +204,10 @@ describe("chalito run (daemon)", () => {
   it("a pinned binary that changed (hash), vanished or became world-writable is an onboarding error", async () => {
     const changed = await setup();
     writeFileSync(changed.claude, "#!/bin/sh\necho swapped\n");
-    await expect(runDaemon(changed.deps)).rejects.toThrow(/hash_mismatch.*chalito claude pin/);
+    await expect(runDaemon(changed.deps)).rejects.toThrow(CLAUDE_PIN_FAILED.es("hash_mismatch"));
+    expect(CLAUDE_PIN_FAILED.en("hash_mismatch")).toBe(
+      "Claude Code updated itself: run `chalito claude pin` again in a terminal to trust the new version.",
+    );
 
     const gone = await setup();
     rmSync(gone.claude);
@@ -211,7 +215,7 @@ describe("chalito run (daemon)", () => {
 
     const writable = await setup();
     chmodSync(writable.claude, 0o777);
-    await expect(runDaemon(writable.deps)).rejects.toThrow(/world_writable/);
+    await expect(runDaemon(writable.deps)).rejects.toThrow(/cualquiera puede modificarlo/);
     expect(writable.challenges).toHaveLength(0);
   });
 
