@@ -237,7 +237,71 @@
       "alto": "High"
     },
     "needsAck": "First confirm you understand that charges may apply.",
-    "chargesAck": "I understand that charges may apply."
+    "chargesAck": "I understand that charges may apply.",
+    "rooms": {
+      "you": "You",
+      "member": "Member {id}",
+      "owner": "created the room",
+      "feed": "Room messages",
+      "members": "Members",
+      "empty": "No messages yet.",
+      "sealed": "Can't be read on this device (missing the room key).",
+      "report": "Report",
+      "kind": {
+        "notice": "notice",
+        "event_proposal": "proposes an event",
+        "ask": "asks",
+        "ack": "replies",
+        "enter": "joined",
+        "leave": "left",
+        "presence": "status"
+      },
+      "composer": "Write a notice for the room",
+      "send": "Send",
+      "reportTitle": "Report",
+      "reason": "Reason",
+      "reasons": {
+        "spam": "Spam",
+        "abuse": "Harassment or abuse",
+        "impersonation": "Pretending to be someone else",
+        "other": "Other"
+      },
+      "note": "Comment (optional)",
+      "attach": "Attach this message's text to the report. Only you can read it: Chalito doesn't see room content unless you send it.",
+      "reportSend": "Send report",
+      "cancel": "Cancel",
+      "ended": {
+        "left": "You left this room.",
+        "kicked": "You're no longer a member of this room.",
+        "dissolved": "This room no longer exists.",
+        "revoked": "This device was removed from your account.",
+        "not_member": "You're no longer a member of this room."
+      },
+      "joinLabel": "Invite code",
+      "join": "Join",
+      "title": "Rooms",
+      "intro": "Private rooms with other families or teams. Messages are end-to-end encrypted: Chalito can't read them.",
+      "none": "You're not in any room yet.",
+      "joinTitle": "Join with a code",
+      "leave": "Leave the room",
+      "leaveConfirm": "Leave the room? You won't see its new messages.",
+      "leaveYes": "Yes, leave",
+      "noKey": "Waiting for the room key: another member shares it with this device.",
+      "noCompanion": "Choose your companion first.",
+      "notFound": "We couldn't find this room, or you're no longer a member.",
+      "reported": "Report sent. Thank you.",
+      "reportedDup": "You'd already reported this.",
+      "error": {
+        "not_member": "You're no longer a member of this room.",
+        "not_found": "Not found.",
+        "rate_limited": "Too many reports in a row; wait a moment.",
+        "bad_code": "That code isn't valid or was already used.",
+        "full": "The room is full.",
+        "no_key": "You don't have the room key yet.",
+        "failed": "That didn't work. Try again.",
+        "ended": "This room has ended for you."
+      }
+    }
   },
   "integrations": {
     "anthropic": {

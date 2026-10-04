@@ -503,6 +503,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
       '@chalito/roster':
         specifier: workspace:*
         version: link:../../packages/roster
@@ -820,6 +823,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../rooms
       '@chalito/roster':
         specifier: workspace:*
         version: link:../roster

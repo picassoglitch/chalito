@@ -25,3 +25,15 @@ export {
   type SettingKey,
   type Shell,
 } from "./settings/registry.js";
+export {
+  JoinRoomForm,
+  RoomComposer,
+  RoomEnded,
+  RoomEventList,
+  RoomMembers,
+  RoomReportDialog,
+  memberLabel,
+  type ReportReason,
+  type ReportTarget,
+  type RoomEndReason,
+} from "./rooms.js";

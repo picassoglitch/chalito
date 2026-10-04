@@ -15,6 +15,7 @@ export const routing = defineRouting({
     "/tienda": "/tienda",
     "/privacidad": { es: "/privacidad", en: "/privacy" },
     "/terminos": { es: "/terminos", en: "/terms" },
+    "/salas": { es: "/salas", en: "/rooms" },
     "/descargar": { es: "/descargar", en: "/download" },
     "/bandeja": { es: "/bandeja", en: "/inbox" },
     "/sesiones": { es: "/sesiones", en: "/sessions" },

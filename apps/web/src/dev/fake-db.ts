@@ -73,6 +73,11 @@ export class FakeDb {
     for (const fn of this.#onWrite) queueMicrotask(() => fn(e));
   }
 
+  /** A server-sent pointer with its own payload (room kicks and dissolves, review R-L14). */
+  pointer(payload: Row): void {
+    for (const ch of this.#channels) if (!ch.removed) for (const h of ch.handlers) h({ event: "pointer", payload });
+  }
+
   /** Server/agent-side write. */
   insert(table: string, row: Row, byClient = false): Row {
     const r = { ...row, rev: ++this.#rev };

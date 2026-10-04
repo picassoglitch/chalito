@@ -19,6 +19,7 @@ import {
   generateBoxKeyPair,
   generateSigningKeyPair,
   fingerprint,
+  generateRoomKey,
   openJson,
   randomNonce,
   sealJson,
@@ -51,6 +52,7 @@ import { passkeyRef, savePasskeyRef } from "@/lib/keys";
 import { httpStore } from "@/lib/store";
 import { parseUsage, type UsageApi } from "@/lib/usage";
 import { DEV_CATALOG } from "./catalog";
+import { sealRoomEvent, unwrapKeyring, wrapRoomKeyFor } from "@chalito/rooms";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -129,6 +131,18 @@ export interface DevControls {
     /** Purchases as the api recorded them (purchaseId → charged). */
     purchases(): Record<string, { cosmeticId: string; charged: number }>;
     seedCompanion(avatar: string): void;
+  };
+  /** Rooms (ADR 0010): a seeded room with another family's companion, and the server's side. */
+  rooms: {
+    /** Creates this browser's companion (if needed) and a room "Familia" it owns, with Ana's companion. */
+    seed(): Promise<{ roomId: string; me: string; ana: string; eid: string }>;
+    /** Ana's companion posts a notice. */
+    postAsAna(text: string): Promise<string>;
+    kickMe(): void;
+    dissolve(): void;
+    /** A one-use invite code to another room ("Proyecto"), keyed to this device on join. */
+    inviteCode: string;
+    reports(): Row[];
   };
   /** /v1/endorse: the other side of "Añadir un dispositivo" / "Esperando aprobación". */
   endorse: {
@@ -544,8 +558,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   db.setSession(personSession);
   const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
 
-  const controls: Omit<DevControls, "endorse" | "setUsage" | "storeState"> &
-    Partial<Pick<DevControls, "endorse" | "setUsage" | "storeState">> = {
+  const controls: Omit<DevControls, "endorse" | "setUsage" | "storeState" | "rooms"> &
+    Partial<Pick<DevControls, "endorse" | "setUsage" | "storeState" | "rooms">> = {
     marker: DEV_MARKER,
     owner: OWNER,
     get me() {
@@ -823,6 +837,10 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     post: async <T>(path: string, body: unknown): Promise<T> => {
       const b = body as Record<string, unknown>;
       db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...b } });
+      if (path.startsWith("/v1/rooms/")) {
+        if (role() !== "client") throw fail(403, "forbidden");
+        return (await roomsApi(path, b)) as T;
+      }
       switch (path) {
         case "/v1/endorse/codes": {
           needRole("user");
@@ -1126,6 +1144,145 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       }),
   };
 
+  // ---- /v1/rooms (apps/api/src/routes/rooms.ts), simulated --------------------------------
+  const MY_COMPANION = "chl_devcompanionaaaaaaaaaaaaaa";
+  const ANA = "chl_anacompanionbbbbbbbbbbbbbb";
+  const ROOM = "room_dev_familia";
+  const PROJECT = "room_dev_proyecto";
+  const INVITE = "KQ7R-M2XZ";
+  const roomKeys = new Map<string, Uint8Array>();
+  const reports: Row[] = [];
+  let inviteUsed = false;
+  const ensureCompanion = () => {
+    if (!db.rows("companions").some((c) => c.owner === OWNER))
+      db.insert("companions", {
+        owner: OWNER,
+        companion_id: MY_COMPANION,
+        name: "Chalito",
+        is_renamed: false,
+        avatar: "chalito",
+        equipped: {},
+      });
+    return String(db.rows("companions").find((c) => c.owner === OWNER)!.companion_id);
+  };
+  const makeRoom = async (roomId: string, name: string, owner: string, members: string[]) => {
+    const key = await generateRoomKey();
+    roomKeys.set(roomId, key);
+    db.insert("rooms", { room_id: roomId, type: "family", name, owner_companion_id: owner, key_epoch: 1 });
+    for (const m of members)
+      db.insert("room_members", { room_id: roomId, companion_id: m, role: m === owner ? "owner" : "member" });
+  };
+  const keyMe = async (roomId: string, companion: string) => {
+    const wrapped = await wrapRoomKeyFor(roomKeys.get(roomId)!, 1, [{ deviceId: me.deviceId, pubBox: me.pubBox }]);
+    db.insert("room_member_keys", {
+      room_id: roomId,
+      companion_id: companion,
+      device_id: me.deviceId,
+      epoch: 1,
+      ct: wrapped[me.deviceId],
+    });
+  };
+  const insertEvent = (
+    roomId: string,
+    req: { eid: string; companionId: string; kind: string; urgency: string; ct: unknown; keyEpoch: number },
+  ) =>
+    db.insert("room_events", {
+      room_id: roomId,
+      eid: req.eid,
+      from_companion_id: req.companionId,
+      to_companions: [],
+      kind: req.kind,
+      urgency: req.urgency,
+      ct: req.ct,
+      key_epoch: req.keyEpoch,
+      promoted: false,
+      t: iso(Date.now()),
+      expires_at: iso(Date.now() + 24 * 3_600_000),
+    });
+  const postAsAna = async (text: string, roomId = ROOM) => {
+    const req = await sealRoomEvent({
+      roomId,
+      epoch: 1,
+      key: roomKeys.get(roomId)!,
+      eid: `evt_${Math.random().toString(36).slice(2)}`,
+      companionId: ANA,
+      body: { kind: "notice", text },
+    });
+    insertEvent(roomId, req);
+    return req.eid;
+  };
+  const isMember = (roomId: string, companion: string) =>
+    db.rows("room_members").some((m) => m.room_id === roomId && m.companion_id === companion);
+  const roomsApi = async (path: string, b: Row): Promise<unknown> => {
+    if (path === "/v1/rooms/join") {
+      if (b.shortCode !== INVITE || inviteUsed) throw fail(404, "invite_not_found");
+      inviteUsed = true;
+      await makeRoom(PROJECT, "Proyecto", ANA, [ANA]);
+      db.insert("room_members", { room_id: PROJECT, companion_id: b.companionId, role: "member" });
+      await keyMe(PROJECT, String(b.companionId)); // a member's client wraps the key to the newcomer
+      return { roomId: PROJECT };
+    }
+    const m = /^\/v1\/rooms\/([^/]+)\/(events|leave|reports)$/.exec(path);
+    if (!m) throw fail(404, "not_found");
+    const roomId = decodeURIComponent(m[1]!);
+    if (!isMember(roomId, String(b.companionId))) throw fail(403, "not_a_member");
+    if (m[2] === "events") {
+      insertEvent(roomId, b as never);
+      return { ok: true };
+    }
+    if (m[2] === "leave") {
+      db.remove("room_members", (r) => r.room_id === roomId && r.companion_id === b.companionId);
+      db.pointer({ table: "room_members", op: "kicked", key: { companion_id: b.companionId } });
+      return {};
+    }
+    if (reports.length >= 10) throw fail(429, "rate_limited");
+    const dup = reports.find(
+      (r) => r.roomId === roomId && r.eventId === (b.eventId ?? null) && r.member === (b.memberCompanionId ?? null),
+    );
+    if (dup) return { reportId: dup.reportId, duplicate: true };
+    const r = {
+      reportId: `rpt_${reports.length + 1}`,
+      roomId,
+      eventId: b.eventId ?? null,
+      member: b.memberCompanionId ?? null,
+      reason: b.reason,
+      note: b.note ?? null,
+      plaintext: b.attachPlaintext === true ? (b.attachedPlaintext ?? null) : null,
+    };
+    reports.push(r);
+    return { reportId: r.reportId, duplicate: false };
+  };
+  controls.rooms = {
+    seed: async () => {
+      const mine = ensureCompanion();
+      if (!roomKeys.has(ROOM)) {
+        await makeRoom(ROOM, "Familia", mine, [mine, ANA]);
+        await keyMe(ROOM, mine);
+      }
+      const eid = await postAsAna("Llego a las 7, ¿alguien pasa por pan? <b>no es HTML</b>");
+      return { roomId: ROOM, me: mine, ana: ANA, eid };
+    },
+    postAsAna: (text) => postAsAna(text),
+    kickMe: () => {
+      const mine = ensureCompanion();
+      db.remove("room_members", (r) => r.room_id === ROOM && r.companion_id === mine);
+      db.pointer({ table: "room_members", op: "kicked", key: { companion_id: mine } });
+    },
+    dissolve: () => {
+      db.remove("rooms", (r) => r.room_id === ROOM);
+      db.pointer({ table: "rooms", op: "dissolve" });
+    },
+    inviteCode: INVITE,
+    reports: () => reports.map((r) => ({ ...r })),
+  };
+
+  // DEV/TEST: start with the seeded room ("chalito.dev.rooms" = "1"), so a page load lands in it.
+  try {
+    if (window.localStorage.getItem("chalito.dev.rooms") === "1") await controls.rooms.seed();
+  } catch {
+    /* storage unavailable */
+  }
+
   // /v1/devices/token, simulated: the signature over the refresh challenge is the authentication.
   const sb = db.client(OWNER);
   return {
@@ -1145,6 +1302,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
             stepUp: async ({ risk }) =>
               passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
             forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
+            roomKeyring: (rows: readonly { epoch: number; ct: string }[]) => unwrapKeyring(rows, me.box),
           }
         : null,
     deviceLogin: (k, owner) => async () => {

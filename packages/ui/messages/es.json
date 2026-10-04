@@ -237,7 +237,71 @@
       "alto": "Alta"
     },
     "needsAck": "Primero confirma que entiendes que pueden aplicar cargos.",
-    "chargesAck": "Entiendo que pueden aplicar cargos."
+    "chargesAck": "Entiendo que pueden aplicar cargos.",
+    "rooms": {
+      "you": "Tú",
+      "member": "Miembro {id}",
+      "owner": "creó la sala",
+      "feed": "Mensajes de la sala",
+      "members": "Miembros",
+      "empty": "Todavía no hay mensajes.",
+      "sealed": "No se puede leer en este dispositivo (falta la llave de la sala).",
+      "report": "Reportar",
+      "kind": {
+        "notice": "aviso",
+        "event_proposal": "propone un evento",
+        "ask": "pregunta",
+        "ack": "responde",
+        "enter": "entró",
+        "leave": "salió",
+        "presence": "estado"
+      },
+      "composer": "Escribe un aviso para la sala",
+      "send": "Enviar",
+      "reportTitle": "Reportar",
+      "reason": "Motivo",
+      "reasons": {
+        "spam": "Spam",
+        "abuse": "Acoso o abuso",
+        "impersonation": "Se hace pasar por otra persona",
+        "other": "Otro"
+      },
+      "note": "Comentario (opcional)",
+      "attach": "Adjuntar el texto de este mensaje al reporte. Solo tú puedes leerlo: Chalito no ve el contenido de las salas a menos que tú lo envíes.",
+      "reportSend": "Enviar reporte",
+      "cancel": "Cancelar",
+      "ended": {
+        "left": "Saliste de esta sala.",
+        "kicked": "Ya no eres miembro de esta sala.",
+        "dissolved": "Esta sala ya no existe.",
+        "revoked": "Este dispositivo fue retirado de tu cuenta.",
+        "not_member": "Ya no eres miembro de esta sala."
+      },
+      "joinLabel": "Código de invitación",
+      "join": "Unirse",
+      "title": "Salas",
+      "intro": "Salas privadas con otras familias o equipos. Los mensajes van cifrados de extremo a extremo: Chalito no puede leerlos.",
+      "none": "Todavía no estás en ninguna sala.",
+      "joinTitle": "Unirse con código",
+      "leave": "Salir de la sala",
+      "leaveConfirm": "¿Salir de la sala? Ya no verás sus mensajes nuevos.",
+      "leaveYes": "Sí, salir",
+      "noKey": "Esperando la llave de la sala: otro miembro la comparte con este dispositivo.",
+      "noCompanion": "Primero elige a tu compañero.",
+      "notFound": "No encontramos esta sala, o ya no eres miembro.",
+      "reported": "Reporte enviado. Gracias.",
+      "reportedDup": "Ya habías reportado esto.",
+      "error": {
+        "not_member": "Ya no eres miembro de esta sala.",
+        "not_found": "No se encontró.",
+        "rate_limited": "Demasiados reportes seguidos; espera un momento.",
+        "bad_code": "Ese código no es válido o ya se usó.",
+        "full": "La sala está llena.",
+        "no_key": "Todavía no tienes la llave de la sala.",
+        "failed": "No se pudo. Vuelve a intentarlo.",
+        "ended": "Esta sala ya terminó para ti."
+      }
+    }
   },
   "integrations": {
     "anthropic": {
