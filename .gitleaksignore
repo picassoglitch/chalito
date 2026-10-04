@@ -1,0 +1,3 @@
+# False positives (reviewed). Format: <commit>:<file>:<rule>:<line>
+# PASSKEY_REF_KEY is the localStorage key name "chalito.passkey.v1", not a credential.
+44858b7447953fd36f184d14cb0521fdb67e92ad:apps/web/src/lib/keys.ts:generic-api-key:14
