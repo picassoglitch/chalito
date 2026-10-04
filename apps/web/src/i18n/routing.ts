@@ -11,6 +11,7 @@ export const routing = defineRouting({
     "/bienvenida": { es: "/bienvenida", en: "/welcome" },
     "/ajustes": { es: "/ajustes", en: "/settings" },
     "/uso": { es: "/uso", en: "/usage" },
+    "/tienda": "/tienda",
     "/descargar": { es: "/descargar", en: "/download" },
     "/bandeja": { es: "/bandeja", en: "/inbox" },
     "/sesiones": { es: "/sesiones", en: "/sessions" },

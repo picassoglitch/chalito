@@ -19,7 +19,8 @@
     "download": "Download",
     "inbox": "Inbox",
     "sessions": "Sessions",
-    "devices": "Devices"
+    "devices": "Devices",
+    "store": "Store"
   },
   "home": {
     "title": "Hi, I'm {name}",
@@ -154,11 +155,6 @@
     },
     "avatar": {
       "label": "Companion"
-    },
-    "companions": {
-      "chalito": "Chalito",
-      "luna": "Luna",
-      "tito": "Tito"
     },
     "companionName": {
       "label": "Name",
@@ -560,5 +556,42 @@
       "title": "See by day",
       "day": "Day"
     }
+  },
+  "store": {
+    "title": "Store",
+    "intro": "Outfits and effects for your companion. They only change how it looks, never what it can do.",
+    "loading": "Loading…",
+    "signIn": "Sign in with your Chalyb account to see the store.",
+    "signInCta": "Sign in with Chalyb",
+    "error": "We couldn't load the store.",
+    "retry": "Try again",
+    "previewLabel": "{name} wearing their items",
+    "noCompanion": "You don't have a companion yet.",
+    "chooseCompanion": "Choose one",
+    "slot": {
+      "head": "Head",
+      "face": "Face",
+      "body": "Body",
+      "back": "Back",
+      "aura": "Aura",
+      "portal_fx": "Portal"
+    },
+    "free": "Free",
+    "owned": "Yours",
+    "price": "{tokens} tokens",
+    "buy": "Buy",
+    "equip": "Wear",
+    "unequip": "Take off",
+    "noTokens": "You don't have enough tokens.",
+    "whyChip": "Why?",
+    "retryBuy": "The purchase didn't go through. Retrying never charges twice.",
+    "failed": "Couldn't buy it. Try again later.",
+    "equipError": {
+      "not_owned": "Buy it first.",
+      "wrong_slot": "That doesn't go there.",
+      "no_companion": "Choose your companion first.",
+      "failed": "Couldn't change it. Try again."
+    },
+    "lookOnly": "Accessories don't change what your companion can do or its limits."
   }
 }

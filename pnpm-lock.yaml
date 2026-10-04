@@ -431,6 +431,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../../packages/roster
       '@chalito/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -743,6 +746,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../roster
       libphonenumber-js:
         specifier: ^1
         version: 1.13.14
