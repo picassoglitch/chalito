@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl";
 import type { DeviceView } from "@chalito/client";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { PasskeyEnroll } from "./PasskeyEnroll";
+import { SharingToggle } from "./SharingToggle";
 
 /**
  * Devices: online/offline, Developer mode, revoke. Developer mode can only be turned OFF here
@@ -57,6 +58,7 @@ export const Devices = () => {
                 {d.revoked ? t("revoked") : d.online ? t("online") : t("offline")}
               </span>
             </div>
+            {d.role === "agent" && !d.revoked ? <SharingToggle scope="device" target={d.deviceId} /> : null}
             {d.devMode.on ? (
               <div data-testid="devmode-controls" className="grid gap-2 rounded-lg bg-red-50 p-3 text-sm text-red-900">
                 <p className="font-semibold">{t("devModeOn", { toggles: d.devMode.toggles.join(", ") })}</p>

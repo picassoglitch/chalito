@@ -15,6 +15,8 @@ export const routing = defineRouting({
     "/sesiones": { es: "/sesiones", en: "/sessions" },
     "/sesiones/[sid]": { es: "/sesiones/[sid]", en: "/sessions/[sid]" },
     "/dispositivos": { es: "/dispositivos", en: "/devices" },
+    "/conexiones": { es: "/conexiones", en: "/connections" },
+    "/oauth/consent": "/oauth/consent",
     "/creditos": "/creditos",
     "/auth/sso": "/auth/sso",
     "/a/[id]": "/a/[id]",

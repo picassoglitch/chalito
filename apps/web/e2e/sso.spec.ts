@@ -71,3 +71,15 @@ test("the token's own next wins over the remembered one", async ({ page, context
   await page.goto("/auth/sso?token=t&next=%2Fcreditos");
   await expect(page).toHaveURL(/\/creditos$/);
 });
+
+test("consent signed out → hub sign-in, remembering the consent request", async ({ page, context }) => {
+  let launched = "";
+  await page.route("https://hub.example/**", async (r) => {
+    launched = r.request().url();
+    await r.fulfill({ body: "hub" });
+  });
+  await page.goto("/oauth/consent?request=req_1");
+  await expect.poll(() => launched).toBe("https://hub.example/auth/launch/chalito");
+  const cookie = (await context.cookies()).find((c) => c.name === "chalito_next");
+  expect(decodeURIComponent(cookie!.value)).toBe("/oauth/consent?request=req_1");
+});

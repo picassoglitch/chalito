@@ -3,6 +3,7 @@ import { useTranslations } from "next-intl";
 import { SettingsPanel } from "@chalito/ui";
 import { env } from "@/lib/env";
 import { useChalito } from "./ChalitoProvider";
+import { Link } from "@/i18n/navigation";
 import { useSettings } from "./useSettings";
 
 export const Settings = () => {
@@ -23,6 +24,9 @@ export const Settings = () => {
           {tw(`error.${error}`)}
         </p>
       ) : null}
+      <Link href="/conexiones" className="w-fit text-emerald-700 underline">
+        {tw("connectedApps")}
+      </Link>
       <SettingsPanel
         shell="web"
         values={values}
