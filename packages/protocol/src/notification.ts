@@ -75,7 +75,20 @@ export type OutboundTemplateVars = z.infer<typeof OutboundTemplateVars>;
  * and only when call briefing is enabled for the user and allowed by local policy.
  * One short sentence: session label + open question. No paths, diffs or commands.
  */
-const FORBIDDEN_IN_CALL_LINE = /[/\\`$|<>{}~]|https?:|\w\.\w{1,5}\b/;
+export const FORBIDDEN_IN_CALL_LINE = /[/\\`$|<>{}~]|https?:|\w\.\w{1,5}\b/;
+/**
+ * The only characters a call line may hold, after NFKC (so fullwidth `？`, `／` or `U+2024` can't
+ * dodge the checks): letters, digits, spaces and plain sentence punctuation. No quotes of any kind,
+ * so a line can't close a quotation. The database enforces the same rule (migration 003000).
+ */
+export const CALL_LINE_CHARS = /^[\p{L}\p{N} ,.;:?!¿¡'()-]+$/u;
+/** NFKC, collapsed whitespace, and every character outside CALL_LINE_CHARS dropped. */
+export const sanitizeCallText = (s: string) =>
+  s
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N} ,.;:?!¿¡'()-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 export const CallLine = z.object({
   v: z.literal(1),
   notificationId: NotificationId,
@@ -85,6 +98,10 @@ export const CallLine = z.object({
     .string()
     .min(1)
     .max(160)
+    .refine(
+      (s) => s === s.normalize("NFKC") && CALL_LINE_CHARS.test(s),
+      "call line has characters outside the allowlist",
+    )
     .refine((s) => !FORBIDDEN_IN_CALL_LINE.test(s), "call line must not contain paths, URLs or command syntax")
     .refine((s) => (s.match(/[.?!]/g) ?? []).length <= 1, "call line must be one sentence"),
   expireAt: EpochMs,

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PricesConfig } from "@chalito/config";
 import {
   callCostMicros,
@@ -10,6 +11,9 @@ import {
   type DrainResult,
   type HubClient,
   type OutboxStore,
+  sweepVoiceSessions,
+  type VoiceEventFor,
+  type VoiceSessionStore,
 } from "@chalito/billing";
 import type { HubUsageEvent } from "@chalito/protocol";
 
@@ -37,9 +41,18 @@ export interface CommsBilling {
     uid: string,
     p: { callSid: string; seconds: number; country: string; reservationId?: string },
   ): Promise<void>;
-  /** The Realtime voice on a call ended: voice seconds + the SIP interface minutes. */
-  recordVoice(uid: string, p: { callId: string; seconds: number }): Promise<void>;
-  drain(): Promise<DrainResult>;
+  /**
+   * Before a call's voice starts: admit it on the hub (fail closed) and open a server-side session
+   * bounded by `maxSeconds` (Twilio's timeLimit). Without a session store, nothing is metered here.
+   */
+  openCallVoice(
+    uid: string,
+    p: { callSid: string; maxSeconds: number },
+  ): Promise<{ ok: true; sourceId: string } | { ok: false; reason: string }>;
+  /** The call's voice ended: bill the elapsed seconds (voice + SIP interface minutes) and settle. */
+  closeCallVoice(uid: string, sourceId: string): Promise<void>;
+  /** Bills desktop voice sessions that were never ended (R-H6), then drains the outbox. */
+  drain(): Promise<DrainResult & { voiceSessionsSwept?: number }>;
 }
 
 export const twilioDestination = (country: string) => {
@@ -64,6 +77,10 @@ export const hubCommsBilling = (p: {
   voiceModel: string;
   now: () => number;
   alert: (msg: string, meta: Record<string, unknown>) => void;
+  /** Server-side voice sessions (migration 003010): call voice here, desktop voice in apps/api. */
+  voiceSessions?: VoiceSessionStore;
+  /** Prices a desktop session's increment, for the sweep (apps/api's HubStreamUsage.event). */
+  desktopVoiceEvent?: VoiceEventFor;
 }): CommsBilling => {
   const ctx = (owner: string, origin: "whatsapp.message" | "sms.message" | "call.pstn" | "voice.call") => ({
     owner,
@@ -77,6 +94,21 @@ export const hubCommsBilling = (p: {
         ? smsCostMicros(p.prices, country, 2)
         : callCostMicros(p.prices, { seconds: 300, destination: twilioDestination(country), sip: true }) +
           voiceSecondsCostMicros(p.prices, p.voiceModel, 300);
+  /** Voice on a call: OpenAI voice seconds plus Twilio's SIP interface minutes. */
+  const callVoiceCost = (seconds: number) =>
+    voiceSecondsCostMicros(p.prices, p.voiceModel, seconds) +
+    Math.ceil(Math.ceil(seconds / 60) * (p.prices.twilio.perMinute.sipInterface ?? 0) * 1e6);
+  const callVoiceEvent: VoiceEventFor = (s, seconds, total) =>
+    usageEvent(ctx(s.owner, "voice.call"), {
+      kind: "voice.seconds",
+      provider: "openai",
+      amount: seconds,
+      costUsdMicros: callVoiceCost(seconds),
+      occurredAt: p.now(),
+      sourceId: `${s.sourceId}:${total}`,
+      reservationId: s.reservationId,
+      metadata: { model: s.model },
+    });
   return {
     async admit(uid, channel, nid, country) {
       try {
@@ -128,22 +160,63 @@ export const hubCommsBilling = (p: {
       ]);
       if (c.reservationId) await p.hub.settle({ reservation_id: c.reservationId, outcome: "succeeded" });
     },
-    async recordVoice(uid, v) {
-      const minutes = Math.ceil(v.seconds / 60);
-      await p.enqueue(uid, [
-        usageEvent(ctx(uid, "voice.call"), {
-          kind: "voice.seconds",
-          provider: "openai",
-          amount: Math.round(v.seconds),
-          costUsdMicros:
-            voiceSecondsCostMicros(p.prices, p.voiceModel, v.seconds) +
-            Math.ceil(minutes * (p.prices.twilio.perMinute.sipInterface ?? 0) * 1e6),
-          occurredAt: p.now(),
-          sourceId: `voice-call:${v.callId}`,
-          metadata: { model: p.voiceModel },
-        }),
-      ]);
+    async openCallVoice(uid, c) {
+      if (!p.voiceSessions) return { ok: true, sourceId: "" };
+      const sourceId = `voice_${createHash("sha256").update(c.callSid).digest("hex").slice(0, 32)}`;
+      let res;
+      try {
+        res = await p.hub.admit({
+          external_user_id: uid,
+          external_job_id: sourceId,
+          class: "stream",
+          operation: "voice.call",
+          est_tokens: estimateBillable(callVoiceCost(c.maxSeconds)),
+          ttl_seconds: Math.min(86_400, Math.max(60, c.maxSeconds + 300)),
+        });
+      } catch {
+        return { ok: false, reason: "hub_unavailable" };
+      }
+      if (!res.allowed) return { ok: false, reason: res.reason };
+      if (!res.balance.unlimited && res.balance.remaining <= 0) {
+        await p.hub.settle({ reservation_id: res.reservation_id, outcome: "cancelled" }).catch(() => undefined);
+        return { ok: false, reason: "no_tokens" };
+      }
+      const opened = await p.voiceSessions.open({
+        sourceId,
+        owner: uid,
+        channel: "call",
+        deviceId: c.callSid,
+        reservationId: res.reservation_id,
+        model: p.voiceModel,
+        startedAt: p.now(),
+        maxSeconds: c.maxSeconds,
+      });
+      if (opened === "busy") {
+        await p.hub.settle({ reservation_id: res.reservation_id, outcome: "cancelled" }).catch(() => undefined);
+        return { ok: false, reason: "call_voice_open" };
+      }
+      return { ok: true, sourceId };
     },
-    drain: () => drainOutbox({ store: p.outbox, hub: p.hub, now: p.now, alert: p.alert }),
+    async closeCallVoice(uid, sourceId) {
+      if (!p.voiceSessions || !sourceId) return;
+      const r = await p.voiceSessions.advance({ owner: uid, sourceId, now: p.now(), end: true, event: callVoiceEvent });
+      if (r.reservationId)
+        await p.hub.settle({ reservation_id: r.reservationId, outcome: "succeeded" }).catch(() => undefined);
+    },
+    drain: async () => {
+      const voiceSessionsSwept = p.voiceSessions
+        ? await sweepVoiceSessions({
+            store: p.voiceSessions,
+            now: p.now(),
+            event: (s, seconds, total) =>
+              s.channel === "call"
+                ? callVoiceEvent(s, seconds, total)
+                : (p.desktopVoiceEvent?.(s, seconds, total) ?? null),
+            settle: (rid) => p.hub.settle({ reservation_id: rid, outcome: "succeeded" }),
+          })
+        : undefined;
+      const r = await drainOutbox({ store: p.outbox, hub: p.hub, now: p.now, alert: p.alert });
+      return voiceSessionsSwept === undefined ? r : { ...r, voiceSessionsSwept };
+    },
   };
 };

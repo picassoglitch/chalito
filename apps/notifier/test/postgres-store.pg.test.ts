@@ -205,6 +205,7 @@ if (!url) {
         callBriefingEnabled: true,
         items: [
           {
+            lid: "l1",
             deviceLabel: "Laptop",
             sessionLabel: "API de pagos",
             line: "¿Corro las migraciones?",

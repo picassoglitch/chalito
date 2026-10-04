@@ -2,7 +2,14 @@ import { serve } from "@hono/node-server";
 import { GoogleAuth } from "google-auth-library";
 import postgres from "postgres";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, PostgresOutbox, compedFrom, enqueueUsage } from "@chalito/billing";
+import {
+  HubClient,
+  HubStreamUsage,
+  PostgresOutbox,
+  PostgresVoiceSessions,
+  compedFrom,
+  enqueueUsage,
+} from "@chalito/billing";
 import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { createApp } from "./app.js";
 import { hubCommsBilling } from "./billing.js";
@@ -36,6 +43,14 @@ const sql = postgres(env("DATABASE_URL"), {
 });
 const hub = new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") });
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
+
+const voiceSessions = new PostgresVoiceSessions(sql);
+const desktopVoice = new HubStreamUsage({
+  hub,
+  prices: loadPrices(),
+  model: loadModels().voice.desktop.model,
+  now: Date.now,
+});
 
 const app = createApp(
   {
@@ -75,6 +90,17 @@ const app = createApp(
       voiceModel: loadModels().voice.call.model,
       now: Date.now,
       alert: (msg, meta) => log.error(msg, { ...meta, alert: true }),
+      // Voice sessions (calls here, desktop in apps/api) are metered on the server; never-ended
+      // ones are billed in full by the drain task (R-H6, R-M8).
+      voiceSessions,
+      desktopVoiceEvent: (sess, seconds, total) =>
+        desktopVoice.event({
+          owner: sess.owner,
+          admissionId: sess.reservationId,
+          kind: "voice.seconds",
+          seconds,
+          sourceId: `${sess.sourceId}:${total}`,
+        }),
     }),
   },
   {

@@ -52,9 +52,11 @@ The call uses `<Gather input="dtmf speech" language="es-MX|en-US" numDigits="1" 
 
 | Input | What happens |
 |---|---|
-| **1** | Ack, then `<Dial><Sip>REALTIME_SIP_URI</Sip>`. Without it, "open your app". |
+| **1** | Ack, then `<Dial timeLimit="…"><Sip>REALTIME_SIP_URI</Sip>`, bounded by this month's voice minutes (at most 20 min). The signed `X-Chalito-Ref` freezes the waiting items the call is for: only those can be answered on it (R-H3). Without voice, "open your app". |
 | **2** | Snooze: re-call 1 min before a Mesa, else +10 min. |
 | **3** | Dismiss (ack). |
+
+The voice agent gets the items, labels and lines as JSON inside a `<data>` block, under a rule that data is never instructions (R-H3). Call voice is admitted on the hub and metered on the server (`packages/billing` README, "Voice sessions").
 
 Spoken digits and words work too.
 

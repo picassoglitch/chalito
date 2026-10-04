@@ -17,7 +17,8 @@ Chalito admits work, reports provider costs and settles. It keeps no payment rec
 | `outbox.ts`, `postgres-outbox.ts` | The usage outbox (`chalito_private.usage_outbox`, migration `20261004001500`). |
 | `entitlements.ts` | Pure: entitlements from tier, trial, balance and comped. |
 | `energy.ts` | `admitManaged` and the in-character out-of-energy result. |
-| `stream-usage.ts` | `HubStreamUsage` for voice streams. |
+| `stream-usage.ts` | `HubStreamUsage` for voice streams: admit, price an increment (`event`), keep alive, settle. |
+| `voice-sessions.ts` | Voice metered on the server (`chalito_private.voice_sessions`, migration `20261004003010`). See below. |
 
 **Hub client details:**
 - **admit / usage / settle / balance.** Usage takes at most 100 events per call, each with `cost_usd_micros` and an idempotent `source_id`.
@@ -50,6 +51,22 @@ Sent rows are purged after 30 days. Dead rows stay until someone resolves them.
 The notifier exposes `POST /tasks/drain-usage` (Google OIDC). Point a Cloud Scheduler job at it every minute, with `SCHEDULER_SA_EMAIL` as the signer.
 
 **Caveat:** the hub rejects `occurred_at` older than 7 days. Events stuck longer than that (a week-long hub outage) go `dead`, still alerted and kept.
+
+## Voice sessions (R-H6, R-M8)
+
+Voice is billed from what Chalito observes, never from what a client reports.
+
+**Desktop push-to-talk (`/v1/voice`).** The device talks to OpenAI over WebRTC directly, so the api:
+- records the session when it mints the client secret;
+- bills the time since then, capped at the session's maximum (30 min, lowered to this month's remaining minutes);
+- allows one open session per owner.
+
+**Phone calls (notifier).** The voice leg is admitted on the hub before the call is accepted. It's bounded by Twilio's `<Dial timeLimit>`: the remaining minutes, at most 20 min.
+
+**How billing works:**
+- Each increment's usage event is written in the same transaction as `billed_seconds`, with source_id `<session>:<total>`. Retried heartbeats and concurrent ones never double-bill.
+- The notifier's drain task (every minute) bills sessions that were never ended in full, and settles their reservations.
+- **Limit:** without a server-side handle on the WebRTC call, the api can't hang up a desktop session that ignores `continue: false`. It stops billing at the session's maximum. Proxying the SDP exchange through the api would give it that handle; that needs a desktop change.
 
 ## Entitlements
 

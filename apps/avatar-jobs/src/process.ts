@@ -139,7 +139,27 @@ const centreX = (px: { data: Buffer; width: number; height: number }, yFrom: num
   return n ? sum / n : px.width / 2;
 };
 
-/** Cosmetic anchors from the silhouette: head at the top of the figure, face a little below, feet at the bottom. */
+/**
+ * Where the skull starts: the first row (top half) with at least 60% of the opaque pixels of the
+ * fullest row up there, so ears, tufts and hair spikes above the head don't count.
+ */
+const skullTop = (px: { data: Buffer; width: number; height: number }) => {
+  // Opaque pixels per row, not the outer span: two ears far apart are wide but thin.
+  const filled: number[] = [];
+  for (let y = 0; y < Math.round(px.height * 0.5); y++) {
+    let n = 0;
+    for (let x = 0; x < px.width; x++) if (px.data[(y * px.width + x) * 4 + 3]! > 16) n++;
+    filled.push(n);
+  }
+  const widest = Math.max(0, ...filled);
+  const y = filled.findIndex((n) => n >= widest * 0.6);
+  return y < 0 ? 0 : y;
+};
+
+/**
+ * Cosmetic anchors from the silhouette: head where a hat's brim sits (just below the top of the
+ * skull), face a little below, feet at the bottom.
+ */
 export const anchorsFor = (px: { data: Buffer; width: number; height: number }): Record<Slot, Anchor> => {
   const h = px.height;
   const w = px.width;
@@ -148,7 +168,7 @@ export const anchorsFor = (px: { data: Buffer; width: number; height: number }):
   const faceBand = centreX(px, Math.round(h * 0.2), Math.round(h * 0.45));
   const bodyBand = centreX(px, Math.round(h * 0.45), Math.round(h * 0.8));
   return {
-    head: pt(topBand, h * 0.04, 1),
+    head: pt(topBand, skullTop(px) + h * 0.03, 1),
     face: pt(faceBand, h * 0.32, 2),
     body: pt(bodyBand, h * 0.62, 1),
     back: pt(bodyBand, h * 0.55, -1),

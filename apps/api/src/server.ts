@@ -7,7 +7,7 @@ import { GcsReleaseStore } from "./releases/gcs.js";
 import { PostgresAuditSink, teeAudit } from "./postgres/audit.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, HubStreamUsage, compedFrom, enqueueUsage } from "@chalito/billing";
+import { HubClient, HubStreamUsage, PostgresVoiceSessions, compedFrom } from "@chalito/billing";
 import { loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
@@ -66,7 +66,6 @@ const backend = (): {
             provider: openaiRealtime({ apiKey: env("OPENAI_API_KEY") }),
             hub: new HubStreamUsage({
               hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
-              enqueue: (owner, events) => enqueueUsage(sql, owner, events),
               prices: loadPrices(),
               model: loadModels().voice.desktop.model,
               now: Date.now,
@@ -75,6 +74,7 @@ const backend = (): {
             voiceName: process.env.REALTIME_VOICE ?? "marin",
             tokenSecret: env("VOICE_TOKEN_SECRET"),
             cap: pgVoiceCap(sql, loadPlans(), compedFrom(process.env.OWNER_UIDS)),
+            sessions: new PostgresVoiceSessions(sql),
           },
         }
       : {}),

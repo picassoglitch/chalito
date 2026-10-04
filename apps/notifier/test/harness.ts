@@ -4,7 +4,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import webpush from "web-push";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, MemoryOutbox } from "@chalito/billing";
+import { HubClient, MemoryOutbox, MemoryVoiceSessions } from "@chalito/billing";
 import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { hubCommsBilling } from "../src/billing.js";
 import type { UserPrefs } from "@chalito/escalation";
@@ -238,6 +238,7 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
     log: { info: (msg, meta) => logs.push({ msg, meta }), error: (msg, meta) => logs.push({ msg, meta }) },
   };
   const outbox = new MemoryOutbox();
+  const voiceSessions = new MemoryVoiceSessions();
   if (opts.caps) deps.caps = { plans: loadPlans(), isComped: (uid) => uid === "owner-1" };
   if (opts.billing)
     deps.billing = hubCommsBilling({
@@ -248,6 +249,7 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
       voiceModel: loadModels().voice.call.model,
       now: () => deps.now(),
       alert: (msg, meta) => logs.push({ msg, meta }),
+      voiceSessions,
     });
   const cfg: AppConfig = {
     pubsub: {
@@ -280,6 +282,7 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
     app,
     store,
     outbox,
+    voiceSessions,
     sockets,
     deps,
     logs,
