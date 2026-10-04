@@ -6,6 +6,7 @@ import { CommandBody, RelayedCommand, SealedEnvelope } from "@chalito/protocol";
 import { z } from "zod";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
+import { bearerOk } from "../lib/bearer.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { ClientError, fetchCimd, providerOf, redirectAllowed, redirectMatches, registerDcr } from "../oauth/clients.js";
@@ -264,22 +265,36 @@ export const oauthRoutes = (
     if (!cred) return fail(409, "no_passkey");
     const challenge = await deps.repo.takeWebAuthnChallenge(p.owner, p.deviceId!, "assert", deps.now());
     if (!challenge) return fail(400, "challenge_expired");
-    try {
-      const v = await verifyAuthenticationResponse({
-        response: body.data.assertion as unknown as AuthenticationResponseJSON,
-        expectedChallenge: challenge,
-        expectedOrigin: wa.origins,
-        expectedRPID: wa.rpId,
-        credential: {
-          id: cred.credentialId,
-          publicKey: (await fromB64url(cred.publicKey)) as Uint8Array<ArrayBuffer>,
-          counter: cred.counter,
-        },
-        requireUserVerification: true,
+    const counter = await verifyAuthenticationResponse({
+      response: body.data.assertion as unknown as AuthenticationResponseJSON,
+      expectedChallenge: challenge,
+      expectedOrigin: wa.origins,
+      expectedRPID: wa.rpId,
+      credential: {
+        id: cred.credentialId,
+        publicKey: (await fromB64url(cred.publicKey)) as Uint8Array<ArrayBuffer>,
+        // The sign-counter check is the repo's atomic compare below (as in endorse), which also
+        // catches concurrent assertions and raises the clone alert (review R-L10).
+        counter: 0,
+      },
+      requireUserVerification: true,
+    }).then(
+      (v) =>
+        v.verified && v.authenticationInfo.credentialID === cred.credentialId ? v.authenticationInfo.newCounter : null,
+      () => null,
+    );
+    if (counter === null) return fail(401, "passkey_failed");
+    const bumped = await deps.repo.bumpWebAuthnCounter(p.owner, p.deviceId!, cred.credentialId, counter);
+    if (bumped === "not_found") return fail(401, "passkey_failed");
+    if (bumped === "cloned") {
+      await deps.audit.record({
+        action: "webauthn.clone_suspected",
+        owner: p.owner,
+        actor: p.uid,
+        target: p.deviceId!,
+        meta: { credentialId: cred.credentialId, stored: cred.counter, reported: counter, during: "oauth.consent" },
       });
-      if (!v.verified) return fail(401, "passkey_failed");
-    } catch {
-      return fail(401, "passkey_failed");
+      return fail(403, "authenticator_cloned");
     }
 
     const client = await store().getClient(r.clientId);
@@ -487,8 +502,7 @@ export const oauthRoutes = (
   // ---------------------------------------------------------------- gateway writes
   /** The gateway's service token AND a live user access token with the needed scope. */
   const gatewayCall = async (c: Context, scope: McpScope): Promise<TokenWithGrant | Response> => {
-    const svc = c.req.header("authorization") ?? "";
-    if (!cfg.gatewayToken || svc !== `Bearer ${cfg.gatewayToken}`)
+    if (!bearerOk(c.req.header("authorization"), cfg.gatewayToken))
       return oauthError(c, "invalid_client", "gateway only", 401);
     const tok = c.req.header("x-chalito-access-token") ?? "";
     const t = tok ? await store().getToken(sha256hex(tok)) : null;

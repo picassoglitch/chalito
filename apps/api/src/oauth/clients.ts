@@ -1,4 +1,5 @@
 import type { OAuthClient, Provider } from "./model.js";
+import { safeFetch } from "./safe-fetch.js";
 
 /**
  * Client identification (MCP 2026-07-28): Client ID Metadata Documents are preferred (the
@@ -40,16 +41,42 @@ export const redirectMatches = (registered: string[], uri: string): boolean => {
   });
 };
 
-export const providerOf = (client: Pick<OAuthClient, "clientId" | "redirectUris">): Provider => {
-  const hosts = [client.clientId, ...client.redirectUris].flatMap((u) => {
-    try {
-      return [new URL(u).hostname];
-    } catch {
-      return [];
-    }
-  });
-  if (hosts.some((h) => h === "claude.ai" || h.endsWith(".claude.ai"))) return "claude";
-  if (hosts.some((h) => h === "chatgpt.com" || h.endsWith(".chatgpt.com"))) return "chatgpt";
+/**
+ * Claude or ChatGPT only when the provider itself vouches for the client (review R-M3): a CIMD
+ * document served from the provider's own https origin, whose every redirect is https on that
+ * same host. Nobody else can publish a document there. DCR clients and anything with a
+ * loopback redirect are "other": they never get `session:prompt` or an `mcp:claude|chatgpt` origin.
+ */
+const PROVIDER_HOSTS: [Exclude<Provider, "other">, string][] = [
+  ["claude", "claude.ai"],
+  ["chatgpt", "chatgpt.com"],
+];
+
+export const providerOf = (
+  client: Pick<OAuthClient, "clientId" | "redirectUris"> & { kind?: OAuthClient["kind"] },
+): Provider => {
+  if (client.kind === "dcr") return "other";
+  let id: URL;
+  try {
+    id = new URL(client.clientId);
+  } catch {
+    return "other";
+  }
+  if (id.protocol !== "https:" || id.port || id.username || id.password) return "other";
+  for (const [provider, host] of PROVIDER_HOSTS) {
+    if (id.hostname !== host) continue;
+    const redirectsOk =
+      client.redirectUris.length > 0 &&
+      client.redirectUris.every((r) => {
+        try {
+          const u = new URL(r);
+          return u.protocol === "https:" && u.hostname === host && !u.port;
+        } catch {
+          return false;
+        }
+      });
+    return redirectsOk ? provider : "other";
+  }
   return "other";
 };
 
@@ -80,8 +107,12 @@ const validate = (m: Record<string, unknown>, kind: "cimd" | "dcr", clientId: st
   };
 };
 
-/** Fetches and validates a CIMD document: https, small JSON, `client_id` equal to its own URL. */
-export const fetchCimd = async (clientId: string, fetcher: typeof fetch = fetch): Promise<OAuthClient> => {
+/**
+ * Fetches and validates a CIMD document: https, small JSON, `client_id` equal to its own URL.
+ * The default fetcher refuses internal addresses at connect time (safe-fetch.ts, review R-M4);
+ * failures are reported generically so the endpoint can't be used to probe a network.
+ */
+export const fetchCimd = async (clientId: string, fetcher: typeof fetch = safeFetch): Promise<OAuthClient> => {
   let url: URL;
   try {
     url = new URL(clientId);
@@ -90,22 +121,45 @@ export const fetchCimd = async (clientId: string, fetcher: typeof fetch = fetch)
   }
   if (url.protocol !== "https:" || url.hash || url.username || url.password)
     throw new ClientError("client_id must be an https URL");
-  const res = await fetcher(url, {
-    headers: { accept: "application/json" },
-    redirect: "error",
-    signal: AbortSignal.timeout(5_000),
-  });
-  if (!res.ok) throw new ClientError(`client metadata: HTTP ${res.status}`);
-  const text = await res.text();
-  if (text.length > 64 * 1024) throw new ClientError("client metadata too large");
+  let text: string;
+  try {
+    const res = await fetcher(url, {
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) throw new Error("status");
+    text = await readCapped(res, 64 * 1024);
+  } catch {
+    throw new ClientError("client metadata could not be fetched");
+  }
   let m: Record<string, unknown>;
   try {
     m = JSON.parse(text) as Record<string, unknown>;
   } catch {
-    throw new ClientError("client metadata is not JSON");
+    throw new ClientError("client metadata could not be fetched");
   }
   if (m.client_id !== clientId) throw new ClientError("client metadata client_id must equal its URL");
   return validate(m, "cimd", clientId);
+};
+
+/** Reads at most `max` bytes of a body, failing beyond it (never buffers an unbounded response). */
+const readCapped = async (res: Response, max: number): Promise<string> => {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("too large");
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 };
 
 export const registerDcr = (m: Record<string, unknown>, clientId: string): OAuthClient => validate(m, "dcr", clientId);
