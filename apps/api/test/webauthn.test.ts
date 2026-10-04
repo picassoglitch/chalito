@@ -1,6 +1,13 @@
 import { verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { describe, expect, it } from "vitest";
-import { fromB64url, verifyWebAuthnAssertion } from "@chalito/crypto";
+import {
+  deriveDeviceId,
+  fromB64url,
+  generateSigningKeyPair,
+  signEnvelope,
+  toB64url,
+  verifyWebAuthnAssertion,
+} from "@chalito/crypto";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import type { DeviceDoc } from "@chalito/protocol";
 import { createApp } from "../src/app.js";
@@ -33,13 +40,19 @@ const memoryRepo = (devices: DeviceDoc[]) => {
       return true;
     },
     getDeviceWebAuthn: async (o, d) => creds.get(`${o}/${d}`) ?? null,
+    setDeviceWebAuthnBinding: async (o, d, binding) => {
+      const c = creds.get(`${o}/${d}`);
+      if (!c) return false;
+      creds.set(`${o}/${d}`, { ...c, binding });
+      return true;
+    },
   };
   return { repo: repo as ApiRepo, challenges, creds };
 };
 
-const setup = async (opts: { now?: () => number; revoked?: boolean } = {}) => {
+const setup = async (opts: { now?: () => number; revoked?: boolean; phone?: Partial<DeviceDoc> } = {}) => {
   const o = owner();
-  const phone = await device(o, "client", { revoked: opts.revoked ?? false });
+  const phone = await device(o, "client", { revoked: opts.revoked ?? false, ...opts.phone });
   const mem = memoryRepo([phone]);
   const audit = new MemoryAudit();
   let clock = NOW;
@@ -181,5 +194,74 @@ describe("WebAuthn routes refuse", () => {
     expect((await s.post("/register/options", {}, "nope")).status).toBe(401);
     const r = await setup({ revoked: true });
     expect((await r.post("/register/options")).status).toBe(403);
+  });
+});
+
+describe("passkey binding (chalito.webauthn-binding.v1)", () => {
+  const phoneKeys = async () => {
+    const sign = await generateSigningKeyPair();
+    return { sign, deviceId: await deriveDeviceId(sign.publicKey), pubSign: await toB64url(sign.publicKey) };
+  };
+  const bind = (
+    k: Awaited<ReturnType<typeof phoneKeys>>,
+    body: { credentialId: string; publicKey: string; rpId?: string },
+    signer = k,
+  ) =>
+    signEnvelope(
+      "chalito.webauthn-binding.v1",
+      { v: 1 as const, deviceId: k.deviceId, rpId: RP, issuedAt: NOW, ...body },
+      signer.deviceId,
+      signer.sign.secretKey,
+    );
+  const registered = async () => {
+    const k = await phoneKeys();
+    const s = await setup({ phone: { deviceId: k.deviceId, pubSign: k.pubSign } });
+    const auth = new SoftAuthenticator({ origin: ORIGIN });
+    const opts = await s.post("/register/options");
+    expect((await s.post("/register/verify", { response: await auth.create(opts.json.options) })).status).toBe(201);
+    return { s, k, auth };
+  };
+
+  it("stores a binding signed by the device's own key for its registered passkey", async () => {
+    const { s, k, auth } = await registered();
+    const binding = await bind(k, { credentialId: auth.credentialId, publicKey: auth.publicKey });
+    const res = await s.post("/register/bind", { binding });
+    expect(res).toEqual({ status: 200, json: { ok: true } });
+    expect(s.mem.creds.get(`${s.o}/${k.deviceId}`)?.binding).toEqual(binding);
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "webauthn.bound", target: k.deviceId });
+  });
+
+  it("refuses a binding signed by another key, for another credential or another relying party", async () => {
+    const { s, k, auth } = await registered();
+    const other = await phoneKeys();
+    const forged = {
+      ...(await bind(k, { credentialId: auth.credentialId, publicKey: auth.publicKey }, other)),
+      signerDeviceId: k.deviceId,
+    };
+    expect((await s.post("/register/bind", { binding: forged })).json.error).toBe("bad_binding_invalid_signature");
+    expect(
+      (
+        await s.post("/register/bind", {
+          binding: await bind(k, { credentialId: "b3RoZXI", publicKey: auth.publicKey }),
+        })
+      ).json.error,
+    ).toBe("bad_binding_credential_mismatch");
+    expect(
+      (
+        await s.post("/register/bind", {
+          binding: await bind(k, { credentialId: auth.credentialId, publicKey: auth.publicKey, rpId: "evil.example" }),
+        })
+      ).json.error,
+    ).toBe("bad_binding_expected_rp_mismatch");
+    expect(s.mem.creds.get(`${s.o}/${k.deviceId}`)?.binding).toBeUndefined();
+  });
+
+  it("needs a registered passkey first", async () => {
+    const k = await phoneKeys();
+    const s = await setup({ phone: { deviceId: k.deviceId, pubSign: k.pubSign } });
+    const res = await s.post("/register/bind", {
+      binding: await bind(k, { credentialId: "Y3JlZA", publicKey: "cHVi" }),
+    });
+    expect(res.status).toBe(409);
   });
 });

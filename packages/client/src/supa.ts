@@ -27,6 +27,11 @@ export interface SupaChannel {
   subscribe(cb?: (status: string, err?: Error) => void): SupaChannel;
 }
 export interface SupaClient {
+  /**
+   * realtime-js 2.117: `setAuth()` returns a Promise (no argument = take the session's token).
+   * Joins must wait for it, or the private topic is joined with a stale or missing token.
+   */
+  realtime?: { setAuth(token?: string | null): unknown };
   from(table: string): SupaQuery;
   channel(topic: string, opts: { config: { private: boolean } }): SupaChannel;
   removeChannel(ch: SupaChannel): Promise<unknown>;

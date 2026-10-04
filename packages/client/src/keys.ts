@@ -30,12 +30,19 @@ export interface ClientKeys {
   trustedAgentBoxKey(agentDeviceId: string): string | null;
 }
 
-/** Step-up for HIGH/CRITICAL decisions (WebAuthn / platform biometric), provided by the keys slice. */
-export type StepUpProvider = (approval: {
-  aid: string;
-  risk: string;
-  agentDeviceId: string;
-}) => Promise<
+/**
+ * Step-up for HIGH/CRITICAL decisions (WebAuthn / platform biometric), provided by the keys
+ * slice. `unsignedDecisionBody` is the final decision body without `stepUp`: a passkey
+ * assertion is bound to it (D-019), and client-keys' `passkeyStepUp` refuses without it.
+ */
+export type StepUpProvider = (
+  approval: {
+    aid: string;
+    risk: string;
+    agentDeviceId: string;
+  },
+  unsignedDecisionBody?: Record<string, unknown>,
+) => Promise<
   | { method: "webauthn"; at: number; assertion: Record<string, unknown> }
   | { method: "platform_biometric"; at: number }
   | null

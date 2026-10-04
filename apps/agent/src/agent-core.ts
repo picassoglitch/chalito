@@ -393,6 +393,10 @@ export class AgentCore {
         return { allow: false, reason: decision.reason };
       }
       let aid: string | undefined;
+      // The "requested" side effects (event, card, call line) run while the approval waits. Keep
+      // the promise: the resolution below must not remove the call line before it was published,
+      // or a fast decision leaves a stale plaintext line behind (seen over Supabase round-trips).
+      let announced: Promise<void> = Promise.resolve();
       const outcome = await this.approvals.request({
         sid: s.sid,
         risk: classification.tier,
@@ -401,7 +405,7 @@ export class AgentCore {
         details: { toolName: call.toolName, summary, input: call.input, reasons: classification.reasons },
         onRequested: (requested, expiresAt) => {
           aid = requested;
-          void (async () => {
+          announced = (async () => {
             s.card.approvalPending(requested, true);
             await this.#event(s, {
               type: "approval.requested",
@@ -417,9 +421,12 @@ export class AgentCore {
               sessionLabel: s.label,
               question: null,
             });
-          })();
+          })().catch((err: unknown) =>
+            this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" }),
+          );
         },
       });
+      await announced;
       if (aid) {
         s.card.approvalPending(aid, false);
         await this.callLines.remove(`${s.sid}_${aid}`);

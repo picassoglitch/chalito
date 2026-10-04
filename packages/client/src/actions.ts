@@ -101,12 +101,9 @@ export class ClientActions {
     const now = this.#now();
     if (a.expiresAt <= now) throw new ActionError("expired");
 
-    let stepUp;
-    if (allow && (a.stepUpRequired || a.risk === "HIGH" || a.risk === "CRITICAL")) {
-      stepUp = await this.opts.stepUp({ aid, risk: a.risk, agentDeviceId: a.agentDeviceId });
-      if (!stepUp) throw new ActionError("step_up_cancelled");
-    }
-    const body = DecisionBody.parse({
+    // The unsigned body first: a passkey step-up is bound to it (D-019: the WebAuthn challenge
+    // is SHA-256(JCS(body without stepUp))), so it must be final before the ceremony.
+    const base = DecisionBody.parse({
       v: 1,
       aid,
       requestId: a.requestId,
@@ -116,9 +113,14 @@ export class ClientActions {
       nonce: b64Nonce(),
       issuedAt: now,
       expiresAt: Math.min(a.expiresAt, now + APPROVAL_TTL_MS),
-      ...(stepUp ? { stepUp } : {}),
       ...(opts.choice !== undefined ? { choice: opts.choice } : {}),
     });
+    let body = base;
+    if (allow && (a.stepUpRequired || a.risk === "HIGH" || a.risk === "CRITICAL")) {
+      const stepUp = await this.opts.stepUp({ aid, risk: a.risk, agentDeviceId: a.agentDeviceId }, { ...base });
+      if (!stepUp) throw new ActionError("step_up_cancelled");
+      body = DecisionBody.parse({ ...base, stepUp });
+    }
     const decision = await this.keys.sign("chalito.decision.v1", body);
     await writeWithRetry(
       "decide",
