@@ -14,7 +14,7 @@ const HERO = showcase("hero-chalito");
 const ROSTER_CARDS = ROSTER.map((r) => ({ name: r.name, asset: showcase(`roster-${r.id}`) }));
 const TRYON = [showcase("tryon-chalito-viking"), showcase("tryon-luna-crown"), showcase("tryon-bruno-cape")];
 const RECHARGE = showcase("recharge-chalito");
-const TOGETHER = showcase("together-tito-canela");
+const ROOM = showcase("room-portal");
 
 /** The public page at / and /en: real renders of the runtime, the plans from plans.yaml, no claims beyond the product. */
 export const Landing = async () => {
@@ -69,7 +69,7 @@ export const Landing = async () => {
       </section>
 
       <section className="grid items-center gap-6 sm:grid-cols-2" aria-labelledby="landing-together">
-        <Render asset={TOGETHER} locale={locale} />
+        <Render asset={ROOM} locale={locale} />
         <div className="grid gap-3">
           <h2 id="landing-together" className="text-2xl font-semibold">
             {t("together.title")}

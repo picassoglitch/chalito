@@ -2,7 +2,7 @@
   "v": 1,
   "generator": "scripts/render-showcase.ts",
   "renderer": "chromium (headless) + SwiftShader, three r186",
-  "source": "fc11abbdeb7297ea9fae1be960185f5bb8127901",
+  "source": "15b89b155e14771bbc05d6d2eb2b99bca75fdedb",
   "assets": [
     {
       "id": "hero-chalito",
@@ -233,29 +233,31 @@
       ]
     },
     {
-      "id": "together-tito-canela",
+      "id": "room-portal",
       "kind": "animated",
-      "file": "showcase/together-tito-canela.webp",
-      "poster": "showcase/together-tito-canela-poster.webp",
+      "file": "showcase/room-portal.webp",
+      "poster": "showcase/room-portal-poster.webp",
       "w": 560,
-      "h": 420,
+      "h": 360,
       "fps": 10,
-      "frames": 30,
-      "seed": 41,
-      "sha256": "1e1456180fd3ec74084aa504af02861598e1a4524b2388ff162191a3b278096c",
-      "posterSha256": "67ce8d280770100a630d821a621d91f0b821742826d54367baf83d95b795b0b1",
+      "frames": 70,
+      "seed": 0,
+      "sha256": "db040bf88f069ac4f803b984f014e19832e0de3b2076239ead1b03b986c45880",
+      "posterSha256": "3877eee269a5fa37f5841bafb444b5d51559d89990f44ae4add1d70ee7c38dae",
       "alt": {
-        "es": "Tito y Canela juntos",
-        "en": "Tito and Canela together"
+        "es": "Luna llega a la sala por el portal y Chalito va a saludarla",
+        "en": "Luna arrives in the room through the portal and Chalito walks over to greet her"
       },
       "actors": [
         {
-          "roster": "tito",
+          "roster": "chalito",
           "cosmetics": []
         },
         {
-          "roster": "canela",
-          "cosmetics": []
+          "roster": "luna",
+          "cosmetics": [
+            "flower_crown"
+          ]
         }
       ]
     }

@@ -64,6 +64,8 @@ jobs:
         run: pnpm check-showcase
         env:
           SHOWCASE_OUT: ${{ runner.temp }}/showcase
+      - name: Room scene at quality bajo draws >= 30 FPS on SwiftShader
+        run: pnpm scene-perf
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
