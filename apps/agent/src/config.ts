@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -9,9 +18,44 @@ import { signLocal, verifyLocal } from "./local-sig.js";
 /** ~/.chalito: config, policy, trusted clients, Developer-mode state and audit. 0700. */
 export const chalitoDir = (home = homedir()): string => join(home, ".chalito");
 
-export const ensureChalitoDir = (dir: string): string => {
+/**
+ * Creates ~/.chalito (0700), and tightens an existing one: mkdir's mode only applies on create,
+ * so a directory made by an older version (or by hand) could be group/world readable. Every
+ * directory inside becomes 0700 and every file 0600; symlinks are left alone (review R-L12).
+ */
+export const ensureChalitoDir = (dir: string, onTightened?: (fixed: number) => void): string => {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") {
+    const fixed = tightenTree(dir);
+    if (fixed > 0) onTightened?.(fixed);
+  }
   return dir;
+};
+
+const tightenTree = (dir: string): number => {
+  let fixed = 0;
+  const fix = (path: string, mode: number) => {
+    const st = lstatSync(path);
+    if (st.isSymbolicLink()) return;
+    if ((st.mode & 0o777) !== mode && (st.mode & 0o077) !== 0) {
+      chmodSync(path, mode);
+      fixed++;
+    }
+  };
+  fix(dir, 0o700);
+  const walk = (d: string, depth: number) => {
+    if (depth > 4) return;
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) {
+        fix(p, 0o700);
+        walk(p, depth + 1);
+      } else if (e.isFile()) fix(p, 0o600);
+    }
+  };
+  walk(dir, 0);
+  return fixed;
 };
 
 /**
