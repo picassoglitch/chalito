@@ -3,11 +3,13 @@ import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { SettingsPanel, type SettingsValues } from "@chalito/ui";
 import { env } from "@/lib/env";
+import { useChalito } from "./ChalitoProvider";
 import { loadSettings, saveSettings } from "@/lib/local";
 
 export const Settings = () => {
   const t = useTranslations("settings");
   const ti = useTranslations("integrations");
+  const { phoneVerifier } = useChalito();
   const [values, setValues] = useState<SettingsValues | null>(null);
   useEffect(() => setValues(loadSettings()), []);
   if (!values) return null;
@@ -24,6 +26,7 @@ export const Settings = () => {
         }}
         providerLabel={(p) => ti(`${p}.name`)}
         hubPlansUrl={env.hubUrl || "#"}
+        phoneVerifier={phoneVerifier}
       />
     </div>
   );

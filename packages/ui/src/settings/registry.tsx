@@ -10,7 +10,7 @@ import {
   RenderQualityField,
   Toggle,
 } from "./fields.js";
-import { chargesApply, type SettingsValues } from "./values.js";
+import { canOptIn, chargesApply, type PhoneVerifier, type SettingsValues } from "./values.js";
 
 /** Where a settings panel is rendered. Every setting renders in both (brief M5 settings parity). */
 export const SHELLS = ["web", "desktop"] as const;
@@ -26,6 +26,8 @@ export interface SettingContext {
   providerLabel: (provider: string) => string;
   /** Where plans and credits are managed: the Chalyb hub. Prices never live in Chalito code. */
   hubPlansUrl: string;
+  /** Sends and checks phone codes (the api in the PWA, a mock in tests). */
+  phoneVerifier: PhoneVerifier;
 }
 
 export interface SettingDef {
@@ -60,16 +62,43 @@ const PlanCredits = ({ ctx }: { ctx: SettingContext }) => {
 
 const PhoneToggle = ({ ctx, k }: { ctx: SettingContext; k: "whatsapp" | "calls" }) => {
   const { t } = useUiText();
+  const allowed = canOptIn(ctx.values);
   return (
     <Toggle
       label={t(`${k}.label`)}
-      hint={ctx.values.phone ? t(`${k}.hint`) : t("needsPhone")}
-      checked={ctx.values[k]}
-      disabled={!ctx.values.phone}
+      hint={!ctx.values.phone.verified ? t("needsPhone") : !ctx.values.chargesAck ? t("needsAck") : t(`${k}.hint`)}
+      checked={ctx.values[k] && allowed}
+      disabled={!allowed}
       onChange={(on) => ctx.set(k, on)}
     >
-      {ctx.values[k] && chargesApply(ctx.values) ? <ChargesNotice /> : null}
+      {ctx.values[k] && allowed && chargesApply(ctx.values) ? <ChargesNotice /> : null}
     </Toggle>
+  );
+};
+
+/** Shown once the phone is verified: the notice plus an explicit "I understand". */
+const ChargesAck = ({ ctx }: { ctx: SettingContext }) => {
+  const { t } = useUiText();
+  if (!ctx.values.phone.verified) return null;
+  return (
+    <div>
+      <ChargesNotice />
+      <label className="mt-2 flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={ctx.values.chargesAck}
+          onChange={(e) => {
+            ctx.set("chargesAck", e.target.checked);
+            // Withdrawing the acknowledgement turns the paid channels off.
+            if (!e.target.checked) {
+              ctx.set("whatsapp", false);
+              ctx.set("calls", false);
+            }
+          }}
+        />
+        <span>{t("chargesAck")}</span>
+      </label>
+    </div>
   );
 };
 
@@ -96,10 +125,11 @@ export const SETTINGS: readonly SettingDef[] = [
     section: "contact",
     render: (ctx) => (
       <Labelled k="phone">
-        <PhoneField value={ctx.values.phone} onChange={(v) => ctx.set("phone", v)} />
+        <PhoneField value={ctx.values.phone} onChange={(v) => ctx.set("phone", v)} verifier={ctx.phoneVerifier} />
       </Labelled>
     ),
   },
+  { key: "chargesAck", section: "contact", render: (ctx) => <ChargesAck ctx={ctx} /> },
   { key: "whatsapp", section: "contact", render: (ctx) => <PhoneToggle ctx={ctx} k="whatsapp" /> },
   { key: "calls", section: "contact", render: (ctx) => <PhoneToggle ctx={ctx} k="calls" /> },
   { key: "callBriefing", section: "contact", render: (ctx) => <PlainToggle ctx={ctx} k="callBriefing" /> },

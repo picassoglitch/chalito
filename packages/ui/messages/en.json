@@ -16,7 +16,10 @@
     "settings": "Settings",
     "onboarding": "Get started",
     "credits": "Credits",
-    "download": "Download"
+    "download": "Download",
+    "inbox": "Inbox",
+    "sessions": "Sessions",
+    "devices": "Devices"
   },
   "home": {
     "title": "Hi, I'm {name}",
@@ -99,7 +102,18 @@
       "country": "Country or region",
       "number": "Number",
       "placeholder": "Your number",
-      "invalid": "That number doesn't look valid for the chosen country."
+      "invalid": "That number doesn't look valid for the chosen country.",
+      "willSend": "We'll text you a code to verify it.",
+      "sendCode": "Send code",
+      "codeSent": "We sent a code to {number}.",
+      "code": "Code",
+      "verify": "Verify",
+      "verified": "{number} verified",
+      "change": "Change number",
+      "wrongCode": "That code isn't right.",
+      "expired": "The code expired. Request a new one.",
+      "rateLimited": "Too many attempts. Wait a moment.",
+      "error": "We couldn't verify the number. Try again later."
     },
     "whatsapp": {
       "label": "WhatsApp alerts",
@@ -160,7 +174,9 @@
       "bajo": "Low",
       "medio": "Medium",
       "alto": "High"
-    }
+    },
+    "needsAck": "First confirm you understand that charges may apply.",
+    "chargesAck": "I understand that charges may apply."
   },
   "integrations": {
     "anthropic": {
@@ -199,5 +215,151 @@
   },
   "pwa": {
     "description": "Your companion that runs your AI team."
+  },
+  "live": {
+    "testMode": "TEST MODE: simulated data, nothing is real.",
+    "gate": {
+      "loading": "Connecting…",
+      "signed_out": "Sign in with your Chalyb account to see your sessions and approvals.",
+      "signIn": "Sign in with Chalyb",
+      "unpaired": "This device isn't paired yet. Pair it from the desktop app to approve and see your sessions.",
+      "error": "We couldn't connect. Try again in a moment.",
+      "revoked": "This device was removed from your account. Pair it again from a trusted device."
+    },
+    "devMode": {
+      "banner": "Developer mode ACTIVE.",
+      "manage": "Turn it off"
+    },
+    "risk": {
+      "LOW": "Low",
+      "MED": "Medium",
+      "HIGH": "High",
+      "CRITICAL": "Critical"
+    },
+    "stepUp": {
+      "title": "Confirm it's you",
+      "body": "This is a {risk}-risk action. Confirm with your fingerprint, face or security key.",
+      "confirm": "Confirm",
+      "cancel": "Cancel"
+    },
+    "approval": {
+      "unknownTool": "Action",
+      "expiresIn": "Expires in",
+      "sealed": "The details are encrypted for another device.",
+      "stepUpNeeded": "Approving asks for your fingerprint, face or security key.",
+      "pending": "Waiting for you",
+      "expired": "Expired: denied",
+      "status": {
+        "approved": "Approved",
+        "denied": "Denied",
+        "expired": "Expired: denied",
+        "rejected_invalid": "Rejected: invalid signature"
+      },
+      "approve": "Approve",
+      "deny": "Deny",
+      "sentAllow": "Approval sent.",
+      "sentDeny": "Denial sent.",
+      "error": {
+        "step_up_cancelled": "Cancelled: nothing was sent.",
+        "expired": "Expired: denied",
+        "not_pending": "Already resolved.",
+        "other": "We couldn't send your answer."
+      },
+      "openSession": "Open the session",
+      "notFound": "We couldn't find that approval.",
+      "loading": "Loading…"
+    },
+    "inbox": {
+      "title": "Inbox",
+      "notifications": "Alerts",
+      "notification": "{count, plural, one {# pending} other {# pending}}",
+      "ack": "Got it",
+      "pending": "To approve ({count})",
+      "empty": "Nothing pending.",
+      "history": "History"
+    },
+    "sessions": {
+      "title": "Sessions",
+      "empty": "No sessions yet.",
+      "state": {
+        "starting": "Starting",
+        "running": "Working",
+        "waiting_approval": "Waiting for approval",
+        "waiting_input": "Waiting for your answer",
+        "idle": "Paused",
+        "completed": "Done",
+        "failed": "Failed",
+        "interrupted": "Interrupted"
+      }
+    },
+    "session": {
+      "notFound": "We couldn't find that session.",
+      "loading": "Loading…",
+      "sealed": "The card is encrypted for another device.",
+      "card": {
+        "lastAction": "Last action",
+        "pendingApprovals": "Pending approvals",
+        "filesTouched": "Files touched",
+        "tests": "Tests",
+        "testsValue": "{passed} passed, {failed} failed",
+        "blockers": "Blockers"
+      },
+      "interrupt": "Interrupt",
+      "resume": "Resume",
+      "mode": "Mode",
+      "modes": {
+        "default": "Ask",
+        "plan": "Plan only",
+        "acceptEdits": "Accept edits"
+      },
+      "prompt": "Message",
+      "promptPlaceholder": "Write to your agent…",
+      "send": "Send",
+      "sent": "Sent.",
+      "interrupted": "Interrupt sent.",
+      "resumed": "Resume sent.",
+      "modeSet": "Mode changed.",
+      "answer": "Answer",
+      "answerSent": "Answer sent.",
+      "untrusted": "That computer isn't paired with this device.",
+      "failed": "We couldn't send it."
+    },
+    "timeline": {
+      "label": "Activity",
+      "type": {
+        "session.started": "Session started",
+        "session.state": "State change",
+        "message.user": "You",
+        "message.assistant": "Agent",
+        "tool.started": "Tool",
+        "tool.finished": "Tool finished",
+        "approval.requested": "Asked for approval",
+        "approval.resolved": "Approval resolved",
+        "question.asked": "Question",
+        "usage": "Usage",
+        "card.updated": "Card",
+        "error": "Error"
+      }
+    },
+    "devices": {
+      "title": "Devices",
+      "role": {
+        "agent": "Computer",
+        "client": "Phone or browser"
+      },
+      "online": "Online",
+      "offline": "Offline",
+      "revoked": "Removed",
+      "devModeOn": "Developer mode ACTIVE ({toggles})",
+      "devModeOff": "Turn Developer mode off",
+      "toggleOff": "Turn off {toggle}",
+      "devModeOffSent": "Done: asked to turn it off.",
+      "revoke": "Remove",
+      "revokeConfirm": "Remove {name}? It won't be able to approve anything.",
+      "revokeYes": "Yes, remove",
+      "cancel": "Cancel",
+      "revokeSent": "Removal sent to your computers.",
+      "failed": "We couldn't send it."
+    }
   }
 }

@@ -16,7 +16,10 @@
     "settings": "Ajustes",
     "onboarding": "Primeros pasos",
     "credits": "Créditos",
-    "download": "Descargar"
+    "download": "Descargar",
+    "inbox": "Bandeja",
+    "sessions": "Sesiones",
+    "devices": "Dispositivos"
   },
   "home": {
     "title": "Hola, soy {name}",
@@ -99,7 +102,18 @@
       "country": "País o región",
       "number": "Número",
       "placeholder": "Tu número",
-      "invalid": "Ese número no parece válido para el país elegido."
+      "invalid": "Ese número no parece válido para el país elegido.",
+      "willSend": "Te enviaremos un código por SMS para verificarlo.",
+      "sendCode": "Enviar código",
+      "codeSent": "Te enviamos un código a {number}.",
+      "code": "Código",
+      "verify": "Verificar",
+      "verified": "{number} verificado",
+      "change": "Cambiar número",
+      "wrongCode": "Ese código no es correcto.",
+      "expired": "El código venció. Pide otro.",
+      "rateLimited": "Demasiados intentos. Espera un momento.",
+      "error": "No pudimos verificar el número. Inténtalo más tarde."
     },
     "whatsapp": {
       "label": "Avisos por WhatsApp",
@@ -160,7 +174,9 @@
       "bajo": "Baja",
       "medio": "Media",
       "alto": "Alta"
-    }
+    },
+    "needsAck": "Primero confirma que entiendes que pueden aplicar cargos.",
+    "chargesAck": "Entiendo que pueden aplicar cargos."
   },
   "integrations": {
     "anthropic": {
@@ -199,5 +215,151 @@
   },
   "pwa": {
     "description": "Tu compañero que dirige a tu equipo de IA."
+  },
+  "live": {
+    "testMode": "MODO DE PRUEBA: datos simulados, nada es real.",
+    "gate": {
+      "loading": "Conectando…",
+      "signed_out": "Entra con tu cuenta de Chalyb para ver tus sesiones y aprobaciones.",
+      "signIn": "Entrar con Chalyb",
+      "unpaired": "Este dispositivo aún no está emparejado. Emparéjalo desde la app de escritorio para aprobar y ver tus sesiones.",
+      "error": "No pudimos conectar. Vuelve a intentarlo en un momento.",
+      "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza."
+    },
+    "devMode": {
+      "banner": "Modo desarrollador ACTIVO.",
+      "manage": "Apagarlo"
+    },
+    "risk": {
+      "LOW": "Bajo",
+      "MED": "Medio",
+      "HIGH": "Alto",
+      "CRITICAL": "Crítico"
+    },
+    "stepUp": {
+      "title": "Confirma que eres tú",
+      "body": "Esta acción es de riesgo {risk}. Confírmala con tu huella, rostro o llave de seguridad.",
+      "confirm": "Confirmar",
+      "cancel": "Cancelar"
+    },
+    "approval": {
+      "unknownTool": "Acción",
+      "expiresIn": "Vence en",
+      "sealed": "Los detalles están cifrados para otro dispositivo.",
+      "stepUpNeeded": "Aprobar pide tu huella, rostro o llave de seguridad.",
+      "pending": "Esperando tu respuesta",
+      "expired": "Expiró: denegada",
+      "status": {
+        "approved": "Aprobada",
+        "denied": "Denegada",
+        "expired": "Expiró: denegada",
+        "rejected_invalid": "Rechazada: firma inválida"
+      },
+      "approve": "Aprobar",
+      "deny": "Denegar",
+      "sentAllow": "Aprobación enviada.",
+      "sentDeny": "Rechazo enviado.",
+      "error": {
+        "step_up_cancelled": "Cancelado: no se envió nada.",
+        "expired": "Expiró: denegada",
+        "not_pending": "Ya se resolvió.",
+        "other": "No pudimos enviar tu respuesta."
+      },
+      "openSession": "Ver la sesión",
+      "notFound": "No encontramos esa aprobación.",
+      "loading": "Cargando…"
+    },
+    "inbox": {
+      "title": "Bandeja",
+      "notifications": "Avisos",
+      "notification": "{count, plural, one {# pendiente} other {# pendientes}}",
+      "ack": "Entendido",
+      "pending": "Por aprobar ({count})",
+      "empty": "Nada pendiente.",
+      "history": "Historial"
+    },
+    "sessions": {
+      "title": "Sesiones",
+      "empty": "Aún no hay sesiones.",
+      "state": {
+        "starting": "Iniciando",
+        "running": "Trabajando",
+        "waiting_approval": "Esperando aprobación",
+        "waiting_input": "Esperando tu respuesta",
+        "idle": "En pausa",
+        "completed": "Terminada",
+        "failed": "Falló",
+        "interrupted": "Interrumpida"
+      }
+    },
+    "session": {
+      "notFound": "No encontramos esa sesión.",
+      "loading": "Cargando…",
+      "sealed": "La tarjeta está cifrada para otro dispositivo.",
+      "card": {
+        "lastAction": "Última acción",
+        "pendingApprovals": "Aprobaciones pendientes",
+        "filesTouched": "Archivos tocados",
+        "tests": "Pruebas",
+        "testsValue": "{passed} bien, {failed} mal",
+        "blockers": "Bloqueos"
+      },
+      "interrupt": "Interrumpir",
+      "resume": "Reanudar",
+      "mode": "Modo",
+      "modes": {
+        "default": "Preguntar",
+        "plan": "Solo planear",
+        "acceptEdits": "Aceptar ediciones"
+      },
+      "prompt": "Mensaje",
+      "promptPlaceholder": "Escribe a tu agente…",
+      "send": "Enviar",
+      "sent": "Enviado.",
+      "interrupted": "Interrupción enviada.",
+      "resumed": "Reanudación enviada.",
+      "modeSet": "Modo cambiado.",
+      "answer": "Responder",
+      "answerSent": "Respuesta enviada.",
+      "untrusted": "Esta computadora no está emparejada con este dispositivo.",
+      "failed": "No pudimos enviarlo."
+    },
+    "timeline": {
+      "label": "Actividad",
+      "type": {
+        "session.started": "Sesión iniciada",
+        "session.state": "Cambio de estado",
+        "message.user": "Tú",
+        "message.assistant": "Agente",
+        "tool.started": "Herramienta",
+        "tool.finished": "Herramienta terminada",
+        "approval.requested": "Pidió aprobación",
+        "approval.resolved": "Aprobación resuelta",
+        "question.asked": "Pregunta",
+        "usage": "Uso",
+        "card.updated": "Tarjeta",
+        "error": "Error"
+      }
+    },
+    "devices": {
+      "title": "Dispositivos",
+      "role": {
+        "agent": "Computadora",
+        "client": "Teléfono o navegador"
+      },
+      "online": "En línea",
+      "offline": "Sin conexión",
+      "revoked": "Retirado",
+      "devModeOn": "Modo desarrollador ACTIVO ({toggles})",
+      "devModeOff": "Apagar modo desarrollador",
+      "toggleOff": "Apagar {toggle}",
+      "devModeOffSent": "Listo: se pidió apagarlo.",
+      "revoke": "Retirar",
+      "revokeConfirm": "¿Retirar {name}? Ya no podrá aprobar nada.",
+      "revokeYes": "Sí, retirar",
+      "cancel": "Cancelar",
+      "revokeSent": "Retiro enviado a tus computadoras.",
+      "failed": "No pudimos enviarlo."
+    }
   }
 }

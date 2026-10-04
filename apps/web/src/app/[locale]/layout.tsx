@@ -4,7 +4,11 @@ import { notFound } from "next/navigation";
 import { hasLocale, NextIntlClientProvider } from "next-intl";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { routing } from "@/i18n/routing";
+import { ChalitoProvider } from "@/components/ChalitoProvider";
+import { DevModeBanner } from "@/components/DevModeBanner";
 import { Nav } from "@/components/Nav";
+import { StepUpHost } from "@/components/StepUpHost";
+import { TestModeBanner } from "@/components/TestModeBanner";
 import { ServiceWorker } from "@/components/ServiceWorker";
 import { UiBridge } from "@/components/UiBridge";
 import "../globals.css";
@@ -40,8 +44,13 @@ export default async function LocaleLayout({
       <body>
         <NextIntlClientProvider>
           <UiBridge>
-            <Nav />
-            <main className="mx-auto max-w-3xl px-4 py-6">{children}</main>
+            <ChalitoProvider>
+              <TestModeBanner />
+              <DevModeBanner />
+              <Nav />
+              <main className="mx-auto max-w-3xl px-4 py-6">{children}</main>
+              <StepUpHost />
+            </ChalitoProvider>
           </UiBridge>
         </NextIntlClientProvider>
         <ServiceWorker />

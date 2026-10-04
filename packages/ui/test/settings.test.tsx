@@ -11,12 +11,25 @@ import {
   type SettingsValues,
 } from "../src/index.js";
 import { renderUi } from "./helpers.js";
+import type { PhoneVerifier } from "../src/index.js";
+
+/** Accepts code 123456 for any number. */
+const mockVerifier = (): PhoneVerifier & { started: string[] } => {
+  const started: string[] = [];
+  return {
+    started,
+    start: async (e164) => (started.push(e164), { ok: true }),
+    check: async (_e164, code) => (code === "123456" ? { ok: true } : { ok: false, reason: "wrong_code" }),
+  };
+};
+const VERIFIED = { e164: "+525512345678", verified: true };
 
 afterEach(cleanup);
 
 /** Every setting the brief lists (M5 "settings parity"). */
 const REQUIRED: SettingKey[] = [
   "phone",
+  "chargesAck",
   "whatsapp",
   "calls",
   "callBriefing",
@@ -36,6 +49,7 @@ const Panel = ({ shell, values = DEFAULT_SETTINGS }: { shell: (typeof SHELLS)[nu
     onChange={() => undefined}
     providerLabel={(p) => p}
     hubPlansUrl="https://hub.example/planes"
+    phoneVerifier={mockVerifier()}
   />
 );
 
@@ -63,22 +77,53 @@ describe("settings registry", () => {
   });
 });
 
-describe("charges notice", () => {
-  it("shows 'Pueden aplicar cargos' / 'Charges may apply' only when WhatsApp or calls are on", () => {
-    const withPhone = { ...DEFAULT_SETTINGS, phone: "+525512345678" };
-    renderUi(<Panel shell="web" values={withPhone} />);
-    expect(screen.queryByTestId("charges-notice")).toBeNull();
+describe("charges notice and opt-ins", () => {
+  it("opt-ins need a verified phone and the charges acknowledgement", () => {
+    renderUi(<Panel shell="web" />);
+    for (const name of [/Avisos por WhatsApp/, /Llamadas/])
+      expect(screen.getByRole("switch", { name }).hasAttribute("disabled")).toBe(true);
     cleanup();
-    renderUi(<Panel shell="web" values={{ ...withPhone, whatsapp: true }} />);
-    expect(screen.getByTestId("charges-notice").textContent).toBe("Pueden aplicar cargos.");
+    renderUi(<Panel shell="web" values={{ ...DEFAULT_SETTINGS, phone: VERIFIED }} />);
+    expect(screen.getByRole("switch", { name: /Llamadas/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByLabelText("Entiendo que pueden aplicar cargos.")).toBeTruthy();
     cleanup();
-    renderUi(<Panel shell="desktop" values={{ ...withPhone, calls: true }} />, "en");
-    expect(screen.getByTestId("charges-notice").textContent).toBe("Charges may apply.");
+    renderUi(<Panel shell="web" values={{ ...DEFAULT_SETTINGS, phone: VERIFIED, chargesAck: true }} />);
+    expect(screen.getByRole("switch", { name: /Llamadas/ }).hasAttribute("disabled")).toBe(false);
   });
 
-  it("WhatsApp and calls stay off until there is a phone", () => {
+  it("shows 'Pueden aplicar cargos' / 'Charges may apply' with a verified phone, and again on each channel that's on", () => {
     renderUi(<Panel shell="web" />);
-    for (const s of screen.getAllByRole("switch").slice(0, 2)) expect((s as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByTestId("charges-notice")).toBeNull();
+    cleanup();
+    const on = { ...DEFAULT_SETTINGS, phone: VERIFIED, chargesAck: true, whatsapp: true };
+    renderUi(<Panel shell="web" values={on} />);
+    expect(screen.getAllByTestId("charges-notice").map((n) => n.textContent)).toEqual([
+      "Pueden aplicar cargos.",
+      "Pueden aplicar cargos.",
+    ]);
+    cleanup();
+    renderUi(<Panel shell="desktop" values={{ ...on, whatsapp: false, calls: true }} />, "en");
+    expect(screen.getAllByTestId("charges-notice")[0]!.textContent).toBe("Charges may apply.");
+  });
+
+  it("withdrawing the acknowledgement turns the paid channels off", () => {
+    const changes: [string, unknown][] = [];
+    renderUi(
+      <SettingsPanel
+        shell="web"
+        values={{ ...DEFAULT_SETTINGS, phone: VERIFIED, chargesAck: true, calls: true }}
+        onChange={(k, v) => changes.push([k, v])}
+        providerLabel={(p) => p}
+        hubPlansUrl="#"
+        phoneVerifier={mockVerifier()}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Entiendo que pueden aplicar cargos."));
+    expect(changes).toEqual([
+      ["chargesAck", false],
+      ["whatsapp", false],
+      ["calls", false],
+    ]);
   });
 });
 
@@ -100,25 +145,45 @@ describe("companion name", () => {
   });
 });
 
-describe("phone", () => {
-  it("accepts any country code and stores E.164 only when valid", () => {
-    let phone: string | null = "unset";
+describe("phone verification", () => {
+  const panel = (verifier: PhoneVerifier, onChange: (k: string, v: unknown) => void) =>
     renderUi(
       <SettingsPanel
         shell="web"
         values={DEFAULT_SETTINGS}
-        onChange={(k, v) => {
-          if (k === "phone") phone = v as string | null;
-        }}
+        onChange={onChange as never}
         providerLabel={(p) => p}
         hubPlansUrl="#"
+        phoneVerifier={verifier}
       />,
     );
+
+  it("any country code; a number becomes verified only after the right code", async () => {
+    const v = mockVerifier();
+    const changes: [string, unknown][] = [];
+    panel(v, (k, val) => changes.push([k, val]));
     fireEvent.change(screen.getByLabelText("País o región"), { target: { value: "JP" } });
     fireEvent.change(screen.getByLabelText("Número"), { target: { value: "090-1234-5678" } });
-    expect(phone).toBe("+819012345678");
+    fireEvent.click(screen.getByRole("button", { name: "Enviar código" }));
+    expect(await screen.findByText("Te enviamos un código a +819012345678.")).toBeTruthy();
+    expect(v.started).toEqual(["+819012345678"]);
+    expect(changes).toEqual([]);
+    fireEvent.change(screen.getByLabelText("Código"), { target: { value: "000000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verificar" }));
+    expect(await screen.findByText("Ese código no es correcto.")).toBeTruthy();
+    expect(changes).toEqual([]);
+    fireEvent.change(screen.getByLabelText("Código"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Verificar" }));
+    expect(await screen.findByTestId("phone-verified")).toBeTruthy();
+    expect(changes).toEqual([["phone", { e164: "+819012345678", verified: true }]]);
+  });
+
+  it("an invalid number never reaches the verifier", async () => {
+    const v = mockVerifier();
+    panel(v, () => undefined);
     fireEvent.change(screen.getByLabelText("Número"), { target: { value: "12" } });
-    expect(phone).toBeNull();
-    expect(screen.getByRole("alert")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Enviar código" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("no parece válido");
+    expect(v.started).toEqual([]);
   });
 });

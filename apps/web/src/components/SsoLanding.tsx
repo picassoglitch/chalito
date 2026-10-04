@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { env } from "@/lib/env";
+import { hubLaunchUrl } from "@/lib/hub";
 import { completeSso } from "@/lib/sso";
 import { supabase } from "@/lib/supabase";
 
@@ -37,8 +38,8 @@ export const SsoLanding = () => {
   return (
     <div className="grid gap-3" role="alert">
       <p>{failed === "missing" ? t("missingToken") : t("failed")}</p>
-      {env.hubUrl ? (
-        <a className="w-fit rounded-lg border px-4 py-2" href={env.hubUrl}>
+      {hubLaunchUrl() ? (
+        <a className="w-fit rounded-lg border px-4 py-2" href={hubLaunchUrl()!}>
           {t("retry")}
         </a>
       ) : null}

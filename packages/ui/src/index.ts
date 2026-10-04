@@ -4,9 +4,11 @@ export { COMPANIONS, DEFAULT_COMPANION, type CompanionId } from "./companions.js
 export {
   DEFAULT_SETTINGS,
   RENDER_QUALITIES,
+  canOptIn,
   chargesApply,
   type ConnectionMode,
   type ConnectionStatus,
+  type PhoneVerifier,
   type RenderQuality,
   type SettingsValues,
 } from "./settings/values.js";

@@ -3,7 +3,7 @@ import { getCountries, getCountryCallingCode, parsePhoneNumberFromString, type C
 import { formatCompanionTitle } from "@chalito/brand";
 import { COMPANIONS, type CompanionId } from "../companions.js";
 import { useUiText } from "../text.js";
-import { RENDER_QUALITIES, type ConnectionStatus, type RenderQuality } from "./values.js";
+import { RENDER_QUALITIES, type ConnectionStatus, type PhoneVerifier, type RenderQuality } from "./values.js";
 
 /** "Pueden aplicar cargos" / "Charges may apply": shown wherever calls, SMS or WhatsApp are on. */
 export const ChargesNotice = () => {
@@ -57,32 +57,120 @@ export const Toggle = ({
   );
 };
 
-/** Any country code (libphonenumber-js metadata); stores E.164 only when valid. */
-export const PhoneField = ({ value, onChange }: { value: string | null; onChange: (e164: string | null) => void }) => {
+type PhoneValue = { e164: string | null; verified: boolean };
+
+/**
+ * Any country code (libphonenumber-js metadata). The flow follows the server rule: the browser
+ * proposes a number, the api sends a code ("Te enviaremos un código"), and only a correct code
+ * makes it verified. Nothing here marks a number verified on its own.
+ */
+export const PhoneField = ({
+  value,
+  onChange,
+  verifier,
+}: {
+  value: PhoneValue;
+  onChange: (v: PhoneValue) => void;
+  verifier: PhoneVerifier;
+}) => {
   const { t, locale } = useUiText();
-  const parsed = value ? parsePhoneNumberFromString(value) : undefined;
+  const parsed = value.e164 ? parsePhoneNumberFromString(value.e164) : undefined;
   const [country, setCountry] = useState<CountryCode>(parsed?.country ?? (locale === "es" ? "MX" : "US"));
   const [national, setNational] = useState(parsed?.nationalNumber ?? "");
-  const [invalid, setInvalid] = useState(false);
+  const [stage, setStage] = useState<"edit" | "code" | "done">(value.verified ? "done" : "edit");
+  const [pending, setPending] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const countryId = useId();
   const numberId = useId();
+  const codeId = useId();
   const names = useMemo(() => new Intl.DisplayNames([locale], { type: "region" }), [locale]);
   const countries = useMemo(
     () => getCountries().sort((a, b) => (names.of(a) ?? a).localeCompare(names.of(b) ?? b, locale)),
     [names, locale],
   );
 
-  const commit = (c: CountryCode, n: string) => {
-    if (!n.trim()) {
-      setInvalid(false);
-      onChange(null);
-      return;
-    }
-    const p = parsePhoneNumberFromString(n, c);
-    const ok = !!p && p.isValid();
-    setInvalid(!ok);
-    onChange(ok ? p.number : null);
+  const send = async () => {
+    const p = parsePhoneNumberFromString(national, country);
+    if (!p || !p.isValid()) return setError(t("phone.invalid"));
+    setBusy(true);
+    setError(null);
+    const r = await verifier.start(p.number);
+    setBusy(false);
+    if (!r.ok)
+      return setError(
+        t(r.reason === "invalid" ? "phone.invalid" : r.reason === "rate_limited" ? "phone.rateLimited" : "phone.error"),
+      );
+    setPending(p.number);
+    setCode("");
+    setStage("code");
   };
+  const check = async () => {
+    if (!pending) return;
+    setBusy(true);
+    setError(null);
+    const r = await verifier.check(pending, code.trim());
+    setBusy(false);
+    if (!r.ok)
+      return setError(
+        t(r.reason === "wrong_code" ? "phone.wrongCode" : r.reason === "expired" ? "phone.expired" : "phone.error"),
+      );
+    onChange({ e164: pending, verified: true });
+    setStage("done");
+  };
+
+  const verifiedNumber = value.verified ? value.e164 : stage === "done" ? pending : null;
+  if (stage === "done" && verifiedNumber)
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <span data-testid="phone-verified">{t("phone.verified", { number: verifiedNumber })}</span>
+        <button
+          type="button"
+          className="rounded-md border px-3 py-1 text-sm"
+          onClick={() => {
+            setStage("edit");
+            setError(null);
+          }}
+        >
+          {t("phone.change")}
+        </button>
+      </div>
+    );
+
+  if (stage === "code")
+    return (
+      <div className="grid gap-2">
+        <p>{t("phone.codeSent", { number: pending ?? "" })}</p>
+        <label htmlFor={codeId}>{t("phone.code")}</label>
+        <input
+          id={codeId}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          className="w-40 rounded-md border px-3 py-2 tracking-widest"
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 8))}
+        />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="rounded-md bg-emerald-700 px-3 py-1 text-white disabled:opacity-50"
+            disabled={busy || code.length < 4}
+            onClick={() => void check()}
+          >
+            {t("phone.verify")}
+          </button>
+          <button type="button" className="rounded-md border px-3 py-1" onClick={() => setStage("edit")}>
+            {t("phone.change")}
+          </button>
+        </div>
+        {error ? (
+          <p role="alert" className="text-sm text-red-700">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    );
 
   return (
     <div className="grid gap-2 sm:grid-cols-[minmax(0,14rem)_1fr]">
@@ -93,11 +181,7 @@ export const PhoneField = ({ value, onChange }: { value: string | null; onChange
         id={countryId}
         className="rounded-md border px-2 py-2"
         value={country}
-        onChange={(e) => {
-          const c = e.target.value as CountryCode;
-          setCountry(c);
-          commit(c, national);
-        }}
+        onChange={(e) => setCountry(e.target.value as CountryCode)}
       >
         {countries.map((c) => (
           <option key={c} value={c}>
@@ -116,15 +200,23 @@ export const PhoneField = ({ value, onChange }: { value: string | null; onChange
         className="rounded-md border px-3 py-2"
         placeholder={t("phone.placeholder")}
         value={national}
-        aria-invalid={invalid}
-        onChange={(e) => {
-          setNational(e.target.value);
-          commit(country, e.target.value);
-        }}
+        aria-invalid={!!error}
+        onChange={(e) => setNational(e.target.value)}
       />
-      {invalid ? (
+      <div className="grid gap-1 sm:col-span-2">
+        <p className="text-sm text-neutral-600">{t("phone.willSend")}</p>
+        <button
+          type="button"
+          className="w-fit rounded-md bg-emerald-700 px-3 py-1 text-white disabled:opacity-50"
+          disabled={busy || !national.trim()}
+          onClick={() => void send()}
+        >
+          {t("phone.sendCode")}
+        </button>
+      </div>
+      {error ? (
         <p role="alert" className="text-sm text-red-700 sm:col-span-2">
-          {t("phone.invalid")}
+          {error}
         </p>
       ) : null}
     </div>

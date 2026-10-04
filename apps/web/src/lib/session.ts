@@ -5,7 +5,7 @@ import { supabase } from "./supabase";
 /** The parts of a Supabase Auth session the shell reads. */
 export interface Session {
   access_token: string;
-  user?: { app_metadata?: Record<string, unknown> };
+  user?: { id?: string; app_metadata?: Record<string, unknown> };
 }
 
 export type SessionState = { status: "loading" } | { status: "signed_out" } | { status: "signed_in"; session: Session };

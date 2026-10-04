@@ -13,6 +13,8 @@ import { Link, useRouter } from "@/i18n/navigation";
 import { env } from "@/lib/env";
 import { loadSettings, markOnboarded, saveSettings } from "@/lib/local";
 import { sessionTier, useSession } from "@/lib/session";
+import { hubLaunchUrl } from "@/lib/hub";
+import { useChalito } from "./ChalitoProvider";
 
 /** One entry per coding agent in providers.yaml, with its official auth paths. */
 export interface AgentOption {
@@ -33,6 +35,7 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
   const ti = useTranslations("integrations");
   const router = useRouter();
   const session = useSession();
+  const { phoneVerifier } = useChalito();
   const [i, setI] = useState(0);
   const [values, setValues] = useState<SettingsValues | null>(null);
   const [billing, setBilling] = useState<BillingMode>("byo");
@@ -59,6 +62,7 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
     shell: "web",
     providerLabel: (p) => ti(`${p}.name`),
     hubPlansUrl: env.hubUrl || "#",
+    phoneVerifier,
   };
 
   return (
@@ -72,8 +76,8 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
         ) : (
           <div className="grid gap-3">
             <p>{t("signIn.body")}</p>
-            {env.hubUrl ? (
-              <a className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white" href={env.hubUrl}>
+            {hubLaunchUrl() ? (
+              <a className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white" href={hubLaunchUrl()!}>
                 {t("signIn.cta")}
               </a>
             ) : null}
@@ -160,7 +164,7 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
         <div className="grid gap-4">
           <p>{t("phone.body")}</p>
           {/* The same registry entries as Ajustes, charges notice included. */}
-          {SETTINGS.filter((s) => s.key === "phone" || s.key === "whatsapp" || s.key === "calls").map((s) => (
+          {SETTINGS.filter((s) => ["phone", "chargesAck", "whatsapp", "calls"].includes(s.key)).map((s) => (
             <div key={s.key} data-setting-key={s.key}>
               {s.render(ctx)}
             </div>
