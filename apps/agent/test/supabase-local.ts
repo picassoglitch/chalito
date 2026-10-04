@@ -87,10 +87,11 @@ export const seedOwner = (owner: string, devices: SeedDevice[], opts: { callBrie
     values ${rows};`);
 };
 
-export const waitFor = async (cond: () => boolean | Promise<boolean>, ms = 15_000) => {
+/** Polls `cond`; on timeout the error carries `explain()` (e.g. the Realtime channel's status log). */
+export const waitFor = async (cond: () => boolean | Promise<boolean>, ms = 15_000, explain?: () => string) => {
   const t0 = Date.now();
   while (!(await cond())) {
-    if (Date.now() - t0 > ms) throw new Error("timeout");
+    if (Date.now() - t0 > ms) throw new Error(`timeout${explain ? `\n${explain()}` : ""}`);
     await new Promise((r) => setTimeout(r, 50));
   }
 };

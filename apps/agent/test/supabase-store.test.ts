@@ -438,3 +438,78 @@ describe("supabasePairingWatcher", () => {
     expect(fake!.channels[0]!.removed).toBe(true);
   });
 });
+
+describe("Realtime auth before join (realtime-js 2.117: setAuth is async)", () => {
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+
+  it("the store doesn't subscribe its channel until setAuth has resolved", async () => {
+    const db = new FakeSupabase();
+    const gate = deferred();
+    const calls: string[] = [];
+    db.realtime = {
+      setAuth: (t?: string | null) => {
+        calls.push(`setAuth:${t ?? "(callback)"}`);
+        return gate.promise;
+      },
+    } as unknown as FakeSupabase["realtime"];
+    const store = new SupabaseStore(db, OWNER, DEV);
+    store.watchCommands(() => undefined);
+    store.watchApproval("a1", () => undefined);
+    await tick();
+    expect(calls).toEqual(["setAuth:(callback)"]);
+    expect(db.channels).toHaveLength(0);
+    gate.resolve();
+    await store.joined();
+    expect(db.channels).toHaveLength(1);
+  });
+
+  it("the pairing watcher awaits setAuth(watch token) before joining", async () => {
+    const gate = deferred();
+    let fake: FakeSupabase | undefined;
+    const w = supabasePairingWatcher(
+      { url: "http://127.0.0.1:54321", publishableKey: "k" },
+      {
+        create: (_u, _k, at) => {
+          fake = new FakeSupabase(at);
+          fake.realtime = { setAuth: () => gate.promise } as unknown as FakeSupabase["realtime"];
+          return fake;
+        },
+      },
+    );
+    const watching = w.watch("watch-jwt", "code_123456789", () => undefined);
+    await tick();
+    expect(fake!.channels).toHaveLength(0);
+    gate.resolve();
+    const stop = await watching;
+    expect(fake!.channels).toHaveLength(1);
+    await stop();
+  });
+
+  it("the cloud awaits setAuth on every refresh", async () => {
+    let n = 0;
+    const order: string[] = [];
+    const cloud = supabaseCloud(
+      { url: "http://127.0.0.1:54321", publishableKey: "k" },
+      apiTokenSource(async () => `jwt-${++n}`),
+      {
+        create: (_u, _k, at) => {
+          const f = new FakeSupabase(at);
+          f.realtime = {
+            setAuth: async (t?: string | null) => {
+              await tick();
+              order.push(`setAuth:${t}`);
+            },
+          } as unknown as FakeSupabase["realtime"];
+          return f;
+        },
+      },
+    );
+    await cloud.refresh();
+    order.push("refreshed");
+    expect(order).toEqual(["setAuth:jwt-1", "refreshed"]);
+  });
+});
