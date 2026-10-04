@@ -42,4 +42,43 @@ describe("release workflow", () => {
   it("checks the unsigned label on every build", () => {
     expect(code).toContain("Unsigned builds are labelled unsigned");
   });
+
+  it("exports a signing variable only when its secret is set (Tauri treats set-but-empty as present)", () => {
+    const names = [
+      "AZURE_CLIENT_ID",
+      "AZURE_CLIENT_SECRET",
+      "AZURE_TENANT_ID",
+      "ARTIFACT_SIGNING_ENDPOINT",
+      "ARTIFACT_SIGNING_ACCOUNT",
+      "ARTIFACT_SIGNING_PROFILE",
+      "APPLE_CERTIFICATE",
+      "APPLE_CERTIFICATE_PASSWORD",
+      "APPLE_SIGNING_IDENTITY",
+      "APPLE_API_ISSUER",
+      "APPLE_API_KEY",
+      "APPIMAGE_SIGN_KEY",
+      "APPIMAGETOOL_SIGN_PASSPHRASE",
+    ];
+    for (const n of names) {
+      // Never mapped straight from a secret or variable into the environment…
+      expect(code).not.toMatch(new RegExp(`\\n\\s+${n}: \\$\\{\\{`));
+      // …only through the step that skips empty values.
+      expect(code).toMatch(new RegExp(`\\n\\s+S_${n}: \\$\\{\\{ (secrets|vars)\\.${n} \\}\\}`));
+    }
+    expect(code).toContain('[ -n "$v" ] || continue');
+  });
+
+  it("macOS: installs the darwin-x64 keyring addon (lockfile-pinned) and smoke-tests both arches before the sidecar", () => {
+    const keyring = code.indexOf("name: darwin-x64 keyring addon (explicit)");
+    const smoke = code.indexOf("name: Smoke the compiled agent");
+    const sidecar = code.indexOf("name: Build the agent sidecar");
+    expect(keyring).toBeGreaterThan(0);
+    expect(keyring).toBeLessThan(smoke);
+    expect(smoke).toBeLessThan(sidecar);
+    const step = code.slice(keyring, smoke);
+    expect(step).toContain("if: matrix.os == 'macos'");
+    expect(step).toContain("pnpm-lock.yaml");
+    expect(step).toMatch(/integrity mismatch/);
+    expect(code.slice(smoke, sidecar)).toContain("arch -x86_64");
+  });
 });
