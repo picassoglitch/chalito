@@ -47,6 +47,6 @@ export const buildDeviceDoc = async (
   devMode: { on: false, toggles: [], since: null },
 });
 
-/** Custom token for a device identity (uid d_<deviceId>). */
+/** Credential for a device identity. */
 export const mintDeviceToken = (deps: Deps, owner: string, deviceId: string, role: "client" | "agent") =>
-  deps.auth.createCustomToken(`d_${deviceId}`, { role, owner, deviceId });
+  deps.identity.mintDevice(owner, deviceId, role);
