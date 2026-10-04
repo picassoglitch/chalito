@@ -593,6 +593,37 @@
       "failed": "We couldn't send it.",
       "noComputers": "You don't have a linked computer yet.",
       "download": "Download Chalito for your computer"
+    },
+    "account": {
+      "title": "Delete my Chalito account",
+      "explain": "Deletes your Chalito companions, sessions, devices and settings. Your Chalyb account doesn't change.",
+      "start": "Delete my account…",
+      "needsPairing": "To ask for this, link this browser as a device.",
+      "needsPasskey": "To ask for this, this device needs a passkey.",
+      "setUpPasskey": "Create a passkey",
+      "what": {
+        "data": "Your Chalito data is deleted: companions, sessions, devices, rooms and settings.",
+        "grace": "You have 7 days to cancel. After that it can't be undone.",
+        "export": "First we prepare a copy of your data for you to download.",
+        "hub": "Your Chalyb account, plan and credits don't change."
+      },
+      "ack": "I understand this deletes my Chalito account.",
+      "confirm": "Confirm with my passkey",
+      "back": "Back",
+      "scheduled": "Your Chalito account will be deleted on {date}.",
+      "countdown": "{days, plural, one {# day} other {# days}} and {hours, plural, one {# hour} other {# hours}} left to cancel.",
+      "cancel": "Cancel the deletion",
+      "download": "Download my data",
+      "loadFailed": "We couldn't check your account. Try again later.",
+      "note": {
+        "cancelled_step_up": "The passkey wasn't confirmed; nothing was requested.",
+        "passkey_required": "This device needs a passkey to ask for this.",
+        "step_up_failed": "The passkey couldn't be verified. Try again.",
+        "already_scheduled": "It was already scheduled.",
+        "failed": "We couldn't do it. Try again.",
+        "cancelled": "Done: your account won't be deleted.",
+        "export_failed": "We couldn't download your data. Try again."
+      }
     }
   },
   "mcp": {

@@ -593,6 +593,37 @@
       "failed": "No pudimos enviarlo.",
       "noComputers": "Aún no tienes una computadora vinculada.",
       "download": "Descargar Chalito para tu computadora"
+    },
+    "account": {
+      "title": "Eliminar mi cuenta de Chalito",
+      "explain": "Borra tus compañeros, sesiones, dispositivos y ajustes de Chalito. Tu cuenta de Chalyb no cambia.",
+      "start": "Eliminar mi cuenta…",
+      "needsPairing": "Para pedirlo, vincula este navegador como dispositivo.",
+      "needsPasskey": "Para pedirlo, este dispositivo necesita una passkey.",
+      "setUpPasskey": "Crear passkey",
+      "what": {
+        "data": "Se borran tus datos de Chalito: compañeros, sesiones, dispositivos, salas y ajustes.",
+        "grace": "Tienes 7 días para cancelarlo. Después no se puede deshacer.",
+        "export": "Antes preparamos una copia de tus datos para que la descargues.",
+        "hub": "Tu cuenta de Chalyb, tu plan y tus créditos no cambian."
+      },
+      "ack": "Entiendo que esto borra mi cuenta de Chalito.",
+      "confirm": "Confirmar con mi passkey",
+      "back": "Volver",
+      "scheduled": "Tu cuenta de Chalito se eliminará el {date}.",
+      "countdown": "Quedan {days, plural, one {# día} other {# días}} y {hours, plural, one {# hora} other {# horas}} para cancelarlo.",
+      "cancel": "Cancelar la eliminación",
+      "download": "Descargar mis datos",
+      "loadFailed": "No pudimos ver el estado de tu cuenta. Inténtalo más tarde.",
+      "note": {
+        "cancelled_step_up": "No se confirmó con la passkey; no se pidió nada.",
+        "passkey_required": "Este dispositivo necesita una passkey para pedirlo.",
+        "step_up_failed": "La passkey no se pudo verificar. Inténtalo de nuevo.",
+        "already_scheduled": "Ya estaba programada.",
+        "failed": "No pudimos hacerlo. Inténtalo de nuevo.",
+        "cancelled": "Listo: tu cuenta ya no se eliminará.",
+        "export_failed": "No pudimos descargar tus datos. Inténtalo de nuevo."
+      }
     }
   },
   "mcp": {

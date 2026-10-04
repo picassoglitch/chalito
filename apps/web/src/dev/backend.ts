@@ -51,6 +51,7 @@ import { confirmStepUp } from "@/components/StepUpHost";
 import { passkeyRef, savePasskeyRef } from "@/lib/keys";
 import { httpStore } from "@/lib/store";
 import { parseUsage, type UsageApi } from "@/lib/usage";
+import { httpAccount } from "@/lib/account";
 import { DEV_CATALOG } from "./catalog";
 import { sealRoomEvent, unwrapKeyring, wrapRoomKeyFor } from "@chalito/rooms";
 import { DEV_MARKER, FakeDb } from "./fake-db";
@@ -1147,6 +1148,43 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     })!;
   };
 
+  // ---- /v1/account/* (apps/api/src/account/routes.ts), simulated -------------------------
+  const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+  let deletion: { status: "scheduled" | "cancelled"; requestedAt: number; dueAt: number } | null = null;
+  const accountFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const method = init?.method ?? "GET";
+    const body = init?.body ? (JSON.parse(String(init.body)) as Row) : {};
+    const answer = (status: number, b: unknown) => new Response(JSON.stringify(b), { status });
+    db.clientWrites.push({ table: "api", op: `${method} ${path.replace(/^\/v1\//, "")}`, row: { ...body } });
+    if (!role()) return answer(401, { error: "unauthorized" });
+    if (path === "/v1/account/deletion" && method === "GET") return answer(200, deletion ?? { status: "none" });
+    if (path === "/v1/account/deletion" && method === "POST") {
+      if (role() !== "client") return answer(403, { error: "forbidden" });
+      if (!passkeyRef()) return answer(403, { error: "passkey_required" });
+      if (!body.stepUp) return answer(401, { error: "step_up_required" });
+      if ((body.stepUp as { id?: unknown }).id !== lastAssertion.value) return answer(401, { error: "step_up_failed" });
+      if (deletion?.status === "scheduled") return answer(409, { error: "already_scheduled" });
+      const at = Date.now();
+      deletion = { status: "scheduled", requestedAt: at, dueAt: at + GRACE_MS };
+      return answer(202, { status: "scheduled", dueAt: deletion.dueAt, exportReady: true });
+    }
+    if (path === "/v1/account/deletion" && method === "DELETE") {
+      if (deletion?.status !== "scheduled") return answer(404, { error: "nothing_scheduled" });
+      deletion = { ...deletion, status: "cancelled" };
+      return answer(200, { status: "cancelled" });
+    }
+    if (path === "/v1/account/export" && method === "GET") {
+      if (!deletion) return answer(404, { error: "no_export" });
+      return new Response(JSON.stringify({ owner: OWNER, users: db.rows("users") }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return answer(404, { error: "not_found" });
+  }) as typeof fetch;
+  const account = httpAccount("http://dev.invalid", async () => db.session?.access_token ?? null, accountFetch);
+
   // ---- /v1/store (apps/api/src/store/routes.ts), simulated ------------------------------
   let balance = 300_000;
   let failNext: "hub_unavailable" | "network" | null = null;
@@ -1411,6 +1449,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     api: () => api,
     usage: () => usage,
     store: () => store,
+    account: () => account,
     endorseWatch,
     saveDeviceKeys,
     trustIntroduced,
