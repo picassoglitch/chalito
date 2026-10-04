@@ -30,14 +30,14 @@ const command = (db: FakeSupabase, id: string) =>
   });
 
 describe("SupabaseStore: realtime (one private channel per device)", () => {
-  it("joins device:<id> privately once, shared by commands and approvals", async () => {
+  it("joins chalito:device:<id> privately once, shared by commands and approvals", async () => {
     const { db, store } = setup();
     store.watchCommands(() => undefined);
     store.watchApproval("a1", () => undefined);
     store.watchApproval("a2", () => undefined);
     await tick();
     expect(db.channels).toHaveLength(1);
-    expect(db.channels[0]).toMatchObject({ topic: `device:${DEV}`, opts: { config: { private: true } } });
+    expect(db.channels[0]).toMatchObject({ topic: `chalito:device:${DEV}`, opts: { config: { private: true } } });
   });
 
   it("a command pointer is read back under RLS and delivered once (no content in the broadcast)", async () => {
@@ -47,8 +47,8 @@ describe("SupabaseStore: realtime (one private channel per device)", () => {
     await tick();
     command(db, "c1");
     const pointer = { table: "commands", op: "insert", key: { target_device_id: DEV, id: "c1" }, cursor: 1 };
-    db.broadcast(`device:${DEV}`, pointer);
-    db.broadcast(`device:${DEV}`, pointer);
+    db.broadcast(`chalito:device:${DEV}`, pointer);
+    db.broadcast(`chalito:device:${DEV}`, pointer);
     await tick();
     expect(got).toEqual([
       ["c1", { env: { ctx: "chalito.command.v1", body: { cid: "c1" } }, fromDeviceId: "dev_phone" }],
@@ -71,57 +71,92 @@ describe("SupabaseStore: realtime (one private channel per device)", () => {
     // Offline: two commands land, no broadcast reaches us.
     command(db, "c2");
     command(db, "c3");
-    db.rejoin(`device:${DEV}`);
+    db.rejoin(`chalito:device:${DEV}`);
     await tick();
     expect(got).toEqual(["early", "c2", "c3"]);
     // A handled (deleted) command isn't redelivered by the next resync.
     await store.deleteCommand("c2");
-    db.rejoin(`device:${DEV}`);
+    db.rejoin(`chalito:device:${DEV}`);
     await tick();
     expect(got).toEqual(["early", "c2", "c3"]);
     expect(db.rows("commands").map((r) => r.id)).toEqual(["early", "c3"]);
   });
 
-  it("an approval decision reaches its watcher once; a decision attached while offline is caught on rejoin", async () => {
+  const decide = (db: FakeSupabase, aid: string, signer: string, decision: unknown) =>
+    db.seed("approval_decisions", { owner: OWNER, aid, signer_device_id: signer, decision });
+  const pointer = (aid: string, signer: string) => ({
+    table: "approval_decisions",
+    op: "insert",
+    key: { aid, signer_device_id: signer },
+  });
+
+  it("decision rows (insert-only, one per signer) reach the watcher once each, in rev order", async () => {
     const { db, store } = setup();
-    db.seed("approvals", { owner: OWNER, aid: "a1", decision: null });
-    db.seed("approvals", { owner: OWNER, aid: "a2", decision: null });
+    const got: [string, unknown][] = [];
+    store.watchApproval("a1", (d) => got.push(["a1", d]));
+    await tick();
+
+    decide(db, "a1", "dev_phone", { sig: "d1" });
+    db.broadcast(`chalito:device:${DEV}`, pointer("a1", "dev_phone"));
+    db.broadcast(`chalito:device:${DEV}`, pointer("a1", "dev_phone"));
+    await tick();
+    // A second signer (e.g. the web client): passed on too; the agent verifies and picks the first valid.
+    decide(db, "a1", "dev_web", { sig: "d2" });
+    db.broadcast(`chalito:device:${DEV}`, pointer("a1", "dev_web"));
+    await tick();
+    expect(got).toEqual([
+      ["a1", { sig: "d1" }],
+      ["a1", { sig: "d2" }],
+    ]);
+    const read = db.ops.filter((o) => o.table === "approval_decisions").at(-1)!;
+    expect(read.filters).toEqual([
+      ["owner", OWNER],
+      ["aid", "a1"],
+    ]);
+  });
+
+  it("decisions inserted while offline arrive on rejoin via rev > last; unwatching stops delivery", async () => {
+    const { db, store } = setup();
     const got: [string, unknown][] = [];
     const stop1 = store.watchApproval("a1", (d) => got.push(["a1", d]));
     store.watchApproval("a2", (d) => got.push(["a2", d]));
     await tick();
-
-    db.rows("approvals")[0]!.decision = { sig: "d1" };
-    db.broadcast(`device:${DEV}`, { table: "approvals", op: "update", key: { aid: "a1" } });
+    decide(db, "a2", "dev_phone", { sig: "offline" });
+    decide(db, "other", "dev_phone", { sig: "not watched" });
+    db.rejoin(`chalito:device:${DEV}`);
     await tick();
-    db.broadcast(`device:${DEV}`, { table: "approvals", op: "update", key: { aid: "a1" } });
-    await tick();
-    expect(got).toEqual([["a1", { sig: "d1" }]]);
+    expect(got).toEqual([["a2", { sig: "offline" }]]);
+    const resync = db.ops.find((o) => o.table === "approval_decisions" && o.filters.length === 1);
+    expect(resync?.filters).toEqual([["owner", OWNER]]);
 
-    // The UPDATE on a2 happens while the socket is down: the cursor wouldn't show it, the re-read does.
-    db.rows("approvals")[1]!.decision = { sig: "d2" };
-    db.rejoin(`device:${DEV}`);
-    await tick();
-    expect(got).toEqual([
-      ["a1", { sig: "d1" }],
-      ["a2", { sig: "d2" }],
-    ]);
-
-    // A replaced decision (e.g. a second, different signature) is passed on; unwatching stops it.
-    db.rows("approvals")[0]!.decision = { sig: "d1b" };
     stop1();
-    db.broadcast(`device:${DEV}`, { table: "approvals", op: "update", key: { aid: "a1" } });
+    decide(db, "a1", "dev_phone", { sig: "late" });
+    db.broadcast(`chalito:device:${DEV}`, pointer("a1", "dev_phone"));
     await tick();
-    expect(got).toHaveLength(2);
+    expect(got).toHaveLength(1);
   });
 
-  it("a decision already attached when the watch starts is delivered", async () => {
+  it("a decision row that exists when the watch starts is delivered", async () => {
     const { db, store } = setup();
-    db.seed("approvals", { owner: OWNER, aid: "a9", decision: { sig: "early" } });
+    decide(db, "a9", "dev_phone", { sig: "early" });
     const got: unknown[] = [];
     store.watchApproval("a9", (d) => got.push(d));
     await tick();
     expect(got).toEqual([{ sig: "early" }]);
+  });
+
+  it("command resync asks only for rev above the last one seen", async () => {
+    const { db, store } = setup();
+    const got: string[] = [];
+    store.watchCommands((id) => got.push(id));
+    command(db, "c1");
+    await tick();
+    command(db, "c2");
+    db.rejoin(`chalito:device:${DEV}`);
+    await tick();
+    expect(got).toEqual(["c1", "c2"]);
+    const resyncs = db.ops.filter((o) => o.table === "commands" && o.op === "select" && o.filters.length === 2);
+    expect(resyncs.length).toBeGreaterThanOrEqual(2);
   });
 
   it("ignores malformed pointers and other tables", async () => {
@@ -135,7 +170,7 @@ describe("SupabaseStore: realtime (one private channel per device)", () => {
       { table: "devices", op: "update", key: {} },
       { table: "commands", op: "insert", key: {} },
     ])
-      db.broadcast(`device:${DEV}`, p);
+      db.broadcast(`chalito:device:${DEV}`, p);
     await tick();
     expect(got).toEqual([]);
   });
@@ -170,7 +205,6 @@ describe("SupabaseStore: writes through the Data API", () => {
       step_up_required: true,
       details_ct: { v: 1 },
       status: "pending",
-      created_at: new Date(T).toISOString(),
       expires_at: new Date(T + 600_000).toISOString(),
     });
     await store.resolveApproval("a1", "approved", "signed", T + 5000);
@@ -289,6 +323,27 @@ describe("SupabaseStore: writes through the Data API", () => {
     expect(db.rows("call_lines")).toHaveLength(0);
   });
 
+  it("rate-limited writes (PT429) back off exponentially and succeed; exhausting retries throws", async () => {
+    const db = new FakeSupabase();
+    const sleeps: number[] = [];
+    const store = new SupabaseStore(db, OWNER, DEV, {
+      retry: { baseMs: 100, attempts: 3 },
+      sleep: async (ms) => void sleeps.push(ms),
+    });
+    db.failNext("chalito: rate limit for dev on audit", "PT429", 2);
+    await store.audit({ eid: "r1", t: T, type: "x", meta: {}, source: "agent" });
+    expect(db.rows("audit")).toHaveLength(1);
+    expect(sleeps).toHaveLength(2);
+    expect(sleeps[0]).toBeGreaterThanOrEqual(75);
+    expect(sleeps[1]).toBeGreaterThanOrEqual(150);
+
+    db.failNext("chalito: rate limit", "PT429", 10);
+    await expect(store.audit({ eid: "r2", t: T, type: "x", meta: {}, source: "agent" })).rejects.toMatchObject({
+      code: "PT429",
+    });
+    expect(sleeps).toHaveLength(5);
+  });
+
   it("RLS and constraint errors surface as SupabaseError with the Postgres code", async () => {
     const { db, store } = setup();
     db.failNext("new row violates row-level security policy", "42501");
@@ -356,7 +411,7 @@ describe("supabasePairingWatcher", () => {
     expires_at: new Date(T + 60_000).toISOString(),
   };
 
-  it("joins pairing:<code> with the watch token and maps the row to PairingCodeDoc", async () => {
+  it("joins chalito:pairing:<code> with the watch token and maps the row to PairingCodeDoc", async () => {
     let fake: FakeSupabase | undefined;
     const w = supabasePairingWatcher(
       { url: "http://127.0.0.1:54321", publishableKey: "k" },
@@ -365,9 +420,16 @@ describe("supabasePairingWatcher", () => {
     const docs: Record<string, unknown>[] = [];
     const stop = await w.watch("watch-jwt", "code_123456789", (d) => docs.push(d));
     expect(await fake!.accessToken!()).toBe("watch-jwt");
-    expect(fake!.channels[0]).toMatchObject({ topic: "pairing:code_123456789", opts: { config: { private: true } } });
+    expect(fake!.channels[0]).toMatchObject({
+      topic: "chalito:pairing:code_123456789",
+      opts: { config: { private: true } },
+    });
     fake!.seed("pairing_codes", row);
-    fake!.broadcast("pairing:code_123456789", { table: "pairing_codes", op: "update", key: { code_id: row.code_id } });
+    fake!.broadcast("chalito:pairing:code_123456789", {
+      table: "pairing_codes",
+      op: "update",
+      key: { code_id: row.code_id },
+    });
     await tick();
     expect(docs.length).toBeGreaterThan(0);
     expect(docs.at(-1)).toMatchObject({ codeId: row.code_id, claimed: true, owner: OWNER, expiresAt: T + 60_000 });

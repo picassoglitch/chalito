@@ -62,7 +62,13 @@ const waitFor = async (cond: () => boolean | Promise<boolean>, ms = 5000) => {
   }
 };
 
-afterAll(async () => Promise.all(apps.map((a) => deleteApp(a))));
+// Listeners and running sessions must stop before their app goes away, or a snapshot callback
+// lands on a terminated Firestore ("Firestore shutting down") and the next test times out.
+const cleanups: (() => unknown)[] = [];
+afterAll(async () => {
+  for (const c of cleanups.reverse()) await Promise.resolve(c()).catch(() => undefined);
+  await Promise.all(apps.map((a) => deleteApp(a)));
+});
 
 describe("agent over Firestore (emulator, real rules)", () => {
   it("receives a signed command, requests an approval and runs the tool after the phone's signed decision", async () => {
@@ -129,7 +135,16 @@ describe("agent over Firestore (emulator, real rules)", () => {
       log: createLogger(() => undefined),
     });
     const handled: string[] = [];
-    store.watchCommands((id, d) => void core.handleCommand(id, d).then((r) => handled.push(`${id}:${r.ok}`)));
+    const stopCommands = store.watchCommands(
+      (id, d) => void core.handleCommand(id, d).then((r) => handled.push(`${id}:${r.ok}`)),
+    );
+    cleanups.push(async () => {
+      stopCommands();
+      for (const sess of core.sessions.values()) {
+        sess.handle.close();
+        await sess.handle.done.catch(() => undefined);
+      }
+    });
 
     // The phone sends a signed session.start through Firestore.
     const body = {
