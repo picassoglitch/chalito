@@ -1,3 +1,4 @@
+import { PostgresNotifyOutbox } from "./notify-outbox.js";
 import { installConsoleRedaction, redact, redactDeep } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { GoogleAuth } from "google-auth-library";
@@ -126,6 +127,16 @@ const app = createApp(
     tasks: { email: env("TASKS_SA_EMAIL"), audience: `${base}/tasks/tick`, queueName: env("TASKS_QUEUE") },
     twilioAuthToken: env("TWILIO_AUTH_TOKEN"),
     drain: { audience: `${base}/tasks/drain-usage`, email: env("SCHEDULER_SA_EMAIL") },
+    // The database's notify outbox: pg_net pokes (HMAC) and the per-minute drain (OIDC).
+    ...(process.env.NOTIFY_POKE_SECRET
+      ? {
+          notify: {
+            store: new PostgresNotifyOutbox(sql),
+            pokeSecret: env("NOTIFY_POKE_SECRET"),
+            drain: { audience: `${base}/tasks/drain-notify`, email: env("SCHEDULER_SA_EMAIL") },
+          },
+        }
+      : {}),
     metaAppSecret: env("META_APP_SECRET"),
     metaVerifyToken: env("META_VERIFY_TOKEN"),
     ...(process.env.REALTIME_SIP_URI
