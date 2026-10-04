@@ -10,8 +10,7 @@ import {
   type ChalitoClient,
   type StepUpProvider,
 } from "@chalito/client";
-import { DeviceClientKeys, KeyVault, httpApi, passkeyStepUp } from "@chalito/client-keys";
-import { deviceLogin } from "./device-login.js";
+import { DeviceClientKeys, KeyVault, deviceLogin, httpApi, passkeyStepUp } from "@chalito/client-keys";
 import { enrollDesktop, unavailableEndorsement, type EndorsementChannel } from "./enrollment.js";
 import { SignInController } from "./sign-in.js";
 import { SsoFlow, exchange } from "./sso.js";

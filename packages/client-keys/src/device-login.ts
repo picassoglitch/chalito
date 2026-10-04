@@ -1,5 +1,6 @@
-import type { ApiClient, DeviceSigner } from "@chalito/client-keys";
 import { DeviceTokenResponse, RefreshChallengeBody } from "@chalito/protocol";
+import type { ApiClient } from "./api.js";
+import type { DeviceSigner } from "./webauthn.js";
 
 const nonce = () =>
   btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))))
@@ -8,9 +9,10 @@ const nonce = () =>
     .replace(/=+$/, "");
 
 /**
- * After enrolment the panel signs in as ITSELF (its own Supabase Auth user, like the agent):
- * a signed refresh challenge at /v1/devices/token returns a magic-link hash. For
- * `connect({ signIn: { kind: "device", deviceId, login } })`.
+ * A trusted client signs in as ITSELF (its own Supabase Auth user, like the agent): a signed
+ * refresh challenge at /v1/devices/token (no bearer: the signature is the authentication)
+ * returns a magic-link hash. For `connect({ signIn: { kind: "device", deviceId, login } })`,
+ * with `httpApi({ baseUrl, token: async () => null })`.
  */
 export const deviceLogin =
   (api: ApiClient, signer: DeviceSigner, owner: string, now: () => number = Date.now) =>

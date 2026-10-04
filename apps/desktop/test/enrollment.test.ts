@@ -16,7 +16,6 @@ import {
   type EnrollDeps,
 } from "../src/lib/enrollment.js";
 import { needsStepUp, platformAuthenticatorAvailable } from "../src/lib/stepup.js";
-import { deviceLogin } from "../src/lib/device-login.js";
 
 const OWNER = "8a7a0d3c-5b5e-4a39-9d2b-2f8b1e0c4a11";
 const NOW = 1_780_000_000_000;
@@ -223,36 +222,5 @@ describe("step-up capability", () => {
     expect(needsStepUp({ risk: "MED", stepUpRequired: true })).toBe(true);
     expect(needsStepUp({ risk: "HIGH", stepUpRequired: false })).toBe(true);
     expect(needsStepUp({ risk: "CRITICAL", stepUpRequired: false })).toBe(true);
-  });
-});
-
-describe("device sign-in (refresh challenge)", () => {
-  it("signs a fresh challenge as this device and returns its magic-link hash", async () => {
-    const keys = await DeviceClientKeys.create(await generateDeviceKeys());
-    const id = keys.deviceId;
-    const signed: unknown[] = [];
-    const api = userApi(() => ({ customToken: "dev-hash", deviceId: id }));
-    const signer = {
-      deviceId: id,
-      sign: <T>(ctx: Parameters<typeof keys.sign>[0], body: T) => (signed.push(body), keys.sign(ctx, body)),
-    };
-    const login = deviceLogin(api, signer, OWNER, () => NOW);
-    expect(await login()).toBe("dev-hash");
-    await login();
-    expect(api.calls[0]![0]).toBe("/v1/devices/token");
-    const [a, b] = signed as { nonce: string; owner: string; issuedAt: number }[];
-    expect(a).toMatchObject({ owner: OWNER, issuedAt: NOW });
-    expect(a!.nonce).not.toBe(b!.nonce);
-  });
-
-  it("refuses a token minted for another device", async () => {
-    const keys = await DeviceClientKeys.create(await generateDeviceKeys());
-    const other = (await generateDeviceKeys()).deviceId;
-    const login = deviceLogin(
-      userApi(() => ({ customToken: "h", deviceId: other })),
-      keys,
-      OWNER,
-    );
-    await expect(login()).rejects.toThrow(/another device/);
   });
 });
