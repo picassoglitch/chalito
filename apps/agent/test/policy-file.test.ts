@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { generateSigningKeyPair } from "@chalito/crypto";
+import { AnchorStore } from "../src/anchor.js";
+import { MemorySecretStore } from "../src/secrets.js";
 import { DENY_ALL_POLICY, FilePolicyHolder, parsePolicyYaml, policyToYaml } from "../src/policy-file.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
 
@@ -129,5 +131,73 @@ describe("FilePolicyHolder", () => {
     const res = parsePolicyYaml("version: 1\napprovals: { ttlSeconds: 5 }\n");
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/approvals\.ttlSeconds/);
+  });
+});
+
+describe("policy.lock rollback (seq + keychain anchor)", () => {
+  const lockOf = (dir: string) => JSON.parse(readFileSync(join(dir, "policy.lock"), "utf8"));
+
+  it("every seal bumps seq and chains prevHash; the anchor follows", async () => {
+    const dir = fresh();
+    const anchor = await new AnchorStore(new MemorySecretStore()).load();
+    const h = new FilePolicyHolder(dir, KEYS, { anchor });
+    expect(lockOf(dir)).toMatchObject({ seq: 1, prevHash: "0".repeat(64) });
+    await h.set(withWs(DEFAULT_POLICY), "local");
+    expect(lockOf(dir)).toMatchObject({ seq: 2, prevHash: policyHash(DEFAULT_POLICY) });
+    expect(anchor.policy()).toEqual({ seq: 2, hash: policyHash(withWs(DEFAULT_POLICY)) });
+  });
+
+  it("an older signed lock + yaml restored from a backup is refused → deny-all", async () => {
+    const dir = fresh();
+    const secrets = new MemorySecretStore();
+    const h = new FilePolicyHolder(dir, KEYS, { anchor: await new AnchorStore(secrets).load() });
+    await h.set(withWs(DEFAULT_POLICY), "local");
+    const backupLock = readFileSync(h.lockFile, "utf8");
+    const backupYaml = readFileSync(h.file, "utf8");
+    // A phone tightens: drop the workspace's adapters.
+    await h.set({ ...withWs(DEFAULT_POLICY), adapters: { claudeCode: false, codex: false } }, "remote_tighten");
+    await h.flush();
+
+    writeFileSync(h.lockFile, backupLock);
+    writeFileSync(h.file, backupYaml);
+    const tampers: unknown[] = [];
+    const restarted = new FilePolicyHolder(dir, KEYS, {
+      anchor: await new AnchorStore(secrets).load(),
+      onTamper: (i) => void tampers.push(i),
+    });
+    expect(restarted.tamperReason).toBe("rollback");
+    expect(restarted.get()).toEqual(DENY_ALL_POLICY);
+    expect(tampers).toHaveLength(1);
+  });
+
+  it("a running holder refuses a lower seq on reload (in-memory high-water mark), even without an anchor", async () => {
+    const dir = fresh();
+    const h = new FilePolicyHolder(dir, KEYS);
+    await h.set(withWs(DEFAULT_POLICY), "local");
+    const old = { lock: readFileSync(h.lockFile, "utf8"), yaml: readFileSync(h.file, "utf8") };
+    await h.set({ ...withWs(DEFAULT_POLICY), approvals: { ttlSeconds: 60 } }, "local");
+    writeFileSync(h.lockFile, old.lock);
+    writeFileSync(h.file, old.yaml);
+    expect(await h.reload()).toBe(false);
+    expect(h.tamperReason).toBe("rollback");
+    expect(h.get().approvals.ttlSeconds).toBe(60);
+  });
+
+  it("with no anchor in the keychain only a first (seq ≤ 1) lock is accepted", async () => {
+    const dir = fresh();
+    const h = new FilePolicyHolder(dir, KEYS);
+    await h.set(withWs(DEFAULT_POLICY), "local");
+    const fresh2 = new FilePolicyHolder(dir, KEYS, { anchor: await new AnchorStore(new MemorySecretStore()).load() });
+    expect(fresh2.tamperReason).toBe("rollback");
+  });
+
+  it("a newer lock from another process (CLI) is accepted and moves the anchor", async () => {
+    const dir = fresh();
+    const secrets = new MemorySecretStore();
+    const daemon = new FilePolicyHolder(dir, KEYS, { anchor: await new AnchorStore(secrets).load() });
+    const cli = new FilePolicyHolder(dir, KEYS, { anchor: await new AnchorStore(secrets).load() });
+    await cli.set(withWs(DEFAULT_POLICY), "local");
+    expect(await daemon.reload()).toBe(true);
+    expect(daemon.seq).toBe(2);
   });
 });

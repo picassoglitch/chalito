@@ -2,9 +2,20 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigError, configPath, envLocale, isPaired, readConfig, requirePaired, writeConfig } from "../src/config.js";
+import { generateSigningKeyPair } from "@chalito/crypto";
+import {
+  ConfigError,
+  ConfigTamperedError,
+  configPath,
+  envLocale,
+  isPaired,
+  readConfig,
+  requirePaired,
+  writeConfig,
+} from "../src/config.js";
 
 const DEVICE = `dev_${"a".repeat(22)}`;
+const KEYS = await generateSigningKeyPair();
 const ENDPOINTS = {
   apiBase: "https://api.chalito.test/",
   firebase: { projectId: "demo-chalito", apiKey: "AIzaTest" },
@@ -58,15 +69,33 @@ describe("config.json", () => {
     expect(() => readConfig(dir, {})).toThrow(/deviceId/);
   });
 
-  it("writes atomically with mode 0600 and round-trips a paired config", () => {
+  it("writes atomically with mode 0600, signed, and round-trips a paired config", () => {
     const dir = join(mkdtempSync(join(tmpdir(), "chalito-cfg-")), ".chalito");
     const c = { ...readConfigFrom(ENDPOINTS), owner: "hub-user-1", deviceId: DEVICE };
-    writeConfig(dir, c);
+    writeConfig(dir, c, KEYS);
+    expect(readConfig(dir, {}, { keys: KEYS })).toMatchObject({ owner: "hub-user-1" });
     expect(statSync(configPath(dir)).mode & 0o777).toBe(0o600);
     expect(statSync(dir).mode & 0o777).toBe(0o700);
     const back = readConfig(dir, {});
     expect(requirePaired(back)).toMatchObject({ owner: "hub-user-1", deviceId: DEVICE });
     expect(JSON.parse(readFileSync(configPath(dir), "utf8")).locale).toBe("es");
+  });
+
+  it("with keys, an unsigned or edited config.json is refused (claude path, endpoints)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
+    const pinned = { path: "/home/u/.local/share/claude/versions/2.1/claude", sha256: "a".repeat(64) };
+    writeConfig(dir, { ...readConfigFrom(ENDPOINTS), owner: "u1", deviceId: DEVICE, claude: pinned }, KEYS);
+    const raw = JSON.parse(readFileSync(configPath(dir), "utf8"));
+    writeFileSync(configPath(dir), JSON.stringify({ ...raw, claude: { ...pinned, path: "/tmp/evil" } }));
+    expect(() => readConfig(dir, {}, { keys: KEYS })).toThrow(ConfigTamperedError);
+    // Without keys (CLI locale, pre-pair) it still reads.
+    expect(readConfig(dir, {}).claude?.path).toBe("/tmp/evil");
+
+    writeFileSync(configPath(dir), JSON.stringify({ ...ENDPOINTS }));
+    expect(() => readConfig(dir, {}, { keys: KEYS })).toThrow(ConfigTamperedError);
+    const other = await generateSigningKeyPair();
+    writeConfig(dir, { ...readConfigFrom(ENDPOINTS), owner: "u1", deviceId: DEVICE }, other);
+    expect(() => readConfig(dir, {}, { keys: KEYS })).toThrow(ConfigTamperedError);
   });
 
   it("envLocale: en only when the environment says so", () => {

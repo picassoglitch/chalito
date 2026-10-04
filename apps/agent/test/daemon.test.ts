@@ -1,12 +1,14 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { verifyEnvelope, type SignedEnvelope } from "@chalito/crypto";
 import type { Cloud, FetchFn } from "../src/cloud.js";
-import { chalitoDir, writeConfig, readConfig, configPath } from "../src/config.js";
+import { pinClaude } from "../src/claude-pin.js";
+import { ConfigTamperedError, chalitoDir, writeConfig, readConfig, configPath } from "../src/config.js";
 import {
   CLAUDE_MISSING,
+  CLAUDE_PIN_FAILED,
   OnboardingError,
   TOKEN_REFRESH_MS,
   defaultAdapters,
@@ -21,7 +23,7 @@ import { MemoryStore } from "../src/store.js";
 
 const NOW = 1_790_000_000_000;
 
-const setup = async (opts: { paired?: boolean; claude?: "path" | "config" | "missing"; apiKey?: boolean } = {}) => {
+const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; apiKey?: boolean } = {}) => {
   const home = mkdtempSync(join(tmpdir(), "chalito-daemon-"));
   const dir = chalitoDir(home);
   const secrets = new MemorySecretStore();
@@ -33,6 +35,12 @@ const setup = async (opts: { paired?: boolean; claude?: "path" | "config" | "mis
   const claude = join(bin, "claude");
   writeFileSync(claude, "#!/bin/sh\n");
   chmodSync(claude, 0o755);
+  // A different `claude` first on PATH: the daemon must never pick it up.
+  const evilBin = join(home, "evil");
+  mkdirSync(evilBin);
+  writeFileSync(join(evilBin, "claude"), "#!/bin/sh\necho pwned\n");
+  chmodSync(join(evilBin, "claude"), 0o755);
+  const pin = await pinClaude(claude);
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -40,12 +48,16 @@ const setup = async (opts: { paired?: boolean; claude?: "path" | "config" | "mis
     JSON.stringify({ apiBase: "https://api.test", firebase: { projectId: "demo", apiKey: "k" } }),
   );
   if (opts.paired !== false)
-    writeConfig(dir, {
-      ...readConfig(dir, {}),
-      owner: "hub-user-1",
-      deviceId: id.deviceId,
-      ...(opts.claude === "config" ? { claudePath: claude } : {}),
-    });
+    writeConfig(
+      dir,
+      {
+        ...readConfig(dir, {}),
+        owner: "hub-user-1",
+        deviceId: id.deviceId,
+        ...(opts.claude === "missing" ? {} : { claude: pin }),
+      },
+      id.sign,
+    );
 
   const tokens: string[] = [];
   const challenges: SignedEnvelope<{ owner: string; deviceId: string; nonce: string }>[] = [];
@@ -67,7 +79,7 @@ const setup = async (opts: { paired?: boolean; claude?: "path" | "config" | "mis
   const adapterInputs: { apiKey: string | null; claudePath: string }[] = [];
   const deps: DaemonDeps = {
     home,
-    env: { PATH: opts.claude === "path" || opts.claude === undefined ? bin : join(home, "nowhere") },
+    env: { PATH: `${evilBin}:${bin}` },
     secrets,
     fetch,
     cloud: () => cloud,
@@ -90,7 +102,7 @@ const setup = async (opts: { paired?: boolean; claude?: "path" | "config" | "mis
     logs,
     refreshers,
     adapterInputs,
-    claude,
+    claude: pin.path,
     closed: () => closed,
   };
 };
@@ -172,26 +184,57 @@ describe("chalito run (daemon)", () => {
     expect(s.logs.find((l) => l.msg === "agent.stopping")).toMatchObject({ reason: "SIGTERM" });
   });
 
-  it("uses the configured claudePath when set", async () => {
-    const s = await setup({ claude: "config" });
+  it("runs exactly the pinned Claude Code, never what PATH finds first", async () => {
+    const s = await setup();
     const d = await runDaemon(s.deps);
     expect(s.adapterInputs[0]!.claudePath).toBe(s.claude);
+    expect(s.adapterInputs[0]!.claudePath).not.toContain("evil");
     await d.stop();
   });
 
-  it("without a `claude` binary it fails at startup with the onboarding message, before touching the cloud", async () => {
+  it("with no pinned `claude` it fails at startup with the onboarding message, before touching the cloud", async () => {
     const s = await setup({ claude: "missing" });
     await expect(runDaemon(s.deps)).rejects.toBeInstanceOf(OnboardingError);
     await expect(runDaemon(s.deps)).rejects.toThrow(CLAUDE_MISSING.es);
     expect(CLAUDE_MISSING.es).toContain("https://code.claude.com/docs/en/setup");
+    expect(CLAUDE_MISSING.es).toContain("chalito claude pin");
     expect(s.challenges).toHaveLength(0);
   });
 
-  it("a configured claudePath that doesn't exist is also an onboarding error", async () => {
-    const s = await setup({ claude: "config" });
-    const cfg = readConfig(s.dir, {});
-    writeConfig(s.dir, { ...cfg, claudePath: join(s.home, "gone", "claude") });
-    await expect(runDaemon(s.deps)).rejects.toBeInstanceOf(OnboardingError);
+  it("a pinned binary that changed (hash), vanished or became world-writable is an onboarding error", async () => {
+    const changed = await setup();
+    writeFileSync(changed.claude, "#!/bin/sh\necho swapped\n");
+    await expect(runDaemon(changed.deps)).rejects.toThrow(CLAUDE_PIN_FAILED.es("hash_mismatch"));
+    expect(CLAUDE_PIN_FAILED.en("hash_mismatch")).toBe(
+      "Claude Code updated itself: run `chalito claude pin` again in a terminal to trust the new version.",
+    );
+
+    const gone = await setup();
+    rmSync(gone.claude);
+    await expect(runDaemon(gone.deps)).rejects.toBeInstanceOf(OnboardingError);
+
+    const writable = await setup();
+    chmodSync(writable.claude, 0o777);
+    await expect(runDaemon(writable.deps)).rejects.toThrow(/cualquiera puede modificarlo/);
+    expect(writable.challenges).toHaveLength(0);
+  });
+
+  it("an edited config.json (e.g. another claude path) is refused", async () => {
+    const s = await setup();
+    const raw = JSON.parse(readFileSync(configPath(s.dir), "utf8"));
+    writeFileSync(configPath(s.dir), JSON.stringify({ ...raw, claude: { ...raw.claude, path: "/tmp/evil" } }));
+    await expect(runDaemon(s.deps)).rejects.toBeInstanceOf(ConfigTamperedError);
+    expect(s.challenges).toHaveLength(0);
+  });
+
+  it("gives the core the classifier extras: agent binaries, protected files, Claude's PATH dirs", async () => {
+    const s = await setup();
+    const d = await runDaemon(s.deps);
+    const x = d.classifyExtras();
+    expect(x.protectedPaths).toContain(s.claude);
+    expect(x.pathDirs).toEqual([join(s.home, "evil"), join(s.home, "bin")]);
+    for (const b of x.agentBinaries) expect(b).not.toMatch(/(^|\/)(node|nodejs|bun|tsx)$/);
+    await d.stop();
   });
 
   it("a missing Anthropic key is logged clearly but doesn't stop the agent", async () => {
@@ -210,7 +253,7 @@ describe("chalito run (daemon)", () => {
     const s = await setup();
     await runDaemon({ ...s.deps, secrets: new MemorySecretStore() }).then(
       () => expect.unreachable(),
-      (err: Error) => expect(err.message).toMatch(/doesn't match the paired device/),
+      (err: Error) => expect(err.message).toMatch(/doesn't match the paired device|signature doesn't match/),
     );
   });
 

@@ -1,9 +1,11 @@
+import { existsSync } from "node:fs";
 import { hostname as osHostname } from "node:os";
 import { TrustedClientList, deriveDeviceId, fingerprint, fromB64url, randomNonce } from "@chalito/crypto";
 import { signGlyph } from "@chalito/glyph";
 import { CreatePairingCodeResponse, PAIRING_TTL_MS, PairingCodeDoc } from "@chalito/protocol";
 import { firebasePairingWatcher, postJson, type FetchFn, type PairingWatcher } from "./cloud.js";
-import { readConfig, writeConfig } from "./config.js";
+import { ConfigTamperedError, readConfig, writeConfig } from "./config.js";
+import type { OsAuth } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import type { SecretStore } from "./secrets.js";
 import { TrustStore } from "./trust-store.js";
@@ -20,6 +22,11 @@ const COPY = {
     rejected:
       "No se agregó nada. Si no reconoces ese teléfono, revoca esta computadora desde un teléfono de confianza.\n",
     expired: "El código venció. Ejecuta `chalito pair` otra vez.\n",
+    authFailed: "La autenticación del sistema falló. No se emparejó nada.\n",
+    replaceWarn: (from: string | null, to: string) =>
+      `\nATENCIÓN: esto reemplaza la cuenta de esta computadora (${from ?? "desconocida"} → ${to}) y borra los teléfonos de confianza actuales.\n`,
+    replacePrompt: 'Escribe "REEMPLAZAR" para continuar: ',
+    replacePhrase: "REEMPLAZAR",
   },
   en: {
     code: (c: string) => `\nOn your phone, open Chalito → Add computer and scan the glyph or type:\n\n    ${c}\n\n`,
@@ -30,6 +37,11 @@ const COPY = {
     paired: "Done: this computer trusts your phone. Install the service with `chalito service install`.\n",
     rejected: "Nothing was added. If you don't recognise that phone, revoke this computer from a trusted phone.\n",
     expired: "The code expired. Run `chalito pair` again.\n",
+    authFailed: "OS authentication failed. Nothing was paired.\n",
+    replaceWarn: (from: string | null, to: string) =>
+      `\nWARNING: this replaces this computer's account (${from ?? "unknown"} → ${to}) and removes the current trusted phones.\n`,
+    replacePrompt: 'Type "REPLACE" to continue: ',
+    replacePhrase: "REPLACE",
   },
 } as const;
 
@@ -41,6 +53,10 @@ export interface PairDeps {
   watcher?: PairingWatcher;
   /** Local y/N for the reverse fingerprint check. */
   confirm: (question: string) => Promise<boolean>;
+  /** Asks the user to type `phrase` exactly; used before replacing an account or trust list. */
+  confirmTyped: (question: string, phrase: string) => Promise<boolean>;
+  /** OS user authentication; pairing decides who can control this computer. */
+  osAuth: OsAuth;
   out: (s: string) => void;
   now?: () => number;
   hostname?: string;
@@ -50,7 +66,7 @@ export interface PairDeps {
 
 export type PairResult =
   | { ok: true; owner: string; deviceId: string; phoneDeviceId: string }
-  | { ok: false; reason: "expired" | "rejected_locally" | "bad_claim" };
+  | { ok: false; reason: "expired" | "rejected_locally" | "bad_claim" | "os_auth_failed" | "replace_declined" };
 
 const PLATFORMS: Partial<Record<NodeJS.Platform, "linux" | "windows" | "macos">> = {
   linux: "linux",
@@ -71,7 +87,23 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
   const platform = PLATFORMS[deps.platform ?? process.platform];
   if (!platform) throw new Error(`unsupported platform ${deps.platform ?? process.platform}`);
 
+  if (!(await deps.osAuth.verify("Chalito: emparejar esta computadora"))) {
+    deps.out(c.authFailed);
+    return { ok: false, reason: "os_auth_failed" };
+  }
   const id = await loadOrCreateIdentity(deps.secrets);
+  // The owner on record only counts if config.json still carries the agent's signature.
+  let ownerOnRecord = base.owner;
+  let ownerVerified = true;
+  if (base.owner !== null) {
+    try {
+      readConfig(deps.dir, deps.env, { keys: id.sign });
+    } catch (err) {
+      if (!(err instanceof ConfigTamperedError)) throw err;
+      ownerVerified = false;
+      ownerOnRecord = null;
+    }
+  }
   const issuedAt = now();
   const glyph = await signGlyph(
     {
@@ -139,11 +171,21 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
   const trustStore = new TrustStore(deps.dir, id.sign, id.deviceId);
   const loaded = await trustStore.load();
   // A different account, or a list that failed its signature, starts from scratch.
-  const list =
-    loaded.tampered || (base.owner !== null && base.owner !== owner) ? new TrustedClientList(id.deviceId) : loaded.list;
+  // An owner that fails its signature is unknown, so any claim counts as switching accounts.
+  const switching = ownerOnRecord !== null ? ownerOnRecord !== owner : !ownerVerified;
+  const reset = loaded.tampered || switching;
+  // Never silently: replacing the account or dropping trusted phones needs the typed phrase.
+  if (reset && (switching || loaded.list.toJSON().length > 0 || existsSync(trustStore.file))) {
+    deps.out(c.replaceWarn(base.owner, owner));
+    if (!(await deps.confirmTyped(c.replacePrompt, c.replacePhrase))) {
+      deps.out(c.rejected);
+      return { ok: false, reason: "replace_declined" };
+    }
+  }
+  const list = reset ? new TrustedClientList(id.deviceId) : loaded.list;
   await list.addConfirmed({ deviceId: claimedByDeviceId, pubSign: claimerPubSign, pubBox: claimerPubBox }, now());
   await trustStore.save(list);
-  writeConfig(deps.dir, { ...base, owner, deviceId: id.deviceId });
+  writeConfig(deps.dir, { ...base, owner, deviceId: id.deviceId }, id.sign);
   deps.out(c.paired);
   return { ok: true, owner, deviceId: id.deviceId, phoneDeviceId: claimedByDeviceId };
 };
