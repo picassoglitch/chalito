@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { z } from "zod";
 import { Id, MesaCard, SealedEnvelope, SessionCard } from "@chalito/protocol";
 import type { Authn, Caller } from "./auth.js";
@@ -23,7 +24,25 @@ export interface AppDeps extends TurnDeps {
   audit: AuditFn;
   /** Cloud Scheduler → POST /tasks/sweep-decisions (Google OIDC). Absent: the route is off. */
   sweep?: { verify: OidcVerifier; expect: OidcExpectation };
+  /** The web app's origin (CHALITO_WEB_ORIGIN), the only one browsers may call from. Absent: no CORS. */
+  webOrigin?: string;
 }
+
+/**
+ * CORS for the web app only: one exact origin (no wildcard), bearer auth (no cookies, so no
+ * credentials), GET/POST/OPTIONS, a short preflight cache. Any other origin gets no
+ * Access-Control-Allow-Origin, so browsers refuse to read the response.
+ */
+export const webCors = (webOrigin: string) => {
+  const allowed = new URL(webOrigin).origin;
+  return cors({
+    origin: (origin) => (origin === allowed ? allowed : null),
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowHeaders: ["Authorization", "Content-Type"],
+    credentials: false,
+    maxAge: 600,
+  });
+};
 
 const CreateBody = z.object({
   /** Everyone but the person (added automatically). */
@@ -127,6 +146,8 @@ type Env = { Variables: { caller: Caller } };
 
 export const createOrchestrator = (deps: AppDeps) => {
   const app = new Hono<Env>();
+  // Before auth: a preflight carries no Authorization header.
+  if (deps.webOrigin) app.use("/v1/*", webCors(deps.webOrigin));
   app.get("/healthz", (c) => c.json({ ok: true }));
 
   // Signed answers already rejected (audited once; never resolve anything later either).

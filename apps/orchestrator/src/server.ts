@@ -50,6 +50,7 @@ const app = createOrchestrator({
   authn: new SupabaseAuthn(supabase.auth),
   store,
   wrapper,
+  ...(process.env.CHALITO_WEB_ORIGIN ? { webOrigin: process.env.CHALITO_WEB_ORIGIN } : {}),
   // Audit to stdout (Cloud Logging): decision.resolved / decision.invalid_signature.
   audit: (e) => process.stdout.write(`${JSON.stringify({ audit: { ...e, t: new Date().toISOString() } })}\n`),
   ...(process.env.SCHEDULER_SA_EMAIL && process.env.ORCHESTRATOR_BASE_URL
