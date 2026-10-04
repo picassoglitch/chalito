@@ -93,7 +93,7 @@ select pg_temp.logout();
 
 -- ---------------------------------------------------------------- TTL
 select chalito_private.purge_expired();
-select is((select array_agg(code_id order by code_id) from chalito.endorse_codes where owner = 'ec-user'),
+select is((select array_agg(code_id::text order by code_id) from chalito.endorse_codes where owner = 'ec-user'),
   array['ec_code_live_000000000']::text[], 'ttl: expired codes are swept with the other TTL rows');
 
 select * from finish();
