@@ -162,6 +162,8 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 - Apply `infra/terraform/envs/dev/releases.tf`. It creates the `chalito-release-signer` service account (objectViewer on that bucket only, no keys) and gives the api's service account (`api_service_account` variable) Token Creator on the signer.
 - Set on the api's Cloud Run service: `CHALITO_RELEASES_BUCKET` and `CHALITO_RELEASES_SIGNER` (both are outputs of the apply). Without them, `/releases/...` isn't served and /descargar says downloads aren't available.
 
+**2b. Desktop account wiring (repository variables).** `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (public values; a secret key is refused) become `VITE_SUPABASE_URL` / `VITE_SUPABASE_PUBLISHABLE_KEY` in the release build, with `VITE_CHALITO_API_BASE` from the workflow. A release refuses to build without them; a dry run is labelled "UNWIRED".
+
 **3. Apple (macOS signing + notarization, D-011).**
 - An Apple Developer Program membership.
 - Create a **Developer ID Application** certificate. Export it as a .p12 and set `APPLE_CERTIFICATE` (base64 of the .p12), `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY` (e.g. `Developer ID Application: Name (TEAMID)`).
