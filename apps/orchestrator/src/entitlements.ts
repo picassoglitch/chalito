@@ -18,17 +18,18 @@ export const hubEntitlements =
   async (owner: string): Promise<Entitlements> => {
     const [u] = await p.sql<{ tier: string | null }[]>`select tier from chalito.users where id = ${owner}`;
     const tier = HubTierId.safeParse(u?.tier);
-    const remaining = await p.hub
+    const balance = await p.hub
       .balance(owner)
-      .then((b) => b.remaining)
-      .catch(() => 0);
+      .then((b) => ({ remaining: b.remaining, unlimited: b.unlimited }))
+      .catch(() => ({ remaining: 0, unlimited: false }));
     return computeEntitlements(
       {
         uid: owner,
         hubTier: tier.success ? tier.data : null,
         soloTier: null,
         hubTrialActive: false,
-        hubBalanceRemaining: Math.max(0, remaining),
+        hubBalanceRemaining: Math.max(0, balance.remaining),
+        hubUnlimited: balance.unlimited,
         comped: p.comped(owner),
         now: p.now(),
       },

@@ -44,7 +44,15 @@ export const mocks = () => {
       lane: "standard",
       boost_fee_tokens: 0,
       limits: {},
-      balance: { remaining: 50_000, reserved: 1_000 },
+      balance: {
+        remaining: 50_000,
+        unlimited: false,
+        monthlyAllocation: 100_000,
+        bonus: 0,
+        monthlyUsed: 50_000,
+        reserved: 1_000,
+        periodStart: "2026-10-01T00:00:00Z",
+      },
     }),
   };
   const server = setupServer(
@@ -108,6 +116,7 @@ export const harness = async (opts: { entitlement?: Partial<EntitlementInputs>; 
     soloTier: null,
     hubTrialActive: false,
     hubBalanceRemaining: 50_000,
+    hubUnlimited: false,
     comped: false,
     now: 1,
     ...opts.entitlement,

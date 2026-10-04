@@ -200,7 +200,6 @@ describe("energy (admitManaged before every call)", () => {
       allowed: false,
       reason: "no_tokens",
       limits: {},
-      balance: { remaining: 0, reserved: 0 },
     });
     const r = await runTurn(h.deps, req(h.mid));
     expect(m.claude).toHaveLength(0);
@@ -238,7 +237,6 @@ describe("energy (admitManaged before every call)", () => {
       allowed: false,
       reason: "concurrency",
       limits: {},
-      balance: { remaining: 10, reserved: 0 },
     });
     const r = await runTurn(h.deps, req(h.mid));
     expect(r.stopped).toBe("refused:concurrency");
