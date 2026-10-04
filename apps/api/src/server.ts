@@ -8,6 +8,9 @@ import { createApp } from "./app.js";
 import type { AuditSink } from "./deps.js";
 import { FirebaseIssuer } from "./firestore/identity.js";
 import { FirestoreRepo } from "./firestore/repo.js";
+import { PostgresPhoneStore } from "./phone/postgres.js";
+import type { PhoneDeps } from "./phone/routes.js";
+import { twilioPhoneVerifier } from "./phone/twilio.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
@@ -23,7 +26,7 @@ const env = (name: string): string => {
  * (DATABASE_URL, acting as chalito_server) and Supabase Auth device users (SUPABASE_URL + the secret key, server only).
  * Default `firestore`: Firestore + Firebase Auth, as through M3.
  */
-const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
+const backend = (): { repo: ApiRepo; identity: IdentityIssuer; phone?: PhoneDeps } => {
   if (process.env.CHALITO_DATA_BACKEND === "supabase") {
     const supabase = createClient(env("SUPABASE_URL"), env("SUPABASE_SECRET_KEY"), {
       auth: { autoRefreshToken: false, persistSession: false },
@@ -34,6 +37,19 @@ const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
     return {
       repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
       identity: new SupabaseIssuer(supabase.auth),
+      // Phone verification (Twilio Verify + Geo Permissions) when configured.
+      ...(process.env.TWILIO_VERIFY_SERVICE_SID
+        ? {
+            phone: {
+              store: new PostgresPhoneStore(sql),
+              verifier: twilioPhoneVerifier({
+                accountSid: env("TWILIO_ACCOUNT_SID"),
+                authToken: env("TWILIO_AUTH_TOKEN"),
+                verifyServiceSid: env("TWILIO_VERIFY_SERVICE_SID"),
+              }),
+            },
+          }
+        : {}),
     };
   }
   const firebase = initializeApp({ projectId: env("GOOGLE_CLOUD_PROJECT") });
