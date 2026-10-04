@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -304,6 +304,7 @@ describe("chalito CLI", () => {
       expect(await c.run(["service", "install"])).toBe(0);
       const unit = join(c.home, ".config", "systemd", "user", "chalito-agent.service");
       expect(readFileSync(unit, "utf8")).toContain('ExecStart="/opt/chalito/chalito-agent" run');
+      expect(statSync(unit).mode & 0o777).toBe(0o600);
       expect(c.runs.map((r) => [r.cmd, ...r.args].join(" "))).toEqual([
         "systemctl --user daemon-reload",
         "systemctl --user enable --now chalito-agent.service",
@@ -311,6 +312,19 @@ describe("chalito CLI", () => {
       expect(await c.run(["service", "uninstall"])).toBe(0);
       expect(existsSync(unit)).toBe(false);
       expect(c.runs.at(-1)!.args).toEqual(["--user", "disable", "--now", "chalito-agent.service"]);
+    });
+
+    it("--passphrase-file: a 0600 file becomes a systemd credential; a readable one is refused", async () => {
+      const c = cli();
+      const pass = join(c.home, "pass");
+      writeFileSync(pass, "pw\n", { mode: 0o600 });
+      expect(await c.run(["service", "install", "--passphrase-file", pass])).toBe(0);
+      const unit = join(c.home, ".config", "systemd", "user", "chalito-agent.service");
+      expect(readFileSync(unit, "utf8")).toContain(`LoadCredential=chalito-secrets-passphrase:${pass}`);
+      chmodSync(pass, 0o644);
+      const again = cli();
+      expect(await again.run(["service", "install", "--passphrase-file", pass])).toBe(1);
+      expect(again.err()).toMatch(/chmod 600/);
     });
 
     it("macOS: LaunchAgent plist + launchctl bootstrap", async () => {

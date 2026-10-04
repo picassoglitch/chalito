@@ -133,8 +133,10 @@ const repeat = (fn: () => void, ms: number) => {
 /** `chalito run`: the long-lived agent the OS user service keeps alive (ADR 0004). */
 export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const env = deps.env ?? process.env;
-  const dir = ensureChalitoDir(chalitoDir(deps.home ?? homedir()));
   const log = deps.log ?? createLogger();
+  const dir = ensureChalitoDir(chalitoDir(deps.home ?? homedir()), (fixed) =>
+    log.warn("chalito_dir.permissions_tightened", { fixed, dirMode: "0700", fileMode: "0600" }),
+  );
   const now = deps.now ?? Date.now;
   const secrets =
     deps.secrets ?? (await openSecretStore({ env, warn: (m) => log.warn("secrets.file_store", { message: m }) }));
