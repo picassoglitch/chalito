@@ -184,7 +184,8 @@
       "tier": "Nivel: {tier}",
       "unknown": "Nivel desconocido",
       "trial": "Prueba hasta el {date}",
-      "manage": "Administrar en Chalyb"
+      "manage": "Administrar en Chalyb",
+      "usage": "Ver tu uso"
     },
     "renderQuality": {
       "label": "Calidad de animación",
@@ -524,6 +525,40 @@
         "failed": "Algo salió mal. Vuelve a intentarlo.",
         "passkey_cloned": "Tu passkey parece copiada: no se aprobó. Revisa tus dispositivos y crea una passkey nueva."
       }
+    }
+  },
+  "usage": {
+    "title": "Tu uso",
+    "range": "Periodo",
+    "days": "{n} días",
+    "loading": "Cargando…",
+    "error": "No pudimos cargar tu uso.",
+    "retry": "Reintentar",
+    "intro": "Tokens por día (UTC). Los días sin uso cuentan en cero.",
+    "empty": "Todavía no hay uso en este periodo.",
+    "tokens": "{n} tokens",
+    "chalito": {
+      "title": "Tokens de Chalito",
+      "work": "Trabajo",
+      "comms": "Comunicación",
+      "chartLabel": "Tokens de Chalito por día, últimos {days} días: trabajo y comunicación"
+    },
+    "share": {
+      "title": "Comunicación",
+      "none": "Sin uso de Chalito en este periodo.",
+      "value": "{share} de lo que usó Chalito (meta: menos de {target})",
+      "under": "Dentro de la meta: casi todo se va en el trabajo.",
+      "over": "Por encima de la meta: avisos, mensajes y llamadas están usando más de lo esperado.",
+      "chartLabel": "Comunicación por día frente a la meta de {target}"
+    },
+    "byo": {
+      "title": "Tus claves",
+      "body": "Uso con tus propias claves de proveedor. No consume tokens de Chalito.",
+      "chartLabel": "Tokens con tus claves por día, últimos {days} días"
+    },
+    "table": {
+      "title": "Ver por día",
+      "day": "Día"
     }
   }
 }
