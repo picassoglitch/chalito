@@ -133,6 +133,25 @@ const sameSecret = (got: string | undefined, want: string) => {
   return timingSafeEqual(a, b);
 };
 
+/**
+ * Desktop and call voice share the month's minutes, and a call's own seconds are billed only when
+ * it closes: each drain (every minute) ends the calls that have used what was left. Twilio's
+ * timeLimit (minutes left at DTMF 1) still bounds a call when nothing else is talking.
+ */
+export const endCallsAtCap = async (deps: NotifierDeps) => {
+  if (!deps.billing || !deps.caps) return 0;
+  let ended = 0;
+  for (const s of await deps.billing.openCallVoices()) {
+    const elapsed = Math.floor((deps.now() - s.startedAt) / 1000);
+    if (elapsed < (await voiceSecondsLeft(deps, s.owner))) continue;
+    await deps.billing.hangUpCallVoice(s);
+    await capNote(deps, s.owner, "voice").catch(() => undefined);
+    deps.log.info("voice.call_capped", { sourceId: s.sourceId });
+    ended++;
+  }
+  return ended;
+};
+
 export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVerifier) => {
   const app = new Hono();
   const voice = (locale: "es" | "en") => deps.config.voices[locale];
@@ -311,7 +330,8 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
   app.post("/tasks/drain-usage", async (c) => {
     if (!deps.billing || !cfg.drain) return c.text("not found", 404);
     if (!(await verifyOidc(c.req.header("authorization"), cfg.drain))) return c.json({ error: "unauthorized" }, 401);
-    return c.json(await deps.billing.drain());
+    const drained = await deps.billing.drain();
+    return c.json({ ...drained, callsEndedAtCap: await endCallsAtCap(deps) });
   });
 
   // ---- OpenAI Realtime SIP (Standard Webhooks signature) -----------------------------
@@ -373,6 +393,13 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
       return c.body(null, 200);
     }
     await v.provider.acceptCall(callId, callSession(ctx, v.model, v.voiceName));
+    // With the call id on the session, the cap check, the sweep and a revoke can hang it up.
+    if (metered?.ok)
+      await deps
+        .billing!.connectedCallVoice(ref.uid, metered.sourceId, callId)
+        .catch((err: unknown) =>
+          deps.log.error("voice.call_id_failed", { callId, error: err instanceof Error ? err.message : "error" }),
+        );
     const { url, headers } = v.provider.callSocket(callId);
     // The call outlives this request: Cloud Run needs CPU always allocated for the notifier.
     void runCallAgent(deps, v.openSocket(url, headers), ctx)

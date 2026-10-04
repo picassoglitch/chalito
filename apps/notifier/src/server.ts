@@ -57,6 +57,12 @@ const desktopVoice = new HubStreamUsage({
   now: Date.now,
 });
 
+const twilio = twilioClient({
+  accountSid: env("TWILIO_ACCOUNT_SID"),
+  authToken: env("TWILIO_AUTH_TOKEN"),
+  from: env("TWILIO_FROM"),
+});
+
 const app = createApp(
   {
     store: new PostgresStore(sql),
@@ -66,11 +72,7 @@ const app = createApp(
       privateKey: env("VAPID_PRIVATE_KEY"),
     }),
     whatsapp: whatsappSender({ token: env("WHATSAPP_TOKEN"), phoneNumberId: env("WHATSAPP_PHONE_NUMBER_ID"), config }),
-    twilio: twilioClient({
-      accountSid: env("TWILIO_ACCOUNT_SID"),
-      authToken: env("TWILIO_AUTH_TOKEN"),
-      from: env("TWILIO_FROM"),
-    }),
+    twilio,
     scheduler: cloudTasksScheduler({
       project: env("GOOGLE_CLOUD_PROJECT"),
       location: env("TASKS_LOCATION"),
@@ -107,6 +109,8 @@ const app = createApp(
           sourceId: `${sess.sourceId}:${total}`,
         }),
       // A desktop call that stopped heart-beating is hung up at OpenAI as well (needs only the key).
+      // A phone call's Twilio leg (at the cap, from the sweep, and on revoke via the OpenAI leg).
+      endPhoneCall: (callSid: string) => twilio.endCall(callSid),
       ...(process.env.OPENAI_API_KEY
         ? { hangupCall: (callId: string) => openaiRealtime({ apiKey: env("OPENAI_API_KEY") }).hangupCall(callId) }
         : {}),

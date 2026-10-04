@@ -61,6 +61,8 @@ export interface VoiceSessionStore {
   setCallId(owner: string, sourceId: string, callId: string): Promise<boolean>;
   /** The owner's open sessions on one device (e.g. to hang them up when the device is revoked). */
   openFor(owner: string, deviceId: string): Promise<VoiceSession[]>;
+  /** Open sessions on a channel (all owners, or one): phone calls to check against the cap or end on revoke. */
+  openOn(channel: VoiceSession["channel"], owner?: string): Promise<VoiceSession[]>;
 }
 
 /** Billed seconds for a session at `now`. */
@@ -78,12 +80,15 @@ export const sweepVoiceSessions = async (p: {
   owner?: string;
   event: VoiceEventFor;
   settle: (reservationId: string) => Promise<unknown>;
-  /** Ends the provider call of a session that has one (best effort; billing doesn't wait on it). */
+  /**
+   * Ends a stale session's live call, if any (best effort; billing doesn't wait on it): the
+   * OpenAI call id, and for a phone call the Twilio call (`deviceId` is its CallSid).
+   */
   hangup?: (s: VoiceSession) => Promise<unknown>;
 }) => {
   const stale = await p.store.stale(p.now, p.graceMs ?? 120_000, p.owner);
   for (const s of stale) {
-    if (s.callId && p.hangup) await p.hangup(s).catch(() => undefined);
+    if (p.hangup) await p.hangup(s).catch(() => undefined);
     const r = await p.store.advance({
       owner: s.owner,
       sourceId: s.sourceId,
@@ -205,6 +210,15 @@ export class PostgresVoiceSessions implements VoiceSessionStore {
       where owner = ${owner} and device_id = ${deviceId} and ended_at is null`;
     return rows.map(fromRow);
   }
+
+  async openOn(channel: VoiceSession["channel"], owner?: string) {
+    // Few rows: the one-open-per-(owner, channel) partial index holds only open sessions.
+    const rows = await this.sql<Row[]>`
+      select * from chalito_private.voice_sessions
+      where channel = ${channel} and ended_at is null
+        ${owner ? this.sql`and owner = ${owner}` : this.sql``}`;
+    return rows.map(fromRow);
+  }
 }
 
 export class MemoryVoiceSessions implements VoiceSessionStore {
@@ -273,6 +287,12 @@ export class MemoryVoiceSessions implements VoiceSessionStore {
   async openFor(owner: string, deviceId: string) {
     return [...this.sessions.values()].filter(
       (v) => v.owner === owner && v.deviceId === deviceId && v.endedAt === null,
+    );
+  }
+
+  async openOn(channel: VoiceSession["channel"], owner?: string) {
+    return [...this.sessions.values()].filter(
+      (v) => v.channel === channel && v.endedAt === null && (!owner || v.owner === owner),
     );
   }
 }

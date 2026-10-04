@@ -71,7 +71,9 @@ const hangup = async (voice: VoiceDeps, callId: string | null | undefined) => {
 
 /**
  * A revoked device's open desktop voice: bill the elapsed time and close it (through the store,
- * like an end), settle the reservation and hang the call up server-side.
+ * like an end), settle the reservation and hang the call up server-side. The owner's phone call
+ * (if one is live) is hung up too: ending its OpenAI SIP leg ends Twilio's <Dial>, which ends the
+ * call; the notifier bills it when its call socket closes (call pricing lives there).
  */
 export const endDeviceVoice = async (deps: Deps, voice: VoiceDeps, owner: string, deviceId: string) => {
   for (const s of await voice.sessions.openFor(owner, deviceId)) {
@@ -93,6 +95,7 @@ export const endDeviceVoice = async (deps: Deps, voice: VoiceDeps, owner: string
     await hangup(voice, r.callId ?? s.callId);
     await voice.hub.settle({ owner, admissionId: s.reservationId }).catch(() => undefined);
   }
+  for (const s of await voice.sessions.openOn("call", owner)) await hangup(voice, s.callId);
 };
 
 const PERSONA =

@@ -199,7 +199,7 @@ describe("outbox drain endpoint", () => {
       ).status,
     ).toBe(401);
     const ok = await post(await googleToken({ aud: `${BASE}/tasks/drain-usage`, email: SCHEDULER_SA }));
-    expect(await ok.json()).toEqual({ sent: 1, retried: 0, dead: 0, voiceSessionsSwept: 0 });
+    expect(await ok.json()).toEqual({ sent: 1, retried: 0, dead: 0, voiceSessionsSwept: 0, callsEndedAtCap: 0 });
     expect(
       (cap.hub.find((c) => c.path === "usage")!.body.events as { source_id: string }[]).map((e) => e.source_id),
     ).toEqual(["wa:x"]);

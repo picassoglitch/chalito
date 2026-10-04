@@ -627,6 +627,12 @@ Source: https://www.twilio.com/docs/voice/twiml/gather (checked 2026-10-03)
 
 Suggested settings: `<Gather input="dtmf speech" language="es-MX" speechTimeout="auto" actionOnEmptyResult="true" numDigits="1">`, with no `speechModel`. If you need deterministic STT, use `speechModel="googlev2_telephony"` or `deepgram_nova-3` with `speechTimeout="2"`.
 
+#### Ending a call in progress (REST)
+- `POST https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Calls/{CallSid}.json` with the form field `Status=completed` ends an in-progress call. `Status=canceled` applies only to a call that is still ringing.
+- The update applies to calls in progress. The docs don't state the error for a call that has already ended, so we treat 400 and 404 as "already ended".
+- When a `<Dial><Sip>` leg ends and no verb follows `<Dial>` (our `connectTwiml`), the call hangs up. So hanging up the OpenAI leg (`/v1/realtime/calls/{call_id}/hangup`) also ends the phone call, which is the api's path on revoke (it has no Twilio credentials).
+- Source: https://www.twilio.com/docs/voice/api/call-resource#update-a-call-resource ; https://www.twilio.com/docs/voice/tutorials/how-to-modify-calls-in-progress (checked 2026-10-03)
+
 #### `<Say>` voices (exact `voice=` strings)
 
 **es-MX** (Polly only; Twilio lists no Google es-MX voices):

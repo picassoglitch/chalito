@@ -86,6 +86,8 @@ export interface Captured {
   openai: { path: string; body: Record<string, unknown>; headers: Record<string, string> }[];
   whatsapp: { url: string; body: Record<string, unknown> }[];
   calls: Record<string, string>[];
+  /** Twilio call updates (POST Calls/<CallSid>.json), e.g. Status=completed. */
+  callUpdates: { callSid: string; form: Record<string, string> }[];
   sms: Record<string, string>[];
   tasks: { method: string; url: string; body?: Record<string, unknown> }[];
   push: { endpoint: string; headers: Record<string, string>; bytes: number }[];
@@ -129,7 +131,7 @@ export const prefs = (over: Partial<UserPrefs> = {}): UserPrefs => ({
 });
 
 export const mockServer = () => {
-  const cap: Captured = { hub: [], openai: [], whatsapp: [], calls: [], sms: [], tasks: [], push: [] };
+  const cap: Captured = { hub: [], openai: [], whatsapp: [], calls: [], callUpdates: [], sms: [], tasks: [], push: [] };
   const goneEndpoints = new Set<string>();
   const hubBase = "https://www.chalyb.com/api/engines/chalito";
   const server = setupServer(
@@ -167,7 +169,8 @@ export const mockServer = () => {
       return HttpResponse.json({ ok: true });
     }),
     http.post("https://api.openai.com/v1/*", async ({ request }) => {
-      const body = (await request.json()) as Record<string, unknown>;
+      // Call controls like /hangup have no body.
+      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
       cap.openai.push({
         path: new URL(request.url).pathname,
         body,
@@ -184,6 +187,13 @@ export const mockServer = () => {
     http.post("https://api.twilio.com/2010-04-01/Accounts/:sid/Calls.json", async ({ request }) => {
       cap.calls.push(Object.fromEntries(new URLSearchParams(await request.text())));
       return HttpResponse.json({ sid: `CA${"0".repeat(31)}${cap.calls.length}` }, { status: 201 });
+    }),
+    http.post("https://api.twilio.com/2010-04-01/Accounts/:sid/Calls/:callSid", async ({ request, params }) => {
+      cap.callUpdates.push({
+        callSid: String(params.callSid).replace(/\.json$/, ""),
+        form: Object.fromEntries(new URLSearchParams(await request.text())),
+      });
+      return HttpResponse.json({ sid: params.callSid, status: "completed" });
     }),
     http.post("https://api.twilio.com/2010-04-01/Accounts/:sid/Messages.json", async ({ request }) => {
       cap.sms.push(Object.fromEntries(new URLSearchParams(await request.text())));
@@ -250,6 +260,8 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
       now: () => deps.now(),
       alert: (msg, meta) => logs.push({ msg, meta }),
       voiceSessions,
+      hangupCall: (callId) => openaiRealtime({ apiKey: "sk-test" }).hangupCall(callId),
+      endPhoneCall: (callSid) => deps.twilio.endCall(callSid),
     });
   const cfg: AppConfig = {
     pubsub: {
