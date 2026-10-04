@@ -362,6 +362,13 @@ export const createStack = () => {
   };
   const registerBrowser = (p: Person, k: Keys) => registration(p.owner, k, "web", "Navegador");
 
+  /**
+   * Opens the pool's connections up front. msw (used by the steps that mock outside services)
+   * intercepts raw sockets too, and a Postgres connection opened while it listens fails its SASL
+   * handshake; connections opened before keep working.
+   */
+  const warm = () => Promise.all(Array.from({ length: 5 }, () => sql`select pg_sleep(0.05)`));
+
   const close = async () => {
     for (const c of clients) await c.removeAllChannels().catch(() => undefined);
     for (const id of hubUsers) await authAdmin.admin.deleteUser(id).catch(() => undefined);
@@ -384,6 +391,7 @@ export const createStack = () => {
     pairAgent,
     agentRef,
     endorseBrowser,
+    warm,
     close,
     now,
     tick: (ms: number) => void (clock += ms),

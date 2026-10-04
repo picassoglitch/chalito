@@ -61,6 +61,9 @@ import {
 } from "./stack.js";
 
 const stack = READY ? createStack() : null;
+beforeAll(async () => {
+  await stack?.warm();
+});
 afterAll(async () => {
   await stack?.close();
 });
@@ -232,7 +235,7 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
   // Web push, WhatsApp, Twilio and Cloud Tasks HTTP, mocked at the network (the notifier harness's).
   const net = notifierMocks();
   let agent: Awaited<ReturnType<typeof startAgent>> | null = null;
-  beforeAll(() => net.server.listen({ onUnhandledFrame: "bypass" }));
+  // msw listens only while the notifier sends (it also intercepts new sockets: Realtime, Postgres).
   afterAll(async () => {
     net.server.close();
     await agent?.close();
@@ -330,6 +333,7 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
       select id, message from chalito_private.notify_outbox where owner = ${p.owner} order by id`;
     expect(queued.map((r) => r.message.type)).toContain("notify");
     const row = queued.find((r) => r.message.type === "notify")!;
+    net.server.listen({ onUnhandledFrame: "bypass" });
     expect((await notifier.poke(Number(row.id))).status).toBe(200);
     await waitFor(() => net.cap.push.some((x) => x.endpoint === sub.endpoint), 20_000, "the web push");
     expect(net.cap.whatsapp).toHaveLength(0);
@@ -340,6 +344,7 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
     expect((await notifier.tick(p.owner, nid)).status).toBeLessThan(300);
     await waitFor(() => net.cap.whatsapp.length > 0, 20_000, "the WhatsApp message");
     expect(JSON.stringify(net.cap.whatsapp[0]!.body)).not.toContain("git push");
+    net.server.close();
 
     // The phone opens the approval and checks that the hash the agent signed is of what it shows.
     const opened = await openJson<{ details: Record<string, unknown>; request: { body: { detailsHash: string } } }>(
@@ -407,7 +412,9 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
       20_000,
       "the ack to be queued",
     );
+    net.server.listen({ onUnhandledFrame: "bypass" });
     expect((await notifier.drainNotify()).status).toBe(200);
+    net.server.close();
     const left = await s.sql<{ status: string }[]>`
       select status from chalito_private.notify_outbox where owner = ${p.owner}`;
     expect(left.every((r) => r.status === "sent")).toBe(true);
@@ -742,8 +749,11 @@ describe.skipIf(!READY)(
       ),
     );
     const gwSql = gatewaySql(DB_URL ?? "postgres://unused", { max: 2, role: "chalito_gateway" });
+    beforeAll(async () => {
+      // Open the gateway role\'s connections before msw listens (see stack.warm).
+      await Promise.all([gwSql`select pg_sleep(0.05)`, gwSql`select pg_sleep(0.05)`]);
+    });
     let agent: Awaited<ReturnType<typeof startAgent>> | null = null;
-    beforeAll(() => cimd.listen({ onUnhandledFrame: "bypass" }));
     afterAll(async () => {
       cimd.close();
       await agent?.close();
@@ -814,6 +824,8 @@ describe.skipIf(!READY)(
       // Claude connects: authorize (CIMD client), the person consents on the phone with the passkey.
       const pk = { verifier: randomUUID() + randomUUID(), challenge: "" };
       pk.challenge = createHash("sha256").update(pk.verifier).digest("base64url");
+      // Claude\'s CIMD document is fetched during authorize: mocked only for the OAuth flow.
+      cimd.listen({ onUnhandledFrame: "bypass" });
       const az = await get(
         `/oauth/authorize?${new URLSearchParams({
           response_type: "code",
@@ -845,6 +857,7 @@ describe.skipIf(!READY)(
       });
       expect(tok.status).toBe(200);
       const accessToken = ((await tok.json()) as { access_token: string }).access_token;
+      cimd.close();
 
       // The gateway (its read-only role on the database) relays prompt_session to the api.
       const gw = createGateway({

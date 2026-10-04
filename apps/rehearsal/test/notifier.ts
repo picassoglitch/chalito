@@ -86,7 +86,7 @@ export const createNotifier = (sql: Sql) => {
     advance: (ms: number) => void (clock += ms),
     /** What the database's pg_net poke sends for one outbox row (signed like it). */
     poke: (id: number) => {
-      const ts = Math.floor(clock / 1000);
+      const ts = clock;
       return app.request("/internal/notify-poke", {
         method: "POST",
         headers: { "content-type": "application/json", "x-chalito-poke-signature": signPoke(POKE_SECRET, id, ts) },

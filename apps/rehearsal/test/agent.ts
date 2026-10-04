@@ -79,13 +79,16 @@ export const startAgent = async (o: {
     core,
     store,
     handled,
+    /** Bounded: a session still waiting on an approval (a failed step) mustn't hang the teardown. */
     close: async () => {
+      const bounded = (p: Promise<unknown>) =>
+        Promise.race([p.catch(() => undefined), new Promise((r) => setTimeout(r, 5_000))]);
       stop();
       for (const s of core.sessions.values()) {
         s.handle.close();
-        await s.handle.done.catch(() => undefined);
+        await bounded(s.handle.done);
       }
-      await store.close();
+      await bounded(store.close());
     },
   };
 };
