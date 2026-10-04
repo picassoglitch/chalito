@@ -14,11 +14,16 @@ const env = (name: string): string => {
 
 const firebase = initializeApp({ projectId: env("GOOGLE_CLOUD_PROJECT") });
 const db = getFirestore(firebase, process.env.FIRESTORE_DATABASE ?? "chalito");
-const topic = new PubSub().topic(process.env.AUDIT_TOPIC ?? "audit");
+// Production publishes to Pub/Sub `audit` (→ BigQuery). Locally, without the Pub/Sub
+// emulator, audit goes to stdout so a dev machine with ADC never publishes to real GCP.
+const usePubSub = process.env.K_SERVICE !== undefined || process.env.PUBSUB_EMULATOR_HOST !== undefined;
+const topic = usePubSub ? new PubSub().topic(process.env.AUDIT_TOPIC ?? "audit") : null;
 
 const audit: AuditSink = {
   async record(e) {
-    await topic.publishMessage({ json: { ...e, t: new Date().toISOString() } });
+    const entry = { ...e, t: new Date().toISOString() };
+    if (topic) await topic.publishMessage({ json: entry });
+    else process.stdout.write(`${JSON.stringify({ audit: entry })}\n`);
   },
 };
 
@@ -35,5 +40,6 @@ const app = createApp({
   now: Date.now,
 });
 
-const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080) });
+// Cloud Run sets PORT; the local default avoids the Firestore emulator's 8080.
+const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8787) });
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
