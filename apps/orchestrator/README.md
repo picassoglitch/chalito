@@ -138,6 +138,7 @@ can't read either table.
 | `SCHEDULER_SA_EMAIL`, `ORCHESTRATOR_BASE_URL` | The decision sweep's OIDC signer and audience (route off without them). |
 | `BRAIN_KEYS_KMS_KEY` | Cloud KMS key (`projects/…/cryptoKeys/…`) that wraps BYO keys for cloud turns. |
 | `OWNER_UIDS` | Comped owners. |
+| `CHALITO_WEB_ORIGIN` | The web app's origin: the only origin allowed by CORS (exact match, bearer auth, no credentials). Unset: no CORS. |
 | `PORT` | Default 8080. |
 
 Tests mock all four provider APIs and the hub with msw, and use a local AES-GCM wrapper in place of KMS (no cloud) (`pnpm --filter @chalito/orchestrator test`). The Postgres store test
