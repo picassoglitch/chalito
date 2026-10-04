@@ -64,7 +64,7 @@ Images go to the Artifact Registry repo created by `module "artifact_registry"`.
      -t us-central1-docker.pkg.dev/$PROJECT/chalito/<service>:$(git rev-parse --short HEAD) .
    docker push us-central1-docker.pkg.dev/$PROJECT/chalito/<service>:$(git rev-parse --short HEAD)
    ```
-   For avatar-jobs, add `--build-arg ENTRY=src/job.ts`. To bump a base image, update its `@sha256:` digest in `docker/service.Dockerfile`.
+   For avatar-jobs, add `--build-arg ENTRY=src/job.ts`. **Filesystem:** the images run with a read-only root; `/tmp` is the only writable path (tsx makes a temp dir there). Cloud Run's in-memory `/tmp` covers it; anywhere else, run with `--read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m`. To bump a base image, update its `@sha256:` digest in `docker/service.Dockerfile`.
 2. Deploy without traffic, then check the new revision:
    ```sh
    gcloud run deploy chalito-<service> --image …:<sha> --region us-central1 --no-traffic --tag canary

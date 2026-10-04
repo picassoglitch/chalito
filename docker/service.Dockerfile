@@ -24,8 +24,9 @@ FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2
 WORKDIR /app
 # Owned by root, run as nonroot: the app can't modify its own code.
 COPY --from=build --chown=0:0 /out /app
-# The services run TypeScript through tsx (workspace packages export .ts sources). No transform
-# cache, so the root filesystem can be read-only.
+# The services run TypeScript through tsx (workspace packages export .ts sources), with no transform
+# cache. The root filesystem can be read-only; /tmp must stay writable (tsx makes a temp dir there):
+# Cloud Run always provides an in-memory /tmp, and elsewhere mount a tmpfs at /tmp.
 ENV NODE_ENV=production TSX_DISABLE_CACHE=1
 USER nonroot:nonroot
 # distroless runs `node` with these arguments; entry.ts links to the app's ENTRY.
