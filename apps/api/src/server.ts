@@ -12,6 +12,7 @@ import { twilioPhoneVerifier } from "./phone/twilio.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
 import type { McpStore } from "./oauth/model.js";
 import { PostgresMcpStore } from "./oauth/postgres-store.js";
+import { PostgresRoomsRepo, type RoomsRepo } from "./rooms/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
 import { PostgresStoreRepo } from "./store/repo.js";
@@ -35,6 +36,7 @@ const backend = (): {
   repo: ApiRepo;
   identity: IdentityIssuer;
   mcp: McpStore;
+  rooms: RoomsRepo;
   phone?: PhoneDeps;
   voice?: VoiceDeps;
   store?: StoreDeps;
@@ -94,6 +96,7 @@ const backend = (): {
           },
         }
       : {}),
+    rooms: new PostgresRoomsRepo(sql),
   };
 };
 

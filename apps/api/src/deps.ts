@@ -3,6 +3,7 @@ import type { StoreDeps } from "./store/routes.js";
 import type { VoiceDeps } from "./voice/routes.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import type { McpStore } from "./oauth/model.js";
+import type { RoomsRepo } from "./rooms/repo.js";
 
 export interface AuditEvent {
   action: string;
@@ -32,6 +33,8 @@ export interface Deps {
   repo: ApiRepo;
   /** OAuth server + MCP gateway writes (M10); those routes answer 503 without it. */
   mcp?: McpStore;
+  /** Rooms (M11); routes answer 503 without it. */
+  rooms?: RoomsRepo;
   identity: IdentityIssuer;
   audit: AuditSink;
   config: ApiConfig;
