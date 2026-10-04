@@ -9,6 +9,7 @@ import { pairingRoutes } from "./routes/pairing.js";
 import { recoveryRoutes } from "./routes/recovery.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
 import { oauthRoutes } from "./routes/oauth.js";
+import { storeRoutes } from "./store/routes.js";
 
 export const createApp = (deps: Deps) => {
   const app = new Hono();
@@ -22,6 +23,7 @@ export const createApp = (deps: Deps) => {
   app.route("/", oauthRoutes(deps));
   if (deps.phone) app.route("/v1/phone", phoneRoutes(deps, deps.phone));
   if (deps.voice) app.route("/v1/voice", voiceRoutes(deps, deps.voice));
+  if (deps.store) app.route("/v1/store", storeRoutes(deps, deps.store));
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
     console.error("[api] unhandled", err instanceof Error ? err.message : "error");

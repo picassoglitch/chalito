@@ -1,4 +1,5 @@
 import type { PhoneDeps } from "./phone/routes.js";
+import type { StoreDeps } from "./store/routes.js";
 import type { VoiceDeps } from "./voice/routes.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import type { McpStore } from "./oauth/model.js";
@@ -39,6 +40,8 @@ export interface Deps {
   phone?: PhoneDeps;
   /** Desktop push-to-talk (/v1/voice), when OpenAI is configured. */
   voice?: VoiceDeps;
+  /** The pay-to-dress store (/v1/store), when the hub is configured. */
+  store?: StoreDeps;
 }
 
 export class MemoryAudit implements AuditSink {
