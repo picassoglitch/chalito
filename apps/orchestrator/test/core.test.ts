@@ -141,14 +141,27 @@ describe("card merge, budgets, models", () => {
 
   it("models come from models.yaml per profile; Sonnet 5.5 by default", () => {
     const m = loadModels();
-    expect(resolveModel(m, "standard", companion)).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" });
-    expect(resolveModel(m, "standard", claude)).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" });
-    expect(resolveModel(m, "max", claude)).toEqual({ provider: "anthropic", model: "claude-opus-5-5" });
-    // low: the companion is Gemini in models.yaml; this service falls back to the profile's Claude model.
-    expect(resolveModel(m, "low", companion)).toEqual({ provider: "anthropic", model: "claude-haiku-4-5" });
-    expect(resolveModel(m, "standard", participants[2] as Speaker)).toEqual({
-      unavailable: "provider openai not available yet",
+    const all = () => true;
+    const onlyClaude = (p: string) => p === "anthropic";
+    expect(resolveModel(m, "standard", companion, all)).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" });
+    expect(resolveModel(m, "standard", claude, all)).toEqual({ provider: "anthropic", model: "claude-sonnet-5-5" });
+    expect(resolveModel(m, "max", claude, all)).toEqual({ provider: "anthropic", model: "claude-opus-5-5" });
+    // Participants map to providers by models.yaml.
+    expect(resolveModel(m, "standard", participants[2] as Speaker, all)).toEqual({
+      provider: "openai",
+      model: "gpt-5.6-luna",
     });
-    expect(resolveModel(m, "free_min", companion)).toEqual({ unavailable: "free_min" });
+    expect(resolveModel(m, "standard", participants[3] as Speaker, all)).toEqual({
+      provider: "xai",
+      model: "grok-4.3",
+    });
+    expect(resolveModel(m, "max", participants[3] as Speaker, all)).toEqual({ provider: "xai", model: "grok-4.7" });
+    // low: the companion is Gemini; without a Google brain it falls back to the profile's Claude model.
+    expect(resolveModel(m, "low", companion, all)).toEqual({ provider: "google", model: "gemini-3.1-flash-lite" });
+    expect(resolveModel(m, "low", companion, onlyClaude)).toEqual({ provider: "anthropic", model: "claude-haiku-4-5" });
+    expect(resolveModel(m, "standard", participants[2] as Speaker, onlyClaude)).toEqual({
+      unavailable: "provider openai not configured",
+    });
+    expect(resolveModel(m, "free_min", companion, all)).toEqual({ unavailable: "free_min" });
   });
 });

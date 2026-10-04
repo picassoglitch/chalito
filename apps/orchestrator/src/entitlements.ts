@@ -5,7 +5,9 @@ import { HubTierId, type Entitlements, type PlansConfig } from "@chalito/protoco
 /**
  * Entitlements for a turn (ADR 0013): the hub tier Chalito has for the user (chalito.users.tier,
  * written at SSO), the hub balance, and comped owners. Computed per turn; a hub that can't be
- * reached yields no managed allowance (free_min), failing closed.
+ * reached yields no managed allowance (free_min), failing closed. Trial: the hub (chalyb a5733df)
+ * exposes no trial flag on balance or admit (VERIFIED_APIS "Brain APIs for the Mesa"), so
+ * hubTrialActive stays false until it does.
  */
 export const hubEntitlements =
   (p: {

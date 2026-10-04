@@ -1,12 +1,45 @@
-import type { HubUsageEvent } from "@chalito/protocol";
+import type { HubUsageEvent, SealedEnvelope } from "@chalito/protocol";
+import type { BrainProviderId } from "./brains/brain.js";
 import type { MesaDoc } from "./core/mesa.js";
 
 /** What the orchestrator stores. Postgres (as chalito_server) in production, memory in tests. */
 export interface TurnSpend {
   pid: string;
   tokens: number;
-  /** Usage events (null = not billable), written to the outbox in the same transaction. */
+  /** Usage events (null = not billable: BYO), written to the outbox in the same transaction. */
   events: (HubUsageEvent | null)[];
+}
+
+/**
+ * A `kind=decision` approval raised by a Mesa participant. The orchestrator only CREATES it
+ * (pending, details sealed to the person's clients); the person decides with a signed Decision.
+ * There is deliberately no method to resolve one.
+ */
+export interface DecisionApproval {
+  aid: string;
+  mid: string;
+  tid: string;
+  /** The client device whose turn led to it: the approval's origin `client:<id>`. */
+  origin: string;
+  detailsCt: SealedEnvelope;
+}
+
+/** A BYO provider key: sealed to the person's devices; `cloud` = a KMS-wrapped copy exists. */
+export interface BrainKeyRow {
+  provider: BrainProviderId;
+  sealedCt: SealedEnvelope;
+  /** Last 4 characters, for display. */
+  hint: string;
+  cloud: boolean;
+}
+
+/** One aggregate row for the usage page. */
+export interface UsageRow {
+  day: string;
+  billing: "managed" | "byo";
+  purpose: "work" | "comms";
+  tokens: number;
+  costUsdMicros: number;
 }
 
 export interface MesaStore {
@@ -27,6 +60,14 @@ export interface MesaStore {
     doc: Record<string, unknown>,
     spend?: TurnSpend,
   ): Promise<"ok" | "duplicate">;
+  createDecisionApproval(owner: string, a: DecisionApproval): Promise<void>;
+
+  putBrainKey(owner: string, row: BrainKeyRow, wrapped: string | null): Promise<void>;
+  deleteBrainKey(owner: string, provider: BrainProviderId): Promise<boolean>;
+  /** The KMS-wrapped copy, only if the person opted in to cloud turns for that provider. */
+  wrappedBrainKey(owner: string, provider: BrainProviderId): Promise<string | null>;
+
+  usageDaily(owner: string, sinceMs: number): Promise<UsageRow[]>;
 }
 
 export class MemoryMesaStore implements MesaStore {
@@ -34,6 +75,9 @@ export class MemoryMesaStore implements MesaStore {
   turns = new Map<string, { owner: string; mid: string; tid: string; doc: Record<string, unknown> }>();
   outbox: HubUsageEvent[] = [];
   clients = new Map<string, Record<string, string>>();
+  approvals: (DecisionApproval & { owner: string; status: "pending" })[] = [];
+  brainKeys = new Map<string, BrainKeyRow>();
+  wrapped = new Map<string, string>();
   /** Makes the next appendTurn that carries spend throw (the turn and its usage commit together). */
   failNextSpend = false;
 
@@ -71,5 +115,53 @@ export class MemoryMesaStore implements MesaStore {
       m.used.byParticipant[spend.pid] = (m.used.byParticipant[spend.pid] ?? 0) + spend.tokens;
     }
     return "ok" as const;
+  }
+  async createDecisionApproval(owner: string, a: DecisionApproval) {
+    this.approvals.push({ ...structuredClone(a), owner, status: "pending" });
+  }
+  async putBrainKey(owner: string, row: BrainKeyRow, wrapped: string | null) {
+    this.brainKeys.set(`${owner}/${row.provider}`, structuredClone(row));
+    if (wrapped) this.wrapped.set(`${owner}/${row.provider}`, wrapped);
+    else this.wrapped.delete(`${owner}/${row.provider}`);
+  }
+  async deleteBrainKey(owner: string, provider: BrainProviderId) {
+    this.wrapped.delete(`${owner}/${provider}`);
+    return this.brainKeys.delete(`${owner}/${provider}`);
+  }
+  async wrappedBrainKey(owner: string, provider: BrainProviderId) {
+    return this.wrapped.get(`${owner}/${provider}`) ?? null;
+  }
+  async usageDaily(owner: string, sinceMs: number) {
+    const rows = new Map<string, UsageRow>();
+    const add = (r: UsageRow) => {
+      const k = `${r.day}/${r.billing}/${r.purpose}`;
+      const cur = rows.get(k) ?? { ...r, tokens: 0, costUsdMicros: 0 };
+      cur.tokens += r.tokens;
+      cur.costUsdMicros += r.costUsdMicros;
+      rows.set(k, cur);
+    };
+    for (const e of this.outbox) {
+      const t = Date.parse(e.occurred_at);
+      if (e.external_user_id !== owner || t < sinceMs) continue;
+      add({
+        day: e.occurred_at.slice(0, 10),
+        billing: "managed",
+        purpose: e.metadata?.purpose === "work" ? "work" : "comms",
+        tokens: e.kind === "llm.tokens" ? e.amount : 0,
+        costUsdMicros: e.cost_usd_micros,
+      });
+    }
+    for (const { owner: o, doc } of this.turns.values()) {
+      if (o !== owner || doc.billingMode !== "byo" || (doc.t as number) < sinceMs) continue;
+      const u = doc.usage as { in: number; out: number; cached: number };
+      add({
+        day: new Date(doc.t as number).toISOString().slice(0, 10),
+        billing: "byo",
+        purpose: "work",
+        tokens: u.in + u.out + u.cached,
+        costUsdMicros: (doc.estCostUsdMicros as number) ?? 0,
+      });
+    }
+    return [...rows.values()];
   }
 }

@@ -19,6 +19,7 @@ afterAll(() => m.server.close());
 
 const req = (mid: string, over: Partial<TurnRequest> = {}): TurnRequest => ({
   owner: OWNER,
+  deviceId: "dev_phone",
   mid,
   tid: `in_${Math.random().toString(36).slice(2, 10)}`,
   text: "@Claude ¿lanzamos el lunes?",
@@ -48,15 +49,30 @@ describe("a Mesa turn on the Claude API (msw)", () => {
     expect(m.hub[1]!.body).toEqual({ reservation_id: RESERVATION, outcome: "succeeded" });
   });
 
-  it("@todos: the companion and Claude speak; GPT and Grok are skipped before any admission", async () => {
+  it("@todos: every brain speaks, each on its provider and admitted first; later speakers hear earlier ones as data", async () => {
     const h = await harness();
     const r = await runTurn(h.deps, req(h.mid, { text: "@todos ¿qué opinan?" }));
-    expect(r.turns.map((t) => t.pid)).toEqual(["chalito", "claude"]);
-    expect(r.skipped.map((s) => s.pid)).toEqual(["gpt", "grok"]);
-    expect(m.claude).toHaveLength(2);
-    expect(m.hub.filter((x) => x.path === "admit")).toHaveLength(2);
-    // The second speaker hears the first as quoted data.
+    expect(r.turns.map((t) => [t.pid, t.provider, t.model])).toEqual([
+      ["chalito", "anthropic", "claude-sonnet-5-5"],
+      ["claude", "anthropic", "claude-sonnet-5-5"],
+      ["gpt", "openai", "gpt-5.6-luna"],
+      ["grok", "xai", "grok-4.3"],
+    ]);
+    expect([m.claude.length, m.openai.length, m.xai.length]).toEqual([2, 1, 1]);
+    expect(m.hub.filter((x) => x.path === "admit")).toHaveLength(4);
     expect(m.claude[1]!.body.messages[0].content).toContain('Chalito: <data source="participant:chalito">');
+    expect(m.xai[0]!.body.input).toContain('GPT: <data source="participant:gpt">');
+  });
+
+  it("a provider without a managed key is skipped before any admission", async () => {
+    const h = await harness({ managed: { openai: undefined, xai: undefined } });
+    const r = await runTurn(h.deps, req(h.mid, { text: "@todos ¿qué opinan?" }));
+    expect(r.turns.map((t) => t.pid)).toEqual(["chalito", "claude"]);
+    expect(r.skipped).toEqual([
+      { pid: "gpt", reason: "provider openai not configured" },
+      { pid: "grok", reason: "provider xai not configured" },
+    ]);
+    expect(m.hub.filter((x) => x.path === "admit")).toHaveLength(2);
   });
 
   it("writes one llm.tokens event per reply through the outbox, priced from prices.yaml incl. cache", async () => {
@@ -259,7 +275,7 @@ describe("budgets (runaway-loop guard)", () => {
     const h = await harness({ budget: { mesaTokens: null, perParticipant: 4500 } });
     await runTurn(h.deps, req(h.mid)); // Claude spends 3850
     const r = await runTurn(h.deps, req(h.mid, { text: "@todos sigan" }));
-    expect(r.turns.map((t) => t.pid)).toEqual(["chalito"]);
+    expect(r.turns.map((t) => t.pid)).toEqual(["chalito", "gpt", "grok"]);
     expect(r.skipped[0]).toEqual({ pid: "claude", reason: "budget_participant" });
   });
 });

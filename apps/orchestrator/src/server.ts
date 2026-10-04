@@ -6,6 +6,11 @@ import { loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { createOrchestrator } from "./app.js";
 import { SupabaseAuthn } from "./auth.js";
 import { AnthropicBrain } from "./brains/anthropic.js";
+import type { Brain, BrainProviderId } from "./brains/brain.js";
+import { GeminiBrain } from "./brains/gemini.js";
+import { ResponsesBrain } from "./brains/responses.js";
+import { byoBrains } from "./byo.js";
+import { CloudKmsWrapper } from "./kms.js";
 import { hubEntitlements } from "./entitlements.js";
 import { PostgresMesaStore } from "./postgres-store.js";
 
@@ -24,13 +29,28 @@ const sql = postgres(env("DATABASE_URL"), {
 const supabase = createClient(env("SUPABASE_URL"), env("SUPABASE_SECRET_KEY"), {
   auth: { autoRefreshToken: false, persistSession: false },
 });
+// Managed brains: one per provider whose key is configured (others are skipped, never faked).
+const managed: Partial<Record<BrainProviderId, Brain>> = {
+  anthropic: new AnthropicBrain({ apiKey: env("ANTHROPIC_API_KEY") }),
+  ...(process.env.OPENAI_API_KEY
+    ? { openai: new ResponsesBrain("openai", { apiKey: process.env.OPENAI_API_KEY }) }
+    : {}),
+  ...(process.env.XAI_API_KEY ? { xai: new ResponsesBrain("xai", { apiKey: process.env.XAI_API_KEY }) } : {}),
+  // Vertex AI, global endpoint (D-012), with the service account's ADC.
+  ...(process.env.GOOGLE_CLOUD_PROJECT
+    ? { google: GeminiBrain.vertex(process.env.GOOGLE_CLOUD_PROJECT, "global") }
+    : {}),
+};
+const store = new PostgresMesaStore(sql);
+const wrapper = new CloudKmsWrapper(env("BRAIN_KEYS_KMS_KEY"));
 const hub = new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") });
 
 const app = createOrchestrator({
   authn: new SupabaseAuthn(supabase.auth),
-  store: new PostgresMesaStore(sql),
+  store,
+  wrapper,
   hub,
-  brain: new AnthropicBrain({ apiKey: env("ANTHROPIC_API_KEY") }),
+  brains: { managed, byo: byoBrains({ store, wrapper }) },
   models: loadModels(),
   prices: loadPrices(),
   entitlements: hubEntitlements({

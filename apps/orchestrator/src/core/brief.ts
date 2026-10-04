@@ -1,4 +1,4 @@
-import { MesaCard, estimateTokens } from "@chalito/protocol";
+import { MesaCard, SessionCard, estimateTokens } from "@chalito/protocol";
 import { DATA_RULE, quoteData, type Source } from "./quote.js";
 import type { Speaker } from "./mesa.js";
 
@@ -30,6 +30,8 @@ export interface BriefInput {
   profile: BriefProfile;
   /** Names of everyone at the table, for context. */
   table: string[];
+  /** Live session cards referenced by the Mesa (opened by the client): quoted data, ≤2. */
+  sessions?: { name: string; sid: string; card: SessionCard }[];
 }
 
 export interface Brief {
@@ -78,10 +80,17 @@ export const buildBrief = (b: BriefInput): Brief => {
   const card = b.card ? quoteData("card", JSON.stringify(MesaCard.parse(b.card))) : "(none)";
   const input = line({ ...b.input, text: clampTokens(b.input.text, 1200) });
   let recent = b.recent.slice(-RECENT_MAX).map((t) => line({ ...t, text: clampTokens(t.text, 400) }));
+  const sessions = (b.sessions ?? [])
+    .slice(0, 2)
+    .map((x) => `${x.name}: ${quoteData(`session:${x.sid}`, JSON.stringify(SessionCard.parse(x.card)))}`);
   const render = () =>
-    [`Goal: ${goal}`, `Mesa card: ${card}`, `Recent turns:\n${recent.join("\n") || "(none)"}`, `Now:\n${input}`].join(
-      "\n\n",
-    );
+    [
+      `Goal: ${goal}`,
+      `Mesa card: ${card}`,
+      ...(sessions.length ? [`Sessions (status only; you can't prompt them):\n${sessions.join("\n")}`] : []),
+      `Recent turns:\n${recent.join("\n") || "(none)"}`,
+      `Now:\n${input}`,
+    ].join("\n\n");
   const budget = BRIEF_BUDGET[b.profile];
   let context = render();
   // Over budget: drop the oldest recent turns first.

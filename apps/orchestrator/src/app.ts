@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
-import { Id, MesaCard } from "@chalito/protocol";
+import { Id, MesaCard, SealedEnvelope, SessionCard } from "@chalito/protocol";
 import type { Authn, Caller } from "./auth.js";
+import { brainKeyAad, type KeyWrapper } from "./kms.js";
+import type { UsageRow } from "./store.js";
 import { Participant, type MesaDoc } from "./core/mesa.js";
 import type { RecentTurn } from "./core/brief.js";
 import { runTurn, type TurnDeps } from "./turn.js";
@@ -14,6 +16,8 @@ import { runTurn, type TurnDeps } from "./turn.js";
  */
 export interface AppDeps extends TurnDeps {
   authn: Authn;
+  /** Wraps BYO keys for cloud turns (Cloud KMS in production). */
+  wrapper: KeyWrapper;
 }
 
 const CreateBody = z.object({
@@ -47,8 +51,72 @@ const TurnBody = z.object({
     )
     .max(3)
     .default([]),
+  /** Cards of the Mesa's session participants, opened by this client (quoted as data). */
+  sessionCards: z
+    .array(z.object({ sid: Id, card: SessionCard }))
+    .max(4)
+    .default([]),
   locale: z.enum(["es", "en"]).default("es"),
 });
+
+const PROVIDERS = ["anthropic", "openai", "xai", "google"] as const;
+const KeyBody = z
+  .object({
+    /** The key sealed to the person's own devices (aad brainkey:<owner>:<provider>). */
+    sealedCt: SealedEnvelope,
+    /** Opt in to cloud turns: then `key` is sent once, wrapped by KMS at once, never stored in plaintext. */
+    cloud: z.boolean(),
+    key: z.string().min(8).max(512).optional(),
+    hint: z.string().max(8).default(""),
+  })
+  .refine((b) => b.cloud === (b.key !== undefined), { message: "key exactly when cloud" });
+
+/** GET /v1/usage/daily: the usage page's read API (per day, managed vs BYO, work vs comms). */
+export interface UsageDaily {
+  days: {
+    day: string;
+    managed: { work: { tokens: number; costUsdMicros: number }; comms: { tokens: number; costUsdMicros: number } };
+    byo: { tokens: number; estCostUsdMicros: number };
+  }[];
+  totals: { managedTokens: number; managedCostUsdMicros: number; commsCostUsdMicros: number; byoTokens: number };
+  /** comms ÷ all managed cost (target < 0.10); null when nothing was spent. */
+  commsOverheadRatio: number | null;
+  target: 0.1;
+}
+
+export const summarizeUsage = (rows: UsageRow[], days: string[]): UsageDaily => {
+  const blank = () => ({
+    managed: { work: { tokens: 0, costUsdMicros: 0 }, comms: { tokens: 0, costUsdMicros: 0 } },
+    byo: { tokens: 0, estCostUsdMicros: 0 },
+  });
+  const byDay = new Map(days.map((d) => [d, blank()]));
+  for (const r of rows) {
+    const d = byDay.get(r.day);
+    if (!d) continue;
+    if (r.billing === "byo") {
+      d.byo.tokens += r.tokens;
+      d.byo.estCostUsdMicros += r.costUsdMicros;
+    } else {
+      d.managed[r.purpose].tokens += r.tokens;
+      d.managed[r.purpose].costUsdMicros += r.costUsdMicros;
+    }
+  }
+  const list = [...byDay].map(([day, v]) => ({ day, ...v }));
+  const sum = (f: (x: (typeof list)[number]) => number) => list.reduce((a, x) => a + f(x), 0);
+  const work = sum((x) => x.managed.work.costUsdMicros);
+  const comms = sum((x) => x.managed.comms.costUsdMicros);
+  return {
+    days: list,
+    totals: {
+      managedTokens: sum((x) => x.managed.work.tokens + x.managed.comms.tokens),
+      managedCostUsdMicros: work + comms,
+      commsCostUsdMicros: comms,
+      byoTokens: sum((x) => x.byo.tokens),
+    },
+    commsOverheadRatio: work + comms > 0 ? comms / (work + comms) : null,
+    target: 0.1,
+  };
+};
 
 type Env = { Variables: { caller: Caller } };
 
@@ -81,6 +149,8 @@ export const createOrchestrator = (deps: AppDeps) => {
       if (p.kind === "human" || pids.has(p.pid)) return c.json({ error: "bad_participants" }, 400);
       pids.add(p.pid);
     }
+    if (b.data.participants.filter((p) => p.kind === "session").length > 2)
+      return c.json({ error: "bad_participants" }, 400);
     // Brains per Mesa come from the plan (limits.mesaBrains); unset fails closed.
     const limit = (await deps.entitlements(caller.owner)).limits.mesaBrains;
     const brains = b.data.participants.filter((p) => p.kind === "brain").length;
@@ -108,6 +178,7 @@ export const createOrchestrator = (deps: AppDeps) => {
     if (!b.success) return c.json({ error: "bad_request" }, 400);
     const r = await runTurn(deps, {
       owner: caller.owner,
+      deviceId: caller.deviceId,
       mid: c.req.param("mid"),
       ...b.data,
       recent: b.data.recent as RecentTurn[],
@@ -116,6 +187,42 @@ export const createOrchestrator = (deps: AppDeps) => {
     if (r.status !== "ok")
       return c.json({ error: r.status, ...(r.stopped ? { stopped: r.stopped } : {}) }, status[r.status]);
     return c.json(r, 200, { "cache-control": "no-store" });
+  });
+
+  // ---- BYO brain keys (the person's own provider keys)
+  app.put("/v1/brain-keys/:provider", async (c) => {
+    const caller = c.get("caller");
+    const provider = z.enum(PROVIDERS).safeParse(c.req.param("provider"));
+    const b = KeyBody.safeParse(await c.req.json().catch(() => null));
+    if (!provider.success || !b.success) return c.json({ error: "bad_request" }, 400);
+    const wrapped = b.data.key ? await deps.wrapper.wrap(b.data.key, brainKeyAad(caller.owner, provider.data)) : null;
+    await deps.store.putBrainKey(
+      caller.owner,
+      {
+        provider: provider.data,
+        sealedCt: b.data.sealedCt,
+        hint: b.data.key ? b.data.key.slice(-4) : b.data.hint.slice(-4),
+        cloud: wrapped !== null,
+      },
+      wrapped,
+    );
+    return c.body(null, 204);
+  });
+  app.delete("/v1/brain-keys/:provider", async (c) => {
+    const provider = z.enum(PROVIDERS).safeParse(c.req.param("provider"));
+    if (!provider.success) return c.json({ error: "bad_request" }, 400);
+    const gone = await deps.store.deleteBrainKey(c.get("caller").owner, provider.data);
+    return gone ? c.body(null, 204) : c.json({ error: "not_found" }, 404);
+  });
+
+  // ---- usage page (read API)
+  app.get("/v1/usage/daily", async (c) => {
+    const n = Math.min(31, Math.max(1, Number(c.req.query("days") ?? 30) || 30));
+    const DAY = 86_400_000;
+    const today = Math.floor(deps.now() / DAY) * DAY;
+    const days = Array.from({ length: n }, (_, i) => new Date(today - (n - 1 - i) * DAY).toISOString().slice(0, 10));
+    const rows = await deps.store.usageDaily(c.get("caller").owner, today - (n - 1) * DAY);
+    return c.json(summarizeUsage(rows, days), 200, { "cache-control": "no-store" });
   });
 
   app.onError((err, c) => {

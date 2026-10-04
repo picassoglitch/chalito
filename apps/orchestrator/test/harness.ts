@@ -5,7 +5,12 @@ import { loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { generateBoxKeyPair, openJson, toB64url } from "@chalito/crypto";
 import { SealedEnvelope, type EntitlementInputs } from "@chalito/protocol";
 import { createOrchestrator } from "../src/app.js";
+import { GoogleGenAI } from "@google/genai";
 import { AnthropicBrain } from "../src/brains/anthropic.js";
+import { GeminiBrain } from "../src/brains/gemini.js";
+import { ResponsesBrain } from "../src/brains/responses.js";
+import { byoBrains } from "../src/byo.js";
+import { LocalKeyWrapper } from "../src/kms.js";
 import type { MesaDoc, Participant } from "../src/core/mesa.js";
 import { MemoryMesaStore } from "../src/store.js";
 import type { TurnDeps } from "../src/turn.js";
@@ -25,7 +30,12 @@ export interface ClaudeReply {
 }
 
 export const mocks = () => {
-  const claude: { body: Record<string, any> }[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Call = { body: Record<string, any>; auth: string | null; url: string };
+  const claude: Call[] = [];
+  const openai: Call[] = [];
+  const xai: Call[] = [];
+  const gemini: Call[] = [];
   const hub: { path: string; body: Record<string, any> }[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
   const state = {
     reply: (_body: Record<string, unknown>): ClaudeReply => ({
@@ -37,6 +47,10 @@ export const mocks = () => {
       },
     }),
     claudeStatus: 200,
+    /** Reply for OpenAI / xAI / Gemini: the `respond` arguments and the provider's usage block. */
+    other: (_provider: "openai" | "xai" | "google", _body: Record<string, unknown>): ClaudeReply => ({
+      input: { say: "De acuerdo.", proposals: [], objections: [], emotion: { tag: "relaxed", intensity: 0.4 } },
+    }),
     admit: (_b: Record<string, unknown>): Record<string, unknown> => ({
       ok: true,
       allowed: true,
@@ -58,7 +72,7 @@ export const mocks = () => {
   const server = setupServer(
     http.post("https://api.anthropic.com/v1/messages", async ({ request }) => {
       const body = (await request.json()) as Record<string, unknown>;
-      claude.push({ body });
+      claude.push({ body, auth: request.headers.get("x-api-key"), url: request.url });
       if (state.claudeStatus !== 200)
         return HttpResponse.json(
           { type: "error", error: { type: "api_error", message: "x" } },
@@ -85,6 +99,81 @@ export const mocks = () => {
         },
       });
     }),
+    ...(["https://api.openai.com/v1/responses", "https://api.x.ai/v1/responses"] as const).map((url) =>
+      http.post(url, async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        const provider = url.includes("x.ai") ? "xai" : "openai";
+        (provider === "xai" ? xai : openai).push({
+          body,
+          auth: request.headers.get("authorization"),
+          url: request.url,
+        });
+        const r = state.other(provider, body);
+        return HttpResponse.json({
+          id: `resp_${openai.length + xai.length}`,
+          object: "response",
+          created_at: 1,
+          model: body.model,
+          status: "completed",
+          output: r.input
+            ? [
+                {
+                  type: "function_call",
+                  id: "fc_1",
+                  call_id: "call_1",
+                  name: "respond",
+                  arguments: JSON.stringify(r.input),
+                  status: "completed",
+                },
+              ]
+            : [
+                {
+                  type: "message",
+                  id: "m_1",
+                  role: "assistant",
+                  status: "completed",
+                  content: [{ type: "output_text", text: r.text ?? "", annotations: [] }],
+                },
+              ],
+          usage: r.usage ?? {
+            input_tokens: 3000,
+            input_tokens_details: {
+              cached_tokens: 1000,
+              ...(provider === "openai" ? { cache_write_tokens: 500 } : {}),
+            },
+            output_tokens: 200,
+            output_tokens_details: { reasoning_tokens: 0 },
+            total_tokens: 3200,
+          },
+        });
+      }),
+    ),
+    http.post(
+      /^https:\/\/(aiplatform|generativelanguage)\.googleapis\.com\/.*:generateContent$/,
+      async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        gemini.push({ body, auth: request.headers.get("x-goog-api-key"), url: request.url });
+        const r = state.other("google", body);
+        return HttpResponse.json({
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: r.input ? [{ functionCall: { name: "respond", args: r.input } }] : [{ text: r.text ?? "" }],
+              },
+              finishReason: "STOP",
+            },
+          ],
+          usageMetadata: r.usage ?? {
+            promptTokenCount: 2000,
+            cachedContentTokenCount: 800,
+            candidatesTokenCount: 100,
+            thoughtsTokenCount: 50,
+            totalTokenCount: 2150,
+          },
+        });
+      },
+    ),
     http.post(`${HUB}/usage/admit`, async ({ request }) => {
       const body = (await request.json()) as Record<string, unknown>;
       hub.push({ path: "admit", body });
@@ -95,7 +184,7 @@ export const mocks = () => {
       return HttpResponse.json({ ok: true });
     }),
   );
-  return { server, claude, hub, state };
+  return { server, claude, openai, xai, gemini, hub, state };
 };
 
 export const participants: Participant[] = [
@@ -105,8 +194,16 @@ export const participants: Participant[] = [
   { kind: "brain", pid: "grok", name: "Grok", provider: "xai", modelRef: "auto" },
 ];
 
-export const harness = async (opts: { entitlement?: Partial<EntitlementInputs>; budget?: MesaDoc["budget"] } = {}) => {
+export const harness = async (
+  opts: {
+    entitlement?: Partial<EntitlementInputs>;
+    budget?: MesaDoc["budget"];
+    managed?: TurnDeps["brains"]["managed"];
+    extraParticipants?: Participant[];
+  } = {},
+) => {
   const store = new MemoryMesaStore();
+  const wrapper = new LocalKeyWrapper();
   const phone = await generateBoxKeyPair();
   store.clients.set(OWNER, { dev_phone: await toB64url(phone.publicKey) });
   const plans = loadPlans();
@@ -125,7 +222,17 @@ export const harness = async (opts: { entitlement?: Partial<EntitlementInputs>; 
   const deps: TurnDeps = {
     store,
     hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "engine-token" }),
-    brain: new AnthropicBrain({ apiKey: "sk-ant-test", maxRetries: 0 }),
+    brains: {
+      managed: {
+        anthropic: new AnthropicBrain({ apiKey: "sk-ant-managed", maxRetries: 0 }),
+        openai: new ResponsesBrain("openai", { apiKey: "sk-openai-managed", maxRetries: 0 }),
+        xai: new ResponsesBrain("xai", { apiKey: "xai-managed", maxRetries: 0 }),
+        // Vertex AI (express mode in tests: no ADC needed).
+        google: new GeminiBrain(new GoogleGenAI({ vertexai: true, apiKey: "vertex-managed" })),
+        ...opts.managed,
+      },
+      byo: byoBrains({ store, wrapper }),
+    },
     models: loadModels(),
     prices: loadPrices(),
     entitlements: async () => computeEntitlements(entitlementInputs, plans),
@@ -136,7 +243,11 @@ export const harness = async (opts: { entitlement?: Partial<EntitlementInputs>; 
   await store.createMesa(OWNER, mid, {
     v: 1,
     kind: "mesa",
-    participants: [{ kind: "human", pid: "owner", name: "Aldo", uid: OWNER }, ...participants],
+    participants: [
+      { kind: "human", pid: "owner", name: "Aldo", uid: OWNER },
+      ...participants,
+      ...(opts.extraParticipants ?? []),
+    ],
     budget: opts.budget ?? { mesaTokens: null, perParticipant: null },
     used: { total: 0, byParticipant: {} },
     status: "open",
@@ -144,6 +255,7 @@ export const harness = async (opts: { entitlement?: Partial<EntitlementInputs>; 
   });
   const app = createOrchestrator({
     ...deps,
+    wrapper,
     authn: {
       verify: async (t) => {
         if (t === "phone-token") return { owner: OWNER, deviceId: "dev_phone", role: "client" };
@@ -156,5 +268,5 @@ export const harness = async (opts: { entitlement?: Partial<EntitlementInputs>; 
   /** Opens a stored turn as the phone would. */
   const open = async (doc: Record<string, unknown>, m = mid) =>
     openJson<Record<string, unknown>>(SealedEnvelope.parse(doc.outCt), "dev_phone", phone, `mesa:${m}`);
-  return { store, deps, mid, app, open, phone };
+  return { store, deps, mid, app, open, phone, wrapper };
 };

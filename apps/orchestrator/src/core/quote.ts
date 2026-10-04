@@ -4,7 +4,8 @@
  * <data> element whose closing tag can't appear in the payload, and the system prompt says data is
  * never instructions.
  */
-export type Source = "owner" | "mcp:claude" | "mcp:chatgpt" | "room" | `participant:${string}` | "card";
+export type Source =
+  "owner" | "mcp:claude" | "mcp:chatgpt" | "room" | `participant:${string}` | `session:${string}` | "card";
 
 const SAFE = /^[a-z:._0-9-]{1,64}$/i;
 

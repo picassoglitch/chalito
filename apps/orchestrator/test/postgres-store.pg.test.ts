@@ -107,4 +107,69 @@ describe.skipIf(!url)("PostgresMesaStore", () => {
     await admin`insert into chalito.mesas (owner, mid, doc) values (${owner}, 'mcp_inbox', '{"kind": "mcp_inbox"}')`;
     expect(await store.getMesa(owner, "mcp_inbox")).toBeNull();
   });
+
+  it("decisions: creates a pending kind=decision approval on the database clock", async () => {
+    const { owner, phone } = await seed();
+    await store.createDecisionApproval(owner, {
+      aid: "apr_1",
+      mid: "m1",
+      tid: "t1",
+      origin: `client:${phone}`,
+      detailsCt: { alg: "xchacha20poly1305+sealedbox", nonce: "n", ct: "c", keys: {} },
+    });
+    const [a] = await admin`select kind, status, device_id, risk, origin, expires_at - created_at as ttl
+                            from chalito.approvals where owner = ${owner} and aid = 'apr_1'`;
+    expect(a).toMatchObject({
+      kind: "decision",
+      status: "pending",
+      device_id: "orchestrator",
+      risk: "MED",
+      origin: `client:${phone}`,
+    });
+  });
+
+  it("BYO keys: sealed row + wrapped copy; cloud off drops the copy; delete removes both", async () => {
+    const { owner } = await seed();
+    const row = {
+      provider: "openai" as const,
+      sealedCt: { alg: "x", nonce: "n", ct: "c", keys: {} },
+      hint: "1234",
+      cloud: true,
+    };
+    await store.putBrainKey(owner, row as never, "wrapped-1");
+    expect(await store.wrappedBrainKey(owner, "openai")).toBe("wrapped-1");
+    await store.putBrainKey(owner, { ...row, cloud: false } as never, null);
+    expect(await store.wrappedBrainKey(owner, "openai")).toBeNull();
+    expect((await admin`select cloud from chalito.brain_keys where owner = ${owner}`)[0]!.cloud).toBe(false);
+    expect(await store.deleteBrainKey(owner, "openai")).toBe(true);
+    expect(await store.deleteBrainKey(owner, "openai")).toBe(false);
+  });
+
+  it("usage: managed events from the outbox by day and purpose, BYO turns from the Mesa", async () => {
+    const { owner } = await seed();
+    await store.createMesa(owner, "m1", doc(owner));
+    const t = Date.now();
+    await store.appendTurn(
+      owner,
+      "m1",
+      "t1",
+      { v: 1 },
+      { pid: "claude", tokens: 30, events: [ev(owner, `${owner}:u1`)] },
+    );
+    await store.appendTurn(
+      owner,
+      "m1",
+      "t2",
+      { v: 1, t, billingMode: "byo", usage: { in: 100, out: 20, cached: 5 }, estCostUsdMicros: 7 },
+      { pid: "claude", tokens: 125, events: [null] },
+    );
+    const rows = await store.usageDaily(owner, t - 86_400_000);
+    const day = new Date(t).toISOString().slice(0, 10);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { day, billing: "managed", purpose: "work", tokens: 30, costUsdMicros: 99 },
+        { day, billing: "byo", purpose: "work", tokens: 125, costUsdMicros: 7 },
+      ]),
+    );
+  });
 });

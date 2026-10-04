@@ -1,30 +1,40 @@
 import type { ModelsConfig } from "@chalito/config";
 import type { EfficiencyProfile } from "@chalito/protocol";
+import type { BrainProviderId } from "../brains/brain.js";
 import type { Speaker } from "./mesa.js";
 
 /**
- * Which model a speaker uses, from models.yaml and the person's efficiency profile only (never
- * from the client). This service calls Anthropic; a profile whose companion is on another
- * provider (e.g. `low` → Gemini) falls back to that profile's Anthropic Mesa model, and other
- * providers' brain participants are unavailable until their adapters land.
+ * Which provider and model a speaker uses: models.yaml and the person's efficiency profile only,
+ * never the client. Brain participants use `profiles[p].mesa[provider]`; the companion uses
+ * `profiles[p].companion`, falling back to the profile's Claude model when its provider isn't
+ * configured here.
  */
-export type Resolved = { provider: "anthropic"; model: string } | { unavailable: string };
+export type Resolved = { provider: BrainProviderId; model: string } | { unavailable: string };
+
+/** The provider a speaker would use under a profile (before checking what's configured). */
+export const providerFor = (
+  models: ModelsConfig,
+  profile: Exclude<EfficiencyProfile, "free_min">,
+  speaker: Speaker,
+): BrainProviderId | null =>
+  speaker.kind === "companion" ? (models.profiles[profile]?.companion?.provider ?? null) : speaker.provider;
 
 export const resolveModel = (
   models: ModelsConfig,
   profile: EfficiencyProfile,
   speaker: Speaker,
-  defaults: { companion: string } = { companion: "claude-sonnet-5-5" },
+  has: (p: BrainProviderId) => boolean,
 ): Resolved => {
   if (profile === "free_min") return { unavailable: "free_min" };
   const p = models.profiles[profile];
   if (!p) return { unavailable: `no profile ${profile}` };
   if (speaker.kind === "companion") {
-    if (p.companion?.provider === "anthropic") return { provider: "anthropic", model: p.companion.model };
-    const fallback = p.mesa?.anthropic;
-    return { provider: "anthropic", model: fallback ?? defaults.companion };
+    if (p.companion && has(p.companion.provider)) return { provider: p.companion.provider, model: p.companion.model };
+    if (p.mesa?.anthropic && has("anthropic")) return { provider: "anthropic", model: p.mesa.anthropic };
+    return { unavailable: "no companion model configured" };
   }
-  if (speaker.provider !== "anthropic") return { unavailable: `provider ${speaker.provider} not available yet` };
-  const m = p.mesa?.anthropic;
-  return m ? { provider: "anthropic", model: m } : { unavailable: "no anthropic model in profile" };
+  const model = p.mesa?.[speaker.provider];
+  if (!model) return { unavailable: `no ${speaker.provider} model in profile ${profile}` };
+  if (!has(speaker.provider)) return { unavailable: `provider ${speaker.provider} not configured` };
+  return { provider: speaker.provider, model };
 };

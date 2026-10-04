@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BrainProvider, CompanionId, Id } from "@chalito/protocol";
+import { BrainProvider, CompanionId, Id, SessionId } from "@chalito/protocol";
 
 /**
  * A Mesa's stored metadata (chalito.mesas.doc, migration 001900). No goal, card or text: those
@@ -21,6 +21,12 @@ export const Participant = z.discriminatedUnion("kind", [
     /** "auto": the model comes from the person's efficiency profile (models.yaml), never from a client. */
     modelRef: z.literal("auto").default("auto"),
   }),
+  /**
+   * A live Claude Code / Codex session, by reference: its card (opened by the client) is quoted
+   * as data in briefs. It never speaks and is never prompted from the Mesa; prompting it takes
+   * the person's own signed command, as always.
+   */
+  z.object({ kind: z.literal("session"), pid: Id, name: z.string().min(1).max(40), sid: SessionId }),
 ]);
 export type Participant = z.infer<typeof Participant>;
 
@@ -40,5 +46,6 @@ export const MesaDoc = z.object({
 });
 export type MesaDoc = z.infer<typeof MesaDoc>;
 
-export type Speaker = Exclude<Participant, { kind: "human" }>;
-export const isSpeaker = (p: Participant): p is Speaker => p.kind !== "human";
+/** Who can be called: the companion and brains. Humans and session references never are. */
+export type Speaker = Extract<Participant, { kind: "companion" | "brain" }>;
+export const isSpeaker = (p: Participant): p is Speaker => p.kind === "companion" || p.kind === "brain";
