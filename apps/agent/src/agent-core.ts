@@ -511,6 +511,12 @@ export class AgentCore {
       card: { ct: await this.sealer.seal(card, `card:${s.sid}`) },
       updatedAt: this.d.now(),
     });
+    // MCP card sharing (opt-in, default off): the same redacted card, in plaintext, only while on.
+    try {
+      if (await this.d.store.mcpSharingOn(s.sid)) await this.d.store.writeSharedCard(s.sid, card);
+    } catch (err) {
+      this.d.log.warn("card.share_failed", { sid: s.sid, error: err instanceof Error ? err.message : "error" });
+    }
   }
 
   #reject(id: string, reason: string): { ok: false; reason: string } {

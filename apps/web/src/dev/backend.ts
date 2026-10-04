@@ -44,6 +44,7 @@ import type { ChannelSetter } from "@/lib/phone";
 import type { Connector, ConsentRequest, McpApi } from "@/lib/mcp";
 import { confirmStepUp } from "@/components/StepUpHost";
 import { passkeyRef, savePasskeyRef } from "@/lib/keys";
+import { parseUsage, type UsageApi } from "@/lib/usage";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -99,6 +100,8 @@ export interface DevControls {
   session(): { access_token: string; role: unknown } | null;
   /** Revokes THIS browser device (as another trusted device would). */
   revokeMe(): void;
+  /** GET /v1/usage/daily: "normal" (comms under target), "over" (above), "empty", or "error". */
+  setUsage(mode: "normal" | "over" | "empty" | "error"): void;
   /** /v1/endorse: the other side of "Añadir un dispositivo" / "Esperando aprobación". */
   endorse: {
     /** A new browser of the owner opens a code (for this trusted browser to approve). */
@@ -433,7 +436,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   db.setSession(personSession);
   const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
 
-  const controls: Omit<DevControls, "endorse"> & Partial<Pick<DevControls, "endorse">> = {
+  const controls: Omit<DevControls, "endorse" | "setUsage"> & Partial<Pick<DevControls, "endorse" | "setUsage">> = {
     marker: DEV_MARKER,
     owner: OWNER,
     get me() {
@@ -815,6 +818,46 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     mePairedWithAgent = false;
   };
 
+  // ---- GET /v1/usage/daily (apps/orchestrator), simulated: same shape, costs included --------
+  let usageMode: "normal" | "over" | "empty" | "error" = "normal";
+  controls.setUsage = (m) => void (usageMode = m);
+  const usage: UsageApi = async (days) => {
+    db.clientWrites.push({ table: "api", op: "usage/daily", row: { days } });
+    if (role() !== "client" || usageMode === "error") return "error";
+    const n = Math.min(31, Math.max(1, days));
+    const DAY = 86_400_000;
+    const today = Math.floor(Date.now() / DAY) * DAY;
+    const list = Array.from({ length: n }, (_, i) => {
+      const day = new Date(today - (n - 1 - i) * DAY).toISOString().slice(0, 10);
+      const on = usageMode !== "empty" && i % 7 !== 3; // a quiet day each week
+      const work = on ? 40_000 + ((i * 7919) % 25_000) : 0;
+      const comms = on ? Math.round(work * (usageMode === "over" ? 0.18 : 0.06)) : 0;
+      const byo = on && i % 2 === 0 ? 12_000 + ((i * 104_729) % 9_000) : 0;
+      return {
+        day,
+        managed: {
+          work: { tokens: work, costUsdMicros: work * 3 },
+          comms: { tokens: comms, costUsdMicros: comms * 3 },
+        },
+        byo: { tokens: byo, estCostUsdMicros: byo * 3 },
+      };
+    });
+    const sum = (f: (x: (typeof list)[number]) => number) => list.reduce((a, x) => a + f(x), 0);
+    const work = sum((x) => x.managed.work.costUsdMicros);
+    const comms = sum((x) => x.managed.comms.costUsdMicros);
+    return parseUsage({
+      days: list,
+      totals: {
+        managedTokens: sum((x) => x.managed.work.tokens + x.managed.comms.tokens),
+        managedCostUsdMicros: work + comms,
+        commsCostUsdMicros: comms,
+        byoTokens: sum((x) => x.byo.tokens),
+      },
+      commsOverheadRatio: work + comms > 0 ? comms / (work + comms) : null,
+      target: 0.1,
+    })!;
+  };
+
   // /v1/devices/token, simulated: the signature over the refresh challenge is the authentication.
   const sb = db.client(OWNER);
   return {
@@ -848,6 +891,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     phone: () => ({ verifier: phoneVerifier, channels }),
     mcp: () => mcp,
     api: () => api,
+    usage: () => usage,
     endorseWatch,
     saveDeviceKeys,
     enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),

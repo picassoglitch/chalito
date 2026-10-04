@@ -34,19 +34,21 @@ export const HubTenantStatus = z.object({ status: z.enum(["active", "paused"]) }
 
 // ---- Consumption (Chalito → hub) ----------------------------------------------
 
+// Field rules mirror the hub's parseAdmitBody (chalyb a5733df src/lib/usage/admission-core.ts).
 export const HubAdmitRequest = z.object({
   external_user_id: z.string().min(1),
   /** Re-admitting the same id returns (and updates) the same reservation. */
-  external_job_id: z.string().min(1).max(200),
+  external_job_id: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/),
   class: z.enum(["job", "stream"]),
   /** e.g. `companion.turn`, `mesa.turn`, `voice.session`, `call.briefing`, `room.notify`. */
-  operation: z.string().min(1).max(64),
-  est_tokens: z.number().int().nonnegative(),
-  upload_mb: z.number().nonnegative().default(0),
-  source_minutes: z.number().nonnegative().default(0),
-  storage_mb_after: z.number().nonnegative().default(0),
+  operation: z.string().regex(/^[a-z][a-z0-9_.]{0,63}$/),
+  est_tokens: z.number().int().nonnegative().max(1e11),
+  upload_mb: z.number().nonnegative().max(1e7).default(0),
+  source_minutes: z.number().nonnegative().max(1e6).default(0),
+  storage_mb_after: z.number().nonnegative().max(1e9).nullable().optional(),
   boost: z.boolean().nullable().default(null),
-  ttl_seconds: z.number().int().positive().optional(),
+  /** Hub default 3 h; 60 s to 24 h. */
+  ttl_seconds: z.number().int().min(60).max(86_400).optional(),
 });
 export type HubAdmitRequest = z.infer<typeof HubAdmitRequest>;
 
@@ -60,7 +62,27 @@ export const HubRefusalReason = z.enum([
   "streams_cap",
   "no_tokens",
   "boost_unavailable",
+  "already_settled",
 ]);
+
+/**
+ * The hub's TokenBalance (chalyb src/lib/usage/tokens.ts). `unlimited` users (hub admins) skip
+ * out-of-tokens checks but are still metered; their `remaining` is MAX_SAFE_INTEGER. `reserved`
+ * is new on the consumption-caps branch, so it defaults to 0 for hubs without it.
+ */
+export const HubBalance = z.object({
+  remaining: z.number(),
+  unlimited: z.boolean(),
+  monthlyAllocation: z.number(),
+  bonus: z.number(),
+  monthlyUsed: z.number(),
+  reserved: z.number().default(0),
+  periodStart: z.string(),
+});
+export type HubBalance = z.infer<typeof HubBalance>;
+
+/** GET /usage/balance → {ok: true, balance}; 404 {error: "unknown user_id"}. */
+export const HubBalanceResponse = z.object({ ok: z.literal(true), balance: HubBalance });
 
 export const HubAdmitResponse = z.discriminatedUnion("allowed", [
   z.object({
@@ -70,9 +92,15 @@ export const HubAdmitResponse = z.discriminatedUnion("allowed", [
     lane: z.enum(["standard", "boost"]),
     boost_fee_tokens: z.number().int().nonnegative(),
     limits: z.record(z.string(), z.unknown()),
-    balance: z.object({ remaining: z.number(), reserved: z.number() }).passthrough(),
+    balance: HubBalance,
   }),
-  z.object({ ok: z.literal(true), allowed: z.literal(false), reason: HubRefusalReason }),
+  z.object({
+    ok: z.literal(true),
+    allowed: z.literal(false),
+    reason: HubRefusalReason,
+    detail: z.record(z.string(), z.unknown()).optional(),
+    limits: z.record(z.string(), z.unknown()).optional(),
+  }),
 ]);
 export type HubAdmitResponse = z.infer<typeof HubAdmitResponse>;
 
@@ -191,6 +219,8 @@ export const EntitlementInputs = z
     soloTier: TierId.nullable(),
     hubTrialActive: z.boolean(),
     hubBalanceRemaining: z.number().nonnegative(),
+    /** The hub's `unlimited` (hub admins): never out of tokens, still metered. */
+    hubUnlimited: z.boolean().default(false),
     comped: z.boolean(),
     chosenEfficiency: EfficiencyProfile.optional(),
     now: EpochMs,

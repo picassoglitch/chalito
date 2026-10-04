@@ -15,6 +15,7 @@ import {
 } from "@/lib/endorse";
 import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
+import type { UsageApi } from "@/lib/usage";
 import type { Platform } from "@/lib/platform";
 import type { Session, SessionState } from "@/lib/session";
 import { SettingsStore, type SettingsDb } from "@/lib/settings-store";
@@ -46,6 +47,8 @@ interface Ctx {
   newDevice: ((name: string) => Promise<Waiting | { error: WaitError }>) | null;
   /** "Añadir un dispositivo": a trusted (ready) browser endorses another one. Null otherwise. */
   addDevice: AddDevice | null;
+  /** Token usage (/uso), read as this device; null until paired. */
+  usage: UsageApi | null;
 }
 
 export interface AddDevice {
@@ -101,6 +104,7 @@ const INITIAL: Ctx = {
   readSharing: null,
   newDevice: null,
   addDevice: null,
+  usage: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -296,6 +300,7 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           assertPasskey: () => platform.assertPasskey(token),
           newDevice: null,
           addDevice: addDevice(platform, keys, owner, token),
+          usage: platform.usage(token),
         });
       } catch (err) {
         if (err instanceof DeviceRevokedError) {
