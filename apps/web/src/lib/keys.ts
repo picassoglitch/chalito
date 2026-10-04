@@ -80,14 +80,18 @@ export const saveDeviceKeys = async (keys: RawDeviceKeys): Promise<void> => {
 /**
  * "Protege tus aprobaciones con tu passkey": registers a passkey for this device through the api
  * (client-keys registerPasskey: options → authenticator → verify → device-signed binding) and keeps
- * its reference. Throws on failure; a cancelled authenticator prompt rejects with NotAllowedError.
+ * its reference. With a passkey already here, this REPLACES it, confirmed with the current one
+ * (R-M11). Throws on failure; a cancelled authenticator prompt rejects with NotAllowedError.
  */
 export const enrollPasskey = async (
   device: DeviceKeys["keys"],
   apiBase: string,
   token: () => Promise<string | null>,
 ): Promise<void> => {
-  const credential = await registerPasskey(httpApi({ baseUrl: apiBase, token }), device);
+  // R-M11: replacing an existing passkey needs an assertion by the current one first.
+  const credential = await registerPasskey(httpApi({ baseUrl: apiBase, token }), device, undefined, undefined, {
+    replace: passkeyRef() !== null,
+  });
   savePasskeyRef(credential);
 };
 

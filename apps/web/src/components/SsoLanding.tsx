@@ -1,10 +1,10 @@
 "use client";
+import { SignInLink } from "./SignInLink";
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { handoffUrl, type DesktopHandoff } from "@/lib/desktop-sso";
 import { env } from "@/lib/env";
-import { hubLaunchUrl } from "@/lib/hub";
-import { takeNext } from "@/lib/next-cookie";
+import { allowedNext, ssoStateMatches, takeNext, takeSsoState } from "@/lib/next-cookie";
 import { completeSso } from "@/lib/sso";
 import { supabase } from "@/lib/supabase";
 
@@ -25,7 +25,8 @@ const consumeDesktopHandoff = async (): Promise<DesktopHandoff | null> => {
  */
 export const SsoLanding = () => {
   const t = useTranslations("sso");
-  const [failed, setFailed] = useState<null | "missing" | "failed" | "rate_limited">(null);
+  const [failed, setFailed] = useState<null | "missing" | "failed" | "rate_limited" | "unsolicited">(null);
+  const [returnTo, setReturnTo] = useState<string | undefined>(undefined);
   const [desktop, setDesktop] = useState<string | null>(null);
   const started = useRef(false);
   useEffect(() => {
@@ -34,10 +35,18 @@ export const SsoLanding = () => {
     const url = new URL(window.location.href);
     const token = url.searchParams.get("token");
     const next = url.searchParams.get("next");
+    const state = url.searchParams.get("state");
     // Drop the single-use token from the address bar and history right away.
     window.history.replaceState(null, "", url.pathname);
 
     const webSignIn = () => {
+      // Only a sign-in this browser started (review R-M1, login CSRF): otherwise the token may be
+      // someone else's. It's never exchanged; the person can start a sign-in from here instead.
+      if (!ssoStateMatches(takeSsoState(), state)) {
+        setReturnTo(next ? allowedNext(next) : undefined);
+        setFailed(token ? "unsolicited" : "missing");
+        return;
+      }
       let client;
       try {
         client = supabase();
@@ -77,16 +86,21 @@ export const SsoLanding = () => {
       </div>
     );
   if (!failed) return <p aria-live="polite">{t("working")}</p>;
+  if (failed === "unsolicited")
+    return (
+      <div className="grid gap-3" role="alert" data-testid="sso-unsolicited">
+        <p>{t("unsolicited")}</p>
+        <SignInLink returnTo={returnTo ?? "/"}>{t("continue")}</SignInLink>
+      </div>
+    );
   return (
     <div className="grid gap-3" role="alert">
       <p data-reason={failed}>
         {failed === "missing" ? t("missingToken") : failed === "rate_limited" ? t("rateLimited") : t("failed")}
       </p>
       {/* Rate limited: no relaunch offered; another sign-in right away would be refused too. */}
-      {failed !== "rate_limited" && hubLaunchUrl() ? (
-        <a className="w-fit rounded-lg border px-4 py-2" href={hubLaunchUrl()!}>
-          {t("retry")}
-        </a>
+      {failed !== "rate_limited" ? (
+        <SignInLink className="w-fit rounded-lg border px-4 py-2">{t("retry")}</SignInLink>
       ) : null}
     </div>
   );
