@@ -2,7 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { PostgresRepo, chalitoSql } from "../../src/postgres/repo.js";
 import { chalitoAuthUserId } from "../../src/supabase/identity.js";
 import { runApiRepoContract } from "./api-repo.contract.js";
-import { device, pairingCode } from "./fixtures.js";
+import { device, endorseCode, pairingCode } from "./fixtures.js";
 
 /**
  * Runs the ApiRepo contract against a Chalito database (the local Supabase stack in CI:
@@ -32,6 +32,15 @@ if (url) {
       const [pc] = await sql`select watch_auth_user_id from chalito.pairing_codes where code_id = ${code.codeId}`;
       expect(dev?.auth_user_id).toBe(chalitoAuthUserId("device", d.deviceId));
       expect(pc?.watch_auth_user_id).toBe(chalitoAuthUserId("pairing", code.codeId));
+    });
+    it("endorse codes record their watcher's Auth user, and taking the endorsement detaches it", async () => {
+      const repo = make();
+      const o = `contract-${crypto.randomUUID()}`;
+      await repo.upsertUserFromSso(o, { tenantId: o, email: "a@b.mx", tier: "pro", lastSsoAt: 1 });
+      const code = await endorseCode(o);
+      await repo.createEndorseCode(code);
+      const [ec] = await sql`select watch_auth_user_id from chalito.endorse_codes where code_id = ${code.codeId}`;
+      expect(ec?.watch_auth_user_id).toBe(chalitoAuthUserId("pairing", code.codeId));
     });
     it.runIf(role)(`runs as ${role}`, async () => {
       const [r] = await sql`select current_user as u`;

@@ -5,13 +5,15 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   connect,
   createBrowserSupabase,
+  endorsementChannel,
   ensureSession,
   indexedDbStorage,
+  supabaseEndorseWatch,
   type ChalitoClient,
   type StepUpProvider,
 } from "@chalito/client";
-import { DeviceClientKeys, KeyVault, deviceLogin, httpApi, passkeyStepUp } from "@chalito/client-keys";
-import { enrollDesktop, unavailableEndorsement, type EndorsementChannel } from "./enrollment.js";
+import { DeviceClientKeys, KeyVault, deviceLogin, endorseGlyph, httpApi, passkeyStepUp } from "@chalito/client-keys";
+import { enrollDesktop } from "./enrollment.js";
 import { SignInController } from "./sign-in.js";
 import { SsoFlow, exchange } from "./sso.js";
 import { platformAuthenticatorAvailable } from "./stepup.js";
@@ -29,7 +31,8 @@ export const readEnv = (e: Record<string, string | undefined> = import.meta.env)
     supabaseUrl: e.VITE_SUPABASE_URL ?? "",
     supabaseKey: e.VITE_SUPABASE_PUBLISHABLE_KEY ?? "",
     apiBase: (e.VITE_CHALITO_API_BASE ?? "").replace(/\/+$/, ""),
-    ssoStartUrl: e.VITE_SSO_START_URL ?? "",
+    // The web's desktop bridge (/auth/desktop → hub launch → hand-off to chalito://auth/sso).
+    ssoStartUrl: e.VITE_SSO_START_URL || "https://chalito.chalyb.com/auth/desktop",
   };
   return Object.values(env).every(Boolean) ? env : null;
 };
@@ -70,13 +73,22 @@ export interface Connected {
 export const createSession = async (
   env: DesktopEnv,
   onConnected: (c: Connected) => void,
-  channel: EndorsementChannel = unavailableEndorsement,
 ): Promise<{ controller: SignInController; dispose: () => void }> => {
   const storage = indexedDbStorage({ dbName: "chalito-desktop" });
   const sb = createBrowserSupabase(env.supabaseUrl, env.supabaseKey, storage);
   const vault = await KeyVault.open("chalito-desktop-keys");
   const token = async () => (await sb.auth.getSession()).data.session?.access_token ?? null;
   const api = httpApi({ baseUrl: env.apiBase, token });
+  // /v1/endorse: publish the registration, show the code and the glyph signed by this device's
+  // key, wait on chalito:pairing:<code> with the scoped watch token.
+  const channel = endorsementChannel({
+    api,
+    watch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseKey),
+    glyphFor: async (code) => {
+      const k = await vault.load();
+      return k ? endorseGlyph(k, code, { label: "Chalito (desktop)", now: Date.now() }) : null;
+    },
+  });
 
   const connectAs = async (owner: string, passkey: Stored["passkey"]) => {
     const stored = await vault.load();

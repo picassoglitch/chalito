@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { Deps } from "./deps.js";
 import { deviceRoutes } from "./routes/devices.js";
+import { endorseRoutes } from "./routes/endorse.js";
 import { hubRoutes } from "./routes/hub.js";
 import { pairingRoutes } from "./routes/pairing.js";
 import { recoveryRoutes } from "./routes/recovery.js";
@@ -14,6 +15,7 @@ export const createApp = (deps: Deps) => {
   app.route("/", hubRoutes(deps));
   app.route("/v1/devices", deviceRoutes(deps));
   app.route("/v1/pairing", pairingRoutes(deps));
+  app.route("/v1/endorse", endorseRoutes(deps));
   app.route("/v1/recovery", recoveryRoutes(deps));
   app.route("/v1/webauthn", webauthnRoutes(deps));
   app.onError((err, c) => {

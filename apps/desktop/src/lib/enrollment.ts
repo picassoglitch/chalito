@@ -6,7 +6,10 @@ import {
   registerPasskey,
   signDeviceRegistration,
 } from "@chalito/client-keys";
+import { EndorsementUnavailableError, type EndorsementChannel } from "@chalito/client";
 import type { DeviceRegistration, Endorsement } from "@chalito/protocol";
+
+export { EndorsementUnavailableError, unavailableEndorsement, type EndorsementChannel } from "@chalito/client";
 
 /**
  * Making this desktop panel a trusted client (decision: no special path; ADR 0006). It is a
@@ -21,27 +24,6 @@ import type { DeviceRegistration, Endorsement } from "@chalito/protocol";
  *   5. a passkey is enrolled right after, where the platform allows it (never required).
  * Never through the agent's IPC: the agent must not mint client trust for itself.
  */
-
-/** How the registration reaches a trusted client and its endorsement comes back. */
-export interface EndorsementChannel {
-  open(registration: DeviceRegistration): Promise<{
-    /** What the panel shows the person (glyph / short code / instructions). */
-    display: unknown;
-    endorsement: Promise<Endorsement>;
-    cancel(): void;
-  }>;
-}
-
-export class EndorsementUnavailableError extends Error {
-  constructor() {
-    super("endorsement_channel_unavailable");
-    this.name = "EndorsementUnavailableError";
-  }
-}
-
-export const unavailableEndorsement: EndorsementChannel = {
-  open: () => Promise.reject(new EndorsementUnavailableError()),
-};
 
 export type EnrollError =
   | "channel_unavailable"
@@ -77,6 +59,12 @@ export interface EnrollDeps {
   deviceApi: (customToken: string) => Promise<ApiClient>;
   signer: (keys: DeviceKeys) => Promise<DeviceSigner>;
   platformAuthenticator: () => Promise<boolean>;
+  /**
+   * The webview's origin. WebAuthn binds a passkey to the rpId's https origin, and the panel's
+   * (tauri://localhost, http://tauri.localhost) never matches: off https the attempt is skipped
+   * entirely and the panel is a client without step-up (beta decision).
+   */
+  origin?: string;
   ceremonies?: Ceremonies;
   onDisplay?: (display: unknown) => void;
   signal?: AbortSignal;
@@ -146,7 +134,8 @@ export const enrollDesktop = async (d: EnrollDeps): Promise<EnrollResult> => {
   // person to approve HIGH/CRITICAL actions from their phone.
   let passkey: PasskeyOutcome = "unavailable";
   let credential: { credentialId: string; rpId: string } | null = null;
-  if (await d.platformAuthenticator()) {
+  const httpsOrigin = (d.origin ?? globalThis.location?.origin ?? "").startsWith("https://");
+  if (httpsOrigin && (await d.platformAuthenticator())) {
     try {
       const cred = await registerPasskey(
         await d.deviceApi(enrolled.customToken),

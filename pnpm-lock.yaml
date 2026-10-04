@@ -167,6 +167,9 @@ importers:
       '@chalito/brand':
         specifier: workspace:*
         version: link:../../packages/brand
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@tauri-apps/cli':
         specifier: 2.12.1
         version: 2.12.1

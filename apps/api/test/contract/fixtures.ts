@@ -6,11 +6,18 @@ import {
   generateBoxKeyPair,
   generateSigningKeyPair,
   randomNonce,
+  signEnvelope,
   toB64url,
 } from "@chalito/crypto";
 import { hashShortCode, signGlyph } from "@chalito/glyph";
-import type { DeviceDoc, PairingCodeDoc } from "@chalito/protocol";
-import type { StoredRecovery } from "../../src/repo.js";
+import {
+  DeviceRegistrationBody,
+  EndorsementBody,
+  type DeviceDoc,
+  type Endorsement,
+  type PairingCodeDoc,
+} from "@chalito/protocol";
+import type { NewEndorseCode, StoredRecovery } from "../../src/repo.js";
 
 /** Real keys and derived ids, so a schema with format constraints accepts the fixtures. */
 export const owner = () => `contract-${randomUUID()}`;
@@ -105,3 +112,52 @@ export const agentFor = async (code: PairingCodeDoc, ownerId: string, claimer: s
 
 export const RACERS = 10;
 export const count = <T>(xs: T[], x: T) => xs.filter((y) => y === x).length;
+
+/** A new client's self-signed registration and the code it opens (repo-level: nothing verified). */
+export const endorseCode = async (ownerId: string, now = Date.now()) => {
+  const sign = await generateSigningKeyPair();
+  const box = await generateBoxKeyPair();
+  const deviceId = await deriveDeviceId(sign.publicKey);
+  const registration = await signEnvelope(
+    "chalito.device-register.v1",
+    DeviceRegistrationBody.parse({
+      v: 1,
+      owner: ownerId,
+      deviceId,
+      kind: "web",
+      platform: "web",
+      name: "Chalito (desktop)",
+      pubSign: await toB64url(sign.publicKey),
+      pubBox: await toB64url(box.publicKey),
+      issuedAt: now,
+    }),
+    deviceId,
+    sign.secretKey,
+  );
+  const code: NewEndorseCode = {
+    codeId: randomUUID().replace(/-/g, "").slice(0, 22),
+    shortCodeHash: await hashShortCode(`E${randomUUID().replace(/-/g, "").slice(0, 7).toUpperCase()}`),
+    owner: ownerId,
+    registration,
+    expiresAt: now + 5 * 60_000,
+  };
+  return code;
+};
+
+/** An endorsement-shaped envelope for repo tests (signature unchecked at this layer). */
+export const endorsementFor = async (code: NewEndorseCode, signerDeviceId: string): Promise<Endorsement> => {
+  const signer = await generateSigningKeyPair();
+  return signEnvelope(
+    "chalito.endorsement.v1",
+    EndorsementBody.parse({
+      v: 1,
+      uid: code.owner,
+      newDeviceId: code.registration.body.deviceId,
+      pubSign: code.registration.body.pubSign,
+      pubBox: code.registration.body.pubBox,
+      issuedAt: Date.now(),
+    }),
+    signerDeviceId,
+    signer.secretKey,
+  );
+};

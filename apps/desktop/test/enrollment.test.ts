@@ -161,6 +161,22 @@ describe("desktop enrolment (endorsed new client)", () => {
   });
 
   describe("passkey right after, where available", () => {
+    it.each(["tauri://localhost", "http://tauri.localhost", ""])(
+      "off https (%s) the attempt is skipped entirely: no ceremony, passkey unavailable",
+      async (origin) => {
+        const create = vi.fn();
+        const r = await enrollDesktop(
+          await base({
+            origin,
+            platformAuthenticator: async () => true,
+            ceremonies: { create, get: vi.fn() },
+          }),
+        );
+        expect(r).toMatchObject({ ok: true, passkey: "unavailable", credential: null });
+        expect(create).not.toHaveBeenCalled();
+      },
+    );
+
     it("enrolls when a platform authenticator exists", async () => {
       const deviceApi = userApi((path) =>
         path === "/v1/webauthn/register/options"
@@ -171,6 +187,7 @@ describe("desktop enrolment (endorsed new client)", () => {
       );
       const r = await enrollDesktop(
         await base({
+          origin: "https://chalito.chalyb.com",
           platformAuthenticator: async () => true,
           deviceApi: async (tok) => (expect(tok).toBe("device-hash"), deviceApi),
           ceremonies: { create: async () => ({}) as never, get: async () => ({}) as never },
@@ -186,6 +203,7 @@ describe("desktop enrolment (endorsed new client)", () => {
     it("a failing ceremony (e.g. webview origin ≠ rpId) leaves a working client without step-up", async () => {
       const r = await enrollDesktop(
         await base({
+          origin: "https://chalito.chalyb.com",
           platformAuthenticator: async () => true,
           ceremonies: {
             create: async () => Promise.reject(new DOMException("origin", "SecurityError")),
