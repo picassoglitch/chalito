@@ -2,7 +2,7 @@
 
 Reviewable patches for the Chalyb repo (`picassoglitch/chalyb`), covering the hub items in [CHALYB_ENGINE.md](../CHALYB_ENGINE.md). Nothing here has been applied, pushed or opened as a PR. The owner reviews and applies them.
 
-**Base: `claude/consumption-caps` at `d467b02`** (fetched 2026-10-04). Every patch applies cleanly to it, singly and as a stack, and the stack passes the hub's own checks there: `pnpm typecheck`, `pnpm lint` and `pnpm test` (279/279, no network). They were built in a `git archive` copy; the `~/chalyb` checkout and its worktrees weren't touched.
+**Base: `claude/consumption-caps` at `d467b02`** (fetched 2026-10-04). Every patch applies cleanly to it, singly and as a stack, and the stack passes the hub's own checks there: `pnpm typecheck`, `pnpm lint` and `pnpm test` (279/279, no network; 06 adds no tests and passes `terraform validate`). They were built in a `git archive` copy; the `~/chalyb` checkout and its worktrees weren't touched.
 
 | # | Patch | CHALYB_ENGINE.md | Needs |
 |---|---|---|---|
@@ -11,11 +11,12 @@ Reviewable patches for the Chalyb repo (`picassoglitch/chalyb`), covering the hu
 | 03 | `03-chalito-device-fence.patch`: `auth.users` trigger guard + restrictive RLS fence for Chalito device users (`0053`) | §7 | applies to main too |
 | 04 | `04-launch-forward-next-state.patch`: `/auth/launch/<slug>` forwards a validated `next` and echoes `state` *(optional)* | §8 / 8b | a5733df or later |
 | 05 | `05-revoke-server-rpcs-from-clients.patch`: hub security fix, not Chalito-specific (`0054`) | — | d467b02 (0050) |
+| 06 | `06-terraform-chalito-engine.patch`: the `chalito` engine in Terraform, plus per-slug `engine_extra_env` / `engine_extra_secret_env` | §3–4 | d467b02 (relay.tf context) |
 
 ## Apply order
 
 1. **Merge `claude/consumption-caps`** (§7b, below). It is a fast-forward of `main`.
-2. `git apply` 01 → 02 → 03 → 04 → 05 on top. 04 is optional; the others don't depend on it.
+2. `git apply` 01 → 02 → 03 → 04 → 05 → 06 on top. 04 is optional; the others don't depend on it.
 3. Migrations 0051–0054 then run in order. On the remote: `supabase db push` against nexo-ai, after a dry run on a branch.
 
 The patches use migration numbers 0051–0054 because the branch already uses 0041–0050. If more hub migrations land first, rename the four files (the numbers inside them aren't referenced anywhere else).
@@ -110,26 +111,21 @@ Chalito's paired devices are Supabase Auth users with `app_metadata.chalito` (§
 - **Longer term:** `alter default privileges … revoke execute on functions from anon, authenticated`, so new functions start closed. That's not in this patch, because it changes behaviour for every future migration.
 - **Visible:** no. **Costs:** nothing.
 
-## Infrastructure and secrets (not patches; the owner applies them)
-
-- **tfvars entry** in Chalyb `infra/terraform/terraform.tfvars`:
-  ```hcl
-  chalito = {
-    display_name = "Chalito"
-  }
-  ```
-  The module creates:
-  - the `chalito` service account;
-  - the secrets `chalito-admin-token`, `chalito-sso-secret` and `chalito-database-url`;
-  - a public, scale-to-zero Cloud Run service (Chalito's `api`), with `ENGINE_SLUG`, `PUBLIC_URL=https://chalito.chalyb.com` and `CHALYB_BASE_URL` set.
-- **Domain-mapping caveat:**
-  - `enable_domain_mappings` is a single global flag. With it on, the module maps `chalito.chalyb.com` to Cloud Run, but that host must point at **Vercel** (Chalito's web/PWA, the engine's `external_url`).
-  - Either leave the flag off for this apply and map `api.chalito.chalyb.com` → the `chalito` Cloud Run service by hand, or add a per-engine override to the module first.
-  - Chalito's `api` doesn't use `PUBLIC_URL` as its own host.
-- **Secret values:**
-  - `chalito-sso-secret` = Vercel `CHALITO_SSO_SECRET`;
-  - `chalito-admin-token` = Vercel `CHALITO_ADMIN_TOKEN` (also the bearer Chalito uses on `/api/engines/chalito/usage*`).
-  - Chalito's `notifier` and `orchestrator` service accounts need `secretAccessor` on `chalito-admin-token`.
+### 06: the `chalito` engine in Terraform
+- **Why not a tfvars entry:** `var.engines` has the live engines as its default, so `engines = { chalito = … }` in tfvars would replace the map and plan to destroy ChalyClip, ChalyOBS and ChalyCrypto. The entry goes in the default instead, next to them.
+- **The entry:**
+  - `secret_env_names` = `CHALITO_ADMIN_TOKEN`, `CHALITO_SSO_SECRET`, `DATABASE_URL`, which is what Chalito's api reads (the module's defaults are `ADMIN_TOKEN` / `SSO_SECRET`);
+  - plain env: `SUPABASE_URL` (nexo-ai), `API_PUBLIC_URL`, `CHALITO_API_ISSUER`, `CHALITO_WEB_ORIGIN`, `CHALITO_MCP_RESOURCE`, `CHALITO_WEBAUTHN_RP_ID`, `TRUSTED_PROXIES`;
+  - `SUPABASE_SECRET_KEY` from the shared `supabase-secret-key`.
+- **Two new variables, keyed by slug:** `engine_extra_env` and `engine_extra_secret_env`. They're for values that only exist after Chalito's own apply: its buckets, its release and scheduler signers, and the api's Twilio, voice, gateway, OpenAI and owner-id secrets, which Chalito's Terraform creates and grants to the `chalito` service account. They're set on a second Chalyb apply, without restating `engines`. The commented example is in the patch's `terraform.tfvars.example`.
+- **Apply order:**
+  1. Chalyb (creates the `chalito` service account and the three secrets);
+  2. Chalito's `infra/terraform/envs/dev`, with `api_service_account` set;
+  3. Chalyb again, with the two maps.
+- **Domains:** `enable_domain_mappings` is one global flag, and with it on the module would map `chalito.chalyb.com` to Cloud Run, but that host is Vercel's. Keep it off and map `api.chalito.chalyb.com` → the `chalito` service by hand. Chalito's api doesn't use `PUBLIC_URL`.
+- **Secrets:** the module generates `chalito-admin-token` and `chalito-sso-secret`. Copy them into the hub's Vercel env as `CHALITO_ADMIN_TOKEN` / `CHALITO_SSO_SECRET` (GO_LIVE 1.11). `chalito-database-url` is a `REPLACE_ME` placeholder until GO_LIVE 3.5. Chalito's Terraform grants its notifier and orchestrator access to the admin token and the database URL.
+- **Test:** `terraform validate` passes on the stack (providers from a local init, no backend). `terraform console` with a two-map tfvars shows the merged env and secret env for `chalito`, and `keys(var.engines)` still has the three live engines. Chalito's `packages/config/test/golive-examples.test.ts` checks that every env var the api requires is in this patch or provided by the module.
+- **Visible:** no, until the engine row is active. **Costs:** the first Chalyb apply after merging creates the `chalito` Cloud Run service (scale to zero) and three secrets.
 
 ## What's visible or costs money
 
@@ -139,7 +135,7 @@ Chalito's paired devices are Supabase Auth users with `app_metadata.chalito` (§
 | 01 migration | Coming-soon Chalito card for PRO users | No |
 | 02, 03, 05 migrations | No | No |
 | 04 | No (engines opt in) | No |
-| `terraform apply` with the `chalito` entry | No (the service isn't linked while `coming_soon`) | Cloud Run scale-to-zero, 3 secrets: cents/month idle |
+| `terraform apply` after 06 (and again with the two maps) | No (the service isn't linked while `coming_soon`) | Cloud Run scale-to-zero, 3 secrets: cents/month idle |
 | Flip `engines.status` to `active` + `reconcileEngineLinks('chalito')` | **Yes, go-live**: users can launch Chalito | Yes: Chalito usage starts debiting balances, and provider costs start |
 
 ## Regenerating the patches

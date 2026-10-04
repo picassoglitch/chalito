@@ -92,9 +92,13 @@ export class PostgresStore implements NotifierStore {
     return r?.id ?? null;
   }
 
+  /** Only active devices' subscriptions: nothing, not even a count, goes to a revoked device. */
   async pushSubscriptions(uid: string): Promise<PushSubscriptionRecord[]> {
     const rows = await this.sql<{ endpoint: string; p256dh: string; auth: string }[]>`
-      select endpoint, p256dh, auth from chalito.push_subscriptions where owner = ${uid}`;
+      select p.endpoint, p.p256dh, p.auth
+      from chalito.push_subscriptions p
+      join chalito.devices d on d.owner = p.owner and d.device_id = p.device_id
+      where p.owner = ${uid} and not d.revoked`;
     return rows.map((r) => ({ endpoint: r.endpoint, keys: { p256dh: r.p256dh, auth: r.auth } }));
   }
 

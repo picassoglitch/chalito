@@ -62,8 +62,8 @@ The details are in `docs/integrations/CHALYB_ENGINE.md`. These changes go in `pi
 Nothing here is committed. Each value goes into Secret Manager in Chalyb's project and is mounted only on the services listed.
 
 **Wiring:** `infra/terraform/envs/dev/main.tf` creates the containers and mounts each one under the env name the code reads (R-L12). `packages/config/test/terraform-env.test.ts` fails if a required name is missing or misnamed. Containers to fill:
-- `chalito-database-url`, `chalito-gateway-database-url`;
-- `chalito-gateway-token`, `chalito-supabase-secret-key`;
+- `chalito-database-url` (created by Chalyb's engine module as a `REPLACE_ME` placeholder; Chalito's Terraform grants the notifier and orchestrator access), `chalito-gateway-database-url`;
+- `chalito-gateway-token`, `chalito-supabase-secret-key`, `chalito-voice-token-secret`;
 - `chalito-vapid-private-key`, `chalito-openai-webhook-secret`, `chalito-voice-ref-secret`;
 - the Twilio, Meta, OpenAI, Anthropic and xAI ones, and `chalito-owner-uids`.
 
@@ -78,7 +78,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 **Cloud Scheduler:** schedule `POST <api>/tasks/account-deletions` hourly, with OIDC as `SCHEDULER_SA_EMAIL`.
 
 **Set by variables:**
-- `hub_admin_token_secret`: the id of Chalyb's `CHALITO_ADMIN_TOKEN` secret. The engine module grants the notifier and orchestrator access to it.
+- `hub_admin_token_secret`: the id of Chalyb's `CHALITO_ADMIN_TOKEN` secret. Chalito's Terraform grants the notifier and orchestrator access to it and to `chalito-database-url` (`hub_secret_read`).
 - `notifier_public_url` and `orchestrator_public_url`;
 - `supabase_url`, `vapid_public_key`, `realtime_sip_uri`.
 
@@ -89,7 +89,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 | `HUB_RESERVE_BASIS` (plain env, optional) | api, notifier, orchestrator | `pre_margin` (default) or `post_margin`: whether the hub adds the margin to an admit's `est_tokens` (GO_LIVE 1.6a). Anything else stops the service at boot |
 | `DATABASE_URL` (login that can `SET ROLE chalito_server`; `chalito_gateway` for the gateway) | api, notifier, orchestrator, mcp-gateway | nexo-ai Postgres; roles from the migrations |
 | `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | api, orchestrator | nexo-ai project settings (secret key, server only) |
-| `VOICE_TOKEN_SECRET` | api | Generate: 32 random bytes |
+| `VOICE_TOKEN_SECRET` | api | `chalito-voice-token-secret`. Generate: 32 random bytes |
 | `CHALITO_GATEWAY_TOKEN` | api, mcp-gateway | Generate: 32 random bytes, the same value on both |
 | `OPENAI_API_KEY` | api (desktop voice), notifier (SIP), orchestrator | OpenAI org account |
 | `OPENAI_WEBHOOK_SECRET` | notifier | OpenAI dashboard, `realtime.call.incoming` webhook |

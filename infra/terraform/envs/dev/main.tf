@@ -113,8 +113,18 @@ module "storage" {
   labels             = local.labels
 }
 
-# Secret containers (values out of band). The SSO secret and admin token belong to
-# Chalyb's engine module; Chalito services that call the hub get read access to them there.
+# The api (Chalyb's engine module) writes account exports and records to the records bucket and
+# avatars to the assets bucket, and deletes an owner's prefixes on account deletion (RUNBOOK).
+resource "google_storage_bucket_iam_member" "api_objects" {
+  for_each = toset(var.api_service_account == "" ? [] : ["assets", "records"])
+
+  bucket = module.storage.bucket_names[each.key]
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${var.api_service_account}"
+}
+
+# Secret containers (values out of band). The SSO secret, admin token and database URL belong to
+# Chalyb's engine module; the services that read them get access in hub_secret_read below.
 module "secrets" {
   source     = "../../modules/secrets"
   project_id = var.project_id
@@ -123,8 +133,8 @@ module "secrets" {
     "chalito-anthropic-api-key"     = concat([local.orchestrator], local.api_list)
     "chalito-openai-api-key"        = concat([local.orchestrator, local.notifier], local.api_list)
     "chalito-xai-api-key"           = [local.orchestrator]
-    "chalito-twilio-account-sid"    = [local.notifier]
-    "chalito-twilio-auth-token"     = [local.notifier]
+    "chalito-twilio-account-sid"    = concat([local.notifier], local.api_list)
+    "chalito-twilio-auth-token"     = concat([local.notifier], local.api_list)
     "chalito-twilio-from-number"    = [local.notifier]
     "chalito-twilio-verify-service" = concat([local.notifier], local.api_list)
     "chalito-meta-wa-phone-id"      = [local.notifier]
@@ -134,10 +144,12 @@ module "secrets" {
     "chalito-owner-uids"            = concat([local.orchestrator, local.notifier], local.api_list)
     "chalito-owner-default-phone"   = local.api_list
     # R-L12: everything the services require, by the names the code reads (see secret_env below).
-    "chalito-database-url"          = [local.orchestrator, local.notifier]
-    "chalito-gateway-database-url"  = [local.mcp]
-    "chalito-gateway-token"         = concat([local.mcp], local.api_list)
-    "chalito-supabase-secret-key"   = [local.orchestrator]
+    # chalito-database-url is not here: Chalyb's engine module creates it (hub_secret_read below).
+    "chalito-gateway-database-url" = [local.mcp]
+    "chalito-gateway-token"        = concat([local.mcp], local.api_list)
+    "chalito-supabase-secret-key"  = [local.orchestrator]
+    # The api's desktop-voice token key (VOICE_TOKEN_SECRET); 32 random bytes.
+    "chalito-voice-token-secret"    = local.api_list
     "chalito-vapid-private-key"     = [local.notifier]
     "chalito-openai-webhook-secret" = [local.notifier]
     "chalito-voice-ref-secret"      = [local.notifier]
@@ -210,7 +222,7 @@ module "orchestrator" {
     OWNER_UIDS          = "chalito-owner-uids"
   }, local.hub_bearer)
 
-  depends_on = [module.secrets, module.service_accounts]
+  depends_on = [module.secrets, module.service_accounts, google_secret_manager_secret_iam_member.hub_secret_read]
 }
 
 # BYO brain keys are envelope-encrypted with the byo key (BRAIN_KEYS_KMS_KEY): the orchestrator
@@ -224,8 +236,31 @@ resource "google_kms_crypto_key_iam_member" "orchestrator_byo" {
 }
 
 locals {
-  # CHALITO_ADMIN_TOKEN is Chalyb's secret (engine module), which grants these services access.
+  # CHALITO_ADMIN_TOKEN is Chalyb's secret (engine module); hub_secret_read grants these services access.
   hub_bearer = var.hub_admin_token_secret == "" ? {} : { CHALITO_ADMIN_TOKEN = var.hub_admin_token_secret }
+
+  # Secrets Chalyb's engine module creates in this project (<slug>-admin-token, -sso-secret,
+  # -database-url) and grants only to the api. The notifier and orchestrator read two of them, so
+  # access is granted here; creating them here too would collide with the hub's apply. They exist
+  # once Chalyb's apply has run with the chalito entry (GO_LIVE 1.10), which api_service_account marks.
+  hub_secret_readers = var.api_service_account == "" ? {} : merge(
+    { "chalito-database-url" = [local.orchestrator, local.notifier] },
+    var.hub_admin_token_secret == "" ? {} : { (var.hub_admin_token_secret) = [local.orchestrator, local.notifier] },
+  )
+  hub_secret_bindings = merge([
+    for id, members in local.hub_secret_readers : { for m in members : "${id}/${m}" => { id = id, member = m } }
+  ]...)
+}
+
+resource "google_secret_manager_secret_iam_member" "hub_secret_read" {
+  for_each = local.hub_secret_bindings
+
+  project   = var.project_id
+  secret_id = each.value.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${each.value.member}"
+
+  depends_on = [module.service_accounts]
 }
 
 module "notifier" {
@@ -269,7 +304,7 @@ module "notifier" {
     OWNER_UIDS               = "chalito-owner-uids"
   }, local.hub_bearer)
 
-  depends_on = [module.secrets]
+  depends_on = [module.secrets, google_secret_manager_secret_iam_member.hub_secret_read]
 }
 
 # Public by design: ChatGPT and Claude connectors call it over the internet. Every tool

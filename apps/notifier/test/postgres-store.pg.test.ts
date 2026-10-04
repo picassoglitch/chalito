@@ -190,6 +190,17 @@ if (!url) {
       ]);
       await store.deletePushSubscription(u, "https://push.example.test/x");
       expect(await store.pushSubscriptions(u)).toEqual([]);
+      // A revoked device's subscription is never used, even if its row is still there.
+      await admin`insert into chalito.push_subscriptions ${admin({
+        owner: u,
+        device_id: dev,
+        endpoint: "https://push.example.test/y",
+        p256dh: "k",
+        auth: "a",
+      })}`;
+      await admin`update chalito.devices set revoked = true where owner = ${u} and device_id = ${dev}`;
+      expect(await store.pushSubscriptions(u)).toEqual([]);
+      await admin`update chalito.devices set revoked = false where owner = ${u} and device_id = ${dev}`;
 
       await admin`insert into chalito.sessions ${admin({ owner: u, sid: "s1", device_id: dev, doc: admin.json({ label: "API de pagos" }) })}`;
       await admin`insert into chalito.call_lines ${admin({
