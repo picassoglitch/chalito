@@ -106,6 +106,10 @@ const app = createApp(
           seconds,
           sourceId: `${sess.sourceId}:${total}`,
         }),
+      // A desktop call that stopped heart-beating is hung up at OpenAI as well (needs only the key).
+      ...(process.env.OPENAI_API_KEY
+        ? { hangupCall: (callId: string) => openaiRealtime({ apiKey: env("OPENAI_API_KEY") }).hangupCall(callId) }
+        : {}),
     }),
   },
   {

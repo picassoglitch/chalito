@@ -20,6 +20,8 @@ export interface VoiceSession {
   maxSeconds: number;
   billedSeconds: number;
   endedAt: number | null;
+  /** The provider's call id once the api connected the call (desktop WebRTC via the api's SDP proxy). */
+  callId?: string | null;
 }
 
 /** Builds the usage event for `seconds` more of a session; its source_id is `<session>:<total>`. */
@@ -34,6 +36,8 @@ export interface AdvanceResult {
   ended: boolean;
   /** The session's hub reservation (to settle on end). */
   reservationId?: string;
+  /** The provider call id, when the api connected the call (to hang it up). */
+  callId?: string | null;
 }
 
 export interface VoiceSessionStore {
@@ -53,6 +57,10 @@ export interface VoiceSessionStore {
   }): Promise<AdvanceResult>;
   /** Open sessions past started + max + grace (never ended): the sweep bills them in full. */
   stale(now: number, graceMs: number, owner?: string): Promise<VoiceSession[]>;
+  /** Records the call id of an open session (the api hangs that call up at the cap or on revoke). */
+  setCallId(owner: string, sourceId: string, callId: string): Promise<boolean>;
+  /** The owner's open sessions on one device (e.g. to hang them up when the device is revoked). */
+  openFor(owner: string, deviceId: string): Promise<VoiceSession[]>;
 }
 
 /** Billed seconds for a session at `now`. */
@@ -70,9 +78,12 @@ export const sweepVoiceSessions = async (p: {
   owner?: string;
   event: VoiceEventFor;
   settle: (reservationId: string) => Promise<unknown>;
+  /** Ends the provider call of a session that has one (best effort; billing doesn't wait on it). */
+  hangup?: (s: VoiceSession) => Promise<unknown>;
 }) => {
   const stale = await p.store.stale(p.now, p.graceMs ?? 120_000, p.owner);
   for (const s of stale) {
+    if (s.callId && p.hangup) await p.hangup(s).catch(() => undefined);
     const r = await p.store.advance({
       owner: s.owner,
       sourceId: s.sourceId,
@@ -97,6 +108,7 @@ type Row = {
   max_seconds: number;
   billed_seconds: number;
   ended_at: Date | null;
+  call_id?: string | null;
 };
 const fromRow = (r: Row): VoiceSession => ({
   sourceId: r.source_id,
@@ -109,6 +121,7 @@ const fromRow = (r: Row): VoiceSession => ({
   maxSeconds: r.max_seconds,
   billedSeconds: r.billed_seconds,
   endedAt: r.ended_at ? r.ended_at.getTime() : null,
+  callId: r.call_id ?? null,
 });
 
 export class PostgresVoiceSessions implements VoiceSessionStore {
@@ -146,6 +159,7 @@ export class PostgresVoiceSessions implements VoiceSessionStore {
           maxSeconds: s.maxSeconds,
           ended: true,
           reservationId: s.reservationId,
+          callId: s.callId ?? null,
         };
       const total = Math.max(s.billedSeconds, dueSeconds(s, p.now, p.full));
       const billed = total - s.billedSeconds;
@@ -155,7 +169,15 @@ export class PostgresVoiceSessions implements VoiceSessionStore {
         set billed_seconds = ${total}, last_beat_at = ${new Date(p.now)},
             ended_at = ${p.end ? new Date(p.now) : null}, closed_by = ${p.end ? (p.full ? "sweep" : "end") : null}
         where source_id = ${p.sourceId}`;
-      return { found: true, billed, total, maxSeconds: s.maxSeconds, ended: p.end, reservationId: s.reservationId };
+      return {
+        found: true,
+        billed,
+        total,
+        maxSeconds: s.maxSeconds,
+        ended: p.end,
+        reservationId: s.reservationId,
+        callId: s.callId ?? null,
+      };
     })) as AdvanceResult;
   }
 
@@ -166,6 +188,21 @@ export class PostgresVoiceSessions implements VoiceSessionStore {
         and started_at + make_interval(secs => max_seconds) + make_interval(secs => ${graceMs / 1000}) < ${new Date(now)}
         ${owner ? this.sql`and owner = ${owner}` : this.sql``}
       order by started_at limit 500`;
+    return rows.map(fromRow);
+  }
+
+  async setCallId(owner: string, sourceId: string, callId: string) {
+    const rows = await this.sql`
+      update chalito_private.voice_sessions set call_id = ${callId}
+      where source_id = ${sourceId} and owner = ${owner} and ended_at is null
+      returning source_id`;
+    return rows.length > 0;
+  }
+
+  async openFor(owner: string, deviceId: string) {
+    const rows = await this.sql<Row[]>`
+      select * from chalito_private.voice_sessions
+      where owner = ${owner} and device_id = ${deviceId} and ended_at is null`;
     return rows.map(fromRow);
   }
 }
@@ -199,6 +236,7 @@ export class MemoryVoiceSessions implements VoiceSessionStore {
         maxSeconds: s.maxSeconds,
         ended: true,
         reservationId: s.reservationId,
+        callId: s.callId ?? null,
       };
     const total = Math.max(s.billedSeconds, dueSeconds(s, p.now, p.full));
     const billed = total - s.billedSeconds;
@@ -208,12 +246,33 @@ export class MemoryVoiceSessions implements VoiceSessionStore {
     }
     s.billedSeconds = total;
     if (p.end) s.endedAt = p.now;
-    return { found: true, billed, total, maxSeconds: s.maxSeconds, ended: p.end, reservationId: s.reservationId };
+    return {
+      found: true,
+      billed,
+      total,
+      maxSeconds: s.maxSeconds,
+      ended: p.end,
+      reservationId: s.reservationId,
+      callId: s.callId ?? null,
+    };
   }
 
   async stale(now: number, graceMs: number, owner?: string) {
     return [...this.sessions.values()].filter(
       (s) => s.endedAt === null && s.startedAt + s.maxSeconds * 1000 + graceMs < now && (!owner || s.owner === owner),
+    );
+  }
+
+  async setCallId(owner: string, sourceId: string, callId: string) {
+    const v = this.sessions.get(sourceId);
+    if (!v || v.owner !== owner || v.endedAt !== null) return false;
+    v.callId = callId;
+    return true;
+  }
+
+  async openFor(owner: string, deviceId: string) {
+    return [...this.sessions.values()].filter(
+      (v) => v.owner === owner && v.deviceId === deviceId && v.endedAt === null,
     );
   }
 }

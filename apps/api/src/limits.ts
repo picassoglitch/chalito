@@ -82,6 +82,8 @@ export const API_ROUTES: RouteTable = {
 
   // Desktop push-to-talk
   "POST /v1/voice/session": user(20, 0.2, 2 * KB),
+  // The desktop's WebRTC offer (a few KB of SDP), once per session.
+  "POST /v1/voice/session/sdp": user(20, 0.2, 32 * KB),
   "POST /v1/voice/session/heartbeat": user(120, 2, 2 * KB),
   "POST /v1/voice/session/end": user(30, 1, 2 * KB),
 

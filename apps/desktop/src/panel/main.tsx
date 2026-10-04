@@ -62,7 +62,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     };
   }, []);
   const client = conn?.client ?? null;
-  const ptt = useMemo(() => new PushToTalk(unavailableVoice), []);
+  const ptt = useMemo(() => new PushToTalk(conn?.voice ?? unavailableVoice), [conn]);
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);

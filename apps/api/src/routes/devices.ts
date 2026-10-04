@@ -7,6 +7,7 @@ import {
   RevokeDeviceRequest,
 } from "@chalito/protocol";
 import type { Deps } from "../deps.js";
+import { endDeviceVoice } from "../voice/routes.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { buildDeviceDoc, checkRegistration, mintDeviceToken } from "../lib/devices.js";
 import { fail } from "../lib/errors.js";
@@ -151,6 +152,8 @@ export const deviceRoutes = (deps: Deps) => {
     if (res === "not_found") return fail(404, "not_found");
     if (res === "already_revoked") return c.json({ ok: true, alreadyRevoked: true });
     await deps.identity.disableDevice(body.data.deviceId);
+    // Its desktop voice call ends now (billed to this moment), not when the client notices.
+    if (deps.voice) await endDeviceVoice(deps, deps.voice, p.owner, body.data.deviceId);
     await deps.audit.record({ action: "device.revoked", owner: p.owner, actor: p.uid, target: body.data.deviceId });
     return c.json({ ok: true });
   });
