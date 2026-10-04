@@ -44,9 +44,24 @@ export const AUTH_URL = process.env.SUPABASE_AUTH_URL;
 export const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 export const ANON = process.env.SUPABASE_ANON_KEY ?? "";
 const ROLE = process.env.CHALITO_DB_ROLE;
-/** Only against the local stack: a non-local URL is refused. */
+/**
+ * The local stack, or a disposable Supabase branch (scripts/nexo-ai-dryrun.sh). A branch needs both
+ * refs: CHALITO_REHEARSAL_BRANCH_REF must be AUTH_URL's host and differ from
+ * CHALITO_REHEARSAL_MAIN_REF (the project the branch came from), which is never a target.
+ */
+export const branchTarget = (
+  authUrl: string | undefined,
+  branchRef: string | undefined,
+  mainRef: string | undefined,
+): boolean =>
+  !!(authUrl && branchRef && mainRef) &&
+  /^[a-z0-9]{20}$/.test(branchRef!) &&
+  branchRef !== mainRef &&
+  authUrl === `https://${branchRef}.supabase.co/auth/v1`;
 export const READY =
-  !!(DB_URL && AUTH_URL && SERVICE && ANON) && /^http:\/\/(127\.0\.0\.1|localhost):\d+/.test(AUTH_URL ?? "");
+  !!(DB_URL && AUTH_URL && SERVICE && ANON) &&
+  (/^http:\/\/(127\.0\.0\.1|localhost):\d+/.test(AUTH_URL ?? "") ||
+    branchTarget(AUTH_URL, process.env.CHALITO_REHEARSAL_BRANCH_REF, process.env.CHALITO_REHEARSAL_MAIN_REF));
 export const SUPABASE_URL = (AUTH_URL ?? "").replace(/\/auth\/v1\/?$/, "");
 
 const SSO_SECRET = "rehearsal-sso-secret";
