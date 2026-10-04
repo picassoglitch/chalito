@@ -84,6 +84,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
@@ -111,6 +114,10 @@ importers:
       zod:
         specifier: ^4.6.5
         version: 4.6.5
+    devDependencies:
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
 
   packages/adapters:
     dependencies:
@@ -183,6 +190,18 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+
+  packages/rooms:
+    dependencies:
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../crypto
+      '@chalito/glyph':
+        specifier: workspace:*
+        version: link:../glyph
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../protocol
 
 packages:
 

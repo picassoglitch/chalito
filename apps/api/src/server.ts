@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createApp } from "./app.js";
 import type { AuditSink } from "./deps.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
+import { PostgresRoomsRepo, type RoomsRepo } from "./rooms/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
 
@@ -19,7 +20,7 @@ const env = (name: string): string => {
  * server only). CHALITO_DATA_BACKEND defaults to `supabase`, the only backend since the
  * Firestore cut-over.
  */
-const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
+const backend = (): { repo: ApiRepo; identity: IdentityIssuer; rooms: RoomsRepo } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
     throw new Error(`CHALITO_DATA_BACKEND=${kind} is not supported (Firestore was removed, ADR 0017)`);
@@ -32,6 +33,7 @@ const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
   return {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
+    rooms: new PostgresRoomsRepo(sql),
   };
 };
 
