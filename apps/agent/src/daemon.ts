@@ -18,6 +18,7 @@ import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, type Logger } from "./redact.js";
 import { which } from "./runner.js";
+import { syncEndorsements } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
@@ -104,6 +105,9 @@ const servicePlanFiles = (bin: string, home: string): string[] => {
     return [];
   }
 };
+
+/** ADR 0018: safety net for endorsement pointers missed while offline. */
+export const ENDORSEMENT_SYNC_MS = 15 * 60 * 1000;
 
 /** Presence: lastSeenAt every 5 min while running (the database skips broadcasts for last_seen-only updates). */
 export const PRESENCE_HEARTBEAT_MS = 5 * 60 * 1000;
@@ -275,6 +279,48 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   };
   const core = new AgentCore(coreDeps);
 
+  // ADR 0018: clients endorsed by a client this agent trusts (at start, on pointer, every 15 min).
+  let syncing = false;
+  const reportedRefusals = new Set<string>();
+  const syncTrust = () => {
+    if (syncing) return;
+    syncing = true;
+    void syncEndorsements({
+      store: signedInStore,
+      trust: () => trust,
+      saveTrust: () => trustStore.save(trust),
+      now,
+      onAdded: (deviceId, endorsedBy) => log.info("trust.client_endorsed", { clientDeviceId: deviceId, endorsedBy }),
+      // R-L13: a refusal is never silent. Logged, audited, and published to the person's clients.
+      onRefused: (clientDeviceId, endorsedBy, reason) => {
+        log.warn("trust.endorsement_refused", { clientDeviceId, endorsedBy, reason });
+        const t = now();
+        void signedInStore
+          .publishDeviceEvent({
+            v: 1,
+            type: "trust.endorsement_refused",
+            deviceId: id.deviceId,
+            clientDeviceId,
+            endorsedBy,
+            reason,
+            t,
+          })
+          .catch((err: unknown) =>
+            log.warn("trust.refusal_report_failed", { error: err instanceof Error ? err.message : "error" }),
+          );
+      },
+      reported: reportedRefusals,
+    })
+      .catch((err: unknown) =>
+        log.warn("trust.endorsement_sync_failed", { error: err instanceof Error ? err.message : "error" }),
+      )
+      .finally(() => {
+        syncing = false;
+      });
+  };
+  const unwatchEndorsements = signedInStore.watchEndorsements(syncTrust);
+  syncTrust();
+
   const unwatchCommands = signedInStore.watchCommands((cid, doc) => {
     void core.handleCommand(cid, doc).then((r) => {
       if (!r.ok) log.warn("command.not_applied", { cid, reason: r.reason });
@@ -322,6 +368,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
         log.warn("presence.heartbeat_failed", { error: err instanceof Error ? err.message : "error" }),
       );
   }, PRESENCE_HEARTBEAT_MS);
+  const endorsementSync = every(syncTrust, ENDORSEMENT_SYNC_MS);
 
   let resolveDone!: () => void;
   const done = new Promise<void>((r) => (resolveDone = r));
@@ -332,6 +379,8 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     log.info("agent.stopping", { reason });
     refresh.clear();
     heartbeat.clear();
+    endorsementSync.clear();
+    unwatchEndorsements();
     unwatchCommands();
     policy.close();
     devWatcher?.close();

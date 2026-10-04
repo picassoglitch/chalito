@@ -1,10 +1,9 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { Entry } from "@napi-rs/keyring";
 import { fromB64url, toB64url } from "@chalito/crypto";
 import sodium from "libsodium-wrappers-sumo";
-import type { SecretStore } from "./secrets.js";
+import { KeyringUnavailableError, loadKeyring, type SecretStore } from "./secrets.js";
 
 /**
  * Headless-Linux fallback for the OS keychain (ADR 0004): one file, ~/.chalito/secrets.enc
@@ -137,10 +136,20 @@ export class EncryptedFileSecretStore implements SecretStore {
   }
 }
 
-/** True when a persistent OS keychain is reachable. On Linux this means a Secret Service, never keyutils (in-memory, lost on reboot). */
-export const keyringProbe = async (): Promise<boolean> => {
+/**
+ * Whether a persistent OS keychain is reachable. On Linux this means a Secret Service, never
+ * keyutils (in-memory, lost on reboot). "addon_missing" when the keychain addon itself won't
+ * load: a broken build, which must fail closed rather than fall back.
+ */
+export const keyringProbe = async (load?: Parameters<typeof loadKeyring>[0]): Promise<boolean | "addon_missing"> => {
+  let mod;
   try {
-    const e = new Entry("com.chalito.agent.probe", `probe-${process.pid}`, { linux: { store: "secret-service" } });
+    mod = await loadKeyring(load);
+  } catch {
+    return "addon_missing";
+  }
+  try {
+    const e = new mod.Entry("com.chalito.agent.probe", `probe-${process.pid}`, { linux: { store: "secret-service" } });
     e.setPassword("1");
     const ok = e.getPassword() === "1";
     e.deletePassword();
@@ -156,12 +165,19 @@ export const FILE_STORE_WARNING =
 export type ChosenSecretStore =
   { kind: "keyring"; store: SecretStore } | { kind: "file"; store: SecretStore; warning: string };
 
-/** The keyring when the probe passes, otherwise the encrypted file, with a warning the caller must show. */
+/**
+ * The keyring when the probe passes; the encrypted file (with a warning the caller must show)
+ * when there's no keychain service; KeyringUnavailableError when the addon is missing.
+ */
 export const chooseSecretStore = async (deps: {
   keyring: SecretStore;
   fileStore: () => SecretStore;
-  probe?: () => Promise<boolean>;
+  probe?: () => Promise<boolean | "addon_missing">;
 }): Promise<ChosenSecretStore> => {
-  if (await (deps.probe ?? keyringProbe)()) return { kind: "keyring", store: deps.keyring };
+  const p = await (deps.probe ?? keyringProbe)();
+  // The encrypted file is for machines WITHOUT a keychain service (headless Linux), not for a
+  // build that lost its keychain addon: that one refuses to run.
+  if (p === "addon_missing") throw new KeyringUnavailableError();
+  if (p) return { kind: "keyring", store: deps.keyring };
   return { kind: "file", store: deps.fileStore(), warning: FILE_STORE_WARNING };
 };

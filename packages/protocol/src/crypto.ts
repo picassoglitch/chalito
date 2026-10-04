@@ -62,6 +62,32 @@ export const signed = <T extends z.ZodTypeAny>(ctx: SigningContext, body: T) =>
     sig: Signature,
   });
 
+/** An agent the endorser trusts locally, introduced to the new client (ADR 0018). */
+export const IntroducedAgent = z.object({
+  deviceId: DeviceId,
+  pubSign: PubSign,
+  pubBox: b64url(32),
+  fingerprint: z.string().min(1).max(64),
+});
+export type IntroducedAgent = z.infer<typeof IntroducedAgent>;
+
+/**
+ * The endorser's presence over the endorsement (ADR 0018): a WebAuthn assertion by the
+ * ENDORSER's passkey whose challenge is SHA-256(JCS(endorsement body without stepUp)), the same
+ * construction as a decision's step-up (D-019). WebAuthn only: a self-asserted method would
+ * prove nothing to the agents.
+ */
+export const EndorsementStepUp = z.object({
+  method: z.literal("webauthn"),
+  at: EpochMs,
+  assertion: z.object({
+    credentialId: b64url(),
+    authenticatorData: b64url(),
+    clientDataJSON: b64url(),
+    signature: b64url(),
+  }),
+});
+
 /** Endorsement of a new client by an already-trusted client. */
 export const EndorsementBody = z.object({
   v: z.literal(1),
@@ -70,6 +96,17 @@ export const EndorsementBody = z.object({
   pubSign: PubSign,
   pubBox: b64url(32),
   issuedAt: EpochMs,
+  /**
+   * ADR 0018 (optional, signed with the rest): the endorser's trusted agents. The new client
+   * may trust them (after checking each against the devices directory); an agent accepts the
+   * endorsed client only if it is listed here. Absent in older endorsements.
+   */
+  agents: z.array(IntroducedAgent).max(32).optional(),
+  /**
+   * Required by agents (and the api) when the endorser has a passkey: without it a stolen,
+   * unlocked client could endorse a device carrying the thief's own passkey.
+   */
+  stepUp: EndorsementStepUp.optional(),
 });
 export const Endorsement = signed("chalito.endorsement.v1", EndorsementBody);
 export type Endorsement = z.infer<typeof Endorsement>;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent, SessionCard } from "@chalito/protocol";
 import type { Logger } from "./redact.js";
 import { redactDeep, sanitizeDeviceEvent } from "./redact.js";
-import type { AgentStore, AuditEntry } from "./store.js";
+import type { AgentStore, AuditEntry, EndorsementRow } from "./store.js";
 
 /**
  * The slice of supabase-js the agent uses (schema `chalito`). Narrow on purpose: unit tests
@@ -19,6 +19,7 @@ export interface SupaQuery extends PromiseLike<SupaResult> {
   delete(): SupaQuery;
   eq(column: string, value: unknown): SupaQuery;
   gt(column: string, value: unknown): SupaQuery;
+  in(column: string, values: readonly unknown[]): SupaQuery;
   order(column: string, opts?: { ascending?: boolean }): SupaQuery;
   maybeSingle(): SupaQuery;
 }
@@ -182,6 +183,8 @@ export class SupabaseStore implements AgentStore {
         await this.#fetchCommand(p.key.id);
       } else if (p.table === "approval_decisions" && typeof aid === "string" && this.#approvalWatchers.has(aid)) {
         await this.#fetchDecisions(aid);
+      } else if (p.table === "endorsements" || p.table === "devices") {
+        this.#endorsementHandler?.();
       }
     } catch (err) {
       this.#log?.error("realtime.fetch_failed", {
@@ -221,6 +224,7 @@ export class SupabaseStore implements AgentStore {
         // Fallback: a watcher registered after those revs were seen.
         for (const aid of [...this.#approvalWatchers.keys()]) await this.#fetchDecisions(aid);
       }
+      this.#endorsementHandler?.();
     } catch (err) {
       this.#log?.error("realtime.resync_failed", { error: err instanceof Error ? err.message : "error" });
     }
@@ -354,6 +358,47 @@ export class SupabaseStore implements AgentStore {
   async upsertSession(sid: string, data: Record<string, unknown>) {
     const patch = JSON.parse(JSON.stringify({ ...data, deviceId: this.deviceId })) as Record<string, unknown>;
     await this.#write("merge session", () => this.db.rpc("session_merge", { p_sid: sid, p_patch: patch }));
+  }
+
+  // ---- endorsements (ADR 0018) ---------------------------------------------------
+
+  #endorsementHandler: (() => void) | null = null;
+
+  watchEndorsements(onChange: () => void) {
+    this.#endorsementHandler = onChange;
+    this.#ensureChannel();
+    return () => {
+      this.#endorsementHandler = null;
+    };
+  }
+
+  async listEndorsements(): Promise<EndorsementRow[]> {
+    const rows = await must<{ device_id: string; endorsement: unknown }[]>(
+      "list endorsements",
+      this.db.from("endorsements").select("device_id, endorsement").eq("owner", this.owner),
+    );
+    if (!rows?.length) return [];
+    const devices = await must<{ device_id: string; revoked: boolean; webauthn_binding: unknown }[]>(
+      "endorsed devices",
+      this.db
+        .from("devices")
+        .select("device_id, revoked, webauthn_binding")
+        .eq("owner", this.owner)
+        .in(
+          "device_id",
+          rows.map((r) => r.device_id),
+        ),
+    );
+    const byId = new Map((devices ?? []).map((d) => [d.device_id, d]));
+    return rows.map((r) => {
+      const d = byId.get(r.device_id);
+      return {
+        deviceId: r.device_id,
+        endorsement: r.endorsement,
+        revoked: !d || d.revoked,
+        webauthnBinding: d?.webauthn_binding ?? null,
+      };
+    });
   }
 
   // ---- commands ------------------------------------------------------------------

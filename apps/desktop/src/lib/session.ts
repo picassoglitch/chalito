@@ -8,6 +8,7 @@ import {
   endorsementChannel,
   ensureSession,
   indexedDbStorage,
+  must,
   supabaseEndorseWatch,
   type ChalitoClient,
   type StepUpProvider,
@@ -135,6 +136,26 @@ export const createSession = async (
         },
         signer: (k) => DeviceClientKeys.create(k, vault),
         platformAuthenticator: () => platformAuthenticatorAvailable(),
+        // ADR 0018: the computers the endorsing client trusts, where the directory agrees.
+        introduce: {
+          directory: async () => {
+            const rows = await must<
+              { device_id: string; role: string; revoked: boolean; pub_sign: string; pub_box: string }[]
+            >(
+              "devices directory",
+              sb.from("devices").select("device_id, role, revoked, pub_sign, pub_box").eq("owner", owner),
+            );
+            return (rows ?? []).map((r) => ({
+              deviceId: r.device_id,
+              role: r.role === "agent" ? ("agent" as const) : ("client" as const),
+              revoked: r.revoked,
+              pubSign: r.pub_sign,
+              pubBox: r.pub_box,
+            }));
+          },
+          trust: async (k, agents, endorsedBy) =>
+            (await DeviceClientKeys.create(k, vault)).trustIntroducedAgents(agents, endorsedBy, Date.now()),
+        },
         onDisplay,
         signal,
       });

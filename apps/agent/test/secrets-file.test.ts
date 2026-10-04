@@ -1,13 +1,14 @@
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { MemorySecretStore } from "../src/secrets.js";
+import { describe, expect, it, vi } from "vitest";
+import { KeyringStore, KeyringUnavailableError, MemorySecretStore } from "../src/secrets.js";
 import {
   EncryptedFileSecretStore,
   FILE_STORE_WARNING,
   SecretsFileError,
   chooseSecretStore,
+  keyringProbe,
 } from "../src/secrets-file.js";
 
 // Fast argon2id limits for most tests; one test uses the MODERATE defaults.
@@ -92,5 +93,36 @@ describe("chooseSecretStore", () => {
     expect(r.store).toBe(file);
     expect(r.kind === "file" && r.warning).toBe(FILE_STORE_WARNING);
     expect(FILE_STORE_WARNING).toMatch(/secrets\.enc/);
+  });
+});
+
+describe("keychain addon missing (broken build): fail closed", () => {
+  const missing = () => Promise.reject(new Error("Cannot find module '@napi-rs/keyring-darwin-x64'"));
+
+  it("the probe reports addon_missing, not 'no keychain'", async () => {
+    expect(await keyringProbe(missing)).toBe("addon_missing");
+  });
+
+  it("chooseSecretStore refuses, and never opens the file store", async () => {
+    const fileStore = vi.fn(() => new MemorySecretStore());
+    await expect(
+      chooseSecretStore({ keyring: new MemorySecretStore(), fileStore, probe: async () => "addon_missing" }),
+    ).rejects.toBeInstanceOf(KeyringUnavailableError);
+    expect(fileStore).not.toHaveBeenCalled();
+  });
+
+  it("KeyringStore throws a clear error instead of reading 'no value' or writing anywhere else", async () => {
+    const s = new KeyringStore(missing);
+    await expect(s.get("device.sign")).rejects.toBeInstanceOf(KeyringUnavailableError);
+    await expect(s.set("device.sign", "secret")).rejects.toThrow(
+      /Reinstall Chalito from https:\/\/chalito\.chalyb\.com\/descargar/,
+    );
+    await expect(s.delete("device.sign")).rejects.toBeInstanceOf(KeyringUnavailableError);
+  });
+
+  it("the message names the platform and says nothing is stored elsewhere", () => {
+    const e = new KeyringUnavailableError(new Error("x"));
+    expect(e.message).toContain(`${process.platform}-${process.arch}`);
+    expect(e.message).toMatch(/won't store its keys anywhere else/);
   });
 });

@@ -37,13 +37,13 @@ export const ResolveEndorseCodeResponse = z.object({
 });
 
 /**
- * Trusted client (`client`). `stepUp` is a WebAuthn assertion over a server challenge
- * (/v1/webauthn/assert/options): required when the endorsing device has a passkey.
+ * Trusted client (`client`). When the endorsing device has a passkey, `endorsement.body.stepUp`
+ * must carry its assertion over the endorsement body (R-L13, ADR 0018): the api and every agent
+ * verify the same one.
  */
 export const ApproveEndorseCodeRequest = z.object({
   codeId: EndorseCodeId,
   endorsement: Endorsement,
-  stepUp: z.record(z.string(), z.unknown()).optional(),
 });
 
 /** New device (`user`): single use. */

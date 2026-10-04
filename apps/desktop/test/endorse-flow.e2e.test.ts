@@ -18,7 +18,9 @@ import {
   resolveForEndorsement,
   type DeviceKeys,
 } from "@chalito/client-keys";
-import { fingerprint } from "@chalito/crypto";
+import { fingerprint, randomNonce } from "@chalito/crypto";
+import { signGlyph } from "@chalito/glyph";
+import type { IntroducedAgent } from "@chalito/protocol";
 import type { DeviceDoc } from "@chalito/protocol";
 import { createApp } from "../../api/src/app.js";
 import { MemoryAudit, type Deps } from "../../api/src/deps.js";
@@ -126,6 +128,7 @@ const desktopRun = async (
   w: Awaited<ReturnType<typeof world>>,
   desktopKeys: DeviceKeys,
   onDisplay: (d: EndorseDisplay) => void,
+  trusted?: DeviceClientKeys,
 ) =>
   enrollDesktop({
     owner: OWNER,
@@ -144,6 +147,23 @@ const desktopRun = async (
     deviceApi: async () => w.api("person"),
     signer: (k) => DeviceClientKeys.create(k),
     platformAuthenticator: async () => false,
+    ...(trusted
+      ? {
+          introduce: {
+            // The devices directory as the api's repo holds it (cloud data).
+            directory: async () =>
+              w.devices.map((d) => ({
+                deviceId: d.deviceId,
+                role: d.role,
+                revoked: d.revoked,
+                pubSign: d.pubSign,
+                pubBox: d.pubBox,
+              })),
+            trust: async (_k: DeviceKeys, agents: IntroducedAgent[], by: string) =>
+              trusted.trustIntroducedAgents(agents, by, Date.now()),
+          },
+        }
+      : {}),
     onDisplay: (d) => onDisplay(d as EndorseDisplay),
   });
 
@@ -217,5 +237,78 @@ describe("desktop endorsement, end to end", () => {
     expect((refusal as EndorseError).code).toBe("key_mismatch");
     expect(r.ok).toBe(false);
     expect(w.devices.some((d) => d.deviceId === desktopKeys.deviceId)).toBe(false);
+  });
+
+  describe("ADR 0018: the endorsement introduces the phone's computers", () => {
+    /** The phone confirmed `laptop` by glyph; the directory holds `laptop` (maybe swapped). */
+    const withLaptop = async (swapBox: boolean) => {
+      const w = await world();
+      const laptop = await generateDeviceKeys();
+      const lpub = await publicKeys(laptop);
+      const phone = await DeviceClientKeys.create(w.phoneKeys);
+      const glyph = await signGlyph(
+        {
+          v: 1,
+          purpose: "pair_device",
+          codeId: "code_laptop01",
+          issuerPubSign: lpub.pubSign,
+          issuerPubBox: lpub.pubBox,
+          label: "Laptop",
+          issuedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+          nonce: await randomNonce(),
+        },
+        laptop.sign.secretKey,
+      );
+      await phone.trustAgentFromGlyph(glyph, await fingerprint(laptop.sign.publicKey), Date.now());
+      const swapped = swapBox ? (await publicKeys(await generateDeviceKeys())).pubBox : lpub.pubBox;
+      w.devices.push({
+        ...w.devices[0]!,
+        deviceId: laptop.deviceId,
+        role: "agent",
+        kind: "laptop",
+        platform: "linux",
+        name: "Laptop",
+        pubSign: lpub.pubSign,
+        pubBox: swapped,
+        fingerprint: await fingerprint(laptop.sign.publicKey),
+        enrolledVia: "pairing",
+      });
+      const desktopKeys = await generateDeviceKeys();
+      const desktop = await DeviceClientKeys.create(desktopKeys);
+      const r = await desktopRun(
+        w,
+        desktopKeys,
+        (d) => {
+          void (async () => {
+            const target = await resolveForEndorsement(w.api("phone"), { glyph: d.glyph }, Date.now());
+            await approveEndorsement(w.api("phone"), phone, target, {
+              uid: OWNER,
+              now: Date.now(),
+              agents: phone.trustedAgents(),
+            });
+          })();
+        },
+        desktop,
+      );
+      return { r, desktop, laptop, lpub };
+    };
+
+    it("the new desktop can seal to the laptop its phone trusts, with no second pairing", async () => {
+      const { r, desktop, laptop, lpub } = await withLaptop(false);
+      expect(r).toMatchObject({ ok: true, agents: [laptop.deviceId], droppedAgents: [] });
+      expect(desktop.trustedAgentBoxKey(laptop.deviceId)).toBe(lpub.pubBox);
+      expect(desktop.trustedAgents()[0]).toMatchObject({ via: "endorsement" });
+    });
+
+    it("a server-side key swap for the laptop gets nothing trusted (the enrolment itself still works)", async () => {
+      const { r, desktop, laptop } = await withLaptop(true);
+      expect(r).toMatchObject({
+        ok: true,
+        agents: [],
+        droppedAgents: [{ deviceId: laptop.deviceId, reason: "key_mismatch" }],
+      });
+      expect(desktop.trustedAgentBoxKey(laptop.deviceId)).toBeNull();
+    });
   });
 });
