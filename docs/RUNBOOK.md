@@ -333,7 +333,7 @@ Rooms: `apps/api/src/routes/rooms.ts`, mounted at `/v1/rooms`. Members can only 
    select * from chalito.room_events where room_id = '<id>';
    ```
    The content is end-to-end encrypted, so you see metadata only.
-3. The room owner can dissolve the room (`POST /v1/rooms/:roomId/dissolve`, audited as `room.dissolved`) or rotate the key (`POST /v1/rooms/:roomId/rotate`). Members can leave (`POST /v1/rooms/:roomId/leave`). Owner removal of a member by route is **not yet built**.
+3. The room owner can dissolve the room (`POST /v1/rooms/:roomId/dissolve`, audited as `room.dissolved`) or rotate the key (`POST /v1/rooms/:roomId/rotate`). Members can leave (`POST /v1/rooms/:roomId/leave`). The owner can remove a member (`POST /v1/rooms/:roomId/members/:companionId/remove`, audited as `room.member_removed`); like a leave, the room then needs a key rotation before anyone posts again.
 4. For abuse across rooms, revoke the offender's devices (4.2) on legal advice. For uploaded images, follow the takedown in `docs/LEGAL_CHECKLIST.md`.
 5. Room events expire under the retention policy (24 h by default, decision #12).
 
