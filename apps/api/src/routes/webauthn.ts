@@ -2,10 +2,12 @@ import { Hono } from "hono";
 import {
   generateAuthenticationOptions,
   generateRegistrationOptions,
+  verifyAuthenticationResponse,
   verifyRegistrationResponse,
+  type AuthenticationResponseJSON,
   type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
-import { toB64url, verifyWebAuthnBinding } from "@chalito/crypto";
+import { fromB64url, toB64url, verifyWebAuthnBinding } from "@chalito/crypto";
 import { WebAuthnBindRequest } from "@chalito/protocol";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
@@ -56,10 +58,66 @@ export const webauthnRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFr
     return device;
   };
 
+  /**
+   * R-M11: replacing a device's passkey requires an assertion by the CURRENT one, over a fresh
+   * server challenge (/assert/options), so a stolen session + device key can't swap in the
+   * thief's passkey. Losing the old passkey means re-enrolling the device (endorsement or
+   * recovery), not replacing it here.
+   */
+  const verifyCurrentPasskey = async (
+    owner: string,
+    deviceId: string,
+    cred: NonNullable<Awaited<ReturnType<typeof deps.repo.getDeviceWebAuthn>>>,
+    response: AuthenticationResponseJSON | undefined,
+  ): Promise<"ok" | "required" | "failed" | "cloned"> => {
+    if (!response || typeof response !== "object") return "required";
+    const challenge = await deps.repo.takeWebAuthnChallenge(owner, deviceId, "assert", deps.now());
+    if (!challenge) return "failed";
+    const counter = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: challenge,
+      expectedOrigin: wa.origins,
+      expectedRPID: wa.rpId,
+      credential: {
+        id: cred.credentialId,
+        publicKey: new Uint8Array(await fromB64url(cred.publicKey)),
+        // The repo's atomic compare below is the counter check (and the clone alert).
+        counter: 0,
+        transports: cred.transports as never,
+      },
+      requireUserVerification: true,
+    }).then(
+      (r) =>
+        r.verified && r.authenticationInfo.credentialID === cred.credentialId ? r.authenticationInfo.newCounter : null,
+      () => null,
+    );
+    if (counter === null) return "failed";
+    const bumped = await deps.repo.bumpWebAuthnCounter(owner, deviceId, cred.credentialId, counter);
+    return bumped === "ok" ? "ok" : bumped === "cloned" ? "cloned" : "failed";
+  };
+
   app.post("/register/options", requireAuth(deps, ["client"]), limiter, async (c) => {
     const p = principal(c);
     const device = await activeDevice(p.owner, p.deviceId!);
     const existing = await deps.repo.getDeviceWebAuthn(p.owner, device.deviceId);
+    if (existing) {
+      const body = (await c.req.json().catch(() => null)) as { currentAssertion?: AuthenticationResponseJSON } | null;
+      const check = await verifyCurrentPasskey(p.owner, device.deviceId, existing, body?.currentAssertion);
+      if (check !== "ok") {
+        await deps.audit.record({
+          action: check === "cloned" ? "webauthn.clone_suspected" : "webauthn.replace_refused",
+          owner: p.owner,
+          actor: p.uid,
+          target: device.deviceId,
+          meta: { reason: check, during: "register.options" },
+        });
+        if (check === "required") return fail(409, "current_passkey_required");
+        return fail(
+          check === "cloned" ? 403 : 401,
+          check === "cloned" ? "authenticator_cloned" : "current_passkey_failed",
+        );
+      }
+    }
     const options = await generateRegistrationOptions({
       rpName: wa.rpName,
       rpID: wa.rpId,
@@ -104,6 +162,7 @@ export const webauthnRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFr
     }
     if (!result.verified) return fail(400, "bad_registration");
     const cred = result.registrationInfo.credential;
+    const replaced = await deps.repo.getDeviceWebAuthn(p.owner, device.deviceId);
     const stored = {
       credentialId: cred.id,
       publicKey: await toB64url(cred.publicKey),
@@ -118,8 +177,37 @@ export const webauthnRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFr
       owner: p.owner,
       actor: p.uid,
       target: device.deviceId,
-      meta: { credentialId: stored.credentialId },
+      meta: { credentialId: stored.credentialId, ...(replaced ? { replaced: replaced.credentialId } : {}) },
     });
+    if (replaced && replaced.credentialId !== stored.credentialId) {
+      // R-M11: a passkey changed: every device of the account hears about it (metadata only).
+      const nid = `passkey_${device.deviceId}_${deps.now()}`;
+      await deps.repo.createNotification(p.owner, nid, {
+        v: 1,
+        nid,
+        uid: p.owner,
+        level: "L3",
+        source: "security",
+        urgency: "critical",
+        counts: { approvals: 0, questions: 0, messages: 0, mesas: 0 },
+        deepLink: "/dispositivos",
+        coalesceKey: `security:passkey:${device.deviceId}`,
+        state: "pending",
+        step: 0,
+        nextAt: null,
+        channels: ["desktop", "push", "whatsapp"],
+        createdAt: deps.now(),
+        ackedAt: null,
+        ackedVia: null,
+      });
+      await deps.audit.record({
+        action: "webauthn.replaced",
+        owner: p.owner,
+        actor: p.uid,
+        target: device.deviceId,
+        meta: { from: replaced.credentialId, to: stored.credentialId },
+      });
+    }
     return c.json(
       { credential: { credentialId: stored.credentialId, publicKey: stored.publicKey, rpId: stored.rpId } },
       201,
