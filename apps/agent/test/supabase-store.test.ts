@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { PairingCodeDoc, type AgentEvent, type ApprovalRequest, type CallLine } from "@chalito/protocol";
+import {
+  PairingCodeDoc,
+  type AgentEvent,
+  type ApprovalRequest,
+  type CallLine,
+  type SessionCard,
+} from "@chalito/protocol";
 import {
   SUPABASE_REFRESH_MS,
   apiTokenSource,
@@ -297,6 +303,23 @@ describe("SupabaseStore: writes through the Data API", () => {
     expect(await store.callBriefingEnabled()).toBe(false);
     db.seed("users", { id: OWNER, call_briefing: { enabled: true } });
     expect(await store.callBriefingEnabled()).toBe(true);
+  });
+
+  it("MCP sharing: session or device switch; the shared card is inserted once, then updated", async () => {
+    const { db, store } = setup();
+    expect(await store.mcpSharingOn("s1")).toBe(false);
+    db.seed("mcp_sharing", { owner: OWNER, scope: "session", target: "s9", enabled: true });
+    db.seed("mcp_sharing", { owner: OWNER, scope: "session", target: "s1", enabled: false });
+    expect(await store.mcpSharingOn("s1")).toBe(false);
+    db.seed("mcp_sharing", { owner: OWNER, scope: "device", target: DEV, enabled: true });
+    expect(await store.mcpSharingOn("s1")).toBe(true);
+
+    const card = { v: 1, sid: "s1", goal: "uno" } as unknown as SessionCard;
+    await store.writeSharedCard("s1", card);
+    await store.writeSharedCard("s1", { ...card, goal: "dos" });
+    const rows = db.rows("session_card_plain");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ owner: OWNER, sid: "s1", device_id: DEV, card: { goal: "dos" } });
   });
 
   it("call lines: insert with the line text and expiry; delete by key (errors swallowed)", async () => {

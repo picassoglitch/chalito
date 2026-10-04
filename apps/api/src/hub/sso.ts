@@ -1,6 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { HubSsoPayload } from "@chalito/protocol";
 
+const B64URL = /^[A-Za-z0-9_-]+$/;
+/** HMAC-SHA256 (32 bytes) in unpadded base64url. */
+const SIG_LEN = 43;
+
 export type SsoResult =
   | { ok: true; payload: HubSsoPayload; sigHash: string }
   | { ok: false; reason: "malformed" | "bad_signature" | "expired" | "bad_payload" };
@@ -13,13 +17,13 @@ export const verifySsoToken = (token: string, secret: string, nowMs: number): Ss
   const parts = token.split(".");
   if (parts.length !== 2 || !parts[0] || !parts[1]) return { ok: false, reason: "malformed" };
   const [body, sig] = parts as [string, string];
+  // Canonical base64url only: Node's decoder ignores stray characters, padding and the last
+  // character's spare bits, so `t + "="` or a different final character would decode to the
+  // same signature under a new string (review R-H2). Re-encoding must give back the input.
+  if (!B64URL.test(body) || !B64URL.test(sig) || sig.length !== SIG_LEN) return { ok: false, reason: "malformed" };
+  const given = Buffer.from(sig, "base64url");
+  if (given.toString("base64url") !== sig) return { ok: false, reason: "malformed" };
   const expected = createHmac("sha256", secret).update(body).digest();
-  let given: Buffer;
-  try {
-    given = Buffer.from(sig, "base64url");
-  } catch {
-    return { ok: false, reason: "malformed" };
-  }
   if (given.length !== expected.length || !timingSafeEqual(given, expected))
     return { ok: false, reason: "bad_signature" };
   let json: unknown;
@@ -31,7 +35,12 @@ export const verifySsoToken = (token: string, secret: string, nowMs: number): Ss
   const parsed = HubSsoPayload.safeParse(json);
   if (!parsed.success) return { ok: false, reason: "bad_payload" };
   if (parsed.data.exp * 1000 <= nowMs) return { ok: false, reason: "expired" };
-  return { ok: true, payload: parsed.data, sigHash: createHmac("sha256", "chalito.sso.jti").update(sig).digest("hex") };
+  // The single-use id comes from the verified bytes, never from how they were spelled.
+  return {
+    ok: true,
+    payload: parsed.data,
+    sigHash: createHmac("sha256", "chalito.sso.jti").update(given).digest("hex"),
+  };
 };
 
 /** Validates a post-SSO redirect: same-origin relative path only (no open redirect). */

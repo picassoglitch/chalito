@@ -1,0 +1,8 @@
+# Out of energy, in character (brief §5 M12, ADR 0013). See recharge.es.yaml.
+schemaVersion: 1
+chip: "Why?"
+lines:
+  - "I want to help, but I'm out of energy… could you recharge me?"
+  - "Phew, my battery's empty. Recharge me and we'll pick up where we left off."
+  - "I'm getting sleepy… I need a recharge to think deeply. I can still do the basics."
+  - "I'm out of energy for this one. Your approvals and alerts still work; for the rest, recharge me?"

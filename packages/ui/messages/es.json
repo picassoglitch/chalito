@@ -19,7 +19,8 @@
     "download": "Descargar",
     "inbox": "Bandeja",
     "sessions": "Sesiones",
-    "devices": "Dispositivos"
+    "devices": "Dispositivos",
+    "store": "Tienda"
   },
   "home": {
     "title": "Hola, soy {name}",
@@ -33,7 +34,12 @@
     "working": "Entrando a Chalito…",
     "failed": "No pudimos abrir tu sesión. Vuelve a entrar desde Chalyb.",
     "missingToken": "Falta el enlace de acceso. Entra desde Chalyb.",
-    "retry": "Volver a Chalyb"
+    "retry": "Volver a Chalyb",
+    "desktop": {
+      "title": "Abre Chalito para terminar",
+      "body": "Entraste con tu cuenta. Vuelve a la app de escritorio para terminar de entrar.",
+      "open": "Abrir Chalito"
+    }
   },
   "onboarding": {
     "title": "Primeros pasos",
@@ -150,11 +156,6 @@
     "avatar": {
       "label": "Compañero"
     },
-    "companions": {
-      "chalito": "Chalito",
-      "luna": "Luna",
-      "tito": "Tito"
-    },
     "companionName": {
       "label": "Nombre",
       "placeholder": "Chalito"
@@ -179,7 +180,8 @@
       "tier": "Nivel: {tier}",
       "unknown": "Nivel desconocido",
       "trial": "Prueba hasta el {date}",
-      "manage": "Administrar en Chalyb"
+      "manage": "Administrar en Chalyb",
+      "usage": "Ver tu uso"
     },
     "renderQuality": {
       "label": "Calidad de animación",
@@ -235,9 +237,11 @@
       "loading": "Conectando…",
       "signed_out": "Entra con tu cuenta de Chalyb para ver tus sesiones y aprobaciones.",
       "signIn": "Entrar con Chalyb",
-      "unpaired": "Este dispositivo aún no está emparejado. Emparéjalo desde la app de escritorio para aprobar y ver tus sesiones.",
+      "unpaired": "Este navegador aún no es de confianza. Apruébalo desde un dispositivo de confianza o emparéjalo desde la app de escritorio.",
       "error": "No pudimos conectar. Vuelve a intentarlo en un momento.",
-      "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza."
+      "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza.",
+      "repair": "Emparejar de nuevo",
+      "link": "Usar este navegador"
     },
     "devMode": {
       "banner": "Modo desarrollador ACTIVO.",
@@ -374,7 +378,8 @@
       "revokeYes": "Sí, retirar",
       "cancel": "Cancelar",
       "revokeSent": "Retiro enviado a tus computadoras.",
-      "failed": "No pudimos enviarlo."
+      "failed": "No pudimos enviarlo.",
+      "add": "Añadir un dispositivo"
     },
     "settings": {
       "server": "Tus ajustes se guardan en tu cuenta.",
@@ -385,7 +390,8 @@
         "phone_not_verified": "Primero verifica tu teléfono.",
         "charges_notice_required": "Primero confirma que entiendes que pueden aplicar cargos.",
         "country_not_supported": "Las llamadas a este país no están disponibles."
-      }
+      },
+      "connectedApps": "Apps conectadas"
     },
     "notification": {
       "opening": "Abriendo…",
@@ -400,5 +406,192 @@
       "cancelled": "Cancelaste la passkey; puedes intentarlo de nuevo.",
       "error": "No pudimos crear la passkey. Inténtalo de nuevo."
     }
+  },
+  "mcp": {
+    "consent": {
+      "title": "{client} quiere conectarse a Chalito",
+      "redirect": "Después volverás a",
+      "scopes": "Permisos que pide",
+      "approve": "Permitir",
+      "deny": "No permitir",
+      "loading": "Cargando…",
+      "missing": "Falta la solicitud de conexión.",
+      "gone": "Esa solicitud ya no existe o venció. Vuelve a conectar desde la app.",
+      "error": {
+        "not_found": "Esa solicitud ya no existe.",
+        "no_passkey": "Este dispositivo no tiene passkey.",
+        "passkey_failed": "No se pudo confirmar con tu passkey.",
+        "challenge_expired": "Tardaste demasiado; inténtalo de nuevo.",
+        "forbidden": "Este dispositivo no puede aprobar conexiones.",
+        "error": "Algo falló. Inténtalo de nuevo."
+      },
+      "badRedirect": "La dirección de regreso no es segura; no te enviamos ahí.",
+      "needsDevice": "Para permitirlo, abre esta página en un dispositivo emparejado.",
+      "needsPasskey": "Permitirlo pide tu passkey.",
+      "enrolPasskey": "Crear passkey"
+    },
+    "connectors": {
+      "title": "Apps conectadas",
+      "empty": "No tienes apps conectadas.",
+      "loading": "Cargando…",
+      "failed": "No pudimos cargar tus apps conectadas.",
+      "signedOut": "Entra con tu cuenta para ver tus apps conectadas.",
+      "lastUsed": "Usada {when}",
+      "neverUsed": "Aún no se ha usado",
+      "revoke": "Desconectar",
+      "revokeConfirm": "¿Desconectar {name}? Dejará de tener acceso de inmediato.",
+      "revokeYes": "Sí, desconectar",
+      "cancel": "Cancelar"
+    },
+    "sharing": {
+      "label": "Compartir tarjeta con apps conectadas",
+      "warning": "La tarjeta (objetivo, estado y última acción) se guardará sin cifrar para que tus apps conectadas la lean.",
+      "ack": "Entiendo que se guarda sin cifrar.",
+      "confirm": "Compartir",
+      "cancel": "Cancelar",
+      "failed": "No pudimos cambiarlo."
+    }
+  },
+  "endorse": {
+    "wait": {
+      "title": "Usar este navegador",
+      "body": "Para ver y aprobar tus sesiones aquí, un dispositivo en el que ya confías tiene que aprobar este navegador.",
+      "nameLabel": "Nombre de este navegador",
+      "start": "Mostrar código",
+      "loading": "Conectando…",
+      "signInFirst": "Primero entra con tu cuenta de Chalyb en este navegador.",
+      "signIn": "Entrar con Chalyb",
+      "unavailable": "No se puede añadir este navegador ahora. Vuelve a intentarlo en un momento.",
+      "waitingTitle": "Esperando aprobación",
+      "waitingBody": "En tu teléfono u otro navegador de confianza, abre Dispositivos → Añadir un dispositivo y escanea este anillo o escribe el código.",
+      "glyphLabel": "Anillo para escanear desde un dispositivo de confianza",
+      "orType": "o escribe este código:",
+      "fingerprint": "Huella de este navegador:",
+      "expiresIn": "Vence en {minutes}:{seconds}",
+      "whereToApprove": "Antes de aprobar, comprueba que la huella sea la misma en los dos dispositivos.",
+      "cancel": "Cancelar",
+      "doneTitle": "Listo",
+      "doneBody": "Este navegador ya es de confianza. Para enviar instrucciones a una computadora, emparéjalo también con ella.",
+      "doneCta": "Ir a la bandeja",
+      "error": {
+        "expired": "El código venció. Muestra uno nuevo.",
+        "cancelled": "Se canceló.",
+        "unavailable": "No se puede añadir este navegador ahora. Vuelve a intentarlo en un momento.",
+        "endorsement_mismatch": "La aprobación no corresponde a este navegador. Vuelve a intentarlo.",
+        "endorser_not_trusted": "El dispositivo que aprobó ya no es de confianza.",
+        "device_exists": "Este navegador ya estaba registrado. Muestra un código nuevo.",
+        "rejected": "No se aceptó la aprobación. Vuelve a intentarlo.",
+        "failed": "Algo salió mal. Vuelve a intentarlo."
+      }
+    },
+    "add": {
+      "title": "Añadir un dispositivo",
+      "body": "En el dispositivo nuevo, entra con tu cuenta y abre «Usar este navegador». Luego escanea su anillo o escribe su código.",
+      "codeLabel": "Código",
+      "find": "Buscar",
+      "scan": {
+        "start": "Escanear anillo",
+        "starting": "Abriendo la cámara…",
+        "scanning": "Apunta la cámara al anillo.",
+        "denied": "No hay permiso para usar la cámara. Escribe el código.",
+        "unavailable": "La cámara no está disponible. Escribe el código."
+      },
+      "kind": {
+        "phone": "Teléfono",
+        "web": "Navegador"
+      },
+      "compare": "Comprueba que esta huella sea la misma que muestra el dispositivo nuevo:",
+      "expiresIn": "Vence en {minutes}:{seconds}",
+      "withPasskey": "Al aprobar, te pediremos tu passkey.",
+      "withoutPasskey": "Ese dispositivo podrá aprobar acciones igual que este.",
+      "approve": "Aprobar",
+      "notMine": "No es mío",
+      "done": "Listo: {name} ya es de confianza.",
+      "back": "Volver a Dispositivos",
+      "error": {
+        "invalid_code": "Ese código no es válido. Revísalo.",
+        "not_found": "No encontramos ese código. Revísalo o muestra uno nuevo.",
+        "expired": "El código venció. Muestra uno nuevo en el otro dispositivo.",
+        "wrong_account": "Ese dispositivo es de otra cuenta.",
+        "same_device": "Es este mismo dispositivo.",
+        "already_endorsed": "Ese código ya se aprobó.",
+        "step_up": "Hace falta tu passkey para aprobar. Vuelve a intentarlo.",
+        "not_trusted": "Este dispositivo ya no es de confianza.",
+        "tampered": "Los datos no coinciden. No lo apruebes y muestra un código nuevo.",
+        "failed": "Algo salió mal. Vuelve a intentarlo.",
+        "passkey_cloned": "Tu passkey parece copiada: no se aprobó. Revisa tus dispositivos y crea una passkey nueva."
+      }
+    }
+  },
+  "usage": {
+    "title": "Tu uso",
+    "range": "Periodo",
+    "days": "{n} días",
+    "loading": "Cargando…",
+    "error": "No pudimos cargar tu uso.",
+    "retry": "Reintentar",
+    "intro": "Tokens por día (UTC). Los días sin uso cuentan en cero.",
+    "empty": "Todavía no hay uso en este periodo.",
+    "tokens": "{n} tokens",
+    "chalito": {
+      "title": "Tokens de Chalito",
+      "work": "Trabajo",
+      "comms": "Comunicación",
+      "chartLabel": "Tokens de Chalito por día, últimos {days} días: trabajo y comunicación"
+    },
+    "share": {
+      "title": "Comunicación",
+      "none": "Sin uso de Chalito en este periodo.",
+      "value": "{share} de lo que usó Chalito (meta: menos de {target})",
+      "under": "Dentro de la meta: casi todo se va en el trabajo.",
+      "over": "Por encima de la meta: avisos, mensajes y llamadas están usando más de lo esperado.",
+      "chartLabel": "Comunicación por día frente a la meta de {target}"
+    },
+    "byo": {
+      "title": "Tus claves",
+      "body": "Uso con tus propias claves de proveedor. No consume tokens de Chalito.",
+      "chartLabel": "Tokens con tus claves por día, últimos {days} días"
+    },
+    "table": {
+      "title": "Ver por día",
+      "day": "Día"
+    }
+  },
+  "store": {
+    "title": "Tienda",
+    "intro": "Ropa y efectos para tu compañero. Solo cambian cómo se ve, nunca lo que puede hacer.",
+    "loading": "Cargando…",
+    "signIn": "Entra con tu cuenta de Chalyb para ver la tienda.",
+    "signInCta": "Entrar con Chalyb",
+    "error": "No pudimos cargar la tienda.",
+    "retry": "Reintentar",
+    "previewLabel": "{name} con lo que lleva puesto",
+    "noCompanion": "Todavía no tienes compañero.",
+    "chooseCompanion": "Elige uno",
+    "slot": {
+      "head": "Cabeza",
+      "face": "Cara",
+      "body": "Cuerpo",
+      "back": "Espalda",
+      "aura": "Aura",
+      "portal_fx": "Portal"
+    },
+    "free": "Gratis",
+    "owned": "Ya es tuyo",
+    "price": "{tokens} tokens",
+    "buy": "Comprar",
+    "equip": "Ponérselo",
+    "unequip": "Quitárselo",
+    "noTokens": "No te alcanzan los tokens.",
+    "whyChip": "¿Por qué?",
+    "retryBuy": "No se pudo completar la compra. Reintentar no te cobra dos veces.",
+    "failed": "No se pudo comprar. Vuelve a intentarlo más tarde.",
+    "equipError": {
+      "not_owned": "Primero cómpralo.",
+      "wrong_slot": "Eso no va ahí.",
+      "no_companion": "Primero elige a tu compañero.",
+      "failed": "No se pudo cambiar. Vuelve a intentarlo."
+    },
+    "lookOnly": "Los accesorios no cambian lo que tu compañero puede hacer ni sus límites."
   }
 }

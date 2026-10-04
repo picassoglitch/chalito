@@ -11,5 +11,5 @@ export default function proxy(request: NextRequest) {
 
 export const config = {
   // Everything except API routes, Next internals and static files (sw.js, manifest, icons).
-  matcher: "/((?!api|_next|_vercel|.*\\..*).*)",
+  matcher: "/((?!api|auth/desktop|_next|_vercel|.*\\..*).*)",
 };

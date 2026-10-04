@@ -25,8 +25,8 @@ const fakeAuth = (opts: { existing?: boolean; verifyError?: string } = {}) => {
 };
 
 describe("completeSso", () => {
-  it("exchanges the hub token for a token_hash, verifies it and returns a safe next", async () => {
-    const f = okFetch({ token_hash: "hash123" });
+  it("exchanges the hub token (customToken = the magic-link hash), verifies it and returns a safe next", async () => {
+    const f = okFetch({ customToken: "hash123", owner: "hub-user-1" });
     const auth = fakeAuth();
     const r = await completeSso(
       { token: "tok", next: "/en/a/abc" },
@@ -42,7 +42,10 @@ describe("completeSso", () => {
 
   it("replaces a session already in the browser: the launch is for whoever the hub authenticated", async () => {
     const auth = fakeAuth({ existing: true });
-    const r = await completeSso({ token: "t", next: null }, { apiBase: "", fetch: okFetch({ token_hash: "h" }), auth });
+    const r = await completeSso(
+      { token: "t", next: null },
+      { apiBase: "", fetch: okFetch({ customToken: "h", owner: "hub-user-1" }), auth },
+    );
     expect(r.ok).toBe(true);
     expect(auth.signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(auth.verifyOtp).toHaveBeenCalled();
@@ -52,7 +55,7 @@ describe("completeSso", () => {
     for (const next of ["https://evil.com", "//evil.com", "/\\evil.com", "/\t/evil.com", null]) {
       const r = await completeSso(
         { token: "t", next },
-        { apiBase: "", fetch: okFetch({ token_hash: "h" }), auth: fakeAuth() },
+        { apiBase: "", fetch: okFetch({ customToken: "h", owner: "hub-user-1" }), auth: fakeAuth() },
       );
       expect(r).toEqual({ ok: true, next: "/" });
     }
@@ -68,14 +71,21 @@ describe("completeSso", () => {
       reason: "missing_token",
     });
     expect(await run(okFetch({}, false))).toEqual({ ok: false, reason: "exchange_failed" });
-    expect(await run(okFetch({ token_hash: 3 }))).toEqual({ ok: false, reason: "exchange_failed" });
+    expect(await run(okFetch({ customToken: 3, owner: "hub-user-1" }))).toEqual({
+      ok: false,
+      reason: "exchange_failed",
+    });
+    // The old, wrong shape is refused, not half-accepted.
+    expect(await run(okFetch({ token_hash: "h" }))).toEqual({ ok: false, reason: "exchange_failed" });
     const boom = vi.fn(async () => {
       throw new Error("offline");
     }) as unknown as typeof fetch;
     expect(await run(boom)).toEqual({ ok: false, reason: "exchange_failed" });
-    expect(await run(okFetch({ token_hash: "h" }), fakeAuth({ verifyError: "expired" }))).toEqual({
-      ok: false,
-      reason: "verify_failed",
-    });
+    expect(await run(okFetch({ customToken: "h", owner: "hub-user-1" }), fakeAuth({ verifyError: "expired" }))).toEqual(
+      {
+        ok: false,
+        reason: "verify_failed",
+      },
+    );
   });
 });

@@ -4,7 +4,7 @@ import { API, SUPABASE, expect, fakeSession, storedSession, test } from "./fixtu
 const mockBackends = async (page: Page, exchanged: string[]) => {
   await page.route(`${API}/sso/exchange`, async (r) => {
     exchanged.push(r.request().postData() ?? "");
-    await r.fulfill({ json: { token_hash: "e2e-token-hash" } });
+    await r.fulfill({ json: { customToken: "e2e-token-hash", owner: "hub-user-e2e" } });
   });
   await page.route(`${SUPABASE}/auth/v1/verify**`, (r) => r.fulfill({ json: fakeSession() }));
 };
@@ -70,4 +70,16 @@ test("the token's own next wins over the remembered one", async ({ page, context
   await mockBackends(page, []);
   await page.goto("/auth/sso?token=t&next=%2Fcreditos");
   await expect(page).toHaveURL(/\/creditos$/);
+});
+
+test("consent signed out → hub sign-in, remembering the consent request", async ({ page, context }) => {
+  let launched = "";
+  await page.route("https://hub.example/**", async (r) => {
+    launched = r.request().url();
+    await r.fulfill({ body: "hub" });
+  });
+  await page.goto("/oauth/consent?request=req_1");
+  await expect.poll(() => launched).toBe("https://hub.example/auth/launch/chalito");
+  const cookie = (await context.cookies()).find((c) => c.name === "chalito_next");
+  expect(decodeURIComponent(cookie!.value)).toBe("/oauth/consent?request=req_1");
 });

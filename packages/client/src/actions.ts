@@ -208,8 +208,27 @@ export class ClientActions {
     return this.#command(agentDeviceId, async () => ({ type: "devmode.toggleOff", toggle }));
   }
 
+  /**
+   * Revoking ANOTHER client asks for this device's passkey (step-up over the command, review
+   * R-L1); revoking itself doesn't.
+   */
   async revokeClient(agentDeviceId: string, clientDeviceId: string): Promise<string> {
-    return this.#command(agentDeviceId, async () => ({ type: "device.revokeClient", clientDeviceId }));
+    const self = clientDeviceId === this.keys.deviceId;
+    return this.#command(
+      agentDeviceId,
+      async () => ({ type: "device.revokeClient", clientDeviceId }),
+      self
+        ? undefined
+        : async (unsigned) => {
+            const stepUp = await this.opts.stepUp(
+              { aid: `revoke:${clientDeviceId}`, risk: "HIGH", agentDeviceId },
+              unsigned,
+            );
+            // No passkey on this device: send it plain; agents accept that only while no trusted
+            // client has a passkey at all.
+            return stepUp ?? undefined;
+          },
+    );
   }
 
   // ---- notifications ----------------------------------------------------------------
@@ -246,13 +265,18 @@ export class ClientActions {
     );
   }
 
-  async #command(agentDeviceId: string, build: (cid: string) => Promise<CommandPayload>): Promise<string> {
+  async #command(
+    agentDeviceId: string,
+    build: (cid: string) => Promise<CommandPayload>,
+    /** A step-up bound to the final body (without stepUp); the body must not change after it. */
+    stepUp?: (unsignedBody: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>,
+  ): Promise<string> {
     if (!this.keys.trustedAgentBoxKey(agentDeviceId)) throw new ActionError("untrusted_agent");
     const cid = this.#newId();
     const payload = await build(cid);
     if (!CLIENT_COMMANDS.has(payload.type)) throw new ActionError("not_allowed");
     const now = this.#now();
-    const body = CommandBody.parse({
+    const base = CommandBody.parse({
       v: 1,
       cid,
       uid: this.live.owner,
@@ -263,6 +287,8 @@ export class ClientActions {
       expiresAt: now + this.#ttl,
       payload,
     });
+    const step = stepUp ? await stepUp({ ...base }) : undefined;
+    const body = step ? CommandBody.parse({ ...base, stepUp: step }) : base;
     const env = await this.keys.sign("chalito.command.v1", body);
     await writeWithRetry(
       "send command",

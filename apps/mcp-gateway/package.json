@@ -1,0 +1,28 @@
+{
+  "name": "@chalito/mcp-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@chalito/crypto": "workspace:*",
+    "@chalito/guard": "workspace:*",
+    "@chalito/protocol": "workspace:*",
+    "@hono/node-server": "^2.1.3",
+    "@modelcontextprotocol/server": "2.3.0",
+    "hono": "^4.13.12",
+    "postgres": "^3.4.9",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@chalito/adapters": "workspace:*",
+    "@chalito/client-keys": "workspace:*",
+    "@chalito/config": "workspace:*",
+    "@modelcontextprotocol/client": "2.3.0"
+  }
+}

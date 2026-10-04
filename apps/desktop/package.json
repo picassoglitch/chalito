@@ -8,7 +8,8 @@
     "build": "vite build",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "release": "tsx scripts/release/cli.ts"
   },
   "dependencies": {
     "@chalito/avatar": "workspace:*",
@@ -17,10 +18,13 @@
     "@chalito/client-keys": "workspace:*",
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
+    "@chalito/releases": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-deep-link": "2.6.1",
     "@tauri-apps/plugin-opener": "2.7.0",
+    "@tauri-apps/plugin-process": "2.4.0",
+    "@tauri-apps/plugin-updater": "2.13.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "three": "0.186.1"
@@ -35,6 +39,7 @@
     "@types/react-dom": "^19.3.0",
     "@types/three": "0.186.0",
     "@vitejs/plugin-react": "^6.1.1",
+    "ajv": "8.20.0",
     "jsdom": "^30.1.1",
     "vite": "8.3.2"
   }

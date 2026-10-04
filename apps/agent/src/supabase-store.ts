@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
+import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent, SessionCard } from "@chalito/protocol";
 import type { Logger } from "./redact.js";
 import { redactDeep, sanitizeDeviceEvent } from "./redact.js";
 import type { AgentStore, AuditEntry, EndorsementRow } from "./store.js";
@@ -467,6 +467,43 @@ export class SupabaseStore implements AgentStore {
       this.db.from("users").select("call_briefing").eq("id", this.owner).maybeSingle(),
     );
     return row?.call_briefing?.enabled === true;
+  }
+
+  async mcpSharingOn(sid: string) {
+    const rows = await must<{ scope: string; target: string }[]>(
+      "read mcp sharing",
+      this.db.from("mcp_sharing").select("scope,target").eq("owner", this.owner).eq("enabled", true),
+    );
+    return (rows ?? []).some(
+      (r) => (r.scope === "session" && r.target === sid) || (r.scope === "device" && r.target === this.deviceId),
+    );
+  }
+
+  /** Update-or-insert (the client may update only `card`/`updated_at`, so no PostgREST upsert). */
+  async writeSharedCard(sid: string, card: SessionCard) {
+    const doc = JSON.parse(JSON.stringify(card)) as Record<string, unknown>;
+    const update = () =>
+      this.#write("update shared card", () =>
+        this.db
+          .from("session_card_plain")
+          .update({ card: doc, updated_at: iso(Date.now()) })
+          .eq("owner", this.owner)
+          .eq("sid", sid),
+      );
+    const existing = await must<{ sid: string } | null>(
+      "read shared card",
+      this.db.from("session_card_plain").select("sid").eq("owner", this.owner).eq("sid", sid).maybeSingle(),
+    );
+    if (existing) return void (await update());
+    try {
+      await this.#write("insert shared card", () =>
+        this.db.from("session_card_plain").insert({ owner: this.owner, sid, device_id: this.deviceId, card: doc }),
+      );
+    } catch (err) {
+      if (err instanceof SupabaseError && err.code === "23505")
+        await update(); // raced another write
+      else throw err;
+    }
   }
 
   async writeCallLine(id: string, line: CallLine) {

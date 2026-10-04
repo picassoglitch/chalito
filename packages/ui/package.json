@@ -15,6 +15,7 @@
   "dependencies": {
     "@chalito/brand": "workspace:*",
     "@chalito/protocol": "workspace:*",
+    "@chalito/roster": "workspace:*",
     "libphonenumber-js": "^1"
   },
   "peerDependencies": {

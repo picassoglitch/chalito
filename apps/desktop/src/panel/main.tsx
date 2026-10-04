@@ -10,6 +10,7 @@ import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
 import { shell } from "../lib/shell.js";
 import { PushToTalk, unavailableVoice } from "../lib/voice.js";
+import { UpdateController, tauriUpdater } from "../lib/updates.js";
 import { Panel } from "./Panel.js";
 import { SignIn } from "./SignIn.js";
 import { createSession, readEnv, type Connected } from "../lib/session.js";
@@ -62,6 +63,9 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   }, []);
   const client = conn?.client ?? null;
   const ptt = useMemo(() => new PushToTalk(unavailableVoice), []);
+  const updates = useMemo(() => new UpdateController(tauriUpdater), []);
+  // One quiet check per launch; the Settings tab shows the result and offers to install.
+  useEffect(() => void updates.check(), [updates]);
   // Server-backed once the desktop has a session (new SettingsStore(supabase, owner)).
   const store = useMemo(() => new DesktopSettings(null), []);
   useEffect(() => {
@@ -118,6 +122,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       }}
       hubPlansUrl={HUB_PLANS_URL}
       phoneVerifier={offlinePhoneVerifier}
+      updates={updates}
     />
   );
 };

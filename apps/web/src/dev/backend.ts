@@ -18,7 +18,9 @@ import {
   fromB64url,
   generateBoxKeyPair,
   generateSigningKeyPair,
+  fingerprint,
   openJson,
+  randomNonce,
   sealJson,
   sha256,
   signEnvelope,
@@ -28,14 +30,26 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import type { ClientKeys, ConnectOptions } from "@chalito/client";
-import { memoryStorage } from "@chalito/client";
-import type { SealedEnvelope } from "@chalito/protocol";
+import type { ClientKeys, EndorseWatch } from "@chalito/client";
+import {
+  ApiError,
+  endorseGlyph,
+  generateDeviceKeys,
+  signDeviceRegistration,
+  signEndorsement,
+  type ApiClient,
+} from "@chalito/client-keys";
+import { generateShortCode } from "@chalito/glyph";
+import type { DeviceRegistration, Endorsement, GlyphPayload, SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
-import type { SettingsDb } from "@/lib/settings-store";
+import type { Platform } from "@/lib/platform";
 import type { ChannelSetter } from "@/lib/phone";
+import type { Connector, ConsentRequest, McpApi } from "@/lib/mcp";
 import { confirmStepUp } from "@/components/StepUpHost";
 import { passkeyRef, savePasskeyRef } from "@/lib/keys";
+import { httpStore } from "@/lib/store";
+import { parseUsage, type UsageApi } from "@/lib/usage";
+import { DEV_CATALOG } from "./catalog";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -87,19 +101,54 @@ export interface DevControls {
   askQuestion(questionId: string, question: string, options: string[]): Promise<void>;
   /** What the agent received, opened with its key (prompts, answers). */
   agentInbox: { type: string; text?: unknown }[];
+  /** The browser's current Supabase session (who the app is signed in as). */
+  session(): { access_token: string; role: unknown } | null;
+  /** Revokes THIS browser device (as another trusted device would). */
+  revokeMe(): void;
+  /** GET /v1/usage/daily: "normal" (comms under target), "over" (above), "empty", or "error". */
+  setUsage(mode: "normal" | "over" | "empty" | "error"): void;
+  /** /v1/store: the hub balance in tokens, a one-shot failure, and the companion to dress. */
+  storeState: {
+    balance(): number;
+    setBalance(tokens: number): void;
+    failNextPurchase(how: "hub_unavailable" | "network"): void;
+    /** Purchases as the api recorded them (purchaseId → charged). */
+    purchases(): Record<string, { cosmeticId: string; charged: number }>;
+    seedCompanion(avatar: string): void;
+  };
+  /** /v1/endorse: the other side of "Añadir un dispositivo" / "Esperando aprobación". */
+  endorse: {
+    /** A new browser of the owner opens a code (for this trusted browser to approve). */
+    newBrowser(name?: string): Promise<{
+      codeId: string;
+      shortCode: string;
+      deviceId: string;
+      fingerprint: string;
+      glyph: GlyphPayload;
+    }>;
+    /** Who endorsed that code, if anyone. */
+    endorsementOf(codeId: string): { signer: string; newDeviceId: string } | null;
+    /** "Navegador del trabajo" approves this (new) browser's code. */
+    approveFromOther(shortCode: string): Promise<void>;
+  };
 }
 
-export const startDevBackend = async (): Promise<{
-  connectOptions: ConnectOptions;
-  phoneVerifier: PhoneVerifier;
-  settingsDb: SettingsDb;
-  channels: ChannelSetter;
-  /** Stub of client-keys registerPasskey: records a reference, no authenticator. */
-  enrollPasskey: () => Promise<void>;
-  controls: DevControls;
-}> => {
+/** DEV/TEST: whether this browser counts as paired (localStorage "chalito.dev.paired", default yes). */
+export const DEV_PAIRED_KEY = "chalito.dev.paired";
+const devPaired = () => {
+  try {
+    return window.localStorage.getItem(DEV_PAIRED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+};
+
+export const startDevBackend = async (): Promise<Platform & { controls: DevControls }> => {
   const db = new FakeDb();
-  const me = await newDevice();
+  // This browser's identity. A new browser gets a fresh one when it asks to be endorsed (/vincular).
+  let me = await newDevice();
+  /** Whether `me` confirmed the agent's key by pairing (an endorsed browser hasn't). */
+  let mePairedWithAgent = true;
   const agent = await newDevice();
   const now = Date.now();
   const agentInbox: DevControls["agentInbox"] = [];
@@ -194,7 +243,15 @@ export const startDevBackend = async (): Promise<{
     charges_notice_ack_at: null,
   });
   device(agent, "agent", "Laptop de Aldo", "laptop", "linux");
-  device(me, "client", "Este teléfono", "phone", "ios");
+  // A new (unpaired) browser has no device row until it is endorsed.
+  if (devPaired()) device(me, "client", "Este teléfono", "phone", "ios");
+  // DEV/TEST: start with this browser already revoked ("chalito.dev.revoked" = "1").
+  try {
+    if (window.localStorage.getItem("chalito.dev.revoked") === "1")
+      db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true });
+  } catch {
+    /* storage unavailable */
+  }
   const other = await newDevice();
   device(other, "client", "Navegador del trabajo", "web", "web");
   db.insert("connections", {
@@ -395,8 +452,12 @@ export const startDevBackend = async (): Promise<{
 
   // ---- this browser's keys (stub of packages/client-keys) ------------------------------
   const keys: ClientKeys = {
-    deviceId: me.deviceId,
-    pubBox: me.pubBox,
+    get deviceId() {
+      return me.deviceId;
+    },
+    get pubBox() {
+      return me.pubBox;
+    },
     sign: (ctx, body) => signEnvelope(ctx, body, me.deviceId, me.sign.secretKey),
     open: (env, aad) => openJson(env, me.deviceId, me.box, aad),
     seal: async (value, recipients, aad) => {
@@ -404,14 +465,33 @@ export const startDevBackend = async (): Promise<{
       for (const [id, k] of Object.entries(recipients)) r[id] = await fromB64url(k);
       return sealJson(value, r, aad) as Promise<SealedEnvelope>;
     },
-    trustedAgentBoxKey: (id) => (id === agent.deviceId ? agent.pubBox : null),
-    trustedAgentSignKey: (id) => (id === agent.deviceId ? agent.pubSign : null),
+    trustedAgentBoxKey: (id) => (id === agent.deviceId && mePairedWithAgent ? agent.pubBox : null),
+    // ADR 0019: the same local-trust rule for the agent's signing key.
+    trustedAgentSignKey: (id) => (id === agent.deviceId && mePairedWithAgent ? agent.pubSign : null),
   };
 
-  const controls: DevControls = {
+  // ---- sessions: the person's (hub SSO) until this browser signs in as its own device -------
+  const personSession = {
+    access_token: "dev-person-token",
+    user: { id: OWNER, app_metadata: { chalito: { role: "user", tier: "pro" } } },
+  };
+  const deviceSession = (deviceId: string) => ({
+    access_token: `dev-device-token-${deviceId}`,
+    user: {
+      id: `auth_${deviceId}`,
+      app_metadata: { chalito: { role: "client", owner: OWNER, device_id: deviceId } },
+    },
+  });
+  db.setSession(personSession);
+  const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
+
+  const controls: Omit<DevControls, "endorse" | "setUsage" | "storeState"> &
+    Partial<Pick<DevControls, "endorse" | "setUsage" | "storeState">> = {
     marker: DEV_MARKER,
     owner: OWNER,
-    me: me.deviceId,
+    get me() {
+      return me.deviceId;
+    },
     agent: agent.deviceId,
     other: other.deviceId,
     sid: SID,
@@ -430,8 +510,11 @@ export const startDevBackend = async (): Promise<{
       await session({ state: "waiting_input", openQuestion: question });
     },
     agentInbox,
+    session: () => (db.session ? { access_token: db.session.access_token, role: role() } : null),
+    revokeMe: () =>
+      db.update("devices", (r) => r.device_id === me.deviceId, { revoked: true, revoked_at: iso(Date.now()) }),
   };
-  (window as unknown as { __chalitoDev: DevControls }).__chalitoDev = controls;
+  (window as unknown as { __chalitoDev: typeof controls }).__chalitoDev = controls;
 
   // The api + Twilio Verify, simulated (apps/api/src/phone/routes.ts): /start needs the charges
   // acknowledgement; /check takes 123456, refuses a number on another account, and on success
@@ -471,23 +554,476 @@ export const startDevBackend = async (): Promise<{
     return { ok: true };
   };
 
-  return {
-    phoneVerifier,
-    channels,
-    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
-    controls,
-    settingsDb: db.client({ access_token: "dev-access" }, OWNER) as unknown as SettingsDb,
-    connectOptions: {
-      url: "http://dev.invalid",
-      publishableKey: "dev",
-      keys,
-      owner: OWNER,
-      storage: memoryStorage(),
-      // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
-      stepUp: async ({ risk }) =>
-        passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
-      signIn: { kind: "sso", exchange: async () => ({ token_hash: "dev" }) },
-      create: () => db.client({ access_token: "dev-access" }, OWNER),
+  // ---- M10 api (apps/api/src/routes/oauth.ts), simulated -------------------------------
+  const SCOPES: ConsentRequest["scopes"] = [
+    {
+      scope: "mcp:read",
+      es: "Ver tus aprobaciones pendientes y el estado de tus sesiones.",
+      en: "See your pending approvals and session status.",
+      defaultChecked: true,
     },
+    {
+      scope: "approval:recommend",
+      es: "Sugerir aprobar o rechazar (solo una sugerencia).",
+      en: "Suggest approving or denying (advice only).",
+      defaultChecked: true,
+    },
+    {
+      scope: "session:prompt",
+      es: "Enviar instrucciones a tus sesiones de agentes.",
+      en: "Send prompts to your agent sessions.",
+      defaultChecked: false,
+    },
+  ];
+  const requests = new Map<string, ConsentRequest & { redirectUri: string; state: string }>([
+    [
+      "req_dev_1",
+      {
+        requestId: "req_dev_1",
+        client: {
+          name: "Claude",
+          id: "https://claude.ai/oauth/mcp-client-metadata",
+          redirectHost: "claude.ai",
+          provider: "claude",
+        },
+        scopes: SCOPES,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        redirectUri: "https://claude.ai/api/mcp/auth_callback",
+        state: "st_dev",
+      },
+    ],
+  ]);
+  const connectors: Connector[] = [
+    {
+      cid: "con_dev_gpt",
+      clientId: "https://chatgpt.com/oauth/client",
+      clientName: "ChatGPT",
+      provider: "chatgpt",
+      scopes: ["mcp:read"],
+      createdAt: now - 86_400_000,
+      lastUsedAt: now - 3_600_000,
+      revokedAt: null,
+    },
+  ];
+  const lastAssertion = { value: null as string | null };
+  const mcp: McpApi = {
+    getRequest: async (id) => {
+      const r = requests.get(id);
+      if (!r) return "not_found";
+      const { redirectUri: _r, state: _s, ...view } = r;
+      return view;
+    },
+    approve: async (id, scopes, assertion) => {
+      if (role() !== "client") return "forbidden"; // requireAuth(["client"])
+      const r = requests.get(id);
+      if (!r) return "not_found";
+      if (!passkeyRef()) return "no_passkey";
+      if (assertion.id !== lastAssertion.value) return "passkey_failed";
+      if (!scopes.every((x) => r.scopes.some((s) => s.scope === x))) return "error";
+      requests.delete(id);
+      connectors.push({
+        cid: "con_dev_new",
+        clientId: r.client.id,
+        clientName: r.client.name,
+        provider: r.client.provider,
+        scopes,
+        createdAt: Date.now(),
+        lastUsedAt: null,
+        revokedAt: null,
+      });
+      db.clientWrites.push({ table: "api", op: "oauth/approve", row: { id, scopes } });
+      return { redirect: `${r.redirectUri}?code=dev_code&state=${r.state}&iss=https%3A%2F%2Fapi.chalito.dev` };
+    },
+    deny: async (id) => {
+      const r = requests.get(id);
+      if (!r) return "not_found";
+      requests.delete(id);
+      return { redirect: `${r.redirectUri}?error=access_denied&state=${r.state}&iss=https%3A%2F%2Fapi.chalito.dev` };
+    },
+    listConnectors: async () => connectors.map((c) => ({ ...c })),
+    revoke: async (cid) => {
+      const c = connectors.find((x) => x.cid === cid);
+      if (!c) return "not_found";
+      c.revokedAt = Date.now();
+      db.clientWrites.push({ table: "api", op: "connectors/revoke", row: { cid } });
+      return true;
+    },
+    setSharing: async ({ sessionId, deviceId, enabled, plaintextAck }) => {
+      if (role() !== "client") return "forbidden"; // requireAuth(["client"])
+      if (!!sessionId === !!deviceId) return "error";
+      if (enabled && plaintextAck !== true) return "error";
+      const scope = sessionId ? "session" : "device";
+      const target = (sessionId ?? deviceId)!;
+      db.clientWrites.push({
+        table: "api",
+        op: "mcp/sharing",
+        row: { scope, target, enabled, plaintextAck: !!plaintextAck },
+      });
+      const match = (r: Row) => r.owner === OWNER && r.scope === scope && r.target === target;
+      if (db.rows("mcp_sharing").some(match)) db.update("mcp_sharing", match, { enabled });
+      else
+        db.insert("mcp_sharing", {
+          owner: OWNER,
+          scope,
+          target,
+          enabled,
+          plaintext_ack_at: enabled ? new Date().toISOString() : null,
+        });
+      return true;
+    },
+  };
+  const assertPasskey = async () => {
+    if (!passkeyRef()) throw Object.assign(new Error("no passkey"), { name: "NotAllowedError" });
+    lastAssertion.value = `dev_assert_${Math.random().toString(36).slice(2)}`;
+    return { id: lastAssertion.value, type: "public-key" };
+  };
+
+  // ---- /v1/endorse + /v1/devices/endorsed (apps/api), simulated --------------------------
+  // The browser runs the real client code (packages/client endorsementChannel, client-keys
+  // resolveForEndorsement / approveEndorsement / enrollEndorsed) against these routes.
+  interface Code {
+    codeId: string;
+    shortCode: string;
+    registration: DeviceRegistration;
+    expiresAt: number;
+    endorsement: Endorsement | null;
+    taken: boolean;
+  }
+  const codes = new Map<string, Code>();
+  const watchers = new Map<string, Set<() => void>>();
+  /** Trusted clients' signing keys (who may endorse): this browser and "Navegador del trabajo". */
+  const clients = new Map([
+    [me.deviceId, await fromB64url(me.pubSign)],
+    [other.deviceId, await fromB64url(other.pubSign)],
+  ]);
+  const fail = (status: number, code: string) => new ApiError(status, code);
+  const needRole = (want: "user" | "client") => {
+    if (role() !== want) throw fail(403, "forbidden");
+  };
+  const live = (c: Code | undefined): Code => {
+    if (!c) throw fail(404, "not_found");
+    if (c.expiresAt <= Date.now()) throw fail(410, "expired");
+    return c;
+  };
+  const pointer = (codeId: string) => watchers.get(codeId)?.forEach((f) => f());
+  const openCode = async (registration: DeviceRegistration): Promise<Code> => {
+    const chk = await verifyEnvelope(
+      registration,
+      "chalito.device-register.v1",
+      new Map([[registration.body.deviceId, await fromB64url(registration.body.pubSign)]]),
+    );
+    if (!chk.ok || registration.body.owner !== OWNER) throw fail(400, "bad_registration");
+    const c: Code = {
+      codeId: (await randomNonce()).slice(0, 22),
+      shortCode: await generateShortCode(),
+      registration,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      endorsement: null,
+      taken: false,
+    };
+    codes.set(c.codeId, c);
+    return c;
+  };
+  /** Records a signed endorsement on a code, as POST /v1/endorse/approve does after its checks. */
+  const endorse = async (c: Code, endorsement: Endorsement, signer: string) => {
+    if (c.endorsement) throw fail(409, "already_endorsed");
+    const key = clients.get(signer);
+    const row = db.rows("devices").find((r) => r.device_id === signer);
+    if (!key || !row || row.revoked) throw fail(403, "endorser_not_trusted");
+    if (endorsement.signerDeviceId !== signer) throw fail(403, "signer_mismatch");
+    const chk = await verifyEnvelope(endorsement, "chalito.endorsement.v1", new Map([[signer, key]]));
+    const reg = c.registration.body;
+    const b = endorsement.body;
+    if (
+      !chk.ok ||
+      b.uid !== OWNER ||
+      b.newDeviceId !== reg.deviceId ||
+      b.pubSign !== reg.pubSign ||
+      b.pubBox !== reg.pubBox
+    )
+      throw fail(400, "endorsement_mismatch");
+    c.endorsement = endorsement;
+    pointer(c.codeId);
+  };
+  const api: ApiClient = {
+    post: async <T>(path: string, body: unknown): Promise<T> => {
+      const b = body as Record<string, unknown>;
+      db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...b } });
+      switch (path) {
+        case "/v1/endorse/codes": {
+          needRole("user");
+          const c = await openCode(b.registration as DeviceRegistration);
+          return {
+            codeId: c.codeId,
+            shortCode: c.shortCode,
+            expiresAt: c.expiresAt,
+            watchToken: `dev-watch-${c.codeId}`,
+          } as T;
+        }
+        case "/v1/endorse/take": {
+          needRole("user");
+          const c = live(codes.get(b.codeId as string));
+          if (!c.endorsement) throw fail(409, "not_endorsed");
+          if (c.taken) throw fail(409, "already_taken");
+          c.taken = true;
+          return { endorsement: c.endorsement } as T;
+        }
+        case "/v1/endorse/resolve": {
+          needRole("client");
+          const c = live(
+            "codeId" in b
+              ? codes.get(b.codeId as string)
+              : [...codes.values()].find((x) => x.shortCode === b.shortCode),
+          );
+          if (c.endorsement) throw fail(409, "already_endorsed");
+          return { codeId: c.codeId, registration: c.registration, expiresAt: c.expiresAt } as T;
+        }
+        case "/v1/endorse/approve": {
+          needRole("client");
+          const c = live(codes.get(b.codeId as string));
+          if (passkeyRef()) {
+            if (!b.stepUp) throw fail(401, "step_up_required");
+            if ((b.stepUp as { id?: unknown }).id !== lastAssertion.value) throw fail(401, "step_up_failed");
+          }
+          await endorse(c, b.endorsement as Endorsement, me.deviceId);
+          return { ok: true } as T;
+        }
+        case "/v1/devices/endorsed": {
+          needRole("user");
+          const reg = b.registration as DeviceRegistration;
+          const e = b.endorsement as Endorsement;
+          const c = [...codes.values()].find((x) => x.registration.body.deviceId === reg.body.deviceId);
+          if (!c?.endorsement || c.endorsement.sig !== e.sig) throw fail(400, "endorsement_mismatch");
+          if (db.rows("devices").some((r) => r.device_id === reg.body.deviceId)) throw fail(409, "device_exists");
+          const pub = await fromB64url(reg.body.pubSign);
+          trusted.set(reg.body.deviceId, pub); // the agent verifies the endorsement locally
+          clients.set(reg.body.deviceId, pub);
+          db.insert("devices", {
+            owner: OWNER,
+            device_id: reg.body.deviceId,
+            role: "client",
+            kind: reg.body.kind,
+            platform: reg.body.platform,
+            name: reg.body.name,
+            revoked: false,
+            last_seen_at: iso(Date.now()),
+            dev_mode: { on: false, toggles: [], since: null },
+            policy_hash: null,
+          });
+          window.localStorage.setItem(DEV_PAIRED_KEY, "1");
+          const hash = `dev-magiclink-${reg.body.deviceId}-endorsed`;
+          db.tokenHashes.set(hash, deviceSession(reg.body.deviceId));
+          return { customToken: hash, deviceId: reg.body.deviceId } as T;
+        }
+      }
+      throw fail(404, "not_found");
+    },
+  };
+  // Realtime on chalito:pairing:<codeId>: a pointer on approve, and one on join (resync).
+  const endorseWatch: EndorseWatch = async (codeId, _token, onPointer) => {
+    const set = watchers.get(codeId) ?? new Set();
+    set.add(onPointer);
+    watchers.set(codeId, set);
+    setTimeout(onPointer, 0);
+    return () => set.delete(onPointer);
+  };
+  controls.endorse = {
+    newBrowser: async (name = "Firefox en Linux") => {
+      const k = await generateDeviceKeys();
+      const registration = await signDeviceRegistration(k, {
+        owner: OWNER,
+        kind: "web",
+        platform: "web",
+        name,
+        now: Date.now(),
+      });
+      const c = await openCode(registration);
+      return {
+        codeId: c.codeId,
+        shortCode: c.shortCode,
+        deviceId: k.deviceId,
+        fingerprint: await fingerprint(k.sign.publicKey),
+        glyph: await endorseGlyph(k, c, { label: name, now: Date.now() }),
+      };
+    },
+    endorsementOf: (codeId) => {
+      const e = codes.get(codeId)?.endorsement;
+      return e ? { signer: e.signerDeviceId, newDeviceId: e.body.newDeviceId } : null;
+    },
+    approveFromOther: async (shortCode) => {
+      const c = live([...codes.values()].find((x) => x.shortCode === shortCode));
+      const reg = c.registration.body;
+      const e = await signEndorsement(other, {
+        uid: OWNER,
+        newDeviceId: reg.deviceId,
+        pubSign: reg.pubSign,
+        pubBox: reg.pubBox,
+        now: Date.now(),
+      });
+      await endorse(c, e, other.deviceId);
+    },
+  };
+  const saveDeviceKeys = async (k: { deviceId: string; sign: SigningKeyPair; box: BoxKeyPair }) => {
+    me = { ...k, pubSign: await toB64url(k.sign.publicKey), pubBox: await toB64url(k.box.publicKey) };
+    mePairedWithAgent = false;
+  };
+
+  // ---- GET /v1/usage/daily (apps/orchestrator), simulated: same shape, costs included --------
+  let usageMode: "normal" | "over" | "empty" | "error" = "normal";
+  controls.setUsage = (m) => void (usageMode = m);
+  const usage: UsageApi = async (days) => {
+    db.clientWrites.push({ table: "api", op: "usage/daily", row: { days } });
+    if (role() !== "client" || usageMode === "error") return "error";
+    const n = Math.min(31, Math.max(1, days));
+    const DAY = 86_400_000;
+    const today = Math.floor(Date.now() / DAY) * DAY;
+    const list = Array.from({ length: n }, (_, i) => {
+      const day = new Date(today - (n - 1 - i) * DAY).toISOString().slice(0, 10);
+      const on = usageMode !== "empty" && i % 7 !== 3; // a quiet day each week
+      const work = on ? 40_000 + ((i * 7919) % 25_000) : 0;
+      const comms = on ? Math.round(work * (usageMode === "over" ? 0.18 : 0.06)) : 0;
+      const byo = on && i % 2 === 0 ? 12_000 + ((i * 104_729) % 9_000) : 0;
+      return {
+        day,
+        managed: {
+          work: { tokens: work, costUsdMicros: work * 3 },
+          comms: { tokens: comms, costUsdMicros: comms * 3 },
+        },
+        byo: { tokens: byo, estCostUsdMicros: byo * 3 },
+      };
+    });
+    const sum = (f: (x: (typeof list)[number]) => number) => list.reduce((a, x) => a + f(x), 0);
+    const work = sum((x) => x.managed.work.costUsdMicros);
+    const comms = sum((x) => x.managed.comms.costUsdMicros);
+    return parseUsage({
+      days: list,
+      totals: {
+        managedTokens: sum((x) => x.managed.work.tokens + x.managed.comms.tokens),
+        managedCostUsdMicros: work + comms,
+        commsCostUsdMicros: comms,
+        byoTokens: sum((x) => x.byo.tokens),
+      },
+      commsOverheadRatio: work + comms > 0 ? comms / (work + comms) : null,
+      target: 0.1,
+    })!;
+  };
+
+  // ---- /v1/store (apps/api/src/store/routes.ts), simulated ------------------------------
+  let balance = 300_000;
+  let failNext: "hub_unavailable" | "network" | null = null;
+  const owned = new Set<string>();
+  const purchases: Record<string, { cosmeticId: string; charged: number }> = {};
+  const catalogItem = (id: string) =>
+    (DEV_CATALOG as Record<string, (typeof DEV_CATALOG)[keyof typeof DEV_CATALOG]>)[id];
+  const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  const storeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const body = init?.body ? (JSON.parse(String(init.body)) as Row) : {};
+    db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...body } });
+    if (path === "/v1/store/catalog")
+      return reply(200, {
+        items: Object.entries(DEV_CATALOG).map(([id, x]) => ({ id, ...x, owned: x.free || owned.has(id) })),
+      });
+    if (path === "/v1/store/purchase") {
+      const item = catalogItem(body.cosmeticId as string);
+      if (!item) return reply(404, { error: "unknown_cosmetic" });
+      if (item.free) return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: 0 });
+      const prior = purchases[body.purchaseId as string];
+      if (prior)
+        return reply(200, { status: "owned", cosmeticId: prior.cosmeticId, charged: prior.charged, replay: true });
+      if (owned.has(body.cosmeticId as string))
+        return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: 0 });
+      if (failNext) {
+        const how = failNext;
+        failNext = null;
+        if (how === "network") throw new TypeError("Failed to fetch");
+        return reply(503, { error: "hub_unavailable" });
+      }
+      const price = (item as { priceTokens: number }).priceTokens;
+      if (balance < price)
+        return reply(402, { error: "no_tokens", chips: [{ label: "¿Por qué?", href: "/creditos" }] });
+      balance -= price;
+      owned.add(body.cosmeticId as string);
+      purchases[body.purchaseId as string] = { cosmeticId: body.cosmeticId as string, charged: price };
+      return reply(200, { status: "owned", cosmeticId: body.cosmeticId, charged: price });
+    }
+    if (path === "/v1/store/equip") {
+      const { companionId, slot, cosmeticId } = body as {
+        companionId: string;
+        slot: string;
+        cosmeticId: string | null;
+      };
+      if (cosmeticId !== null) {
+        const item = catalogItem(cosmeticId);
+        if (!item) return reply(404, { error: "unknown_cosmetic" });
+        if (item.slot !== slot) return reply(400, { error: "wrong_slot" });
+        if (!item.free && !owned.has(cosmeticId)) return reply(403, { error: "not_owned" });
+      }
+      const row = db.rows("companions").find((r) => r.owner === OWNER && r.companion_id === companionId);
+      if (!row) return reply(404, { error: "unknown_companion" });
+      const equipped = { ...((row.equipped as Row) ?? {}) };
+      if (cosmeticId === null) delete equipped[slot];
+      else equipped[slot] = cosmeticId;
+      db.update("companions", (r) => r === row, { equipped });
+      return reply(200, { ok: true, slot, cosmeticId });
+    }
+    return reply(404, { error: "not_found" });
+  }) as typeof fetch;
+  const store = httpStore("http://dev.invalid", async () => db.session?.access_token ?? null, storeFetch);
+  controls.storeState = {
+    balance: () => balance,
+    setBalance: (n) => void (balance = n),
+    failNextPurchase: (how) => void (failNext = how),
+    purchases: () => ({ ...purchases }),
+    seedCompanion: (avatar) =>
+      db.insert("companions", {
+        owner: OWNER,
+        companion_id: "chl_devcompanionaaaaaaaaaaaaaa",
+        name: "Chalito",
+        is_renamed: false,
+        avatar,
+        equipped: {},
+      }),
+  };
+
+  // /v1/devices/token, simulated: the signature over the refresh challenge is the authentication.
+  const sb = db.client(OWNER);
+  return {
+    controls: controls as DevControls,
+    db: sb,
+    url: "http://dev.invalid",
+    publishableKey: "dev",
+    loadDeviceKeys: async () =>
+      devPaired()
+        ? {
+            keys: keys as ClientKeys & { sign: typeof keys.sign; deviceId: string },
+            // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
+            stepUp: async ({ risk }) =>
+              passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
+            forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
+          }
+        : null,
+    deviceLogin: (k, owner) => async () => {
+      const body = { v: 1 as const, owner, deviceId: k.deviceId, nonce: "n".repeat(22), issuedAt: Date.now() };
+      const challenge = await k.sign("chalito.refresh-challenge.v1", body);
+      const ok = await verifyEnvelope(challenge as never, "chalito.refresh-challenge.v1", trusted);
+      const row = db.rows("devices").find((r) => r.device_id === k.deviceId);
+      if (!row || row.revoked !== false)
+        throw Object.assign(new Error("device_revoked"), { status: 403, code: "device_revoked" });
+      if (!ok.ok) throw Object.assign(new Error("bad_signature"), { status: 401, code: "bad_signature" });
+      const hash = `dev-magiclink-${k.deviceId}-${Math.random().toString(36).slice(2)}`;
+      db.tokenHashes.set(hash, deviceSession(k.deviceId));
+      db.clientWrites.push({ table: "api", op: "devices/token", row: { deviceId: k.deviceId } });
+      return hash;
+    },
+    phone: () => ({ verifier: phoneVerifier, channels }),
+    mcp: () => mcp,
+    api: () => api,
+    usage: () => usage,
+    store: () => store,
+    endorseWatch,
+    saveDeviceKeys,
+    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
+    assertPasskey: () => assertPasskey(),
   };
 };
