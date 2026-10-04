@@ -74,6 +74,9 @@ Chalito's tables live in schemas `chalito` and `chalito_private` on the hub's Su
 ## 8. Engine launch: forward `next` (nice to have)
 `/auth/launch/<slug>` and `getEngineLaunchUrl` ignore a `next` path. Notification links (`/n/<nid>`) need to land on the right screen after sign-in. Chalito works around this with a first-party cookie it sets before redirecting to the hub. A native `next` (validated as a same-engine relative path and carried in the SSO token's `next`) would remove that.
 
+## 8b. Engine launch: echo `state` (nice to have)
+Chalito's web sign-in binds a `state` nonce (first-party cookie) to each hub launch to stop login CSRF (review R-M1). Today the cookie alone is the guard. If `/auth/launch/<slug>` forwarded a `state` query parameter unchanged into the redirect to `{external_url}/auth/sso` (alongside `token`), Chalito would also check that it matches.
+
 ## 9. Going live (owner)
 1. Chalito: create the state bucket, then `terraform apply` in `infra/terraform/envs/dev` (Chalito-only resources).
 2. Chalyb PR: items 1–5 and 7 (8 optional), `terraform apply` in Chalyb, secret values, Vercel env.

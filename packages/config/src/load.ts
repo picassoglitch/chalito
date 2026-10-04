@@ -3,7 +3,16 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import type { z } from "zod";
 import { PlansConfig } from "@chalito/protocol";
-import { CatalogConfig, ModelsConfig, PricesConfig, ProvidersConfig, RenderConfig, RoomsConfig } from "./schemas.js";
+import {
+  CatalogConfig,
+  EscalationConfig,
+  RechargeCopy,
+  ModelsConfig,
+  PricesConfig,
+  ProvidersConfig,
+  RenderConfig,
+  RoomsConfig,
+} from "./schemas.js";
 
 /** Directory holding the YAML files (packages/config). */
 export const CONFIG_DIR = fileURLToPath(new URL("../", import.meta.url));
@@ -24,6 +33,9 @@ export const loadProviders = (dir?: string) => load(ProvidersConfig, "providers.
 export const loadRooms = (dir?: string) => load(RoomsConfig, "rooms.yaml", dir);
 export const loadRender = (dir?: string) => load(RenderConfig, "render.yaml", dir);
 export const loadCatalog = (dir?: string) => load(CatalogConfig, "catalog.yaml", dir);
+export const loadEscalation = (dir?: string) => load(EscalationConfig, "escalation.yaml", dir);
+export const loadRechargeCopy = (locale: "es" | "en", dir?: string) =>
+  load(RechargeCopy, `copy/recharge.${locale}.yaml`, dir);
 
 export interface LiabilityText {
   locale: "es" | "en";

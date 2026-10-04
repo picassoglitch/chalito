@@ -1,4 +1,7 @@
+import type { PhoneDeps } from "./phone/routes.js";
+import type { VoiceDeps } from "./voice/routes.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
+import type { RoomsRepo } from "./rooms/repo.js";
 
 export interface AuditEvent {
   action: string;
@@ -26,10 +29,16 @@ export interface ApiConfig {
 
 export interface Deps {
   repo: ApiRepo;
+  /** Rooms (M11); routes answer 503 without it. */
+  rooms?: RoomsRepo;
   identity: IdentityIssuer;
   audit: AuditSink;
   config: ApiConfig;
   now: () => number;
+  /** Phone verification and channel opt-ins (/v1/phone), when Twilio Verify is configured. */
+  phone?: PhoneDeps;
+  /** Desktop push-to-talk (/v1/voice), when OpenAI is configured. */
+  voice?: VoiceDeps;
 }
 
 export class MemoryAudit implements AuditSink {
