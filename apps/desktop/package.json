@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "pnpm roster && vite",
+    "build": "pnpm roster && vite build",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "release": "tsx scripts/release/cli.ts"
+    "release": "tsx scripts/release/cli.ts",
+    "roster": "node scripts/copy-roster.mjs"
   },
   "dependencies": {
     "@chalito/avatar": "workspace:*",
@@ -20,6 +21,7 @@
     "@chalito/protocol": "workspace:*",
     "@chalito/releases": "workspace:*",
     "@chalito/rooms": "workspace:*",
+    "@chalito/roster": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@tauri-apps/api": "2.12.1",
     "@tauri-apps/plugin-deep-link": "2.6.1",

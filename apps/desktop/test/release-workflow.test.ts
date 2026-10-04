@@ -68,6 +68,16 @@ describe("release workflow", () => {
     expect(code).toContain('[ -n "$v" ] || continue');
   });
 
+  it("the webview CSP lets the desktop reach the api the release builds point at", () => {
+    const api = /\n {2}CHALITO_API_BASE: (https:\/\/[^\s/]+)/.exec(yml)?.[1];
+    expect(api).toBeTruthy();
+    const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+      app: { security: { csp: string } };
+    };
+    const connect = conf.app.security.csp.split(";").find((d) => d.trim().startsWith("connect-src"))!;
+    expect(connect.trim().split(/\s+/)).toContain(api);
+  });
+
   it("macOS: installs the darwin-x64 keyring addon (lockfile-pinned) and smoke-tests both arches before the sidecar", () => {
     const keyring = code.indexOf("name: darwin-x64 keyring addon (explicit)");
     const smoke = code.indexOf("name: Smoke the compiled agent");
