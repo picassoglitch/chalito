@@ -1,5 +1,16 @@
 import { ensureSession, type BrowserAuth } from "@chalito/client";
+import { SsoExchangeResponse } from "@chalito/protocol";
 import { safeNextPath } from "@chalito/ui";
+
+/**
+ * The api's /sso/exchange answer (packages/protocol SsoExchangeResponse): `{customToken, owner}`,
+ * where `customToken` IS the Supabase magic-link token hash for the person's hub account.
+ */
+export const parseSsoExchange = (body: unknown): string => {
+  const r = SsoExchangeResponse.safeParse(body);
+  if (!r.success) throw new Error("exchange");
+  return r.data.customToken;
+};
 
 export type SsoResult =
   { ok: true; next: string } | { ok: false; reason: "missing_token" | "exchange_failed" | "verify_failed" };
@@ -30,9 +41,7 @@ export const completeSso = async (
             body: JSON.stringify({ token: params.token }),
             credentials: "omit",
           });
-          const body = (res.ok ? await res.json() : null) as { token_hash?: unknown } | null;
-          if (typeof body?.token_hash !== "string" || !body.token_hash) throw new Error("exchange");
-          return { token_hash: body.token_hash };
+          return { token_hash: parseSsoExchange(res.ok ? await res.json() : null) };
         } catch (err) {
           exchangeFailed = true;
           throw err;

@@ -33,7 +33,12 @@
     "working": "Signing you in to Chalito…",
     "failed": "We couldn't open your session. Sign in again from Chalyb.",
     "missingToken": "The sign-in link is missing. Sign in from Chalyb.",
-    "retry": "Back to Chalyb"
+    "retry": "Back to Chalyb",
+    "desktop": {
+      "title": "Open Chalito to finish",
+      "body": "You're signed in. Go back to the desktop app to finish signing in.",
+      "open": "Open Chalito"
+    }
   },
   "onboarding": {
     "title": "Get started",

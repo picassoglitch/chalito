@@ -33,7 +33,12 @@
     "working": "Entrando a Chalito…",
     "failed": "No pudimos abrir tu sesión. Vuelve a entrar desde Chalyb.",
     "missingToken": "Falta el enlace de acceso. Entra desde Chalyb.",
-    "retry": "Volver a Chalyb"
+    "retry": "Volver a Chalyb",
+    "desktop": {
+      "title": "Abre Chalito para terminar",
+      "body": "Entraste con tu cuenta. Vuelve a la app de escritorio para terminar de entrar.",
+      "open": "Abrir Chalito"
+    }
   },
   "onboarding": {
     "title": "Primeros pasos",
