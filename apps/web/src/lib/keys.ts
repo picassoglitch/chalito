@@ -8,11 +8,14 @@ import {
   type DeviceKeys as RawDeviceKeys,
 } from "@chalito/client-keys";
 import type { IntroducedAgent } from "@chalito/protocol";
+import { unwrapKeyring } from "@chalito/rooms";
 
 export interface DeviceKeys {
   keys: ClientKeys & Pick<DeviceClientKeys, "sign" | "deviceId" | "trustedAgents">;
   /** WebAuthn step-up for HIGH and CRITICAL decisions (assertion bound to the decision, D-019). */
   stepUp: StepUpProvider;
+  /** Opens this device's sealed copies of a room key (epoch → key); the secret key never leaves here. */
+  roomKeyring: (rows: readonly { epoch: number; ct: string }[]) => Promise<Map<number, Uint8Array>>;
   /** After revocation: drop every agent this browser trusted (it must be paired again). */
   forget: () => Promise<void>;
 }
@@ -119,5 +122,6 @@ export const loadDeviceKeys = async (): Promise<DeviceKeys | null> => {
     for (const a of keys.trustedAgents()) await keys.forgetAgent(a.deviceId);
     window.localStorage.removeItem(ENDORSED_KEY);
   };
-  return { keys, stepUp, forget };
+  const roomKeyring = (rows: readonly { epoch: number; ct: string }[]) => unwrapKeyring(rows, stored.box);
+  return { keys, stepUp, forget, roomKeyring };
 };

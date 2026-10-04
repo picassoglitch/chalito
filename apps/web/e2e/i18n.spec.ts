@@ -42,8 +42,6 @@ test("deep-link stubs exist in both locales", async ({ page }) => {
   test.setTimeout(90_000);
   const links: [string, string][] = [
     ["/m/m1", "Mesa m1"],
-    ["/r/r1", "Sala r1"],
-    ["/en/r/r1", "Room r1"],
     ["/creditos", "Créditos"],
     ["/en/creditos", "Credits"],
   ];
@@ -55,11 +53,15 @@ test("deep-link stubs exist in both locales", async ({ page }) => {
   // /a/<id> is a live screen: signed out, it asks you to sign in first.
   await page.goto("/a/apr_1");
   await expect(page.getByTestId("gate-signed_out")).toBeVisible();
+  // So is a room (/r/<id>, /en/r/<id>).
+  for (const path of ["/r/r1", "/en/r/r1"]) {
+    await page.goto(path);
+    await expect(page.getByTestId("gate-signed_out")).toBeVisible();
+  }
 });
 
 test("the language switch keeps a deep link's id", async ({ page }) => {
-  await page.goto("/r/r1");
+  await page.goto("/m/m1");
   await page.getByTestId("locale-switch").click();
-  await expect(page).toHaveURL(/\/en\/r\/r1$/);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Room r1");
+  await expect(page).toHaveURL(/\/en\/m\/m1$/);
 });
