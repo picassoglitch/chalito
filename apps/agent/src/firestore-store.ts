@@ -11,7 +11,7 @@ import {
 } from "firebase/firestore";
 import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
 import { randomUUID } from "node:crypto";
-import { redactDeep } from "./redact.js";
+import { redactDeep, sanitizeDeviceEvent } from "./redact.js";
 import type { AgentStore, AuditEntry } from "./store.js";
 
 const EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -68,7 +68,8 @@ export class FirestoreStore implements AgentStore {
     await updateDoc(this.#u(`devices/${this.deviceId}`), fields);
   }
 
-  async publishDeviceEvent(e: DeviceEvent) {
+  async publishDeviceEvent(raw: DeviceEvent) {
+    const e = sanitizeDeviceEvent(raw);
     await updateDoc(this.#u(`devices/${this.deviceId}`), { lastEvent: e });
     await this.audit({ eid: randomUUID(), t: e.t, type: e.type, meta: { ...e }, source: "deviceEvent" });
   }

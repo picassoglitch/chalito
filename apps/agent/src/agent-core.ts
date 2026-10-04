@@ -28,7 +28,7 @@ import {
   presetPolicy,
   type Policy,
 } from "./policy/index.js";
-import { redactDeep, type Logger } from "./redact.js";
+import { redact, redactDeep, type Logger } from "./redact.js";
 import { Sealer } from "./sealing.js";
 import type { AgentStore } from "./store.js";
 
@@ -142,14 +142,14 @@ export class AgentCore {
           v: 1,
           type: "remote_enable.rejected",
           deviceId: this.d.self.deviceId,
-          attempted: attempted.slice(0, 64),
+          attempted: redact(attempted).slice(0, 64),
           origin:
             typeof body.origin === "string" && /^(local|client:|mcp:|call:)/.test(body.origin)
               ? (body.origin as Origin)
               : "local",
           t: this.d.now(),
         });
-        this.#audit("remote_enable.rejected", { id, attempted });
+        this.#audit("remote_enable.rejected", { id, attempted: redact(attempted).slice(0, 64) });
         return { ok: false, reason: "remote_enable_rejected" };
       }
       this.#audit("command.rejected", { id, reason: "invalid" });
