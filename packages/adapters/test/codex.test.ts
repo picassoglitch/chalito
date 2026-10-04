@@ -15,11 +15,10 @@ import {
   CodexAdapter,
   type CodexConfig,
   type CodexTransport,
-  fakeCodex,
-  type FakeCodexStep,
   sandboxModeFor,
   sandboxPolicyFor,
 } from "../src/codex/index.js";
+import { fakeCodex, type FakeCodexStep } from "../src/testing.js";
 import { InputQueue } from "../src/core.js";
 import { waitFor } from "./conformance.js";
 import { loadTranscript, replay, type TranscriptEntry } from "./replay.js";

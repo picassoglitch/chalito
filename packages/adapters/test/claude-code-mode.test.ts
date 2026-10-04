@@ -1,7 +1,8 @@
 import fc from "fast-check";
 import { RemotePermissionMode } from "@chalito/protocol";
 import { describe, expect, it } from "vitest";
-import { ClaudeCodeAdapter, fakeClaudeCode } from "../src/claude-code/index.js";
+import { ClaudeCodeAdapter } from "../src/claude-code/index.js";
+import { fakeClaudeCode } from "../src/testing.js";
 
 /** D-004: the SDK's permission mode is always explicit and never one of the unattended modes. */
 const FORBIDDEN = ["auto", "dontAsk", "bypassPermissions"];

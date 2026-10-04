@@ -3,7 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ClaudeCodeAdapter, fakeClaudeCode, type FakeStep } from "@chalito/adapters/claude-code";
+import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
+import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
 import { loadLiabilityText } from "@chalito/config";
 import {
   MemoryNonceStore,
