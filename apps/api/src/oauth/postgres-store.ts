@@ -221,13 +221,17 @@ export class PostgresMcpStore implements McpStore {
   async recommend(owner: string, aid: string, rec: { from: string; allow: boolean; note: string; at: number }) {
     // One statement: the cap holds under concurrent calls.
     const done = await this.sql`
-      update chalito.approvals set recommendations = recommendations || ${this.sql.json([rec] as never)}
-      where owner = ${owner} and aid = ${aid} and status = 'pending' and expires_at > now()
-        and jsonb_array_length(recommendations) < 20
+      update chalito.approvals a set recommendations = a.recommendations || ${this.sql.json([rec] as never)}
+      where a.owner = ${owner} and a.aid = ${aid} and a.status = 'pending' and a.expires_at > now()
+        and not exists (select 1 from chalito.devices d
+                        where d.owner = a.owner and d.device_id = a.device_id and d.revoked)
+        and jsonb_array_length(a.recommendations) < 20
       returning 1`;
     if (done.length) return "ok" as const;
-    const [r] = await this.sql`select 1 from chalito.approvals
-      where owner = ${owner} and aid = ${aid} and status = 'pending' and expires_at > now()`;
+    const [r] = await this.sql`select 1 from chalito.approvals a
+      where a.owner = ${owner} and a.aid = ${aid} and a.status = 'pending' and a.expires_at > now()
+        and not exists (select 1 from chalito.devices d
+                        where d.owner = a.owner and d.device_id = a.device_id and d.revoked)`;
     return r ? ("full" as const) : ("not_found" as const);
   }
   async insertMesaTurn(owner: string, mid: string, tid: string, doc: Record<string, unknown>) {
