@@ -40,6 +40,7 @@ export const pairingRoutes = (deps: Deps) => {
       claimedByDeviceId: null,
       claimerPubSign: null,
       claimerPubBox: null,
+      claimerWebauthnBinding: null,
       expiresAt: glyph.body.expiresAt,
     };
     if ((await deps.repo.createPairingCode(doc)) === "exists") return fail(409, "code_exists");
@@ -89,6 +90,9 @@ export const pairingRoutes = (deps: Deps) => {
     );
     if (!sig.ok) fail(400, "bad_signature");
 
+    // The claimer's passkey binding (signed by its device key) goes to the agent with the claim;
+    // the agent verifies it against the phone key it confirms at the reverse check.
+    const claimerWebauthnBinding = (await deps.repo.getDeviceWebAuthn(p.owner, p.deviceId!))?.binding ?? null;
     const res = await deps.repo.claimPairingCode(
       b.codeId,
       {
@@ -96,6 +100,7 @@ export const pairingRoutes = (deps: Deps) => {
         claimedByDeviceId: p.deviceId!,
         claimerPubSign,
         claimerPubBox: claimer.pubBox,
+        claimerWebauthnBinding,
         claimedAt: deps.now(),
       },
       async (code) => {

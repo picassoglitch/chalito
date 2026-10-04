@@ -88,6 +88,7 @@ export const pairingCode = async (now = Date.now()) => {
     claimedByDeviceId: null,
     claimerPubSign: null,
     claimerPubBox: null,
+    claimerWebauthnBinding: null,
     expiresAt: glyph.body.expiresAt,
   };
   return doc;

@@ -14,3 +14,9 @@ coverage/
 src-tauri/target/
 terraform.tfvars
 backend.hcl
+
+# Next.js / Playwright
+.next/
+next-env.d.ts
+test-results/
+playwright-report/
