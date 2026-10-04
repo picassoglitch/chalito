@@ -2,7 +2,7 @@
 
 - Owner: Aldo (picassoglitch)
 - Written: M0, 2026-10-03
-- Status: **M0–M2 done; M3 in progress** (updated 2026-10-03). Revised 2026-10-03 after the owner's answers: Chalito is a Chalyb engine.
+- Status: **M0–M12, M14 and M15 code-complete; going live is owner-gated (`docs/GO_LIVE.md`); M13 deferred** (updated 2026-10-04). Revised 2026-10-03 after the owner's answers: Chalito is a Chalyb engine.
 
 This is the build plan for the Chalito beta. It is the milestone list from the brief, adjusted to the APIs verified on 2026-10-03 (`docs/VERIFIED_APIS.md`), with risks per milestone. Where the plan differs from the brief, the reason is in `/DEVIATIONS.md`. Design decisions are in `docs/adr/`. Security invariants are in `docs/THREAT_MODEL.md`.
 
@@ -26,6 +26,36 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - Commits are authored as picassoglitch.
   - After each milestone: a summary, test results, deviations, then the next plan, and we **stop for "go"**.
 - **Art.** Any images or art (free roster textures, cosmetics, store art, icons) are generated with **Google AI Studio (Gemini image models)** for quality, and each asset's prompt, model and date is recorded in `docs/ASSET_PROVENANCE.md`. The Solo landing still uses **real renders** of the runtime (M13). AI art is only source material fed into that runtime.
+
+## Status by milestone (2026-10-04)
+
+**Status values:**
+- **Done:** merged to `main`.
+- **Code-complete:** on the integration branch `all` ([#15](https://github.com/picassoglitch/chalito/pull/15), CI only), with its milestone PR open for the owner's go.
+- **Owner-gated:** code-complete, but going live needs owner items (`docs/OPS.md`, `docs/GO_LIVE.md`).
+- **Deferred:** not built for the beta.
+
+| Milestone | Status | PR | Owner-gated on | Deviations |
+|---|---|---|---|---|
+| M0 Planning | Done | (first commit on `main`) | — | — |
+| M1 Foundations + brand | Done | [#1](https://github.com/picassoglitch/chalito/pull/1) | — | D-001 |
+| M2 Control plane + pairing | Done | [#2](https://github.com/picassoglitch/chalito/pull/2) | Chalyb engine PR (GO_LIVE Phase 1) | D-025, D-054 |
+| M3 Agent + Claude Code + signed approvals | Done | [#4](https://github.com/picassoglitch/chalito/pull/4) | the real Claude Code run (`scripts/e2e-claude.md`) | D-002, D-039 |
+| M4 Codex (+ Grok Build ACP) | Done | [#5](https://github.com/picassoglitch/chalito/pull/5) | OpenAI Sign in with ChatGPT approval | D-003, D-022 |
+| Data layer on Supabase (ADR 0017) | Done | [#6](https://github.com/picassoglitch/chalito/pull/6) ([#3](https://github.com/picassoglitch/chalito/pull/3) closed) | nexo-ai sign-off + migrations (Phase 2) | D-048–D-053 |
+| M5 Web/PWA + onboarding | Code-complete, owner-gated | [#7](https://github.com/picassoglitch/chalito/pull/7) | Vercel project, env, domain (Phase 6) | D-055, D-056 |
+| M6 Escalation + comms | Code-complete, owner-gated | [#8](https://github.com/picassoglitch/chalito/pull/8) | Twilio number + Verify, Meta template, the one real call + template (Phase 5, 8.3) | D-013, D-050 |
+| M7 Desktop companion + animation | Code-complete, owner-gated | [#11](https://github.com/picassoglitch/chalito/pull/11) | signed builds (M14) | D-059 |
+| M8 Avatars + pay-to-dress store | Code-complete, owner-gated | [#14](https://github.com/picassoglitch/chalito/pull/14) | cosmetic prices; hub `store.purchase` (Phase 0.1, 1.5) | D-030, D-057, D-060 |
+| M9 Mesa + token efficiency | Code-complete, owner-gated | [#13](https://github.com/picassoglitch/chalito/pull/13) | AI provider keys, KMS (Phase 3, 5.1) | — |
+| M10 MCP gateway | Code-complete, owner-gated | [#12](https://github.com/picassoglitch/chalito/pull/12) | `mcp.` domain mapping (4.5) | — |
+| M11 Rooms + messaging + portal scene | Code-complete (back end and room windows), owner-gated; **the deterministic portal scene (`packages/scene`) isn't on `all`** | [#9](https://github.com/picassoglitch/chalito/pull/9) | load test at 1k (Phase 10) | — (a deviation for the scene is pending) |
+| M12 Hub billing integration | Code-complete, owner-gated | [#10](https://github.com/picassoglitch/chalito/pull/10) | hub `/usage/admit` + `/usage/settle` on chalyb `main` (§7b), Solo MXN amounts, trial/Solo reporting | D-016, D-026, D-030, D-031 |
+| M13 Solo landing (real renders) | **Deferred** | — | — | — |
+| M14 Downloadable apps | Code-complete, owner-gated | [#16](https://github.com/picassoglitch/chalito/pull/16) | updater key, Apple, Azure, the publish go (Phase 9) | D-011, D-061 |
+| M15 Hardening + docs | Code-complete (on `all` via `m15-hardening`, no separate PR), owner-gated | — | the 1k load test, legal review (Phase 10) | D-060 |
+
+**Security fixes from the beta review** (`docs/reviews/beta-security-review.md`): [#17](https://github.com/picassoglitch/chalito/pull/17) R-C1 (critical), [#18](https://github.com/picassoglitch/chalito/pull/18) R-H2, [#19](https://github.com/picassoglitch/chalito/pull/19) R-L12 adapters env, [#20](https://github.com/picassoglitch/chalito/pull/20) R-M1 + revoke guard. The other findings were fixed on `all` in M15 (batches 2–3) and by the review owners.
 
 ## Milestones
 
