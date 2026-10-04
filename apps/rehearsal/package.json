@@ -9,10 +9,15 @@
     "test:rehearsal": "vitest run -c vitest.rehearsal.config.ts"
   },
   "dependencies": {
+    "@chalito/adapters": "workspace:*",
+    "@chalito/billing": "workspace:*",
+    "@chalito/client": "workspace:*",
     "@chalito/client-keys": "workspace:*",
+    "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
     "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
+    "@chalito/rooms": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
     "msw": "^3.0.2"
   }

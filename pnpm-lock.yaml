@@ -491,9 +491,21 @@ importers:
 
   apps/rehearsal:
     dependencies:
+      '@chalito/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
+      '@chalito/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
+      '@chalito/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@chalito/client-keys':
         specifier: workspace:*
         version: link:../../packages/client-keys
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
@@ -503,6 +515,9 @@ importers:
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@chalito/rooms':
+        specifier: workspace:*
+        version: link:../../packages/rooms
       '@supabase/supabase-js':
         specifier: ^2.117.2
         version: 2.117.2(@opentelemetry/api@1.9.1)

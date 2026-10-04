@@ -19,9 +19,19 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
+import {
+  approveEndorsement,
+  httpApi,
+  registerPasskey,
+  resolveForEndorsement,
+  type ApiClient,
+  type DeviceSigner,
+  type TrustedAgent,
+} from "@chalito/client-keys";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
+import type { WebAuthnCredentialRef } from "@chalito/crypto";
 import { signGlyph } from "@chalito/glyph";
-import type { GlyphPayload } from "@chalito/protocol";
+import type { Endorsement, GlyphPayload } from "@chalito/protocol";
 import { createApp } from "../../api/src/app.js";
 import { MemoryAudit, type Deps } from "../../api/src/deps.js";
 import { PostgresRepo, chalitoSql } from "../../api/src/postgres/repo.js";
@@ -59,6 +69,10 @@ export interface Keys {
 export interface Device extends Keys {
   token: string;
   db: Db;
+  /** The api as this device (client-keys' HTTP client, routed to the in-process app). */
+  api: ApiClient;
+  /** This device's key as client-keys signs with it. */
+  signer: DeviceSigner;
 }
 
 export interface Person {
@@ -67,9 +81,15 @@ export interface Person {
   /** The web session (hub SSO → Supabase session of the hub user). */
   userToken: string;
   phone: Device;
-  /** The phone's passkey, once enrolled. */
+  /** The phone's passkey, once enrolled, and the credential its signed binding names. */
   passkey: SoftAuthenticator | null;
+  credential: WebAuthnCredentialRef | null;
 }
+
+export const signerFor = (k: Keys): DeviceSigner => ({
+  deviceId: k.deviceId,
+  sign: (ctx, body) => signEnvelope(ctx, body, k.deviceId, k.sign.secretKey),
+});
 
 export const keys = async (): Promise<Keys> => {
   const sign = await generateSigningKeyPair();
@@ -156,7 +176,13 @@ export const createStack = () => {
       ),
     );
     if (res.status !== 200) throw new Error(`device token ${res.status} ${JSON.stringify(res.json)}`);
-    return { ...k, ...(await signIn(res.json.customToken)) };
+    const session = await signIn(res.json.customToken);
+    return {
+      ...k,
+      ...session,
+      api: httpApi({ baseUrl: "http://api.rehearsal.invalid", token: async () => session.token, fetch: apiFetch }),
+      signer: signerFor(k),
+    };
   };
 
   const registration = (owner: string, k: Keys, kind: "phone" | "web", name: string) =>
@@ -213,20 +239,16 @@ export const createStack = () => {
       userToken,
     );
     if (first.status !== 201) throw new Error(`first device ${first.status} ${JSON.stringify(first.json)}`);
-    return { name, owner, userToken, phone: await deviceSession(owner, k), passkey: null };
+    return { name, owner, userToken, phone: await deviceSession(owner, k), passkey: null, credential: null };
   };
 
-  /** The phone enrols a passkey (WebAuthn registration through the api). */
+  /**
+   * The phone enrols a passkey with the client's own flow (client-keys registerPasskey): WebAuthn
+   * registration through the api, then the device-signed binding agents record it from.
+   */
   const enrolPasskey = async (p: Person) => {
     const auth = new SoftAuthenticator({ origin: ORIGIN, alg: -8 });
-    const opts = await call("/v1/webauthn/register/options", {}, p.phone.token);
-    if (opts.status !== 200) throw new Error(`register options ${opts.status}`);
-    const verify = await call(
-      "/v1/webauthn/register/verify",
-      { response: await auth.create(opts.json.options) },
-      p.phone.token,
-    );
-    if (verify.status !== 201) throw new Error(`register verify ${verify.status} ${JSON.stringify(verify.json)}`);
+    p.credential = await registerPasskey(p.phone.api, p.phone.signer, auth, now);
     p.passkey = auth;
     return auth;
   };
@@ -279,6 +301,42 @@ export const createStack = () => {
     return { glyph, shortCode: String(published.json.shortCode), device: await deviceSession(p.owner, agent) };
   };
 
+  /** What a client keeps about an agent it confirmed with the glyph. */
+  const agentRef = async (d: Keys, label: string): Promise<TrustedAgent> => ({
+    deviceId: d.deviceId,
+    pubSign: d.pubSign,
+    pubBox: d.pubBox,
+    fingerprint: await fingerprint(d.sign.publicKey),
+    label,
+    confirmedAt: now(),
+    via: "glyph",
+  });
+
+  /**
+   * Step 3's path as a helper: a new browser (signed into the web) is endorsed by the phone, with
+   * its passkey step-up when it has one and the phone's agents introduced, then enrols.
+   */
+  const endorseBrowser = async (p: Person, agents: TrustedAgent[] = []) => {
+    const browser = await keys();
+    const registration = await registerBrowser(p, browser);
+    const code = await call("/v1/endorse/codes", { registration }, p.userToken);
+    if (code.status !== 201) throw new Error(`endorse code ${code.status}`);
+    const target = await resolveForEndorsement(p.phone.api, { shortCode: code.json.shortCode }, now());
+    await approveEndorsement(p.phone.api, p.phone.signer, target, {
+      uid: p.owner,
+      now: now(),
+      ...(p.passkey ? { stepUp: p.passkey.stepUp(RP_ID) } : {}),
+      agents,
+    });
+    const taken = await call("/v1/endorse/take", { codeId: code.json.codeId }, p.userToken);
+    if (taken.status !== 200) throw new Error(`take ${taken.status}`);
+    const endorsement = taken.json.endorsement as Endorsement;
+    const enrolled = await call("/v1/devices/endorsed", { registration, endorsement }, p.userToken);
+    if (enrolled.status !== 201) throw new Error(`endorsed ${enrolled.status} ${JSON.stringify(enrolled.json)}`);
+    return { device: await deviceSession(p.owner, browser), endorsement };
+  };
+  const registerBrowser = (p: Person, k: Keys) => registration(p.owner, k, "web", "Navegador");
+
   const close = async () => {
     for (const c of clients) await c.removeAllChannels().catch(() => undefined);
     for (const id of hubUsers) await authAdmin.admin.deleteUser(id).catch(() => undefined);
@@ -299,6 +357,8 @@ export const createStack = () => {
     enrolPasskey,
     stepUp,
     pairAgent,
+    agentRef,
+    endorseBrowser,
     close,
     now,
     tick: (ms: number) => void (clock += ms),
