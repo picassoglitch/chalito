@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /** Guards on .github/workflows/release.yml: drafts only, and only from a tag or a manual dry run. */
-const yml = readFileSync(join(__dirname, "../../../.github/workflows/release.yml"), "utf8");
+// Windows checkouts may convert line endings: match on LF regardless.
+const yml = readFileSync(join(__dirname, "../../../.github/workflows/release.yml"), "utf8").replace(/\r\n/g, "\n");
 const code = yml
   .split("\n")
   .filter((l) => !l.trim().startsWith("#"))
