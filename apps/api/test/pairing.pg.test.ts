@@ -429,7 +429,10 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
       const trusted = new TrustedClientList(agent.deviceId);
       await trusted.addConfirmed({ deviceId: phoneId, pubSign: phone.pubSign, pubBox: phone.pubBox }, clock);
       expect(trusted.has(newPhone.deviceId)).toBe(false);
-      expect(await trusted.addEndorsed(endorsement, clock)).toBe(true);
+      // R-L13: addEndorsed returns { ok, passkey }. This endorser has no recorded passkey, so
+      // no step-up is required and none is reported.
+      expect(await trusted.addEndorsed(endorsement, clock)).toEqual({ ok: true, passkey: false });
+      expect(trusted.has(newPhone.deviceId)).toBe(true);
     });
 
     it("revoking the agent blocks its very next read and its next credential", async () => {
