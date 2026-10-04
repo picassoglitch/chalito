@@ -415,6 +415,26 @@ describe("the api ends the call itself (SDP proxy, R-H6 follow-up)", () => {
     expect(sessions.events).toEqual([]);
   });
 
+  it("the api's sweep leaves a stale phone-call session to the notifier (call pricing lives there)", async () => {
+    const { call, sessions } = setup();
+    await sessions.open({
+      sourceId: "voice_call_stale",
+      owner: "hub-user-1",
+      channel: "call",
+      deviceId: `CA${"d".repeat(32)}`,
+      reservationId: "r_call",
+      model: "gpt-realtime-2.1-mini",
+      startedAt: clock,
+      maxSeconds: 60,
+    });
+    await sessions.setCallId("hub-user-1", "voice_call_stale", "rtc_phone_stale");
+    clock += 60_000 + 121_000;
+    expect((await call("/session", "client:dev_phone")).status).toBe(201);
+    expect(sessions.sessions.get("voice_call_stale")).toMatchObject({ endedAt: null, billedSeconds: 0 });
+    expect(sessions.events).toEqual([]);
+    expect(hungUp).toEqual([]);
+  });
+
   it("the stale sweep hangs up a call that was never ended", async () => {
     const { connect, call } = setup(realHub().hub, undefined, 60);
     await connect();
