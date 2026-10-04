@@ -5,7 +5,7 @@ import { createApp } from "./app.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
 import { HubClient, HubStreamUsage, compedFrom, enqueueUsage } from "@chalito/billing";
-import { loadModels, loadPlans, loadPrices } from "@chalito/config";
+import { loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
 import { twilioPhoneVerifier } from "./phone/twilio.js";
@@ -15,6 +15,8 @@ import { PostgresMcpStore } from "./oauth/postgres-store.js";
 import { PostgresRoomsRepo, type RoomsRepo } from "./rooms/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
+import { PostgresStoreRepo } from "./store/repo.js";
+import type { StoreDeps } from "./store/routes.js";
 import { pgVoiceCap } from "./voice/caps.js";
 import type { VoiceDeps } from "./voice/routes.js";
 
@@ -37,6 +39,7 @@ const backend = (): {
   rooms: RoomsRepo;
   phone?: PhoneDeps;
   voice?: VoiceDeps;
+  store?: StoreDeps;
 } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
@@ -68,6 +71,16 @@ const backend = (): {
             voiceName: process.env.REALTIME_VOICE ?? "marin",
             tokenSecret: env("VOICE_TOKEN_SECRET"),
             cap: pgVoiceCap(sql, loadPlans(), compedFrom(process.env.OWNER_UIDS)),
+          },
+        }
+      : {}),
+    // The store buys from the hub balance, so it needs the hub.
+    ...(process.env.CHALYB_BASE_URL
+      ? {
+          store: {
+            repo: new PostgresStoreRepo(sql),
+            catalog: loadCatalog(),
+            hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
           },
         }
       : {}),

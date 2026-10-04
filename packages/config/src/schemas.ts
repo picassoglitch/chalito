@@ -98,9 +98,19 @@ export const CatalogConfig = z.object({
         free: z.boolean(),
         /** Price in billable tokens, paid from the hub balance (D-030). Required when not free. */
         priceTokens: z.number().int().positive().optional(),
+        /** Art inside @chalito/roster (cosmetics/<id>.webp). */
+        art: z.string().regex(/^cosmetics\/[a-z0-9_]+\.webp$/),
+        /** On a 2.5D card: width as a fraction of the card, and the item's own pivot (0..1). */
+        card: z.object({
+          width: z.number().positive().max(2),
+          pivot: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]),
+        }),
+        /** On a VRM: offset from the slot's bone, in metres. */
+        vrm: z.object({ offset: z.tuple([z.number(), z.number(), z.number()]) }),
         provenance: z.string().min(1),
       })
-      .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens"),
+      .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens")
+      .refine((c) => !(c.free && c.priceTokens !== undefined), "free cosmetics have no price"),
   ),
   drops: z.record(z.string(), z.unknown()),
 });
