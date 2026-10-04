@@ -1,0 +1,156 @@
+rules_version = '2';
+
+// Chalito Firestore rules (brief §6, ADR 0002/0006/0016). Deny by default.
+// Identities (Firebase custom tokens minted by `api`):
+//   user    uid = hub user id, claims { role: "user", owner }
+//   client  uid = d_<deviceId>, claims { role: "client", owner, deviceId }
+//   agent   uid = d_<deviceId>, claims { role: "agent",  owner, deviceId }
+//   pairing uid = p_<codeId>,   claims { role: "pairing", pairingCode }
+// Server service accounts bypass rules; "server only" below means `allow write: if false`.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function role() { return request.auth.token.role; }
+    function ownerOf(uid) { return signedIn() && request.auth.token.owner == uid; }
+    function myDeviceId() { return request.auth.token.deviceId; }
+    function devicePath(uid, id) { return /databases/$(database)/documents/users/$(uid)/devices/$(id); }
+
+    // A device identity is only good while its device doc exists and is not revoked:
+    // revocation takes effect on the very next read or write.
+    function activeDevice(uid) {
+      return ownerOf(uid) && myDeviceId() is string
+        && exists(devicePath(uid, myDeviceId()))
+        && get(devicePath(uid, myDeviceId())).data.revoked == false;
+    }
+    function activeClient(uid) { return role() == "client" && activeDevice(uid); }
+    function activeAgent(uid) { return role() == "agent" && activeDevice(uid); }
+    function userSession(uid) { return role() == "user" && ownerOf(uid); }
+    function member(uid) { return userSession(uid) || activeDevice(uid); }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function writesOwnDevice() { return request.resource.data.deviceId == myDeviceId(); }
+
+    match /users/{uid} {
+      allow read: if member(uid);
+      allow write: if false;
+
+      match /devices/{deviceId} {
+        allow read: if member(uid);
+        // devMode and policyHash are written only by the device itself (brief §6).
+        allow update: if activeAgent(uid) && deviceId == myDeviceId()
+          && onlyChanges(["lastSeenAt", "policyHash", "devMode", "status", "presence"]);
+        allow create, delete: if false;
+
+        // Signed command envelopes from clients to an agent. The agent verifies the
+        // signature against its local trusted list; rules only gate who may write.
+        match /commands/{cid} {
+          allow create: if activeClient(uid)
+            && request.resource.data.keys().hasOnly(["env", "createdAt", "expireAt", "fromDeviceId"])
+            && request.resource.data.env is map
+            && request.resource.data.fromDeviceId == myDeviceId();
+          allow read, delete: if activeAgent(uid) && deviceId == myDeviceId();
+          allow update: if false;
+        }
+      }
+
+      match /endorsements/{eid} { allow read: if member(uid); allow write: if false; }
+      match /private/{doc} { allow read, write: if false; }
+
+      match /sessions/{sid} {
+        allow read: if member(uid);
+        allow create, update: if activeAgent(uid) && writesOwnDevice();
+        allow delete: if false;
+        match /events/{eid} {
+          allow read: if member(uid);
+          allow create: if activeAgent(uid) && writesOwnDevice();
+          allow update, delete: if false;
+        }
+      }
+
+      match /approvals/{aid} {
+        allow read: if member(uid);
+        allow create: if activeAgent(uid) && writesOwnDevice() && request.resource.data.status == "pending";
+        // Clients attach a signed decision (the agent verifies it); the owning agent resolves.
+        allow update: if (activeClient(uid) && onlyChanges(["decision"]) && resource.data.status == "pending")
+          || (activeAgent(uid) && resource.data.deviceId == myDeviceId() && onlyChanges(["status", "resolvedAt", "reason"]));
+        allow delete: if false;
+      }
+
+      match /notifications/{nid} {
+        allow read: if member(uid);
+        allow update: if activeClient(uid) && onlyChanges(["state", "ackedAt", "ackedVia"]);
+        allow create, delete: if false;
+      }
+
+      // Opt-in plaintext call lines: written/deleted by the publishing agent, read only by the notifier.
+      match /callLines/{lid} {
+        allow create: if activeAgent(uid) && writesOwnDevice();
+        allow delete: if activeAgent(uid) && resource.data.deviceId == myDeviceId();
+        allow read, update: if false;
+      }
+
+      match /mesas/{mid} {
+        allow read: if member(uid);
+        allow create, update: if activeClient(uid);
+        allow delete: if false;
+        match /turns/{tid} {
+          allow read: if member(uid);
+          allow create: if activeClient(uid);
+          allow update, delete: if false;
+        }
+      }
+
+      // Equipping cosmetics is server-validated against inventory, so clients can't change `equipped`.
+      match /companions/{cid} {
+        allow read: if member(uid);
+        allow update: if activeClient(uid) && onlyChanges(["name", "isRenamed", "persona", "voice", "style", "renderQuality"]);
+        allow create, delete: if false;
+      }
+
+      match /records/{rid} {
+        allow read, delete: if activeClient(uid);
+        allow create: if activeClient(uid);
+        allow update: if false;
+      }
+
+      match /connections/{provider} {
+        allow read: if member(uid);
+        // Status only; secrets never live here (keys stay in the OS keychain or KMS).
+        allow create, update: if activeClient(uid)
+          && request.resource.data.keys().hasOnly(["provider", "mode", "keyLocation", "status", "updatedAt"]);
+        allow delete: if activeClient(uid);
+      }
+
+      match /reminders/{rid} { allow read: if member(uid); allow write: if false; }
+      match /connectors/{cid} { allow read: if member(uid); allow write: if false; }
+      match /inventory/{id} { allow read: if member(uid); allow write: if false; }
+      match /entitlements/{id} { allow read: if member(uid); allow write: if false; }
+      match /usageOutbox/{id} { allow read, write: if false; }
+    }
+
+    // The agent waits on its own pairing doc with a token scoped to that doc only.
+    match /pairingCodes/{codeId} {
+      allow read: if signedIn() && role() == "pairing" && request.auth.token.pairingCode == codeId;
+      allow write: if false;
+    }
+
+    // Rooms: content is written through `api` (ADR 0010); members read.
+    match /rooms/{roomId} {
+      allow read: if signedIn() && request.auth.token.owner in resource.data.memberUids;
+      allow write: if false;
+      match /roomMembers/{companionId} {
+        allow read: if signedIn() && request.auth.token.owner in get(/databases/$(database)/documents/rooms/$(roomId)).data.memberUids;
+        allow write: if false;
+      }
+      match /roomEvents/{eid} {
+        allow read: if signedIn() && request.auth.token.owner in get(/databases/$(database)/documents/rooms/$(roomId)).data.memberUids;
+        allow write: if false;
+      }
+    }
+
+    match /cosmetics/{id} { allow read: if true; allow write: if false; }
+    match /drops/{id} { allow read: if true; allow write: if false; }
+    match /plans/{id} { allow read: if true; allow write: if false; }
+    // Everything else (ssoTokens, deviceNonces, roomInvites, companionDirectory, …) is server only.
+  }
+}

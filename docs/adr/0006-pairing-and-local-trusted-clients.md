@@ -9,7 +9,7 @@
    - The user signs in through the **Chalyb hub** (SSO launch to `chalito.chalyb.com/auth/sso`, ADR 0016). The PWA gets a Firebase custom token.
    - The user enrols a **WebAuthn passkey** in Chalito. This is the second factor for every security action (pairing, endorsement, recovery, HIGH approvals), and its credential public key is later recorded by each agent during the reverse check (D-019, D-027).
    - The phone generates Ed25519 + X25519 keys in secure storage (ADR 0003) and registers `devices/{phoneId}` with its public keys.
-   - It shows a **recovery code** (128-bit, Crockford base32). `api` stores only an Argon2id hash in `private/recovery`.
+   - It shows a **recovery code** (128-bit, Crockford base32). `api` stores only a scrypt hash (node:crypto, no native addon; D-037) in `private/recovery`.
 2. **Agent request.**
    - `chalito-agent` generates its keys in the OS keychain and calls `POST /pairing/codes` with its public keys.
    - `api` creates `pairingCodes/{codeId}` (TTL 5 min, single claim, short-code hash) and returns a signed `GlyphPayload` (purpose `pair_device`). The agent shows it as a **Chalito Glyph** plus `XXXX-XXXX` short code.
@@ -26,6 +26,12 @@
 6. **More clients.**
    - A new phone or browser is accepted by an agent only with (a) an **endorsement** signed by a client already in *that agent's* list, verified locally, or (b) local confirmation on the desktop.
    - The cloud can list a device; it can't make an agent trust it.
+
+## Identities (as built in M2)
+- **Device ids are derived from the signing key:** `dev_` + base64url(BLAKE2b-128(pubSign)). Server and device agree without coordination, and a key can't claim another device's id.
+- **Every device has its own Firebase identity:** uid `d_<deviceId>`, with claims `{role: client|agent, owner, deviceId}`. One device can be disabled without signing out the others. The user session from hub SSO is uid = hub user id, claims `{role: user, owner}`.
+- **The agent waits event-driven:** `POST /v1/pairing/codes` returns a watch token (uid `p_<codeId>`) that can read only `pairingCodes/{codeId}`. The agent listens on it, sees the claim with the phone's public keys (for the reverse check), then signs a one-time challenge to get its own device credential.
+- The **WebAuthn passkey** (second factor, D-019/D-027) is enrolled by the web client in M5 (D-034). In M2 the phone's device-key signature is the claim proof.
 
 ## Revocation
 - Allowed from any trusted client (signed `device.revokeClient`) or locally.

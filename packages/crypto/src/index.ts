@@ -3,7 +3,7 @@ export { toB64url, fromB64url, utf8, fromUtf8 } from "./encoding.js";
 export { canonicalize } from "./jcs.js";
 export { generateSigningKeyPair, generateBoxKeyPair, randomBytes } from "./keys.js";
 export type { SigningKeyPair, BoxKeyPair } from "./keys.js";
-export { fingerprint, crockford32 } from "./fingerprint.js";
+export { fingerprint, crockford32, deriveDeviceId } from "./fingerprint.js";
 export { signingInput, signDetached, verifyDetached, signEnvelope, verifyEnvelope } from "./sign.js";
 export type { SignedEnvelope, VerifyResult } from "./sign.js";
 export { seal, open, sealJson, openJson } from "./seal.js";
@@ -11,3 +11,5 @@ export { generateRoomKey, wrapRoomKey, unwrapRoomKey, rotateRoomKey, roomSeal, r
 export type { WrappedRoomKey } from "./room.js";
 export { randomNonce, MemoryNonceStore } from "./nonce.js";
 export type { NonceStore } from "./nonce.js";
+export { TrustedClientList } from "./trust.js";
+export type { TrustedClient, DecisionCheck } from "./trust.js";

@@ -30,3 +30,12 @@ export const fingerprint = async (pubSign: Uint8Array): Promise<string> => {
   const chars = crockford32(digest.slice(0, 10));
   return chars.match(/.{4}/g)!.join("-");
 };
+
+/**
+ * Device id derived from the signing key: "dev_" + base64url(BLAKE2b-128(pubSign)).
+ * Server and device compute the same id, and a key can never claim another id.
+ */
+export const deriveDeviceId = async (pubSign: Uint8Array): Promise<string> => {
+  const s = await ready();
+  return `dev_${s.to_base64(s.crypto_generichash(16, pubSign, null), s.base64_variants.URLSAFE_NO_PADDING)}`;
+};

@@ -11,3 +11,4 @@ export * from "./glyph.js";
 export * from "./companion.js";
 export * from "./plans.js";
 export * from "./billing.js";
+export * from "./api.js";

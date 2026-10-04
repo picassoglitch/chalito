@@ -54,7 +54,8 @@ const Tier = z.object({
 export type Tier = z.infer<typeof Tier>;
 
 /** Chalyb hub tiers. Their prices live in Chalyb; here only the Chalito access they grant. */
-export const HubTierId = z.enum(["gratis", "pro", "vip"]);
+export const HubTierId = z.enum(["free", "pro", "vip"]);
+// Values as the hub sends them (lowercase effective tier; "free" is Chalyb Gratis).
 export type HubTierId = z.infer<typeof HubTierId>;
 
 const PROFILE_RANK = { low: 0, standard: 1, max: 2 } as const;

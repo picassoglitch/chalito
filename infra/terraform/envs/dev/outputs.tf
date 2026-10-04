@@ -6,9 +6,28 @@ output "artifact_registry" {
   value = module.artifact_registry.repository
 }
 
+output "firestore_database" {
+  value = module.firestore.database_id
+}
+
+output "topics" {
+  value = module.pubsub.topic_ids
+}
+
+output "buckets" {
+  value = module.storage.bucket_names
+}
+
+output "service_urls" {
+  value = {
+    orchestrator = module.orchestrator.uri
+    notifier     = module.notifier.uri
+    mcp_gateway  = module.mcp_gateway.uri
+  }
+}
+
 output "secrets_needing_values" {
-  description = "Filled in at M2, when secret containers are added."
-  value       = []
+  value = module.secrets.secret_ids
 }
 
 output "hosts" {
