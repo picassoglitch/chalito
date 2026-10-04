@@ -121,7 +121,7 @@ export const apiTokenSource = (mint: MintToken, refreshIntervalMs = SUPABASE_REF
 
 /** What cloud.ts needs from a supabase-js client on top of SupaClient. */
 export type RealtimeClient = SupaClient & {
-  realtime: { setAuth(token?: string | null): unknown };
+  realtime: { setAuth(token?: string | null): unknown | Promise<unknown> };
   removeAllChannels(): Promise<unknown>;
 };
 
@@ -147,12 +147,13 @@ export const supabaseCloud = (
   const client = (opts.create ?? createSupabaseClient)(cfg.url, cfg.publishableKey, async () => token);
   const stores: SupabaseStore[] = [];
   // Realtime caches join authorization until it sees a new token: hand over every new one.
-  const apply = (t: string) => {
+  // realtime-js 2.117's setAuth is async: await it, so a join never races ahead of the token.
+  const apply = async (t: string) => {
     if (t === token) return;
     token = t;
-    client.realtime.setAuth(t);
+    await client.realtime.setAuth(t);
   };
-  tokens.onToken?.(apply);
+  tokens.onToken?.((t) => void apply(t));
   return {
     refreshIntervalMs: tokens.refreshIntervalMs,
     refresh: async () => apply(await tokens.getToken()),
@@ -183,6 +184,7 @@ export const pairingRowToDoc = (r: Record<string, unknown>): Record<string, unkn
   claimedByDeviceId: r.claimed_by_device_id ?? null,
   claimerPubSign: r.claimer_pub_sign ?? null,
   claimerPubBox: r.claimer_pub_box ?? null,
+  claimerWebauthnBinding: r.claimer_webauthn_binding ?? null,
   expiresAt: typeof r.expires_at === "string" ? Date.parse(r.expires_at) : r.expires_at,
 });
 
@@ -202,7 +204,8 @@ export const supabasePairingWatcher = (
   watch: async (watchToken, codeId, onDoc) => {
     const access = opts.exchange ? await opts.exchange(watchToken) : watchToken;
     const client = (opts.create ?? createSupabaseClient)(cfg.url, cfg.publishableKey, async () => access);
-    client.realtime.setAuth(access);
+    // Join only after Realtime has the watch token (setAuth is async in realtime-js 2.117).
+    await client.realtime.setAuth(access);
     const read = async () => {
       const { data, error } = await client.from("pairing_codes").select("*").eq("code_id", codeId).maybeSingle();
       if (!error && data) onDoc(pairingRowToDoc(data as Record<string, unknown>));
