@@ -1,0 +1,10 @@
+# Out of energy, in character (brief §5 M12, ADR 0013). Said when the managed balance runs out
+# mid-conversation; the turn finishes on free_min and the companion plays "tired". No prices,
+# no billing words beyond "recargar". The chip opens /creditos inline (never a modal).
+schemaVersion: 1
+chip: "¿Por qué?"
+lines:
+  - "Quiero ayudarte, pero me quedé sin energía… ¿me recargas?"
+  - "Uf, se me acabó la pila. Si me recargas, seguimos donde íbamos."
+  - "Me estoy quedando dormido… necesito una recarga para pensar a fondo. Lo básico lo sigo haciendo."
+  - "Ando sin energía para esto. Tus aprobaciones y avisos siguen funcionando; para lo demás, ¿me recargas?"

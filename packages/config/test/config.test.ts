@@ -6,6 +6,7 @@ import {
   loadPlans,
   loadPrices,
   loadProviders,
+  loadRechargeCopy,
   loadRender,
   loadRooms,
 } from "../src/load.js";
@@ -24,6 +25,12 @@ describe("config files", () => {
     expect(esc.caps).toEqual({ call: 3, whatsapp: 10, sms: 3 });
     expect(esc.voices).toEqual({ es: "Polly.Mia-Neural", en: "Polly.Joanna-Neural" });
     expect(esc.whatsapp.graphVersion).toBe("v26.0");
+    for (const locale of ["es", "en"] as const) {
+      const copy = loadRechargeCopy(locale);
+      expect(copy.lines.length).toBeGreaterThanOrEqual(3);
+      // In character, never a price.
+      for (const line of copy.lines) expect(line).not.toMatch(/[$€]|\d+\s*(usd|mxn|pesos|dólares|dollars)/i);
+    }
   });
 
   it("every model referenced in models.yaml has a price", () => {

@@ -225,5 +225,15 @@ if (!url) {
         (await admin`select from_device_id from chalito.commands where owner = ${u} and id = 'c1'`)[0]?.from_device_id,
       ).toBe("notifier");
     });
+
+    it("voice call refs are single-use across instances", async () => {
+      const hash = randomUUID().replace(/-/g, "").padEnd(64, "0");
+      const [a, b] = await Promise.all([
+        store.claimCallRef(hash, Date.now() + 60_000),
+        store.claimCallRef(hash, Date.now() + 60_000),
+      ]);
+      expect([a, b].sort()).toEqual([false, true]);
+      expect(await new PostgresStore(sql).claimCallRef(hash, Date.now() + 60_000)).toBe(false);
+    });
   });
 }

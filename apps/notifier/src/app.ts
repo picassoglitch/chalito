@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
@@ -18,7 +19,7 @@ import { metaSignatureValid, twilioSignatureValid } from "./signatures.js";
 import { TEMPLATE } from "./template.js";
 import { connectTwiml, emptyTwiml, menuChoice, sayAndHangup } from "./twiml.js";
 import { runCallAgent, type CallSocketFactory } from "./voice/call-agent.js";
-import { UsedRefs, signCallRef, verifyCallRef } from "./voice/call-ref.js";
+import { signCallRef, verifyCallRef } from "./voice/call-ref.js";
 import { callSession, type CallContext } from "./voice/call-session.js";
 import { verifyStandardWebhook, type VoiceProvider } from "@chalito/adapters/voice";
 
@@ -28,6 +29,8 @@ export interface AppConfig {
   twilioAuthToken: string;
   metaAppSecret: string;
   metaVerifyToken: string;
+  /** Cloud Scheduler → POST /tasks/drain-usage (Google OIDC). */
+  drain?: OidcExpectation;
   /** OpenAI Realtime calls (ADR 0005/0011). Unset: DTMF 1 tells the user to open the app. */
   voice?: VoiceConfig;
 }
@@ -117,7 +120,6 @@ export const waToE164 = (from: string) => {
 export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVerifier) => {
   const app = new Hono();
   const voice = (locale: "es" | "en") => deps.config.voices[locale];
-  const usedRefs = new UsedRefs();
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 
@@ -255,7 +257,28 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
       sid: p.CallSid ?? p.MessageSid,
       status: p.CallStatus ?? p.MessageStatus,
     });
+    // Calls carry uid/country/reservation in their (signed) status URL: meter the minutes.
+    const uid = c.req.query("uid");
+    const rid = c.req.query("rid");
+    if (deps.billing && uid && p.CallSid) {
+      if (p.CallStatus === "completed")
+        await deps.billing.recordCall(uid, {
+          callSid: p.CallSid,
+          seconds: Number(p.CallDuration ?? 0),
+          country: c.req.query("c") ?? "",
+          ...(rid ? { reservationId: rid } : {}),
+        });
+      else if (rid && ["busy", "failed", "no-answer", "canceled"].includes(p.CallStatus ?? ""))
+        await deps.billing.release(rid);
+    }
     return c.body(null, 204);
+  });
+
+  // ---- Usage outbox drain (Cloud Scheduler, OIDC) ------------------------------------
+  app.post("/tasks/drain-usage", async (c) => {
+    if (!deps.billing || !cfg.drain) return c.text("not found", 404);
+    if (!(await verifyOidc(c.req.header("authorization"), cfg.drain))) return c.json({ error: "unauthorized" }, 401);
+    return c.json(await deps.billing.drain());
   });
 
   // ---- OpenAI Realtime SIP (Standard Webhooks signature) -----------------------------
@@ -284,7 +307,8 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
     const callId = ev.data.call_id;
     const token = ev.data.sip_headers?.find((h) => h.name?.toLowerCase() === "x-chalito-ref")?.value;
     const ref = verifyCallRef(v.refSecret, token, deps.now());
-    if (!ref || !usedRefs.claim(token!, ref.exp, deps.now())) {
+    // Single use across every instance (chalito_private.voice_call_refs).
+    if (!ref || !(await deps.store.claimCallRef(createHash("sha256").update(token!).digest("hex"), ref.exp))) {
       deps.log.info("voice.call_rejected", { callId, reason: ref ? "reused" : "unknown" });
       await v.provider.rejectCall(callId, 603);
       return c.body(null, 200);
@@ -307,9 +331,12 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
     await v.provider.acceptCall(callId, callSession(ctx, v.model, v.voiceName));
     const { url, headers } = v.provider.callSocket(callId);
     // The call outlives this request: Cloud Run needs CPU always allocated for the notifier.
-    void runCallAgent(deps, v.openSocket(url, headers), ctx).catch((err: unknown) =>
-      deps.log.error("voice.agent_failed", { callId, error: err instanceof Error ? err.message : "error" }),
-    );
+    const startedAt = deps.now();
+    void runCallAgent(deps, v.openSocket(url, headers), ctx)
+      .then(() => deps.billing?.recordVoice(ref.uid, { callId, seconds: (deps.now() - startedAt) / 1000 }))
+      .catch((err: unknown) =>
+        deps.log.error("voice.agent_failed", { callId, error: err instanceof Error ? err.message : "error" }),
+      );
     return c.body(null, 200);
   });
 

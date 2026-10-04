@@ -4,7 +4,9 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import webpush from "web-push";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { loadEscalation, loadModels } from "@chalito/config";
+import { HubClient, MemoryOutbox } from "@chalito/billing";
+import { loadEscalation, loadModels, loadPrices } from "@chalito/config";
+import { hubCommsBilling } from "../src/billing.js";
 import type { UserPrefs } from "@chalito/escalation";
 import { createApp, type AppConfig } from "../src/app.js";
 import type { NotifierDeps } from "../src/executor.js";
@@ -73,7 +75,14 @@ export class FakeSocket {
 export const NOON_MX = Date.UTC(2026, 9, 5, 18, 0, 0);
 
 /** Every provider request the notifier made, as the mocks saw it. */
+export const SCHEDULER_SA = "scheduler@chalito-dev.iam.gserviceaccount.com";
+export const RID = "44444444-4444-4444-8444-444444444444";
+
+/** What the mocked Chalyb hub answers to /usage/admit. */
+export const hubState = { admit: "allowed" as "allowed" | "no_tokens" | "down" };
+
 export interface Captured {
+  hub: { path: string; body: Record<string, unknown> }[];
   openai: { path: string; body: Record<string, unknown>; headers: Record<string, string> }[];
   whatsapp: { url: string; body: Record<string, unknown> }[];
   calls: Record<string, string>[];
@@ -120,9 +129,35 @@ export const prefs = (over: Partial<UserPrefs> = {}): UserPrefs => ({
 });
 
 export const mockServer = () => {
-  const cap: Captured = { openai: [], whatsapp: [], calls: [], sms: [], tasks: [], push: [] };
+  const cap: Captured = { hub: [], openai: [], whatsapp: [], calls: [], sms: [], tasks: [], push: [] };
   const goneEndpoints = new Set<string>();
+  const hubBase = "https://www.chalyb.com/api/engines/chalito";
   const server = setupServer(
+    http.post(`${hubBase}/usage/admit`, async ({ request }) => {
+      cap.hub.push({ path: "admit", body: (await request.json()) as Record<string, unknown> });
+      if (hubState.admit === "down") return HttpResponse.json({ error: "x" }, { status: 503 });
+      return HttpResponse.json(
+        hubState.admit === "allowed"
+          ? {
+              ok: true,
+              allowed: true,
+              reservation_id: RID,
+              lane: "standard",
+              boost_fee_tokens: 0,
+              limits: {},
+              balance: { remaining: 10_000, reserved: 0 },
+            }
+          : { ok: true, allowed: false, reason: "no_tokens" },
+      );
+    }),
+    http.post(`${hubBase}/usage/settle`, async ({ request }) => {
+      cap.hub.push({ path: "settle", body: (await request.json()) as Record<string, unknown> });
+      return HttpResponse.json({ ok: true });
+    }),
+    http.post(`${hubBase}/usage`, async ({ request }) => {
+      cap.hub.push({ path: "usage", body: (await request.json()) as Record<string, unknown> });
+      return HttpResponse.json({ ok: true });
+    }),
     http.post("https://api.openai.com/v1/*", async ({ request }) => {
       const body = (await request.json()) as Record<string, unknown>;
       cap.openai.push({
@@ -168,7 +203,7 @@ export const mockServer = () => {
   return { server, cap, goneEndpoints };
 };
 
-export const setup = (opts: { now?: () => number } = {}) => {
+export const setup = (opts: { now?: () => number; billing?: boolean } = {}) => {
   const store = new MemoryStore();
   const sockets: FakeSocket[] = [];
   const logs: { msg: string; meta?: Record<string, unknown> }[] = [];
@@ -194,6 +229,17 @@ export const setup = (opts: { now?: () => number } = {}) => {
     now: opts.now ?? (() => clock),
     log: { info: (msg, meta) => logs.push({ msg, meta }), error: (msg, meta) => logs.push({ msg, meta }) },
   };
+  const outbox = new MemoryOutbox();
+  if (opts.billing)
+    deps.billing = hubCommsBilling({
+      hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "chalito-admin-token" }),
+      outbox,
+      enqueue: (owner, events) => outbox.enqueue(owner, events),
+      prices: loadPrices(),
+      voiceModel: loadModels().voice.call.model,
+      now: () => deps.now(),
+      alert: (msg, meta) => logs.push({ msg, meta }),
+    });
   const cfg: AppConfig = {
     pubsub: {
       email: PUSH_SA,
@@ -202,6 +248,7 @@ export const setup = (opts: { now?: () => number } = {}) => {
       roomEventsAudience: `${BASE}/pubsub/room-events`,
     },
     tasks: { email: TASKS_SA, audience: `${BASE}/tasks/tick`, queueName: QUEUE },
+    drain: { email: SCHEDULER_SA, audience: `${BASE}/tasks/drain-usage` },
     twilioAuthToken: TWILIO_TOKEN,
     metaAppSecret: META_SECRET,
     metaVerifyToken: "meta-verify",
@@ -223,6 +270,7 @@ export const setup = (opts: { now?: () => number } = {}) => {
   return {
     app,
     store,
+    outbox,
     sockets,
     deps,
     logs,

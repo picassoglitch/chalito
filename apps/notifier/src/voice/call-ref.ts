@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * Ties a SIP call arriving at OpenAI to the Twilio call it came from. On DTMF 1 the notifier
  * dials `<sip uri>?X-Chalito-Ref=<ref>`; Twilio passes X- headers through, and OpenAI lists them in
  * realtime.call.incoming `sip_headers`. The ref is HMAC-signed, expires in 2 minutes and is
- * accepted once per instance; a call without a valid ref is rejected.
+ * accepted once globally (chalito_private.voice_call_refs); a call without a valid ref is rejected.
  */
 export interface CallRef {
   uid: string;
@@ -35,14 +35,3 @@ export const verifyCallRef = (secret: string, token: string | undefined, nowMs: 
     return null;
   }
 };
-
-/** Best-effort single use within this instance (refs also expire in 2 minutes). */
-export class UsedRefs {
-  #seen = new Map<string, number>();
-  claim(token: string, exp: number, nowMs: number): boolean {
-    for (const [k, e] of this.#seen) if (e <= nowMs) this.#seen.delete(k);
-    if (this.#seen.has(token)) return false;
-    this.#seen.set(token, exp);
-    return true;
-  }
-}

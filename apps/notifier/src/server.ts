@@ -2,8 +2,10 @@ import { serve } from "@hono/node-server";
 import { GoogleAuth } from "google-auth-library";
 import postgres from "postgres";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { loadEscalation, loadModels } from "@chalito/config";
+import { HubClient, PostgresOutbox, enqueueUsage } from "@chalito/billing";
+import { loadEscalation, loadModels, loadPrices } from "@chalito/config";
 import { createApp } from "./app.js";
+import { hubCommsBilling } from "./billing.js";
 import type { Logger } from "./executor.js";
 import { googleOidcVerifier } from "./oidc.js";
 import { PostgresStore } from "./postgres-store.js";
@@ -32,6 +34,7 @@ const sql = postgres(env("DATABASE_URL"), {
   // Least privilege (security review S2): act as chalito_server when the login holds it with SET.
   ...(process.env.DATABASE_ROLE ? { connection: { role: process.env.DATABASE_ROLE } } : {}),
 });
+const hub = new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") });
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
 
 const app = createApp(
@@ -61,6 +64,16 @@ const app = createApp(
     appUrl: env("APP_URL"),
     now: Date.now,
     log,
+    // Paid channels are admitted and metered through the Chalyb hub (ADR 0016).
+    billing: hubCommsBilling({
+      hub,
+      outbox: new PostgresOutbox(sql),
+      enqueue: (owner, events) => enqueueUsage(sql, owner, events),
+      prices: loadPrices(),
+      voiceModel: loadModels().voice.call.model,
+      now: Date.now,
+      alert: (msg, meta) => log.error(msg, { ...meta, alert: true }),
+    }),
   },
   {
     pubsub: {
@@ -71,6 +84,7 @@ const app = createApp(
     },
     tasks: { email: env("TASKS_SA_EMAIL"), audience: `${base}/tasks/tick`, queueName: env("TASKS_QUEUE") },
     twilioAuthToken: env("TWILIO_AUTH_TOKEN"),
+    drain: { audience: `${base}/tasks/drain-usage`, email: env("SCHEDULER_SA_EMAIL") },
     metaAppSecret: env("META_APP_SECRET"),
     metaVerifyToken: env("META_VERIFY_TOKEN"),
     ...(process.env.REALTIME_SIP_URI

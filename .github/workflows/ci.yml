@@ -89,6 +89,9 @@ jobs:
       - run: pnpm --filter @chalito/notifier test:pg
         env:
           CHALITO_DB_ROLE: chalito_server
+      - run: pnpm --filter @chalito/billing test:pg
+        env:
+          CHALITO_DB_ROLE: chalito_server
       - name: Agent SupabaseStore integration
         run: |
           eval "$(supabase status -o env)"

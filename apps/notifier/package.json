@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@chalito/adapters": "workspace:*",
+    "@chalito/billing": "workspace:*",
     "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
     "@chalito/escalation": "workspace:*",

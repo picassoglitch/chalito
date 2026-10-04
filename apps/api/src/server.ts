@@ -4,14 +4,14 @@ import { createClient } from "@supabase/supabase-js";
 import { createApp } from "./app.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { loadModels } from "@chalito/config";
+import { HubClient, HubStreamUsage, enqueueUsage } from "@chalito/billing";
+import { loadModels, loadPrices } from "@chalito/config";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
 import { twilioPhoneVerifier } from "./phone/twilio.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
-import { StubHubUsage } from "./voice/hub.js";
 import type { VoiceDeps } from "./voice/routes.js";
 
 const env = (name: string): string => {
@@ -39,12 +39,18 @@ const backend = (): { repo: ApiRepo; identity: IdentityIssuer; phone?: PhoneDeps
   return {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
-    // Desktop push-to-talk when OpenAI is configured; the hub client is a stub until M12.
+    // Desktop push-to-talk when OpenAI is configured, admitted and metered through the hub.
     ...(process.env.OPENAI_API_KEY
       ? {
           voice: {
             provider: openaiRealtime({ apiKey: env("OPENAI_API_KEY") }),
-            hub: new StubHubUsage((msg, meta) => process.stdout.write(`${JSON.stringify({ msg, ...meta })}\n`)),
+            hub: new HubStreamUsage({
+              hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
+              enqueue: (owner, events) => enqueueUsage(sql, owner, events),
+              prices: loadPrices(),
+              model: loadModels().voice.desktop.model,
+              now: Date.now,
+            }),
             model: loadModels().voice.desktop.model,
             voiceName: process.env.REALTIME_VOICE ?? "marin",
             tokenSecret: env("VOICE_TOKEN_SECRET"),

@@ -41,6 +41,8 @@ export interface NotifierStore {
   pendingApprovals(uid: string): Promise<PendingApproval[]>;
   /** The user's companion name for the voice persona (null: "Chalito"). */
   companionName(uid: string): Promise<string | null>;
+  /** Marks a voice call ref used (global single use); false if it was used before. */
+  claimCallRef(refHash: string, expiresAt: number): Promise<boolean>;
   /** Device public box key, to seal a relayed prompt for that agent. */
   agentPubBox(uid: string, deviceId: string): Promise<string | null>;
   insertRelayedCommand(
@@ -96,6 +98,7 @@ export class MemoryStore implements NotifierStore {
   commands: { uid: string; targetDeviceId: string; cid: string; env: RelayedCommand; expiresAt: number }[] = [];
   approvals = new Map<string, PendingApproval[]>();
   companions = new Map<string, string>();
+  callRefs = new Set<string>();
   #locks = new Map<string, Promise<unknown>>();
 
   async withUser<T>(uid: string, fn: (tx: UserTx) => Promise<T>): Promise<T> {
@@ -160,6 +163,11 @@ export class MemoryStore implements NotifierStore {
   }
   async pendingApprovals(uid: string) {
     return this.approvals.get(uid) ?? [];
+  }
+  async claimCallRef(refHash: string) {
+    if (this.callRefs.has(refHash)) return false;
+    this.callRefs.add(refHash);
+    return true;
   }
   async companionName(uid: string) {
     return this.companions.get(uid) ?? null;

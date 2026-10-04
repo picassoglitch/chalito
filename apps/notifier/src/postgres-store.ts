@@ -138,6 +138,13 @@ export class PostgresStore implements NotifierStore {
     return rows.map((r) => ({ aid: r.aid, deviceLabel: r.device_label, sessionLabel: r.session_label }));
   }
 
+  async claimCallRef(refHash: string, expiresAt: number) {
+    const rows = await this.sql`
+      insert into chalito_private.voice_call_refs (ref_hash, expires_at) values (${refHash}, ${new Date(expiresAt)})
+      on conflict (ref_hash) do nothing returning ref_hash`;
+    return rows.length > 0;
+  }
+
   async companionName(uid: string) {
     const [r] = await this.sql<{ name: string }[]>`
       select name from chalito.companions where owner = ${uid} order by created_at limit 1`;

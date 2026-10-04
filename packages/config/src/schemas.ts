@@ -128,3 +128,11 @@ export const EscalationConfig = z.object({
   }),
 });
 export type EscalationConfig = z.infer<typeof EscalationConfig>;
+
+/** copy/recharge.{es,en}.yaml: the companion's in-character out-of-energy lines. */
+export const RechargeCopy = z.object({
+  schemaVersion: z.literal(1),
+  chip: z.string().min(1).max(20),
+  lines: z.array(z.string().min(1).max(200)).min(3),
+});
+export type RechargeCopy = z.infer<typeof RechargeCopy>;

@@ -8,6 +8,7 @@ import {
   type UserPrefs,
 } from "@chalito/escalation";
 import type { CallBriefing, Channel, Level } from "@chalito/protocol";
+import { smsSegments, type CommsBilling } from "./billing.js";
 import type { Scheduler } from "./scheduler.js";
 import type { PushSender } from "./senders/push.js";
 import type { TwilioClient } from "./senders/twilio.js";
@@ -34,6 +35,8 @@ export interface NotifierDeps {
   appUrl: string;
   now: () => number;
   log: Logger;
+  /** Hub admission and metering for paid channels (WhatsApp, SMS, calls). Unset: not metered. */
+  billing?: CommsBilling;
 }
 
 const HISTORY_WINDOW_MS = 48 * 3_600_000;
@@ -154,28 +157,60 @@ const execute = async (
       return;
     }
     case "whatsapp":
-      if (to) await deps.whatsapp.sendTemplate(to, a.payload);
-      return;
-    case "sms":
-      if (to)
-        await deps.twilio.sendSms({
-          to,
-          body: smsBody(a.payload, deps.appUrl),
-          statusCallback: `${deps.publicBaseUrl}/webhooks/twilio/status`,
+    case "sms": {
+      if (!to) return;
+      const country = prefs.phone?.country ?? "";
+      const gate = deps.billing ? await deps.billing.admit(uid, a.channel, a.nid, country) : null;
+      if (gate && !gate.ok) {
+        deps.log.info("notifier.suppressed", { uid, nid: a.nid, channel: a.channel, reason: gate.reason });
+        return;
+      }
+      const body = a.channel === "sms" ? smsBody(a.payload, deps.appUrl) : "";
+      try {
+        if (a.channel === "whatsapp") await deps.whatsapp.sendTemplate(to, a.payload);
+        else await deps.twilio.sendSms({ to, body, statusCallback: `${deps.publicBaseUrl}/webhooks/twilio/status` });
+      } catch (err) {
+        if (gate?.ok) await deps.billing!.release(gate.reservationId);
+        throw err;
+      }
+      if (gate?.ok)
+        await deps.billing!.recordSend(uid, {
+          channel: a.channel,
+          nid: a.nid,
+          country,
+          segments: a.channel === "sms" ? smsSegments(body) : 1,
+          reservationId: gate.reservationId,
         });
       return;
+    }
     case "call": {
       const ladder = ladders.get(a.nid);
       if (!to || !ladder) return;
+      const country = prefs.phone?.country ?? "";
+      const gate = deps.billing ? await deps.billing.admit(uid, "call", a.nid, country) : null;
+      if (gate && !gate.ok) {
+        deps.log.info("notifier.suppressed", { uid, nid: a.nid, channel: "call", reason: gate.reason });
+        return;
+      }
       const script = buildBriefing(await callBriefing(deps, uid, prefs, ladder), {
         snoozeMin: Math.round(deps.config.snoozeMs / 60_000),
       });
       const gather = `${deps.publicBaseUrl}/webhooks/twilio/gather?uid=${encodeURIComponent(uid)}&nid=${encodeURIComponent(a.nid)}&lang=${prefs.locale}`;
-      await deps.twilio.createCall({
-        to,
-        twiml: briefingTwiml(script, deps.config.voices[prefs.locale], gather),
-        statusCallback: `${deps.publicBaseUrl}/webhooks/twilio/status`,
-      });
+      // The status callback carries who to bill (Twilio signs the whole URL).
+      const status = new URL(`${deps.publicBaseUrl}/webhooks/twilio/status`);
+      status.searchParams.set("uid", uid);
+      status.searchParams.set("c", country);
+      if (gate?.ok) status.searchParams.set("rid", gate.reservationId);
+      try {
+        await deps.twilio.createCall({
+          to,
+          twiml: briefingTwiml(script, deps.config.voices[prefs.locale], gather),
+          statusCallback: status.toString(),
+        });
+      } catch (err) {
+        if (gate?.ok) await deps.billing!.release(gate.reservationId);
+        throw err;
+      }
       return;
     }
   }
