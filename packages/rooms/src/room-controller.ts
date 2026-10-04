@@ -1,6 +1,15 @@
-import { RoomReportRequest, type RoomEventBody } from "@chalito/protocol";
+import { randomNonce } from "@chalito/crypto";
+import { RoomReportRequest, type GlyphPayload, type RoomEventBody } from "@chalito/protocol";
 import { RoomFeed, type RoomsDb } from "./feed.js";
-import { isVisible, openRoomEvent, sealRoomEvent, type RoomEventRow } from "./keys.js";
+import {
+  isVisible,
+  newRoom,
+  openRoomEvent,
+  rotateRoom,
+  sealRoomEvent,
+  type RoomDevice,
+  type RoomEventRow,
+} from "./keys.js";
 
 /**
  * One room as a member's app shows it (ADR 0010), shared by the web and the desktop: the room and
@@ -17,6 +26,20 @@ export interface RoomSummary {
   roomId: string;
   name: string;
   type: string;
+}
+
+export interface RoomRetentionView {
+  /** An ISO 8601 duration from rooms.yaml allowedEphemeralTtl, or "until_dissolved". */
+  ephemeralTtl: string;
+  keepPromoted: boolean;
+}
+
+/** What the room view needs beyond the summary: the key epoch, a pending rotation, retention. */
+export interface RoomDetail extends RoomSummary {
+  keyEpoch: number;
+  /** A member left: posting is refused until a remaining member rotates the key. */
+  needsRotation: boolean;
+  retention: RoomRetentionView;
 }
 
 export interface RoomMemberView {
@@ -43,12 +66,32 @@ export type RoomStatus = "loading" | "live" | "not_member" | "kicked" | "dissolv
 
 export interface RoomSnapshot {
   status: RoomStatus;
-  room: RoomSummary | null;
+  room: RoomDetail | null;
   members: readonly RoomMemberView[];
   events: readonly RoomEventView[];
 }
 
-export type RoomError = "not_member" | "not_found" | "rate_limited" | "ended" | "no_key" | "failed";
+export type RoomError =
+  | "not_member"
+  | "not_found"
+  | "rate_limited"
+  | "ended"
+  | "no_key"
+  /** The action needs something this controller wasn't given (a glyph signer) or the api lacks. */
+  | "unsupported"
+  /** Only the owner may do this (checked here before asking; the database checks again). */
+  | "not_owner"
+  /** The room changed under us (e.g. someone else rotated first); re-read and try again. */
+  | "conflict"
+  | "failed";
+
+/** An invite as the inviting member shows it: the glyph to scan and the code to type. */
+export interface RoomInvite {
+  inviteId: string;
+  glyph: GlyphPayload;
+  shortCode: string;
+  expiresAt: number;
+}
 
 export interface ReportInput {
   eventId?: string;
@@ -77,6 +120,12 @@ export interface RoomControllerDeps {
   newEid?: () => string;
   /** The highest event rev this view has shown (for an app's unread marker). */
   onSeen?: (rev: number) => void;
+  /**
+   * Signs a glyph body with this device's key (the secret stays in the app's key loader), and
+   * this device's public keys for the body. Needed only for `invite()`.
+   */
+  signGlyph?: (body: GlyphPayload["body"]) => Promise<GlyphPayload>;
+  identity?: { pubSign: string; pubBox: string };
 }
 
 /** The plain text a body shows (quoted data, never instructions or markup). */
@@ -114,7 +163,51 @@ const errorOf = (err: unknown): RoomError => {
   if (status === 429) return "rate_limited";
   if (status === 403) return "not_member";
   if (status === 404) return "not_found";
+  if (status === 409) return "conflict";
   return "failed";
+};
+
+/** Invites live 7 days unless the app says less (rooms.yaml invites.ttl). */
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type CreateRoomError = "limit" | "rate_limited" | "no_devices" | "failed";
+
+/**
+ * "Nueva sala": a fresh epoch-1 key, wrapped to this owner's client devices (the creator's other
+ * phones and browsers get it too), and the room created as this companion. The key never leaves
+ * the clients; the api stores only the sealed copies.
+ */
+export const createRoom = async (
+  api: RoomApiClient,
+  r: {
+    companionId: string;
+    name: string;
+    type: "family" | "business" | "project";
+    /** This owner's active client devices (deviceId + pubBox), this one included. */
+    myDevices: readonly RoomDevice[];
+    roomId?: string;
+  },
+): Promise<{ ok: true; roomId: string } | { ok: false; reason: CreateRoomError }> => {
+  if (r.myDevices.length === 0) return { ok: false, reason: "no_devices" };
+  const roomId = r.roomId ?? `room_${crypto.randomUUID().replace(/-/g, "")}`;
+  try {
+    const { request } = await newRoom({
+      roomId,
+      type: r.type,
+      name: r.name.trim().slice(0, 60),
+      companionId: r.companionId,
+      // WrappedKeys holds at most 20 devices.
+      myDevices: r.myDevices.slice(0, 20),
+    });
+    await api.post("/v1/rooms", request);
+    return { ok: true, roomId };
+  } catch (err) {
+    const status = (err as { status?: unknown } | null)?.status;
+    // The plan's room cap (rooms per user): the database's PT402, a 402 from the api.
+    if (status === 402) return { ok: false, reason: "limit" };
+    if (status === 429) return { ok: false, reason: "rate_limited" };
+    return { ok: false, reason: "failed" };
+  }
 };
 
 type Rows = PromiseLike<{ data: Record<string, unknown>[] | null; error: { message: string } | null }>;
@@ -315,9 +408,126 @@ export class RoomController {
     }
   }
 
+  /** The room row changed (another tab rotated, retention changed): read it again. */
+  async refresh(): Promise<void> {
+    if (this.ended) return;
+    try {
+      if (!(await this.#readRoom())) await this.#end("not_member");
+      else await this.#loadKeys();
+    } catch {
+      /* the feed reports read errors */
+    }
+  }
+
+  /** This companion owns the room. */
+  get isOwner(): boolean {
+    return this.#snap.members.some((m) => m.me && m.role === "owner");
+  }
+
+  /**
+   * "Invitar": a `room_invite` glyph signed by this device (codeId = the invite id); the api
+   * stores only hashes and returns the short code to type.
+   */
+  async invite(
+    o: { maxUses?: number; ttlMs?: number } = {},
+  ): Promise<{ ok: true; invite: RoomInvite } | { ok: false; reason: RoomError }> {
+    if (this.ended) return { ok: false, reason: "ended" };
+    if (!this.d.signGlyph || !this.d.identity) return { ok: false, reason: "unsupported" };
+    const now = this.#now();
+    const inviteId = `inv_${crypto.randomUUID().replace(/-/g, "")}`;
+    try {
+      const glyph = await this.d.signGlyph({
+        v: 1,
+        purpose: "room_invite",
+        codeId: inviteId,
+        issuerPubSign: this.d.identity.pubSign,
+        issuerPubBox: this.d.identity.pubBox,
+        label: (this.#snap.room?.name ?? "").slice(0, 40),
+        issuedAt: now,
+        expiresAt: now + Math.min(o.ttlMs ?? INVITE_TTL_MS, INVITE_TTL_MS),
+        nonce: (await randomNonce()).slice(0, 22),
+      });
+      const r = await this.d.api.post<{ inviteId: string; shortCode: string; expiresAt: number }>(
+        `/v1/rooms/${encodeURIComponent(this.d.roomId)}/invites`,
+        { companionId: this.d.companionId, glyph, maxUses: o.maxUses ?? 1 },
+      );
+      return { ok: true, invite: { inviteId: r.inviteId, glyph, shortCode: r.shortCode, expiresAt: r.expiresAt } };
+    } catch (err) {
+      return { ok: false, reason: errorOf(err) };
+    }
+  }
+
+  /** Retention (owner only): how long events last, and whether promoted records stay. */
+  async setRetention(retention: RoomRetentionView): Promise<{ ok: true } | { ok: false; reason: RoomError }> {
+    if (this.ended) return { ok: false, reason: "ended" };
+    if (!this.isOwner) return { ok: false, reason: "not_owner" };
+    try {
+      const r = await this.d.api.post<{ retention?: RoomRetentionView } | undefined>(
+        `/v1/rooms/${encodeURIComponent(this.d.roomId)}/retention`,
+        { companionId: this.d.companionId, retention },
+      );
+      const room = this.#snap.room;
+      if (room) this.#set({ room: { ...room, retention: r?.retention ?? retention } });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: errorOf(err) };
+    }
+  }
+
+  /**
+   * "Rotar clave" after a member left: epoch + 1 with a fresh key, wrapped to exactly the
+   * remaining members' client devices (as the api lists them), so the leaver reads nothing new.
+   */
+  async rotateKey(): Promise<{ ok: true; epoch: number } | { ok: false; reason: RoomError }> {
+    if (this.ended) return { ok: false, reason: "ended" };
+    const room = this.#snap.room;
+    if (!room) return { ok: false, reason: "not_found" };
+    const base = `/v1/rooms/${encodeURIComponent(this.d.roomId)}`;
+    try {
+      const remaining: Record<string, RoomDevice[]> = {};
+      for (const m of this.#snap.members) {
+        const r = await this.d.api.post<{ devices: RoomDevice[] }>(
+          `${base}/members/${encodeURIComponent(m.companionId)}/devices`,
+          { companionId: this.d.companionId },
+        );
+        remaining[m.companionId] = (r?.devices ?? []).slice(0, 20);
+      }
+      const { request, epoch } = await rotateRoom({
+        companionId: this.d.companionId,
+        currentEpoch: room.keyEpoch,
+        remaining,
+      });
+      await this.d.api.post(`${base}/rotate`, request);
+      await this.refresh();
+      return { ok: true, epoch };
+    } catch (err) {
+      return { ok: false, reason: errorOf(err) };
+    }
+  }
+
+  /** "Disolver sala" (owner): events, members, keys and invites go for everyone. */
+  async dissolve(): Promise<{ ok: true } | { ok: false; reason: RoomError }> {
+    if (this.ended) return { ok: false, reason: "ended" };
+    if (!this.isOwner) return { ok: false, reason: "not_owner" };
+    try {
+      await this.d.api.post(`/v1/rooms/${encodeURIComponent(this.d.roomId)}/dissolve`, {
+        companionId: this.d.companionId,
+      });
+      await this.#end("dissolved");
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: errorOf(err) };
+    }
+  }
+
   async #readRoom(): Promise<boolean> {
     const db = this.d.db as unknown as Reads;
-    const [r] = await rowsOf(db.from("rooms").select("room_id, name, type").eq("room_id", this.d.roomId));
+    const [r] = await rowsOf(
+      db
+        .from("rooms")
+        .select("room_id, name, type, key_epoch, needs_rotation, ephemeral_ttl, keep_promoted")
+        .eq("room_id", this.d.roomId),
+    );
     if (!r) return false;
     const members = (
       await rowsOf(db.from("room_members").select("companion_id, role").eq("room_id", this.d.roomId))
@@ -327,7 +537,20 @@ export class RoomController {
       me: m.companion_id === this.d.companionId,
     }));
     if (!members.some((m) => m.me)) return false;
-    this.#set({ room: { roomId: this.d.roomId, name: String(r.name), type: String(r.type) }, members });
+    this.#set({
+      room: {
+        roomId: this.d.roomId,
+        name: String(r.name),
+        type: String(r.type),
+        keyEpoch: Number(r.key_epoch ?? 1) || 1,
+        needsRotation: r.needs_rotation === true,
+        retention: {
+          ephemeralTtl: typeof r.ephemeral_ttl === "string" ? r.ephemeral_ttl : "PT24H",
+          keepPromoted: r.keep_promoted !== false,
+        },
+      },
+      members,
+    });
     return true;
   }
 

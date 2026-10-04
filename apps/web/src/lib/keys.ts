@@ -7,7 +7,9 @@ import {
   registerPasskey,
   type DeviceKeys as RawDeviceKeys,
 } from "@chalito/client-keys";
-import type { IntroducedAgent } from "@chalito/protocol";
+import { toB64url } from "@chalito/crypto";
+import { signGlyph } from "@chalito/glyph";
+import type { GlyphPayload, IntroducedAgent } from "@chalito/protocol";
 import { unwrapKeyring } from "@chalito/rooms";
 
 export interface DeviceKeys {
@@ -16,6 +18,10 @@ export interface DeviceKeys {
   stepUp: StepUpProvider;
   /** Opens this device's sealed copies of a room key (epoch → key); the secret key never leaves here. */
   roomKeyring: (rows: readonly { epoch: number; ct: string }[]) => Promise<Map<number, Uint8Array>>;
+  /** Signs a glyph body (room invites) with this device's key; the secret key never leaves here. */
+  signGlyph: (body: GlyphPayload["body"]) => Promise<GlyphPayload>;
+  /** This device's public keys (base64url), for what it signs. */
+  identity: { pubSign: string; pubBox: string };
   /** After revocation: drop every agent this browser trusted (it must be paired again). */
   forget: () => Promise<void>;
 }
@@ -123,5 +129,7 @@ export const loadDeviceKeys = async (): Promise<DeviceKeys | null> => {
     window.localStorage.removeItem(ENDORSED_KEY);
   };
   const roomKeyring = (rows: readonly { epoch: number; ct: string }[]) => unwrapKeyring(rows, stored.box);
-  return { keys, stepUp, forget, roomKeyring };
+  const sign = (body: GlyphPayload["body"]) => signGlyph(body, stored.sign.secretKey);
+  const identity = { pubSign: await toB64url(stored.sign.publicKey), pubBox: await toB64url(stored.box.publicKey) };
+  return { keys, stepUp, forget, roomKeyring, signGlyph: sign, identity };
 };

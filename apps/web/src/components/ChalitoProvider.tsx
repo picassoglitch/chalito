@@ -74,7 +74,15 @@ interface Ctx {
    */
   revokeAll: (() => Promise<RevokeAllResult | "cancelled" | "no_passkey" | "failed">) | null;
   /** Rooms (/salas, /r/[id]): reads with this device's session, api calls, and its room keys. */
-  rooms: { db: unknown; api: ApiClient; keyring: DeviceKeys["roomKeyring"] } | null;
+  rooms: {
+    db: unknown;
+    api: ApiClient;
+    keyring: DeviceKeys["roomKeyring"];
+    signGlyph: DeviceKeys["signGlyph"];
+    identity: DeviceKeys["identity"];
+    /** This owner's active client devices (a new room's key is wrapped to each). */
+    myClients: () => Promise<{ deviceId: string; pubBox: string }[]>;
+  } | null;
   /** The store (/tienda) and the companion it dresses; null when signed out. */
   store: StoreApi | null;
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
@@ -385,7 +393,17 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           assertPasskey: () => platform.assertPasskey(token),
           newDevice: null,
           addDevice: addDevice(platform, keys, owner, token),
-          rooms: { db: platform.db, api: platform.api(token), keyring: keys.roomKeyring },
+          rooms: {
+            db: platform.db,
+            api: platform.api(token),
+            keyring: keys.roomKeyring,
+            signGlyph: keys.signGlyph,
+            identity: keys.identity,
+            myClients: async () =>
+              (await readDirectory(platform.db, owner))
+                .filter((d) => d.role === "client" && !d.revoked && d.pubBox)
+                .map((d) => ({ deviceId: d.deviceId, pubBox: d.pubBox })),
+          },
           usage: platform.usage(token),
           push: {
             enable: () =>

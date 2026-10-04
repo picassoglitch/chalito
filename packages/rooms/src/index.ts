@@ -5,9 +5,22 @@ export type { RoomAction, RoomNotification } from "./present.js";
 export { RoomFeed, roomTopic } from "./feed.js";
 export type { RoomsDb, RoomChannel } from "./feed.js";
 export { buildInviteGlyph } from "./invite.js";
-export { RoomController, bodyText, joinRoom, myRooms, reportBody, roomList } from "./room-controller.js";
+export {
+  INVITE_TTL_MS,
+  RoomController,
+  bodyText,
+  createRoom,
+  joinRoom,
+  myRooms,
+  reportBody,
+  roomList,
+} from "./room-controller.js";
 export type {
+  CreateRoomError,
   JoinError,
+  RoomDetail,
+  RoomInvite,
+  RoomRetentionView,
   ReportInput,
   RoomListItem,
   RoomApiClient,

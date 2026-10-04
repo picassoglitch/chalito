@@ -40,7 +40,7 @@ import {
   signDeviceRegistration,
   type ApiClient,
 } from "@chalito/client-keys";
-import { generateShortCode } from "@chalito/glyph";
+import { generateShortCode, signGlyph } from "@chalito/glyph";
 import { EndorsementBody } from "@chalito/protocol";
 import type { DeviceRegistration, Endorsement, GlyphPayload, SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
@@ -1451,6 +1451,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
               passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
             forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
             roomKeyring: (rows: readonly { epoch: number; ct: string }[]) => unwrapKeyring(rows, me.box),
+            signGlyph: (body) => signGlyph(body, me.sign.secretKey),
+            identity: { pubSign: me.pubSign, pubBox: me.pubBox },
           }
         : null,
     deviceLogin: (k, owner) => async () => {

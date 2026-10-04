@@ -3,6 +3,7 @@ import { generateBoxKeyPair, toB64url } from "@chalito/crypto";
 import {
   RoomController,
   bodyText,
+  createRoom,
   joinRoom,
   myRooms,
   roomList,
@@ -67,14 +68,15 @@ const fakeDb = () => {
 
 const tick = () => new Promise((r) => setTimeout(r, 15));
 
-const setup = async (o: { member?: boolean } = {}) => {
+const setup = async (o: { member?: boolean; owner?: boolean; signer?: boolean } = {}) => {
   const f = fakeDb();
   const box = await generateBoxKeyPair();
   const me = { deviceId: "dev_me", pubBox: await toB64url(box.publicKey) };
   const created = await newRoom({ roomId: ROOM, type: "family", name: "Casa", companionId: ME, myDevices: [me] });
   f.tables.rooms!.push({ room_id: ROOM, name: "Casa", type: "family" });
-  f.tables.room_members!.push({ room_id: ROOM, companion_id: MOM, role: "owner" });
-  if (o.member !== false) f.tables.room_members!.push({ room_id: ROOM, companion_id: ME, role: "member" });
+  f.tables.room_members!.push({ room_id: ROOM, companion_id: MOM, role: o.owner ? "member" : "owner" });
+  if (o.member !== false)
+    f.tables.room_members!.push({ room_id: ROOM, companion_id: ME, role: o.owner ? "owner" : "member" });
   f.tables.room_member_keys!.push({
     room_id: ROOM,
     device_id: "dev_me",
@@ -109,6 +111,8 @@ const setup = async (o: { member?: boolean } = {}) => {
     await tick();
   };
   const posted: { path: string; body: unknown }[] = [];
+  /** Answers by path suffix (the api's JSON), for routes that return something. */
+  const answers: Record<string, unknown> = {};
   let fail: { status: number } | null = null;
   let clock = 5_000;
   const keyringCalls: number[] = [];
@@ -119,6 +123,8 @@ const setup = async (o: { member?: boolean } = {}) => {
       post: async <T>(path: string, body: unknown) => {
         if (fail) throw Object.assign(new Error("api"), fail);
         posted.push({ path, body });
+        const hit = Object.keys(answers).find((k) => path.endsWith(k));
+        if (hit) return answers[hit] as T;
         return (path.endsWith("/reports") ? { reportId: "rpt_1", duplicate: false } : undefined) as T;
       },
     },
@@ -129,6 +135,12 @@ const setup = async (o: { member?: boolean } = {}) => {
     now: () => clock,
     newEid: () => "evt_mine",
     onSeen: (rev) => void seen.push(rev),
+    ...(o.signer !== false
+      ? {
+          signGlyph: async (body: Record<string, unknown>) => ({ body, sig: "sig" }) as never,
+          identity: { pubSign: "PUBSIGN", pubBox: "PUBBOX" },
+        }
+      : {}),
   });
   await session.start();
   await tick();
@@ -140,6 +152,7 @@ const setup = async (o: { member?: boolean } = {}) => {
     session,
     momPosts,
     posted,
+    answers,
     keyringCalls,
     seen,
     failNext: (status: number) => void (fail = { status }),
@@ -264,6 +277,148 @@ describe("RoomController (shared by the web and the desktop room views)", () => 
       ok: false,
       reason: "rate_limited",
     });
+  });
+});
+
+describe("RoomController: managing a room", () => {
+  it("reads the key epoch, a pending rotation and the retention from the room row (defaults when absent)", async () => {
+    const t = await setup();
+    expect(t.session.getSnapshot().room).toMatchObject({
+      keyEpoch: 1,
+      needsRotation: false,
+      retention: { ephemeralTtl: "PT24H", keepPromoted: true },
+    });
+    Object.assign(t.tables.rooms![0]!, {
+      key_epoch: 3,
+      needs_rotation: true,
+      ephemeral_ttl: "P7D",
+      keep_promoted: false,
+    });
+    await t.session.refresh();
+    expect(t.session.getSnapshot().room).toMatchObject({
+      keyEpoch: 3,
+      needsRotation: true,
+      retention: { ephemeralTtl: "P7D", keepPromoted: false },
+    });
+  });
+
+  it("invite: a room_invite glyph signed by this device, posted for a short code", async () => {
+    const t = await setup();
+    t.answers["/invites"] = { inviteId: "x", shortCode: "KQ7R-M2XZ", expiresAt: 9 };
+    const r = await t.session.invite();
+    expect(r).toMatchObject({ ok: true, invite: { shortCode: "KQ7R-M2XZ", expiresAt: 9 } });
+    const sent = t.posted.at(-1)!;
+    expect(sent.path).toBe(`/v1/rooms/${ROOM}/invites`);
+    const body = sent.body as { companionId: string; maxUses: number; glyph: { body: Record<string, unknown> } };
+    expect(body.companionId).toBe(ME);
+    expect(body.maxUses).toBe(1);
+    expect(body.glyph.body).toMatchObject({
+      purpose: "room_invite",
+      issuerPubSign: "PUBSIGN",
+      issuerPubBox: "PUBBOX",
+      label: "Casa",
+      issuedAt: 5_000,
+      expiresAt: 5_000 + 7 * 86_400_000,
+    });
+    expect(body.glyph.body.codeId).toMatch(/^inv_[0-9a-f]{32}$/);
+    const unsigned = await setup({ signer: false });
+    expect(await unsigned.session.invite()).toEqual({ ok: false, reason: "unsupported" });
+  });
+
+  it("retention and dissolve are the owner's; a member is refused before asking the api", async () => {
+    const member = await setup();
+    expect(await member.session.setRetention({ ephemeralTtl: "P7D", keepPromoted: false })).toEqual({
+      ok: false,
+      reason: "not_owner",
+    });
+    expect(await member.session.dissolve()).toEqual({ ok: false, reason: "not_owner" });
+    expect(member.posted).toEqual([]);
+
+    const owner = await setup({ owner: true });
+    owner.answers["/retention"] = { retention: { ephemeralTtl: "P7D", keepPromoted: false } };
+    expect(await owner.session.setRetention({ ephemeralTtl: "P7D", keepPromoted: false })).toEqual({ ok: true });
+    expect(owner.posted.at(-1)).toEqual({
+      path: `/v1/rooms/${ROOM}/retention`,
+      body: { companionId: ME, retention: { ephemeralTtl: "P7D", keepPromoted: false } },
+    });
+    expect(owner.session.getSnapshot().room!.retention).toEqual({ ephemeralTtl: "P7D", keepPromoted: false });
+    expect(await owner.session.dissolve()).toEqual({ ok: true });
+    expect(owner.posted.at(-1)!.path).toBe(`/v1/rooms/${ROOM}/dissolve`);
+    expect(owner.session.getSnapshot().status).toBe("dissolved");
+  });
+
+  it("rotateKey: epoch + 1, wrapped to exactly the remaining members' devices", async () => {
+    const t = await setup();
+    const momBox = await generateBoxKeyPair();
+    const mom = { deviceId: "dev_mom", pubBox: await toB64url(momBox.publicKey) };
+    t.answers[`/members/${MOM}/devices`] = { devices: [mom] };
+    t.answers[`/members/${ME}/devices`] = { devices: [t.me] };
+    const r = await t.session.rotateKey();
+    expect(r).toEqual({ ok: true, epoch: 2 });
+    const rotate = t.posted.find((p) => p.path.endsWith("/rotate"))!;
+    const body = rotate.body as {
+      companionId: string;
+      epoch: number;
+      wrappedKeys: Record<string, Record<string, string>>;
+    };
+    expect(body.companionId).toBe(ME);
+    expect(body.epoch).toBe(2);
+    expect(Object.keys(body.wrappedKeys).sort()).toEqual([ME, MOM].sort());
+    expect(Object.keys(body.wrappedKeys[MOM]!)).toEqual(["dev_mom"]);
+    // Mom's device can open the new key; ours too.
+    const ring = await unwrapKeyring([{ epoch: 2, ct: body.wrappedKeys[MOM]!["dev_mom"]! }], momBox);
+    expect(ring.get(2)).toHaveLength(32);
+  });
+
+  it("a rotation someone else already did is a conflict", async () => {
+    const t = await setup();
+    t.answers[`/members/${MOM}/devices`] = { devices: [] };
+    t.answers[`/members/${ME}/devices`] = { devices: [t.me] };
+    t.failNext(409);
+    expect(await t.session.rotateKey()).toEqual({ ok: false, reason: "conflict" });
+  });
+});
+
+describe("createRoom", () => {
+  it("wraps epoch 1 to this owner's client devices and creates the room as this companion", async () => {
+    const box = await generateBoxKeyPair();
+    const other = await generateBoxKeyPair();
+    const devices = [
+      { deviceId: "dev_me", pubBox: await toB64url(box.publicKey) },
+      { deviceId: "dev_tablet", pubBox: await toB64url(other.publicKey) },
+    ];
+    const posted: { path: string; body: Record<string, unknown> }[] = [];
+    const api = {
+      post: async <T>(path: string, body: unknown) => (posted.push({ path, body: body as never }), {} as T),
+    };
+    const r = await createRoom(api, {
+      companionId: ME,
+      name: "  Casa  ",
+      type: "family",
+      myDevices: devices,
+      roomId: "room_x",
+    });
+    expect(r).toEqual({ ok: true, roomId: "room_x" });
+    expect(posted[0]!.path).toBe("/v1/rooms");
+    expect(posted[0]!.body).toMatchObject({ roomId: "room_x", name: "Casa", type: "family", companionId: ME });
+    const wrapped = posted[0]!.body.wrappedKeys as Record<string, string>;
+    expect(Object.keys(wrapped).sort()).toEqual(["dev_me", "dev_tablet"]);
+    const mine = await unwrapKeyring([{ epoch: 1, ct: wrapped["dev_me"]! }], box);
+    const theirs = await unwrapKeyring([{ epoch: 1, ct: wrapped["dev_tablet"]! }], other);
+    expect(mine.get(1)).toEqual(theirs.get(1));
+  });
+
+  it("maps the plan's room limit, rate limits, and no devices", async () => {
+    const box = await generateBoxKeyPair();
+    const dev = [{ deviceId: "dev_me", pubBox: await toB64url(box.publicKey) }];
+    const failing = (status: number) => ({
+      post: async () => Promise.reject(Object.assign(new Error("x"), { status })),
+    });
+    const input = { companionId: ME, name: "Casa", type: "family" as const, myDevices: dev };
+    expect(await createRoom(failing(402), input)).toEqual({ ok: false, reason: "limit" });
+    expect(await createRoom(failing(429), input)).toEqual({ ok: false, reason: "rate_limited" });
+    expect(await createRoom(failing(500), input)).toEqual({ ok: false, reason: "failed" });
+    expect(await createRoom(failing(500), { ...input, myDevices: [] })).toEqual({ ok: false, reason: "no_devices" });
   });
 });
 
