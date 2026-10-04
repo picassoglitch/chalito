@@ -32,9 +32,13 @@ export const CLAUDE_MISSING = {
 } as const;
 export const CLAUDE_PIN_FAILED = {
   es: (r: string) =>
-    `Claude Code no coincide con el que fijaste (${r}). Si lo actualizaste, ejecuta \`chalito claude pin\` en una terminal para confiar en la versión nueva.`,
+    r === "hash_mismatch"
+      ? "Claude Code se actualizó solo: ejecuta `chalito claude pin` otra vez en una terminal para confiar en la versión nueva."
+      : `El Claude Code fijado ya no es seguro de ejecutar (${r === "world_writable" ? "cualquiera puede modificarlo" : r}). Revísalo y ejecuta \`chalito claude pin\` en una terminal.`,
   en: (r: string) =>
-    `Claude Code doesn't match the one you pinned (${r}). If you updated it, run \`chalito claude pin\` in a terminal to trust the new version.`,
+    r === "hash_mismatch"
+      ? "Claude Code updated itself: run `chalito claude pin` again in a terminal to trust the new version."
+      : `The pinned Claude Code is no longer safe to run (${r === "world_writable" ? "anyone can modify it" : r}). Check it, then run \`chalito claude pin\` in a terminal.`,
 } as const;
 export const ANTHROPIC_KEY_MISSING = {
   es: "Falta tu API key de Anthropic. Guárdala con `chalito keys set anthropic`.",
@@ -237,7 +241,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
   };
-  const coreDeps: AgentCoreDeps & { classifyExtras?: () => typeof extras } = {
+  const coreDeps: AgentCoreDeps = {
     classifyExtras: () => extras,
     store: signedInStore,
     adapters: (deps.adapters ?? defaultAdapters)({ apiKey, claudePath, log }),
