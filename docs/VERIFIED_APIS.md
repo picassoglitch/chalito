@@ -1173,6 +1173,20 @@ Note: Google Cloud docs moved from `cloud.google.com/.../docs` to `docs.cloud.go
 
 ---
 
+## Supabase: pg_net and Vault (the notify outbox, migration 20261004003050)
+
+Checked 2026-10-04 at https://supabase.com/docs/guides/database/extensions/pg_net and https://supabase.com/docs/guides/database/vault.
+
+- **pg_net, the signature:** `net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{"Content-Type": "application/json"}', timeout_milliseconds int default 2000) returns bigint`, the request id.
+- **When it sends:** "HTTP requests are not started until the transaction is committed." A poke sent from a trigger can't race its own row's commit.
+- **Limits:**
+  - at most 200 requests per second;
+  - POST bodies are JSON only;
+  - responses are kept in `net._http_response` for 6 hours;
+  - requests and responses live in **unlogged** tables, lost in a crash or unclean shutdown.
+- **No retries** are documented. That's why the notifier also drains the outbox every minute, and a lost poke only delays delivery.
+- **Vault:** `vault.create_secret('<value>', '<name>')` creates a secret. Read it back through the view `vault.decrypted_secrets` (column `decrypted_secret`). Anyone who can read the view can read every secret, so only a `security definer` function (`chalito_private.notify_poke`) reads it, and only by name; nothing grants the view to `authenticated` or `chalito_server`.
+
 ## Chalyb hub engine contract (internal)
 
 Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landing-clip-images` (`4ed57c9`, the branch on prod): `docs/engines/consumption-contract.md`, `docs/infra/adding-an-engine.md`, `src/lib/engines/integrations/factory.ts`, `src/app/auth/launch/[slug]/route.ts`, `src/config/pricing.ts`.

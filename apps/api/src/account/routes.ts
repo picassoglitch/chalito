@@ -69,7 +69,7 @@ export const accountRoutes = (deps: Deps, account: AccountDeps, wa: WebAuthnConf
       source: "security",
       urgency: "critical",
       counts: { approvals: 0, questions: 0, messages: 0, mesas: 0 },
-      deepLink: "/ajustes",
+      deepLink: "/",
       coalesceKey: "security:account_deletion",
       state: "pending",
       step: 0,

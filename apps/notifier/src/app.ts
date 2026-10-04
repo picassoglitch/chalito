@@ -1,3 +1,4 @@
+import { processOutbox, verifyPoke, type NotifyOutboxStore, type OutboxMessage } from "./notify-outbox.js";
 import { guard } from "@chalito/guard";
 import { NOTIFIER_ROUTES } from "./limits.js";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -36,6 +37,12 @@ export interface AppConfig {
   metaVerifyToken: string;
   /** Cloud Scheduler → POST /tasks/drain-usage (Google OIDC). */
   drain?: OidcExpectation;
+  /**
+   * The database's notify outbox (migration 20261004003050): pg_net pokes on
+   * POST /internal/notify-poke (HMAC with NOTIFY_POKE_SECRET) and Cloud Scheduler's
+   * POST /tasks/drain-notify (Google OIDC). Unset: both routes are 404.
+   */
+  notify?: { store: NotifyOutboxStore; pokeSecret: string; drain: OidcExpectation };
   /** OpenAI Realtime calls (ADR 0005/0011). Unset: DTMF 1 tells the user to open the app. */
   voice?: VoiceConfig;
 }
@@ -204,6 +211,45 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
       },
     });
     return c.body(null, 204);
+  });
+
+  // ---- The database's notify outbox (pg_net poke + scheduled drain) -------------------
+  /** One outbox row through the same path as Pub/Sub `notifications`. */
+  const handleOutbox = async (row: OutboxMessage): Promise<"ok" | "invalid"> => {
+    const msg = NotifierMessage.safeParse(row.message);
+    if (!msg.success || msg.data.uid !== row.owner) return "invalid";
+    await handleEvent(deps, msg.data.uid, toEvent(msg.data));
+    return "ok";
+  };
+  const runOutbox = async (claim: { id?: number; limit: number }) => {
+    const n = cfg.notify!;
+    const rows = await n.store.claim({ ...claim, now: deps.now(), leaseMs: 60_000 });
+    return processOutbox({
+      store: n.store,
+      rows,
+      now: deps.now,
+      handle: handleOutbox,
+      alert: (msg, meta) => deps.log.error(msg, { ...meta, alert: true }),
+    });
+  };
+  const PokeBody = z.object({ id: z.number().int().positive(), ts: z.number().int().positive() });
+
+  /** pg_net, right after the source row commits: deliver that one row now. A replay is a no-op. */
+  app.post("/internal/notify-poke", async (c) => {
+    if (!cfg.notify) return c.text("not found", 404);
+    const body = PokeBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: "bad_request" }, 400);
+    if (!verifyPoke(cfg.notify.pokeSecret, c.req.header("x-chalito-poke-signature"), body.data, deps.now()))
+      return c.json({ error: "unauthorized" }, 401);
+    return c.json(await runOutbox({ id: body.data.id, limit: 1 }));
+  });
+
+  /** Cloud Scheduler, every minute: whatever a poke missed. */
+  app.post("/tasks/drain-notify", async (c) => {
+    if (!cfg.notify) return c.text("not found", 404);
+    if (!(await verifyOidc(c.req.header("authorization"), cfg.notify.drain)))
+      return c.json({ error: "unauthorized" }, 401);
+    return c.json(await runOutbox({ limit: 100 }));
   });
 
   // ---- Cloud Tasks ladder ticks (OIDC + queue header) --------------------------------

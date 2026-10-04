@@ -1,3 +1,4 @@
+import { MemoryNotifyOutbox } from "../src/notify-outbox.js";
 import { createECDH, randomBytes } from "node:crypto";
 import { SignJWT, exportJWK, generateKeyPair, createLocalJWKSet, type JWK } from "jose";
 import { http, HttpResponse } from "msw";
@@ -76,6 +77,7 @@ export const NOON_MX = Date.UTC(2026, 9, 5, 18, 0, 0);
 
 /** Every provider request the notifier made, as the mocks saw it. */
 export const SCHEDULER_SA = "scheduler@chalito-dev.iam.gserviceaccount.com";
+export const POKE_SECRET = "notify-poke-secret-test";
 export const RID = "44444444-4444-4444-8444-444444444444";
 
 /** What the mocked Chalyb hub answers to /usage/admit. */
@@ -249,6 +251,7 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
   };
   const outbox = new MemoryOutbox();
   const voiceSessions = new MemoryVoiceSessions();
+  const notifyOutbox = new MemoryNotifyOutbox();
   if (opts.caps) deps.caps = { plans: loadPlans(), isComped: (uid) => uid === "owner-1" };
   if (opts.billing)
     deps.billing = hubCommsBilling({
@@ -272,6 +275,11 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
     },
     tasks: { email: TASKS_SA, audience: `${BASE}/tasks/tick`, queueName: QUEUE },
     drain: { email: SCHEDULER_SA, audience: `${BASE}/tasks/drain-usage` },
+    notify: {
+      store: notifyOutbox,
+      pokeSecret: POKE_SECRET,
+      drain: { email: SCHEDULER_SA, audience: `${BASE}/tasks/drain-notify` },
+    },
     twilioAuthToken: TWILIO_TOKEN,
     metaAppSecret: META_SECRET,
     metaVerifyToken: "meta-verify",
@@ -295,6 +303,7 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
     store,
     outbox,
     voiceSessions,
+    notifyOutbox,
     sockets,
     deps,
     logs,
