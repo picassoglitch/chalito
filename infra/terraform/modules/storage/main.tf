@@ -23,10 +23,10 @@ variable "labels" {
 
 locals {
   buckets = {
-    assets   = { versioning = false, cmek = false }
-    records  = { versioning = true, cmek = true }
-    releases = { versioning = true, cmek = false }
-    showcase = { versioning = false, cmek = false }
+    assets   = { cmek = false }
+    records  = { cmek = true }
+    releases = { cmek = false }
+    showcase = { cmek = false }
   }
 }
 
@@ -50,7 +50,17 @@ resource "google_storage_bucket" "this" {
   labels                      = var.labels
 
   versioning {
-    enabled = each.value.versioning
+    enabled = true
+  }
+
+  # Keep old versions for 30 days (undo window), then delete them.
+  lifecycle_rule {
+    condition {
+      days_since_noncurrent_time = 30
+    }
+    action {
+      type = "Delete"
+    }
   }
 
   dynamic "encryption" {
