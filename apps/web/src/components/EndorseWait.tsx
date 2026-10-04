@@ -3,14 +3,18 @@ import { useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import type { GlyphPayload } from "@chalito/protocol";
 import { Link } from "@/i18n/navigation";
-import { browserName, type WaitError, type Waiting } from "@/lib/endorse";
+import { browserName, type Introduced, type WaitError, type Waiting } from "@/lib/endorse";
 import { hubLaunchUrl } from "@/lib/hub";
 import { signInAndReturn } from "@/lib/next-cookie";
 import { useChalito, useNow } from "./ChalitoProvider";
 import { GlyphCanvas } from "./Glyph";
 
 type Step =
-  { s: "name" } | { s: "opening" } | { s: "waiting"; w: Waiting } | { s: "done" } | { s: "failed"; reason: WaitError };
+  | { s: "name" }
+  | { s: "opening" }
+  | { s: "waiting"; w: Waiting }
+  | { s: "done"; introduced: Introduced | null }
+  | { s: "failed"; reason: WaitError };
 
 /**
  * "Esperando aprobación" (/vincular): a new browser, signed in as the person, asks a trusted
@@ -40,14 +44,29 @@ export const EndorseWait = () => {
     const r = await w.result;
     current.current = null;
     if (!r.ok) return setStep(r.reason === "cancelled" ? { s: "name" } : { s: "failed", reason: r.reason });
-    setStep({ s: "done" });
+    setStep({ s: "done", introduced: r.introduced });
   };
 
   if (step.s === "done" || status === "ready")
     return (
       <div className="grid gap-3" data-testid="endorse-done">
         <h1 className="text-2xl font-bold">{t("doneTitle")}</h1>
-        <p>{t("doneBody")}</p>
+        {step.s === "done" && step.introduced?.trusted.length ? (
+          <p data-testid="endorse-introduced">
+            {t("doneIntroduced", { computers: step.introduced.trusted.map((a) => a.name).join(", ") })}
+          </p>
+        ) : (
+          <p>{t("doneBody")}</p>
+        )}
+        {step.s === "done" && step.introduced?.dropped.length ? (
+          <ul className="grid gap-1 text-sm text-amber-900" data-testid="endorse-dropped">
+            {step.introduced.dropped.map((a) => (
+              <li key={a.deviceId} data-reason={a.reason}>
+                {t("doneDropped", { computer: a.name })}
+              </li>
+            ))}
+          </ul>
+        ) : null}
         <Link href="/bandeja" className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white">
           {t("doneCta")}
         </Link>

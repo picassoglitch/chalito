@@ -7,9 +7,10 @@ import {
   registerPasskey,
   type DeviceKeys as RawDeviceKeys,
 } from "@chalito/client-keys";
+import type { IntroducedAgent } from "@chalito/protocol";
 
 export interface DeviceKeys {
-  keys: ClientKeys & Pick<DeviceClientKeys, "sign" | "deviceId">;
+  keys: ClientKeys & Pick<DeviceClientKeys, "sign" | "deviceId" | "trustedAgents">;
   /** WebAuthn step-up for HIGH and CRITICAL decisions (assertion bound to the decision, D-019). */
   stepUp: StepUpProvider;
   /** After revocation: drop every agent this browser trusted (it must be paired again). */
@@ -58,6 +59,16 @@ export const endorsedDevice = (): string | null => {
 export const markEndorsed = (deviceId: string): void => {
   window.localStorage.setItem(ENDORSED_KEY, JSON.stringify({ deviceId }));
   window.localStorage.removeItem(PASSKEY_REF_KEY);
+};
+
+/** ADR 0018: trust the computers the endorsing device introduced (already vetted against the directory). */
+export const trustIntroducedAgents = async (
+  raw: RawDeviceKeys,
+  agents: readonly IntroducedAgent[],
+  endorsedBy: string,
+): Promise<void> => {
+  const vault = await KeyVault.open();
+  await (await DeviceClientKeys.create(raw, vault)).trustIntroducedAgents(agents, endorsedBy, Date.now());
 };
 
 /** A new identity for this browser, replacing the old one and the agents it trusted. */

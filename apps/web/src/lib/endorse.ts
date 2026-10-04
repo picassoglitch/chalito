@@ -3,6 +3,7 @@ import {
   EndorseFailedError,
   EndorsementUnavailableError,
   endorsementChannel,
+  endorsementMatches,
   type EndorseDisplay,
   type EndorseWatch,
 } from "@chalito/client";
@@ -19,10 +20,15 @@ import {
   type DeviceKeys as RawDeviceKeys,
   type DeviceSigner,
   type EndorseTarget,
+  type StepUpAssertion,
+  type TrustedAgent,
+  type DirectoryDevice,
+  type DroppedAgent,
+  introducedAgents,
 } from "@chalito/client-keys";
 import { fingerprint } from "@chalito/crypto";
 import { normalizeShortCode } from "@chalito/glyph";
-import type { DeviceRegistration, Endorsement } from "@chalito/protocol";
+import type { DeviceRegistration, Endorsement, IntroducedAgent } from "@chalito/protocol";
 
 /**
  * Adding a browser to the account (ADR 0006, /v1/endorse). Two screens, one per side:
@@ -49,7 +55,20 @@ export type WaitError =
   | "rejected"
   | "failed";
 
-export type WaitResult = { ok: true; deviceId: string; customToken: string } | { ok: false; reason: WaitError };
+/**
+ * ADR 0018: the computers the endorsing device introduced. `trusted` can be prompted right away;
+ * `dropped` didn't check out against the devices directory and need pairing by their ring.
+ */
+export interface Introduced {
+  trusted: { deviceId: string; name: string }[];
+  dropped: { deviceId: string; name: string; reason: DroppedAgent["reason"] }[];
+}
+
+export type WaitResult =
+  { ok: true; deviceId: string; customToken: string; introduced: Introduced } | { ok: false; reason: WaitError };
+
+/** A devices-directory row as the new browser reads it (RLS, the person's session). */
+export type DirectoryRow = DirectoryDevice & { name: string };
 
 export interface Waiting {
   display: EndorseDisplay;
@@ -71,14 +90,43 @@ export interface NewDeviceDeps {
   now?: () => number;
   generate?: () => Promise<RawDeviceKeys>;
   pollMs?: number;
+  /** The account's devices (ADR 0018: introduced agents are checked against it). */
+  directory?: () => Promise<DirectoryRow[]>;
+  /** Stores the vetted introduced agents in this browser's trust list. */
+  trustIntroduced?: (keys: RawDeviceKeys, agents: IntroducedAgent[], endorsedBy: string) => Promise<void>;
 }
 
-/** The endorsement must vouch for exactly this account and these keys (the api checks too). */
-export const endorsementMatches = (e: Endorsement, reg: DeviceRegistration): boolean =>
-  e.body.uid === reg.body.owner &&
-  e.body.newDeviceId === reg.body.deviceId &&
-  e.body.pubSign === reg.body.pubSign &&
-  e.body.pubBox === reg.body.pubBox;
+const NO_INTRO: Introduced = { trusted: [], dropped: [] };
+
+/**
+ * Best effort: vet the endorser's computers against the directory and trust those that check out.
+ * Any failure just means pairing computers by their ring later.
+ */
+const introduce = async (
+  d: NewDeviceDeps,
+  keys: RawDeviceKeys,
+  registration: DeviceRegistration,
+  endorsement: Endorsement,
+): Promise<Introduced> => {
+  if (!d.directory || !d.trustIntroduced || !endorsement.body.agents?.length) return NO_INTRO;
+  try {
+    const dir = await d.directory();
+    const check = await introducedAgents(
+      endorsement,
+      { uid: d.owner, deviceId: keys.deviceId, pubSign: registration.body.pubSign, pubBox: registration.body.pubBox },
+      dir,
+    );
+    if (!check.ok) return NO_INTRO;
+    if (check.agents.length) await d.trustIntroduced(keys, check.agents, endorsement.signerDeviceId);
+    const name = (id: string) => dir.find((r) => r.deviceId === id)?.name ?? id.slice(0, 8);
+    return {
+      trusted: check.agents.map((a) => ({ deviceId: a.deviceId, name: name(a.deviceId) })),
+      dropped: check.dropped.map((x) => ({ deviceId: x.deviceId, name: name(x.deviceId), reason: x.reason })),
+    };
+  } catch {
+    return NO_INTRO;
+  }
+};
 
 const ENROL_REASONS: Record<string, WaitError> = {
   endorsement_mismatch: "endorsement_mismatch",
@@ -135,7 +183,8 @@ export const waitForEndorsement = async (d: NewDeviceDeps): Promise<Waiting | { 
     try {
       const r = await enrollEndorsed(d.api, { registration, endorsement });
       if (r.deviceId !== keys.deviceId) return { ok: false, reason: "failed" };
-      return { ok: true, deviceId: r.deviceId, customToken: r.customToken };
+      const introduced = await introduce(d, keys, registration, endorsement);
+      return { ok: true, deviceId: r.deviceId, customToken: r.customToken, introduced };
     } catch (err) {
       if (err instanceof ApiError)
         return { ok: false, reason: ENROL_REASONS[err.code] ?? (err.status < 500 ? "rejected" : "failed") };
@@ -218,13 +267,16 @@ export const approveTarget = async (
   api: ApiClient,
   signer: DeviceSigner,
   target: EndorseTarget,
-  o: { owner: string; now: number; stepUp?: () => Promise<unknown> },
+  /** `stepUp`: this device's passkey, signing the endorsement body itself (R-L13). */
+  o: { owner: string; now: number; stepUp?: StepUpAssertion; agents?: readonly TrustedAgent[] },
 ): Promise<{ ok: true } | { ok: false; reason: AddError }> => {
   try {
     await approveEndorsement(api, signer, target, {
       uid: o.owner,
       now: o.now,
       ...(o.stepUp ? { stepUp: o.stepUp } : {}),
+      // ADR 0018: introduce this browser's glyph-confirmed computers to the new one.
+      ...(o.agents ? { agents: o.agents } : {}),
     });
     return { ok: true };
   } catch (err) {
