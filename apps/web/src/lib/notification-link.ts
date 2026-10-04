@@ -12,10 +12,10 @@ export const notificationTarget = (deepLink: string, locale: "es" | "en"): strin
 
 /**
  * How the person arrived, for acked_via: WhatsApp's link wrapper shows up as the referrer; the
- * notifier may also say it explicitly with ?via=. SMS apps send no referrer, so without ?via=sms
- * it counts as "app".
+ * notifier may also say it explicitly with ?via=, and the service worker opens push taps with
+ * ?via=push. SMS apps send no referrer, so without ?via=sms it counts as "app".
  */
-export const ackVia = (referrer: string, via: string | null): "whatsapp" | "sms" | "app" => {
-  if (via === "whatsapp" || via === "sms") return via;
+export const ackVia = (referrer: string, via: string | null): "whatsapp" | "sms" | "push" | "app" => {
+  if (via === "whatsapp" || via === "sms" || via === "push") return via;
   return /(^|\.)whatsapp\.com|(^|\/\/)wa\.me|l\.wl\.co/.test(referrer) ? "whatsapp" : "app";
 };

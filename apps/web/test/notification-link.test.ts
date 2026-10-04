@@ -15,6 +15,7 @@ describe("notification links (/n/<nid>)", () => {
     expect(ackVia("https://l.wl.co/l?u=x", null)).toBe("whatsapp");
     expect(ackVia("https://www.whatsapp.com/", null)).toBe("whatsapp");
     expect(ackVia("", "sms")).toBe("sms");
+    expect(ackVia("", "push")).toBe("push");
     expect(ackVia("", null)).toBe("app");
     expect(ackVia("https://evil.example/whatsapp", null)).toBe("app");
     expect(ackVia("", "email")).toBe("app");

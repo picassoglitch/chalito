@@ -12,6 +12,9 @@ const BASE_ENV = {
   NEXT_PUBLIC_SUPABASE_ANON_KEY: "e2e-anon",
   NEXT_PUBLIC_CHALITO_API_BASE: "http://127.0.0.1:8799",
   NEXT_PUBLIC_HUB_URL: "https://hub.example",
+  // A real P-256 public key (no private half anywhere): the push opt-in subscribes with it.
+  NEXT_PUBLIC_VAPID_PUBLIC_KEY:
+    "BJ_dEvLflg9M4OxwIAm5iyYlU9Q9JBwkjdFxdW_jLyNJP4W6ud2yS5HvQ-ZYZsrfoIIrXQyzU6wcneDWkdYsD1M",
 };
 export const E2E_ENV = BASE_ENV;
 

@@ -11,6 +11,8 @@ export const env = {
   ).replace(/\/+$/, ""),
   /** The hub's www host (the apex drops auth): https://www.chalyb.com */
   hubUrl: (process.env.NEXT_PUBLIC_HUB_URL ?? "").replace(/\/+$/, ""),
+  /** The notifier's VAPID public key (apps/notifier VAPID_PUBLIC_KEY), for Web Push. */
+  vapidPublicKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? "",
 };
 
 /**
