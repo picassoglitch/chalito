@@ -5,7 +5,7 @@ import { setupServer } from "msw/node";
 import webpush from "web-push";
 import { openaiRealtime } from "@chalito/adapters/voice";
 import { HubClient, MemoryOutbox } from "@chalito/billing";
-import { loadEscalation, loadModels, loadPrices } from "@chalito/config";
+import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { hubCommsBilling } from "../src/billing.js";
 import type { UserPrefs } from "@chalito/escalation";
 import { createApp, type AppConfig } from "../src/app.js";
@@ -145,7 +145,15 @@ export const mockServer = () => {
               lane: "standard",
               boost_fee_tokens: 0,
               limits: {},
-              balance: { remaining: 10_000, reserved: 0 },
+              balance: {
+                remaining: 10_000,
+                reserved: 0,
+                unlimited: false,
+                monthlyAllocation: 100_000,
+                bonus: 0,
+                monthlyUsed: 0,
+                periodStart: "2026-10-01T00:00:00.000Z",
+              },
             }
           : { ok: true, allowed: false, reason: "no_tokens" },
       );
@@ -203,7 +211,7 @@ export const mockServer = () => {
   return { server, cap, goneEndpoints };
 };
 
-export const setup = (opts: { now?: () => number; billing?: boolean } = {}) => {
+export const setup = (opts: { now?: () => number; billing?: boolean; caps?: boolean } = {}) => {
   const store = new MemoryStore();
   const sockets: FakeSocket[] = [];
   const logs: { msg: string; meta?: Record<string, unknown> }[] = [];
@@ -230,6 +238,7 @@ export const setup = (opts: { now?: () => number; billing?: boolean } = {}) => {
     log: { info: (msg, meta) => logs.push({ msg, meta }), error: (msg, meta) => logs.push({ msg, meta }) },
   };
   const outbox = new MemoryOutbox();
+  if (opts.caps) deps.caps = { plans: loadPlans(), isComped: (uid) => uid === "owner-1" };
   if (opts.billing)
     deps.billing = hubCommsBilling({
       hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "chalito-admin-token" }),

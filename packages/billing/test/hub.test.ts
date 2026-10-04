@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { HubClient } from "../src/hub.js";
+import { HubClient, HubUnavailable } from "../src/hub.js";
 import { usageEvent } from "../src/billable.js";
 import { hubMock } from "./hub-mock.js";
 
@@ -71,12 +71,75 @@ describe("HubClient (engine contract)", () => {
     expect(sent.every((e) => typeof e.cost_usd_micros === "number")).toBe(true);
   });
 
-  it("settles and reads the balance", async () => {
-    await hub.settle({ reservation_id: "11111111-1111-4111-8111-111111111111", outcome: "succeeded" });
+  it("settle reports a closed reservation (409) separately", async () => {
+    expect(await hub.settle({ reservation_id: "11111111-1111-4111-8111-111111111111", outcome: "succeeded" })).toEqual({
+      ok: true,
+    });
     expect(calls.at(-1)).toMatchObject({ path: "settle", body: { outcome: "succeeded" } });
-    expect(await hub.balance("u 1")).toEqual({ remaining: 42_000, reserved: 0 });
+    state.settleStatus = 409;
+    expect(await hub.settle({ reservation_id: "11111111-1111-4111-8111-111111111111", outcome: "heartbeat" })).toEqual({
+      ok: false,
+      closed: true,
+    });
+    state.settleStatus = 404;
+    expect(await hub.settle({ reservation_id: "11111111-1111-4111-8111-111111111111", outcome: "succeeded" })).toEqual({
+      ok: false,
+      closed: false,
+      httpStatus: 404,
+    });
+    state.settleStatus = 200;
+  });
+
+  it("reads the balance in the hub's exact TokenBalance shape", async () => {
+    expect(await hub.balance("u 1")).toEqual({
+      remaining: 42_000,
+      reserved: 0,
+      unlimited: false,
+      monthlyAllocation: 100_000,
+      bonus: 0,
+      monthlyUsed: 58_000,
+      periodStart: "2026-10-01T00:00:00.000Z",
+    });
     expect(calls.at(-1)!.path).toBe("balance?external_user_id=u+1");
-    state.balance = { balance: { remaining: 7, reserved: 1 } };
-    expect(await hub.balance("u1")).toMatchObject({ remaining: 7 });
+    // chalyb main has no `reserved` yet: it defaults to 0.
+    const { reserved: _r, ...mainShape } = (state.balance as { balance: Record<string, unknown> }).balance;
+    state.balance = { ok: true, balance: mainShape };
+    expect((await hub.balance("u1")).reserved).toBe(0);
+    // A bare {remaining, reserved} (the old guess) is rejected.
+    state.balance = { remaining: 7, reserved: 1 };
+    await expect(hub.balance("u1")).rejects.toThrow();
+    state.balanceStatus = 404;
+    await expect(hub.balance("u1")).rejects.toBeInstanceOf(HubUnavailable);
+    state.balanceStatus = 200;
+  });
+
+  it("admit: 404 (unknown user, or a hub without the route yet) is HubUnavailable", async () => {
+    state.admitStatus = 404;
+    await expect(
+      hub.admit({
+        external_user_id: "u1",
+        external_job_id: "j1",
+        class: "job",
+        operation: "companion.turn",
+        est_tokens: 1,
+      }),
+    ).rejects.toMatchObject({ name: "Error", httpStatus: 404 });
+    state.admitStatus = 200;
+  });
+
+  it("admit requests follow the hub's field rules (job id, operation, ttl)", async () => {
+    const ok = {
+      external_user_id: "u1",
+      external_job_id: "whatsapp:n1:1790000000000",
+      class: "job" as const,
+      operation: "whatsapp.message",
+      est_tokens: 1,
+    };
+    await hub.admit(ok);
+    await expect(hub.admit({ ...ok, external_job_id: "has spaces" })).rejects.toThrow();
+    await expect(hub.admit({ ...ok, external_job_id: "x".repeat(129) })).rejects.toThrow();
+    await expect(hub.admit({ ...ok, operation: "Bad-Op" })).rejects.toThrow();
+    await expect(hub.admit({ ...ok, ttl_seconds: 30 })).rejects.toThrow();
+    await expect(hub.admit({ ...ok, ttl_seconds: 90_000 })).rejects.toThrow();
   });
 });

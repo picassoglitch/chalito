@@ -13,6 +13,7 @@ import {
   Urgency,
 } from "@chalito/protocol";
 import type { EscalationEvent } from "@chalito/escalation";
+import { capNote, voiceMinutesLeft } from "./caps.js";
 import { handleEvent, type NotifierDeps } from "./executor.js";
 import type { OidcExpectation, OidcVerifier } from "./oidc.js";
 import { metaSignatureValid, twilioSignatureValid } from "./signatures.js";
@@ -207,7 +208,9 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
     if (choice === "connect") {
       await handleEvent(deps, uid, { type: "ack", via: "call", nid });
       const callSid = p.CallSid ?? "";
-      if (!cfg.voice || !/^CA[0-9a-f]{32}$/.test(callSid))
+      const voiceLeft = await voiceMinutesLeft(deps, uid);
+      if (!voiceLeft) await capNote(deps, uid, "voice");
+      if (!cfg.voice || !voiceLeft || !/^CA[0-9a-f]{32}$/.test(callSid))
         return twiml(
           sayAndHangup(
             locale === "es" ? "Abre tu app para responder. Hasta luego." : "Open your app to answer. Goodbye.",

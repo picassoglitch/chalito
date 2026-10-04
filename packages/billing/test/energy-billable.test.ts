@@ -49,7 +49,15 @@ describe("out of energy, in character", () => {
       lane: "standard",
       boost_fee_tokens: 0,
       limits: {},
-      balance: { remaining: 0, reserved: 0 },
+      balance: {
+        remaining: 0,
+        reserved: 0,
+        unlimited: false,
+        monthlyAllocation: 100_000,
+        bonus: 0,
+        monthlyUsed: 0,
+        periodStart: "2026-10-01T00:00:00.000Z",
+      },
     });
     const gate = await admitManaged({ hub, entitlements: enabled, request, locale: "en" });
     expect(gate).toMatchObject({ ok: false, outOfEnergy: { chip: { label: "Why?", href: "/en/creditos" } } });
@@ -95,6 +103,37 @@ describe("out of energy, in character", () => {
       refused: "hub_unavailable",
       profile: "free_min",
     });
+  });
+
+  it("unlimited (hub admins) skips the out-of-tokens check, even at zero remaining", async () => {
+    state.admit = () => ({
+      ok: true,
+      allowed: true,
+      reservation_id: "55555555-5555-4555-8555-555555555555",
+      lane: "standard",
+      boost_fee_tokens: 0,
+      limits: {},
+      balance: {
+        remaining: 0,
+        reserved: 0,
+        unlimited: true,
+        monthlyAllocation: 0,
+        bonus: 0,
+        monthlyUsed: 9e9,
+        periodStart: "2026-10-01T00:00:00.000Z",
+      },
+    });
+    expect(await admitManaged({ hub, entitlements: enabled, request, locale: "es" })).toMatchObject({ ok: true });
+  });
+
+  it("an admit 404 (unknown user, or the route isn't deployed) is hub_unavailable: free_min, no recharge line", async () => {
+    state.admitStatus = 404;
+    expect(await admitManaged({ hub, entitlements: enabled, request, locale: "es" })).toEqual({
+      ok: false,
+      refused: "hub_unavailable",
+      profile: "free_min",
+    });
+    state.admitStatus = 200;
   });
 
   it("admits when the balance covers it", async () => {

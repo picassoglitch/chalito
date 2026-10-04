@@ -22,7 +22,13 @@ Chalito admits work, reports provider costs and settles. It keeps no payment rec
 **Hub client details:**
 - **admit / usage / settle / balance.** Usage takes at most 100 events per call, each with `cost_usd_micros` and an idempotent `source_id`.
 - **Failure handling:** a 4xx other than 408/429 is permanent (`dead`); network errors, 5xx, 408 and 429 are retried.
-- **Unverified:** the balance response shape isn't in the verified contract notes. The client accepts `{remaining, reserved}` or `{balance: {…}}`.
+- **Balance (verified in the hub code):** `GET /usage/balance` returns `{ok: true, balance: TokenBalance}` and is parsed strictly. `TokenBalance` is `{remaining, unlimited, monthlyAllocation, bonus, monthlyUsed, reserved, periodStart}`; `reserved` exists only on the consumption-caps branch, so it defaults to 0. A 404 (`unknown user_id`) throws `HubUnavailable`.
+- **`unlimited` users (hub admins)** skip out-of-tokens checks but are still metered.
+- **admit / settle** match chalyb `a5733df`, which isn't on chalyb main yet:
+  - admit field rules: job id `[A-Za-z0-9_.:-]{1,128}`, operation `^[a-z][a-z0-9_.]{0,63}$`, `ttl_seconds` 60–86400;
+  - refusals may carry `detail` and `limits`;
+  - **any non-200 admit (including a 404 from a hub without the route) is `HubUnavailable`**, which callers treat as no: free_min, no recharge line;
+  - settle reports a 409 (closed reservation) separately, so a stream stops on it.
 
 **Cost rules:**
 - Unknown models throw, so we fail closed before spending.
@@ -68,6 +74,16 @@ Unset (`mirror_matching_tier`) values fail closed: `disabled_unset` / `"unset"`.
 - an **inline** "¿Por qué?" chip to `/creditos` (or `/en/creditos`). Never a modal.
 
 Other refusals and an unreachable hub fail closed on free_min without a recharge line. Safety features and BYO never go through it.
+
+## Monthly plan caps
+
+`caps.ts` reads the plan's monthly WhatsApp, calls, SMS and voice-minute inclusions from `plans.yaml`, through the entitlements function. They're counted per calendar month in the user's time zone (`localMonthStart`).
+
+- **Margin first:** an unset limit allows nothing. Chalyb Gratis gets no paid channels.
+- **Notifier:** counts `notification_sends`, excluding suppressed (`failed`) rows. The check runs **before** the hub admit. Over the cap, the channel is suppressed with `cap_reached` (push and desktop are unaffected), and the user gets one in-app note per channel per month (`cap_<channel>_<YYYY_MM>`, source `budget`, links to `/creditos`).
+- **Voice minutes:** desktop push-to-talk and call voice share them, counted from the outbox's `voice.seconds` events.
+  - At the cap, the API refuses new sessions (`voice_cap_reached`) and stops running ones.
+  - At the cap, pressing 1 on a call says "open your app" instead of connecting.
 
 ## Environment
 

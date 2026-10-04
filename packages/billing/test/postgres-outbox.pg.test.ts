@@ -48,10 +48,18 @@ if (!url) {
         Array.from({ length: 6 }, (_, i) => ev(owner, `${owner}:${i}`)),
       );
       const mine = (rows: OutboxRow[]) => rows.filter((r) => r.event.source_id.startsWith(owner));
-      const [a, b] = await Promise.all([outbox.claimDue(100, NOW + 1_000), outbox.claimDue(100, NOW + 1_000)]);
-      const ids = [...mine(a), ...mine(b)].map((r) => r.event.source_id).sort();
+      // Claim in rounds (a shared database may hold other pending rows): two drainers at a time
+      // never get the same row, and every one of ours is claimed exactly once.
+      const all: OutboxRow[] = [];
+      for (let round = 0; round < 50 && all.length < 6; round++) {
+        const [a, b] = await Promise.all([outbox.claimDue(100, NOW + 1_000), outbox.claimDue(100, NOW + 1_000)]);
+        const ia = new Set(a.map((r) => r.id));
+        expect(b.some((r) => ia.has(r.id))).toBe(false);
+        if (a.length + b.length === 0) break;
+        all.push(...mine(a), ...mine(b));
+      }
+      const ids = all.map((r) => r.event.source_id).sort();
       expect(ids).toEqual(Array.from({ length: 6 }, (_, i) => `${owner}:${i}`).sort());
-      const all = [...mine(a), ...mine(b)];
       await outbox.markSent(
         all.slice(0, 3).map((r) => r.id),
         NOW,

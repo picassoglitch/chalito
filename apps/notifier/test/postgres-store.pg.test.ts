@@ -235,5 +235,44 @@ if (!url) {
       expect([a, b].sort()).toEqual([false, true]);
       expect(await new PostgresStore(sql).claimCallRef(hash, Date.now() + 60_000)).toBe(false);
     });
+
+    it("monthly cap queries: plan info, sends excluding suppressed, voice seconds, once-only notes", async () => {
+      const u = await user({ tier: "pro" });
+      expect(await store.planInfo(u)).toMatchObject({ hubTier: "pro", tz: "America/Mexico_City", locale: "es" });
+      const since = Date.now() - 60_000;
+      await store.withUser(u, async (tx) => {
+        await tx.recordSent({ nid: "n1", channel: "call", at: Date.now() }, "k1");
+        await tx.recordSent({ nid: "n2", channel: "call", at: Date.now() }, "k2");
+        await tx.recordSent({ nid: "n2", channel: "sms", at: Date.now() }, "k2");
+      });
+      await store.markSuppressed(u, "n2", "call", "cap_reached");
+      expect(await store.monthlySends(u, since)).toEqual({ whatsapp: 0, sms: 1, call: 1 });
+      // The engine's daily caps don't count the suppressed send either.
+      expect((await store.withUser(u, (tx) => tx.history(since))).sent.map((x) => x.nid).sort()).toEqual(["n1", "n2"]);
+      await admin`insert into chalito_private.usage_outbox (owner, source_id, event)
+                  values (${u}, ${`v:${u}`}, ${admin.json({ kind: "voice.seconds", amount: 90, cost_usd_micros: 1 })})`;
+      expect(await store.voiceSecondsSince(u, since)).toBe(90);
+      const note = {
+        nid: "cap_call_2026_10",
+        source: "budget" as const,
+        urgency: "normal" as const,
+        counts: { approvals: 0, questions: 0, messages: 0, mesas: 0 },
+        deepLink: "/creditos",
+        coalesceKey: "cap:call",
+        state: "pending" as const,
+        step: 0,
+        nextAt: null,
+        createdAt: Date.now(),
+        level: "L1" as const,
+        channels: ["desktop" as const],
+        ackedAt: null,
+        ackedVia: null,
+      };
+      await store.noteOnce(u, note);
+      await store.noteOnce(u, { ...note, level: "L4" as const });
+      expect(
+        await admin`select level from chalito.notifications where owner = ${u} and nid = 'cap_call_2026_10'`,
+      ).toEqual([{ level: "L1" }]);
+    });
   });
 }

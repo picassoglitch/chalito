@@ -1,12 +1,14 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { loadPlans } from "@chalito/config";
-import { EfficiencyProfile, HubTierId, TierId, type EntitlementInputs, type PlansConfig } from "@chalito/protocol";
+import type { z } from "zod";
+import type { EntitlementInputs } from "@chalito/protocol";
+import { EfficiencyProfile, HubTierId, TierId, type PlansConfig } from "@chalito/protocol";
 import { compedFrom, computeEntitlements, entitlementInputsFrom } from "../src/entitlements.js";
 
 const plans = loadPlans();
 const NOW = 1_790_000_000_000;
-const base: EntitlementInputs = {
+const base: z.input<typeof EntitlementInputs> = {
   uid: "u1",
   hubTier: null,
   soloTier: null,
@@ -15,7 +17,7 @@ const base: EntitlementInputs = {
   comped: false,
   now: NOW,
 };
-const ent = (over: Partial<EntitlementInputs> = {}, p: PlansConfig = plans) =>
+const ent = (over: Partial<z.input<typeof EntitlementInputs>> = {}, p: PlansConfig = plans) =>
   computeEntitlements({ ...base, ...over }, p);
 
 describe("entitlements", () => {
@@ -65,6 +67,13 @@ describe("entitlements", () => {
     });
     const isComped = compedFrom(" owner-1, owner-2 ");
     expect([isComped("owner-2"), isComped("u1")]).toEqual([true, false]);
+  });
+
+  it("hub unlimited (admins) keeps managed brains on at any balance", () => {
+    expect(ent({ hubTier: "pro", hubBalanceRemaining: 0, hubUnlimited: true }).managedAllowance.status).toBe("enabled");
+    expect(ent({ hubTier: "free", hubBalanceRemaining: 0, hubUnlimited: true }).managedAllowance.status).toBe(
+      "free_min",
+    );
   });
 
   it("a zero balance drops managed brains to free_min", () => {

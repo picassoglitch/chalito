@@ -1,4 +1,5 @@
 export * from "./billable.js";
+export * from "./caps.js";
 export * from "./cost.js";
 export * from "./energy.js";
 export * from "./entitlements.js";

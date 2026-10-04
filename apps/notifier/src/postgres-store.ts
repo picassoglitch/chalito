@@ -46,7 +46,8 @@ export class PostgresStore implements NotifierStore {
             where owner = ${uid} and (state in ('pending', 'snoozed') or updated_at > now() - interval '1 day')`;
           const sent = await tx<{ nid: string; channel: SentRecord["channel"]; at: Date }[]>`
             select nid, channel, created_at as at from chalito_private.notification_sends
-            where owner = ${uid} and channel in ('whatsapp', 'call', 'sms') and created_at >= ${new Date(since)}`;
+            where owner = ${uid} and channel in ('whatsapp', 'call', 'sms') and status <> 'failed'
+              and created_at >= ${new Date(since)}`;
           return {
             ladders: ladders.map((r) => r.ladder),
             sent: sent.map((r) => ({ nid: r.nid, channel: r.channel, at: r.at.getTime() })),
@@ -136,6 +137,49 @@ export class PostgresStore implements NotifierStore {
       where a.owner = ${uid} and a.status = 'pending' and a.expires_at > now()
       order by a.created_at limit 10`;
     return rows.map((r) => ({ aid: r.aid, deviceLabel: r.device_label, sessionLabel: r.session_label }));
+  }
+
+  async planInfo(uid: string) {
+    const [u] = await this.sql<{ tier: string | null; tz: string | null; locale: "es" | "en" }[]>`
+      select tier, tz, locale from chalito.users where id = ${uid}`;
+    return u ? { hubTier: u.tier, tz: u.tz ?? "America/Mexico_City", locale: u.locale } : null;
+  }
+
+  async monthlySends(uid: string, sinceMs: number) {
+    const rows = await this.sql<{ channel: "whatsapp" | "sms" | "call"; n: string }[]>`
+      select channel, count(*) as n from chalito_private.notification_sends
+      where owner = ${uid} and channel in ('whatsapp', 'sms', 'call') and status <> 'failed'
+        and created_at >= ${new Date(sinceMs)}
+      group by channel`;
+    const out = { whatsapp: 0, sms: 0, call: 0 };
+    for (const r of rows) out[r.channel] = Number(r.n);
+    return out;
+  }
+
+  async voiceSecondsSince(uid: string, sinceMs: number) {
+    const [r] = await this.sql<{ s: string }[]>`
+      select coalesce(sum((event ->> 'amount')::bigint), 0) as s from chalito_private.usage_outbox
+      where owner = ${uid} and event ->> 'kind' = 'voice.seconds' and created_at >= ${new Date(sinceMs)}`;
+    return Number(r?.s ?? 0);
+  }
+
+  async markSuppressed(uid: string, nid: string, channel: "whatsapp" | "sms" | "call", reason: string) {
+    await this.sql`
+      update chalito_private.notification_sends set status = 'failed', error = ${reason}
+      where id = (
+        select id from chalito_private.notification_sends
+        where owner = ${uid} and nid = ${nid} and channel = ${channel} and status = 'queued'
+        order by id desc limit 1
+      )`;
+  }
+
+  async noteOnce(uid: string, n: NotificationRow) {
+    await this.sql`
+      insert into chalito.notifications
+        (owner, nid, level, source, urgency, counts, deep_link, coalesce_key, state, step, next_at, channels, created_at)
+      values (${uid}, ${n.nid}, ${n.level ?? "L1"}, ${n.source}, ${n.urgency}, ${this.sql.json(n.counts as never)},
+              ${n.deepLink}, ${n.coalesceKey}, ${n.state}, ${n.step}, null, ${n.channels}, ${new Date(n.createdAt)})
+      on conflict (owner, nid) do nothing`;
   }
 
   async claimCallRef(refHash: string, expiresAt: number) {
