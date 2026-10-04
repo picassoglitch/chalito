@@ -523,4 +523,5 @@ if (cmd === "help" || !commands[cmd]) {
   process.exit(cmd === "help" ? 0 : 1);
 }
 await commands[cmd].run();
-if (!["events", "approvals"].includes(cmd)) process.exit(0);
+// Firebase keeps sockets open; exit once stdout has drained (pipes are async in Node).
+if (!["events", "approvals"].includes(cmd)) process.stdout.write("", () => process.exit(0));
