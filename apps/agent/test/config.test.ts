@@ -18,11 +18,11 @@ const DEVICE = `dev_${"a".repeat(22)}`;
 const KEYS = await generateSigningKeyPair();
 const ENDPOINTS = {
   apiBase: "https://api.chalito.test/",
-  firebase: { projectId: "demo-chalito", apiKey: "AIzaTest" },
+  supabase: { url: "https://hub.supabase.test/", publishableKey: "sb_publishable_test" },
 };
 
 describe("config.json", () => {
-  it("validates, normalises and defaults (locale es, database chalito, unpaired)", () => {
+  it("validates, normalises and defaults (locale es, device-user auth, unpaired)", () => {
     const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
     writeFileSync(configPath(dir), JSON.stringify(ENDPOINTS));
     const c = readConfig(dir, {});
@@ -31,7 +31,7 @@ describe("config.json", () => {
       owner: null,
       deviceId: null,
       locale: "es",
-      firebase: { databaseId: "chalito" },
+      supabase: { url: "https://hub.supabase.test", auth: "device-user" },
     });
     expect(isPaired(c)).toBe(false);
     expect(() => requirePaired(c)).toThrow(/chalito pair/);
@@ -41,18 +41,37 @@ describe("config.json", () => {
     const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
     const c = readConfig(dir, {
       CHALITO_API_BASE: "http://localhost:8080",
-      CHALITO_FIREBASE_PROJECT_ID: "demo-chalito",
-      CHALITO_FIREBASE_API_KEY: "k",
+      SUPABASE_URL: "http://127.0.0.1:54321",
+      SUPABASE_PUBLISHABLE_KEY: "k",
       LANG: "en_US.UTF-8",
     });
     expect(c.apiBase).toBe("http://localhost:8080");
     expect(c.locale).toBe("en");
   });
 
-  it("with the Firebase emulators set, the project defaults to demo-chalito", () => {
+  it("supabase {url, publishableKey}: from the signed file, or SUPABASE_URL + its publishable key (local stack)", () => {
     const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
-    const c = readConfig(dir, { CHALITO_API_BASE: "http://127.0.0.1:8080", FIRESTORE_EMULATOR_HOST: "127.0.0.1:8085" });
-    expect(c.firebase).toMatchObject({ projectId: "demo-chalito", databaseId: "chalito" });
+    const c = readConfig(dir, {
+      CHALITO_API_BASE: "http://127.0.0.1:8787",
+      SUPABASE_URL: "http://127.0.0.1:54321/",
+      SUPABASE_PUBLISHABLE_KEY: "sb_publishable_local",
+    });
+    expect(c.supabase).toEqual({
+      url: "http://127.0.0.1:54321",
+      publishableKey: "sb_publishable_local",
+      auth: "device-user",
+    });
+
+    writeConfig(dir, { ...c, owner: "u1", deviceId: DEVICE }, KEYS);
+    const back = readConfig(dir, {}, { keys: KEYS });
+    expect(back.supabase).toEqual(c.supabase);
+  });
+
+  it("needs the supabase block; a leftover firebase block is ignored", () => {
+    const dir = mkdtempSync(join(tmpdir(), "chalito-cfg-"));
+    writeFileSync(configPath(dir), JSON.stringify({ apiBase: "https://api.test", firebase: { projectId: "old" } }));
+    expect(() => readConfig(dir, {})).toThrow(/supabase/);
+    expect(() => readConfig(dir, { SUPABASE_URL: "http://127.0.0.1:54321" })).toThrow(/publishableKey/);
   });
 
   it("names the missing fields", () => {

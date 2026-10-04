@@ -28,26 +28,6 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
-  emulator:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/firebase/emulators
-          key: firebase-emulators-${{ hashFiles('pnpm-lock.yaml') }}
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test:emulator
-
   agent-binary:
     runs-on: ubuntu-latest
     steps:
@@ -73,6 +53,50 @@ jobs:
           grep -q '"addonLoaded":true' smoke.json
           grep -q '"sodium":true' smoke.json
       - run: pnpm --filter @chalito/agent exec vitest run test/binary-smoke.test.ts
+
+  supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.119.0
+      # Postgres, PostgREST, GoTrue and Realtime are enough for the migrations, RLS and smoke tests.
+      - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,storage-api
+      - run: supabase test db
+      - run: supabase/scripts/smoke-data-api.sh
+      # ApiRepo (PostgresRepo) and IdentityIssuer (SupabaseIssuer) contracts against the local stack's
+      # database and Auth, then the agent's SupabaseStore (apps/agent/test/*.int.test.ts).
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Point the contract tests at the local stack
+        run: |
+          supabase status -o json > "$RUNNER_TEMP/sb.json"
+          {
+            echo "DATABASE_URL=$(jq -r '.DB_URL' "$RUNNER_TEMP/sb.json")"
+            echo "SUPABASE_AUTH_URL=$(jq -r '.API_URL' "$RUNNER_TEMP/sb.json")/auth/v1"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$(jq -r '.SERVICE_ROLE_KEY // .SECRET_KEY' "$RUNNER_TEMP/sb.json")"
+            echo "SUPABASE_ANON_KEY=$(jq -r '.ANON_KEY // .PUBLISHABLE_KEY' "$RUNNER_TEMP/sb.json")"
+          } >> "$GITHUB_ENV"
+      - run: pnpm --filter @chalito/api test:pg
+        env:
+          # The api's least-privilege role (security review S2); postgres holds it with SET.
+          CHALITO_DB_ROLE: chalito_server
+      - name: Agent SupabaseStore integration
+        run: |
+          eval "$(supabase status -o env)"
+          export API_URL ANON_KEY SERVICE_ROLE_KEY
+          export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
+          pnpm --filter @chalito/agent test:supabase
+      # Realtime delivery (supabase-js against the local stack).
+      - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
+      - run: node supabase/scripts/realtime-latency.mjs
+      - if: always()
+        run: supabase stop --no-backup
 
   gitleaks:
     runs-on: ubuntu-latest

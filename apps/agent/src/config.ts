@@ -22,10 +22,16 @@ export const AgentConfig = z.object({
   owner: Uid.nullable().default(null),
   deviceId: DerivedDeviceId.nullable().default(null),
   apiBase: z.url().transform((u) => u.replace(/\/+$/, "")),
-  firebase: z.object({
-    projectId: z.string().min(1),
-    apiKey: z.string().min(1),
-    databaseId: z.string().min(1).default("chalito"),
+  /** The Chalyb hub's Supabase project (ADR 0017): the agent's only data layer. */
+  supabase: z.object({
+    url: z.url().transform((u) => u.replace(/\/+$/, "")),
+    /** Publishable (anon) key: identifies the project; every request is authorized by the device JWT. */
+    publishableKey: z.string().min(1),
+    /**
+     * Device credentials: a Supabase Auth user per device (owner decision, the default),
+     * or API-minted custom JWTs (iss = chalito).
+     */
+    auth: z.enum(["device-user", "api-jwt"]).default("device-user"),
   }),
   locale: Locale.default("es"),
   /**
@@ -54,9 +60,9 @@ export const envLocale = (env: Record<string, string | undefined>): "es" | "en" 
 
 /**
  * Reads config.json. Missing endpoint fields may come from the environment
- * (CHALITO_API_BASE, CHALITO_FIREBASE_PROJECT_ID, CHALITO_FIREBASE_API_KEY,
- * CHALITO_FIREBASE_DATABASE_ID), so a fresh install can pair before a file exists.
- * With the Firebase emulator variables set, the project defaults to demo-chalito.
+ * (CHALITO_API_BASE, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY), so a fresh install can pair
+ * before a file exists, and a local stack (`supabase start`) or CI can supply them.
+ * A `firebase` block left by an older version is ignored.
  */
 export const readConfig = (
   dir: string,
@@ -79,18 +85,17 @@ export const readConfig = (
       throw new ConfigError(`${file} is not valid JSON.`);
     }
   } else if (verify) throw new ConfigError("This computer isn't paired yet. Run `chalito pair` first.");
-  const fb = (raw.firebase ?? {}) as Record<string, unknown>;
-  // Emulators accept any API key; the demo- project id keeps them from touching a real project.
-  const emulated = Boolean(env.FIRESTORE_EMULATOR_HOST || env.FIREBASE_AUTH_EMULATOR_HOST);
+  // Local stack (`supabase start`) or CI: SUPABASE_URL + its publishable key.
+  const sb = (raw.supabase ?? {}) as Record<string, unknown>;
+  const supabase = {
+    ...sb,
+    url: sb.url ?? env.SUPABASE_URL,
+    publishableKey: sb.publishableKey ?? env.SUPABASE_PUBLISHABLE_KEY ?? env.SUPABASE_ANON_KEY,
+  };
   const merged = {
     ...raw,
     apiBase: raw.apiBase ?? env.CHALITO_API_BASE,
-    firebase: {
-      ...fb,
-      projectId: fb.projectId ?? env.CHALITO_FIREBASE_PROJECT_ID ?? (emulated ? "demo-chalito" : undefined),
-      apiKey: fb.apiKey ?? env.CHALITO_FIREBASE_API_KEY ?? (emulated ? "demo-api-key" : undefined),
-      databaseId: fb.databaseId ?? env.CHALITO_FIREBASE_DATABASE_ID,
-    },
+    supabase,
     locale: raw.locale ?? envLocale(env),
   };
   const parsed = AgentConfig.safeParse(merged);
@@ -110,7 +115,7 @@ export const requirePaired = (c: AgentConfig): PairedConfig => {
 
 /**
  * Atomic write, 0600, signed with the agent key: `claude.path` decides what the daemon
- * runs with the API key, and `apiBase`/`firebase` where it connects, so an unsigned edit
+ * runs with the API key, and `apiBase`/`supabase` where it connects, so an unsigned edit
  * must not take effect.
  */
 export const writeConfig = (dir: string, c: AgentConfig, keys: SigningKeyPair): void => {

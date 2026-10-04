@@ -3,7 +3,8 @@ import { hostname as osHostname } from "node:os";
 import { TrustedClientList, deriveDeviceId, fingerprint, fromB64url, randomNonce } from "@chalito/crypto";
 import { signGlyph } from "@chalito/glyph";
 import { CreatePairingCodeResponse, PAIRING_TTL_MS, PairingCodeDoc } from "@chalito/protocol";
-import { firebasePairingWatcher, postJson, type FetchFn, type PairingWatcher } from "./cloud.js";
+import { postJson, supabasePairingWatcher, type FetchFn, type PairingWatcher } from "./cloud.js";
+import { createEphemeralAuth, exchangeTokenHash } from "./device-auth.js";
 import { ConfigTamperedError, readConfig, writeConfig } from "./config.js";
 import type { OsAuth } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
@@ -131,7 +132,15 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
   deps.out(c.expires(Math.round((created.expiresAt - now()) / 60_000)));
 
   // Wait for the claim (event-driven), or the code's expiry.
-  const watcher = deps.watcher ?? firebasePairingWatcher(base.firebase, deps.env ?? process.env);
+  const sb = base.supabase;
+  const watcher =
+    deps.watcher ??
+    supabasePairingWatcher(sb, {
+      // Device-user mode: the API's watch credential is a magic-link token_hash for a pairing user.
+      ...(sb.auth === "device-user"
+        ? { exchange: (h: string) => exchangeTokenHash(createEphemeralAuth(sb.url, sb.publishableKey), h) }
+        : {}),
+    });
   let onClaim!: (d: PairingCodeDoc | null) => void;
   const claim = new Promise<PairingCodeDoc | null>((resolve) => (onClaim = resolve));
   const expiry = setTimeout(() => onClaim(null), Math.max(0, created.expiresAt - now()));

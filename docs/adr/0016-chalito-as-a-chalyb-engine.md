@@ -9,7 +9,7 @@ Chalyb is a hub (Next.js on Vercel + Supabase + Mercado Pago) with engines: Chal
 ## Decision
 Chalito stays **its own repo** (`picassoglitch/chalito`) and integrates as engine slug **`chalito`**, exactly like ChalyClip.
 
-1. **Accounts and SSO.**
+1. **Accounts and SSO.** *(Superseded by [ADR 0017](0017-data-layer-supabase.md) for accounts/identity storage: Supabase Auth on the hub project, not Firebase.)*
    - The hub launches users to `https://chalito.chalyb.com/auth/sso?token=<b64url(payload)>.<HMAC-SHA256>&next=<relative>`.
      - The payload is `{user_id, email, tenant_id, tier, exp}` with a 300 s TTL, signed with `CHALITO_SSO_SECRET`.
      - Chalito verifies it, rejects absolute or off-origin `next` (open redirect), and opens its session.

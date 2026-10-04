@@ -13,15 +13,13 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "test:emulator": "firebase emulators:exec --only firestore,auth --project demo-chalito 'pnpm -r --if-present run test:emulator'"
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.5",
     "eslint": "^10.12.0",
     "fast-check": "^4.10.2",
-    "firebase-tools": "^15.32.1",
     "globals": "^17.13.0",
     "prettier": "^3.9.9",
     "tsx": "^4.23.15",

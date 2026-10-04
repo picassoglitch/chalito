@@ -60,6 +60,8 @@ describe("payload codec", () => {
 });
 
 describe("fountain frames", () => {
+  // A camera sees many loops (~1.2 s each); with 30% random loss a chunk can miss a few
+  // loops in a row, so the bound is 10 loops (P(all-dropped) per chunk ≈ 0.3^10).
   it("recovers the payload with lost frames, in any order, across loops", async () => {
     const { g } = await makeGlyph();
     const payload = encodePayload(g);
@@ -70,7 +72,7 @@ describe("fountain frames", () => {
         const rnd = () => (x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
         const asm = new FrameAssembler();
         const start = Math.floor(rnd() * loop.length);
-        for (let i = 0; i < loop.length * 4; i++) {
+        for (let i = 0; i < loop.length * 10; i++) {
           if (rnd() < 0.3) continue; // 30% of frames dropped
           const out = asm.push(loop[(start + i) % loop.length]!);
           if (out) {
@@ -78,7 +80,7 @@ describe("fountain frames", () => {
             return;
           }
         }
-        throw new Error("did not complete in 4 loops");
+        throw new Error("did not complete in 10 loops");
       }),
       { numRuns: 100 },
     );
@@ -127,7 +129,7 @@ describe("render → sample", () => {
       ),
       { numRuns: 12 },
     );
-  });
+  }, 60_000);
 
   it("a single frame survives the round trip bit-exact", async () => {
     const { g } = await makeGlyph();

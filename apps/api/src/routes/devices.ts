@@ -129,10 +129,17 @@ export const deviceRoutes = (deps: Deps) => {
       return fail(409, "replayed_nonce");
     await deps.repo.touchDevice(ch.body.owner, ch.body.deviceId, deps.now());
     const role = device.role;
-    return c.json({
-      customToken: await mintDeviceToken(deps, ch.body.owner, ch.body.deviceId, role),
-      deviceId: ch.body.deviceId,
-    });
+    const customToken = await mintDeviceToken(deps, ch.body.owner, ch.body.deviceId, role);
+    // The agent has its own credential now: the pairing watcher it was claimed through is done.
+    if (role === "agent" && deps.identity.releasePairingWatch) {
+      try {
+        for (const codeId of await deps.repo.releasePairingWatches(ch.body.owner, ch.body.deviceId))
+          await deps.identity.releasePairingWatch(codeId);
+      } catch (err) {
+        console.error("[api] pairing watch release failed", err instanceof Error ? err.message : "error");
+      }
+    }
+    return c.json({ customToken, deviceId: ch.body.deviceId });
   });
 
   /** Revoke any device of the account from an active client (or the device itself). */
