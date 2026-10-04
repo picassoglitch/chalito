@@ -6,6 +6,7 @@ import { hubRoutes } from "./routes/hub.js";
 import { pairingRoutes } from "./routes/pairing.js";
 import { recoveryRoutes } from "./routes/recovery.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
+import { oauthRoutes } from "./routes/oauth.js";
 
 export const createApp = (deps: Deps) => {
   const app = new Hono();
@@ -16,6 +17,7 @@ export const createApp = (deps: Deps) => {
   app.route("/v1/pairing", pairingRoutes(deps));
   app.route("/v1/recovery", recoveryRoutes(deps));
   app.route("/v1/webauthn", webauthnRoutes(deps));
+  app.route("/", oauthRoutes(deps));
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
     console.error("[api] unhandled", err instanceof Error ? err.message : "error");
