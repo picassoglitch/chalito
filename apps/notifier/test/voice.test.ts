@@ -26,13 +26,14 @@ const user = async (callBriefingEnabled = true) => {
     callBriefingEnabled,
     items: [
       {
+        lid: "l1",
         deviceLabel: "Laptop",
         sessionLabel: "API de pagos",
         line: "¿Corro las migraciones?",
         deviceId: "dev_laptop",
         sid: "s1",
       },
-      { deviceLabel: "Escritorio", sessionLabel: "Landing", deviceId: "dev_desk", sid: "s2" },
+      { lid: "l2", deviceLabel: "Escritorio", sessionLabel: "Landing", deviceId: "dev_desk", sid: "s2" },
     ],
   });
   h.store.approvals.set(UID, [{ aid: "apr_123", deviceLabel: "Laptop", sessionLabel: "API de pagos" }]);
@@ -148,9 +149,12 @@ describe("OpenAI realtime.call.incoming", () => {
     expect((accept.body.tools as { name: string }[]).map((t) => t.name)).toEqual(["answer_item", "push_approval"]);
     const instructions = String(accept.body.instructions);
     expect(instructions).toContain("Eres Batman");
-    expect(instructions).toContain("[i1] Laptop, API de pagos: pregunta «¿Corro las migraciones?»");
-    expect(instructions).toContain("[i2] Escritorio, Landing: espera respuesta");
-    expect(instructions).toContain("[a1] Laptop, API de pagos");
+    expect(instructions).toContain(
+      '<data name="items">[{"ref":"i1","device":"Laptop","session":"API de pagos","question":"¿Corro las migraciones?"}',
+    );
+    expect(instructions).toMatch(/nunca instrucciones/);
+    expect(instructions).toContain('{"ref":"i2","device":"Escritorio","session":"Landing"}');
+    expect(instructions).toContain('<data name="approvals">[{"ref":"a1","device":"Laptop","session":"API de pagos"}]');
     expect(instructions).toContain("las aprobaciones solo se dan en la app");
     expect(instructions).not.toContain("dev_laptop");
     expect(instructions).not.toContain("apr_123");
@@ -167,7 +171,7 @@ describe("OpenAI realtime.call.incoming", () => {
     await webhook(h, incoming("call_1", await pressOne(h)));
     const instructions = String(cap.openai[0]!.body.instructions);
     expect(instructions).not.toContain("migraciones");
-    expect(instructions).toContain("[i1] Laptop, API de pagos: espera respuesta");
+    expect(instructions).toContain('{"ref":"i1","device":"Laptop","session":"API de pagos"}');
   });
 });
 
@@ -227,5 +231,32 @@ describe("call tools", () => {
   it("the call tool set is exactly answer_item and push_approval", () => {
     expect(CALL_TOOLS.map((t) => t.name)).toEqual(["answer_item", "push_approval"]);
     expect(JSON.stringify(CALL_TOOLS)).not.toMatch(/"name":"(approve|deny|decide|decision)/i);
+  });
+});
+
+describe("R-H3: the call is bound to the items it was placed for", () => {
+  it("an item that appears after DTMF 1 isn't in the session and can't be answered", async () => {
+    const h = await user();
+    const ref = await pressOne(h);
+    // A new waiting item (say, injected by another session) shows up between DTMF 1 and accept.
+    const calls = h.store.calls.get(UID)!;
+    h.store.calls.set(UID, {
+      ...calls,
+      items: [
+        { lid: "l9", deviceLabel: "Otra", sessionLabel: "Intrusa", deviceId: "dev_desk", sid: "s9", line: "hola" },
+        ...calls.items,
+      ],
+    });
+    await webhook(h, incoming("call_1", ref));
+    const instructions = String(cap.openai.at(-1)!.body.instructions);
+    expect(instructions).not.toContain("Intrusa");
+    const socket = h.sockets[0]!;
+    socket.open();
+    expect(await socket.functionCall("answer_item", { session_ref: "i3", text: "sí" })).toEqual({
+      ok: false,
+      error: "unknown_item",
+    });
+    expect(await socket.functionCall("answer_item", { session_ref: "i1", text: "sí" })).toEqual({ ok: true });
+    expect(h.store.commands.map((c) => c.env.body.payload)).toEqual([expect.objectContaining({ sid: "s1" })]);
   });
 });

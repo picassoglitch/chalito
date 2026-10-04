@@ -81,8 +81,10 @@ describe("usage outbox", () => {
     });
     expect(box.rows.map((r) => r.status)).toEqual(["dead", "dead"]);
     expect(box.rows[0]!.lastError).toMatch(/^422/);
+    // The batch is bisected (R-M6): each row the hub still refuses alone is dead, one alert each.
     expect(alerts).toEqual([
-      { m: "billing.usage_dead", meta: { count: 2, httpStatus: 422, sourceIds: ["sms:1", "sms:2"] } },
+      { m: "billing.usage_dead", meta: { count: 1, httpStatus: 422, sourceIds: ["sms:1"] } },
+      { m: "billing.usage_dead", meta: { count: 1, httpStatus: 422, sourceIds: ["sms:2"] } },
     ]);
     // A later drain doesn't resend dead rows.
     calls.length = 0;
@@ -105,5 +107,26 @@ describe("usage outbox", () => {
     expect(alerts).toEqual([{ m: "billing.usage_invalid", meta: { count: 2, sourceIds: ["sms:1", "sms:2"] } }]);
     const sent = calls.flatMap((c) => (c.body as { events: { source_id: string }[] }).events.map((e) => e.source_id));
     expect(sent).toEqual(["sms:3"]);
+  });
+});
+
+describe("R-M6: bisecting a refused batch", () => {
+  it("a retry from the hub mid-bisection defers the untried half instead of dropping or killing it", async () => {
+    const box = new MemoryOutbox();
+    await box.enqueue("u1", [ev(1), ev(2), ev(3), ev(4)]);
+    let n = 0;
+    const flaky = {
+      usage: async () => {
+        n++;
+        if (n === 1) return { status: "dead" as const, httpStatus: 404, error: "unknown user_id" };
+        return { status: "retry" as const, httpStatus: 503, error: "down" };
+      },
+    };
+    expect(await drainOutbox({ store: box, hub: flaky as never, now: () => NOW, alert: () => {} })).toEqual({
+      sent: 0,
+      retried: 4,
+      dead: 0,
+    });
+    expect(box.rows.every((r) => r.status === "pending" && r.nextAttemptAt > NOW)).toBe(true);
   });
 });

@@ -110,15 +110,16 @@ export class PostgresStore implements NotifierStore {
       select (call_briefing ->> 'enabled')::boolean as enabled from chalito.users where id = ${uid}`;
     const callBriefingEnabled = u?.enabled === true;
     const rows = await this.sql<
-      { device_label: string; session_label: string; line: string; device_id: string; sid: string }[]
+      { lid: string; device_label: string; session_label: string; line: string; device_id: string; sid: string }[]
     >`
-      select d.name as device_label, coalesce(s.doc ->> 'label', cl.sid) as session_label, cl.line, cl.device_id, cl.sid
+      select cl.lid, d.name as device_label, coalesce(s.doc ->> 'label', cl.sid) as session_label, cl.line, cl.device_id, cl.sid
       from chalito.call_lines cl
       join chalito.devices d on d.owner = cl.owner and d.device_id = cl.device_id
       left join chalito.sessions s on s.owner = cl.owner and s.sid = cl.sid
       where cl.owner = ${uid} and cl.expires_at > now()
       order by cl.created_at limit 10`;
     const items: CallItem[] = rows.map((r) => ({
+      lid: r.lid,
       deviceLabel: r.device_label,
       sessionLabel: r.session_label,
       deviceId: r.device_id,

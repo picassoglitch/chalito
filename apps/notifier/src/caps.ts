@@ -26,16 +26,19 @@ export const overMonthlyCap = async (deps: NotifierDeps, uid: string, channel: "
   return used > limit;
 };
 
-/** Whether the user still has voice minutes this month (desktop and calls share them). */
-export const voiceMinutesLeft = async (deps: NotifierDeps, uid: string) => {
-  if (!deps.caps) return true;
+/** Voice seconds left this month (desktop and calls share them); Infinity when caps are off. */
+export const voiceSecondsLeft = async (deps: NotifierDeps, uid: string) => {
+  if (!deps.caps) return Number.POSITIVE_INFINITY;
   const info = await deps.store.planInfo(uid);
-  if (!info) return false;
+  if (!info) return 0;
   const now = deps.now();
   const limitSec =
     monthlyLimit(deps.caps.plans, { uid, hubTier: info.hubTier, comped: deps.caps.isComped(uid), now }, "voice") * 60;
-  return (await deps.store.voiceSecondsSince(uid, localMonthStart(now, info.tz))) < limitSec;
+  return Math.max(0, limitSec - (await deps.store.voiceSecondsSince(uid, localMonthStart(now, info.tz))));
 };
+
+/** Whether the user still has voice minutes this month (desktop and calls share them). */
+export const voiceMinutesLeft = async (deps: NotifierDeps, uid: string) => (await voiceSecondsLeft(deps, uid)) > 0;
 
 /** One in-app note per channel per month: "this month's <channel> allowance is used up". */
 export const capNote = async (deps: NotifierDeps, uid: string, channel: CappedChannel) => {

@@ -202,7 +202,9 @@ describe("a full L4 ladder, end to end", () => {
       const h = withUser();
       h.store.calls.set(UID, {
         callBriefingEnabled: enabled,
-        items: [{ deviceLabel: "Lap <top> & co", sessionLabel: 'API "pagos"', line: "¿Corro las migraciones?" }],
+        items: [
+          { lid: "l1", deviceLabel: "Lap <top> & co", sessionLabel: 'API "pagos"', line: "¿Corro las migraciones?" },
+        ],
       });
       await h.publish({ v: 1, type: "notify", uid: UID, item: item() });
       await drive(h);
@@ -310,7 +312,7 @@ describe("webhooks", () => {
 
     const connect = await twilioPost(h, path, { CallSid: `CA${"a".repeat(32)}`, Digits: "1" });
     expect(await connect.text()).toMatch(
-      /<Dial><Sip>sip:proj_test@sip\.api\.openai\.com;transport=tls;secure=true\?X-Chalito-Ref=[\w-]+\.[\w-]+<\/Sip><\/Dial>/,
+      /<Dial timeLimit="1200"><Sip>sip:proj_test@sip\.api\.openai\.com;transport=tls;secure=true\?X-Chalito-Ref=[\w-]+\.[\w-]+<\/Sip><\/Dial>/,
     );
     expect(h.store.ladders.get(UID)![0]).toMatchObject({ state: "acked", ackedVia: "call" });
 

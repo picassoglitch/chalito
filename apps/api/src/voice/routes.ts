@@ -2,6 +2,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { VoiceProvider } from "@chalito/adapters/voice";
+import { sweepVoiceSessions, type VoiceEventFor, type VoiceSessionStore } from "@chalito/billing";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
@@ -22,10 +23,15 @@ export interface VoiceDeps {
   ttlSec?: number;
   /** Monthly voice minutes from the plan. Unset: not enforced. */
   cap?: VoiceCap;
+  /** Server-side session metering (R-H6): what is billed, whatever the client reports. */
+  sessions: VoiceSessionStore;
+  /** The longest one session may run (default 30 min); the cap's remaining minutes lower it. */
+  maxSessionSec?: number;
 }
 
 /** Heartbeats report at most this many seconds each (the desktop beats every 30 s). */
 const MAX_BEAT_SEC = 60;
+const DEFAULT_MAX_SESSION_SEC = 30 * 60;
 
 interface VoiceToken {
   admissionId: string;
@@ -68,18 +74,60 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
   const auth = requireAuth(deps, ["client", "agent"]);
   const ttlSec = Math.min(600, Math.max(10, voice.ttlSec ?? 60));
 
+  /** The event for one billed increment: source_id `<session>:<total>`, so retries are the same event. */
+  const eventFor: VoiceEventFor = (sess, seconds, total) =>
+    voice.hub.event({
+      owner: sess.owner,
+      admissionId: sess.reservationId,
+      kind: "voice.seconds",
+      seconds,
+      sourceId: `${sess.sourceId}:${total}`,
+    });
+  const settle = (owner: string, reservationId: string) => voice.hub.settle({ owner, admissionId: reservationId });
+
   app.post("/session", auth, rateLimit({ capacity: 10, refillPerSec: 0.1, now: deps.now }), async (c) => {
     const p = principal(c);
+    const now = deps.now();
+    // A session left open past its maximum is billed in full before another can start.
+    await sweepVoiceSessions({
+      store: voice.sessions,
+      now,
+      owner: p.owner,
+      event: eventFor,
+      settle: (rid) => settle(p.owner, rid),
+    });
+    let maxSeconds = Math.max(1, voice.maxSessionSec ?? DEFAULT_MAX_SESSION_SEC);
     if (voice.cap) {
-      const c = await voice.cap.status(p.owner, deps.now());
-      if (c.usedSeconds >= c.limitSeconds) {
-        await voice.cap.note(p.owner, deps.now());
+      const cap = await voice.cap.status(p.owner, now);
+      if (cap.usedSeconds >= cap.limitSeconds) {
+        await voice.cap.note(p.owner, now);
         return fail(402, "voice_cap_reached", "This month's voice minutes are used up.");
       }
+      maxSeconds = Math.min(maxSeconds, cap.limitSeconds - cap.usedSeconds);
     }
     const sourceId = `voice_${randomUUID().replace(/-/g, "")}`;
-    const admit = await voice.hub.admit({ owner: p.owner, kind: "voice.seconds", class: "stream", sourceId });
+    const admit = await voice.hub.admit({
+      owner: p.owner,
+      kind: "voice.seconds",
+      class: "stream",
+      sourceId,
+      reserveSeconds: maxSeconds,
+    });
     if (!admit.admitted) return fail(402, "voice_not_admitted", admit.reason);
+    const opened = await voice.sessions.open({
+      sourceId,
+      owner: p.owner,
+      channel: "desktop",
+      deviceId: p.deviceId!,
+      reservationId: admit.admissionId,
+      model: voice.model,
+      startedAt: now,
+      maxSeconds,
+    });
+    if (opened === "busy") {
+      await settle(p.owner, admit.admissionId);
+      return fail(409, "voice_session_open", "Another voice session is still open; end it first.");
+    }
     const secret = await voice.provider.mintClientSecret({
       ttlSec,
       // A stable, non-reversible id for OpenAI's abuse monitoring (never the raw uid).
@@ -92,6 +140,7 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
         clientSecret: secret.value,
         expiresAt: secret.expiresAt,
         model: voice.model,
+        maxSeconds,
         voiceToken: sign(voice.tokenSecret, {
           admissionId: admit.admissionId,
           owner: p.owner,
@@ -103,30 +152,35 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
     );
   });
 
+  /**
+   * Heartbeats and the end bill the server-observed time since the session was minted (capped at
+   * its maximum), never `seconds` from the client, which is only a liveness signal now (R-H6).
+   */
   const beat = async (c: Context<AuthEnv>, end: boolean) => {
     const p = principal(c);
     const body = Beat.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
     const t = verify(voice.tokenSecret, body.data.voiceToken);
     if (!t || t.owner !== p.owner || t.deviceId !== p.deviceId) return fail(403, "bad_voice_token");
-    const r =
-      body.data.seconds > 0
-        ? await voice.hub.record({
-            owner: t.owner,
-            admissionId: t.admissionId,
-            kind: "voice.seconds",
-            quantity: body.data.seconds,
-            sourceId: t.sourceId,
-          })
-        : { continue: true };
-    if (end) await voice.hub.settle({ owner: t.owner, admissionId: t.admissionId });
-    let underCap = true;
-    if (voice.cap && !end) {
-      const cap = await voice.cap.status(t.owner, deps.now());
-      underCap = cap.usedSeconds < cap.limitSeconds;
-      if (!underCap) await voice.cap.note(t.owner, deps.now());
+    const now = deps.now();
+    const r = await voice.sessions.advance({ owner: t.owner, sourceId: t.sourceId, now, end, event: eventFor });
+    if (!r.found) return fail(404, "voice_session_unknown");
+    if (end) {
+      await settle(t.owner, t.admissionId);
+      return c.json({ ok: true, continue: false, billedSeconds: r.total });
     }
-    return c.json({ ok: true, continue: r.continue && underCap && !end });
+    if (r.ended) return c.json({ ok: true, continue: false, billedSeconds: r.total });
+    const alive =
+      r.total < r.maxSeconds
+        ? await voice.hub.keepAlive({ owner: t.owner, admissionId: t.admissionId, sourceId: t.sourceId })
+        : { continue: false };
+    let underCap = true;
+    if (voice.cap) {
+      const cap = await voice.cap.status(t.owner, now);
+      underCap = cap.usedSeconds < cap.limitSeconds;
+      if (!underCap) await voice.cap.note(t.owner, now);
+    }
+    return c.json({ ok: true, continue: alive.continue && underCap && r.total < r.maxSeconds, billedSeconds: r.total });
   };
   app.post("/session/heartbeat", auth, (c) => beat(c, false));
   app.post("/session/end", auth, (c) => beat(c, true));

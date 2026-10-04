@@ -153,9 +153,20 @@ describe("paid channels go through the hub", () => {
     h.setClock(NOON_MX + 90_000); // a 90-second conversation
     h.sockets[0]!.close();
     await new Promise((r) => setTimeout(r, 20));
-    const voice = h.outbox.rows.map((r) => r.event).find((e) => e.kind === "voice.seconds")!;
+    // Metered on the server (R-M8): one session row, billed in one go at close, settled.
+    const [voice] = h.voiceSessions.events;
     // 90 s × $0.03/min + 2 SIP minutes × $0.004.
-    expect([voice.amount, voice.cost_usd_micros, voice.source_id]).toEqual([90, 45_000 + 8_000, "voice-call:call_v"]);
+    expect([voice!.kind, voice!.amount, voice!.cost_usd_micros, voice!.source_id.split(":")[1]]).toEqual([
+      "voice.seconds",
+      90,
+      45_000 + 8_000,
+      "90",
+    ]);
+    expect([...h.voiceSessions.sessions.values()][0]).toMatchObject({
+      channel: "call",
+      deviceId: callSid,
+      endedAt: NOON_MX + 90_000,
+    });
   });
 });
 
@@ -187,7 +198,7 @@ describe("outbox drain endpoint", () => {
       ).status,
     ).toBe(401);
     const ok = await post(await googleToken({ aud: `${BASE}/tasks/drain-usage`, email: SCHEDULER_SA }));
-    expect(await ok.json()).toEqual({ sent: 1, retried: 0, dead: 0 });
+    expect(await ok.json()).toEqual({ sent: 1, retried: 0, dead: 0, voiceSessionsSwept: 0 });
     expect(
       (cap.hub.find((c) => c.path === "usage")!.body.events as { source_id: string }[]).map((e) => e.source_id),
     ).toEqual(["wa:x"]);

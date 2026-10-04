@@ -8,6 +8,8 @@ export interface PushSubscriptionRecord {
 
 /** One waiting item for the spoken briefing (labels are metadata; `line` only with call briefing on). */
 export interface CallItem {
+  /** chalito.call_lines.lid: the call's signed ref lists the items it was placed for. */
+  lid: string;
   deviceLabel: string;
   sessionLabel: string;
   line?: string;

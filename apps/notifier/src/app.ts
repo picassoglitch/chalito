@@ -15,7 +15,7 @@ import {
   Urgency,
 } from "@chalito/protocol";
 import type { EscalationEvent } from "@chalito/escalation";
-import { capNote, voiceMinutesLeft } from "./caps.js";
+import { capNote, voiceSecondsLeft } from "./caps.js";
 import { handleEvent, type NotifierDeps } from "./executor.js";
 import type { OidcExpectation, OidcVerifier } from "./oidc.js";
 import { metaSignatureValid, twilioSignatureValid } from "./signatures.js";
@@ -122,6 +122,9 @@ export const waToE164 = (from: string) => {
   return digits.length === 13 && digits.startsWith("521") ? `+52${digits.slice(3)}` : `+${digits}`;
 };
 
+/** The longest a call's voice leg may run (Twilio Dial timeLimit), whatever minutes are left. */
+export const MAX_CALL_VOICE_SEC = 20 * 60;
+
 export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVerifier) => {
   const app = new Hono();
   const voice = (locale: "es" | "en") => deps.config.voices[locale];
@@ -214,7 +217,8 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
     if (choice === "connect") {
       await handleEvent(deps, uid, { type: "ack", via: "call", nid });
       const callSid = p.CallSid ?? "";
-      const voiceLeft = await voiceMinutesLeft(deps, uid);
+      const secondsLeft = await voiceSecondsLeft(deps, uid);
+      const voiceLeft = secondsLeft > 0;
       if (!voiceLeft) await capNote(deps, uid, "voice");
       if (!cfg.voice || !voiceLeft || !/^CA[0-9a-f]{32}$/.test(callSid))
         return twiml(
@@ -224,8 +228,20 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
             locale,
           ),
         );
-      const ref = signCallRef(cfg.voice.refSecret, { uid, nid, callSid, locale, exp: deps.now() + 2 * 60_000 });
-      return twiml(connectTwiml(`${cfg.voice.sipUri}?X-Chalito-Ref=${ref}`));
+      // Freeze what the call is for: only these waiting items can be answered on it.
+      const lids = (await deps.store.callItems(uid)).items.slice(0, 10).map((it) => it.lid);
+      // Hard bound on the voice leg: this month's minutes left, at most MAX_CALL_VOICE_SEC.
+      const maxSec = Math.floor(Math.min(MAX_CALL_VOICE_SEC, secondsLeft));
+      const ref = signCallRef(cfg.voice.refSecret, {
+        uid,
+        nid,
+        callSid,
+        locale,
+        exp: deps.now() + 2 * 60_000,
+        lids,
+        maxSec,
+      });
+      return twiml(connectTwiml(`${cfg.voice.sipUri}?X-Chalito-Ref=${ref}`, maxSec));
     }
     if (choice === "snooze") {
       await handleEvent(deps, uid, { type: "snooze", nid });
@@ -334,18 +350,35 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
       locale: ref.locale,
       companionName: name ?? "Chalito",
       callBriefingEnabled,
-      items: items.slice(0, 10),
+      // Server-side binding: only the items frozen into the signed ref at DTMF 1.
+      items: items.filter((it) => ref.lids.includes(it.lid)).slice(0, 10),
       approvals,
     };
+    // Admitted and metered on the server before the voice starts (R-M8): a session row bounded by
+    // the call's maxSec, billed in one transaction on close, and swept in full if this instance dies.
+    const metered = deps.billing
+      ? await deps.billing.openCallVoice(ref.uid, { callSid: ref.callSid, maxSeconds: ref.maxSec })
+      : null;
+    if (metered && !metered.ok) {
+      deps.log.info("voice.call_rejected", { callId, reason: metered.reason });
+      await v.provider.rejectCall(callId, 603);
+      return c.body(null, 200);
+    }
     await v.provider.acceptCall(callId, callSession(ctx, v.model, v.voiceName));
     const { url, headers } = v.provider.callSocket(callId);
     // The call outlives this request: Cloud Run needs CPU always allocated for the notifier.
-    const startedAt = deps.now();
     void runCallAgent(deps, v.openSocket(url, headers), ctx)
-      .then(() => deps.billing?.recordVoice(ref.uid, { callId, seconds: (deps.now() - startedAt) / 1000 }))
       .catch((err: unknown) =>
         deps.log.error("voice.agent_failed", { callId, error: err instanceof Error ? err.message : "error" }),
-      );
+      )
+      .finally(() => {
+        if (metered?.ok)
+          void deps
+            .billing!.closeCallVoice(ref.uid, metered.sourceId)
+            .catch((err: unknown) =>
+              deps.log.error("voice.meter_failed", { callId, error: err instanceof Error ? err.message : "error" }),
+            );
+      });
     return c.body(null, 200);
   });
 
