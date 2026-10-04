@@ -427,7 +427,8 @@
         "completed": "Done",
         "failed": "Failed",
         "interrupted": "Interrupted"
-      }
+      },
+      "new": "New session"
     },
     "session": {
       "notFound": "We couldn't find that session.",
@@ -570,6 +571,58 @@
         "body": "Something needs you.",
         "approval": "An approval is waiting for you.",
         "expired": "An approval expired: it was denied."
+      }
+    },
+    "newSession": {
+      "title": "New session",
+      "computer": "Computer",
+      "online": "online",
+      "offline": "offline",
+      "offlineNote": "That computer is offline. The session starts when it's back, if that's within a few minutes.",
+      "adapter": "Agent",
+      "workspace": "Workspace",
+      "workspaceHint": "The name of a folder you allowed on that computer. Chalito never sees its paths.",
+      "recent": "Used before",
+      "mode": "Mode",
+      "prompt": "First message",
+      "promptPlaceholder": "What should it do?",
+      "start": "Start session",
+      "waiting": "Sent. Waiting for your computer to start it…",
+      "timeout": "Your computer didn't start it. Check that it's on, that the workspace exists and that the agent is turned on there.",
+      "untrusted": "This computer isn't paired with this device.",
+      "failed": "We couldn't send it.",
+      "noComputers": "You don't have a linked computer yet.",
+      "download": "Download Chalito for your computer"
+    },
+    "account": {
+      "title": "Delete my Chalito account",
+      "explain": "Deletes your Chalito companions, sessions, devices and settings. Your Chalyb account doesn't change.",
+      "start": "Delete my account…",
+      "needsPairing": "To ask for this, link this browser as a device.",
+      "needsPasskey": "To ask for this, this device needs a passkey.",
+      "setUpPasskey": "Create a passkey",
+      "what": {
+        "data": "Your Chalito data is deleted: companions, sessions, devices, rooms and settings.",
+        "grace": "You have 7 days to cancel. After that it can't be undone.",
+        "export": "First we prepare a copy of your data for you to download.",
+        "hub": "Your Chalyb account, plan and credits don't change."
+      },
+      "ack": "I understand this deletes my Chalito account.",
+      "confirm": "Confirm with my passkey",
+      "back": "Back",
+      "scheduled": "Your Chalito account will be deleted on {date}.",
+      "countdown": "{days, plural, one {# day} other {# days}} and {hours, plural, one {# hour} other {# hours}} left to cancel.",
+      "cancel": "Cancel the deletion",
+      "download": "Download my data",
+      "loadFailed": "We couldn't check your account. Try again later.",
+      "note": {
+        "cancelled_step_up": "The passkey wasn't confirmed; nothing was requested.",
+        "passkey_required": "This device needs a passkey to ask for this.",
+        "step_up_failed": "The passkey couldn't be verified. Try again.",
+        "already_scheduled": "It was already scheduled.",
+        "failed": "We couldn't do it. Try again.",
+        "cancelled": "Done: your account won't be deleted.",
+        "export_failed": "We couldn't download your data. Try again."
       }
     }
   },
@@ -768,5 +821,25 @@
     "draftTitle": "Draft: pending legal review",
     "draftBody": "A lawyer hasn't reviewed this text yet and it may change. It isn't the final version.",
     "onboarding": "By continuing you accept the <terms>Terms of use</terms> and the <privacy>Privacy notice</privacy>."
+  },
+  "credits": {
+    "title": "Credits",
+    "plan": {
+      "title": "Your plan",
+      "loading": "Loading…",
+      "yours": "Your plan: {plan}",
+      "unknown": "We couldn't see your plan.",
+      "signedOut": "Sign in with your Chalyb account to see your plan.",
+      "fromHub": "Your plan and credits come from your Chalyb account."
+    },
+    "how": {
+      "title": "How they work",
+      "tokens": "What Chalito does for you (work and alerts) spends tokens from your Chalyb account.",
+      "byo": "Anything that runs on your own AI keys doesn't spend Chalito tokens.",
+      "basics": "If you run out, the basics keep working: your approvals and alerts.",
+      "recharge": "You recharge on Chalyb and the new tokens work here right away."
+    },
+    "recharge": "Recharge on Chalyb",
+    "usage": "See your usage"
   }
 }

@@ -427,7 +427,8 @@
         "completed": "Terminada",
         "failed": "Falló",
         "interrupted": "Interrumpida"
-      }
+      },
+      "new": "Nueva sesión"
     },
     "session": {
       "notFound": "No encontramos esa sesión.",
@@ -570,6 +571,58 @@
         "body": "Tienes algo pendiente.",
         "approval": "Hay una aprobación esperándote.",
         "expired": "Expiró una aprobación: se denegó."
+      }
+    },
+    "newSession": {
+      "title": "Nueva sesión",
+      "computer": "Computadora",
+      "online": "en línea",
+      "offline": "sin conexión",
+      "offlineNote": "Esa computadora está sin conexión. La sesión empieza cuando vuelva, si es dentro de unos minutos.",
+      "adapter": "Agente",
+      "workspace": "Espacio de trabajo",
+      "workspaceHint": "El nombre de una carpeta que permitiste en esa computadora. Chalito nunca ve sus rutas.",
+      "recent": "Usados antes",
+      "mode": "Modo",
+      "prompt": "Primer mensaje",
+      "promptPlaceholder": "¿Qué quieres que haga?",
+      "start": "Iniciar sesión",
+      "waiting": "Enviado. Esperando a que tu computadora la inicie…",
+      "timeout": "Tu computadora no la inició. Revisa que esté encendida, que ese espacio de trabajo exista y que el agente esté activado en ella.",
+      "untrusted": "Esta computadora no está emparejada con este dispositivo.",
+      "failed": "No pudimos enviarlo.",
+      "noComputers": "Aún no tienes una computadora vinculada.",
+      "download": "Descargar Chalito para tu computadora"
+    },
+    "account": {
+      "title": "Eliminar mi cuenta de Chalito",
+      "explain": "Borra tus compañeros, sesiones, dispositivos y ajustes de Chalito. Tu cuenta de Chalyb no cambia.",
+      "start": "Eliminar mi cuenta…",
+      "needsPairing": "Para pedirlo, vincula este navegador como dispositivo.",
+      "needsPasskey": "Para pedirlo, este dispositivo necesita una passkey.",
+      "setUpPasskey": "Crear passkey",
+      "what": {
+        "data": "Se borran tus datos de Chalito: compañeros, sesiones, dispositivos, salas y ajustes.",
+        "grace": "Tienes 7 días para cancelarlo. Después no se puede deshacer.",
+        "export": "Antes preparamos una copia de tus datos para que la descargues.",
+        "hub": "Tu cuenta de Chalyb, tu plan y tus créditos no cambian."
+      },
+      "ack": "Entiendo que esto borra mi cuenta de Chalito.",
+      "confirm": "Confirmar con mi passkey",
+      "back": "Volver",
+      "scheduled": "Tu cuenta de Chalito se eliminará el {date}.",
+      "countdown": "Quedan {days, plural, one {# día} other {# días}} y {hours, plural, one {# hora} other {# horas}} para cancelarlo.",
+      "cancel": "Cancelar la eliminación",
+      "download": "Descargar mis datos",
+      "loadFailed": "No pudimos ver el estado de tu cuenta. Inténtalo más tarde.",
+      "note": {
+        "cancelled_step_up": "No se confirmó con la passkey; no se pidió nada.",
+        "passkey_required": "Este dispositivo necesita una passkey para pedirlo.",
+        "step_up_failed": "La passkey no se pudo verificar. Inténtalo de nuevo.",
+        "already_scheduled": "Ya estaba programada.",
+        "failed": "No pudimos hacerlo. Inténtalo de nuevo.",
+        "cancelled": "Listo: tu cuenta ya no se eliminará.",
+        "export_failed": "No pudimos descargar tus datos. Inténtalo de nuevo."
       }
     }
   },
@@ -768,5 +821,25 @@
     "draftTitle": "Borrador: pendiente de revisión legal",
     "draftBody": "Este texto todavía no lo revisa un abogado y puede cambiar. No es la versión definitiva.",
     "onboarding": "Al continuar aceptas los <terms>Términos de uso</terms> y el <privacy>Aviso de privacidad</privacy>."
+  },
+  "credits": {
+    "title": "Créditos",
+    "plan": {
+      "title": "Tu plan",
+      "loading": "Cargando…",
+      "yours": "Tu plan: {plan}",
+      "unknown": "No pudimos ver tu plan.",
+      "signedOut": "Entra con tu cuenta de Chalyb para ver tu plan.",
+      "fromHub": "Tu plan y tus créditos vienen de tu cuenta de Chalyb."
+    },
+    "how": {
+      "title": "Cómo funcionan",
+      "tokens": "Lo que hace Chalito por ti (trabajo y avisos) gasta tokens de tu cuenta de Chalyb.",
+      "byo": "Lo que corre con tus propias claves de IA no gasta tokens de Chalito.",
+      "basics": "Si se te acaban, lo básico sigue funcionando: tus aprobaciones y avisos.",
+      "recharge": "Recargas en Chalyb y los tokens nuevos se usan aquí de inmediato."
+    },
+    "recharge": "Recargar en Chalyb",
+    "usage": "Ver tu uso"
   }
 }
