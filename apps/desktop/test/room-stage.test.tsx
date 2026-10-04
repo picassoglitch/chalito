@@ -4,7 +4,7 @@ import type { RoomEventView, RoomMemberView } from "@chalito/rooms";
 import type { RenderQuality, RoomSceneMember, SceneEvent } from "@chalito/scene";
 import { DEFAULT_COMPANION } from "@chalito/ui";
 import { RoomStage, sceneEvents, type StageScene } from "../src/room/RoomStage.js";
-import { sceneMembersFor } from "../src/room/scene-members.js";
+import { catalogLoader, sceneMembersFor } from "../src/room/scene-members.js";
 
 afterEach(cleanup);
 
@@ -92,23 +92,62 @@ describe("room scene in the room window", () => {
     ).not.toThrow();
   });
 
-  it("members: the co-member directory's roster card, else the default companion", async () => {
-    const dir: Record<string, string | null> = { chl_mom: "luna", chl_me: "not-a-card" };
+  it("members: the directory's roster card (else the default) and equipped cosmetics placed from the catalog", async () => {
+    const dir: Record<string, { avatar_thumb: string | null; equipped: string[] }> = {
+      chl_mom: { avatar_thumb: "luna", equipped: ["flower_crown", "unknown_item"] },
+      chl_me: { avatar_thumb: "not-a-card", equipped: [] },
+    };
     const db = {
       from: (t: string) => ({
-        select: () => ({
-          eq: async (_c: string, id: string) => ({
-            data: t === "companion_directory" && id in dir ? [{ companion_id: id, avatar_thumb: dir[id] }] : [],
-            error: null,
-          }),
+        select: (cols: string) => ({
+          eq: async (_c: string, id: string) => {
+            expect(cols).toBe("companion_id, avatar_thumb, equipped");
+            return {
+              data: t === "companion_directory" && id in dir ? [{ companion_id: id, ...dir[id] }] : [],
+              error: null,
+            };
+          },
         }),
       }),
     };
-    const out = await sceneMembersFor(db, [...MEMBERS, { companionId: "chl_x", role: "member", me: false }]);
-    expect(out.map((m) => [m.companionId, m.avatar])).toEqual([
-      ["chl_me", DEFAULT_COMPANION],
-      ["chl_mom", "luna"],
-      ["chl_x", DEFAULT_COMPANION],
+    let fetches = 0;
+    const catalog = catalogLoader(async () => {
+      fetches++;
+      return {
+        items: [
+          {
+            id: "flower_crown",
+            slot: "head",
+            art: "cosmetics/flower_crown.webp",
+            card: { width: 0.44, pivot: [0.5, 0.62] },
+          },
+          { id: "broken" },
+        ],
+      };
+    });
+    const out = await sceneMembersFor(db, [...MEMBERS, { companionId: "chl_x", role: "member", me: false }], catalog);
+    expect(out).toEqual([
+      { companionId: "chl_me", avatar: DEFAULT_COMPANION, presence: "online" },
+      {
+        companionId: "chl_mom",
+        avatar: "luna",
+        presence: "online",
+        cosmetics: [{ slot: "head", art: "cosmetics/flower_crown.webp", card: { width: 0.44, pivot: [0.5, 0.62] } }],
+      },
+      { companionId: "chl_x", avatar: DEFAULT_COMPANION, presence: "online" },
     ]);
+    await sceneMembersFor(db, MEMBERS, catalog);
+    expect(fetches).toBe(1);
+  });
+
+  it("a failed catalog fetch renders members without cosmetics and is retried next time", async () => {
+    let n = 0;
+    const catalog = catalogLoader(async () => {
+      if (++n === 1) throw new Error("offline");
+      return { items: [] };
+    });
+    expect((await catalog()).size).toBe(0);
+    await catalog();
+    expect(n).toBe(2);
   });
 });
