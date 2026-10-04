@@ -24,6 +24,7 @@ import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { MemoryStore } from "../src/store.js";
+import { syncEndorsements } from "../src/endorsement-sync.js";
 
 const OWNER = "hub-user-1";
 const HOME = "/home/aldo";
@@ -657,5 +658,101 @@ describe("durable audit trail", () => {
     expect(String(entry.meta.attempted)).toContain("bypass");
     expect(JSON.stringify(entry)).not.toContain(secret);
     expect(JSON.stringify(h.store.deviceEvents)).not.toContain(secret);
+  });
+});
+
+describe("R-L13: an endorsement can't smuggle in a passkey (ADR 0018)", () => {
+  const RP = "chalito.chalyb.com";
+  /** An attacker device with its own passkey and a binding signed by its own key. */
+  const attackerWithPasskey = async () => {
+    const attacker = await device("dev_attacker");
+    const auth = new SoftAuthenticator({ origin: `https://${RP}` });
+    const binding = await signEnvelope(
+      "chalito.webauthn-binding.v1",
+      {
+        v: 1,
+        deviceId: attacker.id,
+        credentialId: auth.credentialId,
+        publicKey: auth.publicKey,
+        rpId: RP,
+        issuedAt: Date.now(),
+      },
+      attacker.id,
+      attacker.sign.secretKey,
+    );
+    return { attacker, auth, binding };
+  };
+  const endorsement = (signer: Device, subject: Device) =>
+    signEnvelope(
+      "chalito.endorsement.v1",
+      {
+        v: 1,
+        uid: OWNER,
+        newDeviceId: subject.id,
+        pubSign: subject.pubSign,
+        pubBox: subject.pubBox,
+        issuedAt: Date.now(),
+      },
+      signer.id,
+      signer.sign.secretKey,
+    );
+  const sync = (h: Awaited<ReturnType<typeof harness>>, refused: [string, string][]) =>
+    syncEndorsements({
+      store: h.store,
+      trust: () => h.trust,
+      saveTrust: async () => undefined,
+      now: Date.now,
+      onAdded: () => undefined,
+      onRefused: (id, _by, reason) => refused.push([id, reason]),
+      reported: new Set(),
+    });
+
+  it("a stolen phone WITHOUT its passkey can't get an attacker's device trusted; the refusal is reported", async () => {
+    const h = await harness();
+    const { attacker, binding } = await attackerWithPasskey();
+    // The thief holds the phone's device key, not its passkey: no endorser step-up.
+    h.store.endorsements.push({
+      deviceId: attacker.id,
+      endorsement: await endorsement(h.phone, attacker),
+      revoked: false,
+      webauthnBinding: binding,
+    });
+    const refused: [string, string][] = [];
+    expect(await sync(h, refused)).toEqual([]);
+    expect(h.trust.has(attacker.id)).toBe(false);
+    expect(refused).toEqual([[attacker.id, "missing_step_up"]]);
+  });
+
+  it("an endorser with no passkey here: the client is accepted but its own passkey never passes HIGH", async () => {
+    const h = await harness({ turns: pushTurn });
+    // A second trusted client confirmed WITHOUT a passkey (e.g. a browser before enrolling one).
+    const tablet = await device("dev_tablet");
+    await h.trust.addConfirmed({ deviceId: tablet.id, pubSign: tablet.pubSign, pubBox: tablet.pubBox }, Date.now());
+    const { attacker, auth, binding } = await attackerWithPasskey();
+    h.store.endorsements.push({
+      deviceId: attacker.id,
+      endorsement: await endorsement(tablet, attacker),
+      revoked: false,
+      webauthnBinding: binding,
+    });
+    expect(await sync(h, [])).toEqual([attacker.id]);
+    expect(h.trust.webauthnFor(attacker.id)).toBeUndefined();
+
+    // A HIGH approval: the attacker's allow with ITS OWN valid passkey assertion is refused.
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    await h.decide(true, {
+      signer: attacker,
+      customStepUp: async (b) => ({
+        method: "webauthn",
+        at: Date.now(),
+        assertion: await auth.stepUp(RP)(await stepUpChallenge(b)),
+      }),
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.fake.run.ran).toHaveLength(0);
+    // The phone (passkey recorded at the reverse check) still can.
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.fake.run.ran.length === 1);
   });
 });

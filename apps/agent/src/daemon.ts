@@ -281,6 +281,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
 
   // ADR 0018: clients endorsed by a client this agent trusts (at start, on pointer, every 15 min).
   let syncing = false;
+  const reportedRefusals = new Set<string>();
   const syncTrust = () => {
     if (syncing) return;
     syncing = true;
@@ -290,6 +291,25 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
       saveTrust: () => trustStore.save(trust),
       now,
       onAdded: (deviceId, endorsedBy) => log.info("trust.client_endorsed", { clientDeviceId: deviceId, endorsedBy }),
+      // R-L13: a refusal is never silent. Logged, audited, and published to the person's clients.
+      onRefused: (clientDeviceId, endorsedBy, reason) => {
+        log.warn("trust.endorsement_refused", { clientDeviceId, endorsedBy, reason });
+        const t = now();
+        void signedInStore
+          .publishDeviceEvent({
+            v: 1,
+            type: "trust.endorsement_refused",
+            deviceId: id.deviceId,
+            clientDeviceId,
+            endorsedBy,
+            reason,
+            t,
+          })
+          .catch((err: unknown) =>
+            log.warn("trust.refusal_report_failed", { error: err instanceof Error ? err.message : "error" }),
+          );
+      },
+      reported: reportedRefusals,
     })
       .catch((err: unknown) =>
         log.warn("trust.endorsement_sync_failed", { error: err instanceof Error ? err.message : "error" }),

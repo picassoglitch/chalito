@@ -2,7 +2,7 @@ import type { Endorsement, WebAuthnBinding } from "@chalito/protocol";
 import { fromB64url } from "./encoding.js";
 import type { NonceStore } from "./nonce.js";
 import { verifyDetached, verifyEnvelope, type SignedEnvelope } from "./sign.js";
-import type { WebAuthnCredentialRef } from "./webauthn.js";
+import { stepUpChallenge, verifyWebAuthnAssertion, type WebAuthnCredentialRef } from "./webauthn.js";
 
 export interface TrustedClient {
   deviceId: string;
@@ -71,6 +71,21 @@ interface DecisionLike {
  * (reverse check) or an endorsement signed by a key already here. Nothing the cloud
  * says can add a key. The agent persists `toJSON()` under ~/.chalito, signed (M3).
  */
+export type EndorseCheck =
+  | { ok: true; passkey: boolean }
+  | {
+      ok: false;
+      reason:
+        | "removed"
+        | "already_trusted"
+        | "not_listed"
+        | "bad_signature"
+        | "stale"
+        | "missing_step_up"
+        | "bad_step_up"
+        | "bad_binding";
+    };
+
 /** How old an endorsement an agent still accepts (a laptop off over a weekend, ADR 0018). */
 export const ENDORSEMENT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -161,41 +176,68 @@ export class TrustedClientList {
   }
 
   /**
-   * A new client vouched for by a client already in this list. Its passkey binding (signed by
-   * the NEW client's key) may come along; a binding that doesn't verify against that key
-   * rejects the whole endorsement.
+   * A new client vouched for by a client already in this list (ADR 0018).
+   *
+   * - The endorsement must be signed by a locally trusted client, name this device when it lists
+   *   agents, and be at most `maxAgeMs` old. A client removed here never comes back this way.
+   * - If THIS device recorded a passkey for the endorser (reverse check), the endorsement must
+   *   carry the endorser's assertion over its body (`stepUp`), verified against that passkey.
+   *   Otherwise a stolen, unlocked phone could vouch for any device.
+   * - The new client's passkey binding (signed by the new key) is recorded ONLY with a verified
+   *   endorser step-up. Without one the client is trusted but has no passkey here, so it can't
+   *   pass a HIGH/CRITICAL step-up: an endorsement never gives more than the endorser has.
    */
   async addEndorsed(
     e: Endorsement,
     now: number,
-    maxAgeMs = ENDORSEMENT_MAX_AGE_MS,
-    webauthnBinding?: WebAuthnBinding | null,
-  ): Promise<boolean> {
-    // Removed here: only a local re-pair brings it back. Already trusted: nothing to add.
-    if (this.#removed.has(e.body.newDeviceId) || this.#clients.has(e.body.newDeviceId)) return false;
+    opts: {
+      maxAgeMs?: number;
+      webauthnBinding?: WebAuthnBinding | null;
+      /** Allowed WebAuthn origins for a relying party (default `https://<rpId>`). */
+      origins?: (rpId: string) => string[];
+    } = {},
+  ): Promise<EndorseCheck> {
+    const b = e.body;
+    if (this.#removed.has(b.newDeviceId)) return { ok: false, reason: "removed" };
+    if (this.#clients.has(b.newDeviceId)) return { ok: false, reason: "already_trusted" };
     // ADR 0018: when the endorser named its agents, only those accept the new client.
-    if (e.body.agents && !e.body.agents.some((a) => a.deviceId === this.selfDeviceId)) return false;
+    if (b.agents && !b.agents.some((a) => a.deviceId === this.selfDeviceId)) return { ok: false, reason: "not_listed" };
     const res = await verifyEnvelope(e, "chalito.endorsement.v1", this.#keys);
-    if (!res.ok || now - e.body.issuedAt > maxAgeMs || e.body.issuedAt > now + 60_000) return false;
-    let webauthn: WebAuthnCredentialRef | undefined;
-    if (webauthnBinding) {
-      const check = await verifyWebAuthnBinding(webauthnBinding, {
-        deviceId: e.body.newDeviceId,
-        pubSign: e.body.pubSign,
+    if (!res.ok) return { ok: false, reason: "bad_signature" };
+    if (now - b.issuedAt > (opts.maxAgeMs ?? ENDORSEMENT_MAX_AGE_MS) || b.issuedAt > now + 60_000)
+      return { ok: false, reason: "stale" };
+
+    const endorserPasskey = this.webauthnFor(e.signerDeviceId);
+    let stepUpVerified = false;
+    if (endorserPasskey) {
+      if (!b.stepUp) return { ok: false, reason: "missing_step_up" };
+      const check = await verifyWebAuthnAssertion({
+        assertion: b.stepUp.assertion,
+        credential: endorserPasskey,
+        expectedChallenge: await stepUpChallenge(b),
+        rpId: endorserPasskey.rpId,
+        origin: (opts.origins ?? ((rpId) => [`https://${rpId}`]))(endorserPasskey.rpId),
       });
-      if (!check.ok) return false;
+      if (!check.ok) return { ok: false, reason: "bad_step_up" };
+      stepUpVerified = true;
+    }
+
+    let webauthn: WebAuthnCredentialRef | undefined;
+    if (stepUpVerified && opts.webauthnBinding) {
+      const check = await verifyWebAuthnBinding(opts.webauthnBinding, { deviceId: b.newDeviceId, pubSign: b.pubSign });
+      if (!check.ok) return { ok: false, reason: "bad_binding" };
       webauthn = check.credential;
     }
     await this.#put({
-      deviceId: e.body.newDeviceId,
-      pubSign: e.body.pubSign,
-      pubBox: e.body.pubBox,
+      deviceId: b.newDeviceId,
+      pubSign: b.pubSign,
+      pubBox: b.pubBox,
       via: "endorsement",
       addedAt: now,
       endorsedBy: e.signerDeviceId,
       ...(webauthn ? { webauthn } : {}),
     });
-    return true;
+    return { ok: true, passkey: webauthn !== undefined };
   }
 
   /** Revocation takes effect immediately, whatever the server still delivers, and sticks. */

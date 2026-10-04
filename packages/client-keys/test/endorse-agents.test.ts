@@ -197,3 +197,72 @@ describe("ADR 0018: the endorsement introduces the endorser's agents", () => {
     expect(keys.trustedAgentBoxKey(laptop.deviceId)).toBe(laptop.pubBox);
   });
 });
+
+describe("R-L13: the endorser's passkey step-up is bound to the endorsement body", () => {
+  it("the assertion covers this exact body (agents and the api verify the same proof); cancelling sends nothing", async () => {
+    const { SoftAuthenticator } = await import("../src/testing/soft-authenticator.js");
+    const { stepUpChallenge, verifyWebAuthnAssertion } = await import("@chalito/crypto");
+    const { stepUpWithPasskey } = await import("../src/index.js");
+    const [phone, desk, laptop] = await Promise.all([dev(), dev(), dev()]);
+    const auth = new SoftAuthenticator({ origin: "https://chalito.chalyb.com" });
+    const ref = { credentialId: auth.credentialId, rpId: "chalito.chalyb.com" };
+    let posted: { endorsement: Endorsement } | null = null;
+    const api: ApiClient = {
+      post: async <T>(_p: string, body: unknown) => ((posted = body as { endorsement: Endorsement }), {} as T),
+    };
+    const reg = {
+      ctx: "chalito.device-register.v1",
+      body: {
+        v: 1,
+        owner: UID,
+        deviceId: desk.deviceId,
+        kind: "web",
+        platform: "web",
+        name: "Desk",
+        pubSign: desk.pubSign,
+        pubBox: desk.pubBox,
+        issuedAt: NOW,
+      },
+      signerDeviceId: desk.deviceId,
+      sig: "x",
+    } as never;
+    const keys = await DeviceClientKeys.create(phone.keys);
+    await approveEndorsement(
+      api,
+      keys,
+      { codeId: "c", registration: reg },
+      {
+        uid: UID,
+        now: NOW,
+        agents: [asAgent(laptop)],
+        stepUp: stepUpWithPasskey(ref, { create: async () => ({}) as never, get: (o) => auth.get(o) }),
+      },
+    );
+    const e = posted!.endorsement;
+    expect(Object.keys(posted!).sort()).toEqual(["codeId", "endorsement"]); // no separate server-challenge field
+    expect(e.body.stepUp?.method).toBe("webauthn");
+    const check = await verifyWebAuthnAssertion({
+      assertion: e.body.stepUp!.assertion,
+      credential: { credentialId: auth.credentialId, publicKey: auth.publicKey },
+      expectedChallenge: await stepUpChallenge(e.body),
+      rpId: "chalito.chalyb.com",
+      origin: "https://chalito.chalyb.com",
+    });
+    expect(check.ok).toBe(true);
+
+    posted = null;
+    await expect(
+      approveEndorsement(
+        api,
+        keys,
+        { codeId: "c", registration: reg },
+        {
+          uid: UID,
+          now: NOW,
+          stepUp: () => Promise.reject(new DOMException("cancelled", "NotAllowedError")),
+        },
+      ),
+    ).rejects.toThrow();
+    expect(posted).toBeNull();
+  });
+});

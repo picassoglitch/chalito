@@ -321,3 +321,46 @@ describe("panel: sign-in screen", () => {
     expect(screen.getByText("Try again")).toBeTruthy();
   });
 });
+
+describe("panel: endorsement refusals are never silent (R-L13)", () => {
+  const agent = (lastEvent: unknown) => ({
+    deviceId: "agent1",
+    role: "agent" as const,
+    kind: "laptop",
+    platform: "linux",
+    name: "Laptop",
+    revoked: false,
+    online: true,
+    lastSeenAt: 1,
+    devMode: { on: false, toggles: [], since: null },
+    policyHash: null,
+    lastEvent,
+    rev: 1,
+  });
+  const refused = {
+    v: 1,
+    type: "trust.endorsement_refused",
+    deviceId: "agent1",
+    clientDeviceId: "dev_new",
+    endorsedBy: "dev_phone",
+    reason: "missing_step_up",
+    t: 1,
+  };
+
+  it("shows the agent's refusal with what to do", () => {
+    const f = fakeClient({ devices: [agent(refused)] });
+    renderPanel({ client: f.client, initialTab: "security" }, "en");
+    expect(screen.getByRole("alert").textContent).toMatch(/“Laptop” refused a new device: .*passkey/);
+  });
+
+  it("nothing when no agent reports one (or the event is something else)", () => {
+    const f = fakeClient({
+      devices: [
+        agent({ v: 1, type: "policy.changed", deviceId: "agent1", policyHash: "a".repeat(64), t: 1 }),
+        agent(null),
+      ],
+    });
+    const { container } = renderPanel({ client: f.client, initialTab: "security" }, "en");
+    expect(container.querySelector('[data-section="notices"]')).toBeNull();
+  });
+});

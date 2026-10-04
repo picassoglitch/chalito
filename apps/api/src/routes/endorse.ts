@@ -1,6 +1,12 @@
 import { Hono } from "hono";
-import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from "@simplewebauthn/server";
-import { fromB64url, randomBytes, toB64url, verifyEnvelope } from "@chalito/crypto";
+import {
+  fromB64url,
+  randomBytes,
+  stepUpChallenge,
+  toB64url,
+  verifyEnvelope,
+  verifyWebAuthnAssertion,
+} from "@chalito/crypto";
 import { generateShortCode, hashShortCode, normalizeShortCode } from "@chalito/glyph";
 import {
   ApproveEndorseCodeRequest,
@@ -26,7 +32,8 @@ const CLIENT_KINDS = ["phone", "web"] as const;
  *
  *   POST /codes    new device (`user`): its self-signed registration → code + watch token
  *   POST /resolve  trusted client (`client`): code id or short code → the registration
- *   POST /approve  trusted client (`client`): signed endorsement (+ passkey step-up if it has one)
+ *   POST /approve  trusted client (`client`): signed endorsement, carrying the endorser's passkey
+ *                  step-up over its body when the endorser has a passkey
  *   POST /take     new device (`user`): the endorsement, once
  */
 export const endorseRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFromEnv()) => {
@@ -92,7 +99,7 @@ export const endorseRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFro
     const p = principal(c);
     const body = ApproveEndorseCodeRequest.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
-    const { codeId, endorsement: e, stepUp } = body.data;
+    const { codeId, endorsement: e } = body.data;
     if (e.signerDeviceId !== p.deviceId) return fail(403, "signer_mismatch");
     const endorser = await deps.repo.getDevice(p.owner, p.deviceId!);
     if (!endorser || endorser.revoked !== false || endorser.role !== "client") return fail(403, "endorser_not_trusted");
@@ -118,35 +125,27 @@ export const endorseRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFro
     if (reg.deviceId === endorser.deviceId) return fail(400, "self_endorsement");
     if (Math.abs(deps.now() - e.body.issuedAt) > deps.config.skewMs * 5) return fail(400, "stale_endorsement");
 
-    // Passkey step-up where the endorsing device has one (a server-challenged assertion).
+    // Passkey step-up where the endorsing device has one (R-L13, ADR 0018): the assertion is bound
+    // to the endorsement body (SHA-256 of its JCS without stepUp), the same one every agent
+    // verifies, so there's a single ceremony and a compromised server can't skip the agents' check.
     const cred = await deps.repo.getDeviceWebAuthn(p.owner, endorser.deviceId);
     if (cred) {
-      if (!stepUp) return fail(401, "step_up_required");
-      const challenge = await deps.repo.takeWebAuthnChallenge(p.owner, endorser.deviceId, "assert", deps.now());
-      if (!challenge) return fail(401, "step_up_failed");
-      const counter = await verifyAuthenticationResponse({
-        response: stepUp as unknown as AuthenticationResponseJSON,
-        expectedChallenge: challenge,
-        expectedOrigin: wa.origins,
-        expectedRPID: wa.rpId,
-        credential: {
-          id: cred.credentialId,
-          publicKey: new Uint8Array(await fromB64url(cred.publicKey)),
-          // The counter check is the repo's atomic compare below (it also catches concurrent
-          // assertions and raises the clone alert), so the library doesn't pre-empt it.
-          counter: 0,
-          transports: cred.transports as never,
-        },
-        requireUserVerification: true,
-      }).then(
-        (r) =>
-          r.verified && r.authenticationInfo.credentialID === cred.credentialId
-            ? r.authenticationInfo.newCounter
-            : null,
-        () => null,
+      const step = e.body.stepUp;
+      if (!step) return fail(401, "step_up_required");
+      const check = await verifyWebAuthnAssertion({
+        assertion: step.assertion,
+        credential: { credentialId: cred.credentialId, publicKey: cred.publicKey },
+        expectedChallenge: await stepUpChallenge(e.body),
+        rpId: wa.rpId,
+        origin: wa.origins,
+      });
+      if (!check.ok) return fail(401, "step_up_failed");
+      const bumped = await deps.repo.bumpWebAuthnCounter(
+        p.owner,
+        endorser.deviceId,
+        cred.credentialId,
+        check.signCount,
       );
-      if (counter === null) return fail(401, "step_up_failed");
-      const bumped = await deps.repo.bumpWebAuthnCounter(p.owner, endorser.deviceId, cred.credentialId, counter);
       if (bumped === "cloned") {
         // A sign counter that didn't move forward: a copy of this passkey may exist. Refuse and alert.
         await deps.audit.record({
@@ -154,7 +153,12 @@ export const endorseRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFro
           owner: p.owner,
           actor: p.uid,
           target: endorser.deviceId,
-          meta: { credentialId: cred.credentialId, stored: cred.counter, reported: counter, during: "endorse.approve" },
+          meta: {
+            credentialId: cred.credentialId,
+            stored: cred.counter,
+            reported: check.signCount,
+            during: "endorse.approve",
+          },
         });
         console.warn("[api] passkey sign counter did not advance; refusing (possible cloned authenticator)");
         return fail(403, "authenticator_cloned");

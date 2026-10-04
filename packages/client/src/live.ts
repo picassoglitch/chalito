@@ -73,6 +73,11 @@ export interface DeviceView {
   lastSeenAt: number | null;
   devMode: { on: boolean; toggles: string[]; since: number | null };
   policyHash: string | null;
+  /**
+   * The device's latest DeviceEvent as it published it (agent-written, display only: e.g. ADR
+   * 0018's `trust.endorsement_refused`). Unvalidated cloud data: parse before use.
+   */
+  lastEvent: unknown;
   rev: number;
 }
 
@@ -390,6 +395,7 @@ export class LiveStore {
       lastSeenAt: last,
       devMode: { on: dm.on === true, toggles: dm.toggles ?? [], since: dm.since ?? null },
       policyHash: (r.policy_hash as string | null) ?? null,
+      lastEvent: r.last_event ?? null,
       rev: num(r.rev),
     };
   }

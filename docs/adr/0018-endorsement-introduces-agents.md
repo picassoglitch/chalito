@@ -56,6 +56,33 @@ glyph-confirmed ones. A later glyph confirmation upgrades the entry.
   tombstone list (in `trusted-clients.json`, under the same signature).
 - An endorsement for a tombstoned or server-revoked device is never re-accepted.
 
+**Endorser step-up (review R-L13).**
+- The threat: a client that is stolen (or left unlocked) holds its device key but not its
+  passkey's user verification. Without step-up, it could endorse an attacker's device, together
+  with the attacker's OWN passkey binding. Every agent would record that passkey, and the attacker
+  would pass HIGH/CRITICAL step-ups, bypassing D-019.
+- `EndorsementBody.stepUp` (WebAuthn only) is the endorser's passkey assertion over
+  SHA-256(JCS(body without stepUp)). It's the same construction as a decision step-up, so it
+  binds the uid, the new keys, the agent list and the time.
+- **Agent:**
+  - If it recorded a passkey for the endorser (reverse check), the endorsement must carry a
+    step-up that verifies against THAT passkey. Otherwise it's refused (`missing_step_up` /
+    `bad_step_up`).
+  - If it recorded none, it accepts the client but never records the new client's passkey
+    binding. That client can approve LOW/MED but never pass a HIGH/CRITICAL step-up here, so an
+    endorsement never grants more than the endorser had.
+  - The new client's binding is recorded only after a verified endorser step-up.
+- **Api:** `/v1/endorse/approve` verifies the same body-bound assertion against the endorser's
+  stored passkey and bumps its sign counter (clone check). There is no separate server
+  challenge: one ceremony.
+- **Never silent:**
+  - A refusal the person must act on (missing or bad step-up, bad binding, bad signature, too
+    old) is logged and audited, and published as the agent's `trust.endorsement_refused` device
+    event, once per client and reason.
+  - The panel's Security tab (and the web) shows it: "approve it again with your passkey".
+  - "Not listed" is the endorser's own choice and isn't reported.
+- No local confirmation is required on the agent; the endorser's passkey is the trust root.
+
 ## Consequences
 - An endorsed client can prompt, approve and receive sealed content for exactly the computers
   its endorser trusted, with no extra pairing. Endorsing from a phone that trusts one laptop

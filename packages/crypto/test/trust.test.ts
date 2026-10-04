@@ -88,11 +88,13 @@ describe("TrustedClientList", () => {
       issuedAt: now,
     };
     expect(
-      await list.addEndorsed(await signEnvelope("chalito.endorsement.v1", body, "evil", stranger.sign.secretKey), now),
+      (await list.addEndorsed(await signEnvelope("chalito.endorsement.v1", body, "evil", stranger.sign.secretKey), now))
+        .ok,
     ).toBe(false);
     expect(list.has("phone2")).toBe(false);
     expect(
-      await list.addEndorsed(await signEnvelope("chalito.endorsement.v1", body, "phone1", phone.sign.secretKey), now),
+      (await list.addEndorsed(await signEnvelope("chalito.endorsement.v1", body, "phone1", phone.sign.secretKey), now))
+        .ok,
     ).toBe(true);
     expect((await list.verifyDecision(await decide(newPhone), expected, now, new MemoryNonceStore())).ok).toBe(true);
   });
@@ -191,10 +193,10 @@ describe("endorsement introduces agents (ADR 0018)", () => {
 
   it("an agent accepts the endorsed client only when it's in the endorsement's agent list", async () => {
     const s = await setup();
-    expect(await s.list.addEndorsed(await s.endorse({ agents: [await s.agentEntry("agent9")] }), now)).toBe(false);
+    expect((await s.list.addEndorsed(await s.endorse({ agents: [await s.agentEntry("agent9")] }), now)).ok).toBe(false);
     expect(s.list.has("desk2")).toBe(false);
     const e = await s.endorse({ agents: [await s.agentEntry("agent9"), await s.agentEntry("agent1")] });
-    expect(await s.list.addEndorsed(e, now)).toBe(true);
+    expect((await s.list.addEndorsed(e, now)).ok).toBe(true);
     expect(s.list.toJSON().find((c) => c.deviceId === "desk2")).toMatchObject({
       via: "endorsement",
       endorsedBy: "phone1",
@@ -212,21 +214,21 @@ describe("endorsement introduces agents (ADR 0018)", () => {
         agents: [...(e.body as unknown as { agents: unknown[] }).agents, await s.agentEntry("agent1")],
       },
     };
-    expect(await s.list.addEndorsed(tampered as never, now)).toBe(false);
+    expect((await s.list.addEndorsed(tampered as never, now)).ok).toBe(false);
     expect(s.list.has("desk2")).toBe(false);
   });
 
   it("an endorsement without a list (older format) is accepted as before", async () => {
     const s = await setup();
-    expect(await s.list.addEndorsed(await s.endorse({}), now)).toBe(true);
+    expect((await s.list.addEndorsed(await s.endorse({}), now)).ok).toBe(true);
   });
 
   it("removal is final: the stored endorsement never brings a revoked client back", async () => {
     const s = await setup();
     const e = await s.endorse({ agents: [await s.agentEntry("agent1")] });
-    expect(await s.list.addEndorsed(e, now)).toBe(true);
+    expect((await s.list.addEndorsed(e, now)).ok).toBe(true);
     expect(s.list.remove("desk2")).toBe(true);
-    expect(await s.list.addEndorsed(e, now)).toBe(false);
+    expect((await s.list.addEndorsed(e, now)).ok).toBe(false);
     expect(s.list.removedIds()).toEqual(["desk2"]);
     // A local re-pair (the person confirms the fingerprint here) is the way back.
     await s.list.addConfirmed(s.newClient, now);
@@ -238,9 +240,9 @@ describe("endorsement introduces agents (ADR 0018)", () => {
   it("accepts up to 7 days old, not older, and not from the future", async () => {
     const s = await setup();
     const old = await s.endorse({ issuedAt: now - 6 * 24 * 3600_000 });
-    expect(await s.list.addEndorsed(old, now)).toBe(true);
+    expect((await s.list.addEndorsed(old, now)).ok).toBe(true);
     const s2 = await setup();
-    expect(await s2.list.addEndorsed(await s2.endorse({ issuedAt: now - 8 * 24 * 3600_000 }), now)).toBe(false);
-    expect(await s2.list.addEndorsed(await s2.endorse({ issuedAt: now + 5 * 60_000 }), now)).toBe(false);
+    expect((await s2.list.addEndorsed(await s2.endorse({ issuedAt: now - 8 * 24 * 3600_000 }), now)).ok).toBe(false);
+    expect((await s2.list.addEndorsed(await s2.endorse({ issuedAt: now + 5 * 60_000 }), now)).ok).toBe(false);
   });
 });

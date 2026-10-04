@@ -1,4 +1,12 @@
-import { deriveDeviceId, fingerprint, fromB64url, randomNonce, toB64url, verifyEnvelope } from "@chalito/crypto";
+import {
+  deriveDeviceId,
+  fingerprint,
+  fromB64url,
+  randomNonce,
+  stepUpChallenge,
+  toB64url,
+  verifyEnvelope,
+} from "@chalito/crypto";
 import { signGlyph, verifyGlyph } from "@chalito/glyph";
 import {
   EndorsementBody,
@@ -10,6 +18,7 @@ import {
 } from "@chalito/protocol";
 import { ApiError, type ApiClient } from "./api.js";
 import type { DeviceKeys, TrustedAgent } from "./keys.js";
+import type { StepUpAssertion } from "./signing.js";
 import type { DeviceSigner } from "./webauthn.js";
 
 /**
@@ -116,8 +125,8 @@ export const resolveForEndorsement = async (
 
 /**
  * Trusted client, after the person compared the fingerprint: sign the endorsement for exactly
- * the resolved keys and post it. `stepUp` (a server-challenged passkey assertion, e.g.
- * `() => assertWithServerChallenge(api)`) is required by the api when this device has a passkey.
+ * the resolved keys (with this device's passkey assertion over it, when it has a passkey) and
+ * post it.
  */
 export const approveEndorsement = async (
   api: ApiClient,
@@ -126,7 +135,12 @@ export const approveEndorsement = async (
   o: {
     uid: string;
     now: number;
-    stepUp?: () => Promise<unknown>;
+    /**
+     * This device's passkey (e.g. `stepUpWithPasskey(ref)`), REQUIRED when it has one: the
+     * assertion is made over SHA-256(JCS(endorsement body without stepUp)) and goes into the
+     * body, so the api and every agent verify the same proof (R-L13, ADR 0018).
+     */
+    stepUp?: StepUpAssertion;
     /**
      * ADR 0018: this client's trusted agents, introduced to the new client (and the only
      * agents that will accept it). Only glyph-confirmed ones are passed on: no trust chains.
@@ -137,28 +151,32 @@ export const approveEndorsement = async (
   const reg = target.registration.body;
   if (reg.owner !== o.uid) throw new EndorseError("owner_mismatch");
   if (reg.deviceId === signer.deviceId) throw new EndorseError("self_endorsement");
-  const endorsement = await signer.sign(
-    "chalito.endorsement.v1",
-    EndorsementBody.parse({
-      v: 1,
-      uid: o.uid,
-      newDeviceId: reg.deviceId,
-      pubSign: reg.pubSign,
-      pubBox: reg.pubBox,
-      issuedAt: o.now,
-      ...(o.agents
-        ? {
-            agents: o.agents
-              .filter((a) => a.via !== "endorsement")
-              .slice(0, 32)
-              .map((a) => ({ deviceId: a.deviceId, pubSign: a.pubSign, pubBox: a.pubBox, fingerprint: a.fingerprint })),
-          }
-        : {}),
-    }),
-  );
-  const stepUp = o.stepUp ? await o.stepUp() : undefined;
+  const base = EndorsementBody.parse({
+    v: 1,
+    uid: o.uid,
+    newDeviceId: reg.deviceId,
+    pubSign: reg.pubSign,
+    pubBox: reg.pubBox,
+    issuedAt: o.now,
+    ...(o.agents
+      ? {
+          agents: o.agents
+            .filter((a) => a.via !== "endorsement")
+            .slice(0, 32)
+            .map((a) => ({ deviceId: a.deviceId, pubSign: a.pubSign, pubBox: a.pubBox, fingerprint: a.fingerprint })),
+        }
+      : {}),
+  });
+  // A cancelled passkey prompt rejects here, before anything is signed or sent.
+  const body = o.stepUp
+    ? EndorsementBody.parse({
+        ...base,
+        stepUp: { method: "webauthn", at: o.now, assertion: await o.stepUp(await stepUpChallenge(base)) },
+      })
+    : base;
+  const endorsement = await signer.sign("chalito.endorsement.v1", body);
   try {
-    await api.post("/v1/endorse/approve", { codeId: target.codeId, endorsement, ...(stepUp ? { stepUp } : {}) });
+    await api.post("/v1/endorse/approve", { codeId: target.codeId, endorsement });
   } catch (err) {
     throw new EndorseError(err instanceof ApiError ? err.code : "failed");
   }

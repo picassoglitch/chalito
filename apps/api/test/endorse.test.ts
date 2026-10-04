@@ -5,6 +5,7 @@ import {
   generateBoxKeyPair,
   generateSigningKeyPair,
   signEnvelope,
+  stepUpChallenge,
   toB64url,
   type BoxKeyPair,
   type SigningKeyPair,
@@ -57,8 +58,10 @@ const signDeviceRegistration = async (
 const signEndorsement = async (
   k: DeviceKeys,
   e: { uid: string; newDeviceId: string; pubSign: string; pubBox: string; now: number },
+  /** The endorser's passkey: its assertion over the body goes into `stepUp` (R-L13). */
+  auth?: SoftAuthenticator,
 ): Promise<Endorsement> => {
-  const body = EndorsementBody.parse({
+  const base = EndorsementBody.parse({
     v: 1,
     uid: e.uid,
     newDeviceId: e.newDeviceId,
@@ -66,6 +69,12 @@ const signEndorsement = async (
     pubBox: e.pubBox,
     issuedAt: e.now,
   });
+  const body = auth
+    ? EndorsementBody.parse({
+        ...base,
+        stepUp: { method: "webauthn", at: e.now, assertion: await auth.stepUp(RP)(await stepUpChallenge(base)) },
+      })
+    : base;
   return signEnvelope("chalito.endorsement.v1", body, k.deviceId, k.sign.secretKey);
 };
 
@@ -192,15 +201,19 @@ const setup = async () => {
   const endorse = async (
     reg: Awaited<ReturnType<typeof registration>>,
     by = phoneKeys,
-    over: { uid?: string; now?: number } = {},
+    over: { uid?: string; now?: number; auth?: SoftAuthenticator } = {},
   ) =>
-    signEndorsement(by, {
-      uid: over.uid ?? reg.body.owner,
-      newDeviceId: reg.body.deviceId,
-      pubSign: reg.body.pubSign,
-      pubBox: reg.body.pubBox,
-      now: over.now ?? clock,
-    });
+    signEndorsement(
+      by,
+      {
+        uid: over.uid ?? reg.body.owner,
+        newDeviceId: reg.body.deviceId,
+        pubSign: reg.body.pubSign,
+        pubBox: reg.body.pubBox,
+        now: over.now ?? clock,
+      },
+      over.auth,
+    );
   const createCode = async () => {
     const reg = await registration();
     const r = await post("/v1/endorse/codes", { registration: reg }, "person");
@@ -368,7 +381,7 @@ describe("endorsement handoff", () => {
       expect([late.status, late.json.error]).toEqual([410, "expired"]);
     });
 
-    it("an endorser with a passkey must step up with a fresh server-challenged assertion", async () => {
+    it("an endorser with a passkey must step up over the endorsement body (R-L13)", async () => {
       const s = await setup();
       const auth = new SoftAuthenticator({ origin: ORIGIN, alg: -8 });
       const opts = await s.post("/v1/webauthn/register/options", {}, "phone");
@@ -378,24 +391,41 @@ describe("endorsement handoff", () => {
       ).toBe(201);
 
       const c = await s.createCode();
-      const e = await s.endorse(c.reg);
-      const none = await s.post("/v1/endorse/approve", { codeId: c.codeId, endorsement: e }, "phone");
-      expect([none.status, none.json.error]).toEqual([401, "step_up_required"]);
-
-      const a = await s.post("/v1/webauthn/assert/options", {}, "phone");
-      const stepUp = await auth.get(a.json.options);
-      const ok = await s.post("/v1/endorse/approve", { codeId: c.codeId, endorsement: e, stepUp }, "phone");
-      expect(ok.status).toBe(200);
-      expect(s.audit.events.at(-1)?.meta).toMatchObject({ stepUp: true });
-
-      // The challenge is single use: replaying the assertion on another code fails.
-      const c2 = await s.createCode();
-      const replay = await s.post(
+      const none = await s.post(
         "/v1/endorse/approve",
-        { codeId: c2.codeId, endorsement: await s.endorse(c2.reg), stepUp },
+        { codeId: c.codeId, endorsement: await s.endorse(c.reg) },
         "phone",
       );
-      expect([replay.status, replay.json.error]).toEqual([401, "step_up_failed"]);
+      expect([none.status, none.json.error]).toEqual([401, "step_up_required"]);
+
+      // Another authenticator's assertion: refused.
+      const other = new SoftAuthenticator({ origin: ORIGIN, alg: -8 });
+      const wrongKey = await s.post(
+        "/v1/endorse/approve",
+        { codeId: c.codeId, endorsement: await s.endorse(c.reg, undefined, { auth: other }) },
+        "phone",
+      );
+      expect([wrongKey.status, wrongKey.json.error]).toEqual([401, "step_up_failed"]);
+
+      // An assertion made over ANOTHER endorsement body (here: issued a second earlier), grafted
+      // onto this one and re-signed by the phone: refused.
+      const forOther = await s.endorse(c.reg, undefined, { auth, now: NOW - 1000 });
+      const grafted = await signEnvelope(
+        "chalito.endorsement.v1",
+        { ...(await s.endorse(c.reg)).body, stepUp: forOther.body.stepUp },
+        s.phoneKeys.deviceId,
+        s.phoneKeys.sign.secretKey,
+      );
+      const graft = await s.post("/v1/endorse/approve", { codeId: c.codeId, endorsement: grafted }, "phone");
+      expect([graft.status, graft.json.error]).toEqual([401, "step_up_failed"]);
+
+      const ok = await s.post(
+        "/v1/endorse/approve",
+        { codeId: c.codeId, endorsement: await s.endorse(c.reg, undefined, { auth }) },
+        "phone",
+      );
+      expect(ok.status).toBe(200);
+      expect(s.audit.events.at(-1)?.meta).toMatchObject({ stepUp: true });
     });
   });
 
@@ -408,10 +438,9 @@ describe("endorsement handoff", () => {
     };
     const approveWithStepUp = async (s: Awaited<ReturnType<typeof setup>>, auth: SoftAuthenticator) => {
       const c = await s.createCode();
-      const a = await s.post("/v1/webauthn/assert/options", {}, "phone");
       return s.post(
         "/v1/endorse/approve",
-        { codeId: c.codeId, endorsement: await s.endorse(c.reg), stepUp: await auth.get(a.json.options) },
+        { codeId: c.codeId, endorsement: await s.endorse(c.reg, undefined, { auth }) },
         "phone",
       );
     };

@@ -50,6 +50,11 @@
       "cancel": "Cancel",
       "confirm": "Turn on (asks for your password)",
       "failed": "Not turned on: {reason}"
+    },
+    "notices": {
+      "title": "Security notices",
+      "missingStepUp": "“{computer}” refused a new device: the device that approved it didn't use its passkey. Approve it again from your phone with your passkey.",
+      "refused": "“{computer}” refused a new device because its approval couldn't be verified. Approve it again from a trusted device."
     }
   },
   "voice": {

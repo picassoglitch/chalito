@@ -53,7 +53,10 @@ const setup = async () => {
   const store = new MemoryStore();
   const saveTrust = vi.fn(async () => undefined);
   const onAdded = vi.fn();
-  const run = () => syncEndorsements({ store, trust: () => list, saveTrust, now: () => NOW, onAdded });
+  const onRefused = vi.fn();
+  const reported = new Set<string>();
+  const run = () =>
+    syncEndorsements({ store, trust: () => list, saveTrust, now: () => NOW, onAdded, onRefused, reported });
   const row = async (over: Partial<EndorsementRow> = {}): Promise<EndorsementRow> => ({
     deviceId: desk.deviceId,
     endorsement: await endorse(),
@@ -61,7 +64,7 @@ const setup = async () => {
     webauthnBinding: null,
     ...over,
   });
-  return { phone, desk, list, store, saveTrust, onAdded, run, row, endorse };
+  return { phone, desk, list, store, saveTrust, onAdded, onRefused, run, row, endorse };
 };
 
 describe("agent: endorsement sync (ADR 0018)", () => {
@@ -128,6 +131,27 @@ describe("agent: endorsement sync (ADR 0018)", () => {
     s.store.watchEndorsements(() => void s.run().then((ids) => added.push(...ids)));
     s.store.pushEndorsement(await s.row());
     await vi.waitFor(() => expect(added).toEqual([s.desk.deviceId]));
+  });
+});
+
+describe("refusals are never silent (R-L13)", () => {
+  it("reports a refusal the person must act on once per client and reason; the endorser's choice stays quiet", async () => {
+    const s = await setup();
+    s.store.endorsements.push(await s.row({ endorsement: await s.endorse(await device()) }));
+    await s.run();
+    await s.run();
+    expect(s.onRefused).toHaveBeenCalledTimes(1);
+    expect(s.onRefused).toHaveBeenCalledWith(s.desk.deviceId, expect.any(String), "bad_signature");
+    const s2 = await setup();
+    s2.store.endorsements.push(
+      await s2.row({
+        endorsement: await s2.endorse(undefined, {
+          agents: [{ deviceId: "agent_other", pubSign: s2.phone.pubSign, pubBox: s2.phone.pubBox, fingerprint: "FP" }],
+        }),
+      }),
+    );
+    await s2.run();
+    expect(s2.onRefused).not.toHaveBeenCalled();
   });
 });
 

@@ -71,6 +71,23 @@ export const IntroducedAgent = z.object({
 });
 export type IntroducedAgent = z.infer<typeof IntroducedAgent>;
 
+/**
+ * The endorser's presence over the endorsement (ADR 0018): a WebAuthn assertion by the
+ * ENDORSER's passkey whose challenge is SHA-256(JCS(endorsement body without stepUp)), the same
+ * construction as a decision's step-up (D-019). WebAuthn only: a self-asserted method would
+ * prove nothing to the agents.
+ */
+export const EndorsementStepUp = z.object({
+  method: z.literal("webauthn"),
+  at: EpochMs,
+  assertion: z.object({
+    credentialId: b64url(),
+    authenticatorData: b64url(),
+    clientDataJSON: b64url(),
+    signature: b64url(),
+  }),
+});
+
 /** Endorsement of a new client by an already-trusted client. */
 export const EndorsementBody = z.object({
   v: z.literal(1),
@@ -85,6 +102,11 @@ export const EndorsementBody = z.object({
    * endorsed client only if it is listed here. Absent in older endorsements.
    */
   agents: z.array(IntroducedAgent).max(32).optional(),
+  /**
+   * Required by agents (and the api) when the endorser has a passkey: without it a stolen,
+   * unlocked client could endorse a device carrying the thief's own passkey.
+   */
+  stepUp: EndorsementStepUp.optional(),
 });
 export const Endorsement = signed("chalito.endorsement.v1", EndorsementBody);
 export type Endorsement = z.infer<typeof Endorsement>;

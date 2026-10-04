@@ -6,6 +6,7 @@ import type { AgentIpc } from "../lib/ipc.js";
 import type { PushToTalk } from "../lib/voice.js";
 import { Inbox } from "./Inbox.js";
 import { Security } from "./Security.js";
+import { SecurityNotices } from "./SecurityNotices.js";
 import { Settings } from "./Settings.js";
 import { Voice } from "./Voice.js";
 
@@ -64,6 +65,7 @@ export const Panel = (p: PanelProps) => {
             phoneVerifier={p.phoneVerifier}
           />
         )}
+        {tab === "security" && p.client && <SecurityNotices client={p.client} />}
         {tab === "security" && <Security ipc={p.ipc} />}
         {tab === "voice" && <Voice ptt={p.ptt} />}
       </main>
