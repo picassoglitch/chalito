@@ -1,8 +1,10 @@
 import { serve } from "@hono/node-server";
 import { PubSub } from "@google-cloud/pubsub";
 import { createClient } from "@supabase/supabase-js";
+import { PostgresBuckets } from "@chalito/guard";
 import { createApp } from "./app.js";
 import { GcsReleaseStore } from "./releases/gcs.js";
+import { PostgresAuditSink, teeAudit } from "./postgres/audit.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
 import { HubClient, HubStreamUsage, compedFrom, enqueueUsage } from "@chalito/billing";
@@ -41,6 +43,8 @@ const backend = (): {
   phone?: PhoneDeps;
   voice?: VoiceDeps;
   store?: StoreDeps;
+  rateBuckets: PostgresBuckets;
+  serverAudit: PostgresAuditSink;
 } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
@@ -98,6 +102,8 @@ const backend = (): {
         }
       : {}),
     rooms: new PostgresRoomsRepo(sql),
+    rateBuckets: new PostgresBuckets(sql),
+    serverAudit: new PostgresAuditSink(sql),
   };
 };
 
@@ -106,7 +112,7 @@ const backend = (): {
 const usePubSub = process.env.K_SERVICE !== undefined || process.env.PUBSUB_EMULATOR_HOST !== undefined;
 const topic = usePubSub ? new PubSub().topic(process.env.AUDIT_TOPIC ?? "audit") : null;
 
-const audit: AuditSink = {
+const streamAudit: AuditSink = {
   async record(e) {
     const entry = { ...e, t: new Date().toISOString() };
     if (topic) await topic.publishMessage({ json: entry });
@@ -114,14 +120,19 @@ const audit: AuditSink = {
   },
 };
 
+const { serverAudit, ...data } = backend();
+// Every event goes to the stream; owner-scoped ones also to chalito.server_audit (the audit views).
+const audit = teeAudit(streamAudit, serverAudit);
+
 const app = createApp({
-  ...backend(),
+  ...data,
   audit,
   config: {
     ssoSecret: env("CHALITO_SSO_SECRET"),
     adminToken: env("CHALITO_ADMIN_TOKEN"),
     recoveryCooldownMs: Number(process.env.RECOVERY_COOLDOWN_MS ?? 60 * 60 * 1000),
     skewMs: 60_000,
+    trustedProxies: Number(process.env.TRUSTED_PROXIES ?? 0),
   },
   now: Date.now,
   // ADR 0014: signed download URLs from the private releases bucket, signed as the release signer.
