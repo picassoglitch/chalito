@@ -16,6 +16,7 @@
     "@chalito/client": "workspace:*",
     "@chalito/client-keys": "workspace:*",
     "@chalito/crypto": "workspace:*",
+    "@chalito/glyph": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",

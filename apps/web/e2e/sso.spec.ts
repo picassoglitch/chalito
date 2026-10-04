@@ -4,7 +4,7 @@ import { API, SUPABASE, expect, fakeSession, storedSession, test } from "./fixtu
 const mockBackends = async (page: Page, exchanged: string[]) => {
   await page.route(`${API}/sso/exchange`, async (r) => {
     exchanged.push(r.request().postData() ?? "");
-    await r.fulfill({ json: { token_hash: "e2e-token-hash" } });
+    await r.fulfill({ json: { customToken: "e2e-token-hash", owner: "hub-user-e2e" } });
   });
   await page.route(`${SUPABASE}/auth/v1/verify**`, (r) => r.fulfill({ json: fakeSession() }));
 };

@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import type { DeviceView } from "@chalito/client";
+import { Link } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { PasskeyEnroll } from "./PasskeyEnroll";
 import { SharingToggle } from "./SharingToggle";
@@ -38,7 +39,16 @@ export const Devices = () => {
 
   return (
     <div className="grid gap-4">
-      <h1 className="text-2xl font-bold">{t("title")}</h1>
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-2xl font-bold">{t("title")}</h1>
+        <Link
+          href="/dispositivos/nuevo"
+          data-testid="add-device-link"
+          className="ml-auto rounded-lg bg-emerald-700 px-3 py-1.5 text-sm text-white"
+        >
+          {t("add")}
+        </Link>
+      </div>
       <PasskeyEnroll />
       <ul className="grid gap-3">
         {devices.map((d) => (

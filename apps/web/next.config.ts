@@ -49,6 +49,13 @@ const config: NextConfig = {
       },
       // The launch token is in this URL: never send it on as a referrer.
       { source: "/:locale(en)?/auth/sso", headers: [{ key: "Referrer-Policy", value: "no-referrer" }] },
+      {
+        source: "/auth/desktop/:path*",
+        headers: [
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
+        ],
+      },
       { source: "/sw.js", headers: [{ key: "Cache-Control", value: "no-cache" }] },
     ];
   },
