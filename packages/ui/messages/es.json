@@ -1,0 +1,203 @@
+{
+  "common": {
+    "appName": "Chalito",
+    "continue": "Continuar",
+    "back": "Atrás",
+    "skip": "Saltar",
+    "finish": "Terminar",
+    "loading": "Cargando…",
+    "save": "Guardar",
+    "home": "Inicio",
+    "language": "Idioma",
+    "comingSoon": "Muy pronto"
+  },
+  "nav": {
+    "home": "Inicio",
+    "settings": "Ajustes",
+    "onboarding": "Primeros pasos",
+    "credits": "Créditos",
+    "download": "Descargar"
+  },
+  "home": {
+    "title": "Hola, soy {name}",
+    "subtitle": "Te ayudo a dirigir a tu equipo de IA desde cualquier lugar.",
+    "startOnboarding": "Empezar",
+    "signedOut": "Entra desde tu cuenta de Chalyb para continuar.",
+    "signIn": "Entrar con Chalyb",
+    "companion": "Tu compañero: {name}"
+  },
+  "sso": {
+    "working": "Entrando a Chalito…",
+    "failed": "No pudimos abrir tu sesión. Vuelve a entrar desde Chalyb.",
+    "missingToken": "Falta el enlace de acceso. Entra desde Chalyb.",
+    "retry": "Volver a Chalyb"
+  },
+  "onboarding": {
+    "title": "Primeros pasos",
+    "progress": "Paso {step} de {total}",
+    "signIn": {
+      "title": "Entra a tu cuenta",
+      "body": "Chalito usa tu cuenta de Chalyb. No necesitas otra contraseña.",
+      "signedIn": "Ya entraste. ¡Sigamos!",
+      "cta": "Entrar con Chalyb"
+    },
+    "companion": {
+      "title": "Elige a tu compañero",
+      "body": "Puedes cambiarlo cuando quieras. Pronto podrás subir tu propia imagen o modelo."
+    },
+    "name": {
+      "title": "Ponle nombre",
+      "body": "Si le cambias el nombre, mostraremos la línea de crédito debajo."
+    },
+    "connect": {
+      "title": "Conecta tus IA",
+      "body": "Solo usamos las formas oficiales de cada proveedor. Tus claves se quedan en tu computadora.",
+      "guided": "Guiado",
+      "expert": "Experto",
+      "expertBody": "Pega tus API keys en la app de escritorio o con «chalito keys set». Nunca las enviamos a la nube.",
+      "later": "Puedes conectarlas después en Ajustes → Conexiones."
+    },
+    "billing": {
+      "title": "Cómo pagas",
+      "body": "Tu plan y tus créditos vienen de tu cuenta de Chalyb.",
+      "byo": "Tus propias claves: lo que usas lo paga tu cuenta con cada proveedor.",
+      "energy": "Energía de Chalito: se descuenta de tu saldo en Chalyb.",
+      "both": "Ambas: tus claves primero y energía cuando haga falta.",
+      "tier": "Tu nivel en Chalyb: {tier}",
+      "tierUnknown": "Aún no conocemos tu nivel en Chalyb.",
+      "trial": "Tu prueba termina el {date}.",
+      "manage": "Ver planes en Chalyb"
+    },
+    "phone": {
+      "title": "Tu teléfono",
+      "body": "Para avisos por WhatsApp y llamadas cuando algo urge. Es opcional."
+    },
+    "pair": {
+      "title": "Conecta tu computadora",
+      "body": "Instala Chalito en tu computadora y emparéjala con el glifo de Chalito.",
+      "download": "Ir a Descargar",
+      "later": "Puedes hacerlo después."
+    },
+    "done": {
+      "title": "¡Listo!",
+      "body": "{name} ya está contigo."
+    }
+  },
+  "settings": {
+    "title": "Ajustes",
+    "sections": {
+      "contact": "Contacto y avisos",
+      "companion": "Tu compañero",
+      "privacy": "Privacidad y conexiones",
+      "account": "Plan y créditos",
+      "display": "Pantalla"
+    },
+    "charges": "Pueden aplicar cargos.",
+    "needsPhone": "Primero agrega tu teléfono.",
+    "phone": {
+      "label": "Teléfono",
+      "country": "País o región",
+      "number": "Número",
+      "placeholder": "Tu número",
+      "invalid": "Ese número no parece válido para el país elegido."
+    },
+    "whatsapp": {
+      "label": "Avisos por WhatsApp",
+      "hint": "Te escribimos cuando algo necesita tu atención."
+    },
+    "calls": {
+      "label": "Llamadas",
+      "hint": "Te llamamos si algo urge y no respondes."
+    },
+    "callBriefing": {
+      "label": "Resumen en llamadas",
+      "hint": "En la llamada te leemos una línea de cada pendiente.",
+      "plaintext": "Esas líneas salen de tu computadora sin cifrar para poder leerlas en voz alta."
+    },
+    "quietHours": {
+      "label": "Horas de silencio",
+      "hint": "No te llamamos ni escribimos en ese horario, salvo urgencias.",
+      "from": "De",
+      "to": "a"
+    },
+    "avatar": {
+      "label": "Compañero"
+    },
+    "companions": {
+      "chalito": "Chalito",
+      "luna": "Luna",
+      "tito": "Tito"
+    },
+    "companionName": {
+      "label": "Nombre",
+      "placeholder": "Chalito"
+    },
+    "privacyMode": {
+      "label": "Modo privado",
+      "hint": "Usa tus propias claves desde tu dispositivo y guarda solo contenido cifrado."
+    },
+    "connections": {
+      "label": "Conexiones",
+      "none": "Aún no conectas ninguna IA.",
+      "notConnected": "Sin conectar",
+      "mode": {
+        "api_key": "API key",
+        "subscription": "Tu plan",
+        "managed": "Energía de Chalito",
+        "none": "Sin conectar"
+      }
+    },
+    "planCredits": {
+      "label": "Plan y créditos",
+      "tier": "Nivel: {tier}",
+      "unknown": "Nivel desconocido",
+      "trial": "Prueba hasta el {date}",
+      "manage": "Administrar en Chalyb"
+    },
+    "renderQuality": {
+      "label": "Calidad de animación",
+      "auto": "Automática",
+      "bajo": "Baja",
+      "medio": "Media",
+      "alto": "Alta"
+    }
+  },
+  "integrations": {
+    "anthropic": {
+      "name": "Claude",
+      "agent": "Claude Code",
+      "howTo": "Claude Code se conecta solo con tu API key de Anthropic. Por las reglas de Anthropic no podemos usar tu suscripción de Claude."
+    },
+    "openai": {
+      "name": "ChatGPT",
+      "agent": "Codex",
+      "howTo": "Codex funciona con tu API key de OpenAI o con tu plan de ChatGPT (Iniciar sesión con ChatGPT). El plan de ChatGPT está disponible por ahora solo para el equipo de Chalito.",
+      "ownerOnly": "Plan de ChatGPT: solo equipo de Chalito por ahora"
+    },
+    "xai": {
+      "name": "Grok",
+      "agent": "Grok Build",
+      "howTo": "Grok Build funciona con tu API key de xAI o con tu inicio de sesión de Grok."
+    },
+    "google": {
+      "name": "Gemini",
+      "agent": "Gemini",
+      "howTo": "Usa tu API key de Google AI Studio."
+    },
+    "iHave": "Tengo {name}"
+  },
+  "deeplinks": {
+    "approval": "Aprobación {id}",
+    "mesa": "Mesa {id}",
+    "room": "Sala {id}",
+    "stub": "Esta pantalla llega pronto.",
+    "credits": "Créditos"
+  },
+  "download": {
+    "title": "Descargar Chalito",
+    "body": "Las apps para Linux, Windows y macOS llegan pronto."
+  },
+  "pwa": {
+    "description": "Tu compañero que dirige a tu equipo de IA."
+  }
+}

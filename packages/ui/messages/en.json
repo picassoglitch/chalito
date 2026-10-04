@@ -1,0 +1,203 @@
+{
+  "common": {
+    "appName": "Chalito",
+    "continue": "Continue",
+    "back": "Back",
+    "skip": "Skip",
+    "finish": "Finish",
+    "loading": "Loading…",
+    "save": "Save",
+    "home": "Home",
+    "language": "Language",
+    "comingSoon": "Coming soon"
+  },
+  "nav": {
+    "home": "Home",
+    "settings": "Settings",
+    "onboarding": "Get started",
+    "credits": "Credits",
+    "download": "Download"
+  },
+  "home": {
+    "title": "Hi, I'm {name}",
+    "subtitle": "I help you run your AI team from anywhere.",
+    "startOnboarding": "Get started",
+    "signedOut": "Sign in from your Chalyb account to continue.",
+    "signIn": "Sign in with Chalyb",
+    "companion": "Your companion: {name}"
+  },
+  "sso": {
+    "working": "Signing you in to Chalito…",
+    "failed": "We couldn't open your session. Sign in again from Chalyb.",
+    "missingToken": "The sign-in link is missing. Sign in from Chalyb.",
+    "retry": "Back to Chalyb"
+  },
+  "onboarding": {
+    "title": "Get started",
+    "progress": "Step {step} of {total}",
+    "signIn": {
+      "title": "Sign in",
+      "body": "Chalito uses your Chalyb account. No new password needed.",
+      "signedIn": "You're signed in. Let's go!",
+      "cta": "Sign in with Chalyb"
+    },
+    "companion": {
+      "title": "Choose your companion",
+      "body": "You can change it any time. Soon you'll be able to upload your own image or model."
+    },
+    "name": {
+      "title": "Name it",
+      "body": "If you rename it, we show the credit line underneath."
+    },
+    "connect": {
+      "title": "Connect your AIs",
+      "body": "We only use each provider's official options. Your keys stay on your computer.",
+      "guided": "Guided",
+      "expert": "Expert",
+      "expertBody": "Paste your API keys in the desktop app or with \"chalito keys set\". We never send them to the cloud.",
+      "later": "You can connect them later in Settings → Connections."
+    },
+    "billing": {
+      "title": "How you pay",
+      "body": "Your plan and credits come from your Chalyb account.",
+      "byo": "Your own keys: what you use is billed by each provider to your account.",
+      "energy": "Chalito energy: drawn from your Chalyb balance.",
+      "both": "Both: your keys first, energy when needed.",
+      "tier": "Your Chalyb tier: {tier}",
+      "tierUnknown": "We don't know your Chalyb tier yet.",
+      "trial": "Your trial ends on {date}.",
+      "manage": "See plans on Chalyb"
+    },
+    "phone": {
+      "title": "Your phone",
+      "body": "For WhatsApp messages and calls when something is urgent. Optional."
+    },
+    "pair": {
+      "title": "Connect your computer",
+      "body": "Install Chalito on your computer and pair it with the Chalito glyph.",
+      "download": "Go to Download",
+      "later": "You can do this later."
+    },
+    "done": {
+      "title": "All set!",
+      "body": "{name} is here for you."
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "sections": {
+      "contact": "Contact and alerts",
+      "companion": "Your companion",
+      "privacy": "Privacy and connections",
+      "account": "Plan and credits",
+      "display": "Display"
+    },
+    "charges": "Charges may apply.",
+    "needsPhone": "Add your phone first.",
+    "phone": {
+      "label": "Phone",
+      "country": "Country or region",
+      "number": "Number",
+      "placeholder": "Your number",
+      "invalid": "That number doesn't look valid for the chosen country."
+    },
+    "whatsapp": {
+      "label": "WhatsApp alerts",
+      "hint": "We message you when something needs your attention."
+    },
+    "calls": {
+      "label": "Calls",
+      "hint": "We call you if something is urgent and you don't respond."
+    },
+    "callBriefing": {
+      "label": "Call briefing",
+      "hint": "On a call we read you one line per pending item.",
+      "plaintext": "Those lines leave your computer unencrypted so they can be read aloud."
+    },
+    "quietHours": {
+      "label": "Quiet hours",
+      "hint": "No calls or messages during these hours, except emergencies.",
+      "from": "From",
+      "to": "to"
+    },
+    "avatar": {
+      "label": "Companion"
+    },
+    "companions": {
+      "chalito": "Chalito",
+      "luna": "Luna",
+      "tito": "Tito"
+    },
+    "companionName": {
+      "label": "Name",
+      "placeholder": "Chalito"
+    },
+    "privacyMode": {
+      "label": "Private mode",
+      "hint": "Use your own keys from your device and store only encrypted content."
+    },
+    "connections": {
+      "label": "Connections",
+      "none": "You haven't connected any AI yet.",
+      "notConnected": "Not connected",
+      "mode": {
+        "api_key": "API key",
+        "subscription": "Your plan",
+        "managed": "Chalito energy",
+        "none": "Not connected"
+      }
+    },
+    "planCredits": {
+      "label": "Plan and credits",
+      "tier": "Tier: {tier}",
+      "unknown": "Unknown tier",
+      "trial": "Trial until {date}",
+      "manage": "Manage on Chalyb"
+    },
+    "renderQuality": {
+      "label": "Animation quality",
+      "auto": "Automatic",
+      "bajo": "Low",
+      "medio": "Medium",
+      "alto": "High"
+    }
+  },
+  "integrations": {
+    "anthropic": {
+      "name": "Claude",
+      "agent": "Claude Code",
+      "howTo": "Claude Code connects only with your Anthropic API key. Anthropic's rules don't let us use your Claude subscription."
+    },
+    "openai": {
+      "name": "ChatGPT",
+      "agent": "Codex",
+      "howTo": "Codex works with your OpenAI API key or your ChatGPT plan (Sign in with ChatGPT). The ChatGPT plan is available only to the Chalito team for now.",
+      "ownerOnly": "ChatGPT plan: Chalito team only for now"
+    },
+    "xai": {
+      "name": "Grok",
+      "agent": "Grok Build",
+      "howTo": "Grok Build works with your xAI API key or your Grok login."
+    },
+    "google": {
+      "name": "Gemini",
+      "agent": "Gemini",
+      "howTo": "Use your Google AI Studio API key."
+    },
+    "iHave": "I have {name}"
+  },
+  "deeplinks": {
+    "approval": "Approval {id}",
+    "mesa": "Mesa {id}",
+    "room": "Room {id}",
+    "stub": "This screen is coming soon.",
+    "credits": "Credits"
+  },
+  "download": {
+    "title": "Download Chalito",
+    "body": "The Linux, Windows and macOS apps are coming soon."
+  },
+  "pwa": {
+    "description": "Your companion that runs your AI team."
+  }
+}
