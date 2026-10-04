@@ -11,7 +11,7 @@ const RULES: [RegExp, string][] = [
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "gh…"],
   [/\b(AKIA|ASIA)[0-9A-Z]{16}\b/g, "AKIA…"],
   [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "<jwt>"],
-  [/(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1…"],
+  [/(?<bearer>Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$<bearer>…"],
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "<private key>"],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email>"],
 ];
