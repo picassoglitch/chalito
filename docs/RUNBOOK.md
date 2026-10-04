@@ -58,11 +58,13 @@ Migrations are **forward-only and additive**. A deploy never depends on a migrat
 
 Images go to the Artifact Registry repo created by `module "artifact_registry"`.
 
-1. Build and push:
+1. Build and push, from the repo root. There's one Dockerfile for every service: distroless Node, non-root, base images pinned by digest, no transform cache so the root filesystem can be read-only. CI builds every image and boots each one read-only on every PR (job `images`), but never pushes.
    ```sh
-   gcloud builds submit --tag us-central1-docker.pkg.dev/$PROJECT/chalito/<service>:$(git rev-parse --short HEAD)
+   docker build -f docker/service.Dockerfile --build-arg APP=<api|notifier|orchestrator|mcp-gateway> \
+     -t us-central1-docker.pkg.dev/$PROJECT/chalito/<service>:$(git rev-parse --short HEAD) .
+   docker push us-central1-docker.pkg.dev/$PROJECT/chalito/<service>:$(git rev-parse --short HEAD)
    ```
-   No Dockerfiles exist yet, so the container build is **not yet built**.
+   For avatar-jobs, add `--build-arg ENTRY=src/job.ts`. To bump a base image, update its `@sha256:` digest in `docker/service.Dockerfile`.
 2. Deploy without traffic, then check the new revision:
    ```sh
    gcloud run deploy chalito-<service> --image …:<sha> --region us-central1 --no-traffic --tag canary
@@ -94,11 +96,10 @@ Images go to the Artifact Registry repo created by `module "artifact_registry"`.
    ```sh
    gcloud run jobs update chalito-avatar-jobs --image …:<sha>
    ```
-3. Each upload runs:
+3. Each upload runs it automatically (`infra/terraform/envs/dev/avatar_jobs.tf`): GCS object finalized in the assets bucket → Eventarc → Workflow `chalito-avatar-upload`, which runs the job with `UPLOAD_PATH` set for `uploads/<owner>/<asset>/original` objects only. By hand:
    ```sh
    gcloud run jobs execute chalito-avatar-jobs --update-env-vars UPLOAD_PATH=uploads/<owner>/<asset>/original
    ```
-   The trigger from the upload path (api or Eventarc) is **not yet built**.
 
 ### 1.4 Web (Vercel)
 
@@ -206,23 +207,23 @@ General steps for a secret in Secret Manager (`module "secrets"`):
    ```
    Then ban the auth user in Supabase Auth (Users → the `device:<id>` user → Ban).
 
-### 4.2 Every device (revoke-all)
+### 4.2 Every other client (revoke-all)
 
-There is no revoke-all route yet (**not yet built**). Operator steps, on a verified request from the owner:
+`POST /v1/devices/revoke-all` (`apps/api/src/routes/devices.ts`), from a trusted client **with a passkey step-up** (mandatory):
+- revokes every other client in one statement and bans each one's Auth user, so RLS and `requireAuth` cut them off at once;
+- queues the caller's signed `device.revokeClient` commands, one per (agent, revoked client). The server checks the signer, the signature, that the target is one of the owner's agents, and that the client isn't the caller; agents then drop the revoked clients from their trust lists. The server can't sign these itself;
+- audits `device.revoked` for each client and `device.revoked_all`. A failed ban is listed in `banFailed` and logged; the revoked flag still applies.
 
-1. List devices:
-   ```sql
-   select device_id, role, kind, name from chalito.devices where owner = '<owner>' and not revoked;
-   ```
-2. Revoke them all:
+Agents stay paired: revoke them one by one (4.1) if needed.
+
+**Without any trusted client** (all lost), on a verified request from the owner:
+1. Use recovery (5.3) to get a client back, then run revoke-all from it.
+2. Or, as an operator:
    ```sql
    update chalito.devices set revoked = true, revoked_at = now() where owner = '<owner>' and not revoked;
    ```
-3. Ban each device's Supabase Auth user (`chalitoAuthUserId("device", <id>)` in `apps/api/src/supabase/identity.ts`) from the dashboard or the admin API.
-4. Revoke MCP connectors: `POST /v1/connectors/:cid/revoke` for each grant (`apps/api/src/routes/oauth.ts`). Refresh-token reuse already revokes the whole grant.
-5. The owner signs in on the hub again and enrolls a fresh phone (first client) or uses recovery (5.3). Agents are paired again.
-
----
+   Then ban each device's Auth user (`chalitoAuthUserId("device", <id>)`, `apps/api/src/supabase/identity.ts`).
+3. Revoke MCP connectors: `POST /v1/connectors/:cid/revoke` for each grant (`apps/api/src/routes/oauth.ts`).
 
 ## 5. Lost phone, lost laptop, only-client recovery
 
@@ -336,7 +337,23 @@ Rooms: `apps/api/src/routes/rooms.ts`, mounted at `/v1/rooms`. Members can only 
 4. For abuse across rooms, revoke the offender's devices (4.2) on legal advice. For uploaded images, follow the takedown in `docs/LEGAL_CHECKLIST.md`.
 5. Room events expire under the retention policy (24 h by default, decision #12).
 
-### 6.6 Release rollback
+### 6.6 Account deletion (ARCO / erasure requests)
+
+`/v1/account` (`apps/api/src/account/routes.ts`, migration `20261004003030`):
+1. **The owner asks** from a trusted client with a passkey step-up: `POST /v1/account/deletion`.
+   - An export of everything Chalito holds is written first: `chalito_private.export_account`, no secrets, stored under `exports/<owner>/` in `ACCOUNT_EXPORT_BUCKET`. The owner downloads it with `GET /v1/account/export`.
+   - Every device gets an L3 security notification.
+   - The deletion is due in 7 days.
+2. **The owner can cancel** until then: `DELETE /v1/account/deletion`, from any of their sessions.
+3. **When due**, Cloud Scheduler calls `POST /tasks/account-deletions` (OIDC as `SCHEDULER_SA_EMAIL`, hourly):
+   - deletes the device Auth users;
+   - deletes the owner's prefixes: `avatars/` and `uploads/` in `AVATAR_BUCKET`, `records/` in `RECORDS_BUCKET`, `exports/`;
+   - runs `chalito_private.delete_account`: everything cascades from `chalito.users`, plus the legacy credit tables and sent usage. Unsent usage stays until the drainer reports it.
+   - Each step is idempotent: a failed owner is retried on the next run.
+4. **Not touched:** the hub account, its balance and payments (Chalyb's). Point the person to Chalyb for those.
+5. **For an operator-run request** (e.g. by email, identity checked): schedule it with `insert into chalito_private.account_deletions …`, or ask the owner to use the app. The 20-business-day ARCO clock covers the 7-day grace.
+
+### 6.7 Release rollback
 
 1. Services: 2.1.
 2. Web: 2.2.

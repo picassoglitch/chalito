@@ -1,5 +1,6 @@
 import type { BucketStore } from "@chalito/guard";
 import type { PhoneDeps } from "./phone/routes.js";
+import type { AccountDeps } from "./account/routes.js";
 import type { StoreDeps } from "./store/routes.js";
 import type { VoiceDeps } from "./voice/routes.js";
 import type { ReleaseStore } from "./releases/gcs.js";
@@ -34,6 +35,8 @@ export interface ApiConfig {
 }
 
 export interface Deps {
+  /** Account deletion and export (/v1/account, /tasks/account-deletions), when storage is configured. */
+  account?: AccountDeps;
   /** Shared rate buckets for the routes marked `shared` in src/limits.ts (Postgres in production). */
   rateBuckets?: BucketStore;
   repo: ApiRepo;

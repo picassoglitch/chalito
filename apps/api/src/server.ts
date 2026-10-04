@@ -6,6 +6,11 @@ import { PostgresBuckets } from "@chalito/guard";
 import { createApp } from "./app.js";
 import { GcsReleaseStore } from "./releases/gcs.js";
 import { PostgresAuditSink, teeAudit } from "./postgres/audit.js";
+import { Storage } from "@google-cloud/storage";
+import { GcsAccountFiles } from "./account/files.js";
+import type { AccountDeps } from "./account/routes.js";
+import { PostgresAccountStore } from "./account/store.js";
+import { googleOidcVerifier } from "./lib/oidc.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
 import { HubClient, HubStreamUsage, PostgresVoiceSessions, compedFrom } from "@chalito/billing";
@@ -48,6 +53,7 @@ const backend = (): {
   store?: StoreDeps;
   rateBuckets: PostgresBuckets;
   serverAudit: PostgresAuditSink;
+  account?: AccountDeps;
 } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
@@ -107,6 +113,33 @@ const backend = (): {
     rooms: new PostgresRoomsRepo(sql),
     rateBuckets: new PostgresBuckets(sql),
     serverAudit: new PostgresAuditSink(sql),
+    // Account deletion and export (ARCO) when the export bucket is configured.
+    ...(process.env.ACCOUNT_EXPORT_BUCKET
+      ? {
+          account: {
+            store: new PostgresAccountStore(sql),
+            files: new GcsAccountFiles(new Storage(), {
+              exportBucket: env("ACCOUNT_EXPORT_BUCKET"),
+              prefixes: [
+                ...(process.env.AVATAR_BUCKET
+                  ? [
+                      { bucket: env("AVATAR_BUCKET"), prefix: (o: string) => `avatars/${o}/` },
+                      { bucket: env("AVATAR_BUCKET"), prefix: (o: string) => `uploads/${o}/` },
+                    ]
+                  : []),
+                ...(process.env.RECORDS_BUCKET
+                  ? [{ bucket: env("RECORDS_BUCKET"), prefix: (o: string) => `records/${o}/` }]
+                  : []),
+              ],
+            }),
+            scheduler: {
+              audience: `${env("API_PUBLIC_URL").replace(/\/$/, "")}/tasks/account-deletions`,
+              email: env("SCHEDULER_SA_EMAIL"),
+            },
+            verifyOidc: googleOidcVerifier(),
+          },
+        }
+      : {}),
   };
 };
 

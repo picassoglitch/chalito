@@ -18,6 +18,7 @@
     "@modelcontextprotocol/server": "2.3.0",
     "hono": "^4.13.12",
     "postgres": "^3.4.9",
+    "tsx": "^4.23.15",
     "zod": "^4.6.5"
   },
   "devDependencies": {

@@ -4,6 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { guard } from "@chalito/guard";
 import type { Deps } from "./deps.js";
 import { API_ROUTES } from "./limits.js";
+import { accountRoutes, accountTaskRoutes } from "./account/routes.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { endorseRoutes } from "./routes/endorse.js";
 import { hubRoutes } from "./routes/hub.js";
@@ -42,6 +43,10 @@ export const createApp = (deps: Deps) => {
   if (deps.store) app.route("/v1/store", storeRoutes(deps, deps.store));
   app.route("/v1/rooms", roomsRoutes(deps));
   if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));
+  if (deps.account) {
+    app.route("/v1/account", accountRoutes(deps, deps.account));
+    app.route("/tasks", accountTaskRoutes(deps, deps.account));
+  }
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
     console.error("[api] unhandled", errorMessage(err));

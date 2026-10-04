@@ -26,6 +26,7 @@
     "jose": "^6.2.12",
     "openai": "7.27.0",
     "postgres": "^3.4.9",
+    "tsx": "^4.23.15",
     "zod": "^4.6.5"
   },
   "devDependencies": {

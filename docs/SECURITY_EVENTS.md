@@ -45,6 +45,11 @@ Each is written with `deps.audit.record({ action, owner, actor, target?, meta? }
 |---|---|---|---|---|---|
 | `device.enrolled` | devices | `apps/api/src/routes/devices.ts` (first client; endorsed) | device user uid | new device id | `{via: "first_client"}` or `{via: "endorsement", by}` |
 | `device.revoked` | devices | `apps/api/src/routes/devices.ts` (`POST /v1/devices/revoke`) | uid | revoked device id | — |
+| `device.revoked_all` | devices | `apps/api/src/routes/devices.ts` (`POST /v1/devices/revoke-all`, passkey step-up) | uid | the calling client | `{clients, commandsQueued, banFailed}` (plus one `device.revoked` per client, `{via: "revoke_all"}`) |
+| `account.deletion_requested` | account | `apps/api/src/account/routes.ts` (`POST /v1/account/deletion`, passkey step-up) | uid | the calling client | `{dueAt}` |
+| `account.deletion_cancelled` | account | `apps/api/src/account/routes.ts` (`DELETE /v1/account/deletion`) | uid | — | — |
+| `account.export_downloaded` | account | `apps/api/src/account/routes.ts` (`GET /v1/account/export`) | uid | — | — |
+| `account.deleted` | account | `apps/api/src/account/routes.ts` (`runDueDeletions`) | `system` | — | `{files}`. BigQuery only in practice: the owner's `server_audit` rows go with the account |
 | `pairing.code_created` | devices | `apps/api/src/routes/pairing.ts` | agent device id | code id | — (**owner null: BigQuery-only**) |
 | `pairing.claimed` | devices | `apps/api/src/routes/pairing.ts` | uid | agent device id | — |
 | `recovery.started` | devices | `apps/api/src/routes/recovery.ts` | uid | — | `{cooldownUntil}` |

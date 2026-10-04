@@ -41,6 +41,7 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/devices/endorsed": sensitive(10, 2, MEDIUM),
   "POST /v1/devices/token": user(30, 0.5),
   "POST /v1/devices/revoke": user(20, 0.2),
+  "POST /v1/devices/revoke-all": sensitive(5, 1, 256 * KB),
   "POST /v1/pairing/codes": sensitive(10, 6),
   "POST /v1/pairing/resolve": sensitive(20, 6),
   "POST /v1/pairing/claim": sensitive(20, 6, MEDIUM),
@@ -102,6 +103,14 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/rooms/:roomId/events": user(120, 5, SEALED),
   "POST /v1/rooms/:roomId/events/:eid/promote": user(30, 0.5),
   "POST /v1/rooms/:roomId/retention": user(20, 0.2),
+
+  // Account deletion (ARCO) and export
+  "GET /v1/account/deletion": user(30, 0.5, 0),
+  "POST /v1/account/deletion": sensitive(5, 0.1, 32 * KB),
+  "DELETE /v1/account/deletion": user(10, 0.1, 0),
+  "GET /v1/account/export": sensitive(10, 0.2, 0),
+  // Cloud Scheduler (OIDC)
+  "POST /tasks/account-deletions": { capacity: 30, refillPerSec: 0.5, bodyBytes: 4 * KB },
 
   // Desktop updater manifest (signed URLs to the private releases bucket)
   "GET /releases/:channel/latest.json": user(30, 1, 0),

@@ -154,6 +154,43 @@ jobs:
       - if: always()
         run: supabase stop --no-backup
 
+  # Container images: build only (never pushed), then boot each one with a read-only root
+  # filesystem and no env: it must load every module and stop on the first missing variable.
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { app: api, entry: src/server.ts, expect: "is required" }
+          - { app: notifier, entry: src/server.ts, expect: "is required" }
+          - { app: orchestrator, entry: src/server.ts, expect: "is required" }
+          - { app: mcp-gateway, entry: src/server.ts, expect: "is required" }
+          - { app: avatar-jobs, entry: src/job.ts, expect: "AVATAR_BUCKET and UPLOAD_PATH are required" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/service.Dockerfile
+          build-args: |
+            APP=${{ matrix.app }}
+            ENTRY=${{ matrix.entry }}
+          tags: chalito-${{ matrix.app }}:ci
+          load: true
+          push: false
+      - name: Boot read-only, as non-root, without env
+        run: |
+          set +e
+          out=$(docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges chalito-${{ matrix.app }}:ci 2>&1)
+          code=$?
+          set -e
+          echo "$out" | tail -5
+          test "$code" -ne 0
+          echo "$out" | grep -q "${{ matrix.expect }}"
+          test "$(docker inspect -f '{{.Config.User}}' chalito-${{ matrix.app }}:ci)" = "nonroot:nonroot"
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:

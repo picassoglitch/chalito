@@ -80,9 +80,20 @@ export class SupabaseIssuer implements IdentityIssuer {
    * cut it off meanwhile.
    */
   async disableDevice(deviceId: string) {
-    await this.auth.admin
+    // supabase-js reports failures as `{ error }`, not by throwing: check it (R-L10).
+    const res = await this.auth.admin
       .updateUserById(chalitoAuthUserId("device", deviceId), { ban_duration: BAN_FOREVER })
-      .catch(() => undefined);
+      .catch((err: unknown) => ({ error: err }));
+    if (res.error) {
+      console.error("[api] device ban failed", deviceId, res.error instanceof Error ? res.error.message : "error");
+      return false;
+    }
+    return true;
+  }
+
+  async deleteDevice(deviceId: string) {
+    const { error } = await this.auth.admin.deleteUser(chalitoAuthUserId("device", deviceId));
+    if (error && (error as { status?: number }).status !== 404) throw error;
   }
 
   async #ensureUser(id: string, email: string, chalito: Record<string, string>) {

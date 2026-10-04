@@ -124,6 +124,32 @@ export class PostgresRepo implements ApiRepo {
     return exists ? ("already_revoked" as const) : ("not_found" as const);
   }
 
+  async revokeOtherClients(owner: string, keep: string, at: number) {
+    const rows = await this.sql<{ device_id: string }[]>`
+      update chalito.devices set revoked = true, revoked_at = ${ts(at)}, revoked_by = ${keep}
+      where owner = ${owner} and role = 'client' and revoked = false and device_id <> ${keep}
+      returning device_id`;
+    return rows.map((r) => r.device_id).sort();
+  }
+
+  async activeAgents(owner: string) {
+    const rows = await this.sql<{ device_id: string }[]>`
+      select device_id from chalito.devices where owner = ${owner} and role = 'agent' and revoked = false`;
+    return rows.map((r) => r.device_id).sort();
+  }
+
+  async queueCommand(
+    owner: string,
+    c: { targetDeviceId: string; id: string; env: unknown; fromDeviceId: string; expiresAt: number },
+  ) {
+    const rows = await this.sql`
+      insert into chalito.commands (owner, target_device_id, id, env, from_device_id, expires_at)
+      values (${owner}, ${c.targetDeviceId}, ${c.id}, ${this.sql.json(c.env as never)}, ${c.fromDeviceId}, ${ts(c.expiresAt)})
+      on conflict do nothing
+      returning id`;
+    return rows.length > 0;
+  }
+
   async enrollFirstClient(owner: string, doc: DeviceDoc, recovery: StoredRecovery) {
     return this.sql.begin(async (tx) => {
       // Serialises enrolments per account: concurrent callers queue on the user row.
