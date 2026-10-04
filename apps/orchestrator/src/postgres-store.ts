@@ -126,21 +126,21 @@ export class PostgresMesaStore implements MesaStore {
   // ---- signed answers to Mesa decisions (verified by the caller before resolveDecision)
   async pendingDecisions(filter: { owner?: string; aid?: string }): Promise<PendingDecision[]> {
     const rows = await this.sql<
-      { owner: string; aid: string; request_id: string; signer: string; decision: unknown }[]
+      { owner: string; aid: string; request_id: string; id: string; signer: string; decision: unknown }[]
     >`
-      select a.owner, a.aid, a.request_id, d.signer_device_id as signer, d.decision
+      select a.owner, a.aid, a.request_id, d.id, d.signer_device_id as signer, d.decision
       from chalito.approvals a
       join chalito.approval_decisions d on d.owner = a.owner and d.aid = a.aid
       where a.kind = 'decision' and a.device_id = 'orchestrator' and a.status = 'pending' and a.expires_at > now()
         and (${filter.owner ?? null}::text is null or a.owner = ${filter.owner ?? null})
         and (${filter.aid ?? null}::text is null or a.aid = ${filter.aid ?? null})
-      order by a.owner, a.aid, d.created_at, d.signer_device_id
+      order by a.owner, a.aid, d.rev
       limit 500`;
     const out = new Map<string, PendingDecision>();
     for (const r of rows) {
       const k = `${r.owner}/${r.aid}`;
       if (!out.has(k)) out.set(k, { owner: r.owner, aid: r.aid, requestId: r.request_id, answers: [] });
-      out.get(k)!.answers.push({ signer: r.signer, decision: r.decision });
+      out.get(k)!.answers.push({ id: String(r.id), signer: r.signer, decision: r.decision });
     }
     return [...out.values()];
   }
@@ -155,9 +155,9 @@ export class PostgresMesaStore implements MesaStore {
       where owner = ${owner} and aid <> ${aid} and decision #>> '{body,nonce}' = ${nonce} limit 1`;
     return r.length > 0;
   }
-  async resolveDecision(owner: string, aid: string, signer: string) {
+  async resolveDecision(owner: string, aid: string, signer: string, id: string) {
     const [r] = await this.sql<{ s: "approved" | "denied" | null }[]>`
-      select chalito_private.resolve_orchestrator_decision(${owner}, ${aid}, ${signer}) as s`;
+      select chalito_private.resolve_orchestrator_decision(${owner}, ${aid}, ${signer}, ${id}::uuid) as s`;
     return r?.s ?? null;
   }
 }

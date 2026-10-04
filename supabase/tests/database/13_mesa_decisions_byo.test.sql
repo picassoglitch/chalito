@@ -1,6 +1,7 @@
 -- Migration 002300: the orchestrator can only CREATE pending Mesa decisions; nothing resolves one on
 -- insert. Only chalito_server can call resolve_orchestrator_decision (after it verified the
--- signature), which re-checks the rows and can never touch an agent's approval. BYO brain keys:
+-- signature), which re-checks the row it verified (by id since migration 003510) and can never
+-- touch an agent's approval. BYO brain keys:
 -- sealed copy readable by the person's clients, KMS-wrapped copy server-only, gone when cloud is off.
 begin;
 create extension if not exists pgtap with schema extensions;
@@ -28,6 +29,12 @@ language sql as $$
   select jsonb_build_object('ctx', 'chalito.decision.v1', 'signerDeviceId', signer, 'sig', 'x',
     'body', jsonb_build_object('v', 1, 'aid', aid, 'requestId', request, 'uid', 'dc-user', 'targetDeviceId', target,
                                'allow', allow, 'choice', 1)) $$;
+
+-- The id of a signer's (latest) attempt for an approval: the row the orchestrator verified.
+create function pg_temp.did(aid text, signer text) returns uuid language sql as $$
+  select d.id from chalito.approval_decisions d
+  where d.owner = 'dc-user' and d.aid = did.aid and d.signer_device_id = signer
+  order by d.created_at desc, d.rev desc limit 1 $$;
 
 insert into chalito.tenants (id) values ('dc-user');
 insert into chalito.users (id, tenant_id) values ('dc-user', 'dc-user');
@@ -65,19 +72,19 @@ select pg_temp.as_device('dc-user', 'dc_phone', 'client');
 select lives_ok($$insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
   values ('dc-user', 'apr_m1', 'dc_phone', '{"garbage": true}')$$,
   'client: a stolen token can insert garbage (RLS can''t check a signature)');
-select throws_ok($$select chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_phone')$$, '42501', null,
+select throws_ok($$select chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_phone', gen_random_uuid())$$, '42501', null,
   'client: can''t call the resolve function');
 select pg_temp.logout();
 select is((select status from chalito.approvals where aid = 'apr_m1'), 'pending', 'garbage resolves nothing on insert');
 
 set local role chalito_gateway;
-select throws_ok($$select chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_phone')$$, '42501', null,
+select throws_ok($$select chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_phone', gen_random_uuid())$$, '42501', null,
   'gateway: can''t call it either');
 reset role;
 
 -- ---------------------------------------------------------------- only the orchestrator, after verifying
 set local role chalito_server;
-select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_phone'), null,
+select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_phone', pg_temp.did('apr_m1', 'dc_phone')), null,
   'server: a malformed answer is refused by the SQL re-check too');
 reset role;
 
@@ -87,14 +94,14 @@ values ('dc-user', 'apr_m1', 'dc_tablet', pg_temp.decision('apr_m1', 'dc_tablet'
 select pg_temp.logout();
 update chalito.devices set revoked = true where device_id = 'dc_tablet';
 set local role chalito_server;
-select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_tablet'), null,
+select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_tablet', pg_temp.did('apr_m1', 'dc_tablet')), null,
   'server: a revoked signer''s answer doesn''t resolve');
 reset role;
 update chalito.devices set revoked = false where device_id = 'dc_tablet';
 set local role chalito_server;
-select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_tablet'), 'denied',
+select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_tablet', pg_temp.did('apr_m1', 'dc_tablet')), 'denied',
   'server: a well-formed answer from an active client resolves it');
-select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_tablet'), null,
+select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m1', 'dc_tablet', pg_temp.did('apr_m1', 'dc_tablet')), null,
   'server: and only once');
 reset role;
 select is((select status || '/' || reason from chalito.approvals where aid = 'apr_m1'), 'denied/signed:dc_tablet:choice=1',
@@ -106,7 +113,7 @@ insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
 values ('dc-user', 'apr_agent', 'dc_phone', pg_temp.decision('apr_agent', 'dc_phone', true, 'orchestrator', 'r'));
 select pg_temp.logout();
 set local role chalito_server;
-select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_agent', 'dc_phone'), null,
+select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_agent', 'dc_phone', pg_temp.did('apr_agent', 'dc_phone')), null,
   'server: an agent approval is untouchable through the function');
 reset role;
 select is((select status from chalito.approvals where aid = 'apr_agent'), 'pending', 'the agent approval stays pending');
@@ -121,7 +128,7 @@ insert into chalito.approval_decisions (owner, aid, signer_device_id, decision)
 values ('dc-user', 'apr_m2', 'dc_phone', pg_temp.decision('apr_m2', 'dc_phone', true, 'orchestrator', 't_other'));
 select pg_temp.logout();
 set local role chalito_server;
-select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m2', 'dc_phone'), null,
+select is(chalito_private.resolve_orchestrator_decision('dc-user', 'apr_m2', 'dc_phone', pg_temp.did('apr_m2', 'dc_phone')), null,
   'server: an answer for another request doesn''t resolve');
 reset role;
 

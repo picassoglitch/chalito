@@ -254,14 +254,11 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
     const p = await s.person("hugo");
     await s.enrolPasskey(p);
     const { device: agentDevice } = await s.pairAgent(p, "Laptop de Hugo");
-    // A second client (an endorsed browser, no passkey): the device a forged decision is filed as.
-    const { device: web, endorsement } = await s.endorseBrowser(p, [await s.agentRef(agentDevice, "Laptop de Hugo")]);
     const trust = new TrustedClientList(agentDevice.deviceId);
     await trust.addConfirmed(
       { deviceId: p.phone.deviceId, pubSign: p.phone.pubSign, pubBox: p.phone.pubBox, webauthn: p.credential! },
       Date.now(),
     );
-    expect(await trust.addEndorsed(endorsement, Date.now())).toMatchObject({ ok: true });
     const push: FakeStep[] = [{ tool: "Bash", input: { command: "git push origin main" } }];
     const fake = fakeClaudeCode([push]);
     agent = await startAgent({
@@ -394,14 +391,14 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
         : body;
       return signEnvelope("chalito.decision.v1", full, signer.deviceId, signer.secretKey);
     };
-    // A forged allow (filed as the browser, signed by a key the agent never trusted) is ignored.
-    // One decision row per (approval, device): it goes on the browser's row, not the phone's.
+    // A forged allow (filed with the phone's session, signed by a key the agent never trusted) is
+    // ignored, and doesn't block the phone's own decision (each attempt is its own row, 003510).
     const forger = await keys();
-    const forged = await web.db.from("approval_decisions").insert({
+    const forged = await p.phone.db.from("approval_decisions").insert({
       owner: p.owner,
       aid: a.aid,
-      signer_device_id: web.deviceId,
-      decision: await decision({ deviceId: web.deviceId, secretKey: forger.sign.secretKey }, false),
+      signer_device_id: p.phone.deviceId,
+      decision: await decision({ deviceId: p.phone.deviceId, secretKey: forger.sign.secretKey }, true),
     });
     expect(forged.error).toBeNull();
     await new Promise((r) => setTimeout(r, 2000));
@@ -788,14 +785,11 @@ describe.skipIf(!READY)(
       const p = await s.person("gabi");
       await s.enrolPasskey(p);
       const { device: agentDevice } = await s.pairAgent(p, "Laptop de Gabi");
-      // A second trusted client without a passkey (an endorsed browser).
-      const { device: web, endorsement } = await s.endorseBrowser(p, [await s.agentRef(agentDevice, "Laptop de Gabi")]);
       const trust = new TrustedClientList(agentDevice.deviceId);
       await trust.addConfirmed(
         { deviceId: p.phone.deviceId, pubSign: p.phone.pubSign, pubBox: p.phone.pubBox, webauthn: p.credential! },
         Date.now(),
       );
-      expect(await trust.addEndorsed(endorsement, Date.now())).toMatchObject({ ok: true });
       const push: FakeStep[] = [{ tool: "Bash", input: { command: "git push origin fix-login" } }];
       const fake = fakeClaudeCode([[{ say: "Listo." }], push]);
       agent = await startAgent({
@@ -955,9 +949,9 @@ describe.skipIf(!READY)(
           .insert({ owner: p.owner, aid: a.aid, signer_device_id: by.deviceId, decision });
         return r.error;
       };
-      // A trusted client's signed allow WITHOUT a passkey step-up doesn't release a HIGH action
-      // from an MCP turn (R-C1).
-      expect(await decide(web, false)).toBeNull();
+      // The phone's signed allow WITHOUT the passkey step-up doesn't release a HIGH action from an
+      // MCP turn (R-C1); and it doesn't block the phone's next attempt (migration 003510).
+      expect(await decide(p.phone, false)).toBeNull();
       await new Promise((r) => setTimeout(r, 2000));
       expect(fake.run.ran).toHaveLength(0);
       // The phone's passkey-signed allow does.
