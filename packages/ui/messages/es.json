@@ -521,7 +521,8 @@
         "step_up": "Hace falta tu passkey para aprobar. Vuelve a intentarlo.",
         "not_trusted": "Este dispositivo ya no es de confianza.",
         "tampered": "Los datos no coinciden. No lo apruebes y muestra un código nuevo.",
-        "failed": "Algo salió mal. Vuelve a intentarlo."
+        "failed": "Algo salió mal. Vuelve a intentarlo.",
+        "passkey_cloned": "Tu passkey parece copiada: no se aprobó. Revisa tus dispositivos y crea una passkey nueva."
       }
     }
   }

@@ -521,7 +521,8 @@
         "step_up": "Your passkey is needed to approve. Try again.",
         "not_trusted": "This device is no longer trusted.",
         "tampered": "The details don't match. Don't approve it; show a new code.",
-        "failed": "Something went wrong. Try again."
+        "failed": "Something went wrong. Try again.",
+        "passkey_cloned": "Your passkey looks copied, so nothing was approved. Check your devices and create a new passkey."
       }
     }
   }

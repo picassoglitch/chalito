@@ -161,6 +161,7 @@ export type AddError =
   | "step_up"
   | "not_trusted"
   | "tampered"
+  | "passkey_cloned"
   | "failed";
 
 const ADD_REASONS: Record<string, AddError> = {
@@ -183,6 +184,7 @@ const ADD_REASONS: Record<string, AddError> = {
   code_mismatch: "tampered",
   endorsement_mismatch: "tampered",
   stale_endorsement: "failed",
+  authenticator_cloned: "passkey_cloned",
 };
 
 export const addReason = (err: unknown): AddError => {

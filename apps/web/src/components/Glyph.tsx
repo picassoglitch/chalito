@@ -3,6 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { GlyphDecoder, renderGlyphFrames } from "@chalito/glyph";
 import type { GlyphPayload } from "@chalito/protocol";
 
+/** Same pace as the desktop panel's ring; the decoder assembles frames in any order. */
+const FRAME_MS = 250;
+
 /** The animated ring a trusted device scans (ADR 0007). It loops its frames; the scanner assembles them. */
 export const GlyphCanvas = ({ glyph, size = 240, label }: { glyph: GlyphPayload; size?: number; label: string }) => {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -21,7 +24,7 @@ export const GlyphCanvas = ({ glyph, size = 240, label }: { glyph: GlyphPayload;
     let i = 0;
     ctx.putImageData(frames[0]!, 0, 0);
     // The ring carries data in every frame: it keeps animating even with reduced motion.
-    const t = setInterval(() => ctx.putImageData(frames[(i = (i + 1) % frames.length)]!, 0, 0), 160);
+    const t = setInterval(() => ctx.putImageData(frames[(i = (i + 1) % frames.length)]!, 0, 0), FRAME_MS);
     return () => clearInterval(t);
   }, [glyph, size]);
   return (

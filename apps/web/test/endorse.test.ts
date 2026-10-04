@@ -173,6 +173,15 @@ describe("adding a browser (/v1/endorse)", () => {
       ok: false,
       reason: "step_up",
     });
+    const cloned: ApiClient = {
+      post: async () => {
+        throw new ApiError(403, "authenticator_cloned");
+      },
+    };
+    expect(await approveTarget(cloned, trusted, r.target, { owner: OWNER, now: Date.now() })).toEqual({
+      ok: false,
+      reason: "passkey_cloned",
+    });
     // A cancelled passkey prompt is a step-up problem too, and nothing is posted.
     const stepUp = async () => {
       throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
