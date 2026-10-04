@@ -1,0 +1,19 @@
+[package]
+name = "chalito-desktop"
+version = "0.0.0"
+description = "Chalito desktop companion (pet, panel, room)"
+edition = "2021"
+rust-version = "1.77.2"
+publish = false
+
+[lib]
+name = "chalito_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

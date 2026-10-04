@@ -3,7 +3,18 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["**/node_modules/**", "**/dist/**", "**/.turbo/**", "infra/**"] },
+  {
+    ignores: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/.turbo/**",
+      "infra/**",
+      "**/.next/**",
+      "**/next-env.d.ts",
+      "**/test-results/**",
+      "**/playwright-report/**",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -13,6 +24,10 @@ export default tseslint.config(
       "@typescript-eslint/consistent-type-imports": "error",
       "no-console": ["error", { allow: ["warn", "error"] }],
     },
+  },
+  {
+    files: ["apps/web/public/sw.js"],
+    languageOptions: { globals: { ...globals.serviceworker } },
   },
   {
     files: ["**/*.test.ts", "**/cli.ts", "**/*-cli.ts"],
