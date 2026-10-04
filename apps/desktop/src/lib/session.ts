@@ -18,6 +18,11 @@ import { enrollDesktop } from "./enrollment.js";
 import { SignInController } from "./sign-in.js";
 import { SsoFlow, exchange } from "./sso.js";
 import { platformAuthenticatorAvailable } from "./stepup.js";
+import type { RoomsDb } from "@chalito/rooms";
+import { companionIdFor } from "./companion.js";
+import { roomSeen } from "./room-seen.js";
+import { roomsSource, type RoomsSource } from "./rooms-source.js";
+import { shell } from "./shell.js";
 import type { VoiceProvider } from "./voice.js";
 import { webrtcVoice } from "./webrtc-voice.js";
 
@@ -69,6 +74,8 @@ export interface Connected {
   canStepUp: boolean;
   /** Push-to-talk voice as this device (WebRTC, SDP proxied by the api). */
   voice: VoiceProvider;
+  /** Salas: this companion's rooms; each opens in the room window. */
+  rooms: RoomsSource;
 }
 
 /**
@@ -118,6 +125,13 @@ export const createSession = async (
     onConnected({
       client,
       canStepUp: passkey !== null,
+      rooms: roomsSource({
+        db: sb as unknown as RoomsDb,
+        api,
+        companionId: () => companionIdFor(sb, owner),
+        seen: roomSeen(),
+        open: (roomId) => shell().openRoom(roomId),
+      }),
       voice: webrtcVoice({
         apiBase: env.apiBase,
         token,

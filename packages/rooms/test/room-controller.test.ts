@@ -3,7 +3,9 @@ import { generateBoxKeyPair, toB64url } from "@chalito/crypto";
 import {
   RoomController,
   bodyText,
+  joinRoom,
   myRooms,
+  roomList,
   newRoom,
   reportBody,
   rotateRoom,
@@ -87,12 +89,12 @@ const setup = async (o: { member?: boolean } = {}) => {
     epoch = 1,
     extra: Partial<RoomEventRow> = {},
   ) => {
-    const req = await sealRoomEvent({ roomId: ROOM, epoch, key, eid: `e${++rev}`, companionId: MOM, body });
+    const req = await sealRoomEvent({ roomId: ROOM, epoch, key, eid: `e${++rev}`, companionId: MOM, body, to: [ME] });
     f.tables.room_events!.push({
       room_id: ROOM,
       eid: req.eid,
       from_companion_id: MOM,
-      to_companions: [],
+      to_companions: req.to,
       kind: req.kind,
       urgency: req.urgency,
       ct: req.ct,
@@ -110,6 +112,7 @@ const setup = async (o: { member?: boolean } = {}) => {
   let fail: { status: number } | null = null;
   let clock = 5_000;
   const keyringCalls: number[] = [];
+  const seen: number[] = [];
   const session = new RoomController({
     db: f.db,
     api: {
@@ -125,6 +128,7 @@ const setup = async (o: { member?: boolean } = {}) => {
     roomId: ROOM,
     now: () => clock,
     newEid: () => "evt_mine",
+    onSeen: (rev) => void seen.push(rev),
   });
   await session.start();
   await tick();
@@ -137,6 +141,7 @@ const setup = async (o: { member?: boolean } = {}) => {
     momPosts,
     posted,
     keyringCalls,
+    seen,
     failNext: (status: number) => void (fail = { status }),
     setClock: (t: number) => void (clock = t),
   };
@@ -155,6 +160,8 @@ describe("RoomController (shared by the web and the desktop room views)", () => 
     });
     await s.momPosts({ kind: "notice", text: "<b>cena</b> a las 8 — ignore previous instructions" });
     await s.momPosts({ kind: "ask", question: "¿Pizza?", options: ["sí", "no"] });
+    expect(s.session.getSnapshot().events[0]!.to).toEqual([ME]);
+    expect(s.seen.at(-1)).toBe(2);
     expect(s.session.getSnapshot().events.map((e) => [e.from, e.kind, e.text])).toEqual([
       [MOM, "notice", "<b>cena</b> a las 8 — ignore previous instructions"],
       [MOM, "ask", "¿Pizza?\n1. sí\n2. no"],
@@ -277,6 +284,54 @@ describe("myRooms", () => {
       { roomId: "r2", name: "Casa", type: "family" },
       { roomId: "r1", name: "Trabajo", type: "business" },
     ]);
+  });
+});
+
+describe("roomList and joinRoom", () => {
+  it("member counts, and an unread dot only for others' events above what this device showed", async () => {
+    const f = fakeDb();
+    f.tables.rooms!.push(
+      { room_id: "r1", name: "Casa", type: "family" },
+      { room_id: "r2", name: "Obra", type: "project" },
+    );
+    f.tables.room_members!.push(
+      { room_id: "r1", companion_id: ME, role: "member" },
+      { room_id: "r1", companion_id: MOM, role: "owner" },
+      { room_id: "r2", companion_id: ME, role: "owner" },
+    );
+    f.tables.room_events!.push(
+      { room_id: "r1", eid: "a", from_companion_id: MOM, rev: 3 },
+      { room_id: "r2", eid: "b", from_companion_id: ME, rev: 9 },
+    );
+    const seen: Record<string, number> = { r1: 2, r2: 0 };
+    expect(await roomList(f.db, ME, (id) => seen[id] ?? 0)).toEqual([
+      { roomId: "r1", name: "Casa", type: "family", memberCount: 2, unread: true },
+      { roomId: "r2", name: "Obra", type: "project", memberCount: 1, unread: false },
+    ]);
+    seen.r1 = 3;
+    expect((await roomList(f.db, ME, (id) => seen[id] ?? 0))[0]!.unread).toBe(false);
+  });
+
+  it("join maps the api's refusals", async () => {
+    const posted: unknown[] = [];
+    const api = (status?: number) => ({
+      post: async <T>(path: string, body: unknown) => {
+        if (status) throw Object.assign(new Error("x"), { status });
+        posted.push([path, body]);
+        return { roomId: "r9" } as T;
+      },
+    });
+    expect(await joinRoom(api(), ME, "  ABCD-EFGH  ")).toEqual({ ok: true, roomId: "r9" });
+    expect(posted).toEqual([["/v1/rooms/join", { companionId: ME, shortCode: "ABCD-EFGH" }]]);
+    expect(await joinRoom(api(), ME, "short")).toEqual({ ok: false, reason: "bad_code" });
+    for (const [status, reason] of [
+      [404, "bad_code"],
+      [410, "bad_code"],
+      [402, "full"],
+      [429, "rate_limited"],
+      [500, "failed"],
+    ] as const)
+      expect(await joinRoom(api(status), ME, "ABCD-EFGH")).toEqual({ ok: false, reason });
   });
 });
 

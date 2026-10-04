@@ -7,6 +7,7 @@ import {
 } from "@chalito/client";
 import { KeyVault, httpApi } from "@chalito/client-keys";
 import { unwrapKeyring, type RoomControllerDeps, type RoomsDb } from "@chalito/rooms";
+import { companionIdFor } from "./companion.js";
 import { loadStored, type DesktopEnv, type Stored } from "./session.js";
 
 /** What every RoomController in the room window shares (all but the roomId). */
@@ -33,31 +34,14 @@ export const roomWindowDeps = async (io: RoomWindowIo): Promise<RoomWindowDeps |
   const token = storedAccessToken(io.storage);
   if (!account || !keys || !(await token())) return null;
   const db = io.supabase(token);
-  const { data, error } = await (
-    db as unknown as {
-      from(t: "companions"): {
-        select(c: "companion_id"): {
-          eq(
-            c: "owner",
-            v: string,
-          ): {
-            maybeSingle(): PromiseLike<{ data: { companion_id?: unknown } | null; error: unknown }>;
-          };
-        };
-      };
-    }
-  )
-    .from("companions")
-    .select("companion_id")
-    .eq("owner", account.owner)
-    .maybeSingle();
-  if (error || typeof data?.companion_id !== "string") return null;
+  const companionId = await companionIdFor(db, account.owner);
+  if (!companionId) return null;
   return {
     db: db as unknown as RoomsDb,
     api: io.api(token),
     keyring: (rows) => unwrapKeyring(rows, keys.box),
     deviceId: keys.deviceId,
-    companionId: data.companion_id,
+    companionId,
   };
 };
 

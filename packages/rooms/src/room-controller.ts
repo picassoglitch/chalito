@@ -29,6 +29,8 @@ export interface RoomMemberView {
 export interface RoomEventView {
   eid: string;
   from: string;
+  /** Addressed companions (empty = everyone): metadata the room scene uses for choreography. */
+  to: readonly string[];
   kind: string;
   t: number;
   /** Plain text to render as text (never HTML). */
@@ -73,6 +75,8 @@ export interface RoomControllerDeps {
   roomId: string;
   now?: () => number;
   newEid?: () => string;
+  /** The highest event rev this view has shown (for an app's unread marker). */
+  onSeen?: (rev: number) => void;
 }
 
 /** The plain text a body shows (quoted data, never instructions or markup). */
@@ -125,6 +129,67 @@ const rowsOf = async (q: Rows) => {
   return data ?? [];
 };
 const ms = (v: string | number) => new Date(v).getTime();
+
+export interface RoomListItem extends RoomSummary {
+  memberCount: number;
+  /** Someone else posted after `seen(roomId)`. */
+  unread: boolean;
+}
+
+/**
+ * The rooms list with what a list needs: member count and an unread dot (an event from another
+ * companion above the rev this device last showed). Metadata only: nothing is decrypted here.
+ */
+export const roomList = async (
+  db: RoomsDb,
+  companionId: string,
+  seen: (roomId: string) => number,
+): Promise<RoomListItem[]> => {
+  const d = db as unknown as Reads & {
+    from(t: "room_events"): {
+      select(c: string): {
+        eq(c: string, v: unknown): { gt(c: string, v: number): { order(c: string, o: { ascending: boolean }): Rows } };
+      };
+    };
+  };
+  const out: RoomListItem[] = [];
+  for (const r of await myRooms(db, companionId)) {
+    const members = await rowsOf(d.from("room_members").select("companion_id").eq("room_id", r.roomId));
+    const newer = await rowsOf(
+      d
+        .from("room_events")
+        .select("rev, from_companion_id")
+        .eq("room_id", r.roomId)
+        .gt("rev", seen(r.roomId))
+        .order("rev", { ascending: true }),
+    );
+    out.push({ ...r, memberCount: members.length, unread: newer.some((e) => e.from_companion_id !== companionId) });
+  }
+  return out;
+};
+
+export type JoinError = "bad_code" | "full" | "rate_limited" | "failed";
+
+/** Join with a typed invite code. The room key is wrapped to this device next, by a member. */
+export const joinRoom = async (
+  api: RoomApiClient,
+  companionId: string,
+  shortCode: string,
+): Promise<{ ok: true; roomId: string } | { ok: false; reason: JoinError }> => {
+  const code = shortCode.trim();
+  if (code.length < 8 || code.length > 20) return { ok: false, reason: "bad_code" };
+  try {
+    const r = await api.post<{ roomId: string }>("/v1/rooms/join", { companionId, shortCode: code });
+    return { ok: true, roomId: r.roomId };
+  } catch (err) {
+    const status = (err as { status?: unknown } | null)?.status;
+    // An unknown, used-up or expired invite: 400/404/410; the owner's plan caps members: 402.
+    if (status === 400 || status === 404 || status === 410) return { ok: false, reason: "bad_code" };
+    if (status === 402) return { ok: false, reason: "full" };
+    if (status === 429) return { ok: false, reason: "rate_limited" };
+    return { ok: false, reason: "failed" };
+  }
+};
 
 /** The rooms this companion belongs to (RLS: its own memberships), by name. */
 export const myRooms = async (db: RoomsDb, companionId: string): Promise<RoomSummary[]> => {
@@ -302,6 +367,7 @@ export class RoomController {
       out.push({
         eid: r.eid,
         from: r.from_companion_id,
+        to: r.to_companions ?? [],
         kind: r.kind,
         t: ms(r.t),
         text: body ? bodyText(body) : null,
@@ -311,6 +377,8 @@ export class RoomController {
     }
     if (this.ended) return;
     this.#set({ events: out.sort((a, b) => a.t - b.t) });
+    const top = Math.max(0, ...[...this.#rows.values()].map((r) => Number(r.rev)));
+    if (top > 0) this.d.onSeen?.(top);
   }
 
   #onFeedStatus(status: string): void {

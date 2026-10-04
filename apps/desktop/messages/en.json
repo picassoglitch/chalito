@@ -3,7 +3,8 @@
     "inbox": "Inbox",
     "settings": "Settings",
     "security": "Security",
-    "voice": "Voice"
+    "voice": "Voice",
+    "rooms": "Rooms"
   },
   "dnd": "Do not disturb",
   "offline": "Not connected to your account. Pair this computer with “chalito pair”.",
@@ -19,7 +20,8 @@
     "approveOnPhone": "Approve this action from your phone",
     "unverified": "Unverified: your computer didn't sign what you see. You can only deny it.",
     "showFull": "Show the full command",
-    "openFullFirst": "Open the full command before approving"
+    "openFullFirst": "Open the full command before approving",
+    "openRoom": "Open room"
   },
   "security": {
     "localOnly": "These screens only work on this computer. Neither your phone nor the web can change them.",
@@ -184,5 +186,25 @@
     "relaunch": "Restart now",
     "unavailable": "This build doesn't update itself.",
     "error": "Couldn't update. Try again later."
+  },
+  "rooms": {
+    "title": "Your rooms",
+    "loading": "Loading rooms…",
+    "loadFailed": "Couldn't load your rooms.",
+    "none": "You're not in any room yet.",
+    "unread": "New messages",
+    "members": "{n} members",
+    "open": "Open",
+    "join": "Join with a code",
+    "joinButton": "Join",
+    "codePlaceholder": "Invite code",
+    "joined": "Done. A member will give you access to the messages shortly.",
+    "joinError": {
+      "bad_code": "That code isn't valid or has expired.",
+      "full": "The room is full.",
+      "rate_limited": "Too many tries. Wait a moment.",
+      "failed": "Couldn't join. Try again.",
+      "no_companion": "Your companion isn't ready yet. Finish setting up your account."
+    }
   }
 }
