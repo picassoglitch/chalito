@@ -278,6 +278,19 @@ describe("RoomController (shared by the web and the desktop room views)", () => 
       reason: "rate_limited",
     });
   });
+  it("removeMember: the owner removes another member; a member, or removing yourself, is not_owner", async () => {
+    const s = await setup({ owner: true });
+    expect(await s.session.removeMember(ME)).toEqual({ ok: false, reason: "not_owner" });
+    expect(await s.session.removeMember(MOM)).toEqual({ ok: true });
+    expect(s.posted.at(-1)).toEqual({ path: `/v1/rooms/${ROOM}/members/${MOM}/remove`, body: { companionId: ME } });
+    expect(s.session.getSnapshot().members.map((m) => m.companionId)).toEqual([ME]);
+    s.failNext(403);
+    expect(await s.session.removeMember(MOM)).toEqual({ ok: false, reason: "not_owner" });
+
+    const m = await setup();
+    expect(await m.session.removeMember(MOM)).toEqual({ ok: false, reason: "not_owner" });
+    expect(m.posted).toEqual([]);
+  });
 });
 
 describe("RoomController: managing a room", () => {

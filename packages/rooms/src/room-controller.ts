@@ -14,7 +14,7 @@ import {
 /**
  * One room as a member's app shows it (ADR 0010), shared by the web and the desktop: the room and
  * its members, the decrypted events as PLAIN TEXT (quoted data, never markup or instructions),
- * and the actions a member has (post a notice, leave, report). The box secret never comes here:
+ * and the actions a member has (post a notice, leave, report; the owner also removes members). The box secret never comes here:
  * `keyring(rows)` unwraps this device's room_member_keys rows inside the app's key loader.
  *
  * Status: `live` while the feed runs; `kicked`/`dissolved` when RoomFeed stops itself (R-L14);
@@ -392,6 +392,28 @@ export class RoomController {
       return { ok: true };
     } catch (err) {
       return { ok: false, reason: errorOf(err) };
+    }
+  }
+
+  /**
+   * The owner removes another member ("Quitar de la sala"). Like a leave, the room then needs a key
+   * rotation before anyone posts again; the removed member's feed ends as `kicked` (R-L14).
+   * `not_owner` when this companion isn't the owner, or the target is the owner itself.
+   */
+  async removeMember(companionId: string): Promise<{ ok: true } | { ok: false; reason: RoomError }> {
+    if (this.ended) return { ok: false, reason: "ended" };
+    const me = this.#snap.members.find((m) => m.me);
+    if (me?.role !== "owner" || companionId === this.d.companionId) return { ok: false, reason: "not_owner" };
+    try {
+      await this.d.api.post(
+        `/v1/rooms/${encodeURIComponent(this.d.roomId)}/members/${encodeURIComponent(companionId)}/remove`,
+        { companionId: this.d.companionId },
+      );
+      this.#set({ members: this.#snap.members.filter((m) => m.companionId !== companionId) });
+      return { ok: true };
+    } catch (err) {
+      const reason = errorOf(err);
+      return { ok: false, reason: reason === "not_member" ? "not_owner" : reason };
     }
   }
 

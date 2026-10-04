@@ -101,6 +101,7 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/rooms/:roomId/members/:companionId/devices": user(30, 0.5, MEDIUM),
   "POST /v1/rooms/:roomId/keys": user(30, 0.5, SEALED),
   "POST /v1/rooms/:roomId/leave": user(20, 0.2),
+  "POST /v1/rooms/:roomId/members/:companionId/remove": user(20, 0.2),
   "POST /v1/rooms/:roomId/rotate": user(20, 0.2, SEALED),
   "POST /v1/rooms/:roomId/dissolve": user(10, 0.1),
   "POST /v1/rooms/:roomId/events": user(120, 5, SEALED),

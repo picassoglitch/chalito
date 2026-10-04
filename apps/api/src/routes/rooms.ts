@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { canonicalize } from "@chalito/crypto";
 import { generateShortCode, hashShortCode, normalizeShortCode, verifyGlyph } from "@chalito/glyph";
 import {
+  CompanionId,
   CreateRoomInviteRequest,
   CreateRoomRequest,
   GlyphPayload,
@@ -217,6 +218,26 @@ export const roomsRoutes = (deps: Deps & { rooms?: RoomsRepo }) => {
     const b = await parse(RoomActorRequest, await json(c));
     await run(() => repo().leave({ uid: p.owner, companion: b.companionId, roomId: c.req.param("roomId") }));
     await deps.audit.record({ action: "room.left", owner: p.owner, actor: p.uid, target: c.req.param("roomId") });
+    return c.body(null, 204);
+  });
+
+  /**
+   * Remove a member (owner only, never the owner itself): like a leave, the room then needs a new
+   * epoch (/rotate) and the removed member's devices are told to close the room channel.
+   */
+  app.post("/:roomId/members/:companionId/remove", async (c) => {
+    const p = principal(c);
+    const b = await parse(RoomActorRequest, await json(c));
+    const target = await parse(CompanionId, c.req.param("companionId"));
+    const roomId = c.req.param("roomId");
+    await run(() => repo().removeMember({ uid: p.owner, companion: b.companionId, roomId, target }));
+    await deps.audit.record({
+      action: "room.member_removed",
+      owner: p.owner,
+      actor: p.uid,
+      target: roomId,
+      meta: { companionId: target },
+    });
     return c.body(null, 204);
   });
 
