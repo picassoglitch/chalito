@@ -221,7 +221,7 @@ describe("agent over Firestore (emulator, real rules)", () => {
       v: 1,
       type: "remote_enable.rejected",
       deviceId: agentId,
-      attempted: "devmode.on",
+      attempted: "devmode.on Bearer abcdefghijklmnopqrstuvwxyz",
       origin: "local",
       t: 2,
     });
@@ -233,8 +233,8 @@ describe("agent over Firestore (emulator, real rules)", () => {
       deviceId: agentId,
     });
     expect(docs.find((d) => d.source === "deviceEvent")).toMatchObject({ type: "remote_enable.rejected", t: 2 });
-    expect((await adb.doc(`users/${OWNER}/devices/${agentId}`).get()).get("lastEvent.type")).toBe(
-      "remote_enable.rejected",
-    );
+    const lastEvent = (await adb.doc(`users/${OWNER}/devices/${agentId}`).get()).get("lastEvent");
+    expect(lastEvent).toMatchObject({ type: "remote_enable.rejected", attempted: "devmode.on Bearer …" });
+    expect(JSON.stringify(docs)).not.toContain("abcdefghijklmnop");
   });
 });

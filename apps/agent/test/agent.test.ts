@@ -556,5 +556,6 @@ describe("durable audit trail", () => {
     const entry = h.store.audits.find((a) => a.source === "agent" && a.type === "remote_enable.rejected")!;
     expect(String(entry.meta.attempted)).toContain("bypass");
     expect(JSON.stringify(entry)).not.toContain(secret);
+    expect(JSON.stringify(h.store.deviceEvents)).not.toContain(secret);
   });
 });

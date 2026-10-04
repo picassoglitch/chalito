@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sanitizeDeviceEvent } from "./redact.js";
 import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent } from "@chalito/protocol";
 
 /**
@@ -80,7 +81,8 @@ export class MemoryStore implements AgentStore {
   async updateDevice(fields: Record<string, unknown>) {
     Object.assign(this.device, fields);
   }
-  async publishDeviceEvent(e: DeviceEvent) {
+  async publishDeviceEvent(raw: DeviceEvent) {
+    const e = sanitizeDeviceEvent(raw);
     this.deviceEvents.push(e);
     this.audits.push({ eid: randomUUID(), t: e.t, type: e.type, meta: { ...e }, source: "deviceEvent" });
   }
