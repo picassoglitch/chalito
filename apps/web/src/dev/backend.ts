@@ -882,6 +882,50 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           await endorse(c, b.endorsement as Endorsement, me.deviceId);
           return { ok: true } as T;
         }
+        case "/v1/devices/revoke-all": {
+          // apps/api/src/routes/devices.ts: passkey mandatory, then revoke + ban every other client
+          // and queue the caller's signed revokeClient commands (checked: signer, signature, target).
+          needRole("client");
+          if (!passkeyRef()) throw fail(403, "passkey_required");
+          if (!b.stepUp) throw fail(401, "step_up_required");
+          if ((b.stepUp as { id?: unknown }).id !== lastAssertion.value) throw fail(401, "step_up_failed");
+          const others = db
+            .rows("devices")
+            .filter((r) => r.role === "client" && !r.revoked && r.device_id !== me.deviceId)
+            .map((r) => String(r.device_id));
+          for (const id of others)
+            db.update("devices", (r) => r.device_id === id, { revoked: true, revoked_at: iso(Date.now()) });
+          const agents = db
+            .rows("devices")
+            .filter((r) => r.role === "agent" && !r.revoked)
+            .map((r) => String(r.device_id));
+          let queued = 0;
+          const refused: string[] = [];
+          for (const cmd of (b.commands as {
+            body: { cid: string; targetDeviceId: string; payload: { type: string } };
+            signerDeviceId: string;
+          }[]) ?? []) {
+            const ok =
+              cmd.signerDeviceId === me.deviceId &&
+              cmd.body.payload.type === "device.revokeClient" &&
+              agents.includes(cmd.body.targetDeviceId) &&
+              (
+                await verifyEnvelope(
+                  cmd as never,
+                  "chalito.command.v1",
+                  new Map([[me.deviceId, await fromB64url(me.pubSign)]]),
+                )
+              ).ok;
+            if (!ok) {
+              refused.push(cmd.body.cid);
+              continue;
+            }
+            // Queued for the agent (its own loop picks commands up like any other).
+            db.insert("commands", { id: cmd.body.cid, target_device_id: cmd.body.targetDeviceId, env: cmd }, true);
+            queued++;
+          }
+          return { ok: true, revoked: others, agents, commandsQueued: queued, refused, banFailed: [] } as T;
+        }
         case "/v1/devices/revoke": {
           needRole("client");
           const id = b.deviceId as string;

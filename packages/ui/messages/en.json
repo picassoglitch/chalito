@@ -505,7 +505,26 @@
       "revokeFailed": "We couldn't revoke it. Nothing changed; try again.",
       "revokedServer": "{name} was revoked: it can no longer sign in to your account or send anything to your computers.",
       "revokeAgentOnline": "{agent}: removed it from its list.",
-      "revokeAgentOffline": "{agent}: offline. Its access is already closed on the server, and {agent} will drop it from its list as soon as it reconnects."
+      "revokeAgentOffline": "{agent}: offline. Its access is already closed on the server, and {agent} will drop it from its list as soon as it reconnects.",
+      "everywhere": {
+        "title": "Sign out of every other device",
+        "body": "If you lost a phone or think someone got into your account: every other phone and browser is cut off at once. Your computers stay paired.",
+        "needsPasskey": "To use this, first create a passkey on this device.",
+        "button": "Sign out everywhere else",
+        "confirm": "Sign out every other phone and browser? We'll ask for your passkey.",
+        "yes": "Yes, sign out",
+        "cancel": "Cancel",
+        "done": "{n, plural, =0 {There were no other devices.} one {Signed out # device.} other {Signed out # devices.}}",
+        "agentOnline": "{agent}: removed them from its list.",
+        "agentOffline": "{agent}: offline; it will remove them as soon as it reconnects.",
+        "agentUntrusted": "{agent}: doesn't trust this device, so it didn't get the notice. Their access is already closed on the server.",
+        "banFailed": "Some sign-outs will take a moment longer.",
+        "error": {
+          "cancelled": "Cancelled: nothing changed.",
+          "no_passkey": "This needs your passkey on this device.",
+          "failed": "That didn't work. Nothing changed; try again."
+        }
+      }
     },
     "settings": {
       "server": "Your settings are saved to your account.",

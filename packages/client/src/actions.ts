@@ -57,6 +57,25 @@ const b64Nonce = (): string => {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 
+/** The api call revokeAll makes (an ApiClient from @chalito/client-keys fits). */
+export interface RevokeAllApi {
+  post<T = unknown>(path: string, body: unknown): Promise<T>;
+}
+
+export interface RevokeAllResult {
+  /** Clients the server revoked (and banned). */
+  revoked: string[];
+  commandsQueued: number;
+  /** Command ids the server refused. */
+  refused: string[];
+  /** Clients whose Auth ban failed (still revoked; logged server-side). */
+  banFailed: string[];
+  /** Computers this device sent a signed revoke to. */
+  notified: string[];
+  /** Computers this device doesn't trust (no command from here). */
+  untrusted: string[];
+}
+
 export interface ClientActionsOptions {
   stepUp: StepUpProvider;
   now?: () => number;
@@ -213,22 +232,66 @@ export class ClientActions {
    * R-L1); revoking itself doesn't.
    */
   async revokeClient(agentDeviceId: string, clientDeviceId: string): Promise<string> {
-    const self = clientDeviceId === this.keys.deviceId;
     return this.#command(
       agentDeviceId,
       async () => ({ type: "device.revokeClient", clientDeviceId }),
-      self
-        ? undefined
-        : async (unsigned) => {
-            const stepUp = await this.opts.stepUp(
-              { aid: `revoke:${clientDeviceId}`, risk: "HIGH", agentDeviceId },
-              unsigned,
-            );
-            // No passkey on this device: send it plain; agents accept that only while no trusted
-            // client has a passkey at all.
-            return stepUp ?? undefined;
-          },
+      this.#revokeStepUp(agentDeviceId, clientDeviceId),
     );
+  }
+
+  #revokeStepUp(agentDeviceId: string, clientDeviceId: string) {
+    if (clientDeviceId === this.keys.deviceId) return undefined;
+    return async (unsigned: Record<string, unknown>) => {
+      const stepUp = await this.opts.stepUp({ aid: `revoke:${clientDeviceId}`, risk: "HIGH", agentDeviceId }, unsigned);
+      // No passkey on this device: send it plain; agents accept that only while no trusted
+      // client has a passkey at all.
+      return stepUp ?? undefined;
+    };
+  }
+
+  /**
+   * "Cerrar sesión en todos los demás dispositivos" (POST /v1/devices/revoke-all, -41's api): the
+   * server revokes and bans every other client at once after this device's passkey assertion
+   * (`stepUp`: over a server challenge). Agents keep their own trust lists, so this device also
+   * signs one `device.revokeClient` per (computer it trusts, other active client), each with its
+   * own step-up like revokeClient (R-L1), and the api queues them. Computers this device doesn't
+   * trust can't get a command from here (`untrusted`).
+   */
+  async revokeAll(o: { api: RevokeAllApi; stepUp: () => Promise<unknown> }): Promise<RevokeAllResult> {
+    const devices = this.live.getSnapshot().devices.filter((d) => !d.revoked);
+    const clients = devices
+      .filter((d) => d.role === "client" && d.deviceId !== this.keys.deviceId)
+      .map((d) => d.deviceId);
+    const agents = devices.filter((d) => d.role === "agent").map((d) => d.deviceId);
+    const trusted = agents.filter((a) => this.keys.trustedAgentBoxKey(a));
+    const commands = [];
+    for (const agent of trusted)
+      for (const clientDeviceId of clients)
+        commands.push(
+          (
+            await this.#signCommand(
+              agent,
+              async () => ({ type: "device.revokeClient", clientDeviceId }),
+              this.#revokeStepUp(agent, clientDeviceId),
+            )
+          ).env,
+        );
+    // The server's assertion comes last, right before sending (a cancel sends nothing).
+    const stepUp = await o.stepUp();
+    const r = await o.api.post<{
+      revoked?: string[];
+      commandsQueued?: number;
+      refused?: string[];
+      banFailed?: string[];
+    }>("/v1/devices/revoke-all", { stepUp, commands });
+    return {
+      revoked: r.revoked ?? [],
+      commandsQueued: r.commandsQueued ?? 0,
+      refused: r.refused ?? [],
+      banFailed: r.banFailed ?? [],
+      notified: trusted,
+      untrusted: agents.filter((a) => !trusted.includes(a)),
+    };
   }
 
   // ---- notifications ----------------------------------------------------------------
@@ -265,12 +328,12 @@ export class ClientActions {
     );
   }
 
-  async #command(
+  /** Signs a command for one agent (not sent). */
+  async #signCommand(
     agentDeviceId: string,
     build: (cid: string) => Promise<CommandPayload>,
-    /** A step-up bound to the final body (without stepUp); the body must not change after it. */
     stepUp?: (unsignedBody: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>,
-  ): Promise<string> {
+  ) {
     if (!this.keys.trustedAgentBoxKey(agentDeviceId)) throw new ActionError("untrusted_agent");
     const cid = this.#newId();
     const payload = await build(cid);
@@ -290,6 +353,16 @@ export class ClientActions {
     const step = stepUp ? await stepUp({ ...base }) : undefined;
     const body = step ? CommandBody.parse({ ...base, stepUp: step }) : base;
     const env = await this.keys.sign("chalito.command.v1", body);
+    return { cid, body, env };
+  }
+
+  async #command(
+    agentDeviceId: string,
+    build: (cid: string) => Promise<CommandPayload>,
+    /** A step-up bound to the final body (without stepUp); the body must not change after it. */
+    stepUp?: (unsignedBody: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>,
+  ): Promise<string> {
+    const { cid, body, env } = await this.#signCommand(agentDeviceId, build, stepUp);
     await writeWithRetry(
       "send command",
       () =>
