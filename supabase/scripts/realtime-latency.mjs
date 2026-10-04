@@ -92,9 +92,6 @@ const deviceClient = (token) => {
 };
 /** Joins a private topic and records every broadcast on it. */
 const join = async (client, topic) => {
-  // Hand the session token to Realtime BEFORE joining: with the accessToken callback alone the
-  // socket can send the join before the token arrives, and the join is then authorized as anon.
-  await client.realtime.setAuth();
   const inbox = [];
   let status = "PENDING";
   let reason = "";

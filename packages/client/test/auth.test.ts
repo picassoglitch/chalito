@@ -136,9 +136,10 @@ describe("connect", () => {
       create: () => fake,
     });
     await tick();
-    expect(fake.authTokens).toEqual(["at-h"]);
+    // The explicit token first; the live store then re-asserts it (no argument = from the session).
+    expect(fake.authTokens.filter(Boolean)).toEqual(["at-h"]);
     auth.refreshed("at-2");
-    expect(fake.authTokens).toEqual(["at-h", "at-2"]);
+    expect(fake.authTokens.filter(Boolean)).toEqual(["at-h", "at-2"]);
     expect(fake.channels[0]!.topic).toBe(`chalito:device:${me.deviceId}`);
     expect(client.live.getSnapshot().status).toBe("live");
     await client.close();

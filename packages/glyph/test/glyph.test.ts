@@ -129,7 +129,7 @@ describe("render → sample", () => {
       ),
       { numRuns: 12 },
     );
-  }, 60_000);
+  });
 
   it("a single frame survives the round trip bit-exact", async () => {
     const { g } = await makeGlyph();

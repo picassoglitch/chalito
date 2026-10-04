@@ -168,10 +168,31 @@ export class LiveStore {
 
   // ---- lifecycle --------------------------------------------------------------------
 
-  /** Joins this device's channel; every SUBSCRIBED (first and each rejoin) pulls all tables. */
+  #joining: Promise<void> | null = null;
+
+  /**
+   * Joins this device's channel (after Realtime has the current token); every SUBSCRIBED
+   * (first and each rejoin) pulls all tables.
+   */
   start(): void {
-    if (this.#channel) return;
+    if (this.#channel || this.#joining) return;
     this.#setStatus("connecting");
+    this.#joining = (async () => {
+      try {
+        await this.db.realtime?.setAuth();
+      } catch (err) {
+        this.#opts.onError?.(err, "realtime setAuth");
+      }
+      if (this.#status !== "idle") this.#join();
+    })();
+  }
+
+  /** Resolves once the join was issued (after setAuth). */
+  joined(): Promise<void> {
+    return this.#joining ?? Promise.resolve();
+  }
+
+  #join(): void {
     this.#channel = this.db
       .channel(deviceTopic(this.keys.deviceId), { config: { private: true } })
       .on("broadcast", { event: "*" }, (msg) => this.#onPointer(msg.payload))
@@ -187,6 +208,9 @@ export class LiveStore {
   }
 
   async stop(): Promise<void> {
+    this.#setStatus("idle");
+    await this.#joining;
+    this.#joining = null;
     if (this.#channel) await this.db.removeChannel(this.#channel);
     this.#channel = null;
     this.#setStatus("idle");
