@@ -31,6 +31,8 @@ import { GlyphDecoder, renderGlyphFrames, signGlyph } from "@chalito/glyph";
 import type { GlyphPayload, PairingCodeDoc } from "@chalito/protocol";
 import { createApp } from "../src/app.js";
 import { MemoryAudit, type Deps } from "../src/deps.js";
+import { FirebaseIssuer } from "../src/firestore/identity.js";
+import { FirestoreRepo } from "../src/firestore/repo.js";
 
 const PROJECT = "demo-chalito";
 const SSO_SECRET = "sso-secret-for-tests";
@@ -40,9 +42,10 @@ const OWNER = `hub-user-${Date.now()}`;
 let clock = Date.now();
 const audit = new MemoryAudit();
 const adminApp = getApps()[0] ?? initializeApp({ projectId: PROJECT });
+const db = getFirestore(adminApp);
 const deps: Deps = {
-  db: getFirestore(adminApp),
-  auth: getAuth(adminApp),
+  repo: new FirestoreRepo(db),
+  identity: new FirebaseIssuer(getAuth(adminApp)),
   audit,
   config: { ssoSecret: SSO_SECRET, adminToken: ADMIN, recoveryCooldownMs: 60 * 60 * 1000, skewMs: 60_000 },
   now: () => clock,
@@ -425,13 +428,13 @@ describe("only-client-lost recovery", () => {
       newRecoveryCode: "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZZ",
     });
     expect((await call("/v1/recovery/complete", await body(), userIdToken)).status).toBe(425);
-    const alert = await deps.db.collection(`users/${OWNER}/notifications`).where("source", "==", "security").get();
+    const alert = await db.collection(`users/${OWNER}/notifications`).where("source", "==", "security").get();
     expect(alert.empty).toBe(false);
 
     clock += 61 * 60_000;
     const done = await call("/v1/recovery/complete", await body(), userIdToken);
     expect(done.status).toBe(201);
-    const devDoc = await deps.db.doc(`users/${OWNER}/devices/${lost.deviceId}`).get();
+    const devDoc = await db.doc(`users/${OWNER}/devices/${lost.deviceId}`).get();
     expect(devDoc.get("enrolledVia")).toBe("recovery");
     // The old code no longer works.
     expect((await call("/v1/recovery/start", { recoveryCode: RECOVERY }, userIdToken)).status).toBe(401);

@@ -1,11 +1,22 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { DevModeToggle, Locale } from "@chalito/protocol";
 import type { LiabilityText } from "@chalito/config";
 import type { SigningKeyPair } from "@chalito/crypto";
 import { signLocal, verifyLocal } from "./local-sig.js";
-import type { SecretStore } from "./secrets.js";
+import type { AnchorStore } from "./anchor.js";
 import { DEVMODE_OFF, type DevModeState } from "./policy/decide.js";
 
 /** OS user authentication (macOS LocalAuthentication, Windows Hello, polkit/PAM on Linux). */
@@ -92,52 +103,24 @@ export interface DisableRecord {
   sig: string;
 }
 
-export type AuditRecord = LiabilityRecord | DisableRecord;
+/** First record of a new chain after `chalito devmode reset` archived a broken one. */
+export interface ResetRecord {
+  type: "devmode.reset";
+  deviceId: string;
+  by: string;
+  epoch: number;
+  /** File name the previous chain was archived under (in audit/). */
+  archived: string | null;
+  t: number;
+  prevHash: string;
+  hash: string;
+  sig: string;
+}
+
+export type AuditRecord = LiabilityRecord | DisableRecord | ResetRecord;
 type Unsealed<R> = R extends AuditRecord ? Omit<R, "prevHash" | "hash" | "sig"> : never;
 
 export type DevModeTamper = "state_signature" | "audit_chain" | "stale_state" | "toggle_unbacked" | "rollback";
-
-export interface ChainHead {
-  hash: string;
-  count: number;
-}
-
-/** Keychain entry holding the audit chain head (outside ~/.chalito, so a file restore can't move it back). */
-export const CHAIN_HEAD_SECRET = "devmode-chain-head";
-
-/**
- * The audit chain head kept in the OS keychain. Reads are synchronous (from a cache
- * filled by `load()`) because Developer-mode checks run inside synchronous policy reads;
- * writes go through to the keychain.
- */
-export class ChainHeadStore {
-  #head: ChainHead | null = null;
-
-  constructor(private readonly secrets: SecretStore) {}
-
-  /** (Re)loads the head from the keychain; call at startup and when another process may have moved it. */
-  async load(): Promise<this> {
-    const raw = await this.secrets.get(CHAIN_HEAD_SECRET);
-    try {
-      const j = raw ? (JSON.parse(raw) as ChainHead) : null;
-      this.#head = j && typeof j.hash === "string" && Number.isInteger(j.count) ? j : null;
-    } catch {
-      this.#head = null;
-    }
-    return this;
-  }
-
-  get(): ChainHead | null {
-    return this.#head;
-  }
-
-  async set(head: ChainHead): Promise<void> {
-    // Never move the remembered head backwards within this process.
-    if (this.#head && head.count < this.#head.count) return;
-    this.#head = head;
-    await this.secrets.set(CHAIN_HEAD_SECRET, JSON.stringify(head));
-  }
-}
 
 const GENESIS = "0".repeat(64);
 
@@ -152,9 +135,10 @@ const GENESIS = "0".repeat(64);
  */
 export class DevModeStore {
   #pending: Promise<void> = Promise.resolve();
+  #locked = false;
 
   /**
-   * `head` is the keychain copy of the chain head. With it, truncating the audit log or
+   * `anchor` keeps the chain head in the keychain. With it, truncating the audit log or
    * restoring an older devmode.json + log pair reads as rollback (off). Production always
    * passes it; tests of unrelated behaviour may omit it.
    */
@@ -162,7 +146,7 @@ export class DevModeStore {
     readonly dir: string,
     private readonly keys: SigningKeyPair,
     private readonly deviceId: string,
-    private readonly head?: ChainHeadStore,
+    private readonly anchor?: AnchorStore,
   ) {
     mkdirSync(join(dir, "audit"), { recursive: true, mode: 0o700 });
   }
@@ -172,6 +156,71 @@ export class DevModeStore {
   }
   get #auditFile() {
     return join(this.dir, "audit", "devmode.jsonl");
+  }
+  get #lockFile() {
+    return join(this.dir, "audit", "devmode.lock");
+  }
+
+  /**
+   * Runs `fn` holding an exclusive lock file, so the CLI (`devmode on`) and the daemon
+   * (`devmode.off` from a phone) never append at the same time and fork the chain.
+   * A lock older than 30 s is taken over (its holder died).
+   */
+  async transact<T>(fn: () => Promise<T>, timeoutMs = 5000): Promise<T> {
+    if (this.#locked) return fn();
+    const t0 = Date.now();
+    for (;;) {
+      try {
+        closeSync(openSync(this.#lockFile, "wx", 0o600));
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        try {
+          if (Date.now() - statSync(this.#lockFile).mtimeMs > 30_000) rmSync(this.#lockFile, { force: true });
+        } catch {
+          /* released meanwhile */
+        }
+        if (Date.now() - t0 > timeoutMs)
+          throw new Error("Developer mode is being changed by another process. Try again.", { cause: err });
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    }
+    this.#locked = true;
+    try {
+      return await fn();
+    } finally {
+      this.#locked = false;
+      rmSync(this.#lockFile, { force: true });
+    }
+  }
+
+  /**
+   * Archives the current chain (kept for audit), starts a new epoch with a signed reset
+   * record and writes an OFF state. The way out of a forked or broken chain; the caller
+   * (`chalito devmode reset`) does OS auth and a typed confirmation first.
+   */
+  async resetChain(by: string, now: number): Promise<ResetRecord> {
+    return this.transact(async () => {
+      const old = this.records();
+      const oldEpoch = old[0]?.type === "devmode.reset" ? old[0].epoch : 0;
+      const epoch = Math.max(oldEpoch, this.anchor?.devmodeHead()?.epoch ?? 0) + 1;
+      let archived: string | null = null;
+      if (existsSync(this.#auditFile)) {
+        archived = `devmode.${now}.archived.jsonl`;
+        renameSync(this.#auditFile, join(this.dir, "audit", archived));
+      }
+      const rec = this.append<ResetRecord>({
+        type: "devmode.reset",
+        deviceId: this.deviceId,
+        by,
+        epoch,
+        archived,
+        t: now,
+      });
+      await this.flush();
+      this.write(DEVMODE_OFF);
+      return rec;
+    });
   }
 
   /** Verified state plus the reason it was forced off, if any. */
@@ -240,10 +289,16 @@ export class DevModeStore {
     const unsigned = { ...rec, prevHash, hash };
     const full = { ...unsigned, sig: signLocal("chalito.devmode-liability.v1", unsigned, this.keys) } as unknown as R;
     appendFileSync(this.#auditFile, `${JSON.stringify(full)}\n`, { mode: 0o600 });
-    if (this.head) {
-      const head = { hash: (full as AuditRecord).hash, count: this.records().length };
+    if (this.anchor) {
+      const records = this.records();
+      const first = records[0];
+      const head = {
+        hash: (full as AuditRecord).hash,
+        count: records.length,
+        epoch: first?.type === "devmode.reset" ? first.epoch : 0,
+      };
       // A failed keychain write surfaces from flush() but doesn't block the next one.
-      this.#pending = this.#pending.catch(() => undefined).then(() => this.head!.set(head));
+      this.#pending = this.#pending.catch(() => undefined).then(() => this.anchor!.setDevmodeHead(head));
     }
     return full;
   }
@@ -254,9 +309,12 @@ export class DevModeStore {
    * diverge from it. No head while records exist means the head was removed.
    */
   #containsKeychainHead(records: AuditRecord[]): boolean {
-    if (!this.head) return true;
-    const h = this.head.get();
+    if (!this.anchor) return true;
+    const h = this.anchor.devmodeHead();
     if (!h) return records.length === 0;
+    const first = records[0];
+    const epoch = first?.type === "devmode.reset" ? first.epoch : 0;
+    if (epoch !== h.epoch) return false;
     return records.length >= h.count && (h.count === 0 || records[h.count - 1]?.hash === h.hash);
   }
 
@@ -278,9 +336,11 @@ export class DevModeStore {
       return null;
     }
     let prev = GENESIS;
-    for (const r of records) {
+    for (const [i, r] of records.entries()) {
       const { prevHash, hash, sig, ...rest } = r;
       if (prevHash !== prev || rest.deviceId !== this.deviceId) return null;
+      // A reset can only start a chain.
+      if (rest.type === "devmode.reset" && i !== 0) return null;
       if (createHash("sha256").update(prevHash).update(JSON.stringify(rest)).digest("hex") !== hash) return null;
       if (!verifyLocal("chalito.devmode-liability.v1", { ...rest, prevHash, hash }, sig, this.keys.publicKey))
         return null;
@@ -332,24 +392,27 @@ export class DevMode {
     const accepted = await prompter.liability(liability);
     if (!accepted.checked || accepted.typed.trim() !== liability.phrase) return { ok: false, reason: "cancelled" };
 
-    // Read before appending: the state is bound to the chain head it was written with.
-    const cur = this.state;
-    const rec = store.append<LiabilityRecord>({
-      type: "devmode.liability_accepted",
-      toggle,
-      deviceId,
-      locale: liability.locale,
-      textVersion: liability.version,
-      text: liability.text,
-      t: now(),
+    const { rec, state } = await store.transact(async () => {
+      // Read before appending: the state is bound to the chain head it was written with.
+      const cur = this.state;
+      const rec = store.append<LiabilityRecord>({
+        type: "devmode.liability_accepted",
+        toggle,
+        deviceId,
+        locale: liability.locale,
+        textVersion: liability.version,
+        text: liability.text,
+        t: now(),
+      });
+      await store.flush();
+      const state: DevModeState = {
+        on: true,
+        toggles: [...new Set([...cur.toggles, toggle])],
+        since: cur.since ?? now(),
+      };
+      store.write(state);
+      return { rec, state };
     });
-    await store.flush();
-    const state: DevModeState = {
-      on: true,
-      toggles: [...new Set([...cur.toggles, toggle])],
-      since: cur.since ?? now(),
-    };
-    store.write(state);
     await emit({ type: "devmode.liability_accepted", toggle, textVersion: rec.textVersion, hash: rec.hash });
     await emit({ type: "devmode.changed", on: true, toggles: state.toggles });
     return { ok: true, state };
@@ -357,34 +420,59 @@ export class DevMode {
 
   /** Always allowed, locally or from a verified signed remote command. */
   async off(by: string): Promise<DevModeState> {
-    const cur = this.deps.store.read();
-    this.deps.store.append<DisableRecord>({
-      type: "devmode.disabled",
-      toggles: cur.toggles,
-      deviceId: this.deps.deviceId,
-      by,
-      t: this.deps.now(),
+    const { store } = this.deps;
+    await store.transact(async () => {
+      const cur = store.read();
+      store.append<DisableRecord>({
+        type: "devmode.disabled",
+        toggles: cur.toggles,
+        deviceId: this.deps.deviceId,
+        by,
+        t: this.deps.now(),
+      });
+      await store.flush();
+      store.write(DEVMODE_OFF);
     });
-    await this.deps.store.flush();
-    this.deps.store.write(DEVMODE_OFF);
     await this.deps.emit({ type: "devmode.changed", on: false, toggles: [], by });
     return DEVMODE_OFF;
   }
 
   async toggleOff(toggle: DevModeToggle, by: string): Promise<DevModeState> {
-    const cur = this.deps.store.read();
-    const toggles = cur.toggles.filter((t) => t !== toggle);
-    this.deps.store.append<DisableRecord>({
-      type: "devmode.disabled",
-      toggles: [toggle],
-      deviceId: this.deps.deviceId,
-      by,
-      t: this.deps.now(),
+    const { store } = this.deps;
+    const state = await store.transact(async () => {
+      const cur = store.read();
+      const toggles = cur.toggles.filter((t) => t !== toggle);
+      store.append<DisableRecord>({
+        type: "devmode.disabled",
+        toggles: [toggle],
+        deviceId: this.deps.deviceId,
+        by,
+        t: this.deps.now(),
+      });
+      await store.flush();
+      const next: DevModeState = toggles.length ? { ...cur, toggles } : DEVMODE_OFF;
+      store.write(next);
+      return next;
     });
-    await this.deps.store.flush();
-    const state: DevModeState = toggles.length ? { ...cur, toggles } : DEVMODE_OFF;
-    this.deps.store.write(state);
     await this.deps.emit({ type: "devmode.changed", on: state.on, toggles: state.toggles, by });
     return state;
+  }
+
+  /**
+   * Local only: archives a broken or forked audit chain and starts a new one with
+   * everything off. Needs OS auth plus the caller's typed confirmation.
+   */
+  async reset(
+    by: string,
+    confirmTyped: () => Promise<boolean>,
+  ): Promise<{ ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" }> {
+    if (!(await this.deps.osAuth.verify("Chalito: reiniciar el registro del Modo desarrollador")))
+      return { ok: false, reason: "os_auth_failed" };
+    if (!(await confirmTyped())) return { ok: false, reason: "cancelled" };
+    const rec = await this.deps.store.resetChain(by, this.deps.now());
+    this.#lastTamper = null;
+    await this.deps.emit({ type: "devmode.reset", epoch: rec.epoch, archived: rec.archived, hash: rec.hash });
+    await this.deps.emit({ type: "devmode.changed", on: false, toggles: [], by });
+    return { ok: true };
   }
 }
