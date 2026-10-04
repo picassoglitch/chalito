@@ -58,15 +58,23 @@ select pg_temp.logout();
 -- ---------------------------------------------------------------- the pointer
 set local role chalito_server;
 update chalito.endorse_codes set watch_auth_user_id = watch_auth_user_id where code_id = 'ec_code_live_000000000';
+reset role;
 select is(pg_temp.sent('chalito:pairing:ec_code_live_000000000'), 0, 'broadcast: bookkeeping updates send nothing');
+set local role chalito_server;
 update chalito.endorse_codes set endorsement = '{"ctx": "chalito.endorsement.v1"}', endorsed_by_device_id = 'ec_phone',
   endorsed_at = now() where code_id = 'ec_code_live_000000000';
+reset role;
 select is(pg_temp.sent('chalito:pairing:ec_code_live_000000000'), 1, 'broadcast: the waiting device is told once it is endorsed');
+set local role chalito_server;
+reset role;
 select is((select payload -> 'key' from realtime.messages where topic = 'chalito:pairing:ec_code_live_000000000'
   and payload ->> 'table' = 'endorse_codes'), '{"code_id": "ec_code_live_000000000"}'::jsonb,
   'broadcast: a pointer, never the endorsement');
+set local role chalito_server;
 update chalito.endorse_codes set taken_at = now() where code_id = 'ec_code_live_000000000';
+reset role;
 select is(pg_temp.sent('chalito:pairing:ec_code_live_000000000'), 1, 'broadcast: taking it sends nothing more');
+set local role chalito_server;
 reset role;
 
 -- ---------------------------------------------------------------- the watcher's join
@@ -85,7 +93,7 @@ select pg_temp.logout();
 
 -- ---------------------------------------------------------------- TTL
 select chalito_private.purge_expired();
-select is((select array_agg(code_id order by code_id) from chalito.endorse_codes where owner = 'ec-user'),
+select is((select array_agg(code_id::text order by code_id) from chalito.endorse_codes where owner = 'ec-user'),
   array['ec_code_live_000000000']::text[], 'ttl: expired codes are swept with the other TTL rows');
 
 select * from finish();
