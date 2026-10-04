@@ -1,6 +1,14 @@
 import type { DocumentReference, Firestore } from "firebase-admin/firestore";
 import type { DeviceDoc, PairingCodeDoc } from "@chalito/protocol";
-import type { ApiRepo, StoredRecovery, TenantRecord, TenantStatus } from "../repo.js";
+import type {
+  ApiRepo,
+  StoredRecovery,
+  StoredWebAuthnCredential,
+  TenantRecord,
+  TenantStatus,
+  WebAuthnChallenge,
+  WebAuthnPurpose,
+} from "../repo.js";
 
 /** Firestore's ALREADY_EXISTS from `create()`. */
 const isAlreadyExists = (err: unknown) => (err as { code?: number }).code === 6;
@@ -88,6 +96,45 @@ export class FirestoreRepo implements ApiRepo {
       tx.set(this.#recovery(owner), recovery);
       return "ok" as const;
     });
+  }
+
+  // ---- WebAuthn ----
+
+  #challenge(owner: string, deviceId: string, purpose: WebAuthnPurpose) {
+    return this.db.doc(`users/${owner}/webauthnChallenges/${deviceId}_${purpose}`);
+  }
+
+  async putWebAuthnChallenge(c: WebAuthnChallenge) {
+    await this.#challenge(c.owner, c.deviceId, c.purpose).set({
+      challenge: c.challenge,
+      expiresAt: c.expiresAt,
+      expireAt: new Date(c.expiresAt),
+    });
+  }
+
+  async takeWebAuthnChallenge(owner: string, deviceId: string, purpose: WebAuthnPurpose, now: number) {
+    const ref = this.#challenge(owner, deviceId, purpose);
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return null;
+      tx.delete(ref);
+      const d = snap.data() as { challenge: string; expiresAt: number };
+      return d.expiresAt > now ? d.challenge : null;
+    });
+  }
+
+  async setDeviceWebAuthn(owner: string, deviceId: string, cred: StoredWebAuthnCredential) {
+    const ref = this.#device(owner, deviceId);
+    return this.db.runTransaction(async (tx) => {
+      if (!(await tx.get(ref)).exists) return false;
+      tx.update(ref, { webauthn: cred });
+      return true;
+    });
+  }
+
+  async getDeviceWebAuthn(owner: string, deviceId: string) {
+    const snap = await this.#device(owner, deviceId).get();
+    return (snap.get("webauthn") as StoredWebAuthnCredential | undefined) ?? null;
   }
 
   async saveEndorsement(owner: string, newDeviceId: string, endorsement: unknown, at: number) {

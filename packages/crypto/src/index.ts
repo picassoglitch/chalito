@@ -13,3 +13,5 @@ export { randomNonce, MemoryNonceStore } from "./nonce.js";
 export type { NonceStore } from "./nonce.js";
 export { TrustedClientList } from "./trust.js";
 export type { TrustedClient, DecisionCheck } from "./trust.js";
+export { verifyWebAuthnAssertion, stepUpChallenge, parseCoseKey, sha256 } from "./webauthn.js";
+export type { WebAuthnCredentialRef, WebAuthnAssertionInput, AssertionCheck } from "./webauthn.js";
