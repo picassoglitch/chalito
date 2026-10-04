@@ -58,15 +58,53 @@ const verify = (secret: string, token: string): VoiceToken | null => {
 };
 
 const Beat = z.object({ voiceToken: z.string().max(2048), seconds: z.number().int().min(0).max(MAX_BEAT_SEC) });
+/** The desktop's WebRTC offer (SDP is text, a few KB). */
+const Sdp = z.object({ voiceToken: z.string().max(2048), sdp: z.string().min(10).max(20_000) });
+
+/** Why a heartbeat says stop (the desktop shows "Se acabaron tus minutos de voz este mes" for `cap`). */
+export type VoiceStopReason = "cap" | "max" | "stopped" | "ended";
+
+/** Ends a session's provider call if it has one (best effort: billing never waits on OpenAI). */
+const hangup = async (voice: VoiceDeps, callId: string | null | undefined) => {
+  if (callId) await voice.provider.hangupCall(callId).catch(() => undefined);
+};
+
+/**
+ * A revoked device's open desktop voice: bill the elapsed time and close it (through the store,
+ * like an end), settle the reservation and hang the call up server-side.
+ */
+export const endDeviceVoice = async (deps: Deps, voice: VoiceDeps, owner: string, deviceId: string) => {
+  for (const s of await voice.sessions.openFor(owner, deviceId)) {
+    if (s.channel !== "desktop") continue;
+    const r = await voice.sessions.advance({
+      owner,
+      sourceId: s.sourceId,
+      now: deps.now(),
+      end: true,
+      event: (sess, seconds, total) =>
+        voice.hub.event({
+          owner: sess.owner,
+          admissionId: sess.reservationId,
+          kind: "voice.seconds",
+          seconds,
+          sourceId: `${sess.sourceId}:${total}`,
+        }),
+    });
+    await hangup(voice, r.callId ?? s.callId);
+    await voice.hub.settle({ owner, admissionId: s.reservationId }).catch(() => undefined);
+  }
+};
 
 const PERSONA =
   "Eres el compañero de Chalito del usuario, en su escritorio. Responde en el idioma del usuario (español por defecto), cálido y breve. " +
   "Nunca apruebes ni niegues nada: para una aprobación usa open_approval y pide al usuario que la firme en la app.";
 
 /**
- * Desktop push-to-talk (ADR 0005): an active paired device gets an ephemeral OpenAI client secret
- * and talks to OpenAI over WebRTC directly (audio never transits Chalito). Every session is
- * admitted by the hub first and metered as voice.seconds from heartbeats.
+ * Desktop push-to-talk (ADR 0005): the api admits the session with the hub and then proxies the
+ * WebRTC SDP exchange (POST /session/sdp → OpenAI's POST /v1/realtime/calls with the server key).
+ * The desktop never holds an OpenAI credential, and the api keeps the call id, so it can end the
+ * call itself at the voice cap, at the session's maximum, on revoke, and from the sweep. Audio
+ * still flows desktop ↔ OpenAI directly (never through Chalito). Billing: the api's clock (R-H6).
  */
 export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
   const app = new Hono<AuthEnv>();
@@ -95,6 +133,7 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
       owner: p.owner,
       event: eventFor,
       settle: (rid) => settle(p.owner, rid),
+      hangup: (st) => hangup(voice, st.callId),
     });
     let maxSeconds = Math.max(1, voice.maxSessionSec ?? DEFAULT_MAX_SESSION_SEC);
     if (voice.cap) {
@@ -128,17 +167,11 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
       await settle(p.owner, admit.admissionId);
       return fail(409, "voice_session_open", "Another voice session is still open; end it first.");
     }
-    const secret = await voice.provider.mintClientSecret({
-      ttlSec,
-      // A stable, non-reversible id for OpenAI's abuse monitoring (never the raw uid).
-      safetyIdentifier: createHash("sha256").update(`chalito:${p.owner}`).digest("hex"),
-      session: { model: voice.model, voice: voice.voiceName, instructions: PERSONA, tools: DESKTOP_TOOLS },
-    });
     await deps.audit.record({ action: "voice.session", owner: p.owner, actor: p.uid, target: sourceId });
+    // No OpenAI credential for the desktop: it connects through POST /session/sdp, within `ttlSec`.
     return c.json(
       {
-        clientSecret: secret.value,
-        expiresAt: secret.expiresAt,
+        expiresAt: now + ttlSec * 1000,
         model: voice.model,
         maxSeconds,
         voiceToken: sign(voice.tokenSecret, {
@@ -166,10 +199,14 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
     const r = await voice.sessions.advance({ owner: t.owner, sourceId: t.sourceId, now, end, event: eventFor });
     if (!r.found) return fail(404, "voice_session_unknown");
     if (end) {
+      await hangup(voice, r.callId);
       await settle(t.owner, t.admissionId);
       return c.json({ ok: true, continue: false, billedSeconds: r.total });
     }
-    if (r.ended) return c.json({ ok: true, continue: false, billedSeconds: r.total });
+    if (r.ended) {
+      await hangup(voice, r.callId);
+      return c.json({ ok: true, continue: false, reason: "ended" satisfies VoiceStopReason, billedSeconds: r.total });
+    }
     const alive =
       r.total < r.maxSeconds
         ? await voice.hub.keepAlive({ owner: t.owner, admissionId: t.admissionId, sourceId: t.sourceId })
@@ -180,8 +217,46 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
       underCap = cap.usedSeconds < cap.limitSeconds;
       if (!underCap) await voice.cap.note(t.owner, now);
     }
-    return c.json({ ok: true, continue: alive.continue && underCap && r.total < r.maxSeconds, billedSeconds: r.total });
+    const reason: VoiceStopReason | null = !underCap
+      ? "cap"
+      : r.total >= r.maxSeconds
+        ? "max"
+        : !alive.continue
+          ? "stopped"
+          : null;
+    // A client that ignores `continue: false` can't keep talking: the api hangs the call up itself.
+    if (reason) await hangup(voice, r.callId);
+    return c.json({ ok: true, continue: reason === null, ...(reason ? { reason } : {}), billedSeconds: r.total });
   };
+  /**
+   * The desktop's WebRTC offer → OpenAI's answer. One call per session, connected within the
+   * session's `ttlSec` of being minted. The call id stays on the server.
+   */
+  app.post("/session/sdp", auth, rateLimit({ capacity: 10, refillPerSec: 0.1, now: deps.now }), async (c) => {
+    const p = principal(c);
+    const body = Sdp.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(400, "bad_request");
+    const t = verify(voice.tokenSecret, body.data.voiceToken);
+    if (!t || t.owner !== p.owner || t.deviceId !== p.deviceId) return fail(403, "bad_voice_token");
+    const open = (await voice.sessions.openFor(p.owner, p.deviceId!)).find((s) => s.sourceId === t.sourceId);
+    if (!open) return fail(404, "voice_session_unknown");
+    if (open.callId) return fail(409, "voice_call_connected");
+    if (deps.now() > open.startedAt + ttlSec * 1000) return fail(410, "voice_connect_expired");
+    const call = await voice.provider.connectCall({
+      sdp: body.data.sdp,
+      // A stable, non-reversible id for OpenAI's abuse monitoring (never the raw uid).
+      safetyIdentifier: createHash("sha256").update(`chalito:${p.owner}`).digest("hex"),
+      session: { model: voice.model, voice: voice.voiceName, instructions: PERSONA, tools: DESKTOP_TOOLS },
+    });
+    if (!(await voice.sessions.setCallId(p.owner, t.sourceId, call.callId))) {
+      // Ended (cap, revoke, sweep) while connecting: don't leave the call running.
+      await hangup(voice, call.callId);
+      return fail(409, "voice_session_ended");
+    }
+    await deps.audit.record({ action: "voice.connected", owner: p.owner, actor: p.uid, target: t.sourceId });
+    return c.body(call.answerSdp, 201, { "content-type": "application/sdp" });
+  });
+
   app.post("/session/heartbeat", auth, (c) => beat(c, false));
   app.post("/session/end", auth, (c) => beat(c, true));
   return app;

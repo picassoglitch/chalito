@@ -64,7 +64,12 @@
     "hold": "Mantén presionado para hablar",
     "connecting": "Conectando…",
     "listening": "Te escucho…",
-    "unavailable": "La voz aún no está disponible."
+    "unavailable": "La voz aún no está disponible.",
+    "capReached": "Se acabaron tus minutos de voz este mes.",
+    "maxReached": "Llegaste al límite de esta conversación de voz. Vuelve a presionar para seguir.",
+    "noCredits": "Te quedaste sin créditos para la voz.",
+    "ended": "La llamada de voz terminó.",
+    "failed": "No pude conectar la voz. Inténtalo de nuevo."
   },
   "room": {
     "soon": "Tu cuarto llega pronto."

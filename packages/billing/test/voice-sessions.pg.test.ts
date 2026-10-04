@@ -111,5 +111,27 @@ if (!url) {
       const [r] = await admin`select closed_by from chalito_private.voice_sessions where source_id = ${s}`;
       expect(r!.closed_by).toBe("sweep");
     });
+
+    it("records the call id of an open session, lists a device's open sessions, and the sweep hangs up", async () => {
+      const u = await owner();
+      const s = sid();
+      await open(u, s, 60);
+      expect(await store.setCallId(u, s, "rtc_abc")).toBe(true);
+      expect(await store.setCallId("someone-else", s, "rtc_x")).toBe(false);
+      const [first] = await store.openFor(u, "dev_x");
+      expect(first).toMatchObject({ sourceId: s, callId: "rtc_abc" });
+      const hung: string[] = [];
+      await sweepVoiceSessions({
+        store,
+        now: T0 + 60_000 + 121_000,
+        owner: u,
+        event,
+        settle: async () => undefined,
+        hangup: async (v) => void hung.push(v.callId!),
+      });
+      expect(hung).toEqual(["rtc_abc"]);
+      expect(await store.openFor(u, "dev_x")).toEqual([]);
+      expect(await store.setCallId(u, s, "rtc_late")).toBe(false); // ended: no more call ids
+    });
   });
 }

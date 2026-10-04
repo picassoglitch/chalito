@@ -1,6 +1,6 @@
 /**
- * Push-to-talk. The api mints an ephemeral realtime-voice key (-41's m6-voice route); the
- * session itself is a follow-up. This is the UI's contract plus the state machine.
+ * Push-to-talk: the UI's contract plus the state machine. The WebRTC session (api-proxied
+ * SDP, ./webrtc-voice.ts) implements VoiceSession.
  */
 export interface VoiceSession {
   /** Mic open, streaming to the model. Resolves once connected. */
@@ -9,6 +9,18 @@ export interface VoiceSession {
   stop(): Promise<void>;
   /** The companion's audio for lip-sync (AnalyserNode-backed), if any. */
   onOutputLevel?(cb: (rms: number) => void): () => void;
+  /** The server ended the call (monthly cap, session maximum, credits, or a hang-up). */
+  onEnded?(cb: (e: VoiceEndedError) => void): () => void;
+}
+
+/** Why the server ended a call: the api's heartbeat reasons, or the connection dropped. */
+export type VoiceEndReason = "cap" | "max" | "stopped" | "ended" | "hangup";
+
+export class VoiceEndedError extends Error {
+  constructor(readonly reason: VoiceEndReason) {
+    super(`voice_ended:${reason}`);
+    this.name = "VoiceEndedError";
+  }
 }
 
 export type VoiceProvider = () => Promise<VoiceSession>;
@@ -54,7 +66,11 @@ export class PushToTalk {
     this.#held = true;
     this.#set("connecting");
     try {
-      this.#session ??= await this.provider();
+      if (!this.#session) {
+        const s = await this.provider();
+        this.#session = s;
+        s.onEnded?.((e) => this.#ended(s, e));
+      }
       await this.#session.start();
       if (!this.#held) {
         await this.#session.stop();
@@ -74,6 +90,14 @@ export class PushToTalk {
     if (this.#state !== "listening") return;
     await this.#session?.stop();
     this.#set("idle");
+  }
+
+  /** A server hang-up: the mic is already closed; the next press reconnects. */
+  #ended(s: VoiceSession, e: VoiceEndedError): void {
+    if (this.#session !== s) return;
+    this.#held = false;
+    this.#error = e;
+    this.#set("error");
   }
 
   #set(s: PttState): void {

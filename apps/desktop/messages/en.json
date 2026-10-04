@@ -64,7 +64,12 @@
     "hold": "Hold to talk",
     "connecting": "Connecting…",
     "listening": "Listening…",
-    "unavailable": "Voice isn't available yet."
+    "unavailable": "Voice isn't available yet.",
+    "capReached": "You've used up this month's voice minutes.",
+    "maxReached": "This voice conversation hit its time limit. Press again to keep going.",
+    "noCredits": "You're out of credits for voice.",
+    "ended": "The voice call ended.",
+    "failed": "Couldn't connect voice. Try again."
   },
   "room": {
     "soon": "Your room is coming soon."

@@ -18,6 +18,8 @@ import { enrollDesktop } from "./enrollment.js";
 import { SignInController } from "./sign-in.js";
 import { SsoFlow, exchange } from "./sso.js";
 import { platformAuthenticatorAvailable } from "./stepup.js";
+import type { VoiceProvider } from "./voice.js";
+import { webrtcVoice } from "./webrtc-voice.js";
 
 export interface DesktopEnv {
   supabaseUrl: string;
@@ -64,6 +66,8 @@ export interface Connected {
   client: ChalitoClient;
   /** A passkey is enrolled on this device: HIGH/CRITICAL can be approved here. */
   canStepUp: boolean;
+  /** Push-to-talk voice as this device (WebRTC, SDP proxied by the api). */
+  voice: VoiceProvider;
 }
 
 /**
@@ -101,6 +105,8 @@ export const createSession = async (
       keys,
       owner,
       storage,
+      // One auth client: the voice calls below read the same device session it refreshes.
+      create: () => sb,
       signIn: {
         kind: "device",
         deviceId: keys.deviceId,
@@ -108,7 +114,19 @@ export const createSession = async (
       },
       stepUp: passkeyStepUp(passkey) as StepUpProvider,
     });
-    onConnected({ client, canStepUp: passkey !== null });
+    onConnected({
+      client,
+      canStepUp: passkey !== null,
+      voice: webrtcVoice({
+        apiBase: env.apiBase,
+        token,
+        play: (stream) => {
+          const audio = new Audio();
+          audio.autoplay = true;
+          audio.srcObject = stream;
+        },
+      }),
+    });
   };
 
   const controller = new SignInController({

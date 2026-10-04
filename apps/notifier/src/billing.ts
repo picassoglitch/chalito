@@ -13,6 +13,7 @@ import {
   type OutboxStore,
   sweepVoiceSessions,
   type VoiceEventFor,
+  type VoiceSession,
   type VoiceSessionStore,
 } from "@chalito/billing";
 import type { HubUsageEvent } from "@chalito/protocol";
@@ -86,6 +87,8 @@ export const hubCommsBilling = (p: {
   voiceSessions?: VoiceSessionStore;
   /** Prices a desktop session's increment, for the sweep (apps/api's HubStreamUsage.event). */
   desktopVoiceEvent?: VoiceEventFor;
+  /** Hangs up a stale desktop session's WebRTC call (apps/api proxies it and records its id). */
+  hangupCall?: (callId: string) => Promise<unknown>;
 }): CommsBilling => {
   const ctx = (owner: string, origin: "whatsapp.message" | "sms.message" | "call.pstn" | "voice.call") => ({
     owner,
@@ -229,6 +232,12 @@ export const hubCommsBilling = (p: {
                 ? callVoiceEvent(s, seconds, total)
                 : (p.desktopVoiceEvent?.(s, seconds, total) ?? null),
             settle: (rid) => p.hub.settle({ reservation_id: rid, outcome: "succeeded" }),
+            ...(p.hangupCall
+              ? {
+                  hangup: (s: VoiceSession) =>
+                    s.channel === "desktop" && s.callId ? p.hangupCall!(s.callId) : Promise.resolve(),
+                }
+              : {}),
           })
         : undefined;
       const r = await drainOutbox({ store: p.outbox, hub: p.hub, now: p.now, alert: p.alert });

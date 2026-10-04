@@ -333,6 +333,13 @@ Method: read-only. Sources are official docs fetched on 2026-10-03, plus a shall
   - "Unified interface": the server posts multipart form fields `sdp` and `session` with the standard key.
   - The data channel label is `oai-events`.
   - Source: https://developers.openai.com/api/docs/guides/voice-webrtc (checked 2026-10-03)
+- **WebRTC through our server (the desktop's path; R-H6 follow-up):** the api uses the unified interface, so the desktop never holds an OpenAI credential.
+  - Call: `POST /v1/realtime/calls`, `multipart/form-data` with `sdp` (the browser's offer) and `session` (JSON, same shape as the `client_secrets` session), plus `Authorization: Bearer <server key>`. `OpenAI-Safety-Identifier` is optional. The response body is the answer SDP (`application/sdp`).
+  - Call id: the `Location` response header, `/v1/realtime/calls/rtc_…`. The api parses it and stores it in `voice_sessions.call_id`.
+  - Hang up: `POST /v1/realtime/calls/{call_id}/hangup` ends a WebRTC call as well as a SIP one. It returns 200; a repeat on an already-ended call returns 404, which we treat as done. The api calls it at the monthly cap, the session maximum, end, revoke and the stale sweep.
+  - Sideband control: `wss://api.openai.com/v1/realtime?call_id=rtc_…` with the server key (not used yet).
+  - Max duration: I found no per-call duration limit on `/v1/realtime/calls` or in the session config (only the platform's own session limit). Our limit is the api's clock (`maxSeconds`) plus the hang-up.
+  - Sources: https://developers.openai.com/api/docs/guides/realtime-webrtc ; https://developers.openai.com/api/docs/guides/realtime-server-controls ; https://developers.openai.com/api/reference/resources/realtime/subresources/calls/methods/hangup (checked 2026-10-03)
 - **SIP (Realtime):**
   - Point the SIP trunk (e.g. Twilio Elastic SIP) at `sip:$PROJECT_ID@sip.api.openai.com;transport=tls`, where the project ID starts with `proj_`. For EU residency, use `sip-eu.api.openai.com`.
   - Configure a project webhook (platform settings > Project > Webhooks). It fires `realtime.call.incoming` with `data.call_id` and `data.sip_headers`. Verify the `webhook-signature`.
