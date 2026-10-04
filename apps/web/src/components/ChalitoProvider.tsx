@@ -3,8 +3,8 @@ import { createContext, useContext, useEffect, useState, useSyncExternalStore, t
 import { connect, type ChalitoClient, type Snapshot } from "@chalito/client";
 import type { PhoneVerifier } from "@chalito/ui";
 import { env } from "@/lib/env";
-import { loadDeviceKeys } from "@/lib/keys";
-import { apiPhoneVerifier } from "@/lib/phone";
+import { enrollPasskey, loadDeviceKeys, passkeyRef } from "@/lib/keys";
+import { apiPhone } from "@/lib/phone";
 import { SettingsStore, type SettingsDb } from "@/lib/settings-store";
 import { useSession } from "@/lib/session";
 import { supabase } from "@/lib/supabase";
@@ -19,24 +19,42 @@ interface Ctx {
   phoneVerifier: PhoneVerifier;
   /** Server-side settings (signed in, paired or not); null when signed out (settings stay on this device). */
   settings: SettingsStore | null;
+  /** This device's passkey for HIGH/CRITICAL approvals ("Protege tus aprobaciones con tu passkey"). */
+  passkey: PasskeyState;
 }
+
+export type EnrollResult = "ok" | "cancelled" | "error";
+export interface PasskeyState {
+  /** A paired device can enrol one. */
+  available: boolean;
+  enrolled: boolean;
+  enroll: () => Promise<EnrollResult>;
+}
+const NO_PASSKEY: PasskeyState = { available: false, enrolled: false, enroll: async () => "error" };
 
 const unavailable: PhoneVerifier = {
   start: async () => ({ ok: false, reason: "error" }),
   check: async () => ({ ok: false, reason: "error" }),
 };
-const INITIAL: Ctx = { status: "loading", client: null, deviceId: null, phoneVerifier: unavailable, settings: null };
+const INITIAL: Ctx = {
+  status: "loading",
+  client: null,
+  deviceId: null,
+  phoneVerifier: unavailable,
+  settings: null,
+  passkey: NO_PASSKEY,
+};
 const Chalito = createContext<Ctx>(INITIAL);
 
 /** Proposes the number (phone_pending_e164) before the api sends the code. */
 const withProposal = (v: PhoneVerifier, settings: SettingsStore): PhoneVerifier => ({
-  start: async (e164) => {
+  start: async (e164, opts) => {
     try {
       await settings.proposePhone(e164);
     } catch {
       return { ok: false, reason: "invalid" };
     }
-    return v.start(e164);
+    return v.start(e164, opts);
   },
   check: (e164, code) => v.check(e164, code),
 });
@@ -49,6 +67,19 @@ const withProposal = (v: PhoneVerifier, settings: SettingsStore): PhoneVerifier 
 export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
   const session = useSession();
   const [ctx, setCtx] = useState<Ctx>(INITIAL);
+  const passkeyState = (enroll: () => Promise<void>): PasskeyState => ({
+    available: true,
+    enrolled: passkeyRef() !== null,
+    enroll: async () => {
+      try {
+        await enroll();
+      } catch (err) {
+        return (err as { name?: string } | null)?.name === "NotAllowedError" ? "cancelled" : "error";
+      }
+      setCtx((c) => ({ ...c, passkey: { ...c.passkey, enrolled: true } }));
+      return "ok";
+    },
+  });
 
   useEffect(() => {
     let alive = true;
@@ -61,28 +92,27 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         const dev = await import("@/dev/backend");
         const b = await dev.startDevBackend();
         client = await connect(b.connectOptions);
-        const settings = new SettingsStore(b.settingsDb, b.controls.owner);
+        const settings = new SettingsStore(b.settingsDb, b.controls.owner, b.channels);
         return done({
           status: "ready",
           client,
           deviceId: b.connectOptions.keys.deviceId,
           phoneVerifier: withProposal(b.phoneVerifier, settings),
           settings,
+          passkey: passkeyState(b.enrollPasskey),
         });
       }
       if (session.status === "loading") return;
       if (session.status === "signed_out") return done({ ...INITIAL, status: "signed_out" });
       const owner = session.session.user?.id ?? "";
-      const settings = new SettingsStore(supabase() as unknown as SettingsDb, owner);
-      const verifier = withProposal(
-        apiPhoneVerifier(env.apiBase, async () => {
-          const { data } = await supabase().auth.getSession();
-          return data.session?.access_token ?? null;
-        }),
-        settings,
-      );
+      const phone = apiPhone(env.apiBase, async () => {
+        const { data } = await supabase().auth.getSession();
+        return data.session?.access_token ?? null;
+      });
+      const settings = new SettingsStore(supabase() as unknown as SettingsDb, owner, phone.channels);
+      const verifier = withProposal(phone.verifier, settings);
       const keys = await loadDeviceKeys();
-      if (!keys) return done({ status: "unpaired", client: null, deviceId: null, phoneVerifier: verifier, settings });
+      if (!keys) return done({ ...INITIAL, status: "unpaired", phoneVerifier: verifier, settings });
       try {
         client = await connect({
           url: env.supabaseUrl,
@@ -97,9 +127,17 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
             },
           },
         });
-        done({ status: "ready", client, deviceId: keys.keys.deviceId, phoneVerifier: verifier, settings });
+        const token = async () => (await supabase().auth.getSession()).data.session?.access_token ?? null;
+        done({
+          status: "ready",
+          client,
+          deviceId: keys.keys.deviceId,
+          phoneVerifier: verifier,
+          settings,
+          passkey: passkeyState(() => enrollPasskey(keys.keys, env.apiBase, token)),
+        });
       } catch {
-        done({ status: "error", client: null, deviceId: null, phoneVerifier: verifier, settings });
+        done({ ...INITIAL, status: "error", phoneVerifier: verifier, settings });
       }
     })();
     return () => {

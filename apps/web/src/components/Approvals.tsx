@@ -33,12 +33,14 @@ const mmss = (ms: number) => {
 /** One approval: risk, countdown, opened details, approve/deny (HIGH asks for step-up). */
 export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
   const t = useTranslations("live.approval");
-  const { client } = useChalito();
+  const { client, passkey } = useChalito();
   const now = useNow(1000);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const expired = a.status === "expired" || (a.status === "pending" && a.expiresAt <= now);
   const pending = a.status === "pending" && !expired;
+  // HIGH/CRITICAL approvals need this device's passkey; without one, say so instead of failing.
+  const needsPasskey = (a.stepUpRequired || a.risk === "HIGH" || a.risk === "CRITICAL") && !passkey.enrolled;
   const details = a.details as { toolName?: string; summary?: string; reasons?: string[] } | null;
 
   const decide = async (allow: boolean) => {
@@ -87,21 +89,31 @@ export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
         {expired ? t("expired") : a.status === "pending" ? t("pending") : t(`status.${a.status}`)}
       </p>
       {pending ? (
-        <div className="flex gap-2">
-          <button
-            className="rounded-lg bg-emerald-700 px-4 py-2 text-white disabled:opacity-50"
-            disabled={busy}
-            onClick={() => void decide(true)}
-          >
-            {t("approve")}
-          </button>
-          <button
-            className="rounded-lg border px-4 py-2 disabled:opacity-50"
-            disabled={busy}
-            onClick={() => void decide(false)}
-          >
-            {t("deny")}
-          </button>
+        <div className="grid gap-2">
+          {needsPasskey ? (
+            <p data-testid="needs-passkey" className="text-sm text-amber-900">
+              {t("needsPasskey")}{" "}
+              <Link href="/dispositivos" className="underline">
+                {t("enrolPasskey")}
+              </Link>
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <button
+              className="rounded-lg bg-emerald-700 px-4 py-2 text-white disabled:opacity-50"
+              disabled={busy || needsPasskey}
+              onClick={() => void decide(true)}
+            >
+              {t("approve")}
+            </button>
+            <button
+              className="rounded-lg border px-4 py-2 disabled:opacity-50"
+              disabled={busy}
+              onClick={() => void decide(false)}
+            >
+              {t("deny")}
+            </button>
+          </div>
         </div>
       ) : null}
       {note ? (

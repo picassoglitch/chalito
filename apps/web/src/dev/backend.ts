@@ -30,7 +30,9 @@ import { memoryStorage } from "@chalito/client";
 import type { SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
 import type { SettingsDb } from "@/lib/settings-store";
+import type { ChannelSetter } from "@/lib/phone";
 import { confirmStepUp } from "@/components/StepUpHost";
+import { passkeyRef, savePasskeyRef } from "@/lib/keys";
 import { DEV_MARKER, FakeDb } from "./fake-db";
 
 type Row = Record<string, unknown>;
@@ -88,6 +90,9 @@ export const startDevBackend = async (): Promise<{
   connectOptions: ConnectOptions;
   phoneVerifier: PhoneVerifier;
   settingsDb: SettingsDb;
+  channels: ChannelSetter;
+  /** Stub of client-keys registerPasskey: records a reference, no authenticator. */
+  enrollPasskey: () => Promise<void>;
   controls: DevControls;
 }> => {
   const db = new FakeDb();
@@ -391,22 +396,48 @@ export const startDevBackend = async (): Promise<{
   };
   (window as unknown as { __chalitoDev: DevControls }).__chalitoDev = controls;
 
-  // The api + Twilio Verify, simulated: code 123456; on success the SERVER writes the verified phone.
+  // The api + Twilio Verify, simulated (apps/api/src/phone/routes.ts): /start needs the charges
+  // acknowledgement; /check takes 123456, refuses a number on another account, and on success
+  // the SERVER stores the verified phone and records the acknowledgement.
+  const IN_USE = "+525500000000";
+  const user = () => db.rows("users").find((r) => r.id === OWNER)!;
   const phoneVerifier: PhoneVerifier = {
-    start: async (e164) => (/^\+[1-9]\d{6,14}$/.test(e164) ? { ok: true } : { ok: false, reason: "invalid" }),
+    start: async (e164) => (/^\+[1-9]\d{7,14}$/.test(e164) ? { ok: true } : { ok: false, reason: "invalid" }),
     check: async (e164, code) => {
       if (code !== "123456") return { ok: false, reason: "wrong_code" };
+      if (e164 === IN_USE) return { ok: false, reason: "in_use" };
+      const at = new Date().toISOString();
       db.update("users", (r) => r.id === OWNER, {
         phone_e164: e164,
-        phone_verified_at: new Date().toISOString(),
+        phone_country: e164.startsWith("+81") ? "JP" : e164.startsWith("+52") ? "MX" : "US",
+        phone_verified_at: at,
         phone_pending_e164: null,
+        charges_notice_ack_at: user().charges_notice_ack_at ?? at,
       });
       return { ok: true };
     },
   };
+  // POST /v1/phone/channels: verified phone + acknowledgement to turn anything on; no calls to JP.
+  const channels: ChannelSetter = async (patch) => {
+    const u = user();
+    if (Object.values(patch).some((v) => v === true)) {
+      if (!u.phone_verified_at) return { ok: false, reason: "phone_not_verified" };
+      if (!u.charges_notice_ack_at) return { ok: false, reason: "charges_notice_required" };
+      if (patch.calls === true && u.phone_country === "JP") return { ok: false, reason: "country_not_supported" };
+    }
+    const next: Row = {};
+    if (patch.whatsapp !== undefined) next.whatsapp_opt_in = patch.whatsapp;
+    if (patch.calls !== undefined) next.calls_enabled = patch.calls;
+    if (patch.sms !== undefined) next.sms_enabled = patch.sms;
+    db.clientWrites.push({ table: "api", op: "phone/channels", row: { ...patch } });
+    db.update("users", (r) => r.id === OWNER, next);
+    return { ok: true };
+  };
 
   return {
     phoneVerifier,
+    channels,
+    enrollPasskey: async () => savePasskeyRef({ credentialId: "dev-passkey", rpId: window.location.hostname }),
     controls,
     settingsDb: db.client({ access_token: "dev-access" }, OWNER) as unknown as SettingsDb,
     connectOptions: {
@@ -415,8 +446,9 @@ export const startDevBackend = async (): Promise<{
       keys,
       owner: OWNER,
       storage: memoryStorage(),
+      // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
       stepUp: async ({ risk }) =>
-        (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
+        passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
       signIn: { kind: "sso", exchange: async () => ({ token_hash: "dev" }) },
       create: () => db.client({ access_token: "dev-access" }, OWNER),
     },

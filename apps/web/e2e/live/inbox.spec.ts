@@ -15,6 +15,15 @@ test("approve from the phone releases the session; HIGH needs step-up and cancel
   await med.getByRole("button", { name: "Aprobar" }).click();
   await expect(page.locator('[data-aid="apr_med_1"]').getByTestId("approval-status")).toHaveText("Aprobada");
 
+  // HIGH without a passkey: approving is blocked and the card says why, with a way to enrol.
+  await expect(high.getByTestId("needs-passkey")).toBeVisible();
+  await expect(high.getByRole("button", { name: "Aprobar" })).toBeDisabled();
+  await page.getByRole("link", { name: "Dispositivos" }).click();
+  await page.getByRole("button", { name: "Crear passkey" }).click();
+  await expect(page.getByTestId("passkey-enrolled")).toBeVisible();
+  await page.getByRole("link", { name: "Bandeja" }).click();
+  await expect(high.getByTestId("needs-passkey")).toHaveCount(0);
+
   // HIGH: the step-up dialog; cancel → nothing written.
   const before = (await clientWrites(page)).filter((w) => w.table === "approval_decisions").length;
   await high.getByRole("button", { name: "Aprobar" }).click();

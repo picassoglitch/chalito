@@ -76,10 +76,9 @@ const PhoneToggle = ({ ctx, k }: { ctx: SettingContext; k: "whatsapp" | "calls" 
   );
 };
 
-/** Shown once the phone is verified: the notice plus an explicit "I understand". */
+/** The notice plus an explicit "I understand": required before a code can even be sent. */
 const ChargesAck = ({ ctx }: { ctx: SettingContext }) => {
   const { t } = useUiText();
-  if (!ctx.values.phone.verified) return null;
   return (
     <div>
       <ChargesNotice />
@@ -120,16 +119,21 @@ const PlainToggle = ({ ctx, k }: { ctx: SettingContext; k: "callBriefing" | "pri
  * render exactly these entries; the parity test enumerates this list.
  */
 export const SETTINGS: readonly SettingDef[] = [
+  { key: "chargesAck", section: "contact", render: (ctx) => <ChargesAck ctx={ctx} /> },
   {
     key: "phone",
     section: "contact",
     render: (ctx) => (
       <Labelled k="phone">
-        <PhoneField value={ctx.values.phone} onChange={(v) => ctx.set("phone", v)} verifier={ctx.phoneVerifier} />
+        <PhoneField
+          value={ctx.values.phone}
+          onChange={(v) => ctx.set("phone", v)}
+          verifier={ctx.phoneVerifier}
+          chargesAck={ctx.values.chargesAck}
+        />
       </Labelled>
     ),
   },
-  { key: "chargesAck", section: "contact", render: (ctx) => <ChargesAck ctx={ctx} /> },
   { key: "whatsapp", section: "contact", render: (ctx) => <PhoneToggle ctx={ctx} k="whatsapp" /> },
   { key: "calls", section: "contact", render: (ctx) => <PhoneToggle ctx={ctx} k="calls" /> },
   { key: "callBriefing", section: "contact", render: (ctx) => <PlainToggle ctx={ctx} k="callBriefing" /> },

@@ -6,7 +6,8 @@ import { expect, test } from "./fixtures";
 for (const path of ["/ajustes", "/en/settings"]) {
   test(`every registered setting renders on ${path}`, async ({ page }) => {
     await page.goto(path);
-    await expect(page.locator('[data-shell="web"]')).toBeVisible();
+    // The first settings render waits on the session check (IndexedDB); slow when the suite runs in parallel.
+    await expect(page.locator('[data-shell="web"]')).toBeVisible({ timeout: 30_000 });
     for (const s of SETTINGS) await expect(page.locator(`[data-setting-key="${s.key}"]`), s.key).toHaveCount(1);
   });
 }

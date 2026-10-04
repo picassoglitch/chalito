@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
-import { fromServer, toServerPatch, type ServerSettings } from "@/lib/settings-store";
+import { vi } from "vitest";
+import {
+  SettingsError,
+  SettingsStore,
+  fromServer,
+  toServerPatch,
+  type ServerSettings,
+  type SettingsDb,
+} from "@/lib/settings-store";
 import { assertNoDevBackendOnVercel } from "../next.config";
 
 const SERVER: ServerSettings = {
@@ -83,5 +91,57 @@ describe("dev backend guard", () => {
     expect(() => assertNoDevBackendOnVercel({ NEXT_PUBLIC_CHALITO_DEV_BACKEND: "1", VERCEL_ENV: "preview" })).toThrow();
     expect(() => assertNoDevBackendOnVercel({ NEXT_PUBLIC_CHALITO_DEV_BACKEND: "1" })).not.toThrow();
     expect(() => assertNoDevBackendOnVercel({ VERCEL: "1" })).not.toThrow();
+  });
+});
+
+describe("SettingsStore writes", () => {
+  const fakeDb = () => {
+    const calls: [string, unknown][] = [];
+    const db = {
+      rpc: (fn: string, args?: unknown) => (
+        calls.push([`rpc:${fn}`, args]),
+        Promise.resolve({ data: {}, error: null })
+      ),
+      from: (t: string) => ({
+        select: () => ({
+          eq: () =>
+            Object.assign(Promise.resolve({ data: null, error: null }), {
+              maybeSingle: () => Promise.resolve({ data: null, error: null }),
+            }),
+        }),
+        update: (patch: unknown) => ({
+          eq: () => (calls.push([`update:${t}`, patch]), Promise.resolve({ data: null, error: null })),
+        }),
+      }),
+    };
+    return { db: db as unknown as SettingsDb, calls };
+  };
+
+  it("paid channels go through the api; everything else through update_my_settings", async () => {
+    const { db, calls } = fakeDb();
+    const channels = vi.fn(async () => ({ ok: true as const }));
+    const store = new SettingsStore(db, "u1", channels);
+    await store.save("calls", true);
+    await store.save("whatsapp", false);
+    await store.save("privacyMode", false);
+    expect(channels.mock.calls).toEqual([[{ calls: true }], [{ whatsapp: false }]]);
+    expect(calls).toEqual([["rpc:update_my_settings", { p: { privacy_mode: "cloud_assist" } }]]);
+  });
+
+  it("the api's refusals come back as typed errors", async () => {
+    const { db } = fakeDb();
+    const store = new SettingsStore(db, "u1", async () => ({ ok: false, reason: "country_not_supported" }));
+    await expect(store.save("calls", true)).rejects.toMatchObject({ code: "country_not_supported" });
+    await expect(store.save("calls", true)).rejects.toBeInstanceOf(SettingsError);
+  });
+
+  it("an existing companion is updated in place, avatar included", async () => {
+    const { db, calls } = fakeDb();
+    db.rpc = () => Promise.resolve({ data: null, error: { message: "companion_exists", code: "23505" } });
+    await new SettingsStore(db, "u1", async () => ({ ok: true })).saveCompanion({
+      avatar: "luna",
+      companionName: { name: "Pepe", isRenamed: true },
+    });
+    expect(calls).toEqual([["update:companions", { name: "Pepe", is_renamed: true, avatar: "luna" }]]);
   });
 });
