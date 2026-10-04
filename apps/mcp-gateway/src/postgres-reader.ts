@@ -58,11 +58,14 @@ export class PostgresGatewayReader implements GatewayReader {
         recommendations: number;
       }[]
     >`
-      select aid, sid, device_id, kind, risk, origin, step_up_required, created_at, expires_at,
-             jsonb_array_length(recommendations)::int as recommendations
-      from chalito.approvals
-      where owner = ${owner} and status = 'pending' and expires_at > ${new Date(now)}
-      order by created_at
+      select a.aid, a.sid, a.device_id, a.kind, a.risk, a.origin, a.step_up_required, a.created_at, a.expires_at,
+             jsonb_array_length(a.recommendations)::int as recommendations
+      from chalito.approvals a
+      where a.owner = ${owner} and a.status = 'pending' and a.expires_at > ${new Date(now)}
+        -- Never a revoked agent's (the orchestrator's decisions have no device row).
+        and not exists (select 1 from chalito.devices d
+                        where d.owner = a.owner and d.device_id = a.device_id and d.revoked)
+      order by a.created_at
       limit 50`;
     return rows.map((r) => ({
       aid: r.aid,
@@ -94,7 +97,7 @@ export class PostgresGatewayReader implements GatewayReader {
       select s.sid, s.device_id, d.name, s.adapter, s.state, s.updated_at
       from chalito_private.gateway_sessions s
       left join chalito.devices d on d.owner = s.owner and d.device_id = s.device_id
-      where s.owner = ${owner} and s.sid = ${sid}`;
+      where s.owner = ${owner} and s.sid = ${sid} and not coalesce(d.revoked, false)`;
     if (!r) return null;
     return {
       sid: r.sid,
@@ -109,7 +112,8 @@ export class PostgresGatewayReader implements GatewayReader {
   async sharedCard(owner: string, sid: string) {
     const [r] = await this.sql<{ card: Record<string, unknown> }[]>`
       select p.card from chalito.session_card_plain p
-      where p.owner = ${owner} and p.sid = ${sid}
+      join chalito.devices d on d.owner = p.owner and d.device_id = p.device_id
+      where p.owner = ${owner} and p.sid = ${sid} and not d.revoked
         and chalito_private.mcp_sharing_on(p.owner, p.sid, p.device_id)`;
     return r?.card ?? null;
   }

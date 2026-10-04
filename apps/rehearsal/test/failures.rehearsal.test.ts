@@ -34,6 +34,17 @@ import { runTurn, type TurnDeps, type TurnRequest } from "../../orchestrator/src
 import { HUB, mocks as orchestratorMocks } from "../../orchestrator/test/harness.js";
 import { waitFor } from "./agent.js";
 import { createNotifier } from "./notifier.js";
+import {
+  buildInviteGlyph,
+  joinRoom,
+  newRoom,
+  openRoomEvent,
+  rotateRoom,
+  sealRoomEvent,
+  unwrapKeyring,
+  wrapRoomKeyFor,
+  type RoomEventRow,
+} from "@chalito/rooms";
 import { CLAUDE_CLIENT, claudeCimd, connectClaude, pendingHigh, subscribePush } from "./scenario.js";
 import { API_ISSUER, DB_URL, GATEWAY_TOKEN, MCP_RESOURCE, READY, createStack, type Person } from "./stack.js";
 
@@ -422,5 +433,164 @@ describe.skipIf(!READY)("e. a connector's grant revoked mid-session", () => {
     });
     expect(raw.status).toBe(401);
     await client.close().catch(() => undefined);
+  });
+});
+
+describe.skipIf(!READY)("f. an agent revoked mid-approval", () => {
+  const s = stack!;
+  const gwSql = gatewaySql(DB_URL ?? "postgres://unused", { max: 1, role: "chalito_gateway" });
+  beforeAll(async () => {
+    await gwSql`select 1`;
+  });
+  afterAll(async () => {
+    await gwSql.end();
+  });
+
+  it("its approval is denied (agent_revoked), the ladder stops, and nothing it shared stays shared", async () => {
+    const net = notifierMocks();
+    const p = await s.person("pepe");
+    await s.enrolPasskey(p);
+    await s.sql`update chalito.users set tz = ${zoneAt(12)} where id = ${p.owner}`;
+    const endpoint = await subscribePush(p.owner, p.phone);
+    const notifier = createNotifier(s.sql);
+    const h = await pendingHigh(s, p, "Laptop de Pepe");
+    // The session's card, shared with MCP connectors (plaintext on, as the person allowed).
+    const sid = [...h.agent.core.sessions.keys()][0]!;
+    await s.sql`insert into chalito.mcp_sharing (owner, scope, target, enabled, plaintext_ack_at)
+      values (${p.owner}, 'session', ${sid}, true, now())`;
+    await s.sql`insert into chalito.session_card_plain (owner, sid, device_id, card)
+      values (${p.owner}, ${sid}, ${h.agentDevice.deviceId}, ${s.sql.json({ goal: "publicar" })})
+      on conflict (owner, sid) do update set card = excluded.card`;
+    const reader = new PostgresGatewayReader(gwSql);
+    expect(await reader.sharedCard(p.owner, sid)).toEqual({ goal: "publicar" });
+    try {
+      net.server.listen({ onUnhandledFrame: "bypass" });
+      expect((await notifier.poke(h.notifyRow.id)).status).toBe(200);
+      await waitFor(() => net.cap.push.some((x) => x.endpoint === endpoint), 20_000, "the first push");
+      closeQuietly(net.server);
+
+      // The laptop is lost: the phone revokes it.
+      expect((await s.call("/v1/devices/revoke", { deviceId: h.agentDevice.deviceId }, p.phone.token)).status).toBe(
+        200,
+      );
+      const [a] = await s.sql<{ status: string; reason: string }[]>`
+        select status, reason from chalito.approvals where owner = ${p.owner} and aid = ${h.approval.aid}`;
+      expect(a).toEqual({ status: "denied", reason: "agent_revoked" });
+      expect(await reader.sharedCard(p.owner, sid)).toBeNull();
+      expect((await reader.pending(p.owner, Date.now())).map((x) => x.aid)).not.toContain(h.approval.aid);
+
+      // The ack the revoke queued reaches the engine: later ticks send nothing more.
+      net.server.listen({ onUnhandledFrame: "bypass" });
+      expect((await notifier.drainNotify()).status).toBe(200);
+      const before = net.cap.push.length;
+      notifier.advance(5 * 60_000 + 1_000);
+      await notifier.tick(p.owner, h.notifyRow.nid);
+      await new Promise((r) => setTimeout(r, 1000));
+      expect(net.cap.push.length).toBe(before);
+      expect(net.cap.whatsapp).toHaveLength(0);
+      expect(h.fake.run.ran).toHaveLength(0);
+    } finally {
+      closeQuietly(net.server);
+      await h.agent.close();
+    }
+  });
+});
+
+describe.skipIf(!READY)("g. a member's phone revoked: the room rotates its key", () => {
+  const s = stack!;
+
+  it("the next post is refused until a rotation; the revoked phone's key can't open what comes after", async () => {
+    const [dad, son] = [await s.person("quique"), await s.person("rafa")];
+    const { device: sonWeb } = await s.endorseBrowser(son);
+    const companion = async (p: Person) => {
+      const { data, error } = await p.phone.db.rpc("create_my_companion", { p_name: p.name, p_avatar: "starter_owl" });
+      if (error) throw new Error(error.message);
+      return (data as { companion_id: string }).companion_id;
+    };
+    const [cd, cs] = [await companion(dad), await companion(son)];
+    const ROOM = `room-${randomUUID().slice(0, 8)}`;
+    const created = await newRoom({
+      roomId: ROOM,
+      type: "family",
+      name: "Familia",
+      companionId: cd,
+      myDevices: [{ deviceId: dad.phone.deviceId, pubBox: dad.phone.pubBox }],
+    });
+    expect((await s.call("/v1/rooms", created.request, dad.phone.token)).status).toBe(201);
+    const glyph = await buildInviteGlyph({
+      inviteId: `inv_${randomUUID().slice(0, 12)}`,
+      roomName: "Familia",
+      pubSign: dad.phone.pubSign,
+      pubBox: dad.phone.pubBox,
+      secretKey: dad.phone.sign.secretKey,
+      now: s.now(),
+      ttlMs: 60 * 60 * 1000,
+    });
+    const inv = await s.call(`/v1/rooms/${ROOM}/invites`, { companionId: cd, glyph }, dad.phone.token);
+    expect(await joinRoom(son.phone.api, cs, String(inv.json.shortCode))).toEqual({ ok: true, roomId: ROOM });
+    const devicesOf = async (c: string) =>
+      (await s.call(`/v1/rooms/${ROOM}/members/${c}/devices`, { companionId: cd }, dad.phone.token)).json.devices as {
+        deviceId: string;
+        pubBox: string;
+      }[];
+    const sonDevices = await devicesOf(cs);
+    expect(sonDevices.map((d) => d.deviceId).sort()).toEqual([son.phone.deviceId, sonWeb.deviceId].sort());
+    expect(
+      (
+        await s.call(
+          `/v1/rooms/${ROOM}/keys`,
+          {
+            companionId: cd,
+            targetCompanionId: cs,
+            epoch: 1,
+            wrappedKeys: await wrapRoomKeyFor(created.key, 1, sonDevices),
+          },
+          dad.phone.token,
+        )
+      ).status,
+    ).toBe(204);
+    // What the phone holds from now on, even after it's revoked: epoch 1's key.
+    const { data: phoneRows } = await son.phone.db.from("room_member_keys").select("epoch, ct").eq("room_id", ROOM);
+    const stolenRing = await unwrapKeyring(phoneRows ?? [], son.phone.box);
+    expect(stolenRing.get(1)).toEqual(created.key);
+
+    const post = async (key: Uint8Array, epoch: number, text: string) => {
+      const req = await sealRoomEvent({
+        roomId: ROOM,
+        epoch,
+        key,
+        eid: `e-${randomUUID().slice(0, 8)}`,
+        companionId: cd,
+        body: { kind: "notice", text },
+      });
+      return { req, res: await s.call(`/v1/rooms/${ROOM}/events`, req, dad.phone.token) };
+    };
+    expect((await post(created.key, 1, "antes")).res.status).toBe(201);
+
+    // Son's phone is stolen: his browser revokes it. The room must rotate before anyone posts.
+    expect((await s.call("/v1/devices/revoke", { deviceId: son.phone.deviceId }, sonWeb.token)).status).toBe(200);
+    const refused = await post(created.key, 1, "¿sigue?");
+    expect(refused.res.status).toBe(409);
+
+    // Dad's client rotates to the remaining members' active devices (son's browser, not his phone).
+    const remainingSon = await devicesOf(cs);
+    expect(remainingSon.map((d) => d.deviceId)).toEqual([sonWeb.deviceId]);
+    const rot = await rotateRoom({
+      companionId: cd,
+      currentEpoch: 1,
+      remaining: { [cd]: [{ deviceId: dad.phone.deviceId, pubBox: dad.phone.pubBox }], [cs]: remainingSon },
+    });
+    expect((await s.call(`/v1/rooms/${ROOM}/rotate`, rot.request, dad.phone.token)).status).toBe(204);
+    const after = await post(rot.key, rot.epoch, "ya con la llave nueva");
+    expect(after.res.status).toBe(201);
+
+    // The new event, as stored: the browser opens it; the stolen phone's old key can't.
+    const [row] = await s.sql<RoomEventRow[]>`
+      select room_id, eid, from_companion_id, to_companions, kind, urgency, ct, key_epoch, promoted, t, expires_at, rev
+      from chalito.room_events where room_id = ${ROOM} and eid = ${after.req.eid}`;
+    const { data: webRows } = await sonWeb.db.from("room_member_keys").select("epoch, ct").eq("room_id", ROOM);
+    const webRing = await unwrapKeyring(webRows ?? [], sonWeb.box);
+    expect(await openRoomEvent(row!, webRing)).toEqual({ kind: "notice", text: "ya con la llave nueva" });
+    expect(await openRoomEvent(row!, stolenRing)).toBeNull();
   });
 });
