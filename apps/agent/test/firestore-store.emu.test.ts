@@ -106,7 +106,7 @@ describe("agent over Firestore (emulator, real rules)", () => {
       adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
       policy: { get: () => policy, set: async () => undefined },
       devMode: new DevMode({
-        store: new DevModeStore(mkdtempSync(join(tmpdir(), "dm-"))),
+        store: new DevModeStore(mkdtempSync(join(tmpdir(), "dm-")), await generateSigningKeyPair(), agentId),
         osAuth: { verify: async () => false },
         prompter: {
           first: async () => false,
