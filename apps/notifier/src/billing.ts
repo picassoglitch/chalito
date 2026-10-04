@@ -3,7 +3,7 @@ import type { PricesConfig } from "@chalito/config";
 import {
   callCostMicros,
   drainOutbox,
-  estimateBillable,
+  reserveTokens,
   smsCostMicros,
   usageEvent,
   voiceSecondsCostMicros,
@@ -11,6 +11,7 @@ import {
   type DrainResult,
   type HubClient,
   type OutboxStore,
+  type ReserveBasis,
   sweepVoiceSessions,
   type VoiceEventFor,
   type VoiceSession,
@@ -90,6 +91,8 @@ export const hubCommsBilling = (p: {
   enqueue: (owner: string, events: (HubUsageEvent | null)[]) => Promise<void>;
   prices: PricesConfig;
   voiceModel: string;
+  /** What est_tokens means at this hub (HUB_RESERVE_BASIS). */
+  reserveBasis: ReserveBasis;
   now: () => number;
   alert: (msg: string, meta: Record<string, unknown>) => void;
   /** Server-side voice sessions (migration 003010): call voice here, desktop voice in apps/api. */
@@ -143,7 +146,7 @@ export const hubCommsBilling = (p: {
           external_job_id: `${channel}:${nid}:${sendKey ?? "0"}`.slice(0, 128),
           class: channel === "call" ? "stream" : "job",
           operation: channel === "call" ? "call.briefing" : `${channel}.message`,
-          est_tokens: estimateBillable(estimate(channel, country)),
+          est_tokens: reserveTokens(estimate(channel, country), p.reserveBasis),
           ttl_seconds: channel === "call" ? 1800 : 300,
         });
         if (!res.allowed) return { ok: false, reason: res.reason };
@@ -207,7 +210,7 @@ export const hubCommsBilling = (p: {
           external_job_id: sourceId,
           class: "stream",
           operation: "voice.call",
-          est_tokens: estimateBillable(callVoiceCost(c.maxSeconds)),
+          est_tokens: reserveTokens(callVoiceCost(c.maxSeconds), p.reserveBasis),
           ttl_seconds: Math.min(86_400, Math.max(60, c.maxSeconds + 300)),
         });
       } catch {

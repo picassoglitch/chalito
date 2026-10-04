@@ -2,11 +2,12 @@ import { errorMessage } from "@chalito/redact";
 import { randomUUID } from "node:crypto";
 import {
   admitManaged,
-  estimateBillable,
   llmCostMicros,
+  reserveTokens,
   usageEvent,
   type HubClient,
   type OutOfEnergy,
+  type ReserveBasis,
 } from "@chalito/billing";
 import type { ModelsConfig, PricesConfig } from "@chalito/config";
 import { fromB64url, sealJson } from "@chalito/crypto";
@@ -55,6 +56,8 @@ export interface TurnDeps {
   brains: Brains;
   models: ModelsConfig;
   prices: PricesConfig;
+  /** What est_tokens means at this hub (HUB_RESERVE_BASIS). */
+  reserveBasis: ReserveBasis;
   entitlements: (owner: string) => Promise<Entitlements>;
   cheap?: CheapModerator;
   now: () => number;
@@ -272,10 +275,12 @@ export const runTurn = async (d: TurnDeps, req: TurnRequest): Promise<TurnResult
           external_job_id: `mesa:${req.mid}:${req.tid}:${speaker.pid}`,
           class: "job",
           operation: speaker.kind === "companion" ? "companion.turn" : "mesa.turn",
-          // Billable tokens (cost × margin), not raw LLM tokens, like every other caller (review R-M5).
+          // From the cost, not raw LLM tokens, like every other caller (review R-M5); the basis says
+          // whether the hub adds the margin (HUB_RESERVE_BASIS).
           est_tokens: model
-            ? estimateBillable(
+            ? reserveTokens(
                 costMicros(d.prices, provider, model, { ...ZERO, input: brief.tokens, output: maxTokens }),
+                d.reserveBasis,
               )
             : 0,
         },

@@ -86,6 +86,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 |---|---|---|
 | `CHALITO_SSO_SECRET` | api | Shared with the hub (`chalito-sso-secret`; Vercel env on the hub) |
 | `CHALITO_ADMIN_TOKEN` | api, notifier, orchestrator | Shared with the hub (`chalito-admin-token`) |
+| `HUB_RESERVE_BASIS` (plain env, optional) | api, notifier, orchestrator | `pre_margin` (default) or `post_margin`: whether the hub adds the margin to an admit's `est_tokens` (GO_LIVE 1.6a). Anything else stops the service at boot |
 | `DATABASE_URL` (login that can `SET ROLE chalito_server`; `chalito_gateway` for the gateway) | api, notifier, orchestrator, mcp-gateway | nexo-ai Postgres; roles from the migrations |
 | `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | api, orchestrator | nexo-ai project settings (secret key, server only) |
 | `VOICE_TOKEN_SECRET` | api | Generate: 32 random bytes |

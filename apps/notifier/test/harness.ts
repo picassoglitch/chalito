@@ -5,7 +5,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import webpush from "web-push";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, MemoryOutbox, MemoryVoiceSessions } from "@chalito/billing";
+import { HubClient, MemoryOutbox, MemoryVoiceSessions, type ReserveBasis } from "@chalito/billing";
 import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { hubCommsBilling } from "../src/billing.js";
 import type { UserPrefs } from "@chalito/escalation";
@@ -227,7 +227,9 @@ export const mockServer = () => {
   return { server, cap, goneEndpoints };
 };
 
-export const setup = (opts: { now?: () => number; billing?: boolean; caps?: boolean } = {}) => {
+export const setup = (
+  opts: { now?: () => number; billing?: boolean; caps?: boolean; reserveBasis?: ReserveBasis } = {},
+) => {
   const store = new MemoryStore();
   const sockets: FakeSocket[] = [];
   const logs: { msg: string; meta?: Record<string, unknown> }[] = [];
@@ -264,6 +266,7 @@ export const setup = (opts: { now?: () => number; billing?: boolean; caps?: bool
       enqueue: (owner, events) => outbox.enqueue(owner, events),
       prices: loadPrices(),
       voiceModel: loadModels().voice.call.model,
+      reserveBasis: opts.reserveBasis ?? "pre_margin",
       now: () => deps.now(),
       alert: (msg, meta) => logs.push({ msg, meta }),
       voiceSessions,

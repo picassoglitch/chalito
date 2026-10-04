@@ -151,3 +151,19 @@ export const checkBalanceRequest = (url: URL): Refusal | null =>
 /** Every engine route: `Authorization: Bearer <SLUG>_ADMIN_TOKEN`. src/lib/engines/bearer.ts @ main 3f27ef3. */
 export const checkBearer = (header: string | null, token: string): Refusal | null =>
   header === `Bearer ${token}` ? null : { status: 403, error: "invalid token" };
+
+/**
+ * What the hub reserves for an admit's est_tokens. Since 5f62bfb (5f62bfb4357bb3fc004a51bffe248a37c02977ba,
+ * "reservations hold the engine's estimate plus the margin"; claude/consumption-caps tip d467b02):
+ *   src/lib/usage/admission-core.ts:182-184 @ d467b02, called at src/lib/usage/admission.ts:61.
+ * At a5733df alone the hub reserved est_tokens as sent.
+ */
+export const hubReserve = (estTokens: number, marginPercent: number, hub: "5f62bfb" | "a5733df"): number =>
+  hub === "a5733df" ? estTokens : Math.ceil(estTokens * (1 + Math.max(0, marginPercent) / 100));
+
+/** What a usage event bills, for a kind with a cost: supabase/migrations/0046_consumption_caps.sql:43-55 @ d467b02. */
+export const hubBillableTokens = (costUsdMicros: number, marginPercent: number): number =>
+  Math.max(1, Math.ceil((costUsdMicros * (100 + marginPercent)) / 400));
+
+/** The hub's default margin: supabase/migrations/0049_usage_margin_160.sql:20 @ d467b02. */
+export const HUB_DEFAULT_MARGIN_PERCENT = 160;

@@ -3,6 +3,7 @@ import type { HubUsageEvent } from "@chalito/protocol";
 import { usageEvent } from "./billable.js";
 import { voiceSecondsCostMicros } from "./cost.js";
 import type { HubClient } from "./hub.js";
+import { reserveTokens, type ReserveBasis } from "./reserve-basis.js";
 
 /** Metered streams (voice): admit once, report as it runs, settle at the end. */
 export type MeterKind = "voice.seconds";
@@ -32,7 +33,8 @@ export interface StreamUsage {
   settle(p: { owner: string; admissionId: string }): Promise<void>;
 }
 
-/** Billable tokens the hub will reserve for a cost estimate (cost × (1 + 160%) at 4 µ$ per token). */
+/** Billable tokens a cost turns into at the hub (cost × (1 + 160%) at 4 µ$ per token). For an admit's
+ *  est_tokens use reserveTokens, which follows HUB_RESERVE_BASIS. */
 export const estimateBillable = (costMicros: number, marginPercent = 160) =>
   Math.ceil((costMicros * (1 + marginPercent / 100)) / 4);
 
@@ -51,12 +53,15 @@ export class HubStreamUsage implements StreamUsage {
       now: () => number;
       /** How much a stream reserves up front (seconds of voice). */
       reserveSeconds?: number;
+      /** What est_tokens means at this hub (HUB_RESERVE_BASIS). */
+      reserveBasis: ReserveBasis;
     },
   ) {}
 
   #admitRequest(owner: string, sourceId: string, reserveSeconds?: number) {
-    const est = estimateBillable(
+    const est = reserveTokens(
       voiceSecondsCostMicros(this.p.prices, this.p.model, reserveSeconds ?? this.p.reserveSeconds ?? 600),
+      this.p.reserveBasis,
     );
     return {
       external_user_id: owner,

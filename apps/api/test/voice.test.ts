@@ -88,6 +88,7 @@ const realHub = () => {
     hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "chalito-admin-token" }),
     prices: loadPrices(),
     model: "gpt-realtime-2.1-mini",
+    reserveBasis: "pre_margin",
     now: () => clock,
   });
   return { hub };

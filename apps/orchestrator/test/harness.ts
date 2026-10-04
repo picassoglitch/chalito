@@ -1,6 +1,6 @@
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
-import { HubClient, computeEntitlements } from "@chalito/billing";
+import { HubClient, computeEntitlements, type ReserveBasis } from "@chalito/billing";
 import { loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { generateBoxKeyPair, openJson, toB64url } from "@chalito/crypto";
 import { SealedEnvelope, type EntitlementInputs } from "@chalito/protocol";
@@ -200,6 +200,7 @@ export const harness = async (
     budget?: MesaDoc["budget"];
     managed?: TurnDeps["brains"]["managed"];
     extraParticipants?: Participant[];
+    reserveBasis?: ReserveBasis;
   } = {},
 ) => {
   const store = new MemoryMesaStore();
@@ -235,6 +236,7 @@ export const harness = async (
     },
     models: loadModels(),
     prices: loadPrices(),
+    reserveBasis: opts.reserveBasis ?? "pre_margin",
     entitlements: async () => computeEntitlements(entitlementInputs, plans),
     now: () => 1_790_000_000_000,
     newId: () => `t_${++n}`,
