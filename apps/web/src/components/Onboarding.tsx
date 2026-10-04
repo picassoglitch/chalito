@@ -8,6 +8,7 @@ import { sessionTier, useSession } from "@/lib/session";
 import { hubLaunchUrl } from "@/lib/hub";
 import { DEV_BACKEND } from "@/lib/env";
 import { useChalito } from "./ChalitoProvider";
+import { PasskeyEnroll } from "./PasskeyEnroll";
 import { useSettings } from "./useSettings";
 
 /** One entry per coding agent in providers.yaml, with its official auth paths. */
@@ -19,7 +20,7 @@ export interface AgentOption {
   subscription: string;
 }
 
-const STEPS = ["signIn", "companion", "name", "connect", "billing", "phone", "pair"] as const;
+const STEPS = ["signIn", "companion", "name", "connect", "billing", "phone", "pair", "passkey"] as const;
 type Step = (typeof STEPS)[number];
 type BillingMode = "byo" | "energy" | "both";
 
@@ -159,6 +160,13 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
               {s.render(ctx)}
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {step === "passkey" ? (
+        <div className="grid gap-3">
+          <p>{t("passkey.body")}</p>
+          <PasskeyEnroll />
         </div>
       ) : null}
 

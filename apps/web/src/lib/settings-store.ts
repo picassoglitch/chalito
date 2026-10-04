@@ -1,3 +1,4 @@
+import type { ChannelSetter } from "./phone";
 import { COMPANIONS, DEFAULT_COMPANION, DEFAULT_SETTINGS, type CompanionId, type SettingsValues } from "@chalito/ui";
 
 /**
@@ -32,10 +33,18 @@ export interface SettingsDb {
   };
 }
 
+export type SettingsErrorCode =
+  | "rejected"
+  | "companion_exists"
+  | "phone_not_verified"
+  | "charges_notice_required"
+  | "country_not_supported"
+  | "failed";
+
 export class SettingsError extends Error {
   override name = "SettingsError";
   constructor(
-    readonly code: "rejected" | "companion_exists" | "failed",
+    readonly code: SettingsErrorCode,
     message: string,
   ) {
     super(message);
@@ -141,6 +150,8 @@ export class SettingsStore {
   constructor(
     private readonly db: SettingsDb,
     private readonly owner: string,
+    /** Paid channels go through the api (/v1/phone/channels): the RPC refuses turning them on. */
+    private readonly channels: ChannelSetter,
   ) {}
 
   async load(): Promise<{ values: SettingsValues; onboarded: boolean }> {
@@ -161,6 +172,11 @@ export class SettingsStore {
   /** Saves one setting; returns the server's view afterwards (e.g. a refused opt-in stays off). */
   async save<K extends keyof SettingsValues>(k: K, v: SettingsValues[K]): Promise<void> {
     if (k === "avatar" || k === "companionName") return; // saved together by saveCompanion
+    if (k === "whatsapp" || k === "calls") {
+      const r = await this.channels(k === "whatsapp" ? { whatsapp: v as boolean } : { calls: v as boolean });
+      if (!r.ok) throw new SettingsError(r.reason === "error" ? "failed" : r.reason, r.reason);
+      return;
+    }
     const patch = toServerPatch(k, v);
     if (patch) await must(this.db.rpc("update_my_settings", { p: patch }));
   }
@@ -185,7 +201,10 @@ export class SettingsStore {
     } catch (err) {
       if (!(err instanceof SettingsError && err.code === "companion_exists")) throw err;
       await must(
-        this.db.from("companions").update({ name, is_renamed: v.companionName.isRenamed }).eq("owner", this.owner),
+        this.db
+          .from("companions")
+          .update({ name, is_renamed: v.companionName.isRenamed, avatar: v.avatar })
+          .eq("owner", this.owner),
       );
     }
   }

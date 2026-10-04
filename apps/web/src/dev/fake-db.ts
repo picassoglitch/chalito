@@ -105,6 +105,9 @@ export class FakeDb {
     }
     if (fn !== "update_my_settings") return fail(`unknown rpc ${fn}`, "42883");
     const p = args.p as Row;
+    // Migration 20261004002000: paid channels are turned ON only through the api.
+    if (p.whatsapp_opt_in === true || p.calls_enabled === true || p.sms_enabled === true)
+      return fail("chalito: channel opt-ins are turned on through the api (/v1/phone/channels)", "42501");
     const allowed = [
       "locale",
       "tz",

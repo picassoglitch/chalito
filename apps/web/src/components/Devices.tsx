@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import type { DeviceView } from "@chalito/client";
 import { useChalito, useLive } from "./ChalitoProvider";
+import { PasskeyEnroll } from "./PasskeyEnroll";
 
 /**
  * Devices: online/offline, Developer mode, revoke. Developer mode can only be turned OFF here
@@ -37,6 +38,7 @@ export const Devices = () => {
   return (
     <div className="grid gap-4">
       <h1 className="text-2xl font-bold">{t("title")}</h1>
+      <PasskeyEnroll />
       <ul className="grid gap-3">
         {devices.map((d) => (
           <li
