@@ -3,9 +3,16 @@ import { PubSub } from "@google-cloud/pubsub";
 import { createClient } from "@supabase/supabase-js";
 import { createApp } from "./app.js";
 import type { AuditSink } from "./deps.js";
+import { openaiRealtime } from "@chalito/adapters/voice";
+import { loadModels } from "@chalito/config";
+import { PostgresPhoneStore } from "./phone/postgres.js";
+import type { PhoneDeps } from "./phone/routes.js";
+import { twilioPhoneVerifier } from "./phone/twilio.js";
 import { PostgresRepo, chalitoSql } from "./postgres/repo.js";
 import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
+import { StubHubUsage } from "./voice/hub.js";
+import type { VoiceDeps } from "./voice/routes.js";
 
 const env = (name: string): string => {
   const v = process.env[name];
@@ -19,7 +26,7 @@ const env = (name: string): string => {
  * server only). CHALITO_DATA_BACKEND defaults to `supabase`, the only backend since the
  * Firestore cut-over.
  */
-const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
+const backend = (): { repo: ApiRepo; identity: IdentityIssuer; phone?: PhoneDeps; voice?: VoiceDeps } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
     throw new Error(`CHALITO_DATA_BACKEND=${kind} is not supported (Firestore was removed, ADR 0017)`);
@@ -32,6 +39,31 @@ const backend = (): { repo: ApiRepo; identity: IdentityIssuer } => {
   return {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
+    // Desktop push-to-talk when OpenAI is configured; the hub client is a stub until M12.
+    ...(process.env.OPENAI_API_KEY
+      ? {
+          voice: {
+            provider: openaiRealtime({ apiKey: env("OPENAI_API_KEY") }),
+            hub: new StubHubUsage((msg, meta) => process.stdout.write(`${JSON.stringify({ msg, ...meta })}\n`)),
+            model: loadModels().voice.desktop.model,
+            voiceName: process.env.REALTIME_VOICE ?? "marin",
+            tokenSecret: env("VOICE_TOKEN_SECRET"),
+          },
+        }
+      : {}),
+    // Phone verification (Twilio Verify + Geo Permissions) when configured.
+    ...(process.env.TWILIO_VERIFY_SERVICE_SID
+      ? {
+          phone: {
+            store: new PostgresPhoneStore(sql),
+            verifier: twilioPhoneVerifier({
+              accountSid: env("TWILIO_ACCOUNT_SID"),
+              authToken: env("TWILIO_AUTH_TOKEN"),
+              verifyServiceSid: env("TWILIO_VERIFY_SERVICE_SID"),
+            }),
+          },
+        }
+      : {}),
   };
 };
 

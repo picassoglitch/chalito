@@ -1,0 +1,60 @@
+{
+  "name": "chalito_pendientes_v1",
+  "category": "UTILITY",
+  "note": "Submitted to Meta by hand (OPS). Variables come only from OutboundTemplateVars: {{1}} total, {{2}} source label, {{3}} urgency label; the URL button suffix is the opaque notification id. The labels below are fixed per enum value, so no free text can reach the template.",
+  "languages": {
+    "es_MX": {
+      "body": "Chalito: tienes {{1}} pendientes en tu cuenta ({{2}}). Urgencia: {{3}}. Ábrelos en la app.",
+      "buttons": [
+        { "type": "URL", "text": "Abrir", "url": "https://chalito.chalyb.com/n/{{1}}", "example": ["n_4f2a9c"] },
+        { "type": "QUICK_REPLY", "text": "Dejar de recibir" }
+      ],
+      "example": ["3", "aprobaciones", "alta"]
+    },
+    "en_US": {
+      "body": "Chalito: you have {{1}} pending items in your account ({{2}}). Urgency: {{3}}. Open them in the app.",
+      "buttons": [
+        { "type": "URL", "text": "Open", "url": "https://chalito.chalyb.com/n/{{1}}", "example": ["n_4f2a9c"] },
+        { "type": "QUICK_REPLY", "text": "Stop receiving" }
+      ],
+      "example": ["3", "approvals", "high"]
+    }
+  },
+  "sms": {
+    "es": "Chalito: tienes {total} pendientes en tu cuenta ({source}). Urgencia: {urgency}. Ábrelos en la app: {link}",
+    "en": "Chalito: you have {total} pending items in your account ({source}). Urgency: {urgency}. Open them in the app: {link}"
+  },
+  "labels": {
+    "source": {
+      "es": {
+        "approval": "aprobaciones",
+        "session_question": "preguntas de agentes",
+        "mesa_starting": "Mesa por empezar",
+        "room_event": "salas",
+        "unanswered_messages": "mensajes sin contestar",
+        "budget": "presupuesto",
+        "trial": "prueba",
+        "devmode": "modo desarrollador",
+        "security": "seguridad",
+        "reminder": "recordatorios"
+      },
+      "en": {
+        "approval": "approvals",
+        "session_question": "agent questions",
+        "mesa_starting": "Mesa starting",
+        "room_event": "rooms",
+        "unanswered_messages": "unanswered messages",
+        "budget": "budget",
+        "trial": "trial",
+        "devmode": "developer mode",
+        "security": "security",
+        "reminder": "reminders"
+      }
+    },
+    "urgency": {
+      "es": { "low": "baja", "normal": "normal", "high": "alta", "critical": "crítica" },
+      "en": { "low": "low", "normal": "normal", "high": "high", "critical": "critical" }
+    }
+  },
+  "quickReplyPayload": "chalito_optout"
+}

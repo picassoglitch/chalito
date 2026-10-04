@@ -1,5 +1,5 @@
 {
-  "name": "@chalito/api",
+  "name": "@chalito/notifier",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,19 +14,20 @@
     "@chalito/adapters": "workspace:*",
     "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
-    "@chalito/glyph": "workspace:*",
+    "@chalito/escalation": "workspace:*",
     "@chalito/protocol": "workspace:*",
-    "@google-cloud/pubsub": "^6.1.0",
     "@hono/node-server": "^2.1.3",
-    "@simplewebauthn/server": "14.0.3",
-    "@supabase/supabase-js": "^2.117.2",
+    "google-auth-library": "^11.1.0",
     "hono": "^4.13.12",
-    "libphonenumber-js": "^1.13.14",
+    "jose": "^6.2.12",
     "postgres": "^3.4.9",
+    "web-push": "^3.6.7",
+    "ws": "^8.22.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@chalito/client-keys": "workspace:*",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.18.2",
     "msw": "^3.0.2"
   }
 }
