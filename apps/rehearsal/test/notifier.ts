@@ -6,7 +6,9 @@
  */
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, type JWK } from "jose";
 import webpush from "web-push";
-import { loadEscalation } from "@chalito/config";
+import { HubClient, PostgresOutbox, enqueueUsage } from "@chalito/billing";
+import { loadEscalation, loadModels, loadPrices } from "@chalito/config";
+import { hubCommsBilling } from "../../notifier/src/billing.js";
 import type { Sql } from "postgres";
 import { createApp, type AppConfig } from "../../notifier/src/app.js";
 import type { NotifierDeps } from "../../notifier/src/executor.js";
@@ -36,7 +38,11 @@ const googleToken = (aud: string, email: string) =>
     .setExpirationTime("5m")
     .sign(googleKey.privateKey);
 
-export const createNotifier = (sql: Sql) => {
+/**
+ * `billing`: paid channels (WhatsApp, calls, SMS) are admitted on the hub first, as in production
+ * (hubCommsBilling over the usage outbox); without it they're sent unmetered.
+ */
+export const createNotifier = (sql: Sql, opts: { billing?: boolean } = {}) => {
   let clock = Date.now();
   const logs: { msg: string; meta?: Record<string, unknown> }[] = [];
   const config = loadEscalation();
@@ -60,6 +66,17 @@ export const createNotifier = (sql: Sql) => {
     now: () => clock,
     log: { info: (msg, meta) => logs.push({ msg, meta }), error: (msg, meta) => logs.push({ msg, meta }) },
   };
+  if (opts.billing)
+    deps.billing = hubCommsBilling({
+      hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "chalito-admin-token" }),
+      outbox: new PostgresOutbox(sql),
+      enqueue: (owner, events) => enqueueUsage(sql, owner, events),
+      prices: loadPrices(),
+      voiceModel: loadModels().voice.call.model,
+      reserveBasis: "pre_margin",
+      now: () => clock,
+      alert: (msg, meta) => logs.push({ msg, meta }),
+    });
   const cfg: AppConfig = {
     pubsub: {
       email: PUSH_SA,
