@@ -5,6 +5,7 @@ import { ActionError, type EventView, type SessionView } from "@chalito/client";
 import type { RemotePermissionMode } from "@chalito/protocol";
 import { Link } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
+import { SharingToggle } from "./SharingToggle";
 
 /** The only modes a remote surface may set (the device policy is still the ceiling). Never bypassPermissions. */
 export const REMOTE_MODES: readonly RemotePermissionMode[] = ["default", "plan", "acceptEdits"];
@@ -191,6 +192,7 @@ export const SessionDetail = ({ sid }: { sid: string }) => {
       ) : (
         <p className="text-sm text-neutral-600">{t("sealed")}</p>
       )}
+      <SharingToggle scope="session" target={sid} />
       {pendingQuestions.map((q) => (
         <QuestionForm key={q.questionId} sid={sid} q={q} onSent={() => setNote(t("answerSent"))} />
       ))}

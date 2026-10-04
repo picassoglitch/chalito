@@ -3,7 +3,9 @@ import { createContext, useContext, useEffect, useState, useSyncExternalStore, t
 import { connect, type ChalitoClient, type Snapshot } from "@chalito/client";
 import type { PhoneVerifier } from "@chalito/ui";
 import { env } from "@/lib/env";
+import { assertWithServerChallenge, httpApi } from "@chalito/client-keys";
 import { enrollPasskey, loadDeviceKeys, passkeyRef } from "@/lib/keys";
+import { httpMcp, type McpApi } from "@/lib/mcp";
 import { apiPhone } from "@/lib/phone";
 import { SettingsStore, type SettingsDb } from "@/lib/settings-store";
 import { useSession } from "@/lib/session";
@@ -21,7 +23,35 @@ interface Ctx {
   settings: SettingsStore | null;
   /** This device's passkey for HIGH/CRITICAL approvals ("Protege tus aprobaciones con tu passkey"). */
   passkey: PasskeyState;
+  /** MCP connectors api (consent, "Apps conectadas", card sharing); null when signed out. */
+  mcp: McpApi | null;
+  /** A passkey assertion over the server's challenge (/v1/webauthn/assert/options), for consent. */
+  assertPasskey: (() => Promise<Record<string, unknown>>) | null;
+  /** Whether a session's or device's card is shared with connected apps (chalito.mcp_sharing, RLS read). */
+  readSharing: ((scope: "session" | "device", target: string) => Promise<boolean>) | null;
 }
+
+type SharingDb = {
+  from(t: string): {
+    select(c: string): {
+      eq(
+        c: string,
+        v: unknown,
+      ): { eq(c: string, v: unknown): { maybeSingle(): PromiseLike<{ data: { enabled?: boolean } | null }> } };
+    };
+  };
+};
+const sharingReader =
+  (db: unknown) =>
+  async (scope: "session" | "device", target: string): Promise<boolean> => {
+    const { data } = await (db as SharingDb)
+      .from("mcp_sharing")
+      .select("enabled")
+      .eq("scope", scope)
+      .eq("target", target)
+      .maybeSingle();
+    return data?.enabled === true;
+  };
 
 export type EnrollResult = "ok" | "cancelled" | "error";
 export interface PasskeyState {
@@ -43,6 +73,9 @@ const INITIAL: Ctx = {
   phoneVerifier: unavailable,
   settings: null,
   passkey: NO_PASSKEY,
+  mcp: null,
+  assertPasskey: null,
+  readSharing: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -100,6 +133,9 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           phoneVerifier: withProposal(b.phoneVerifier, settings),
           settings,
           passkey: passkeyState(b.enrollPasskey),
+          mcp: b.mcp,
+          assertPasskey: b.assertPasskey,
+          readSharing: sharingReader(b.settingsDb),
         });
       }
       if (session.status === "loading") return;
@@ -111,8 +147,13 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
       });
       const settings = new SettingsStore(supabase() as unknown as SettingsDb, owner, phone.channels);
       const verifier = withProposal(phone.verifier, settings);
+      const apiToken = async () => (await supabase().auth.getSession()).data.session?.access_token ?? null;
+      // NOTE: consent approval and sharing are client-role routes: they need this device's own
+      // session (device sign-in), which arrives with the pairing slice. Until then the person's
+      // session is used and those two calls answer "forbidden".
+      const mcp = httpMcp(env.apiBase, apiToken);
       const keys = await loadDeviceKeys();
-      if (!keys) return done({ ...INITIAL, status: "unpaired", phoneVerifier: verifier, settings });
+      if (!keys) return done({ ...INITIAL, status: "unpaired", phoneVerifier: verifier, settings, mcp });
       try {
         client = await connect({
           url: env.supabaseUrl,
@@ -135,9 +176,16 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           phoneVerifier: verifier,
           settings,
           passkey: passkeyState(() => enrollPasskey(keys.keys, env.apiBase, token)),
+          mcp,
+          readSharing: sharingReader(supabase()),
+          assertPasskey: async () =>
+            (await assertWithServerChallenge(httpApi({ baseUrl: env.apiBase, token }))) as unknown as Record<
+              string,
+              unknown
+            >,
         });
       } catch {
-        done({ ...INITIAL, status: "error", phoneVerifier: verifier, settings });
+        done({ ...INITIAL, status: "error", phoneVerifier: verifier, settings, mcp });
       }
     })();
     return () => {

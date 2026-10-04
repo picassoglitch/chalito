@@ -385,7 +385,8 @@
         "phone_not_verified": "Primero verifica tu teléfono.",
         "charges_notice_required": "Primero confirma que entiendes que pueden aplicar cargos.",
         "country_not_supported": "Las llamadas a este país no están disponibles."
-      }
+      },
+      "connectedApps": "Apps conectadas"
     },
     "notification": {
       "opening": "Abriendo…",
@@ -399,6 +400,51 @@
       "afterPairing": "Cuando emparejes tu computadora te pediremos crear una passkey en este dispositivo.",
       "cancelled": "Cancelaste la passkey; puedes intentarlo de nuevo.",
       "error": "No pudimos crear la passkey. Inténtalo de nuevo."
+    }
+  },
+  "mcp": {
+    "consent": {
+      "title": "{client} quiere conectarse a Chalito",
+      "redirect": "Después volverás a",
+      "scopes": "Permisos que pide",
+      "approve": "Permitir",
+      "deny": "No permitir",
+      "loading": "Cargando…",
+      "missing": "Falta la solicitud de conexión.",
+      "gone": "Esa solicitud ya no existe o venció. Vuelve a conectar desde la app.",
+      "error": {
+        "not_found": "Esa solicitud ya no existe.",
+        "no_passkey": "Este dispositivo no tiene passkey.",
+        "passkey_failed": "No se pudo confirmar con tu passkey.",
+        "challenge_expired": "Tardaste demasiado; inténtalo de nuevo.",
+        "forbidden": "Este dispositivo no puede aprobar conexiones.",
+        "error": "Algo falló. Inténtalo de nuevo."
+      },
+      "badRedirect": "La dirección de regreso no es segura; no te enviamos ahí.",
+      "needsDevice": "Para permitirlo, abre esta página en un dispositivo emparejado.",
+      "needsPasskey": "Permitirlo pide tu passkey.",
+      "enrolPasskey": "Crear passkey"
+    },
+    "connectors": {
+      "title": "Apps conectadas",
+      "empty": "No tienes apps conectadas.",
+      "loading": "Cargando…",
+      "failed": "No pudimos cargar tus apps conectadas.",
+      "signedOut": "Entra con tu cuenta para ver tus apps conectadas.",
+      "lastUsed": "Usada {when}",
+      "neverUsed": "Aún no se ha usado",
+      "revoke": "Desconectar",
+      "revokeConfirm": "¿Desconectar {name}? Dejará de tener acceso de inmediato.",
+      "revokeYes": "Sí, desconectar",
+      "cancel": "Cancelar"
+    },
+    "sharing": {
+      "label": "Compartir tarjeta con apps conectadas",
+      "warning": "La tarjeta (objetivo, estado y última acción) se guardará sin cifrar para que tus apps conectadas la lean.",
+      "ack": "Entiendo que se guarda sin cifrar.",
+      "confirm": "Compartir",
+      "cancel": "Cancelar",
+      "failed": "No pudimos cambiarlo."
     }
   }
 }
