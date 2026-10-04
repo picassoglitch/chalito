@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { fromB64url, verifyEnvelope } from "@chalito/crypto";
+import { z } from "zod";
 import {
   EnrollEndorsedClientRequest,
   EnrollFirstClientRequest,
   RefreshChallenge,
   RevokeDeviceRequest,
+  SignedCommand,
 } from "@chalito/protocol";
 import type { Deps } from "../deps.js";
 import { endDeviceVoice } from "../voice/routes.js";
@@ -13,10 +15,22 @@ import { buildDeviceDoc, checkRegistration, mintDeviceToken } from "../lib/devic
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { hashRecoveryCode } from "../lib/recovery.js";
+import { verifyStepUp } from "../lib/step-up.js";
+import { webauthnConfigFromEnv, type WebAuthnConfig } from "./webauthn.js";
+
+const RevokeAllRequest = z.object({
+  /** The caller's passkey assertion (challenge from POST /v1/webauthn/assert/options). */
+  stepUp: z.unknown().optional(),
+  /**
+   * `device.revokeClient` commands signed by the caller, one per (agent, revoked client), so each
+   * agent drops the revoked clients from its trusted list. The server can't sign them itself.
+   */
+  commands: z.array(SignedCommand).max(500).default([]),
+});
 
 const CLIENT_KINDS = ["phone", "web"] as const;
 
-export const deviceRoutes = (deps: Deps) => {
+export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFromEnv()) => {
   const app = new Hono<AuthEnv>();
 
   /** First trusted client (the phone). Only while the account has no active client. */
@@ -156,6 +170,86 @@ export const deviceRoutes = (deps: Deps) => {
     if (deps.voice) await endDeviceVoice(deps, deps.voice, p.owner, body.data.deviceId);
     await deps.audit.record({ action: "device.revoked", owner: p.owner, actor: p.uid, target: body.data.deviceId });
     return c.json({ ok: true });
+  });
+
+  /**
+   * Revoke every other client at once (a lost or stolen phone, a suspected compromise), from a
+   * trusted client with a passkey step-up. Server side: every other client is revoked and its
+   * Auth user banned in one go, so RLS and requireAuth cut them off immediately. Agents keep their
+   * own trust lists, so the caller sends signed `device.revokeClient` commands, which are checked
+   * (signer, signature, target agent, revoked client) and queued here. Agents themselves stay
+   * paired: revoke them one by one if needed.
+   */
+  app.post("/revoke-all", requireAuth(deps, ["client"]), async (c) => {
+    const p = principal(c);
+    const body = RevokeAllRequest.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(400, "bad_request");
+    const caller = await deps.repo.getDevice(p.owner, p.deviceId!);
+    if (!caller || caller.revoked !== false || caller.role !== "client") return fail(403, "forbidden");
+    // Mandatory step-up: without a passkey on this device, revoke-all isn't available.
+    if (!(await deps.repo.getDeviceWebAuthn(p.owner, caller.deviceId))) return fail(403, "passkey_required");
+    const step = await verifyStepUp(deps, wa, {
+      owner: p.owner,
+      uid: p.uid,
+      deviceId: caller.deviceId,
+      stepUp: body.data.stepUp,
+      during: "devices.revoke_all",
+    });
+    if (!step.ok) return fail(step.status, step.error);
+
+    const now = deps.now();
+    const revoked = await deps.repo.revokeOtherClients(p.owner, caller.deviceId, now);
+    const banFailed: string[] = [];
+    for (const id of revoked) {
+      if (!(await deps.identity.disableDevice(id))) banFailed.push(id);
+      await deps.audit.record({
+        action: "device.revoked",
+        owner: p.owner,
+        actor: p.uid,
+        target: id,
+        meta: { via: "revoke_all" },
+      });
+    }
+
+    // Queue the caller's signed revokeClient commands; anything else in the list is refused.
+    const agents = new Set(await deps.repo.activeAgents(p.owner));
+    const pub = new Map([[caller.deviceId, await fromB64url(caller.pubSign)]]);
+    let queued = 0;
+    const refused: string[] = [];
+    for (const cmd of body.data.commands) {
+      const b = cmd.body;
+      const ok =
+        cmd.signerDeviceId === caller.deviceId &&
+        b.uid === p.owner &&
+        b.origin === `client:${caller.deviceId}` &&
+        b.payload.type === "device.revokeClient" &&
+        agents.has(b.targetDeviceId) &&
+        b.payload.clientDeviceId !== caller.deviceId &&
+        b.expiresAt > now &&
+        (await verifyEnvelope(cmd, "chalito.command.v1", pub)).ok;
+      if (!ok) {
+        refused.push(b.cid);
+        continue;
+      }
+      if (
+        await deps.repo.queueCommand(p.owner, {
+          targetDeviceId: b.targetDeviceId,
+          id: b.cid,
+          env: cmd,
+          fromDeviceId: caller.deviceId,
+          expiresAt: b.expiresAt,
+        })
+      )
+        queued++;
+    }
+    await deps.audit.record({
+      action: "device.revoked_all",
+      owner: p.owner,
+      actor: p.uid,
+      target: caller.deviceId,
+      meta: { clients: revoked.length, commandsQueued: queued, banFailed: banFailed.length },
+    });
+    return c.json({ ok: true, revoked, agents: [...agents], commandsQueued: queued, refused, banFailed });
   });
 
   return app;

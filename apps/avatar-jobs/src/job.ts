@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { errorMessage, installConsoleRedaction } from "@chalito/redact";
 import { Storage } from "@google-cloud/storage";
 import { UploadRejected, makeCard, validateImage, type CardManifest } from "./process.js";
@@ -36,7 +38,15 @@ export const processUpload = async (store: BlobStore, path: string): Promise<Job
 };
 
 /** Cloud Run job entry: AVATAR_BUCKET and UPLOAD_PATH (one upload per execution). */
-if (process.argv[1]?.endsWith("job.ts") || process.argv[1]?.endsWith("job.js")) {
+/** Run as the entry point, also through a symlink (the container's /app/entry.ts). */
+const isEntry = () => {
+  try {
+    return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+};
+if (isEntry()) {
   installConsoleRedaction();
   const bucket = process.env.AVATAR_BUCKET;
   const path = process.env.UPLOAD_PATH;

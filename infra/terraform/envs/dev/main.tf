@@ -13,6 +13,8 @@ locals {
     "billingbudgets.googleapis.com",
     "monitoring.googleapis.com",
     "iamcredentials.googleapis.com",
+    "eventarc.googleapis.com",
+    "workflows.googleapis.com",
   ]
 
   service_accounts = {
@@ -21,6 +23,7 @@ locals {
     "chalito-mcp-gateway"  = "Chalito MCP gateway: reduced scopes, read-only data, no signing keys"
     "chalito-avatar-jobs"  = "Chalito avatar jobs: upload validation and conversion, no secrets"
     "chalito-pubsub-push"  = "Identity Pub/Sub uses to push to Chalito services"
+    "chalito-avatar-trig"  = "Chalito avatar trigger: Eventarc + the Workflow that starts avatar-jobs"
   }
 
   topics = ["agent-events", "notifications", "room-events", "billing-events", "usage", "audit"]

@@ -1,0 +1,16 @@
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+**/coverage
+**/test-results
+**/playwright-report
+.git
+.github
+infra
+docs
+apps/desktop/src-tauri/target
+*.log
+.env
+.env.*
+!.env.example

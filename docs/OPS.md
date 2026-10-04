@@ -67,6 +67,16 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 - `chalito-vapid-private-key`, `chalito-openai-webhook-secret`, `chalito-voice-ref-secret`;
 - the Twilio, Meta, OpenAI, Anthropic and xAI ones, and `chalito-owner-uids`.
 
+**api (Chalyb's engine module) also needs:**
+- `ACCOUNT_EXPORT_BUCKET`: the records bucket (CMEK) is the suggested home for `exports/<owner>/`;
+- `AVATAR_BUCKET`: the assets bucket;
+- `RECORDS_BUCKET`;
+- `API_PUBLIC_URL`;
+- `SCHEDULER_SA_EMAIL`;
+- `TRUSTED_PROXIES`: 0 behind Cloud Run's front end, 1 behind an external load balancer.
+
+**Cloud Scheduler:** schedule `POST <api>/tasks/account-deletions` hourly, with OIDC as `SCHEDULER_SA_EMAIL`.
+
 **Set by variables:**
 - `hub_admin_token_secret`: the id of Chalyb's `CHALITO_ADMIN_TOKEN` secret. The engine module grants the notifier and orchestrator access to it.
 - `notifier_public_url` and `orchestrator_public_url`;
