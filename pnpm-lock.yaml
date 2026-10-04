@@ -124,6 +124,16 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
 
+  packages/avatar:
+    dependencies:
+      '@chalito/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+    devDependencies:
+      fast-check:
+        specifier: ^4.10.2
+        version: 4.10.2
+
   packages/brand:
     dependencies:
       '@chalito/protocol':
