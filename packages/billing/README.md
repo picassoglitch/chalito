@@ -18,6 +18,7 @@ Chalito admits work, reports provider costs and settles. It keeps no payment rec
 | `entitlements.ts` | Pure: entitlements from tier, trial, balance and comped. |
 | `energy.ts` | `admitManaged` and the in-character out-of-energy result. |
 | `stream-usage.ts` | `HubStreamUsage` for voice streams: admit, price an increment (`event`), keep alive, settle. |
+| `reserve-basis.ts` | `HUB_RESERVE_BASIS` and `reserveTokens`: an admit's `est_tokens` from a cost, before or after the hub's margin. |
 | `voice-sessions.ts` | Voice metered on the server (`chalito_private.voice_sessions`, migration `20261004003010`). See below. |
 
 **Hub client details:**
@@ -108,5 +109,6 @@ Other refusals and an unreachable hub fail closed on free_min without a recharge
 |---|---|
 | `CHALYB_BASE_URL` | api, notifier. Must be `https://www.chalyb.com`. |
 | `CHALITO_ADMIN_TOKEN` | api, notifier. Engine bearer, from Secret Manager. |
+| `HUB_RESERVE_BASIS` | api, notifier, orchestrator. `pre_margin` (default): an admit's `est_tokens` is cost ÷ 4 and the hub adds the margin (hub 5f62bfb). `post_margin`: the estimate includes the margin, for a hub with a5733df alone. Unknown values stop the service at boot (`reserve-basis.ts`). |
 | `SCHEDULER_SA_EMAIL` | notifier. Cloud Scheduler's OIDC signer for the drain. |
 | `OWNER_UIDS` | Comped owner accounts, comma-separated. |

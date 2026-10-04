@@ -29,7 +29,7 @@ The patches use migration numbers 0051–0054 because the branch already uses 00
   - **5f62bfb** ("reservations hold the engine's estimate plus the margin") changes what `est_tokens` means, and patch 02 builds on it.
   - **0050** (`usage_cost_by_model`) is in patch 05's revoke list.
   - If the owner merges only `a5733df`: drop the `usage_cost_by_model` lines from 05, and drop the `admission*.ts` / `consumption.test.ts` hunks from 02 (keep its migration and doc line).
-- **Contract change for engines (5f62bfb):** `est_tokens` is now the estimated provider cost ÷ 4 µ$, **before** the margin; the hub adds the margin when it reserves. Chalito currently sends estimates with the margin already included (`estimateBillable`, ×2.6), so it would reserve 2.6× too much once the branch is merged. That fix is on the Chalito side (orchestrator, voice, notifier). For the store, patch 02 makes the hub reserve the price as-is.
+- **Contract change for engines (5f62bfb):** `est_tokens` is now the estimated provider cost ÷ 4 µ$, **before** the margin; the hub adds the margin when it reserves. Chalito currently sends estimates with the margin already included (`estimateBillable`, ×2.6), so it would reserve 2.6× too much once the branch is merged. Chalito handles it with `HUB_RESERVE_BASIS` (default `pre_margin`, matching 5f62bfb; `post_margin` only for a hub with a5733df alone, GO_LIVE 1.6a). For the store, patch 02 makes the hub reserve the price as-is.
 
 ## What each patch does, and how to test it on the hub
 

@@ -11,6 +11,7 @@ import {
   PostgresVoiceSessions,
   compedFrom,
   enqueueUsage,
+  parseReserveBasis,
 } from "@chalito/billing";
 import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { createApp } from "./app.js";
@@ -47,6 +48,8 @@ const sql = postgres(env("DATABASE_URL"), {
   // Least privilege (security review S2): act as chalito_server when the login holds it with SET.
   ...(process.env.DATABASE_ROLE ? { connection: { role: process.env.DATABASE_ROLE } } : {}),
 });
+// What est_tokens means at the hub; an unknown value stops the service here, not at the first admit.
+const reserveBasis = parseReserveBasis(process.env.HUB_RESERVE_BASIS);
 const hub = new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") });
 const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
 
@@ -55,6 +58,7 @@ const desktopVoice = new HubStreamUsage({
   hub,
   prices: loadPrices(),
   model: loadModels().voice.desktop.model,
+  reserveBasis,
   now: Date.now,
 });
 
@@ -96,6 +100,7 @@ const app = createApp(
       enqueue: (owner, events) => enqueueUsage(sql, owner, events),
       prices: loadPrices(),
       voiceModel: loadModels().voice.call.model,
+      reserveBasis,
       now: Date.now,
       alert: (msg, meta) => log.error(msg, { ...meta, alert: true }),
       // Voice sessions (calls here, desktop in apps/api) are metered on the server; never-ended

@@ -1,6 +1,6 @@
 /** Beta review fixes in the orchestrator: R-M5 (reservation units), R-L11 (forwarded decisions, names). */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { estimateBillable, llmCostMicros } from "@chalito/billing";
+import { llmCostMicros, reserveTokens } from "@chalito/billing";
 import { loadPrices } from "@chalito/config";
 import { buildBrief, safeName } from "../src/core/brief.js";
 import type { Speaker } from "../src/core/mesa.js";
@@ -32,16 +32,19 @@ const req = (mid: string, over: Partial<TurnRequest> = {}): TurnRequest => ({
   ...over,
 });
 
-describe("R-M5: the hub reservation is in billable tokens", () => {
-  it("covers the brief and the max output at prices.yaml rates (cost × margin)", async () => {
-    const h = await harness();
-    await runTurn(h.deps, req(h.mid));
-    const est = m.hub.find((x) => x.path === "admit")!.body.est_tokens as number;
-    const outputOnly = estimateBillable(
-      llmCostMicros(loadPrices(), "anthropic", "claude-sonnet-5-5", { input: 0, output: 800 }),
-    );
-    expect(est).toBeGreaterThan(outputOnly);
-  });
+describe("R-M5: the hub reservation is priced from the cost, on HUB_RESERVE_BASIS", () => {
+  it.each(["pre_margin", "post_margin"] as const)(
+    "%s: covers the brief and the max output at prices.yaml rates",
+    async (basis) => {
+      const h = await harness({ reserveBasis: basis });
+      await runTurn(h.deps, req(h.mid));
+      const est = m.hub.find((x) => x.path === "admit")!.body.est_tokens as number;
+      const outputOnly = llmCostMicros(loadPrices(), "anthropic", "claude-sonnet-5-5", { input: 0, output: 800 });
+      expect(est).toBeGreaterThan(reserveTokens(outputOnly, basis));
+      // The brief is a few hundred tokens: well under the margin's 2.6× between the two bases.
+      expect(est).toBeLessThan(reserveTokens(outputOnly, basis) * 2);
+    },
+  );
 });
 
 describe("R-L11: forwarded text never raises a decision", () => {

@@ -17,6 +17,7 @@ describe("the drain sweep hangs up a stale desktop call (api-proxied WebRTC)", (
       enqueue: async () => undefined,
       prices: loadPrices(),
       voiceModel: "gpt-realtime-2.1-mini",
+      reserveBasis: "pre_margin",
       now: () => T0 + 60_000 + 121_000,
       alert: () => undefined,
       voiceSessions,

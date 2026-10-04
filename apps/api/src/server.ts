@@ -13,7 +13,7 @@ import { PostgresAccountStore } from "./account/store.js";
 import { googleOidcVerifier } from "./lib/oidc.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, HubStreamUsage, PostgresVoiceSessions, compedFrom } from "@chalito/billing";
+import { HubClient, HubStreamUsage, PostgresVoiceSessions, compedFrom, parseReserveBasis } from "@chalito/billing";
 import { loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
@@ -36,6 +36,8 @@ const env = (name: string): string => {
   if (!v) throw new Error(`${name} is required`);
   return v;
 };
+// What est_tokens means at the hub; an unknown value stops the service here, not at the first admit.
+const reserveBasis = parseReserveBasis(process.env.HUB_RESERVE_BASIS);
 
 /**
  * Data backend (ADR 0017): the hub's Postgres through a server connection (DATABASE_URL,
@@ -77,6 +79,7 @@ const backend = (): {
               hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
               prices: loadPrices(),
               model: loadModels().voice.desktop.model,
+              reserveBasis,
               now: Date.now,
             }),
             model: loadModels().voice.desktop.model,
