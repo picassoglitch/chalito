@@ -64,6 +64,7 @@ export const memoryStorage = (): AuthStorage & { values: Map<string, string> } =
 
 interface AuthSession {
   access_token: string;
+  user?: { id: string; app_metadata?: Record<string, unknown> };
 }
 interface AuthError {
   message: string;
@@ -82,7 +83,7 @@ export interface BrowserAuth {
   onAuthStateChange(cb: (event: string, session: AuthSession | null) => void): {
     data: { subscription: { unsubscribe(): void } };
   };
-  signOut?(): Promise<unknown>;
+  signOut?(opts?: { scope?: "global" | "local" | "others" }): Promise<unknown>;
 }
 
 /** What the browser client needs from supabase-js. */
@@ -94,17 +95,33 @@ export type BrowserSupabase = SupaClient & {
 
 /**
  * How this browser gets a session:
- * - `sso`: a person's web session from the hub SSO exchange (/auth/sso). The API answers
- *   either with a magic-link `token_hash` or with a session pair.
+ * - `sso`: an SSO launch (/auth/sso) for a person. It always REPLACES whatever session the
+ *   browser holds (another user may have been signed in): sign out locally, then exchange.
+ *   The API answers with a magic-link `token_hash` or a session pair.
+ * - `stored`: a plain reload: restore the stored session, or fail (no silent sign-in).
  * - `device`: a trusted client device signs in as its own Supabase Auth user, like the
- *   agent: a signed challenge at Chalito's API returns a magic-link `token_hash`.
+ *   agent: a signed challenge at Chalito's API returns a magic-link `token_hash`. A stored
+ *   session is reused only if it is this device's own (app_metadata.chalito.device_id).
  */
 export type SignIn =
   | {
       kind: "sso";
       exchange: () => Promise<{ token_hash: string } | { access_token: string; refresh_token: string }>;
     }
-  | { kind: "device"; login: () => Promise<string> };
+  | { kind: "stored" }
+  | { kind: "device"; deviceId: string; login: () => Promise<string> };
+
+export class NoSessionError extends Error {
+  override name = "NoSessionError";
+  constructor() {
+    super("No stored session: sign in again.");
+  }
+}
+
+const sessionDeviceId = (s: AuthSession | null | undefined): string | undefined => {
+  const c = (s?.user?.app_metadata as { chalito?: { device_id?: unknown } } | undefined)?.chalito;
+  return typeof c?.device_id === "string" ? c.device_id : undefined;
+};
 
 export class DeviceRevokedError extends Error {
   override name = "DeviceRevokedError";
@@ -118,10 +135,21 @@ const revoked = (err: unknown) => {
   return e?.code === "device_revoked" || e?.status === 403;
 };
 
-/** Restores the stored session (supabase-js refreshes it if needed), or signs in fresh. */
+/**
+ * Restores or replaces the session, depending on how this launch signs in (see SignIn):
+ * an SSO launch never inherits another identity's stored session, and a device reuses only
+ * its own.
+ */
 export const ensureSession = async (auth: BrowserAuth, signIn: SignIn): Promise<string> => {
   const { data, error } = await auth.getSession();
-  if (!error && data.session?.access_token) return data.session.access_token;
+  const stored = !error && data.session?.access_token ? data.session : null;
+  if (signIn.kind === "stored") {
+    if (!stored) throw new NoSessionError();
+    return stored.access_token;
+  }
+  if (signIn.kind === "device" && stored && sessionDeviceId(stored) === signIn.deviceId) return stored.access_token;
+  // A fresh identity (SSO launch) or someone else's session: drop it before signing in.
+  if (stored) await auth.signOut?.({ scope: "local" });
   let res: Awaited<ReturnType<BrowserAuth["verifyOtp"]>>;
   if (signIn.kind === "device") {
     let tokenHash: string;
