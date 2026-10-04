@@ -106,12 +106,13 @@ jobs:
         env:
           # The api's least-privilege role (security review S2); postgres holds it with SET.
           CHALITO_DB_ROLE: chalito_server
-      - name: Agent SupabaseStore integration
+      - name: Agent SupabaseStore and browser client integration
         run: |
           eval "$(supabase status -o env)"
           export API_URL ANON_KEY SERVICE_ROLE_KEY
           export PUBLISHABLE_KEY="${PUBLISHABLE_KEY:-}"
           pnpm --filter @chalito/agent test:supabase
+          pnpm --filter @chalito/client test:supabase
       # Realtime delivery (supabase-js against the local stack).
       - run: npm install --no-save --no-package-lock --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
       - run: node supabase/scripts/realtime-latency.mjs
