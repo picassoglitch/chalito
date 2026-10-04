@@ -1,0 +1,22 @@
+import { defineRouting } from "next-intl/routing";
+
+/** ADR 0015 / D-018: ES is the bare `/`, EN lives under `/en`, and the locale comes from the URL only. */
+export const routing = defineRouting({
+  locales: ["es", "en"],
+  defaultLocale: "es",
+  localePrefix: "as-needed",
+  localeDetection: false,
+  pathnames: {
+    "/": "/",
+    "/bienvenida": { es: "/bienvenida", en: "/welcome" },
+    "/ajustes": { es: "/ajustes", en: "/settings" },
+    "/descargar": { es: "/descargar", en: "/download" },
+    "/creditos": "/creditos",
+    "/auth/sso": "/auth/sso",
+    "/a/[id]": "/a/[id]",
+    "/m/[id]": "/m/[id]",
+    "/r/[id]": "/r/[id]",
+  },
+});
+
+export type AppLocale = (typeof routing.locales)[number];
