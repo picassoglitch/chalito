@@ -10,7 +10,8 @@ import { PASSPHRASE_CREDENTIAL, servicePlan, systemdUnit } from "../src/service.
 const scratch = () => mkdtempSync(join(tmpdir(), "chalito-l12-"));
 const mode = (p: string) => statSync(p).mode & 0o777;
 
-describe("the secrets passphrase without an environment variable", () => {
+// Each round trip runs argon2id several times: slow under a full parallel run.
+describe("the secrets passphrase without an environment variable", { timeout: 30_000 }, () => {
   const roundTrip = async (env: Record<string, string>) => {
     const path = join(scratch(), "secrets.enc");
     const s = await openSecretStore({ env: { CHALITO_SECRETS: `file:${path}`, ...env }, warn: () => undefined });

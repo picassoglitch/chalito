@@ -102,6 +102,7 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/rooms/:roomId/events": user(120, 5, SEALED),
   "POST /v1/rooms/:roomId/events/:eid/promote": user(30, 0.5),
   "POST /v1/rooms/:roomId/retention": user(20, 0.2),
+  "POST /v1/rooms/:roomId/reports": user(20, 0.2, 8 * KB),
 
   // Desktop updater manifest (signed URLs to the private releases bucket)
   "GET /releases/:channel/latest.json": user(30, 1, 0),
