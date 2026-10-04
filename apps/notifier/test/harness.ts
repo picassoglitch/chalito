@@ -79,7 +79,7 @@ export const SCHEDULER_SA = "scheduler@chalito-dev.iam.gserviceaccount.com";
 export const RID = "44444444-4444-4444-8444-444444444444";
 
 /** What the mocked Chalyb hub answers to /usage/admit. */
-export const hubState = { admit: "allowed" as "allowed" | "no_tokens" | "down" };
+export const hubState = { admit: "allowed" as "allowed" | "no_tokens" | "down", remaining: 10_000 };
 
 export interface Captured {
   hub: { path: string; body: Record<string, unknown> }[];
@@ -146,7 +146,7 @@ export const mockServer = () => {
               boost_fee_tokens: 0,
               limits: {},
               balance: {
-                remaining: 10_000,
+                remaining: hubState.remaining,
                 reserved: 0,
                 unlimited: false,
                 monthlyAllocation: 100_000,

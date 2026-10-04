@@ -318,7 +318,8 @@ export const oauthRoutes = (
       lastUsedAt: null,
       revokedAt: null,
     });
-    const code = newSecret(32);
+    // Prefixed so redaction recognizes Chalito's own secrets in any log or text (R-M9).
+    const code = `chalito_ac_${newSecret(32)}`;
     await store().putCode({
       codeHash: sha256hex(code),
       owner: p.owner,
@@ -358,8 +359,8 @@ export const oauthRoutes = (
 
   // ---------------------------------------------------------------- token
   const issue = async (g: { owner: string; cid: string; clientId: string; scopes: McpScope[] }) => {
-    const access = newSecret(32);
-    const refresh = newSecret(32);
+    const access = `chalito_at_${newSecret(32)}`;
+    const refresh = `chalito_rt_${newSecret(32)}`;
     const now = deps.now();
     const base = {
       owner: g.owner,

@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { redactError } from "./redact.js";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -691,7 +692,8 @@ if (isEntry) {
         console.error(err.message);
         process.exit(3);
       }
-      console.error(err);
+      // Redacted: a crash message can carry a key or token (R-M9).
+      console.error(redactError(err));
       process.exit(1);
     },
   );

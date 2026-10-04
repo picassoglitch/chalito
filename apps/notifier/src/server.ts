@@ -1,3 +1,4 @@
+import { installConsoleRedaction, redact, redactDeep } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { GoogleAuth } from "google-auth-library";
 import postgres from "postgres";
@@ -28,9 +29,13 @@ const env = (name: string): string => {
   return v;
 };
 
+// Every log line and stray console call is redacted (R-M9).
+installConsoleRedaction();
+const line = (severity: string, msg: string, meta?: Record<string, unknown>) =>
+  JSON.stringify({ severity, msg: redact(msg), ...(meta ? (redactDeep(meta) as object) : {}) });
 const log: Logger = {
-  info: (msg, meta) => process.stdout.write(`${JSON.stringify({ severity: "INFO", msg, ...meta })}\n`),
-  error: (msg, meta) => process.stderr.write(`${JSON.stringify({ severity: "ERROR", msg, ...meta })}\n`),
+  info: (msg, meta) => process.stdout.write(`${line("INFO", msg, meta)}\n`),
+  error: (msg, meta) => process.stderr.write(`${line("ERROR", msg, meta)}\n`),
 };
 
 const base = env("PUBLIC_BASE_URL").replace(/\/$/, "");

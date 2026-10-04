@@ -84,7 +84,8 @@ export const computeEntitlements = (raw: z.input<typeof EntitlementInputs>, plan
   const efficiencyDefault: EfficiencyProfile = managed && tierRow ? tierRow.efficiencyDefault : "free_min";
   const chosen = i.chosenEfficiency;
   const efficiencyCurrent: EfficiencyProfile =
-    managed && chosen && plans.efficiency.userMayPickCheaper && RANK[chosen] <= RANK[maxProfile]
+    // Only cheaper than the plan's default (or equal), never up to maxProfile (R-L9).
+    managed && chosen && plans.efficiency.userMayPickCheaper && RANK[chosen] <= RANK[efficiencyDefault]
       ? chosen
       : efficiencyDefault;
 

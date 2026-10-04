@@ -46,7 +46,7 @@ Chalito admits work, reports provider costs and settles. It keeps no payment rec
 - backs off 30 s → 1 h on retriable failures;
 - marks rows `dead` and alerts (`billing.usage_dead`) on permanent 4xx. **Nothing is dropped.**
 
-Sent rows are purged after 30 days. Dead rows stay until someone resolves them.
+Sent rows are purged after 45 days (monthly caps read the outbox; migration 20261004003020). Dead rows stay until someone resolves them.
 
 The notifier exposes `POST /tasks/drain-usage` (Google OIDC). Point a Cloud Scheduler job at it every minute, with `SCHEDULER_SA_EMAIL` as the signer.
 

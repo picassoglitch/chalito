@@ -1,3 +1,4 @@
+import { errorMessage } from "@chalito/redact";
 import { randomUUID } from "node:crypto";
 import {
   admitManaged,
@@ -311,7 +312,7 @@ export const runTurn = async (d: TurnDeps, req: TurnRequest): Promise<TurnResult
         pid: speaker.pid,
         provider,
         billing: mode,
-        error: err instanceof Error ? err.message : "error",
+        error: errorMessage(err),
       });
       result.skipped.push({ pid: speaker.pid, reason: "brain_error" });
       continue;

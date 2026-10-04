@@ -39,6 +39,12 @@ variable "secret_env" {
   default     = {}
 }
 
+variable "cpu_always" {
+  description = "Keep CPU allocated outside requests (work that outlives a request, e.g. the notifier's call agents)."
+  type        = bool
+  default     = false
+}
+
 variable "labels" {
   type    = map(string)
   default = {}
@@ -64,7 +70,7 @@ resource "google_cloud_run_v2_service" "this" {
       image = "us-docker.pkg.dev/cloudrun/container/hello"
 
       resources {
-        cpu_idle = true
+        cpu_idle = !var.cpu_always
         limits = {
           cpu    = "1"
           memory = "512Mi"

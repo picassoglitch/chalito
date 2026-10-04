@@ -23,11 +23,16 @@ import type { HubUsageEvent } from "@chalito/protocol";
  * prices.yaml) through the outbox. Push and the desktop are free and never gated.
  */
 export interface CommsBilling {
+  /**
+   * `sendKey` identifies the send (the ladder rung): re-admitting the same send, e.g. on a Cloud
+   * Tasks retry, gets the same reservation, so recordSend's source_id is the same too (R-L9).
+   */
   admit(
     uid: string,
     channel: "whatsapp" | "sms" | "call",
     nid: string,
     country: string,
+    sendKey?: string,
   ): Promise<{ ok: true; reservationId: string } | { ok: false; reason: string }>;
   /** After a WhatsApp/SMS send: report its cost and settle the reservation. */
   recordSend(
@@ -110,17 +115,23 @@ export const hubCommsBilling = (p: {
       metadata: { model: s.model },
     });
   return {
-    async admit(uid, channel, nid, country) {
+    async admit(uid, channel, nid, country, sendKey) {
       try {
         const res = await p.hub.admit({
           external_user_id: uid,
-          external_job_id: `${channel}:${nid}:${p.now()}`,
+          external_job_id: `${channel}:${nid}:${sendKey ?? "0"}`.slice(0, 128),
           class: channel === "call" ? "stream" : "job",
           operation: channel === "call" ? "call.briefing" : `${channel}.message`,
           est_tokens: estimateBillable(estimate(channel, country)),
           ttl_seconds: channel === "call" ? 1800 : 300,
         });
-        return res.allowed ? { ok: true, reservationId: res.reservation_id } : { ok: false, reason: res.reason };
+        if (!res.allowed) return { ok: false, reason: res.reason };
+        // An admit is not a balance check: refuse an empty balance too (R-L9).
+        if (!res.balance.unlimited && res.balance.remaining <= 0) {
+          await p.hub.settle({ reservation_id: res.reservation_id, outcome: "cancelled" }).catch(() => undefined);
+          return { ok: false, reason: "no_tokens" };
+        }
+        return { ok: true, reservationId: res.reservation_id };
       } catch {
         return { ok: false, reason: "hub_unavailable" }; // fail closed for paid channels
       }
@@ -141,7 +152,12 @@ export const hubCommsBilling = (p: {
           reservationId: s.reservationId,
         }),
       ]);
-      await p.hub.settle({ reservation_id: s.reservationId, outcome: "succeeded" });
+      // The send happened and its usage is queued: a failed settle must not fail (and retry) the send.
+      await p.hub
+        .settle({ reservation_id: s.reservationId, outcome: "succeeded" })
+        .catch((err: unknown) =>
+          p.alert("billing.settle_failed", { reservationId: s.reservationId, error: String(err).slice(0, 200) }),
+        );
     },
     async release(reservationId) {
       await p.hub.settle({ reservation_id: reservationId, outcome: "failed" }).catch(() => undefined);

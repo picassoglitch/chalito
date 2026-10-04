@@ -8,6 +8,7 @@ afterAll(() => server.close());
 beforeEach(() => {
   for (const list of Object.values(cap)) list.length = 0;
   hubState.admit = "allowed";
+  hubState.remaining = 10_000;
 });
 
 const item = (nid: string) => ({

@@ -1,3 +1,4 @@
+import { errorMessage } from "@chalito/redact";
 import type { EscalationConfig } from "@chalito/config";
 import {
   buildBriefing,
@@ -97,7 +98,7 @@ export const handleEvent = async (deps: NotifierDeps, uid: string, event: Escala
         uid,
         type: a.type,
         channel: a.type === "send" ? a.channel : undefined,
-        error: err instanceof Error ? err.message : "error",
+        error: errorMessage(err),
       });
     }
   }
@@ -164,7 +165,8 @@ const execute = async (
       if (!to) return;
       const country = prefs.phone?.country ?? "";
       if (await overMonthlyCap(deps, uid, a.channel)) return suppressPaid(deps, uid, a.nid, a.channel, "cap_reached");
-      const gate = deps.billing ? await deps.billing.admit(uid, a.channel, a.nid, country) : null;
+      const rung = String(ladders.get(a.nid)?.step ?? 0);
+      const gate = deps.billing ? await deps.billing.admit(uid, a.channel, a.nid, country, rung) : null;
       if (gate && !gate.ok) return suppressPaid(deps, uid, a.nid, a.channel, gate.reason);
       const body = a.channel === "sms" ? smsBody(a.payload, deps.appUrl) : "";
       try {
@@ -189,7 +191,7 @@ const execute = async (
       if (!to || !ladder) return;
       const country = prefs.phone?.country ?? "";
       if (await overMonthlyCap(deps, uid, "call")) return suppressPaid(deps, uid, a.nid, "call", "cap_reached");
-      const gate = deps.billing ? await deps.billing.admit(uid, "call", a.nid, country) : null;
+      const gate = deps.billing ? await deps.billing.admit(uid, "call", a.nid, country, String(ladder.step)) : null;
       if (gate && !gate.ok) return suppressPaid(deps, uid, a.nid, "call", gate.reason);
       const script = buildBriefing(await callBriefing(deps, uid, prefs, ladder), {
         snoozeMin: Math.round(deps.config.snoozeMs / 60_000),

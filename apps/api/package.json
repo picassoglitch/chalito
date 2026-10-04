@@ -18,6 +18,7 @@
     "@chalito/glyph": "workspace:*",
     "@chalito/guard": "workspace:*",
     "@chalito/protocol": "workspace:*",
+    "@chalito/redact": "workspace:*",
     "@chalito/releases": "workspace:*",
     "@google-cloud/pubsub": "^6.1.0",
     "@hono/node-server": "^2.1.3",

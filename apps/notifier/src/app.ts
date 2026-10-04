@@ -1,6 +1,6 @@
 import { guard } from "@chalito/guard";
 import { NOTIFIER_ROUTES } from "./limits.js";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
@@ -124,6 +124,14 @@ export const waToE164 = (from: string) => {
 
 /** The longest a call's voice leg may run (Twilio Dial timeLimit), whatever minutes are left. */
 export const MAX_CALL_VOICE_SEC = 20 * 60;
+
+/** Constant-time comparison of a presented secret with the configured one (R-L10). */
+const sameSecret = (got: string | undefined, want: string) => {
+  if (!got || !want) return false;
+  const a = createHash("sha256").update(got).digest();
+  const b = createHash("sha256").update(want).digest();
+  return timingSafeEqual(a, b);
+};
 
 export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVerifier) => {
   const app = new Hono();
@@ -384,7 +392,7 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
 
   // ---- WhatsApp Cloud API (X-Hub-Signature-256 over the raw body) -------------------
   app.get("/webhooks/whatsapp", (c) =>
-    c.req.query("hub.mode") === "subscribe" && c.req.query("hub.verify_token") === cfg.metaVerifyToken
+    c.req.query("hub.mode") === "subscribe" && sameSecret(c.req.query("hub.verify_token"), cfg.metaVerifyToken)
       ? c.text(c.req.query("hub.challenge") ?? "")
       : c.text("forbidden", 403),
   );

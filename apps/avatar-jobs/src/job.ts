@@ -1,3 +1,4 @@
+import { errorMessage, installConsoleRedaction } from "@chalito/redact";
 import { Storage } from "@google-cloud/storage";
 import { UploadRejected, makeCard, validateImage, type CardManifest } from "./process.js";
 import { GcsBlobStore, UPLOAD, outputPrefix, type BlobStore } from "./storage.js";
@@ -36,6 +37,7 @@ export const processUpload = async (store: BlobStore, path: string): Promise<Job
 
 /** Cloud Run job entry: AVATAR_BUCKET and UPLOAD_PATH (one upload per execution). */
 if (process.argv[1]?.endsWith("job.ts") || process.argv[1]?.endsWith("job.js")) {
+  installConsoleRedaction();
   const bucket = process.env.AVATAR_BUCKET;
   const path = process.env.UPLOAD_PATH;
   if (!bucket || !path) {
@@ -45,7 +47,7 @@ if (process.argv[1]?.endsWith("job.ts") || process.argv[1]?.endsWith("job.js")) 
   processUpload(new GcsBlobStore(new Storage(), bucket), path).then(
     (r) => process.stdout.write(`${JSON.stringify({ status: r.status, prefix: r.prefix })}\n`),
     (e: unknown) => {
-      process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n`);
+      process.stderr.write(`${errorMessage(e)}\n`);
       process.exit(1);
     },
   );
