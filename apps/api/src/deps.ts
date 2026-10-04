@@ -1,5 +1,4 @@
-import type { Auth } from "firebase-admin/auth";
-import type { Firestore } from "firebase-admin/firestore";
+import type { ApiRepo, IdentityIssuer } from "./repo.js";
 
 export interface AuditEvent {
   action: string;
@@ -26,8 +25,8 @@ export interface ApiConfig {
 }
 
 export interface Deps {
-  db: Firestore;
-  auth: Auth;
+  repo: ApiRepo;
+  identity: IdentityIssuer;
   audit: AuditSink;
   config: ApiConfig;
   now: () => number;

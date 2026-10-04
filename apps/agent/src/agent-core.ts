@@ -4,6 +4,7 @@ import type { AdapterEvent, SessionAdapter, SessionHandle, ToolCall, ToolGate } 
 import {
   AgentEvent,
   CommandEnvelope,
+  isSignedOrigin,
   type AdapterKind,
   type CommandBody,
   type CommandPayload,
@@ -18,15 +19,17 @@ import { CardBuilder } from "./card.js";
 import type { DevMode } from "./devmode.js";
 import {
   PERMISSION_RANK,
+  SANDBOX_RANK,
   applyRemoteTighten,
   classifyToolCall,
   decide,
   originAllowed,
   policyHash,
   presetPolicy,
+  type ClassifyContext,
   type Policy,
 } from "./policy/index.js";
-import type { Logger } from "./redact.js";
+import { redact, redactDeep, type Logger } from "./redact.js";
 import { Sealer } from "./sealing.js";
 import type { AgentStore } from "./store.js";
 
@@ -51,6 +54,8 @@ export interface AgentCoreDeps {
   now: () => number;
   log: Logger;
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
+  /** Host facts for the classifier's hard floor (agent binaries, service files, the session's PATH dirs). */
+  classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
 }
 
 interface Session {
@@ -66,7 +71,12 @@ interface Session {
   seq: number;
   providerSessionId?: string;
   questions: Map<string, (answers: Record<string, string | string[]>) => void>;
+  /** Set by a relayed (mcp:/call:) answer: the rest of the current turn is gated at this trust. Cleared when the turn ends. */
+  turnOriginFloor?: Origin;
 }
+
+const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
+const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
 
 const REMOTE_ENABLE_ATTEMPT =
   /devmode\.(on|enable|toggleOn)|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
@@ -135,14 +145,14 @@ export class AgentCore {
           v: 1,
           type: "remote_enable.rejected",
           deviceId: this.d.self.deviceId,
-          attempted: attempted.slice(0, 64),
+          attempted: redact(attempted).slice(0, 64),
           origin:
             typeof body.origin === "string" && /^(local|client:|mcp:|call:)/.test(body.origin)
               ? (body.origin as Origin)
               : "local",
           t: this.d.now(),
         });
-        this.#audit("remote_enable.rejected", { id, attempted });
+        this.#audit("remote_enable.rejected", { id, attempted: redact(attempted).slice(0, 64) });
         return { ok: false, reason: "remote_enable_rejected" };
       }
       this.#audit("command.rejected", { id, reason: "invalid" });
@@ -174,12 +184,15 @@ export class AgentCore {
     const open = <T>(ct: SealedEnvelope) => openJson<T>(ct, this.d.self.deviceId, this.d.self.box, `command:${cid}`);
     const aboveCeiling = (mode: RemotePermissionMode) =>
       PERMISSION_RANK[mode] > PERMISSION_RANK[policy.remote.maxPermissionMode];
+    const sandboxAboveCeiling = (sandbox: keyof typeof SANDBOX_RANK | undefined) =>
+      sandbox !== undefined && SANDBOX_RANK[sandbox] > SANDBOX_RANK[policy.remote.maxCodexSandbox];
 
     switch (p.type) {
       case "session.start": {
         const ws = policy.workspaces.find((w) => w.label === p.workspaceLabel);
         if (!ws) return this.#reject(cid, "unknown_workspace");
         if (aboveCeiling(p.permissionMode)) return this.#reject(cid, "permission_mode_above_ceiling");
+        if (sandboxAboveCeiling(p.codexSandbox)) return this.#reject(cid, "codex_sandbox_above_ceiling");
         const adapter = this.d.adapters[p.adapter];
         const enabled =
           p.adapter === "claude-code"
@@ -222,6 +235,7 @@ export class AgentCore {
         const s = this.sessions.get(p.sid);
         if (!s) return this.#reject(cid, "unknown_session");
         if (aboveCeiling(p.permissionMode)) return this.#reject(cid, "permission_mode_above_ceiling");
+        if (sandboxAboveCeiling(p.codexSandbox)) return this.#reject(cid, "codex_sandbox_above_ceiling");
         await s.handle.setPermissionMode(p.permissionMode);
         s.permissionMode = p.permissionMode;
         await this.d.store.upsertSession(s.sid, { permissionMode: p.permissionMode });
@@ -231,6 +245,8 @@ export class AgentCore {
         const s = this.sessions.get(p.sid);
         const resolve = s?.questions.get(p.questionId);
         if (!s || !resolve) return this.#reject(cid, "unknown_question");
+        // An answer steers the running turn, so that turn can't keep a more trusted origin.
+        s.turnOriginFloor = lowerTrust(s.turnOriginFloor ?? origin, origin);
         resolve(await open<Record<string, string | string[]>>(p.answerCt));
         s.questions.delete(p.questionId);
         return { ok: true };
@@ -354,9 +370,10 @@ export class AgentCore {
   }
 
   #gate(s: Session): ToolGate {
-    return async (call: ToolCall) => {
+    return async (gated: ToolCall) => {
+      const call = s.turnOriginFloor ? { ...gated, origin: lowerTrust(gated.origin, s.turnOriginFloor) } : gated;
       const policy = this.d.policy.get();
-      const classification = classifyToolCall(call.toolName, call.input, { policy, home: this.d.home, cwd: s.cwd });
+      const classification = classifyToolCall(call.toolName, call.input, this.#classifyContext(policy, s));
       const decision = decide({
         classification,
         origin: call.origin,
@@ -420,6 +437,10 @@ export class AgentCore {
     };
   }
 
+  #classifyContext(policy: Policy, s: Session): ClassifyContext {
+    return { policy, home: this.d.home, cwd: s.cwd, ...this.d.classifyExtras?.() };
+  }
+
   async #onAdapterEvent(s: Session, e: AdapterEvent): Promise<void> {
     switch (e.type) {
       case "started":
@@ -434,7 +455,7 @@ export class AgentCore {
         return;
       case "tool_started": {
         const policy = this.d.policy.get();
-        const c = classifyToolCall(e.toolName, e.input, { policy, home: this.d.home, cwd: s.cwd });
+        const c = classifyToolCall(e.toolName, e.input, this.#classifyContext(policy, s));
         await this.#event(s, {
           type: "tool.started",
           toolUseId: e.toolUseId,
@@ -451,6 +472,7 @@ export class AgentCore {
         await this.#event(s, { type: "usage", tokIn: e.tokIn, tokOut: e.tokOut, tokCached: e.tokCacheRead });
         return;
       case "state":
+        if (e.state !== "running") s.turnOriginFloor = undefined;
         s.card.state(e.state as SessionState);
         await this.#event(s, { type: "session.state", state: e.state });
         await this.d.store.upsertSession(s.sid, { state: e.state, updatedAt: this.d.now() });
@@ -489,8 +511,20 @@ export class AgentCore {
     return { ok: false, reason };
   }
 
+  /** Logs and writes the durable audit trail (fire-and-forget; a failed write is logged, never thrown). */
   #audit(type: string, meta: Record<string, unknown>): void {
     this.d.log.warn(type, meta);
+    void this.d.store
+      .audit({
+        eid: randomUUID(),
+        t: this.d.now(),
+        type,
+        meta: redactDeep(meta) as Record<string, unknown>,
+        source: "agent",
+      })
+      .catch((err: unknown) =>
+        this.d.log.error("audit write failed", { type, error: err instanceof Error ? err.message : "error" }),
+      );
   }
 
   /** policyHash helper for reporting. */

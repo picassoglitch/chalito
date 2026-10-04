@@ -9,17 +9,22 @@ export interface SecretStore {
 
 const SERVICE = "com.chalito.agent";
 
+// Pin Linux to the Secret Service: without it the library silently falls back to the
+// kernel keyring, which is in-memory and lost on reboot (device identity and BYO keys
+// would vanish). Headless boxes use EncryptedFileSecretStore instead (secrets-file.ts).
+const entry = (name: string) => new Entry(SERVICE, name, { linux: { store: "secret-service" } });
+
 export class KeyringStore implements SecretStore {
   async get(name: string) {
     try {
-      return new Entry(SERVICE, name).getPassword() ?? null;
+      return entry(name).getPassword() ?? null;
     } catch {
       return null;
     }
   }
   async set(name: string, value: string) {
     try {
-      new Entry(SERVICE, name).setPassword(value);
+      entry(name).setPassword(value);
     } catch (err) {
       throw new Error(
         `Could not write to the OS keychain (${err instanceof Error ? err.message : "error"}). On Linux, make sure a Secret Service (gnome-keyring, KWallet or KeePassXC) is running in your session.`,
@@ -29,7 +34,7 @@ export class KeyringStore implements SecretStore {
   }
   async delete(name: string) {
     try {
-      new Entry(SERVICE, name).deletePassword();
+      entry(name).deletePassword();
     } catch {
       /* already gone */
     }

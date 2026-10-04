@@ -47,9 +47,21 @@ service cloud.firestore {
           allow create: if activeClient(uid)
             && request.resource.data.keys().hasOnly(["env", "createdAt", "expireAt", "fromDeviceId"])
             && request.resource.data.env is map
+            // Clients write only signed envelopes; relays come from the gateway/notifier via the Admin SDK.
+            && !("relayedBy" in request.resource.data.env)
+            && request.resource.data.env.get("ctx", null) == "chalito.command.v1"
             && request.resource.data.fromDeviceId == myDeviceId();
           allow read, delete: if activeAgent(uid) && deviceId == myDeviceId();
           allow update: if false;
+        }
+
+        // Durable audit trail: append-only, written by the device about itself.
+        match /audit/{eid} {
+          allow read: if member(uid);
+          allow create: if activeAgent(uid) && deviceId == myDeviceId()
+            && request.resource.data.deviceId == myDeviceId()
+            && request.resource.data.keys().hasOnly(["t", "type", "meta", "source", "deviceId"]);
+          allow update, delete: if false;
         }
       }
 

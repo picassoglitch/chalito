@@ -106,7 +106,7 @@ describe("agent over Firestore (emulator, real rules)", () => {
       adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
       policy: { get: () => policy, set: async () => undefined },
       devMode: new DevMode({
-        store: new DevModeStore(mkdtempSync(join(tmpdir(), "dm-"))),
+        store: new DevModeStore(mkdtempSync(join(tmpdir(), "dm-")), await generateSigningKeyPair(), agentId),
         osAuth: { verify: async () => false },
         prompter: {
           first: async () => false,
@@ -193,5 +193,48 @@ describe("agent over Firestore (emulator, real rules)", () => {
     // Command doc was consumed; a call line was published for the waiting approval, then removed.
     expect((await adb.collection(`users/${OWNER}/devices/${agentId}/commands`).get()).empty).toBe(true);
     await waitFor(async () => (await adb.collection(`users/${OWNER}/callLines`).get()).empty);
+  });
+
+  it("writes the durable audit trail (agent entries and device events), redacted", async () => {
+    const agentId = "dev_auditEmu";
+    const adb = getAdminFirestore(admin);
+    await adb.doc(`users/${OWNER}/devices/${agentId}`).set({
+      v: 1,
+      deviceId: agentId,
+      owner: OWNER,
+      role: "agent",
+      revoked: false,
+      devMode: { on: false, toggles: [], since: null },
+      policyHash: null,
+      lastSeenAt: null,
+    });
+    const db = await signIn(`d_${agentId}`, { role: "agent", owner: OWNER, deviceId: agentId });
+    const store = new FirestoreStore(db, OWNER, agentId);
+    await store.audit({
+      eid: "e1",
+      t: 1,
+      type: "command.rejected",
+      meta: { reason: "Bearer abcdefghijklmnop", missing: undefined },
+      source: "agent",
+    });
+    await store.publishDeviceEvent({
+      v: 1,
+      type: "remote_enable.rejected",
+      deviceId: agentId,
+      attempted: "devmode.on Bearer abcdefghijklmnopqrstuvwxyz",
+      origin: "local",
+      t: 2,
+    });
+    const docs = (await adb.collection(`users/${OWNER}/devices/${agentId}/audit`).get()).docs.map((d) => d.data());
+    expect(docs).toHaveLength(2);
+    expect(docs.find((d) => d.source === "agent")).toMatchObject({
+      type: "command.rejected",
+      meta: { reason: "Bearer …" },
+      deviceId: agentId,
+    });
+    expect(docs.find((d) => d.source === "deviceEvent")).toMatchObject({ type: "remote_enable.rejected", t: 2 });
+    const lastEvent = (await adb.doc(`users/${OWNER}/devices/${agentId}`).get()).get("lastEvent");
+    expect(lastEvent).toMatchObject({ type: "remote_enable.rejected", attempted: "devmode.on Bearer …" });
+    expect(JSON.stringify(docs)).not.toContain("abcdefghijklmnop");
   });
 });

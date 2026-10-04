@@ -17,6 +17,9 @@ importers:
       eslint:
         specifier: ^10.12.0
         version: 10.12.0
+      fast-check:
+        specifier: ^4.10.2
+        version: 4.10.2
       firebase-tools:
         specifier: ^15.32.1
         version: 15.32.1(@types/node@22.20.5)
@@ -65,6 +68,9 @@ importers:
       firebase:
         specifier: ^12.19.0
         version: 12.19.0
+      libsodium-wrappers-sumo:
+        specifier: 0.8.4
+        version: 0.8.4
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -72,6 +78,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@types/libsodium-wrappers-sumo':
+        specifier: ^0.8.2
+        version: 0.8.2
       fast-check:
         specifier: ^4.10.2
         version: 4.10.2
@@ -1269,6 +1278,10 @@ packages:
 
   '@types/jsonwebtoken@9.0.10':
     resolution: {integrity: sha512-asx5hIG9Qmf/1oStypjanR7iKTv0gXQ1Ov/jfrX6kS/EO0OFni8orbmGCn0672NHR3kXHwpAwR+B368ZGN/2rA==}
+
+  '@types/libsodium-wrappers-sumo@0.8.2':
+    resolution: {integrity: sha512-uFOBpg/r21hExVlh2ty8YpDfSR+Yy3Jn8XS4+SSjitbhTxdYq+pBz/49XRxyUFe8SzqujHf/Wu0/O4d+FUtNfQ==}
+    deprecated: This is a stub types definition. libsodium-wrappers-sumo provides its own type definitions, so you do not need this installed.
 
   '@types/libsodium-wrappers@0.8.2':
     resolution: {integrity: sha512-+2IDfSULPUskSjIYfZl9suIUsIE5PXwoKZiE/j0MZWd+M9nEGvJDsk/ztMZKNhL1lBL+1CaypW0dQSjqPW2dMg==}
@@ -2631,6 +2644,12 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
     engines: {node: '>= 0.8.0'}
+
+  libsodium-sumo@0.8.4:
+    resolution: {integrity: sha512-TMtHShQfVVsaxDygyapvUC3o7YsPgXa/hRWeIgzyFz6w5k/1hirGptCxp1U7XwW3rCskaTTYKgV10v86UiGgNw==}
+
+  libsodium-wrappers-sumo@0.8.4:
+    resolution: {integrity: sha512-ql7hcgulKZ3ekfa2DGAogcCKsWU0diA/0nArz1CFzh93WQdb46/Kj18ka/Hifq6uA3Ush34Pc6vU/6HXeRwUkg==}
 
   libsodium-wrappers@0.7.16:
     resolution: {integrity: sha512-Gtr/WBx4dKjvRL1pvfwZqu7gO6AfrQ0u9vFL+kXihtHf6NfkROR8pjYWn98MFDI3jN19Ii1ZUfPR9afGiPyfHg==}
@@ -5027,6 +5046,10 @@ snapshots:
       '@types/ms': 2.1.0
       '@types/node': 22.20.5
 
+  '@types/libsodium-wrappers-sumo@0.8.2':
+    dependencies:
+      libsodium-wrappers-sumo: 0.8.4
+
   '@types/libsodium-wrappers@0.8.2':
     dependencies:
       libsodium-wrappers: 0.8.4
@@ -6733,6 +6756,12 @@ snapshots:
     dependencies:
       prelude-ls: 1.2.1
       type-check: 0.4.0
+
+  libsodium-sumo@0.8.4: {}
+
+  libsodium-wrappers-sumo@0.8.4:
+    dependencies:
+      libsodium-sumo: 0.8.4
 
   libsodium-wrappers@0.7.16:
     dependencies:

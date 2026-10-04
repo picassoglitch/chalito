@@ -54,6 +54,7 @@ const harness = async (
     turns?: FakeStep[][];
     policy?: Partial<Policy>;
     devToggles?: ("allowSudo" | "autoApproveHigh" | "autoApproveCritical")[];
+    classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -73,7 +74,7 @@ const harness = async (
     },
   };
 
-  const dmStore = new DevModeStore(mkdtempSync(join(tmpdir(), "chalito-agent-")));
+  const dmStore = new DevModeStore(mkdtempSync(join(tmpdir(), "chalito-agent-")), agent.sign, agent.id);
   const liability = loadLiabilityText("es");
   const devMode = new DevMode({
     store: dmStore,
@@ -107,6 +108,7 @@ const harness = async (
     locale: () => "es",
     now: Date.now,
     log: createLogger((l) => logs.push(l)),
+    ...(opts.classifyExtras ? { classifyExtras: opts.classifyExtras } : {}),
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
@@ -392,6 +394,34 @@ describe("Developer mode never reaches unsigned turns or the hard floor", () => 
   });
 });
 
+describe("host hard floor (classifyExtras)", () => {
+  const UNIT = `${HOME}/.config/systemd/user/chalito-agent.service`;
+
+  it("an Edit of a protected service file is refused even with every Developer-mode toggle on", async () => {
+    const h = await harness({
+      turns: [[{ tool: "Edit", input: { file_path: UNIT, old_string: "a", new_string: "b" } }]],
+      devToggles: ["allowSudo", "autoApproveHigh", "autoApproveCritical"],
+      classifyExtras: () => ({ agentBinaries: [], protectedPaths: [UNIT], pathDirs: [] }),
+    });
+    await h.startSession();
+    await waitFor(() => h.fake.run.refused.length === 1);
+    expect(h.fake.run.ran).toHaveLength(0);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    await waitFor(() => h.store.events.some((e) => e.type === "tool.started"));
+    expect(h.store.events.find((e) => e.type === "tool.started")).toMatchObject({ risk: "CRITICAL" });
+  });
+
+  it("without the extras the same file isn't on the floor (so the wiring is what blocks it)", async () => {
+    const h = await harness({
+      turns: [[{ tool: "Edit", input: { file_path: UNIT, old_string: "a", new_string: "b" } }]],
+      devToggles: ["allowSudo", "autoApproveHigh", "autoApproveCritical"],
+    });
+    await h.startSession();
+    await waitFor(() => h.fake.run.ran.length + h.fake.run.refused.length + h.store.pendingApprovals().length > 0);
+    expect(h.fake.run.refused).toHaveLength(0);
+  });
+});
+
 describe("local policy changes", () => {
   it("a remote tighten applies and updates policyHash; a remote loosen is rejected", async () => {
     const h = await harness();
@@ -449,5 +479,113 @@ describe("events and cards", () => {
     expect(JSON.stringify(msg)).not.toContain("login.ts");
     const session = [...h.store.sessions.values()][0]!;
     expect(JSON.stringify(session)).not.toContain("SECRET");
+  });
+});
+
+describe("turn origin follows the least trusted voice in the turn (review #10)", () => {
+  const askThenPush: FakeStep[][] = [
+    [
+      { tool: "AskUserQuestion", input: { questions: [{ question: "¿Hago push?", options: [{ label: "Sí" }] }] } },
+      pushTurn[0]![0]!,
+    ],
+  ];
+  const answer = async (h: Awaited<ReturnType<typeof harness>>, o: { origin?: string; relayed?: "mcp-gateway" }) => {
+    await waitFor(() => h.store.events.some((e) => e.type === "question.asked"));
+    const q = h.store.events.find((e) => e.type === "question.asked") as { questionId: string; sid: string };
+    return h.command(
+      {
+        type: "session.answer",
+        sid: q.sid,
+        questionId: q.questionId,
+        answerCt: await h.sealed(2, { "¿Hago push?": "Sí" }),
+      },
+      o,
+    );
+  };
+
+  it("a signed answer keeps Developer-mode auto-approve for the client turn", async () => {
+    const h = await harness({ turns: askThenPush, devToggles: ["autoApproveHigh"] });
+    await h.startSession();
+    expect(await answer(h, {})).toEqual({ ok: true });
+    await waitFor(() => h.fake.run.ran.length === 2);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+  });
+
+  it("a relayed MCP answer lowers the rest of the turn: the HIGH push waits for a signed approval", async () => {
+    const h = await harness({ turns: askThenPush, devToggles: ["autoApproveHigh"] });
+    await h.startSession();
+    expect(await answer(h, { origin: "mcp:chatgpt", relayed: "mcp-gateway" })).toEqual({ ok: true });
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    expect(h.fake.run.ran.map((r) => r.tool)).toEqual(["AskUserQuestion"]);
+    expect(h.store.pendingApprovals()[0]).toMatchObject({ origin: "mcp:chatgpt" });
+  });
+});
+
+describe("the Codex sandbox ceiling is enforced remotely", () => {
+  it("session.start and setPermissionMode above maxCodexSandbox are rejected", async () => {
+    const h = await harness({
+      turns: [[{ say: "hola" }]],
+      policy: { remote: { maxPermissionMode: "acceptEdits", maxCodexSandbox: "read-only" } },
+    });
+    const res = await h.command({
+      type: "session.start",
+      adapter: "claude-code",
+      workspaceLabel: "chalito",
+      promptCt: await h.sealed(1, "x"),
+      permissionMode: "default",
+      codexSandbox: "workspace-write",
+    });
+    expect(res).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
+
+    expect(await h.startSession()).toEqual({ ok: true });
+    const sid = [...h.core.sessions.keys()][0]!;
+    const set = await h.command({
+      type: "session.setPermissionMode",
+      sid,
+      permissionMode: "default",
+      codexSandbox: "workspace-write",
+    });
+    expect(set).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
+    expect(
+      await h.command({ type: "session.setPermissionMode", sid, permissionMode: "default", codexSandbox: "read-only" }),
+    ).toEqual({ ok: true });
+  });
+});
+
+describe("durable audit trail", () => {
+  it("routes agent audits and device events to store.audit, redacted", async () => {
+    const h = await harness();
+    await h.command({ type: "devmode.on" });
+    await waitFor(() => h.store.audits.filter((a) => a.type === "remote_enable.rejected").length === 2);
+    const sources = h.store.audits.filter((a) => a.type === "remote_enable.rejected").map((a) => a.source);
+    expect(sources.sort()).toEqual(["agent", "deviceEvent"]);
+    await h.command({ type: "session.prompt", sid: "nope", promptCt: await h.sealed(2, "x") });
+    await waitFor(() => h.store.audits.some((a) => a.type === "command.rejected"));
+  });
+
+  it("a failing audit write is logged, never thrown", async () => {
+    const h = await harness();
+    h.store.audit = async () => {
+      throw new Error("offline");
+    };
+    expect((await h.command({ type: "session.interrupt", sid: "nope" })).reason).toBe("unknown_session");
+    await waitFor(() => h.logs.some((l) => l.includes("audit write failed")));
+  });
+
+  it("audit meta is redacted before it reaches the store", async () => {
+    const h = await harness();
+    const secret = "sk-ant-abcdefghijklmnop";
+    await h.command({
+      type: "session.start",
+      adapter: "claude-code",
+      workspaceLabel: "chalito",
+      promptCt: await h.sealed(1, "x"),
+      permissionMode: `bypass ${secret}`,
+    });
+    await waitFor(() => h.store.audits.some((a) => a.source === "agent" && a.type === "remote_enable.rejected"));
+    const entry = h.store.audits.find((a) => a.source === "agent" && a.type === "remote_enable.rejected")!;
+    expect(String(entry.meta.attempted)).toContain("bypass");
+    expect(JSON.stringify(entry)).not.toContain(secret);
+    expect(JSON.stringify(h.store.deviceEvents)).not.toContain(secret);
   });
 });

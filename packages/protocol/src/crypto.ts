@@ -45,6 +45,10 @@ export const SigningContext = z.enum([
   "chalito.device-register.v1",
   "chalito.pairing-claim.v1",
   "chalito.trusted-list.v1",
+  "chalito.devmode-state.v1",
+  "chalito.devmode-liability.v1",
+  "chalito.policy-lock.v1",
+  "chalito.agent-config.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 
