@@ -1,0 +1,19 @@
+{
+  "name": "@chalito/guard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:pg": "vitest run -c vitest.pg.config.ts"
+  },
+  "dependencies": {
+    "hono": "^4.13.12",
+    "postgres": "^3.4.9"
+  }
+}

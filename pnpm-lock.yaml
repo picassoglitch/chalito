@@ -105,6 +105,9 @@ importers:
       '@chalito/glyph':
         specifier: workspace:*
         version: link:../../packages/glyph
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -260,6 +263,9 @@ importers:
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -309,6 +315,9 @@ importers:
       '@chalito/escalation':
         specifier: workspace:*
         version: link:../../packages/escalation
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -361,6 +370,9 @@ importers:
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -650,6 +662,15 @@ importers:
       fast-check:
         specifier: ^4.10.2
         version: 4.10.2
+
+  packages/guard:
+    dependencies:
+      hono:
+        specifier: ^4.13.12
+        version: 4.13.12
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
 
   packages/protocol:
     dependencies:

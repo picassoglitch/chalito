@@ -1,3 +1,5 @@
+import { guard } from "@chalito/guard";
+import { ORCHESTRATOR_ROUTES } from "./limits.js";
 import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -127,6 +129,8 @@ type Env = { Variables: { caller: Caller } };
 
 export const createOrchestrator = (deps: AppDeps) => {
   const app = new Hono<Env>();
+  // First: per-IP rate limits and body caps for every route (src/limits.ts).
+  app.use("*", guard(ORCHESTRATOR_ROUTES, { now: deps.now }));
   app.get("/healthz", (c) => c.json({ ok: true }));
 
   // Signed answers already rejected (audited once; never resolve anything later either).

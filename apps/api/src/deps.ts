@@ -1,3 +1,4 @@
+import type { BucketStore } from "@chalito/guard";
 import type { PhoneDeps } from "./phone/routes.js";
 import type { StoreDeps } from "./store/routes.js";
 import type { VoiceDeps } from "./voice/routes.js";
@@ -28,9 +29,13 @@ export interface ApiConfig {
   recoveryCooldownMs: number;
   /** Allowed clock skew for signed requests. */
   skewMs: number;
+  /** Proxies in front of Cloud Run that append to X-Forwarded-For (an external load balancer: 1). */
+  trustedProxies?: number;
 }
 
 export interface Deps {
+  /** Shared rate buckets for the routes marked `shared` in src/limits.ts (Postgres in production). */
+  rateBuckets?: BucketStore;
   repo: ApiRepo;
   /** OAuth server + MCP gateway writes (M10); those routes answer 503 without it. */
   mcp?: McpStore;

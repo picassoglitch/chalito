@@ -15,6 +15,7 @@
     "@chalito/billing": "workspace:*",
     "@chalito/config": "workspace:*",
     "@chalito/crypto": "workspace:*",
+    "@chalito/guard": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@google/genai": "2.27.0",
     "@hono/node-server": "^2.1.3",
