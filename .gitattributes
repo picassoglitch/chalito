@@ -1,0 +1,4 @@
+# Workflows and shell scripts must keep LF on every checkout (tests match their text).
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
