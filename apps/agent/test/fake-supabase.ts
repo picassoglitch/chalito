@@ -23,6 +23,12 @@ export class FakeSupabase implements RealtimeClient {
   readonly channels: Channel[] = [];
   readonly authTokens: (string | null | undefined)[] = [];
   #cursor = 0;
+  #rev = 0;
+  /** bump_rev: a fresh rev, as the database gives every insert and update. */
+  bump(row: Row): Row {
+    row.rev = ++this.#rev;
+    return row;
+  }
   #failNext: { message: string; code?: string } | null = null;
 
   constructor(readonly accessToken?: () => Promise<string | null>) {}
@@ -36,14 +42,16 @@ export class FakeSupabase implements RealtimeClient {
 
   /** Inserts as the database would (e.g. a phone's command), without telling anyone. */
   seed(table: string, row: Row): Row {
-    const r = { cursor: ++this.#cursor, ...row };
+    const r = { cursor: ++this.#cursor, ...row, rev: ++this.#rev };
     this.rows(table).push(r);
     return r;
   }
 
-  failNext(message: string, code?: string) {
+  failNext(message: string, code?: string, times = 1) {
     this.#failNext = { message, code };
+    this.#failTimes = times;
   }
+  #failTimes = 0;
 
   /** The database's realtime.send to a topic. */
   broadcast(topic: string, payload: unknown) {
@@ -62,24 +70,26 @@ export class FakeSupabase implements RealtimeClient {
       cols?: string;
       body?: Row;
       filters: [string, unknown][];
+      gts: [string, number][];
       order?: string;
       single: boolean;
-    } = { op: "select", filters: [], single: false };
+    } = { op: "select", filters: [], gts: [], single: false };
     const exec = (): SupaResult => {
       this.ops.push({ table, op: state.op, filters: [...state.filters], body: state.body });
       if (this.#failNext) {
         const error = this.#failNext;
-        this.#failNext = null;
+        if (--this.#failTimes <= 0) this.#failNext = null;
         return { data: null, error };
       }
-      const match = (r: Row) => state.filters.every(([k, v]) => r[k] === v);
+      const match = (r: Row) =>
+        state.filters.every(([k, v]) => r[k] === v) && state.gts.every(([k, v]) => Number(r[k]) > v);
       const rows = this.rows(table);
       switch (state.op) {
         case "insert":
           this.seed(table, state.body!);
           return { data: null, error: null };
         case "update":
-          for (const r of rows.filter(match)) Object.assign(r, state.body);
+          for (const r of rows.filter(match)) this.bump(Object.assign(r, state.body));
           return { data: null, error: null };
         case "delete": {
           const keep = rows.filter((r) => !match(r));
@@ -101,6 +111,7 @@ export class FakeSupabase implements RealtimeClient {
       update: (patch) => ((state.op = "update"), (state.body = patch), q),
       delete: () => ((state.op = "delete"), q),
       eq: (c, v) => (state.filters.push([c, v]), q),
+      gt: (c, v) => (state.gts.push([c, Number(v)]), q),
       order: (c) => ((state.order = c), q),
       maybeSingle: () => ((state.single = true), q),
       then: (ok, bad) => Promise.resolve().then(exec).then(ok, bad),
@@ -113,7 +124,7 @@ export class FakeSupabase implements RealtimeClient {
     if (fn === "session_merge") {
       const rows = this.rows("sessions");
       const r = rows.find((x) => x.sid === args.p_sid);
-      if (r) r.doc = { ...(r.doc as Row), ...(args.p_patch as Row) };
+      if (r) this.bump(Object.assign(r, { doc: { ...(r.doc as Row), ...(args.p_patch as Row) } }));
       else this.seed("sessions", { sid: args.p_sid, doc: args.p_patch });
     }
     return Promise.resolve({ data: null, error: null });
