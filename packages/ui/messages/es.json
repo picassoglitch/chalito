@@ -821,5 +821,25 @@
     "draftTitle": "Borrador: pendiente de revisión legal",
     "draftBody": "Este texto todavía no lo revisa un abogado y puede cambiar. No es la versión definitiva.",
     "onboarding": "Al continuar aceptas los <terms>Términos de uso</terms> y el <privacy>Aviso de privacidad</privacy>."
+  },
+  "credits": {
+    "title": "Créditos",
+    "plan": {
+      "title": "Tu plan",
+      "loading": "Cargando…",
+      "yours": "Tu plan: {plan}",
+      "unknown": "No pudimos ver tu plan.",
+      "signedOut": "Entra con tu cuenta de Chalyb para ver tu plan.",
+      "fromHub": "Tu plan y tus créditos vienen de tu cuenta de Chalyb."
+    },
+    "how": {
+      "title": "Cómo funcionan",
+      "tokens": "Lo que hace Chalito por ti (trabajo y avisos) gasta tokens de tu cuenta de Chalyb.",
+      "byo": "Lo que corre con tus propias claves de IA no gasta tokens de Chalito.",
+      "basics": "Si se te acaban, lo básico sigue funcionando: tus aprobaciones y avisos.",
+      "recharge": "Recargas en Chalyb y los tokens nuevos se usan aquí de inmediato."
+    },
+    "recharge": "Recargar en Chalyb",
+    "usage": "Ver tu uso"
   }
 }

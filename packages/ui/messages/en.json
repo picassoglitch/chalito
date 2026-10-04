@@ -821,5 +821,25 @@
     "draftTitle": "Draft: pending legal review",
     "draftBody": "A lawyer hasn't reviewed this text yet and it may change. It isn't the final version.",
     "onboarding": "By continuing you accept the <terms>Terms of use</terms> and the <privacy>Privacy notice</privacy>."
+  },
+  "credits": {
+    "title": "Credits",
+    "plan": {
+      "title": "Your plan",
+      "loading": "Loading…",
+      "yours": "Your plan: {plan}",
+      "unknown": "We couldn't see your plan.",
+      "signedOut": "Sign in with your Chalyb account to see your plan.",
+      "fromHub": "Your plan and credits come from your Chalyb account."
+    },
+    "how": {
+      "title": "How they work",
+      "tokens": "What Chalito does for you (work and alerts) spends tokens from your Chalyb account.",
+      "byo": "Anything that runs on your own AI keys doesn't spend Chalito tokens.",
+      "basics": "If you run out, the basics keep working: your approvals and alerts.",
+      "recharge": "You recharge on Chalyb and the new tokens work here right away."
+    },
+    "recharge": "Recharge on Chalyb",
+    "usage": "See your usage"
   }
 }
