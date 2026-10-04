@@ -287,7 +287,15 @@ describe("panel: sign-in screen", () => {
         new Promise((resolve) => {
           onDisplay({ shortCode: "KQ7RM" });
           release = () =>
-            resolve({ ok: true, deviceId: "d", customToken: "h", passkey: "unavailable", credential: null });
+            resolve({
+              ok: true,
+              deviceId: "d",
+              customToken: "h",
+              passkey: "unavailable",
+              credential: null,
+              agents: [],
+              droppedAgents: [],
+            });
         }),
     });
     const { container } = renderPanel({ signIn: <SignIn controller={controller} /> }, "en");

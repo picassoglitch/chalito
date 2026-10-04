@@ -62,6 +62,15 @@ export const signed = <T extends z.ZodTypeAny>(ctx: SigningContext, body: T) =>
     sig: Signature,
   });
 
+/** An agent the endorser trusts locally, introduced to the new client (ADR 0018). */
+export const IntroducedAgent = z.object({
+  deviceId: DeviceId,
+  pubSign: PubSign,
+  pubBox: b64url(32),
+  fingerprint: z.string().min(1).max(64),
+});
+export type IntroducedAgent = z.infer<typeof IntroducedAgent>;
+
 /** Endorsement of a new client by an already-trusted client. */
 export const EndorsementBody = z.object({
   v: z.literal(1),
@@ -70,6 +79,12 @@ export const EndorsementBody = z.object({
   pubSign: PubSign,
   pubBox: b64url(32),
   issuedAt: EpochMs,
+  /**
+   * ADR 0018 (optional, signed with the rest): the endorser's trusted agents. The new client
+   * may trust them (after checking each against the devices directory); an agent accepts the
+   * endorsed client only if it is listed here. Absent in older endorsements.
+   */
+  agents: z.array(IntroducedAgent).max(32).optional(),
 });
 export const Endorsement = signed("chalito.endorsement.v1", EndorsementBody);
 export type Endorsement = z.infer<typeof Endorsement>;

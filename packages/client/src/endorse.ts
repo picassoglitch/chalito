@@ -55,6 +55,16 @@ export class EndorseFailedError extends Error {
   }
 }
 
+/**
+ * The endorsement must vouch for exactly this account and these keys. The api checks it too;
+ * the new device checks before posting it anyway.
+ */
+export const endorsementMatches = (e: Endorsement, reg: DeviceRegistration): boolean =>
+  e.body.uid === reg.body.owner &&
+  e.body.newDeviceId === reg.body.deviceId &&
+  e.body.pubSign === reg.body.pubSign &&
+  e.body.pubBox === reg.body.pubBox;
+
 export const unavailableEndorsement: EndorsementChannel = {
   open: () => Promise.reject(new EndorsementUnavailableError()),
 };

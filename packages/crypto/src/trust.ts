@@ -11,6 +11,8 @@ export interface TrustedClient {
   /** How the device learned to trust this key. Never "server". */
   via: "local_confirmation" | "endorsement";
   addedAt: number;
+  /** For `via: "endorsement"`: the trusted client that signed it. */
+  endorsedBy?: string;
   /**
    * The client's passkey, recorded on this device at the local reverse check (D-019). HIGH and
    * CRITICAL approvals from this client need an assertion verified against it.
@@ -69,20 +71,39 @@ interface DecisionLike {
  * (reverse check) or an endorsement signed by a key already here. Nothing the cloud
  * says can add a key. The agent persists `toJSON()` under ~/.chalito, signed (M3).
  */
+/** How old an endorsement an agent still accepts (a laptop off over a weekend, ADR 0018). */
+export const ENDORSEMENT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 export class TrustedClientList {
   readonly #clients = new Map<string, TrustedClient>();
   readonly #keys = new Map<string, Uint8Array>();
+  /** Clients removed on this device (ADR 0018): an endorsement never brings them back. */
+  readonly #removed = new Set<string>();
 
   constructor(readonly selfDeviceId: string) {}
 
-  static async fromJSON(selfDeviceId: string, clients: TrustedClient[]): Promise<TrustedClientList> {
+  static async fromJSON(
+    selfDeviceId: string,
+    clients: TrustedClient[],
+    removed: readonly string[] = [],
+  ): Promise<TrustedClientList> {
     const list = new TrustedClientList(selfDeviceId);
     for (const c of clients) await list.#put(c);
+    for (const id of removed) list.#removed.add(id);
     return list;
   }
 
   toJSON(): TrustedClient[] {
     return [...this.#clients.values()];
+  }
+
+  /** Tombstones, persisted next to the list (same signature). */
+  removedIds(): string[] {
+    return [...this.#removed].sort();
+  }
+
+  isRemoved(deviceId: string): boolean {
+    return this.#removed.has(deviceId);
   }
 
   has(deviceId: string): boolean {
@@ -94,8 +115,12 @@ export class TrustedClientList {
     return Object.fromEntries([...this.#clients.values()].map((c) => [c.deviceId, c.pubBox]));
   }
 
-  /** After the user confirmed the client's fingerprint (and, if shown, its passkey) on this device. */
+  /**
+   * After the user confirmed the client's fingerprint (and, if shown, its passkey) on this
+   * device. A local confirmation also lifts a tombstone: the person re-paired on purpose.
+   */
   async addConfirmed(c: Omit<TrustedClient, "via" | "addedAt">, now: number): Promise<void> {
+    this.#removed.delete(c.deviceId);
     await this.#put({ ...c, via: "local_confirmation", addedAt: now });
   }
 
@@ -143,9 +168,13 @@ export class TrustedClientList {
   async addEndorsed(
     e: Endorsement,
     now: number,
-    maxAgeMs = 24 * 60 * 60 * 1000,
+    maxAgeMs = ENDORSEMENT_MAX_AGE_MS,
     webauthnBinding?: WebAuthnBinding | null,
   ): Promise<boolean> {
+    // Removed here: only a local re-pair brings it back. Already trusted: nothing to add.
+    if (this.#removed.has(e.body.newDeviceId) || this.#clients.has(e.body.newDeviceId)) return false;
+    // ADR 0018: when the endorser named its agents, only those accept the new client.
+    if (e.body.agents && !e.body.agents.some((a) => a.deviceId === this.selfDeviceId)) return false;
     const res = await verifyEnvelope(e, "chalito.endorsement.v1", this.#keys);
     if (!res.ok || now - e.body.issuedAt > maxAgeMs || e.body.issuedAt > now + 60_000) return false;
     let webauthn: WebAuthnCredentialRef | undefined;
@@ -163,13 +192,15 @@ export class TrustedClientList {
       pubBox: e.body.pubBox,
       via: "endorsement",
       addedAt: now,
+      endorsedBy: e.signerDeviceId,
       ...(webauthn ? { webauthn } : {}),
     });
     return true;
   }
 
-  /** Revocation takes effect immediately, whatever the server still delivers. */
+  /** Revocation takes effect immediately, whatever the server still delivers, and sticks. */
   remove(deviceId: string): boolean {
+    this.#removed.add(deviceId);
     this.#keys.delete(deviceId);
     return this.#clients.delete(deviceId);
   }

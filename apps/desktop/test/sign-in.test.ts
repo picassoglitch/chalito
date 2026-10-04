@@ -19,6 +19,8 @@ const setup = (over: Partial<SignInDeps> = {}) => {
         customToken: "h",
         passkey: "unavailable" as const,
         credential: null,
+        agents: [],
+        droppedAgents: [],
       };
     }),
     ...over,
