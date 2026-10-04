@@ -30,3 +30,15 @@ variable "domain" {
   type        = string
   default     = "chalito.chalyb.com"
 }
+
+variable "api_service_account" {
+  description = "Email of the `api` service account created by Chalyb's engine module. Empty until the engine entry exists."
+  type        = string
+  default     = ""
+}
+
+variable "enable_firebase" {
+  description = "Add Firebase to Chalyb's GCP project (project-wide; owner decision #33)."
+  type        = bool
+  default     = false
+}

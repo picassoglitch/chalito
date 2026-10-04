@@ -211,3 +211,14 @@ describe("fingerprints", () => {
     expect(await toB64url(k.publicKey)).toHaveLength(43);
   });
 });
+
+describe("device ids", () => {
+  it("are derived from the signing key and match the protocol pattern", async () => {
+    const { deriveDeviceId } = await import("../src/index.js");
+    const { DeviceIdPattern } = await import("@chalito/protocol");
+    const k = await generateSigningKeyPair();
+    const id = await deriveDeviceId(k.publicKey);
+    expect(id).toMatch(DeviceIdPattern);
+    expect(await deriveDeviceId(k.publicKey)).toBe(id);
+  });
+});

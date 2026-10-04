@@ -6,3 +6,5 @@ billing_account    = ""
 alert_email        = ""
 monthly_budget_usd = 0
 domain             = "chalito.chalyb.com"
+api_service_account = ""
+enable_firebase     = false

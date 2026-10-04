@@ -291,3 +291,4 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 30 | Firestore location | Accepted: `us-central1` (named database `chalito`) |
 | 31 | **New:** MXN charge amounts for the Solo USD ladder on the hub | Unset; Solo checkout "Disponible pronto" until set |
 | 32 | **New:** Hub changes for Chalito meter kinds + `store.purchase` | Proposed for the Chalyb PR at M2/M12 (D-030) |
+| 33 | **New:** Add Firebase to Chalyb's GCP project (custom-token sign-in, rules deploy) | Off until the owner says so (`enable_firebase = false`) |

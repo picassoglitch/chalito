@@ -32,7 +32,7 @@ billingUnit:
 # Price-free hub tiers: which Solo tier's access each one grants.
 # The token allowance comes from the hub's own balance.
 hubTiers:
-  gratis:
+  free: # Chalyb Gratis
     access: none # BYO keys + free_min only
   pro:
     access: standard

@@ -22,6 +22,7 @@
   - `mesa:post` → `post_to_mesa` (gateway seals to clients; `origin: mcp:<provider>`).
   - `approval:recommend` → `recommend_decision` (appends to `recommendations[]`, advisory only).
   - `session:prompt` → `prompt_session` (sealed to the device key; a `RelayedCommand` that can only prompt). **Separate, explicit grant, default unchecked.**
+- **The gateway reads Firestore read-only** (IAM `datastore.viewer`, conditioned to the `chalito` database). Service accounts bypass security rules, so its writes (`post_to_mesa`, `recommend_decision`, `prompt_session`) go through `api`, which enforces the scope checks (D-035).
 - **Never grantable:** `approval:decide`, `device:admin`, policy, Developer mode, rooms, billing. The gateway's service account has **no Firestore write access** to decisions, devices, endorsements, policy, rooms or billing docs (IAM + rules, tested). It holds **no signing key**.
 - **Grants** are stored in `users/{uid}/connectors/{cid}` and can be revoked instantly. Revocation checks run on every call, not only at token refresh.
 - **Approvals produced by MCP-origin turns** need a signed phone decision (biometric for HIGH), even with `autoApproveHigh` on.
