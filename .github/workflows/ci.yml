@@ -74,6 +74,20 @@ jobs:
           grep -q '"sodium":true' smoke.json
       - run: pnpm --filter @chalito/agent exec vitest run test/binary-smoke.test.ts
 
+  supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.119.0
+      # Postgres, PostgREST, GoTrue and Realtime are enough for the migrations, RLS and smoke tests.
+      - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,storage-api
+      - run: supabase test db
+      - run: supabase/scripts/smoke-data-api.sh
+      - if: always()
+        run: supabase stop --no-backup
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:
