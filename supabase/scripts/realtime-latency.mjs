@@ -7,12 +7,16 @@
 //   4. revocation: once the agent is revoked and its token is refreshed, nothing reaches it,
 //      neither database broadcasts nor direct REST broadcasts to its topic.
 //
-// Tokens come from `supabase gen bearer-jwt` (the local stack's signing key). Needs Node >= 22.
-// Run: npm install --no-save --prefix supabase/scripts @supabase/supabase-js@2.117.2
+// Devices are Supabase Auth users (sub = the device's auth user id, claims in app_metadata.chalito);
+// tokens come from `supabase gen bearer-jwt` (the local stack's signing key). Server writes go
+// through Postgres as chalito_server, as the API does. Needs Node >= 22.
+// Run: npm install --no-save --prefix supabase/scripts @supabase/supabase-js@2.117.2 postgres@3.4.9
 //      node supabase/scripts/realtime-latency.mjs
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { createClient } from "@supabase/supabase-js";
+import postgres from "postgres";
 
 const LIMIT_MS = 2000;
 const RUNS = 20;
@@ -53,13 +57,21 @@ const mint = (sub, claims) =>
       "--valid-for",
       "5m",
       "--payload",
-      JSON.stringify({ iss: "chalito", aud: "authenticated", ...claims }),
+      JSON.stringify({ aud: "authenticated", app_metadata: { provider: "chalito", chalito: claims } }),
     ],
     { encoding: "utf8" },
   ).trim();
 
 const opts = { db: { schema: "chalito" }, auth: { persistSession: false, autoRefreshToken: false } };
+// REST broadcasts (the revocation probe) only; the hub's service_role has no access to chalito tables.
 const admin = createClient(env.API_URL, env.SERVICE_ROLE_KEY, opts);
+const db = postgres(env.DB_URL, { max: 1, onnotice: () => {} });
+/** Runs server-side SQL as chalito_server, as the API does. */
+const server = (fn) =>
+  db.begin(async (tx) => {
+    await tx`set local role chalito_server`;
+    return fn(tx);
+  });
 /** A client whose token can be swapped, as the agent's 5-minute refresh does. */
 const deviceClient = (token) => {
   const holder = { token };
@@ -86,7 +98,7 @@ const must = (res, what) => {
   return res;
 };
 
-// ---------------------------------------------------------------- fixtures (service_role)
+// ---------------------------------------------------------------- fixtures (chalito_server)
 const run = Date.now().toString(36);
 const U1 = `rtu1${run}`;
 const U2 = `rtu2${run}`;
@@ -94,6 +106,8 @@ const AGENT = `rtagent${run}`;
 const PHONE = `rtphone${run}`;
 const XAGENT = `rtxagent${run}`;
 const CODE = `rtcode${run}`;
+// Each device (and the pairing watcher) is its own auth user.
+const SUB = { [AGENT]: randomUUID(), [PHONE]: randomUUID(), [XAGENT]: randomUUID(), watch: randomUUID() };
 const device = (owner, device_id, role) => ({
   owner,
   device_id,
@@ -105,44 +119,37 @@ const device = (owner, device_id, role) => ({
   pub_box: "p",
   fingerprint: "f",
   enrolled_via: role === "agent" ? "pairing" : "first_client",
+  auth_user_id: SUB[device_id],
 });
-must(await admin.from("tenants").insert([{ id: U1 }, { id: U2 }]), "seed tenants");
-must(
-  await admin.from("users").insert([
+await server(async (tx) => {
+  await tx`insert into chalito.tenants ${tx([{ id: U1 }, { id: U2 }])}`;
+  await tx`insert into chalito.users ${tx([
     { id: U1, tenant_id: U1 },
     { id: U2, tenant_id: U2 },
-  ]),
-  "seed users",
-);
-must(
-  await admin
-    .from("devices")
-    .insert([device(U1, AGENT, "agent"), device(U1, PHONE, "client"), device(U2, XAGENT, "agent")]),
-  "seed devices",
-);
-must(
-  await admin.from("pairing_codes").insert({
+  ])}`;
+  await tx`insert into chalito.devices ${tx([device(U1, AGENT, "agent"), device(U1, PHONE, "client"), device(U2, XAGENT, "agent")])}`;
+  await tx`insert into chalito.pairing_codes ${tx({
     code_id: CODE,
     short_code_hash: "e".repeat(64),
     glyph: {},
     agent_device_id: `rtnew${run}`,
     kind: "desktop",
     platform: "linux",
-    expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
-  }),
-  "seed pairing code",
-);
+    expires_at: new Date(Date.now() + 5 * 60_000),
+    watch_auth_user_id: SUB.watch,
+  })}`;
+});
 
-const agentClaims = { owner: U1, device_id: AGENT, chalito_role: "agent" };
-const agent = deviceClient(mint(U1, agentClaims));
-const phone = deviceClient(mint(U1, { owner: U1, device_id: PHONE, chalito_role: "client" }));
-const other = deviceClient(mint(U2, { owner: U2, device_id: XAGENT, chalito_role: "agent" }));
+const agentClaims = { owner: U1, device_id: AGENT, role: "agent" };
+const agent = deviceClient(mint(SUB[AGENT], agentClaims));
+const phone = deviceClient(mint(SUB[PHONE], { owner: U1, device_id: PHONE, role: "client" }));
+const other = deviceClient(mint(SUB[XAGENT], { owner: U2, device_id: XAGENT, role: "agent" }));
 
-const agentCh = await join(agent.client, `device:${AGENT}`);
+const agentCh = await join(agent.client, `chalito:device:${AGENT}`);
 if (agentCh.status() !== "SUBSCRIBED") fail(`agent could not join its own topic (${agentCh.status()})`);
-const otherOwn = await join(other.client, `device:${XAGENT}`);
+const otherOwn = await join(other.client, `chalito:device:${XAGENT}`);
 if (otherOwn.status() !== "SUBSCRIBED") fail(`other owner's agent could not join its own topic (${otherOwn.status()})`);
-const otherSpy = await join(other.client, `device:${AGENT}`);
+const otherSpy = await join(other.client, `chalito:device:${AGENT}`);
 log(`isolation: another owner joining device:${AGENT} -> ${otherSpy.status()}`);
 
 // ---------------------------------------------------------------- 1. latency
@@ -179,13 +186,13 @@ if (otherSpy.status() === "SUBSCRIBED") fail(`another owner joined device:${AGEN
 log("isolation: another owner's device received nothing");
 
 // ---------------------------------------------------------------- 3. pairing topic
-const watch = deviceClient(mint(`p_${CODE}`, { owner: "pairing", chalito_role: "pairing", pairing_code: CODE }));
-const watchCh = await join(watch.client, `pairing:${CODE}`);
+const watch = deviceClient(mint(SUB.watch, { role: "pairing", pairing_code: CODE }));
+const watchCh = await join(watch.client, `chalito:pairing:${CODE}`);
 if (watchCh.status() !== "SUBSCRIBED") fail(`pairing watcher could not join pairing:${CODE} (${watchCh.status()})`);
-const watchSpy = await join(watch.client, `device:${AGENT}`);
+const watchSpy = await join(watch.client, `chalito:device:${AGENT}`);
 if (watchSpy.status() === "SUBSCRIBED") fail("a pairing token joined a device topic");
 const tClaim = performance.now();
-must(await admin.from("pairing_codes").update({ claimed: true, owner: U1 }).eq("code_id", CODE), "claim code");
+await server((tx) => tx`update chalito.pairing_codes set claimed = true, owner = ${U1} where code_id = ${CODE}`);
 const claimed = () => watchCh.inbox.find((m) => m.msg.payload?.table === "pairing_codes");
 if (!(await waitFor(claimed, LIMIT_MS))) fail("pairing watcher was not told its code was claimed");
 log(`pairing: watcher told in ${(claimed().at - tClaim).toFixed(1)} ms`);
@@ -194,7 +201,7 @@ log(`pairing: watcher told in ${(claimed().at - tClaim).toFixed(1)} ms`);
 // Control first: a direct REST broadcast to the agent's topic does reach it while it is active,
 // so the negative check below can't pass vacuously.
 const probe = async (n) => {
-  const ch = admin.channel(`device:${AGENT}`, { config: { private: true } });
+  const ch = admin.channel(`chalito:device:${AGENT}`, { config: { private: true } });
   const res = await ch.httpSend("probe", { probe: n });
   await admin.removeChannel(ch);
   if (!res.success) fail(`REST broadcast failed: ${res.status} ${res.error}`);
@@ -203,28 +210,16 @@ const probed = (n) => () => agentCh.inbox.find((m) => m.msg.event === "probe" &&
 await probe(1);
 if (!(await waitFor(probed(1), LIMIT_MS))) fail("control: an active agent did not receive a REST broadcast");
 
-must(
-  await admin.from("devices").update({ revoked: true, revoked_at: new Date().toISOString() }).eq("device_id", AGENT),
-  "revoke agent",
-);
+await server((tx) => tx`update chalito.devices set revoked = true, revoked_at = now() where device_id = ${AGENT}`);
 // The agent's next token refresh (same claims, fresh expiry) re-runs join authorization.
-agent.holder.token = mint(U1, agentClaims);
+agent.holder.token = mint(SUB[AGENT], agentClaims);
 await agent.client.realtime.setAuth();
 await sleep(1000);
 const before = agentCh.inbox.length;
 await probe(2);
-must(
-  await admin.from("notifications").insert({
-    owner: U1,
-    nid: `rtn${run}`,
-    level: "L1",
-    source: "approval",
-    urgency: "normal",
-    counts: {},
-    deep_link: "/",
-    coalesce_key: "rt",
-  }),
-  "notification after revoke",
+await server(
+  (tx) => tx`insert into chalito.notifications (owner, nid, level, source, urgency, counts, deep_link, coalesce_key)
+             values (${U1}, ${"rtn" + run}, 'L1', 'approval', 'normal', '{}', '/', 'rt')`,
 );
 await sleep(3000);
 const after = agentCh.inbox.slice(before);
@@ -233,4 +228,5 @@ log(`revocation: nothing reached the agent after revoke + refresh (channel ${age
 
 for (const c of [agent, phone, other, watch]) await c.client.removeAllChannels();
 log(`realtime: ok ${JSON.stringify(Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, Math.round(v)])))}`);
+await db.end();
 process.exit(0);

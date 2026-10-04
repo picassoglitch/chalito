@@ -1,6 +1,6 @@
 # ADR 0017: Data layer on the Chalyb hub's Supabase project
 
-- Status: Proposed (owner decision: Chalito uses the Chalyb hub's Supabase instead of Firestore + Firebase). The token mechanism (§Tokens) is still open.
+- Status: Proposed (owner decisions: Chalito uses the Chalyb hub's Supabase project **nexo-ai** instead of Firestore + Firebase; device credentials are **Supabase Auth users per device**, Option C in §Tokens).
 - Supersedes: ADR 0002 (Firestore listeners as event bus), the Firestore parts of ADR 0006 and ADR 0016 §1 (Firebase custom tokens), and the FCM Web Push choice (D-015).
 - Research: Supabase docs checked 2026-10-03 (signing keys, third-party auth, RLS, Realtime authorization/broadcast/limits, Cron, custom schemas, CLI testing).
 - Code: `supabase/` (config, migrations, pgTAP tests, smoke script), CI job `supabase`.
@@ -62,7 +62,7 @@ TTL rows (`pairing_codes`, `commands`, `session_events`, `call_lines`, `sso_toke
 - **Authorization** is RLS on `realtime.messages`: receive only on `device:<own id>` while `device_ok()`, or on `pairing:<own code>` while the code is live. There is no insert policy, so clients can't send on Chalito topics.
 - **Resync:** on SUBSCRIBED, read `rev > last_rev` per table. Broadcast Replay (at most 25 messages, private channels) is only a bonus; Postgres Changes has no replay.
 
-### Tokens (open: owner decides)
+### Tokens (owner decided: Option C)
 Device tokens stay **5 minutes** long, minted by Chalito's API after the existing Ed25519 proof of possession. Never `service_role`. Claims: `iss`, `aud: authenticated`, `role: authenticated`, `sub`, `owner`, `device_id`, `chalito_role`, `exp`, `iat`.
 - **Option A (documented):** import a Chalito ES256 key as the project's **current** signing key (`supabase gen signing-key`, then standby, then Rotate).
   - Cost: the same key signs every hub session, so Chalito would hold a key that can mint any role, including `service_role`.
@@ -77,11 +77,38 @@ Device tokens stay **5 minutes** long, minted by Chalito's API after the existin
 
 The SQL supports A/B (`custom`) and C (`app_metadata`) today.
 
+**Decision (owner):** Option C. Every device, and every pairing watcher, is a Supabase Auth user of the hub project:
+- `sub` is that user's own id, never the hub uid;
+- `app_metadata.chalito = {owner, device_id, role, pairing_code?}` is set only by Chalito's API through the Admin API;
+- `devices.auth_user_id` / `pairing_codes.watch_auth_user_id` bind the row to that auth user.
+
+A person's web session is their real hub account (`sub` = hub uid, no `app_metadata.chalito`), which `jwt_role()` reports as `user`. `claim_source()` defaults to `app_metadata`; `custom` remains behind the switch.
+
+## Security review fixes
+Review: `docs/reviews/supabase-review.md` (origin/supa). Migration `20261004000800_chalito_security_review.sql`, pgTAP `05_security_review.test.sql`, plus updates to suites 01–04 and both CI scripts.
+
+| # | Fix |
+|---|---|
+| S1 | Device tokens never carry the hub uid. In app_metadata mode `sub` is the device's own auth user. In custom mode `sub` must be `d_<device_id>`, `u_<owner>` or `p_<code>`. The hub-side fence for hub tables is drafted in `supabase/hub/` (a Chalyb PR). |
+| S2 | `revoke all` on `chalito` / `chalito_private` tables, sequences, functions and schemas from `service_role`, `anon`, `authenticated` and `public`; explicit grants only. The server uses its own role **`chalito_server`**: NOLOGIN here, with a login member created at deploy, NOBYPASSRLS, `server_all` policies, and grants matching what api/notifier/gateway do. pgTAP proves `service_role` can't read, write, or call Chalito functions. |
+| S3 | `chalito_private.claim_issuer()` (custom mode, a URL for a third-party issuer) next to `claim_source()`. Every mode requires `aud = authenticated` (string or array). |
+| S4 | Topics are `chalito:device:<id>` / `chalito:pairing:<code>`. A **restrictive** `chalito_topics_guard` on `realtime.messages`, for all roles and commands: non-`chalito:` topics pass through; `chalito:` topics are readable only through `realtime_topic_ok()` and never writable by clients. Tested with permissive hub-style `using (true)` read and send policies present. |
+| S5 | In app_metadata mode `device_ok()` also requires `devices.auth_user_id = sub`, so the same claims on any other auth user (e.g. written by hub code) are useless. `aud` is fenced as well. Device users get no hub profile (hub draft (a)). |
+| S6 | `approval_decisions`, insert-only: one row per signer per approval, while pending and unexpired, signer = caller. `approvals.decision` is dropped and clients can no longer update approvals. The agent reads every decision row for the aid and acts on the **first one whose signature verifies** against its local trusted list (ordered by `rev`). |
+| S7 | Per-device token buckets for client inserts (`chalito_private.rate_limits`: capacity and refill per table). Over the limit raises SQLSTATE `PT429`, which PostgREST returns as HTTP 429. `session_events` pointers are capped at `event_broadcasts_per_second()` (10) per session; overflow marks the session dirty, and pg_cron `chalito-flush-coalesced` sends one coalesced pointer carrying the newest `rev` (a trailing burst can wait up to a minute). |
+| S8 | `session_events`, `approvals` and `call_lines` inserts require the `sid` to be a session row of the writing device. |
+| S9 | A `before insert` clamp for client rows: commands ≤ 10 min, call lines ≤ 30 min, events ≤ 7 days, approvals ≤ 10 min. `approvals.created_at` is server time and no longer client-grantable. |
+
+Also merged in this round (requested separately):
+- `rev` (bumped on insert **and** update) replaces `cursor` for resync.
+- `chalito.session_merge(sid, patch)` (security invoker).
+- Device broadcasts skip presence-only updates.
+
 ## What changes in M2/M3 code (second slice)
 - **`apps/api`:**
-  - Firestore Admin calls become supabase-js (or Postgres) as `service_role` against `chalito` / `chalito_private`.
+  - Firestore Admin calls become Postgres as **`chalito_server`** (never the hub's `service_role`, which now has no access) against `chalito` / `chalito_private`.
   - Transactions (`runTransaction`) become SQL transactions or RPCs in `chalito_private`, called with the service role.
-  - `createCustomToken` becomes the chosen device-JWT minting.
+  - `createCustomToken` becomes Admin API user management: create the device's auth user with `app_metadata.chalito`, store its id in `devices.auth_user_id`, and issue its session.
   - `ssoTokens` / `deviceNonces` use `insert … on conflict do nothing` for single use.
 - **`apps/agent`:**
   - `FirestoreStore` becomes a `SupabaseStore`: supabase-js 2.117.x on Node ≥ 22, with an `accessToken` callback returning the 5-minute device JWT.
