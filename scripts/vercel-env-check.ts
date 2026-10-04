@@ -22,6 +22,7 @@ export const REQUIRED: Expectation[] = [
   { name: "NEXT_PUBLIC_SUPABASE_ANON_KEY", why: "publishable key only" },
   { name: "NEXT_PUBLIC_CHALITO_API_BASE", why: "https://api.chalito.chalyb.com" },
   { name: "NEXT_PUBLIC_HUB_URL", why: "https://www.chalyb.com" },
+  { name: "NEXT_PUBLIC_VAPID_PUBLIC_KEY", why: "the notifier's VAPID public key; Web Push opt-in" },
 ];
 /** Set them unless the default is right. */
 export const RECOMMENDED: Expectation[] = [
@@ -34,6 +35,7 @@ export const FORBIDDEN: Expectation[] = [
   { name: "SUPABASE_SERVICE_ROLE_KEY", why: "bypasses RLS; never on the web project" },
   { name: "CHALITO_ADMIN_TOKEN", why: "the hub bearer; server only (Cloud Run)" },
   { name: "CHALITO_SSO_SECRET", why: "verifies launch tokens; api only" },
+  { name: "VAPID_PRIVATE_KEY", why: "signs Web Push; the notifier only" },
 ];
 /** A public var whose name says it's a secret. */
 const SECRET_LOOKING = /^NEXT_PUBLIC_.*(SECRET|SERVICE_ROLE|PRIVATE|ADMIN_TOKEN)/;

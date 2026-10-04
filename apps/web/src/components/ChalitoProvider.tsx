@@ -23,6 +23,8 @@ import {
 } from "@/lib/endorse";
 import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
+import { disablePush, enablePush, type PushDb, type PushResult } from "@/lib/push";
+import { env } from "@/lib/env";
 import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
 import type { UsageApi } from "@/lib/usage";
 import type { ApiClient } from "@chalito/client-keys";
@@ -74,6 +76,8 @@ interface Ctx {
   /** The store (/tienda) and the companion it dresses; null when signed out. */
   store: StoreApi | null;
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
+  /** Web Push on this browser (its own push_subscriptions row, written as this device). Null until paired. */
+  push: { enable: () => Promise<PushResult>; disable: () => Promise<PushResult> } | null;
 }
 
 export interface AddDevice {
@@ -136,6 +140,7 @@ const INITIAL: Ctx = {
   rooms: null,
   revokeDevice: null,
   revokeAll: null,
+  push: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -372,6 +377,16 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           addDevice: addDevice(platform, keys, owner, token),
           rooms: { db: platform.db, api: platform.api(token), keyring: keys.roomKeyring },
           usage: platform.usage(token),
+          push: {
+            enable: () =>
+              enablePush({
+                vapidKey: env.vapidPublicKey,
+                db: platform.db as unknown as PushDb,
+                owner,
+                deviceId: keys.keys.deviceId,
+              }),
+            disable: () => disablePush({ db: platform.db as unknown as PushDb, owner, deviceId: keys.keys.deviceId }),
+          },
           revokeAll: async () => {
             try {
               return await client.actions.revokeAll({

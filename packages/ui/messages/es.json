@@ -553,6 +553,24 @@
       "replace": "Cambiar llave de acceso",
       "replaceRefused": "Para cambiar tu llave de acceso, confirma primero con la actual. ¿La perdiste? Vuelve a agregar este dispositivo.",
       "replaced": "Listo: tu nueva llave de acceso protege tus aprobaciones."
+    },
+    "push": {
+      "title": "Notificaciones",
+      "hint": "Avisos en este dispositivo cuando algo necesita tu atención. Solo dicen qué tipo de aviso es; el contenido lo ves al abrirlo.",
+      "enable": "Activar avisos en este dispositivo",
+      "disable": "Desactivar",
+      "on": "Los avisos están activos en este dispositivo.",
+      "denied": "Bloqueaste los avisos para este sitio. Actívalos en los ajustes de tu navegador.",
+      "unsupported": "Este navegador no puede recibir avisos aquí.",
+      "needsPairing": "Vincula este navegador para recibir avisos en él.",
+      "loading": "Cargando…",
+      "failed": "No pudimos activar los avisos. Inténtalo de nuevo.",
+      "notification": {
+        "title": "Chalito",
+        "body": "Tienes algo pendiente.",
+        "approval": "Hay una aprobación esperándote.",
+        "expired": "Expiró una aprobación: se denegó."
+      }
     }
   },
   "mcp": {

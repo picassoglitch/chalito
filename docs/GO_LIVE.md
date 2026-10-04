@@ -115,7 +115,7 @@ Order: Chalyb's apply (1.10) first, then Chalito's, so `api_service_account` exi
 | # | Step | Command / where | Verify | Rollback |
 |---|---|---|---|---|
 | 6.1 | Vercel project for `apps/web` under picassoglitch. Check that the Pro plan covers it [cost] | Vercel dashboard | the project builds | delete the project |
-| 6.2 | Env (production): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (publishable only), `NEXT_PUBLIC_CHALITO_API_BASE=https://api.chalito.chalyb.com`, `NEXT_PUBLIC_HUB_URL=https://www.chalyb.com`, and `NEXT_PUBLIC_CHALITO_ORCHESTRATOR_BASE`. Never `NEXT_PUBLIC_CHALITO_DEV_BACKEND` (the build refuses it) | `vercel env add …` (`apps/web/.env.example`) | `vercel env ls production --cwd apps/web \| pnpm tsx scripts/vercel-env-check.ts` says PASS (read-only) | `vercel env rm …` |
+| 6.2 | Env (production): `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (publishable only), `NEXT_PUBLIC_CHALITO_API_BASE=https://api.chalito.chalyb.com`, `NEXT_PUBLIC_HUB_URL=https://www.chalyb.com`, `NEXT_PUBLIC_CHALITO_ORCHESTRATOR_BASE`, and `NEXT_PUBLIC_VAPID_PUBLIC_KEY` (the notifier's VAPID **public** key, for the push opt-in; never `VAPID_PRIVATE_KEY`). Never `NEXT_PUBLIC_CHALITO_DEV_BACKEND` (the build refuses it) | `vercel env add …` (`apps/web/.env.example`) | `vercel env ls production --cwd apps/web \| pnpm tsx scripts/vercel-env-check.ts` says PASS (read-only) | `vercel env rm …` |
 | 6.3 | Domain `chalito.chalyb.com` → this project | Vercel domains | `curl -sI https://chalito.chalyb.com/manifest.webmanifest` is 200 | remove the domain |
 | 6.4 | Deploy to production | push to the production branch, or `vercel --prod` | the landing loads; signed out, it links to the hub | `vercel rollback <previous>` |
 

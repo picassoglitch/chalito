@@ -553,6 +553,24 @@
       "replace": "Change passkey",
       "replaceRefused": "To change your passkey, confirm with the current one first. Lost it? Add this device again.",
       "replaced": "Done: your new passkey protects your approvals."
+    },
+    "push": {
+      "title": "Notifications",
+      "hint": "Alerts on this device when something needs you. They only say what kind of alert it is; you see the details when you open it.",
+      "enable": "Turn on alerts on this device",
+      "disable": "Turn off",
+      "on": "Alerts are on for this device.",
+      "denied": "You blocked alerts for this site. Turn them on in your browser's settings.",
+      "unsupported": "This browser can't get alerts here.",
+      "needsPairing": "Link this browser to get alerts on it.",
+      "loading": "Loading…",
+      "failed": "We couldn't turn alerts on. Try again.",
+      "notification": {
+        "title": "Chalito",
+        "body": "Something needs you.",
+        "approval": "An approval is waiting for you.",
+        "expired": "An approval expired: it was denied."
+      }
     }
   },
   "mcp": {
