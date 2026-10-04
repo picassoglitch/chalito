@@ -705,13 +705,14 @@ describe("turn origin follows the least trusted voice in the turn (review #10)",
     expect(h.store.pendingApprovals()).toHaveLength(0);
   });
 
-  it("a relayed MCP answer lowers the rest of the turn: the HIGH push waits for a signed approval", async () => {
+  it("a relayed answer is refused (relays only prompt, review R-L2); the question waits for a signed one", async () => {
     const h = await harness({ turns: askThenPush, devToggles: ["autoApproveHigh"] });
     await h.startSession();
-    expect(await answer(h, { origin: "mcp:chatgpt", relayed: "mcp-gateway" })).toEqual({ ok: true });
-    await waitFor(() => h.store.pendingApprovals().length === 1);
-    expect(h.fake.run.ran.map((r) => r.tool)).toEqual(["AskUserQuestion"]);
-    expect(h.store.pendingApprovals()[0]).toMatchObject({ origin: "mcp:chatgpt" });
+    expect(await answer(h, { origin: "mcp:chatgpt", relayed: "mcp-gateway" })).toEqual({
+      ok: false,
+      reason: "invalid",
+    });
+    expect(h.fake.run.ran.map((r) => r.tool)).toEqual([]);
   });
 });
 
