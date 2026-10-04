@@ -4,6 +4,7 @@ import type { AdapterEvent, SessionAdapter, SessionHandle, ToolCall, ToolGate } 
 import {
   AgentEvent,
   CommandEnvelope,
+  isSignedOrigin,
   type AdapterKind,
   type CommandBody,
   type CommandPayload,
@@ -18,6 +19,7 @@ import { CardBuilder } from "./card.js";
 import type { DevMode } from "./devmode.js";
 import {
   PERMISSION_RANK,
+  SANDBOX_RANK,
   applyRemoteTighten,
   classifyToolCall,
   decide,
@@ -66,7 +68,12 @@ interface Session {
   seq: number;
   providerSessionId?: string;
   questions: Map<string, (answers: Record<string, string | string[]>) => void>;
+  /** Set by a relayed (mcp:/call:) answer: the rest of the current turn is gated at this trust. Cleared when the turn ends. */
+  turnOriginFloor?: Origin;
 }
+
+const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
+const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
 
 const REMOTE_ENABLE_ATTEMPT =
   /devmode\.(on|enable|toggleOn)|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
@@ -174,12 +181,15 @@ export class AgentCore {
     const open = <T>(ct: SealedEnvelope) => openJson<T>(ct, this.d.self.deviceId, this.d.self.box, `command:${cid}`);
     const aboveCeiling = (mode: RemotePermissionMode) =>
       PERMISSION_RANK[mode] > PERMISSION_RANK[policy.remote.maxPermissionMode];
+    const sandboxAboveCeiling = (sandbox: keyof typeof SANDBOX_RANK | undefined) =>
+      sandbox !== undefined && SANDBOX_RANK[sandbox] > SANDBOX_RANK[policy.remote.maxCodexSandbox];
 
     switch (p.type) {
       case "session.start": {
         const ws = policy.workspaces.find((w) => w.label === p.workspaceLabel);
         if (!ws) return this.#reject(cid, "unknown_workspace");
         if (aboveCeiling(p.permissionMode)) return this.#reject(cid, "permission_mode_above_ceiling");
+        if (sandboxAboveCeiling(p.codexSandbox)) return this.#reject(cid, "codex_sandbox_above_ceiling");
         const adapter = this.d.adapters[p.adapter];
         const enabled =
           p.adapter === "claude-code"
@@ -222,6 +232,7 @@ export class AgentCore {
         const s = this.sessions.get(p.sid);
         if (!s) return this.#reject(cid, "unknown_session");
         if (aboveCeiling(p.permissionMode)) return this.#reject(cid, "permission_mode_above_ceiling");
+        if (sandboxAboveCeiling(p.codexSandbox)) return this.#reject(cid, "codex_sandbox_above_ceiling");
         await s.handle.setPermissionMode(p.permissionMode);
         s.permissionMode = p.permissionMode;
         await this.d.store.upsertSession(s.sid, { permissionMode: p.permissionMode });
@@ -231,6 +242,8 @@ export class AgentCore {
         const s = this.sessions.get(p.sid);
         const resolve = s?.questions.get(p.questionId);
         if (!s || !resolve) return this.#reject(cid, "unknown_question");
+        // An answer steers the running turn, so that turn can't keep a more trusted origin.
+        s.turnOriginFloor = lowerTrust(s.turnOriginFloor ?? origin, origin);
         resolve(await open<Record<string, string | string[]>>(p.answerCt));
         s.questions.delete(p.questionId);
         return { ok: true };
@@ -354,7 +367,8 @@ export class AgentCore {
   }
 
   #gate(s: Session): ToolGate {
-    return async (call: ToolCall) => {
+    return async (gated: ToolCall) => {
+      const call = s.turnOriginFloor ? { ...gated, origin: lowerTrust(gated.origin, s.turnOriginFloor) } : gated;
       const policy = this.d.policy.get();
       const classification = classifyToolCall(call.toolName, call.input, { policy, home: this.d.home, cwd: s.cwd });
       const decision = decide({
@@ -451,6 +465,7 @@ export class AgentCore {
         await this.#event(s, { type: "usage", tokIn: e.tokIn, tokOut: e.tokOut, tokCached: e.tokCacheRead });
         return;
       case "state":
+        if (e.state !== "running") s.turnOriginFloor = undefined;
         s.card.state(e.state as SessionState);
         await this.#event(s, { type: "session.state", state: e.state });
         await this.d.store.upsertSession(s.sid, { state: e.state, updatedAt: this.d.now() });

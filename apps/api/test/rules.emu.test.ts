@@ -74,6 +74,25 @@ describe("commands", () => {
     await assertFails(setDoc(doc(as("user", U), `users/${U}/devices/agent1/commands/c2`), cmd()));
     await assertFails(setDoc(doc(as("agent", U, "agent1"), `users/${U}/devices/agent1/commands/c2`), cmd("agent1")));
   });
+  it("a client can't write an unsigned relayed command or a non-command envelope", async () => {
+    const at = doc(as("client", U, "phone1"), `users/${U}/devices/agent1/commands/c2`);
+    await assertFails(
+      setDoc(at, {
+        env: { relayedBy: "mcp-gateway", body: { origin: "mcp:claude" } },
+        createdAt: 2,
+        fromDeviceId: "phone1",
+      }),
+    );
+    await assertFails(
+      setDoc(at, {
+        env: { ctx: "chalito.command.v1", relayedBy: "mcp-gateway" },
+        createdAt: 2,
+        fromDeviceId: "phone1",
+      }),
+    );
+    await assertFails(setDoc(at, { env: { ctx: "chalito.decision.v1" }, createdAt: 2, fromDeviceId: "phone1" }));
+    await assertFails(setDoc(at, { env: {}, createdAt: 2, fromDeviceId: "phone1" }));
+  });
   it("a client can't spoof the sender", async () => {
     await assertFails(
       setDoc(doc(as("client", U, "phone1"), `users/${U}/devices/agent1/commands/c2`), cmd("someoneelse")),
