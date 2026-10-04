@@ -18,7 +18,7 @@ import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
 import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
 import type { UsageApi } from "@/lib/usage";
-import { roomApi, type RoomApi } from "@/lib/rooms";
+import type { ApiClient } from "@chalito/client-keys";
 import type { Platform } from "@/lib/platform";
 import type { Session, SessionState } from "@/lib/session";
 import { SettingsStore, type SettingsDb } from "@/lib/settings-store";
@@ -58,7 +58,7 @@ interface Ctx {
    */
   revokeDevice: ((deviceId: string) => Promise<"ok" | "failed">) | null;
   /** Rooms (/salas, /r/[id]): reads with this device's session, api calls, and its room keys. */
-  rooms: { db: unknown; api: RoomApi; keyring: DeviceKeys["roomKeyring"] } | null;
+  rooms: { db: unknown; api: ApiClient; keyring: DeviceKeys["roomKeyring"] } | null;
   /** The store (/tienda) and the companion it dresses; null when signed out. */
   store: StoreApi | null;
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
@@ -357,7 +357,7 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           assertPasskey: () => platform.assertPasskey(token),
           newDevice: null,
           addDevice: addDevice(platform, keys, owner, token),
-          rooms: { db: platform.db, api: roomApi(platform.api(token)), keyring: keys.roomKeyring },
+          rooms: { db: platform.db, api: platform.api(token), keyring: keys.roomKeyring },
           usage: platform.usage(token),
           revokeDevice: async (deviceId: string) => {
             try {

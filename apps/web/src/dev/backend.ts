@@ -1257,6 +1257,13 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       const mine = ensureCompanion();
       if (!roomKeys.has(ROOM)) {
         await makeRoom(ROOM, "Familia", mine, [mine, ANA]);
+        // Co-members' public card (what the stage draws for another family's companion).
+        db.insert("companion_directory", {
+          companion_id: ANA,
+          display_name: "Luna de Ana",
+          avatar_thumb: "luna",
+          equipped: ["round_glasses"],
+        });
         await keyMe(ROOM, mine);
       }
       const eid = await postAsAna("Llego a las 7, ¿alguien pasa por pan? <b>no es HTML</b>");

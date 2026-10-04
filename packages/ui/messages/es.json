@@ -20,7 +20,8 @@
     "inbox": "Bandeja",
     "sessions": "Sesiones",
     "devices": "Dispositivos",
-    "store": "Tienda"
+    "store": "Tienda",
+    "rooms": "Salas"
   },
   "home": {
     "title": "Hola, soy {name}",
@@ -300,7 +301,10 @@
         "no_key": "Todavía no tienes la llave de la sala.",
         "failed": "No se pudo. Vuelve a intentarlo.",
         "ended": "Esta sala ya terminó para ti."
-      }
+      },
+      "memberCount": "{n, plural, one {# miembro} other {# miembros}}",
+      "unread": "Nuevo",
+      "stage": "Los compañeros de la sala"
     }
   },
   "integrations": {
