@@ -57,10 +57,19 @@ import {
   RP_ID,
   createStack,
   keys,
+  type Device,
   type Person,
 } from "./stack.js";
 
 const stack = READY ? createStack() : null;
+/** msw refuses to close a server that isn't listening (steps listen only around their sends). */
+const closeQuietly = (server: { close(): void }) => {
+  try {
+    server.close();
+  } catch {
+    /* not listening */
+  }
+};
 beforeAll(async () => {
   await stack?.warm();
 });
@@ -237,7 +246,7 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
   let agent: Awaited<ReturnType<typeof startAgent>> | null = null;
   // msw listens only while the notifier sends (it also intercepts new sockets: Realtime, Postgres).
   afterAll(async () => {
-    net.server.close();
+    closeQuietly(net.server);
     await agent?.close();
   });
 
@@ -245,11 +254,14 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
     const p = await s.person("hugo");
     await s.enrolPasskey(p);
     const { device: agentDevice } = await s.pairAgent(p, "Laptop de Hugo");
+    // A second client (an endorsed browser, no passkey): the device a forged decision is filed as.
+    const { device: web, endorsement } = await s.endorseBrowser(p, [await s.agentRef(agentDevice, "Laptop de Hugo")]);
     const trust = new TrustedClientList(agentDevice.deviceId);
     await trust.addConfirmed(
       { deviceId: p.phone.deviceId, pubSign: p.phone.pubSign, pubBox: p.phone.pubBox, webauthn: p.credential! },
       Date.now(),
     );
+    expect(await trust.addEndorsed(endorsement, Date.now())).toMatchObject({ ok: true });
     const push: FakeStep[] = [{ tool: "Bash", input: { command: "git push origin main" } }];
     const fake = fakeClaudeCode([push]);
     agent = await startAgent({
@@ -382,14 +394,16 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
         : body;
       return signEnvelope("chalito.decision.v1", full, signer.deviceId, signer.secretKey);
     };
-    // A forged allow (a key the agent never trusted, claiming to be the phone) is ignored.
+    // A forged allow (filed as the browser, signed by a key the agent never trusted) is ignored.
+    // One decision row per (approval, device): it goes on the browser's row, not the phone's.
     const forger = await keys();
-    await p.phone.db.from("approval_decisions").insert({
+    const forged = await web.db.from("approval_decisions").insert({
       owner: p.owner,
       aid: a.aid,
-      signer_device_id: p.phone.deviceId,
-      decision: await decision({ deviceId: p.phone.deviceId, secretKey: forger.sign.secretKey }, true),
+      signer_device_id: web.deviceId,
+      decision: await decision({ deviceId: web.deviceId, secretKey: forger.sign.secretKey }, false),
     });
+    expect(forged.error).toBeNull();
     await new Promise((r) => setTimeout(r, 2000));
     expect(fake.run.ran).toHaveLength(0);
     // The phone's own passkey-signed allow runs it.
@@ -523,12 +537,13 @@ describe.skipIf(!READY)("6. a Mesa turn bills llm.tokens through the outbox → 
     const hub = new HubClient({ baseUrl: "https://www.chalyb.com", token: "engine-token" });
     for (let i = 0; i < 20; i++) {
       await drainOutbox({ store: outbox, hub, now: s.now, alert: () => undefined, maxBatches: 20 });
-      if (rejected.length || usage.some((b) => b.events.some((e) => e.external_user_id === p.owner))) break;
+      if (rejected.length || usage.some((b) => b.external_user_id === p.owner)) break;
     }
     expect(rejected, "the hub refused the usage batch (HubClient must send a top-level external_user_id)").toEqual([]);
-    const batch = usage.find((b) => b.events.some((e) => e.external_user_id === p.owner))!;
+    const batch = usage.find((b) => b.external_user_id === p.owner)!;
+    expect(batch, "no usage batch for this person reached the hub").toBeTruthy();
     expect(batch.external_user_id).toBe(p.owner);
-    const mine = batch.events.filter((e) => e.external_user_id === p.owner);
+    const mine = batch.events; // one user per request (the top-level external_user_id)
     expect(mine.map((e) => e.kind)).toContain("llm.tokens");
     const tokens = mine.find((e) => e.kind === "llm.tokens")!;
     expect(tokens.cost_usd_micros).toBeGreaterThan(0);
@@ -755,7 +770,7 @@ describe.skipIf(!READY)(
     });
     let agent: Awaited<ReturnType<typeof startAgent>> | null = null;
     afterAll(async () => {
-      cimd.close();
+      closeQuietly(cimd);
       await agent?.close();
       await gwSql.end();
     });
@@ -772,11 +787,14 @@ describe.skipIf(!READY)(
       const p = await s.person("gabi");
       await s.enrolPasskey(p);
       const { device: agentDevice } = await s.pairAgent(p, "Laptop de Gabi");
+      // A second trusted client without a passkey (an endorsed browser).
+      const { device: web, endorsement } = await s.endorseBrowser(p, [await s.agentRef(agentDevice, "Laptop de Gabi")]);
       const trust = new TrustedClientList(agentDevice.deviceId);
       await trust.addConfirmed(
         { deviceId: p.phone.deviceId, pubSign: p.phone.pubSign, pubBox: p.phone.pubBox, webauthn: p.credential! },
         Date.now(),
       );
+      expect(await trust.addEndorsed(endorsement, Date.now())).toMatchObject({ ok: true });
       const push: FakeStep[] = [{ tool: "Bash", input: { command: "git push origin fix-login" } }];
       const fake = fakeClaudeCode([[{ say: "Listo." }], push]);
       agent = await startAgent({
@@ -907,7 +925,7 @@ describe.skipIf(!READY)(
         p.phone.box,
         `approval:${a.aid}`,
       );
-      const decide = async (stepUp: boolean) => {
+      const decide = async (by: Device, stepUp: boolean) => {
         const body = {
           v: 1 as const,
           aid: a.aid,
@@ -930,23 +948,19 @@ describe.skipIf(!READY)(
               },
             }
           : body;
-        const decision = await signEnvelope(
-          "chalito.decision.v1",
-          signedBody,
-          p.phone.deviceId,
-          p.phone.sign.secretKey,
-        );
-        const r = await p.phone.db
+        const decision = await signEnvelope("chalito.decision.v1", signedBody, by.deviceId, by.sign.secretKey);
+        const r = await by.db
           .from("approval_decisions")
-          .insert({ owner: p.owner, aid: a.aid, signer_device_id: p.phone.deviceId, decision });
+          .insert({ owner: p.owner, aid: a.aid, signer_device_id: by.deviceId, decision });
         return r.error;
       };
-      // A signed allow WITHOUT the passkey step-up doesn't release a HIGH action from an MCP turn.
-      await decide(false);
+      // A trusted client's signed allow WITHOUT a passkey step-up doesn't release a HIGH action
+      // from an MCP turn (R-C1).
+      expect(await decide(web, false)).toBeNull();
       await new Promise((r) => setTimeout(r, 2000));
       expect(fake.run.ran).toHaveLength(0);
-      // With the phone's passkey it does.
-      await decide(true);
+      // The phone's passkey-signed allow does.
+      expect(await decide(p.phone, true)).toBeNull();
       await waitFor(() => fake.run.ran.length === 1, 20_000, "the tool to run");
       expect(fake.run.ran[0]!.tool).toBe("Bash");
     });
