@@ -102,7 +102,7 @@ describe.skipIf(!LOCAL)("browser client ⇄ agent on the local stack", () => {
       publishableKey: ANON,
       keys: testKeys(browser, { [agent.deviceId]: agent.pubBox }),
       owner: OWNER,
-      signIn: { kind: "device", login: () => tokenHash(browser.deviceId) },
+      signIn: { kind: "device", deviceId: browser.deviceId, login: () => tokenHash(browser.deviceId) },
       stepUp: async () => ({ method: "platform_biometric", at: Date.now() }),
       storage: memoryStorage(),
     });
