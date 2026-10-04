@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@chalito/brand": "workspace:*",
+    "@chalito/client": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@chalito/ui": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",

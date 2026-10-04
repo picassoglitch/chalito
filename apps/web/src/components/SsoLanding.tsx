@@ -27,7 +27,7 @@ export const SsoLanding = () => {
     }
     void completeSso(
       { token, next },
-      { apiBase: env.apiBase, fetch: window.fetch.bind(window), supabase: client },
+      { apiBase: env.apiBase, fetch: window.fetch.bind(window), auth: client.auth },
     ).then((r) => {
       if (r.ok) window.location.replace(r.next);
       else setFailed(r.reason === "missing_token" ? "missing" : "failed");

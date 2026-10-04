@@ -136,6 +136,9 @@ importers:
       '@chalito/brand':
         specifier: workspace:*
         version: link:../../packages/brand
+      '@chalito/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

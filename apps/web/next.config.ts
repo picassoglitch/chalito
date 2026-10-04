@@ -5,7 +5,7 @@ const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 const config: NextConfig = {
   // Workspace packages ship TypeScript sources.
-  transpilePackages: ["@chalito/ui", "@chalito/brand", "@chalito/protocol"],
+  transpilePackages: ["@chalito/ui", "@chalito/brand", "@chalito/protocol", "@chalito/client"],
   // providers.yaml is read at build/render time from packages/config.
   outputFileTracingIncludes: { "/**": ["../../packages/config/*.yaml"] },
   poweredByHeader: false,

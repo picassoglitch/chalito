@@ -2,8 +2,25 @@ import { test as base, type Page } from "@playwright/test";
 
 export const SUPABASE = "http://127.0.0.1:54399";
 export const API = "http://127.0.0.1:8799";
-/** supabase-js storage key for the e2e project URL (`sb-<first host label>-auth-token`). */
-export const STORAGE_KEY = "sb-127-auth-token";
+/** packages/client keeps the Supabase Auth session in IndexedDB "chalito", store "auth", under this key. */
+export const STORAGE_KEY = "chalito-supabase-session";
+
+/** Reads the stored session (null when signed out). */
+export const storedSession = (page: Page) =>
+  page.evaluate(
+    (key) =>
+      new Promise<string | null>((resolve, reject) => {
+        const open = indexedDB.open("chalito", 1);
+        open.onupgradeneeded = () => open.result.createObjectStore("auth");
+        open.onsuccess = () => {
+          const get = open.result.transaction("auth", "readonly").objectStore("auth").get(key);
+          get.onsuccess = () => resolve((get.result as string | undefined) ?? null);
+          get.onerror = () => reject(get.error);
+        };
+        open.onerror = () => reject(open.error);
+      }),
+    STORAGE_KEY,
+  );
 
 export const fakeSession = (tier = "pro") => ({
   access_token: "e2e-access",
@@ -28,10 +45,23 @@ const guardBackends = async (page: Page) => {
   await page.route(`${API}/**`, (r) => r.fulfill({ status: 503, body: "e2e: unmocked api call" }));
 };
 
+/** Seeds a session the way packages/client stores it, from a cheap page, before the spec navigates. */
 export const signedIn = async (page: Page) => {
-  await page.addInitScript(
-    ([key, session]) => window.localStorage.setItem(key as string, JSON.stringify(session)),
-    [STORAGE_KEY, fakeSession()],
+  await page.goto("/descargar");
+  await page.evaluate(
+    ([key, session]) =>
+      new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open("chalito", 1);
+        open.onupgradeneeded = () => open.result.createObjectStore("auth");
+        open.onsuccess = () => {
+          const tx = open.result.transaction("auth", "readwrite");
+          tx.objectStore("auth").put(JSON.stringify(session), key as string);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        };
+        open.onerror = () => reject(open.error);
+      }),
+    [STORAGE_KEY, fakeSession()] as const,
   );
 };
 
