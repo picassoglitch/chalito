@@ -23,6 +23,12 @@ export interface Classification {
   workspaceEdit: boolean;
   /** No workspaces configured, or the session runs outside them: nothing runs. */
   noWorkspace: boolean;
+  /**
+   * Only reads or searches (Read/LS/Glob/Grep, read-only shell, BashOutput, allowlisted web
+   * reads, read-only MCP tools, planning tools). Unsigned turns (mcp:, call:) get no auto-allow
+   * for anything else (review R-C1).
+   */
+  readOnly: boolean;
 }
 
 export interface ClassifyContext {
@@ -77,6 +83,8 @@ interface Paths {
   /** The agent's own executables, resolved. */
   agentBinaries: string[];
   configOrCi(abs: string): boolean;
+  /** Build/test manifests, lockfiles, tool configs and test code: editing them changes what a test or build run executes. */
+  buildOrTest(abs: string): boolean;
   /** Whether a path that starts with `prefix` (then `next`, a glob/variable char) can land on a protected path. */
   covers(prefix: string, next: string, cwd: string): Cover;
 }
@@ -178,6 +186,16 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
         parts.includes(".husky")
       );
     },
+    buildOrTest: (abs) => {
+      const parts = abs.split(sep);
+      const name = parts[parts.length - 1] ?? "";
+      return (
+        BUILD_FILES.has(name) ||
+        TOOL_CONFIG.test(name) ||
+        TEST_FILE.test(name) ||
+        parts.slice(0, -1).some((p) => TEST_DIRS.has(p))
+      );
+    },
     covers: (prefix, next, cwd) => {
       // Split into a directory we can resolve and a partial last component ("~/.chal" → "~/", ".chal").
       const slash = prefix.lastIndexOf("/");
@@ -204,6 +222,76 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   };
 };
 
+/**
+ * Files whose edit changes what a later build or test run executes (review R-C1): an Edit plus an
+ * allowlisted `npm test` must never chain into running new code without a HIGH approval.
+ */
+const BUILD_FILES = new Set([
+  // JS/TS
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  ".yarnrc",
+  ".yarnrc.yml",
+  ".npmrc",
+  ".pnpmfile.cjs",
+  "bun.lock",
+  "bun.lockb",
+  "bunfig.toml",
+  "deno.json",
+  "deno.jsonc",
+  "turbo.json",
+  "nx.json",
+  "lerna.json",
+  // make & task runners
+  "Makefile",
+  "makefile",
+  "GNUmakefile",
+  "justfile",
+  "Justfile",
+  "Taskfile.yml",
+  "Taskfile.yaml",
+  "CMakeLists.txt",
+  // Python
+  "pyproject.toml",
+  "setup.cfg",
+  "setup.py",
+  "conftest.py",
+  "tox.ini",
+  "noxfile.py",
+  "pytest.ini",
+  "requirements.txt",
+  "Pipfile",
+  "Pipfile.lock",
+  "poetry.lock",
+  "uv.lock",
+  // Rust, Go, Ruby, JVM, PHP
+  "Cargo.toml",
+  "Cargo.lock",
+  "build.rs",
+  "go.mod",
+  "go.sum",
+  "Gemfile",
+  "Gemfile.lock",
+  "Rakefile",
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "settings.gradle.kts",
+  "gradlew",
+  "pom.xml",
+  "composer.json",
+  "composer.lock",
+]);
+/** `*.config.{js,ts,mjs,cjs,mts,cts}` (vitest, jest, playwright, vite, eslint, …). */
+const TOOL_CONFIG = /\.config\.[cm]?[jt]s$/;
+/** Test sources: `*.test.*`, `*.spec.*`, `*_test.*`, `test_*.py`, `*_spec.rb`. */
+const TEST_FILE = /\.(test|spec)\.[A-Za-z0-9]+$|_test\.[A-Za-z0-9]+$|^test_.*\.py$|_spec\.rb$/;
+const TEST_DIRS = new Set(["test", "tests", "__tests__", "spec", "specs", "e2e"]);
+
 const base = (category: ToolCategory): Classification => ({
   tier: "LOW",
   category,
@@ -212,6 +300,7 @@ const base = (category: ToolCategory): Classification => ({
   sudo: false,
   workspaceEdit: false,
   noWorkspace: false,
+  readOnly: false,
 });
 
 /** Reasons that made a classification CRITICAL, so `sudo` can mean "CRITICAL only because of sudo". */
@@ -274,6 +363,10 @@ const classifyPath = (
   }
   if ((write || configAlways) && paths.configOrCi(abs)) {
     raise(out, "HIGH", "config/CI/.env");
+    return;
+  }
+  if (write && paths.buildOrTest(abs)) {
+    raise(out, "HIGH", "build/test manifest or test code");
     return;
   }
   out.tier = max(out.tier, write ? "MED" : "LOW");
@@ -707,6 +800,8 @@ interface ShellState {
   vars: Map<string, string | null>;
   /** An exec-affecting variable (PATH, LD_PRELOAD, …) was set: nothing after it is LOW. */
   tainted: boolean;
+  /** An allowlisted runner (tests, lint, build) ran: LOW, but it executes code, so not read-only. */
+  ranCode?: boolean;
 }
 
 interface Expanded {
@@ -1186,7 +1281,10 @@ const classifySegment = (
       return probe.tier === "LOW";
     });
   });
-  if (allowlisted) return; // LOW
+  if (allowlisted) {
+    st.ranCode = true;
+    return; // LOW, but runs project code
+  }
   if (READ_ONLY.has(cmd)) return; // LOW unless an option above raised it
   raise(out, "MED", "command");
 };
@@ -1211,10 +1309,13 @@ const classifyBash = (command: string, ctx: ClassifyContext, paths: Paths, state
       vars: new Map(st.vars),
     });
     merge(out, sub);
+    if (!sub.readOnly) st.ranCode = true;
   }
   // sudo is unlockable (allowSudo) only when it's the sole reason for CRITICAL.
   const reasons = crit(out);
   out.sudo = reasons.length > 0 && reasons.every((r) => r === "sudo");
+  // Read-only: every segment was a read-only command (no runner, no write, nothing raised).
+  out.readOnly = out.tier === "LOW" && !st.ranCode && !/\$\(|`|<\(|>\(/.test(command);
   return out;
 };
 
@@ -1242,7 +1343,7 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
         const st: ShellState = { cwd: paths.resolve(target), vars: new Map(), tainted: false };
         classifyWord({ text: pattern, dyn: true }, st, paths, out);
       }
-      return out;
+      return { ...out, readOnly: true };
     }
     case "Edit":
     case "MultiEdit":
@@ -1259,6 +1360,7 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
     case "BashOutput":
     case "KillShell":
     case "KillBash": {
+      if (toolName === "BashOutput") return { ...base("shell"), readOnly: true };
       if (toolName !== "Bash") return base("shell");
       return classifyBash(str(input.command) ?? "", ctx, paths);
     }
@@ -1271,21 +1373,25 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
         return { ...out, tier: "HIGH", reasons: ["bad url"] };
       }
       const known = ctx.policy.web.allowDomains.some((d) => host === d || host.endsWith(`.${d}`));
-      return known ? out : { ...out, tier: "MED", reasons: [`new domain ${host}`] };
+      return known ? { ...out, readOnly: true } : { ...out, tier: "MED", reasons: [`new domain ${host}`] };
     }
     case "WebSearch":
       return { ...base("web"), tier: "MED", reasons: ["web search"] };
     case "TodoWrite":
-    case "Task":
-    case "Agent":
     case "ExitPlanMode":
     case "EnterPlanMode":
     case "AskUserQuestion":
+      return { ...base("other"), readOnly: true };
+    case "Task":
+    case "Agent":
+      // Spawns a subagent; its own tool calls are gated, but starting one isn't a read.
       return base("other");
     default: {
       if (toolName.startsWith("mcp__")) {
         const readOnly = ctx.policy.mcp.readOnlyTools.includes(toolName);
-        return readOnly ? base("mcp") : { ...base("mcp"), tier: "HIGH", reasons: ["MCP tool may write externally"] };
+        return readOnly
+          ? { ...base("mcp"), readOnly: true }
+          : { ...base("mcp"), tier: "HIGH", reasons: ["MCP tool may write externally"] };
       }
       return { ...base("other"), tier: "HIGH", reasons: [`unknown tool ${toolName}`] };
     }

@@ -49,6 +49,7 @@ export const SigningContext = z.enum([
   "chalito.devmode-liability.v1",
   "chalito.policy-lock.v1",
   "chalito.agent-config.v1",
+  "chalito.webauthn-binding.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 
@@ -72,3 +73,21 @@ export const EndorsementBody = z.object({
 });
 export const Endorsement = signed("chalito.endorsement.v1", EndorsementBody);
 export type Endorsement = z.infer<typeof Endorsement>;
+
+/**
+ * Ties a client's passkey to its device key: signed by the client's DEVICE key (never the
+ * server), so an agent can record the passkey it will require for HIGH/CRITICAL step-ups
+ * from the same trust root it confirmed at the reverse check (D-019).
+ */
+export const WebAuthnBindingBody = z.object({
+  v: z.literal(1),
+  deviceId: DeviceId,
+  /** base64url credential id. */
+  credentialId: b64url(),
+  /** base64url COSE_Key, as registration returned it. */
+  publicKey: b64url(),
+  rpId: z.string().min(1).max(253),
+  issuedAt: EpochMs,
+});
+export const WebAuthnBinding = signed("chalito.webauthn-binding.v1", WebAuthnBindingBody);
+export type WebAuthnBinding = z.infer<typeof WebAuthnBinding>;

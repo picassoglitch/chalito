@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { NonceStore, TrustedClientList } from "@chalito/crypto";
+import { stepUpChallenge, verifyWebAuthnAssertion, type NonceStore, type TrustedClientList } from "@chalito/crypto";
 import { ApprovalRequest, Decision, type Origin, type ResolutionReason, type RiskTier } from "@chalito/protocol";
 import type { Sealer } from "./sealing.js";
 import type { AgentStore } from "./store.js";
@@ -22,7 +22,34 @@ export interface ApprovalDeps {
   /** Audit sink for rejected decisions (invalid, untrusted, replayed, …). */
   audit: (event: { type: string; [k: string]: unknown }) => void;
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
+  /** Origins a passkey assertion may come from, per rpId (default: https://<rpId>). */
+  webauthnOrigins?: (rpId: string) => string[];
 }
+
+/**
+ * Step-up for HIGH/CRITICAL allows (D-019): a WebAuthn assertion by the passkey this device
+ * recorded for the signer at the local reverse check, over SHA-256(JCS(decision body without
+ * stepUp)). Returns why it fails, or null when it verifies. Self-asserted methods (a bare
+ * `platform_biometric`) no longer count.
+ */
+const stepUpFailure = async (
+  trust: TrustedClientList,
+  decision: Decision,
+  origins: (rpId: string) => string[],
+): Promise<string | null> => {
+  const credential = trust.webauthnFor(decision.signerDeviceId);
+  if (!credential) return "no_passkey_recorded";
+  const step = decision.body.stepUp;
+  if (!step || step.method !== "webauthn" || !step.assertion) return "no_webauthn_assertion";
+  const res = await verifyWebAuthnAssertion({
+    assertion: step.assertion,
+    credential,
+    expectedChallenge: await stepUpChallenge(decision.body),
+    rpId: credential.rpId,
+    origin: origins(credential.rpId),
+  });
+  return res.ok ? null : `assertion_${res.reason}`;
+};
 
 const defaultTimer = (fn: () => void, ms: number) => {
   const t = setTimeout(fn, ms);
@@ -101,14 +128,22 @@ export class ApprovalManager {
             return;
           }
           const d = parsed.data.body;
-          if (
-            input.stepUp &&
-            d.allow &&
-            !(d.stepUp && (d.stepUp.method === "webauthn" || d.stepUp.method === "platform_biometric"))
-          ) {
-            // WebAuthn assertions are cryptographically verified once passkeys are enrolled (M5, D-034).
-            audit({ type: "approval.decision_rejected", aid, reason: "missing_step_up" });
-            return;
+          if (input.stepUp && d.allow) {
+            const failure = await stepUpFailure(
+              trust(),
+              parsed.data,
+              this.deps.webauthnOrigins ?? ((rpId) => [`https://${rpId}`]),
+            );
+            if (failure) {
+              audit({
+                type: "approval.decision_rejected",
+                aid,
+                reason: "missing_step_up",
+                detail: failure,
+                signer: parsed.data.signerDeviceId,
+              });
+              return;
+            }
           }
           finish({
             allow: d.allow,

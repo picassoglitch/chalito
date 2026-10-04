@@ -1,0 +1,10 @@
+@import "tailwindcss";
+/* Shared components (packages/ui) use Tailwind classes too. */
+@source "../../../../packages/ui/src";
+
+:root {
+  color-scheme: light;
+}
+body {
+  @apply bg-neutral-50 text-neutral-900 antialiased;
+}

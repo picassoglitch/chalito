@@ -1,0 +1,404 @@
+{
+  "common": {
+    "appName": "Chalito",
+    "continue": "Continuar",
+    "back": "Atrás",
+    "skip": "Saltar",
+    "finish": "Terminar",
+    "loading": "Cargando…",
+    "save": "Guardar",
+    "home": "Inicio",
+    "language": "Idioma",
+    "comingSoon": "Muy pronto"
+  },
+  "nav": {
+    "home": "Inicio",
+    "settings": "Ajustes",
+    "onboarding": "Primeros pasos",
+    "credits": "Créditos",
+    "download": "Descargar",
+    "inbox": "Bandeja",
+    "sessions": "Sesiones",
+    "devices": "Dispositivos"
+  },
+  "home": {
+    "title": "Hola, soy {name}",
+    "subtitle": "Te ayudo a dirigir a tu equipo de IA desde cualquier lugar.",
+    "startOnboarding": "Empezar",
+    "signedOut": "Entra desde tu cuenta de Chalyb para continuar.",
+    "signIn": "Entrar con Chalyb",
+    "companion": "Tu compañero: {name}"
+  },
+  "sso": {
+    "working": "Entrando a Chalito…",
+    "failed": "No pudimos abrir tu sesión. Vuelve a entrar desde Chalyb.",
+    "missingToken": "Falta el enlace de acceso. Entra desde Chalyb.",
+    "retry": "Volver a Chalyb"
+  },
+  "onboarding": {
+    "title": "Primeros pasos",
+    "progress": "Paso {step} de {total}",
+    "signIn": {
+      "title": "Entra a tu cuenta",
+      "body": "Chalito usa tu cuenta de Chalyb. No necesitas otra contraseña.",
+      "signedIn": "Ya entraste. ¡Sigamos!",
+      "cta": "Entrar con Chalyb"
+    },
+    "companion": {
+      "title": "Elige a tu compañero",
+      "body": "Puedes cambiarlo cuando quieras. Pronto podrás subir tu propia imagen o modelo."
+    },
+    "name": {
+      "title": "Ponle nombre",
+      "body": "Si le cambias el nombre, mostraremos la línea de crédito debajo."
+    },
+    "connect": {
+      "title": "Conecta tus IA",
+      "body": "Solo usamos las formas oficiales de cada proveedor. Tus claves se quedan en tu computadora.",
+      "guided": "Guiado",
+      "expert": "Experto",
+      "expertBody": "Pega tus API keys en la app de escritorio o con «chalito keys set». Nunca las enviamos a la nube.",
+      "later": "Puedes conectarlas después en Ajustes → Conexiones."
+    },
+    "billing": {
+      "title": "Cómo pagas",
+      "body": "Tu plan y tus créditos vienen de tu cuenta de Chalyb.",
+      "byo": "Tus propias claves: lo que usas lo paga tu cuenta con cada proveedor.",
+      "energy": "Energía de Chalito: se descuenta de tu saldo en Chalyb.",
+      "both": "Ambas: tus claves primero y energía cuando haga falta.",
+      "tier": "Tu nivel en Chalyb: {tier}",
+      "tierUnknown": "Aún no conocemos tu nivel en Chalyb.",
+      "trial": "Tu prueba termina el {date}.",
+      "manage": "Ver planes en Chalyb"
+    },
+    "phone": {
+      "title": "Tu teléfono",
+      "body": "Para avisos por WhatsApp y llamadas cuando algo urge. Es opcional."
+    },
+    "pair": {
+      "title": "Conecta tu computadora",
+      "body": "Instala Chalito en tu computadora y emparéjala con el glifo de Chalito.",
+      "download": "Ir a Descargar",
+      "later": "Puedes hacerlo después."
+    },
+    "done": {
+      "title": "¡Listo!",
+      "body": "{name} ya está contigo."
+    },
+    "passkey": {
+      "title": "Protege tus aprobaciones",
+      "body": "Las acciones de riesgo alto piden tu passkey."
+    }
+  },
+  "settings": {
+    "title": "Ajustes",
+    "sections": {
+      "contact": "Contacto y avisos",
+      "companion": "Tu compañero",
+      "privacy": "Privacidad y conexiones",
+      "account": "Plan y créditos",
+      "display": "Pantalla"
+    },
+    "charges": "Pueden aplicar cargos.",
+    "needsPhone": "Primero agrega tu teléfono.",
+    "phone": {
+      "label": "Teléfono",
+      "country": "País o región",
+      "number": "Número",
+      "placeholder": "Tu número",
+      "invalid": "Ese número no parece válido para el país elegido.",
+      "willSend": "Te enviaremos un código por SMS para verificarlo.",
+      "sendCode": "Enviar código",
+      "codeSent": "Te enviamos un código a {number}.",
+      "code": "Código",
+      "verify": "Verificar",
+      "verified": "{number} verificado",
+      "change": "Cambiar número",
+      "wrongCode": "Ese código no es correcto.",
+      "rateLimited": "Demasiados intentos. Espera un momento.",
+      "error": "No pudimos verificar el número. Inténtalo más tarde.",
+      "channel": "Cómo recibir el código",
+      "by": {
+        "sms": "Por SMS",
+        "call": "Por llamada"
+      },
+      "willCall": "Te llamaremos para dictarte un código.",
+      "inUse": "Ese número ya está en otra cuenta."
+    },
+    "whatsapp": {
+      "label": "Avisos por WhatsApp",
+      "hint": "Te escribimos cuando algo necesita tu atención."
+    },
+    "calls": {
+      "label": "Llamadas",
+      "hint": "Te llamamos si algo urge y no respondes."
+    },
+    "callBriefing": {
+      "label": "Resumen en llamadas",
+      "hint": "En la llamada te leemos una línea de cada pendiente.",
+      "plaintext": "Esas líneas salen de tu computadora sin cifrar para poder leerlas en voz alta."
+    },
+    "quietHours": {
+      "label": "Horas de silencio",
+      "hint": "No te llamamos ni escribimos en ese horario, salvo urgencias.",
+      "default": "Horario predeterminado",
+      "custom": "Personalizado",
+      "off": "Sin horas de silencio",
+      "from": "De",
+      "to": "a"
+    },
+    "avatar": {
+      "label": "Compañero"
+    },
+    "companions": {
+      "chalito": "Chalito",
+      "luna": "Luna",
+      "tito": "Tito"
+    },
+    "companionName": {
+      "label": "Nombre",
+      "placeholder": "Chalito"
+    },
+    "privacyMode": {
+      "label": "Modo privado",
+      "hint": "Usa tus propias claves desde tu dispositivo y guarda solo contenido cifrado."
+    },
+    "connections": {
+      "label": "Conexiones",
+      "none": "Aún no conectas ninguna IA.",
+      "notConnected": "Sin conectar",
+      "mode": {
+        "byo_api_key": "Tu API key",
+        "byo_subscription_local": "Tu plan",
+        "byo_mcp_connector": "Conector",
+        "managed": "Energía de Chalito"
+      }
+    },
+    "planCredits": {
+      "label": "Plan y créditos",
+      "tier": "Nivel: {tier}",
+      "unknown": "Nivel desconocido",
+      "trial": "Prueba hasta el {date}",
+      "manage": "Administrar en Chalyb"
+    },
+    "renderQuality": {
+      "label": "Calidad de animación",
+      "auto": "Automática",
+      "bajo": "Baja",
+      "medio": "Media",
+      "alto": "Alta"
+    },
+    "needsAck": "Primero confirma que entiendes que pueden aplicar cargos.",
+    "chargesAck": "Entiendo que pueden aplicar cargos."
+  },
+  "integrations": {
+    "anthropic": {
+      "name": "Claude",
+      "agent": "Claude Code",
+      "howTo": "Claude Code se conecta solo con tu API key de Anthropic. Por las reglas de Anthropic no podemos usar tu suscripción de Claude."
+    },
+    "openai": {
+      "name": "ChatGPT",
+      "agent": "Codex",
+      "howTo": "Codex funciona con tu API key de OpenAI o con tu plan de ChatGPT (Iniciar sesión con ChatGPT). El plan de ChatGPT está disponible por ahora solo para el equipo de Chalito.",
+      "ownerOnly": "Plan de ChatGPT: solo equipo de Chalito por ahora"
+    },
+    "xai": {
+      "name": "Grok",
+      "agent": "Grok Build",
+      "howTo": "Grok Build funciona con tu API key de xAI o con tu inicio de sesión de Grok."
+    },
+    "google": {
+      "name": "Gemini",
+      "agent": "Gemini",
+      "howTo": "Usa tu API key de Google AI Studio."
+    },
+    "iHave": "Tengo {name}"
+  },
+  "deeplinks": {
+    "approval": "Aprobación {id}",
+    "mesa": "Mesa {id}",
+    "room": "Sala {id}",
+    "stub": "Esta pantalla llega pronto.",
+    "credits": "Créditos"
+  },
+  "download": {
+    "title": "Descargar Chalito",
+    "body": "Las apps para Linux, Windows y macOS llegan pronto."
+  },
+  "pwa": {
+    "description": "Tu compañero que dirige a tu equipo de IA."
+  },
+  "live": {
+    "testMode": "MODO DE PRUEBA: datos simulados, nada es real.",
+    "gate": {
+      "loading": "Conectando…",
+      "signed_out": "Entra con tu cuenta de Chalyb para ver tus sesiones y aprobaciones.",
+      "signIn": "Entrar con Chalyb",
+      "unpaired": "Este dispositivo aún no está emparejado. Emparéjalo desde la app de escritorio para aprobar y ver tus sesiones.",
+      "error": "No pudimos conectar. Vuelve a intentarlo en un momento.",
+      "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza."
+    },
+    "devMode": {
+      "banner": "Modo desarrollador ACTIVO.",
+      "manage": "Apagarlo"
+    },
+    "risk": {
+      "LOW": "Bajo",
+      "MED": "Medio",
+      "HIGH": "Alto",
+      "CRITICAL": "Crítico"
+    },
+    "stepUp": {
+      "title": "Confirma que eres tú",
+      "body": "Esta acción es de riesgo {risk}. Confírmala con tu huella, rostro o llave de seguridad.",
+      "confirm": "Confirmar",
+      "cancel": "Cancelar"
+    },
+    "approval": {
+      "unknownTool": "Acción",
+      "expiresIn": "Vence en",
+      "sealed": "Los detalles están cifrados para otro dispositivo.",
+      "stepUpNeeded": "Aprobar pide tu huella, rostro o llave de seguridad.",
+      "pending": "Esperando tu respuesta",
+      "expired": "Expiró: denegada",
+      "status": {
+        "approved": "Aprobada",
+        "denied": "Denegada",
+        "expired": "Expiró: denegada",
+        "rejected_invalid": "Rechazada: firma inválida"
+      },
+      "approve": "Aprobar",
+      "deny": "Denegar",
+      "sentAllow": "Aprobación enviada.",
+      "sentDeny": "Rechazo enviado.",
+      "error": {
+        "step_up_cancelled": "Cancelado: no se envió nada.",
+        "expired": "Expiró: denegada",
+        "not_pending": "Ya se resolvió.",
+        "other": "No pudimos enviar tu respuesta."
+      },
+      "openSession": "Ver la sesión",
+      "notFound": "No encontramos esa aprobación.",
+      "loading": "Cargando…",
+      "needsPasskey": "Para aprobar acciones de riesgo alto, protege este dispositivo con tu passkey.",
+      "enrolPasskey": "Crear passkey"
+    },
+    "inbox": {
+      "title": "Bandeja",
+      "notifications": "Avisos",
+      "notification": "{count, plural, one {# pendiente} other {# pendientes}}",
+      "ack": "Entendido",
+      "pending": "Por aprobar ({count})",
+      "empty": "Nada pendiente.",
+      "history": "Historial"
+    },
+    "sessions": {
+      "title": "Sesiones",
+      "empty": "Aún no hay sesiones.",
+      "state": {
+        "starting": "Iniciando",
+        "running": "Trabajando",
+        "waiting_approval": "Esperando aprobación",
+        "waiting_input": "Esperando tu respuesta",
+        "idle": "En pausa",
+        "completed": "Terminada",
+        "failed": "Falló",
+        "interrupted": "Interrumpida"
+      }
+    },
+    "session": {
+      "notFound": "No encontramos esa sesión.",
+      "loading": "Cargando…",
+      "sealed": "La tarjeta está cifrada para otro dispositivo.",
+      "card": {
+        "lastAction": "Última acción",
+        "pendingApprovals": "Aprobaciones pendientes",
+        "filesTouched": "Archivos tocados",
+        "tests": "Pruebas",
+        "testsValue": "{passed} bien, {failed} mal",
+        "blockers": "Bloqueos"
+      },
+      "interrupt": "Interrumpir",
+      "resume": "Reanudar",
+      "mode": "Modo",
+      "modes": {
+        "default": "Preguntar",
+        "plan": "Solo planear",
+        "acceptEdits": "Aceptar ediciones"
+      },
+      "prompt": "Mensaje",
+      "promptPlaceholder": "Escribe a tu agente…",
+      "send": "Enviar",
+      "sent": "Enviado.",
+      "interrupted": "Interrupción enviada.",
+      "resumed": "Reanudación enviada.",
+      "modeSet": "Modo cambiado.",
+      "answer": "Responder",
+      "answerSent": "Respuesta enviada.",
+      "untrusted": "Esta computadora no está emparejada con este dispositivo.",
+      "failed": "No pudimos enviarlo."
+    },
+    "timeline": {
+      "label": "Actividad",
+      "type": {
+        "session_started": "Sesión iniciada",
+        "session_state": "Cambio de estado",
+        "message_user": "Tú",
+        "message_assistant": "Agente",
+        "tool_started": "Herramienta",
+        "tool_finished": "Herramienta terminada",
+        "approval_requested": "Pidió aprobación",
+        "approval_resolved": "Aprobación resuelta",
+        "question_asked": "Pregunta",
+        "usage": "Uso",
+        "card_updated": "Tarjeta",
+        "error": "Error"
+      }
+    },
+    "devices": {
+      "title": "Dispositivos",
+      "role": {
+        "agent": "Computadora",
+        "client": "Teléfono o navegador"
+      },
+      "online": "En línea",
+      "offline": "Sin conexión",
+      "revoked": "Retirado",
+      "devModeOn": "Modo desarrollador ACTIVO ({toggles})",
+      "devModeOff": "Apagar modo desarrollador",
+      "toggleOff": "Apagar {toggle}",
+      "devModeOffSent": "Listo: se pidió apagarlo.",
+      "revoke": "Retirar",
+      "revokeConfirm": "¿Retirar {name}? Ya no podrá aprobar nada.",
+      "revokeYes": "Sí, retirar",
+      "cancel": "Cancelar",
+      "revokeSent": "Retiro enviado a tus computadoras.",
+      "failed": "No pudimos enviarlo."
+    },
+    "settings": {
+      "server": "Tus ajustes se guardan en tu cuenta.",
+      "device": "Entra con tu cuenta para guardar tus ajustes; por ahora se guardan en este dispositivo.",
+      "error": {
+        "rejected": "No se pudo guardar: primero verifica tu teléfono y confirma que pueden aplicar cargos.",
+        "failed": "No pudimos guardar el cambio. Inténtalo de nuevo.",
+        "phone_not_verified": "Primero verifica tu teléfono.",
+        "charges_notice_required": "Primero confirma que entiendes que pueden aplicar cargos.",
+        "country_not_supported": "Las llamadas a este país no están disponibles."
+      }
+    },
+    "notification": {
+      "opening": "Abriendo…",
+      "notFound": "Ese aviso ya no existe o no es tuyo."
+    },
+    "passkey": {
+      "title": "Protege tus aprobaciones con tu passkey",
+      "body": "Para aprobar acciones de riesgo alto o crítico desde aquí te pediremos tu huella, rostro o llave de seguridad. Tu computadora lo verifica.",
+      "create": "Crear passkey",
+      "enrolled": "Este dispositivo ya tiene passkey.",
+      "afterPairing": "Cuando emparejes tu computadora te pediremos crear una passkey en este dispositivo.",
+      "cancelled": "Cancelaste la passkey; puedes intentarlo de nuevo.",
+      "error": "No pudimos crear la passkey. Inténtalo de nuevo."
+    }
+  }
+}
