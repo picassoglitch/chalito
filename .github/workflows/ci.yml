@@ -85,16 +85,27 @@ jobs:
       - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,storage-api
       - run: supabase test db
       - run: supabase/scripts/smoke-data-api.sh
-      # ApiRepo contract against the local stack's database (PostgresRepo), then the agent's
-      # SupabaseStore against the same local stack (apps/agent/test/*.int.test.ts).
+      # ApiRepo (PostgresRepo) and IdentityIssuer (SupabaseIssuer) contracts against the local stack's
+      # database and Auth, then the agent's SupabaseStore (apps/agent/test/*.int.test.ts).
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: echo "DATABASE_URL=$(supabase status -o json | jq -r '.DB_URL')" >> "$GITHUB_ENV"
+      - name: Point the contract tests at the local stack
+        run: |
+          supabase status -o json > "$RUNNER_TEMP/sb.json"
+          {
+            echo "DATABASE_URL=$(jq -r '.DB_URL' "$RUNNER_TEMP/sb.json")"
+            echo "SUPABASE_AUTH_URL=$(jq -r '.API_URL' "$RUNNER_TEMP/sb.json")/auth/v1"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$(jq -r '.SERVICE_ROLE_KEY // .SECRET_KEY' "$RUNNER_TEMP/sb.json")"
+            echo "SUPABASE_ANON_KEY=$(jq -r '.ANON_KEY // .PUBLISHABLE_KEY' "$RUNNER_TEMP/sb.json")"
+          } >> "$GITHUB_ENV"
       - run: pnpm --filter @chalito/api test:pg
+        env:
+          # The api's least-privilege role (security review S2); postgres holds it with SET.
+          CHALITO_DB_ROLE: chalito_server
       - name: Agent SupabaseStore integration
         run: |
           eval "$(supabase status -o env)"

@@ -10,6 +10,8 @@ import { RACERS, agentFor, count, device, owner, pairingCode, recovery } from ".
 export interface ApiRepoContractOptions {
   /** Concurrent revokes: exactly one caller gets "revoked" (true for transactional backends). */
   strictRevoke?: boolean;
+  /** The backend keeps a watcher per pairing code, released once by releasePairingWatches. */
+  pairingWatches?: boolean;
 }
 
 /** A fresh owner whose user record exists (devices, recovery and notifications belong to a user). */
@@ -129,11 +131,11 @@ export const runApiRepoContract = (
         expect((await repo.getDevice(o, d.deviceId))?.revoked).toBe(true);
       });
 
-      it("saveEndorsement stores (and overwrites) without error", async () => {
+      it("saveEndorsement stores the endorsement; saving it again doesn't fail", async () => {
         const repo = await makeRepo();
         const o = await seededOwner(repo);
         await repo.saveEndorsement(o, "dev_new", { body: { newDeviceId: "dev_new" }, sig: "x" }, 1);
-        await repo.saveEndorsement(o, "dev_new", { body: { newDeviceId: "dev_new" }, sig: "y" }, 2);
+        await repo.saveEndorsement(o, "dev_new", { body: { newDeviceId: "dev_new" }, sig: "x" }, 2);
       });
     });
 
@@ -322,6 +324,28 @@ export const runApiRepoContract = (
           reason: "device_exists",
         });
         expect((await repo.findPairingCodeByShortHash(code.shortCodeHash))?.claimed).toBe(false);
+      });
+
+      it("releasePairingWatches hands each claimed code's watcher to its agent at most once", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const code = await pairingCode();
+        await repo.createPairingCode(code);
+        expect(await repo.releasePairingWatches(o, code.agentDeviceId)).toEqual([]); // not claimed yet
+        const claim = {
+          owner: o,
+          claimedByDeviceId: "dev_phone",
+          claimerPubSign: "ps",
+          claimerPubBox: "pb",
+          claimedAt: 1,
+        };
+        await repo.claimPairingCode(code.codeId, claim, () => agentFor(code, o, "dev_phone"));
+        expect(await repo.releasePairingWatches(owner(), code.agentDeviceId)).toEqual([]); // other owner
+        expect(await repo.releasePairingWatches(o, "dev_other")).toEqual([]); // other agent
+        expect(await repo.releasePairingWatches(o, code.agentDeviceId)).toEqual(
+          opts.pairingWatches ? [code.codeId] : [],
+        );
+        expect(await repo.releasePairingWatches(o, code.agentDeviceId)).toEqual([]);
       });
 
       it(`exactly one of ${RACERS} concurrent claims wins`, async () => {

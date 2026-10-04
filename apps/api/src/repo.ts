@@ -61,6 +61,12 @@ export interface ApiRepo {
   createPairingCode(doc: PairingCodeDoc): Promise<"created" | "exists">;
   findPairingCodeByShortHash(shortCodeHash: string): Promise<PairingCodeDoc | null>;
   /**
+   * Atomic: detaches the pairing watchers of codes this agent was claimed through and returns
+   * their code ids, each at most once (the caller then deletes the watcher credentials).
+   * Backends whose watch credentials expire on their own return [].
+   */
+  releasePairingWatches(owner: string, agentDeviceId: string): Promise<string[]>;
+  /**
    * Atomic: locks the code, lets `build` validate it and produce the agent's device doc
    * (it may throw to abort), then creates the device and marks the code claimed.
    */
@@ -111,4 +117,6 @@ export interface IdentityIssuer {
   mintPairingWatch(codeId: string): Promise<string>;
   verify(token: string): Promise<IdentityClaims>;
   disableDevice(deviceId: string): Promise<void>;
+  /** Deletes a pairing watch's credential, if the backend keeps one per code. */
+  releasePairingWatch?(codeId: string): Promise<void>;
 }
