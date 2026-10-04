@@ -297,7 +297,8 @@ class Ctx {
         ? this.prefs.whatsapp?.optIn === true
         : channel === "call"
           ? this.prefs.calls?.enabled === true
-          : (this.prefs.sms?.enabled ?? (phone ? phone.country.toUpperCase() !== "MX" : false));
+          : (this.prefs.sms?.enabled ??
+            (phone ? !this.config.sms.defaultOffCountries.includes(phone.country.toUpperCase()) : false));
     if (!enabled) return "disabled";
     if (!phone?.verified) return "no_verified_phone";
     if ((channel === "call" || channel === "sms") && phone.chargesNoticeAckAt === null) return "no_charges_ack";
