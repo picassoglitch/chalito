@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { admitManaged, llmCostMicros, usageEvent, type HubClient, type OutOfEnergy } from "@chalito/billing";
+import {
+  admitManaged,
+  estimateBillable,
+  llmCostMicros,
+  usageEvent,
+  type HubClient,
+  type OutOfEnergy,
+} from "@chalito/billing";
 import type { ModelsConfig, PricesConfig } from "@chalito/config";
 import { fromB64url, sealJson } from "@chalito/crypto";
 import {
@@ -264,7 +271,12 @@ export const runTurn = async (d: TurnDeps, req: TurnRequest): Promise<TurnResult
           external_job_id: `mesa:${req.mid}:${req.tid}:${speaker.pid}`,
           class: "job",
           operation: speaker.kind === "companion" ? "companion.turn" : "mesa.turn",
-          est_tokens: estimate,
+          // Billable tokens (cost × margin), not raw LLM tokens, like every other caller (review R-M5).
+          est_tokens: model
+            ? estimateBillable(
+                costMicros(d.prices, provider, model, { ...ZERO, input: brief.tokens, output: maxTokens }),
+              )
+            : 0,
         },
         locale: req.locale,
       });
@@ -362,19 +374,29 @@ export const runTurn = async (d: TurnDeps, req: TurnRequest): Promise<TurnResult
       profile: mode === "byo" ? byoProfile : profile,
       billingMode: mode,
       ...(mode === "byo" ? { estCostUsdMicros: cost } : {}),
-      decisionNeeded: !!ask,
+      decisionNeeded: !!ask && trusted,
     };
     try {
       await d.store.appendTurn(req.owner, req.mid, tid, turnDoc, { pid: speaker.pid, tokens, events: [event] });
     } catch (err) {
-      // The turn and its usage commit together or not at all; release the reservation.
+      // The provider was already paid: the usage still has to be reported (review R-L9). Record
+      // it on its own (same idempotent source_id), then release the reservation as completed.
+      const recorded = await d.store
+        .enqueueUsage(req.owner, [event])
+        .then(() => true)
+        .catch(() => false);
       if (reservationId)
-        await d.hub.settle({ reservation_id: reservationId, outcome: "failed" }).catch(() => undefined);
+        await d.hub
+          .settle({ reservation_id: reservationId, outcome: recorded ? "succeeded" : "failed" })
+          .catch(() => undefined);
+      d.log?.("mesa.turn_write_failed", { mid: req.mid, pid: speaker.pid, usageRecorded: recorded });
       throw err;
     }
     if (reservationId)
       await d.hub.settle({ reservation_id: reservationId, outcome: "succeeded" }).catch(() => undefined);
-    if (ask) {
+    // Only the person's own words may lead to a decision request: text forwarded from an MCP app
+    // or a room never raises an approval, whatever the model says (review R-L11).
+    if (ask && trusted) {
       aid = `apr_${randomUUID().replace(/-/g, "")}`;
       await d.store.createDecisionApproval(req.owner, {
         aid,

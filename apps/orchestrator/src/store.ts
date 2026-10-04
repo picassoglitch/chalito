@@ -62,6 +62,8 @@ export interface MesaStore extends DecisionStore {
     spend?: TurnSpend,
   ): Promise<"ok" | "duplicate">;
   createDecisionApproval(owner: string, a: DecisionApproval): Promise<void>;
+  /** Usage events on their own (when the turn write failed after a paid call); idempotent on source_id. */
+  enqueueUsage(owner: string, events: (HubUsageEvent | null)[]): Promise<void>;
 
   putBrainKey(owner: string, row: BrainKeyRow, wrapped: string | null): Promise<void>;
   deleteBrainKey(owner: string, provider: BrainProviderId): Promise<boolean>;
@@ -127,6 +129,9 @@ export class MemoryMesaStore implements MesaStore {
       m.used.byParticipant[spend.pid] = (m.used.byParticipant[spend.pid] ?? 0) + spend.tokens;
     }
     return "ok" as const;
+  }
+  async enqueueUsage(_owner: string, events: (HubUsageEvent | null)[]) {
+    for (const e of events) if (e && !this.outbox.some((x) => x.source_id === e.source_id)) this.outbox.push(e);
   }
   async createDecisionApproval(owner: string, a: DecisionApproval) {
     this.approvals.push({ ...structuredClone(a), owner, status: "pending", expiresAt: this.now() + 10 * 60_000 });

@@ -1,5 +1,6 @@
 import type { Sql } from "postgres";
 import { enqueueUsage } from "@chalito/billing";
+import type { HubUsageEvent } from "@chalito/protocol";
 import { MesaDoc } from "./core/mesa.js";
 import type { BrainProviderId } from "./brains/brain.js";
 import type { PendingDecision } from "./decisions.js";
@@ -55,6 +56,9 @@ export class PostgresMesaStore implements MesaStore {
     }) as Promise<"ok" | "duplicate">;
   }
 
+  async enqueueUsage(owner: string, events: (HubUsageEvent | null)[]) {
+    await enqueueUsage(this.sql, owner, events);
+  }
   async createDecisionApproval(owner: string, a: DecisionApproval) {
     // created_at and the 10-minute expiry are the database's clock.
     await this.sql`
