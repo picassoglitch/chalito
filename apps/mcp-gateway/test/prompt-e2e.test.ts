@@ -15,6 +15,7 @@ import {
   TrustedClientList,
   generateBoxKeyPair,
   generateSigningKeyPair,
+  openJson,
   randomNonce,
   sealJson,
   signEnvelope,
@@ -49,13 +50,14 @@ const agentFor = async (owner: string, turns: FakeStep[][]) => {
   const phone = { id: "dev_phone", sign: phoneSign };
   const store = new MemoryStore();
   const trust = new TrustedClientList(agent.id);
+  const phoneBox = await generateBoxKeyPair();
   const passkey = new SoftAuthenticator({ origin: "https://chalito.chalyb.com" });
   const passkeyRef = { credentialId: passkey.credentialId, publicKey: passkey.publicKey, rpId: "chalito.chalyb.com" };
   await trust.addConfirmed(
     {
       deviceId: phone.id,
       pubSign: await toB64url(phoneSign.publicKey),
-      pubBox: await toB64url((await generateBoxKeyPair()).publicKey),
+      pubBox: await toB64url(phoneBox.publicKey),
       webauthn: passkeyRef,
     },
     Date.now(),
@@ -86,7 +88,7 @@ const agentFor = async (owner: string, turns: FakeStep[][]) => {
     saveTrust: async () => undefined,
     nonces: new MemoryNonceStore(),
     owner,
-    self: { deviceId: agent.id, pubBox: agent.pubBox, box },
+    self: { deviceId: agent.id, pubBox: agent.pubBox, box, sign },
     home: "/home/aldo",
     locale: () => "es",
     now: Date.now,
@@ -130,6 +132,15 @@ const agentFor = async (owner: string, turns: FakeStep[][]) => {
       nonce: await randomNonce(),
       issuedAt: Date.now(),
       expiresAt: Date.now() + 60_000,
+      // ADR 0019: answer for exactly what the agent signed (opened from the sealed details).
+      detailsHash: (
+        await openJson<{ request: { body: { detailsHash: string } } }>(
+          pending.detailsCt,
+          phone.id,
+          phoneBox,
+          `approval:${pending.aid}`,
+        )
+      ).request.body.detailsHash,
     };
     if (stepUp) {
       const assertion = await passkey.stepUp(passkeyRef.rpId)(await stepUpChallenge(body));
