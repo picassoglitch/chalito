@@ -21,7 +21,7 @@ const renderPanel = (p: Partial<PanelProps> & { initialTab?: Tab }, locale: Loca
         ipc={unavailableIpc}
         ptt={new PushToTalk(unavailableVoice)}
         settings={DEFAULT_SETTINGS}
-        onSettings={() => undefined}
+        onSetting={() => undefined}
         dnd={false}
         onDnd={() => undefined}
         hubPlansUrl="https://hub.example/planes"
@@ -38,13 +38,13 @@ describe("panel: settings parity with the PWA", () => {
     for (const s of SETTINGS) expect(container.querySelector(`[data-setting-key="${s.key}"]`), s.key).not.toBeNull();
   });
 
-  it("edits flow back as a whole SettingsValues", () => {
-    const onSettings = vi.fn();
-    const { container } = renderPanel({ initialTab: "settings", onSettings });
+  it("edits flow back per setting", () => {
+    const onSetting = vi.fn();
+    const { container } = renderPanel({ initialTab: "settings", onSetting });
     const privacy = container.querySelector('[data-setting-key="privacyMode"] input[type="checkbox"]');
     expect(privacy).not.toBeNull();
     fireEvent.click(privacy!);
-    expect(onSettings).toHaveBeenCalledWith({ ...DEFAULT_SETTINGS, privacyMode: !DEFAULT_SETTINGS.privacyMode });
+    expect(onSetting).toHaveBeenCalledWith("privacyMode", !DEFAULT_SETTINGS.privacyMode);
   });
 });
 

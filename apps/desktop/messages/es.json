@@ -73,5 +73,9 @@
     "google": {
       "name": "Google"
     }
+  },
+  "settingsError": {
+    "rejected": "El servidor no aceptó el cambio.",
+    "failed": "No se pudo guardar. Revisa tu conexión."
   }
 }

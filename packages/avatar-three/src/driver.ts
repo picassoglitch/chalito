@@ -130,8 +130,7 @@ export class AvatarDriver {
     bones.head = addRot(bones.head, [-pose.headPitch * i - (this.#sleepy ? 8 : 0), 0, 0]);
 
     const saccade = this.#saccade.offsetAt(now);
-    // smoothDamp divides by dt: on the first frame (and duplicate timestamps) hold the gaze.
-    const smooth = dt > 0 ? this.#look.step(this.#target, dt) : this.#look.gaze;
+    const smooth = this.#look.step(this.#target, dt);
     const gaze = { yaw: smooth.yaw + saccade.yaw, pitch: smooth.pitch + saccade.pitch };
 
     return { expressions, bones, gaze, creature: creaturePose(this.#emotion, now) };

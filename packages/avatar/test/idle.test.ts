@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BlinkScheduler, LookAtSmoother, SaccadeGenerator, bodyIdle } from "../src/idle.js";
+import { smoothDamp } from "../src/math.js";
 
 const HOUR = 60 * 60 * 1000;
 
@@ -123,5 +124,20 @@ describe("breathing and weight shift", () => {
       expect(Math.abs(b.hipsRoll)).toBeLessThan(3);
       expect(Math.abs(b.offsetY)).toBeLessThan(0.01);
     }
+  });
+});
+
+describe("zero time steps", () => {
+  it("dt = 0 (first frame, duplicate timestamps) holds still instead of producing NaN", () => {
+    expect(smoothDamp(0, 0, 0, 0.25, 0)).toEqual({ value: 0, velocity: 0 });
+    expect(smoothDamp(5, 30, 2, 0.25, 0)).toEqual({ value: 5, velocity: 2 });
+    expect(smoothDamp(5, 30, 2, 0.25, -1)).toEqual({ value: 5, velocity: 2 });
+    const l = new LookAtSmoother();
+    expect(l.step({ yaw: 0, pitch: 0 }, 0)).toEqual({ yaw: 0, pitch: 0 });
+    expect(l.step({ yaw: 30, pitch: 10 }, 0)).toEqual({ yaw: 0, pitch: 0 });
+    // …and it still moves (finitely) once time passes.
+    const g = l.step({ yaw: 30, pitch: 10 }, 1 / 30);
+    expect(Number.isFinite(g.yaw) && g.yaw > 0).toBe(true);
+    expect(Number.isFinite(g.pitch) && g.pitch > 0).toBe(true);
   });
 });

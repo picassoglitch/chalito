@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ChalitoClient } from "@chalito/client";
-import type { PhoneVerifier, SettingsValues } from "@chalito/ui";
+import type { PhoneVerifier, SettingContext, SettingsValues } from "@chalito/ui";
 import { useT } from "../lib/i18n.js";
 import type { AgentIpc } from "../lib/ipc.js";
 import type { PushToTalk } from "../lib/voice.js";
@@ -16,8 +16,10 @@ export interface PanelProps {
   client: Pick<ChalitoClient, "live" | "actions"> | null;
   ipc: AgentIpc;
   ptt: PushToTalk;
-  settings: SettingsValues;
-  onSettings: (v: SettingsValues) => void;
+  /** null while loading. */
+  settings: SettingsValues | null;
+  onSetting: SettingContext["set"];
+  settingsError?: "rejected" | "failed" | null;
   dnd: boolean;
   onDnd: (on: boolean) => void;
   hubPlansUrl: string;
@@ -44,10 +46,11 @@ export const Panel = (p: PanelProps) => {
       </header>
       <main role="tabpanel">
         {tab === "inbox" && (p.client ? <Inbox client={p.client} /> : <p className="muted">{t("offline")}</p>)}
-        {tab === "settings" && (
+        {tab === "settings" && p.settingsError && <p role="alert">{t(`settingsError.${p.settingsError}`)}</p>}
+        {tab === "settings" && p.settings && (
           <Settings
             values={p.settings}
-            onChange={p.onSettings}
+            onChange={p.onSetting}
             hubPlansUrl={p.hubPlansUrl}
             phoneVerifier={p.phoneVerifier}
           />

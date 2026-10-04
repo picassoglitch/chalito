@@ -167,6 +167,7 @@ export class LookAtSmoother {
   }
 
   step(target: Gaze, dtS: number): Gaze {
+    if (!(dtS > 0)) return this.gaze;
     const t = {
       yaw: clamp(target.yaw, -this.limits.yaw, this.limits.yaw),
       pitch: clamp(target.pitch, -this.limits.pitch, this.limits.pitch),

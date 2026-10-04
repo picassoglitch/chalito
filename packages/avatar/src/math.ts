@@ -46,6 +46,9 @@ export const smoothDamp = (
   dt: number,
   maxSpeed = Infinity,
 ): { value: number; velocity: number } => {
+  // No time passed (first frame, duplicate timestamps): nothing moves. The overshoot branch
+  // below divides by dt.
+  if (!(dt > 0)) return { value: current, velocity };
   const st = Math.max(1e-4, smoothTime);
   const omega = 2 / st;
   const x = omega * dt;
