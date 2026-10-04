@@ -41,6 +41,16 @@ export interface NotifierStore {
   pendingApprovals(uid: string): Promise<PendingApproval[]>;
   /** The user's companion name for the voice persona (null: "Chalito"). */
   companionName(uid: string): Promise<string | null>;
+  /** The plan the hub reported (users.tier) and the user's time zone, for monthly caps. */
+  planInfo(uid: string): Promise<{ hubTier: string | null; tz: string; locale: "es" | "en" } | null>;
+  /** WhatsApp/SMS/call sends since `sinceMs`, not counting suppressed (failed) ones. */
+  monthlySends(uid: string, sinceMs: number): Promise<Record<"whatsapp" | "sms" | "call", number>>;
+  /** Voice seconds metered since `sinceMs` (desktop and calls), from the usage outbox. */
+  voiceSecondsSince(uid: string, sinceMs: number): Promise<number>;
+  /** A queued send didn't go out (cap, no tokens, hub down): it no longer counts. */
+  markSuppressed(uid: string, nid: string, channel: "whatsapp" | "sms" | "call", reason: string): Promise<void>;
+  /** Inserts an in-app notification unless one with that nid exists (once-a-month notes). */
+  noteOnce(uid: string, row: NotificationRow): Promise<void>;
   /** Marks a voice call ref used (global single use); false if it was used before. */
   claimCallRef(refHash: string, expiresAt: number): Promise<boolean>;
   /** Device public box key, to seal a relayed prompt for that agent. */
@@ -99,6 +109,9 @@ export class MemoryStore implements NotifierStore {
   approvals = new Map<string, PendingApproval[]>();
   companions = new Map<string, string>();
   callRefs = new Set<string>();
+  tiers = new Map<string, string>();
+  voiceSeconds = new Map<string, number>();
+  suppressedSends: (SentRecord & { reason: string })[] = [];
   #locks = new Map<string, Promise<unknown>>();
 
   async withUser<T>(uid: string, fn: (tx: UserTx) => Promise<T>): Promise<T> {
@@ -163,6 +176,32 @@ export class MemoryStore implements NotifierStore {
   }
   async pendingApprovals(uid: string) {
     return this.approvals.get(uid) ?? [];
+  }
+  async planInfo(uid: string) {
+    const p = this.prefs.get(uid);
+    return p ? { hubTier: this.tiers.get(uid) ?? null, tz: p.tz, locale: p.locale } : null;
+  }
+  async monthlySends(uid: string, sinceMs: number) {
+    const out = { whatsapp: 0, sms: 0, call: 0 };
+    for (const s of this.sent.get(uid) ?? [])
+      if (s.at >= sinceMs && s.channel in out) out[s.channel as keyof typeof out]++;
+    return out;
+  }
+  async voiceSecondsSince(uid: string) {
+    return this.voiceSeconds.get(uid) ?? 0;
+  }
+  async markSuppressed(uid: string, nid: string, channel: "whatsapp" | "sms" | "call", reason: string) {
+    const list = this.sent.get(uid) ?? [];
+    for (let i = list.length - 1; i >= 0; i--)
+      if (list[i]!.nid === nid && list[i]!.channel === channel) {
+        this.suppressedSends.push({ ...list[i]!, reason });
+        list.splice(i, 1);
+        return;
+      }
+  }
+  async noteOnce(uid: string, row: NotificationRow) {
+    const key = `${uid}/${row.nid}`;
+    if (!this.notifications.has(key)) this.notifications.set(key, row);
   }
   async claimCallRef(refHash: string) {
     if (this.callRefs.has(refHash)) return false;

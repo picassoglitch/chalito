@@ -2,8 +2,8 @@ import { serve } from "@hono/node-server";
 import { GoogleAuth } from "google-auth-library";
 import postgres from "postgres";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, PostgresOutbox, enqueueUsage } from "@chalito/billing";
-import { loadEscalation, loadModels, loadPrices } from "@chalito/config";
+import { HubClient, PostgresOutbox, compedFrom, enqueueUsage } from "@chalito/billing";
+import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { createApp } from "./app.js";
 import { hubCommsBilling } from "./billing.js";
 import type { Logger } from "./executor.js";
@@ -64,6 +64,8 @@ const app = createApp(
     appUrl: env("APP_URL"),
     now: Date.now,
     log,
+    // Monthly plan caps for paid channels (plans.yaml inclusions), then the hub admit.
+    caps: { plans: loadPlans(), isComped: compedFrom(process.env.OWNER_UIDS) },
     // Paid channels are admitted and metered through the Chalyb hub (ADR 0016).
     billing: hubCommsBilling({
       hub,

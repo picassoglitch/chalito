@@ -9,6 +9,7 @@ import {
 } from "@chalito/escalation";
 import type { CallBriefing, Channel, Level } from "@chalito/protocol";
 import { smsSegments, type CommsBilling } from "./billing.js";
+import { capNote, overMonthlyCap, type CapsConfig } from "./caps.js";
 import type { Scheduler } from "./scheduler.js";
 import type { PushSender } from "./senders/push.js";
 import type { TwilioClient } from "./senders/twilio.js";
@@ -37,6 +38,8 @@ export interface NotifierDeps {
   log: Logger;
   /** Hub admission and metering for paid channels (WhatsApp, SMS, calls). Unset: not metered. */
   billing?: CommsBilling;
+  /** Monthly plan caps for paid channels. Unset: not enforced. */
+  caps?: CapsConfig;
 }
 
 const HISTORY_WINDOW_MS = 48 * 3_600_000;
@@ -160,11 +163,9 @@ const execute = async (
     case "sms": {
       if (!to) return;
       const country = prefs.phone?.country ?? "";
+      if (await overMonthlyCap(deps, uid, a.channel)) return suppressPaid(deps, uid, a.nid, a.channel, "cap_reached");
       const gate = deps.billing ? await deps.billing.admit(uid, a.channel, a.nid, country) : null;
-      if (gate && !gate.ok) {
-        deps.log.info("notifier.suppressed", { uid, nid: a.nid, channel: a.channel, reason: gate.reason });
-        return;
-      }
+      if (gate && !gate.ok) return suppressPaid(deps, uid, a.nid, a.channel, gate.reason);
       const body = a.channel === "sms" ? smsBody(a.payload, deps.appUrl) : "";
       try {
         if (a.channel === "whatsapp") await deps.whatsapp.sendTemplate(to, a.payload);
@@ -187,11 +188,9 @@ const execute = async (
       const ladder = ladders.get(a.nid);
       if (!to || !ladder) return;
       const country = prefs.phone?.country ?? "";
+      if (await overMonthlyCap(deps, uid, "call")) return suppressPaid(deps, uid, a.nid, "call", "cap_reached");
       const gate = deps.billing ? await deps.billing.admit(uid, "call", a.nid, country) : null;
-      if (gate && !gate.ok) {
-        deps.log.info("notifier.suppressed", { uid, nid: a.nid, channel: "call", reason: gate.reason });
-        return;
-      }
+      if (gate && !gate.ok) return suppressPaid(deps, uid, a.nid, "call", gate.reason);
       const script = buildBriefing(await callBriefing(deps, uid, prefs, ladder), {
         snoozeMin: Math.round(deps.config.snoozeMs / 60_000),
       });
@@ -214,6 +213,22 @@ const execute = async (
       return;
     }
   }
+};
+
+/**
+ * A paid send that won't go out: logged, its queued row no longer counts toward caps, and on a
+ * monthly cap the user gets one in-app note per month. Push and the desktop are unaffected.
+ */
+const suppressPaid = async (
+  deps: NotifierDeps,
+  uid: string,
+  nid: string,
+  channel: "whatsapp" | "sms" | "call",
+  reason: string,
+) => {
+  deps.log.info("notifier.suppressed", { uid, nid, channel, reason });
+  await deps.store.markSuppressed(uid, nid, channel, reason);
+  if (reason === "cap_reached") await capNote(deps, uid, channel);
 };
 
 /** CallBriefing from the ladder's metadata plus the user's waiting items (lines only if enabled). */

@@ -67,7 +67,7 @@ export const admitManaged = async (p: {
       ? { ok: false, outOfEnergy: outOfEnergy(p.locale, key) }
       : { ok: false, refused: res.reason, profile: "free_min" };
   }
-  if (res.balance.remaining <= 0) {
+  if (!res.balance.unlimited && res.balance.remaining <= 0) {
     await p.hub.settle({ reservation_id: res.reservation_id, outcome: "cancelled" }).catch(() => undefined);
     return { ok: false, outOfEnergy: outOfEnergy(p.locale, key) };
   }

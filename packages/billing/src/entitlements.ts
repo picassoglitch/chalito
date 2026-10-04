@@ -1,3 +1,4 @@
+import type { z } from "zod";
 import {
   EntitlementInputs,
   Entitlements,
@@ -42,7 +43,7 @@ const accessTierOf = (plans: PlansConfig, tier: TierId): TierId => plans.tiers[t
  * never pay-to-win). Unset (`mirror_matching_tier`) values fail closed. Safety features are
  * always on, whatever the plan state.
  */
-export const computeEntitlements = (raw: EntitlementInputs, plans: PlansConfig): Entitlements => {
+export const computeEntitlements = (raw: z.input<typeof EntitlementInputs>, plans: PlansConfig): Entitlements => {
   const i = EntitlementInputs.parse(raw);
 
   let source: Entitlements["source"];
@@ -73,7 +74,8 @@ export const computeEntitlements = (raw: EntitlementInputs, plans: PlansConfig):
   if (!tier || source === "trial") managedAllowance = { status: "free_min" };
   else if (!inc || inc.managedAllowance === MIRROR || typeof inc.managedAllowance.billableTokens !== "number")
     managedAllowance = { status: "disabled_unset" };
-  else if (source === "comped") managedAllowance = { status: "enabled", remainingBillable: i.hubBalanceRemaining };
+  else if (source === "comped" || i.hubUnlimited)
+    managedAllowance = { status: "enabled", remainingBillable: i.hubBalanceRemaining };
   else if (i.hubBalanceRemaining <= 0) managedAllowance = { status: "free_min" };
   else managedAllowance = { status: "enabled", remainingBillable: i.hubBalanceRemaining };
 
@@ -118,6 +120,7 @@ export const entitlementInputsFrom = (
     soloTier: EntitlementInputs["soloTier"];
     hubTrialActive: boolean;
     hubBalanceRemaining: number;
+    hubUnlimited?: boolean;
     comped: boolean;
     chosenEfficiency?: EfficiencyProfile;
     [other: string]: unknown;
@@ -129,6 +132,7 @@ export const entitlementInputsFrom = (
   soloTier: user.soloTier,
   hubTrialActive: user.hubTrialActive,
   hubBalanceRemaining: Math.max(0, user.hubBalanceRemaining),
+  hubUnlimited: user.hubUnlimited === true,
   comped: user.comped,
   ...(user.chosenEfficiency ? { chosenEfficiency: user.chosenEfficiency } : {}),
   now,

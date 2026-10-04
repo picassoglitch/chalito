@@ -6,6 +6,7 @@ import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
+import type { VoiceCap } from "./caps.js";
 import type { HubUsage } from "./hub.js";
 import { DESKTOP_TOOLS } from "./tools.js";
 
@@ -19,6 +20,8 @@ export interface VoiceDeps {
   tokenSecret: string;
   /** Client secret lifetime: just long enough to connect (ADR 0005: 60 s; at most 600 s). */
   ttlSec?: number;
+  /** Monthly voice minutes from the plan. Unset: not enforced. */
+  cap?: VoiceCap;
 }
 
 /** Heartbeats report at most this many seconds each (the desktop beats every 30 s). */
@@ -67,6 +70,13 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
 
   app.post("/session", auth, rateLimit({ capacity: 10, refillPerSec: 0.1, now: deps.now }), async (c) => {
     const p = principal(c);
+    if (voice.cap) {
+      const c = await voice.cap.status(p.owner, deps.now());
+      if (c.usedSeconds >= c.limitSeconds) {
+        await voice.cap.note(p.owner, deps.now());
+        return fail(402, "voice_cap_reached", "This month's voice minutes are used up.");
+      }
+    }
     const sourceId = `voice_${randomUUID().replace(/-/g, "")}`;
     const admit = await voice.hub.admit({ owner: p.owner, kind: "voice.seconds", class: "stream", sourceId });
     if (!admit.admitted) return fail(402, "voice_not_admitted", admit.reason);
@@ -110,7 +120,13 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
           })
         : { continue: true };
     if (end) await voice.hub.settle({ owner: t.owner, admissionId: t.admissionId });
-    return c.json({ ok: true, continue: r.continue && !end });
+    let underCap = true;
+    if (voice.cap && !end) {
+      const cap = await voice.cap.status(t.owner, deps.now());
+      underCap = cap.usedSeconds < cap.limitSeconds;
+      if (!underCap) await voice.cap.note(t.owner, deps.now());
+    }
+    return c.json({ ok: true, continue: r.continue && underCap && !end });
   };
   app.post("/session/heartbeat", auth, (c) => beat(c, false));
   app.post("/session/end", auth, (c) => beat(c, true));

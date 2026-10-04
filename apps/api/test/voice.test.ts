@@ -11,6 +11,7 @@ import type { ApiRepo, IdentityIssuer } from "../src/repo.js";
 import { HubClient, HubStreamUsage, MemoryOutbox } from "@chalito/billing";
 import { loadPrices } from "@chalito/config";
 import type { HubUsage } from "../src/voice/hub.js";
+import type { VoiceDeps } from "../src/voice/routes.js";
 import { DESKTOP_TOOLS } from "../src/voice/tools.js";
 
 /** OpenAI client_secrets and the Chalyb hub, mocked at the HTTP layer. */
@@ -30,7 +31,15 @@ const server = setupServer(
             lane: "standard",
             boost_fee_tokens: 0,
             limits: {},
-            balance: { remaining: hubRemaining, reserved: 0 },
+            balance: {
+              remaining: hubRemaining,
+              reserved: 0,
+              unlimited: false,
+              monthlyAllocation: 100_000,
+              bonus: 0,
+              monthlyUsed: 0,
+              periodStart: "2026-10-01T00:00:00.000Z",
+            },
           }
         : { ok: true, allowed: false, reason: "no_tokens" },
     );
@@ -71,7 +80,7 @@ const realHub = () => {
 const device = (deviceId: string, role: DeviceDoc["role"], revoked = false) =>
   ({ deviceId, role, revoked }) as DeviceDoc;
 
-const setup = (hub: HubUsage = realHub().hub) => {
+const setup = (hub: HubUsage = realHub().hub, cap?: VoiceDeps["cap"]) => {
   const devices = new Map([
     ["dev_phone", device("dev_phone", "client")],
     ["dev_agent", device("dev_agent", "agent")],
@@ -97,6 +106,7 @@ const setup = (hub: HubUsage = realHub().hub) => {
       model: loadModels().voice.desktop.model,
       voiceName: "marin",
       tokenSecret: "voice-token-secret",
+      ...(cap ? { cap } : {}),
     },
   });
   const call = async (path: string, token: string, body: unknown = {}) => {
@@ -215,5 +225,35 @@ describe("POST /v1/voice/session (desktop push-to-talk)", () => {
       status: 402,
       json: { error: "voice_not_admitted", message: "no_tokens" },
     });
+  });
+
+  it("monthly voice minutes: no new session at the cap (with a note), and a running stream stops when it hits it", async () => {
+    let used = 0;
+    const notes: string[] = [];
+    const cap = {
+      status: async () => ({ limitSeconds: 120 * 60, usedSeconds: used }),
+      note: async (owner: string) => void notes.push(owner),
+    };
+    const { call } = setup(realHub().hub, cap);
+    const { json } = await call("/session", "client:dev_phone");
+    used = 120 * 60 - 10;
+    expect(
+      (await call("/session/heartbeat", "client:dev_phone", { voiceToken: String(json.voiceToken), seconds: 5 })).json,
+    ).toEqual({
+      ok: true,
+      continue: true,
+    });
+    used = 120 * 60;
+    expect(
+      (await call("/session/heartbeat", "client:dev_phone", { voiceToken: String(json.voiceToken), seconds: 10 })).json,
+    ).toEqual({
+      ok: true,
+      continue: false,
+    });
+    expect(await call("/session", "client:dev_phone")).toMatchObject({
+      status: 402,
+      json: { error: "voice_cap_reached" },
+    });
+    expect(notes).toEqual(["hub-user-1", "hub-user-1"]);
   });
 });

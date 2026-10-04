@@ -63,7 +63,7 @@ export class HubStreamUsage implements StreamUsage {
   async admit(p: { owner: string; kind: MeterKind; class: "stream"; sourceId: string }) {
     const res = await this.p.hub.admit(this.#admitRequest(p.owner, p.sourceId));
     if (!res.allowed) return { admitted: false as const, reason: res.reason };
-    if (res.balance.remaining <= 0) {
+    if (!res.balance.unlimited && res.balance.remaining <= 0) {
       await this.p.hub.settle({ reservation_id: res.reservation_id, outcome: "cancelled" });
       return { admitted: false as const, reason: "no_tokens" };
     }
@@ -85,9 +85,11 @@ export class HubStreamUsage implements StreamUsage {
       },
     );
     await this.p.enqueue(p.owner, [event]);
-    await this.p.hub.settle({ reservation_id: p.admissionId, outcome: "heartbeat" });
+    // A heartbeat on a closed reservation is 409: stop the stream.
+    const beat = await this.p.hub.settle({ reservation_id: p.admissionId, outcome: "heartbeat" });
+    if (!beat.ok && beat.closed) return { continue: false };
     const again = await this.p.hub.admit(this.#admitRequest(p.owner, p.sourceId));
-    return { continue: again.allowed && again.balance.remaining > 0 };
+    return { continue: again.allowed && (again.balance.unlimited || again.balance.remaining > 0) };
   }
 
   async settle(p: { owner: string; admissionId: string }) {
