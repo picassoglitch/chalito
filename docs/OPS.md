@@ -178,6 +178,11 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 - Generate a signing key. Set `APPIMAGE_GPG_PRIVATE_KEY` (the armored private key), `APPIMAGE_SIGN_KEY` (key id), `APPIMAGETOOL_SIGN_PASSPHRASE`.
 - Publish the public key and checksums next to the downloads. deb/rpm stay unsigned in beta.
 
+**5b. Public app config (required for a release).**
+- Set the repository **variables** (not secrets; both values are public): `SUPABASE_URL` (the project URL, `https://<ref>.supabase.co`) and `SUPABASE_PUBLISHABLE_KEY` (the publishable key, `sb_publishable_…`, never the secret key; the workflow refuses `sb_secret_…`). The api base comes from `CHALITO_API_BASE` in release.yml.
+- They become the desktop's `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` and `VITE_CHALITO_API_BASE`. Without them the app builds with no account wiring (no sign-in, rooms or voice).
+- A tag release refuses to build without them. A dry run builds anyway, warns, names its artifacts `release-<os>-unwired`, adds `UNWIRED-<os>.txt`, and says so in the summary.
+
 **6. Dry run, then a release (owner's go).**
 - Actions → Release → "Run workflow" builds everything, verifies every updater signature, checks the labels, and produces artifacts plus a `latest.json`. No release is created.
 - To release: push a tag `vX.Y.Z` (or `vX.Y.Z-beta.N` for the beta channel). The workflow creates a DRAFT GitHub release with all installers and `latest.json`.
@@ -186,7 +191,7 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
   - upload its files to `gs://<project>-chalito-releases/<channel>/<version>/`;
   - upload `latest.json` to `gs://<project>-chalito-releases/<channel>/latest.json` (this is what makes installed apps update);
   - publish the GitHub draft.
-- Never publish a draft that says "THROWAWAY test key" or (for a public release) "UNSIGNED".
+- Never publish a draft that says "THROWAWAY test key", "UNWIRED", or (for a public release) "UNSIGNED".
 
 **7. Claude Code is NOT bundled (what the person installs; how the agent detects it).**
 - The desktop installers ship the Chalito agent as a sidecar, but not Anthropic's `claude` CLI: about 250 MB per platform, its own updates and its own terms (VERIFIED_APIS §8).
