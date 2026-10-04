@@ -1,6 +1,7 @@
 mod agent;
 mod cli_install;
 mod hittest;
+mod ipc_client;
 #[cfg(debug_assertions)]
 mod loopback;
 
@@ -71,6 +72,29 @@ fn idle_ms(state: State<'_, SharedState>) -> u64 {
 #[tauri::command]
 fn agent_status(sup: State<'_, Supervisor>) -> agent::Status {
     sup.status()
+}
+
+/// The panel's calls to the local agent (ipc_client.rs; apps/desktop/src/lib/ipc.ts). Panel
+/// only. Without an agent this app started, every call is `agent_ipc_unavailable`.
+#[tauri::command]
+async fn agent_ipc(
+    app: AppHandle,
+    window: tauri::Window,
+    sup: State<'_, Supervisor>,
+    method: String,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    if window.label() != "panel" {
+        return Err(ipc_client::UNAVAILABLE.into());
+    }
+    let token = sup.secret().ok_or(ipc_client::UNAVAILABLE)?.to_string();
+    let home = app.path().home_dir().map_err(|_| ipc_client::UNAVAILABLE)?;
+    let params = params.unwrap_or(serde_json::Value::Null);
+    tauri::async_runtime::spawn_blocking(move || {
+        ipc_client::call(&ipc_client::socket_path(&home), &token, &method, &params)
+    })
+    .await
+    .map_err(|_| ipc_client::UNAVAILABLE.to_string())?
 }
 
 /// What installing the `chalito` command would do here (cli_install.rs), or that it's done.
@@ -175,6 +199,7 @@ pub fn run() {
         touch_activity,
         idle_ms,
         agent_status,
+        agent_ipc,
         cli_status,
         install_cli,
         loopback::sso_loopback
@@ -186,6 +211,7 @@ pub fn run() {
         touch_activity,
         idle_ms,
         agent_status,
+        agent_ipc,
         cli_status,
         install_cli
     ]);
@@ -204,7 +230,9 @@ pub fn run() {
                     cli_install::refresh_copy(&plan);
                 }
             }
-            app.manage(Supervisor::start(sidecar, home, logs));
+            // A fresh secret per launch: only the agent this app starts serves the panel's IPC.
+            let secret = sidecar.as_ref().and_then(|_| ipc_client::new_secret().ok());
+            app.manage(Supervisor::start(sidecar, home, logs, secret));
             Ok(())
         })
         .build(context)

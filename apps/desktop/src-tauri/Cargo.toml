@@ -22,6 +22,7 @@ tauri-plugin-opener = "2.7"
 tauri-plugin-process = "2.4"
 tauri-plugin-single-instance = { version = "2.5", features = ["deep-link"] }
 tauri-plugin-updater = "2.13"
+getrandom = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

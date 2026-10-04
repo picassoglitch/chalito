@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Snapshot } from "@chalito/client";
 import type { PhoneVerifier } from "@chalito/ui";
 import { TextProviders, detectLocale } from "../lib/i18n.js";
-import { unavailableIpc, type AgentIpc } from "../lib/ipc.js";
+import { agentIpc, type AgentIpc } from "../lib/ipc.js";
 import { petContext } from "../lib/pet-context.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
@@ -139,7 +139,7 @@ document.documentElement.lang = locale;
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <TextProviders locale={locale}>
-      <App ipc={unavailableIpc} />
+      <App ipc={agentIpc()} />
     </TextProviders>
   </StrictMode>,
 );

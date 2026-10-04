@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { DevModeToggle } from "@chalito/protocol";
+import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import { useT } from "../lib/i18n.js";
 import {
   IpcUnavailableError,
@@ -185,6 +185,9 @@ const DevMode = ({ ipc }: { ipc: AgentIpc }) => {
             <ul className="list">
               {DevModeToggle.options.map((toggle) => {
                 const on = s.value.toggles.includes(toggle);
+                // Only the CLI's three can be turned on here; bypassStyle shows only to turn it off.
+                const enableable = EnableableDevModeToggle.safeParse(toggle);
+                if (!on && !enableable.success) return null;
                 return (
                   <li key={toggle} data-toggle={toggle} className="row">
                     <span>{toggle}</span>

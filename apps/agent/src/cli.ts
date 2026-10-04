@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLiabilityText } from "@chalito/config";
-import { DevModeToggle } from "@chalito/protocol";
+import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import type { FetchFn, PairingWatcher } from "./cloud.js";
 import { AnchorStore } from "./anchor.js";
 import { pinClaude } from "./claude-pin.js";
@@ -20,6 +20,7 @@ import {
 } from "./config.js";
 import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
+import { readIpcSecret } from "./ipc-server.js";
 import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { osAuthFor, type StatFn } from "./os-auth.js";
@@ -80,7 +81,7 @@ not from an AI session). Dev/test: CHALITO_SECRETS=file:<path> + CHALITO_SECRETS
 keep keys in an encrypted file instead of the OS keychain.
 `;
 
-const ON_TOGGLES = ["allowSudo", "autoApproveHigh", "autoApproveCritical"] as const;
+const ON_TOGGLES = EnableableDevModeToggle.options;
 const KEY_NAMES = {
   anthropic: SECRET_NAMES.anthropicApiKey,
   openai: SECRET_NAMES.openaiApiKey,
@@ -301,12 +302,15 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       case "run": {
         let d: Daemon;
         try {
+          // Started by the desktop app: its per-launch IPC secret is the first line on stdin.
+          const ipcSecret = io.env.CHALITO_IPC === "stdin" ? await readIpcSecret(io.tty.input) : null;
           d = await (io.daemon ?? runDaemon)({
             home: io.home,
             env: io.env,
             secrets,
             fetch: io.fetch,
             now: io.now,
+            ipcSecret,
           });
         } catch (err) {
           // Distinct codes so the desktop supervisor neither races another agent nor

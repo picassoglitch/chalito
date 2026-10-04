@@ -17,6 +17,12 @@ import { SealedEnvelope, signed } from "./crypto.js";
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
 export const DevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical", "bypassStyle"]);
 export type DevModeToggle = z.infer<typeof DevModeToggle>;
+/**
+ * The toggles a person may turn ON locally (CLI or desktop panel, OS auth + three confirmations).
+ * `bypassStyle` can only be turned off.
+ */
+export const EnableableDevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical"]);
+export type EnableableDevModeToggle = z.infer<typeof EnableableDevModeToggle>;
 
 /** Policy presets proposed from the cloud; they take effect only after acceptance on the device. */
 export const PolicyPreset = z.enum(["estricto", "estandar", "relajado"]);

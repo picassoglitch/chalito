@@ -104,6 +104,8 @@ fn open_log(dir: &Path) -> std::io::Result<File> {
 }
 
 struct Inner {
+    /// The per-launch IPC secret given to the agent on stdin (ipc_client.rs).
+    secret: Option<String>,
     status: Mutex<Status>,
     child: Mutex<Option<Child>>,
     quit: AtomicBool,
@@ -117,11 +119,13 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    /// Starts the supervising thread. With no sidecar it only reports `NoSidecar`.
-    pub fn start(sidecar: Option<PathBuf>, home: PathBuf, log_dir: PathBuf) -> Self {
+    /// Starts the supervising thread. With no sidecar it only reports `NoSidecar`. `secret` is
+    /// the panel's IPC secret, written as the agent's first stdin line (CHALITO_IPC=stdin).
+    pub fn start(sidecar: Option<PathBuf>, home: PathBuf, log_dir: PathBuf, secret: Option<String>) -> Self {
         let initial = if sidecar.is_some() { Status::NotPaired } else { Status::NoSidecar };
         let s = Self {
             inner: Arc::new(Inner {
+                secret,
                 status: Mutex::new(initial),
                 child: Mutex::new(None),
                 quit: AtomicBool::new(false),
@@ -133,6 +137,10 @@ impl Supervisor {
             std::thread::spawn(move || me.run(&bin, &home, &log_dir));
         }
         s
+    }
+
+    pub fn secret(&self) -> Option<&str> {
+        self.inner.secret.as_deref()
     }
 
     pub fn status(&self) -> Status {
@@ -212,14 +220,25 @@ impl Supervisor {
     fn spawn_and_wait(&self, bin: &Path, log_dir: &Path) -> std::io::Result<Option<i32>> {
         let log = open_log(log_dir)?;
         let mut cmd = Command::new(bin);
-        cmd.arg("run").stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+        cmd.arg("run").stdout(log.try_clone()?).stderr(log);
+        if self.inner.secret.is_some() {
+            cmd.env("CHALITO_IPC", "stdin").stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let child = cmd.spawn()?;
+        let mut child = cmd.spawn()?;
+        // The secret travels on stdin (not argv or the environment, which other processes of
+        // this user can read), then stdin closes.
+        if let (Some(secret), Some(mut stdin)) = (self.inner.secret.as_deref(), child.stdin.take()) {
+            use std::io::Write;
+            let _ = stdin.write_all(format!("{secret}\n").as_bytes());
+        }
         self.set(Status::Running { pid: child.id() });
         if let Ok(mut c) = self.inner.child.lock() {
             *c = Some(child);
@@ -360,16 +379,18 @@ mod tests {
         let home = tmp("loop-home");
         let logs = tmp("loop-logs");
         let bin = home.join("chalito-agent");
-        // Counts its runs; the first exits 1 (a crash), later ones stay up until SIGTERM.
+        // Counts its runs and records the stdin secret; the first exits 1 (a crash), later ones
+        // stay up until SIGTERM.
         let script = format!(
-            "#!/bin/sh\necho run >> '{}'\n[ $(wc -l < '{}') -eq 1 ] && exit 1\nwhile :; do sleep 0.1; done\n",
+            "#!/bin/sh\nread s; echo \"$CHALITO_IPC $s\" > '{}'\necho run >> '{}'\n[ $(wc -l < '{}') -eq 1 ] && exit 1\nwhile :; do sleep 0.1; done\n",
+            home.join("secret").display(),
             home.join("runs").display(),
             home.join("runs").display()
         );
         fs::write(&bin, script).unwrap();
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let sup = Supervisor::start(Some(bin), home.clone(), logs);
+        let sup = Supervisor::start(Some(bin), home.clone(), logs, Some("ab".repeat(32)));
         std::thread::sleep(Duration::from_millis(300));
         assert_eq!(sup.status(), Status::NotPaired);
 
@@ -389,5 +410,6 @@ mod tests {
         sup.stop();
         assert_eq!(sup.status(), Status::Stopped);
         assert_eq!(fs::read_to_string(home.join("runs")).unwrap().lines().count(), 2);
+        assert_eq!(fs::read_to_string(home.join("secret")).unwrap().trim(), format!("stdin {}", "ab".repeat(32)));
     }
 }

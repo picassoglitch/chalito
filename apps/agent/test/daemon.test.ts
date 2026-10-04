@@ -21,6 +21,7 @@ import {
 } from "../src/daemon.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { AlreadyRunningError, acquireInstanceLock, lockPath } from "../src/instance-lock.js";
+import { ipcCall } from "./ipc-server.test.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { DeviceRevokedError } from "../src/device-auth.js";
@@ -353,6 +354,120 @@ describe("chalito run (daemon)", () => {
     const s = await setup({ claude: "missing" });
     await expect(runDaemon(s.deps)).rejects.toBeInstanceOf(OnboardingError);
     expect(existsSync(lockPath(s.dir))).toBe(false);
+  });
+
+  describe("the desktop panel's IPC", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-side view of arbitrary JSON results
+    type IpcReply = { ok: boolean; result?: any; error?: string };
+    const SECRET = "c".repeat(64);
+    const withIpc = async (osOk = true) => {
+      const s = await setup();
+      const sock = join(s.home, "ipc.sock");
+      const osChecks: number[] = [];
+      const d = await runDaemon({
+        ...s.deps,
+        ipcSecret: SECRET,
+        ipcPath: sock,
+        osAuth: () => ({ verify: async () => (osChecks.push(1), osOk) }),
+      });
+      const call = async (method: string, params?: unknown) =>
+        ipcCall(sock, { id: 1, token: SECRET, method, params }) as Promise<IpcReply>;
+      return { s, d, sock, call, osChecks };
+    };
+
+    it("only with the app's secret: no secret, no socket", async () => {
+      const s = await setup();
+      const d = await runDaemon(s.deps);
+      expect(existsSync(join(s.dir, "agent.sock"))).toBe(false);
+      await d.stop();
+    });
+
+    it("ping, policy view and Developer-mode state; the socket goes away on stop", async () => {
+      const { d, sock, call } = await withIpc();
+      expect(await call("ping")).toEqual({ id: 1, ok: true, result: { version: expect.any(String) } });
+      const p = (await call("policy")).result;
+      expect(p).toMatchObject({
+        seq: expect.any(Number),
+        hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        prevHash: expect.any(String),
+      });
+      expect(p.rules).toContainEqual({
+        id: "workspaces",
+        summary: "Sin carpetas: no corre ninguna sesión",
+        effect: "deny",
+      });
+      expect((await call("devMode")).result).toEqual({ on: false, toggles: [], since: null });
+      expect((await call("pendingPairing")).result).toBeNull();
+      expect(await call("confirmPairing", { pairingId: "p1", match: true })).toMatchObject({
+        ok: false,
+        error: "no_pending_pairing",
+      });
+      await d.stop();
+      expect(existsSync(sock)).toBe(false);
+    });
+
+    it("enabling a toggle: the agent asks the OS and re-checks all three answers and the typed phrase", async () => {
+      const { s, d, call, osChecks } = await withIpc();
+      const ch = (await call("devModeChallenge", { toggle: "allowSudo" })).result;
+      expect(ch).toMatchObject({ toggle: "allowSudo", examples: expect.any(Array), risk: expect.any(String) });
+      const phrase: string = ch.liability.phrase;
+
+      const answers = (over = {}) => ({
+        first: true,
+        second: true,
+        liability: { checked: true, typed: phrase },
+        ...over,
+      });
+      expect(
+        (await call("enableDevToggle", { toggle: "allowSudo", answers: answers({ second: false }) })).result,
+      ).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect(
+        (
+          await call("enableDevToggle", {
+            toggle: "allowSudo",
+            answers: answers({ liability: { checked: true, typed: "sí" } }),
+          })
+        ).result,
+      ).toEqual({ ok: false, reason: "cancelled" });
+      expect((await call("devMode")).result.on).toBe(false);
+
+      const on = (await call("enableDevToggle", { toggle: "allowSudo", answers: answers() })).result;
+      expect(on).toMatchObject({ ok: true, state: { on: true, toggles: ["allowSudo"] } });
+      expect(osChecks).toHaveLength(3);
+      expect(s.store.device.devMode).toMatchObject({ on: true, toggles: ["allowSudo"] });
+      expect(s.store.deviceEvents.at(-1)).toMatchObject({ type: "devmode.changed", on: true });
+
+      const off = (await call("disableDevToggle", { toggle: "allowSudo" })).result;
+      expect(off).toMatchObject({ on: false, toggles: [] });
+      expect(s.store.device.devMode).toMatchObject({ on: false });
+      expect(await call("enableDevToggle", { toggle: "bypassStyle", answers: answers() })).toMatchObject({
+        error: "bad_params",
+      });
+      await d.stop();
+    });
+
+    it("a failed OS check enables nothing", async () => {
+      const { d, call } = await withIpc(false);
+      const phrase = (await call("devModeChallenge", { toggle: "autoApproveHigh" })).result.liability.phrase;
+      const r = await call("enableDevToggle", {
+        toggle: "autoApproveHigh",
+        answers: { first: true, second: true, liability: { checked: true, typed: phrase } },
+      });
+      expect(r.result).toEqual({ ok: false, reason: "os_auth_failed" });
+      expect((await call("devMode")).result.on).toBe(false);
+      await d.stop();
+    });
+
+    it("presence goes to this agent's device row with lastSeenAt", async () => {
+      const { s, d, call } = await withIpc();
+      expect((await call("reportPresence", { desktopActive: true })).ok).toBe(true);
+      expect(s.store.device).toMatchObject({ presence: { desktopActive: true }, lastSeenAt: NOW });
+      expect(await call("reportPresence", { desktopActive: "yes" })).toMatchObject({ error: "bad_params" });
+      await d.stop();
+    });
   });
 
   describe("Codex", () => {

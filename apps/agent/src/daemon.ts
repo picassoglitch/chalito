@@ -14,13 +14,16 @@ import { checkClaudePin } from "./claude-pin.js";
 import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
-import { DevMode, DevModeStore, type DevModeTamper } from "./devmode.js";
+import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
+import { ipcHandlers } from "./ipc-handlers.js";
+import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
+import { osAuthFor } from "./os-auth.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, type Logger } from "./redact.js";
-import { which } from "./runner.js";
+import { spawnRunner, which } from "./runner.js";
 import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
@@ -91,6 +94,15 @@ export interface DaemonDeps {
   watchFiles?: boolean;
   /** One agent per computer (instance-lock.ts); returns the release function. */
   lock?: (dir: string) => () => void;
+  /**
+   * The per-launch secret from the desktop app that started this agent (ipc-server.ts). Without
+   * one (the OS service, a terminal) there is no IPC server.
+   */
+  ipcSecret?: string | null;
+  /** Defaults to ~/.chalito/agent.sock (a named pipe on Windows). */
+  ipcPath?: string;
+  /** The OS check for enabling Developer mode from the panel (os-auth.ts in production). */
+  osAuth?: () => OsAuth;
 }
 
 export interface Daemon {
@@ -249,19 +261,12 @@ const startDaemon = async (
   });
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
-  const devMode = new DevMode({
+  const devModeBase = {
     store: devStore,
-    // The daemon never turns anything on: that happens in `chalito devmode on` or the desktop app.
-    osAuth: { verify: async () => false },
-    prompter: {
-      first: async () => false,
-      second: async () => false,
-      liability: async () => ({ checked: false, typed: "" }),
-    },
     liability: loadLiabilityText(cfg.locale),
     deviceId: id.deviceId,
     now,
-    emit: async (e) => {
+    emit: async (e: { type: string; [k: string]: unknown }) => {
       if (e.type !== "devmode.tampered") return log.warn("audit", e);
       log.error("audit", e);
       publish({
@@ -271,6 +276,17 @@ const startDaemon = async (
         reason: e.reason as DevModeTamper,
         t: now(),
       });
+    },
+  };
+  const devMode = new DevMode({
+    ...devModeBase,
+    // The daemon never turns anything on by itself: that happens in `chalito devmode on`, or in
+    // the desktop panel through the IPC (which asks the OS and carries the person's answers).
+    osAuth: { verify: async () => false },
+    prompter: {
+      first: async () => false,
+      second: async () => false,
+      liability: async () => ({ checked: false, typed: "" }),
     },
   });
   const reportDevMode = async () => {
@@ -490,6 +506,7 @@ const startDaemon = async (
       await s.handle.interrupt().catch(() => undefined);
       s.handle.close();
     }
+    await ipc?.close().catch(() => undefined);
     await cloud.close().catch(() => undefined);
     releaseLock();
     resolveDone();
@@ -498,6 +515,36 @@ const startDaemon = async (
   const onSignal = deps.onSignal ?? ((sig, fn) => process.once(sig, fn));
   onSignal("SIGTERM", () => void stop("SIGTERM"));
   onSignal("SIGINT", () => void stop("SIGINT"));
+
+  // The desktop panel's local IPC (only with the app's secret).
+  let ipc: IpcServer | null = null;
+  if (deps.ipcSecret) {
+    try {
+      ipc = await startIpcServer({
+        path: deps.ipcPath ?? ipcPath(dir),
+        secret: deps.ipcSecret,
+        handlers: ipcHandlers({
+          policy,
+          devMode,
+          devModeDeps: devModeBase,
+          osAuth:
+            deps.osAuth ??
+            (() =>
+              osAuthFor(process.platform, spawnRunner, (m) => log.warn("os_auth.notice", { message: m }), cfg.locale)),
+          liability: devModeBase.liability,
+          locale: () => cfg.locale,
+          store: signedInStore,
+          now,
+          reportDevMode,
+        }),
+        onError: (method, err) =>
+          log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),
+      });
+      log.info("ipc.ready", { path: ipc.path });
+    } catch (err) {
+      log.error("ipc.unavailable", { error: err instanceof Error ? err.message : "error" });
+    }
+  }
 
   log.info("agent.ready", {
     deviceId: id.deviceId,
