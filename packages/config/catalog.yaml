@@ -12,7 +12,7 @@ cosmetics:
     slot: head
     free: true
     art: cosmetics/viking_hat.webp
-    card: { width: 0.5, pivot: [0.5, 0.82] }
+    card: { width: 0.5, pivot: [0.5, 0.95] }
     vrm: { offset: [0, 0.14, 0] }
     provenance: docs/ASSET_PROVENANCE.md#cosmetics
   flower_crown:
@@ -20,7 +20,7 @@ cosmetics:
     slot: head
     free: true
     art: cosmetics/flower_crown.webp
-    card: { width: 0.46, pivot: [0.5, 0.75] }
+    card: { width: 0.44, pivot: [0.5, 0.62] }
     vrm: { offset: [0, 0.12, 0] }
     provenance: docs/ASSET_PROVENANCE.md#cosmetics
   round_glasses:

@@ -8,14 +8,14 @@ export const DEV_CATALOG = {
     slot: "head",
     free: true,
     art: "cosmetics/viking_hat.webp",
-    card: { width: 0.5, pivot: [0.5, 0.82] },
+    card: { width: 0.5, pivot: [0.5, 0.95] },
   },
   flower_crown: {
     name: { es: "Corona de flores", en: "Flower crown" },
     slot: "head",
     free: true,
     art: "cosmetics/flower_crown.webp",
-    card: { width: 0.46, pivot: [0.5, 0.75] },
+    card: { width: 0.44, pivot: [0.5, 0.62] },
   },
   round_glasses: {
     name: { es: "Lentes redondos", en: "Round glasses" },
