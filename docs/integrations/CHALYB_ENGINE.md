@@ -2,6 +2,8 @@
 
 These changes are needed in the **Chalyb repo** (`picassoglitch/chalyb`). They go on their own branch and PR there, **only with the owner's go**. Nothing in this document has been applied. See ADR 0016 for the design. The contract was read from Chalyb at `4ed57c9`.
 
+Items 1–2, 5, 7, 8 and a hub security fix are ready as reviewable patches in [chalyb-hub-patches/](chalyb-hub-patches/README.md), against `claude/consumption-caps` at `d467b02`.
+
 ## 1. Engine definition (hub code)
 Append to `src/lib/engines/integrations/definitions.ts`:
 

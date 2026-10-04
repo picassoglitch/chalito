@@ -1,0 +1,272 @@
+diff --git a/src/app/auth/launch/[slug]/route.ts b/src/app/auth/launch/[slug]/route.ts
+index 89275bc..2a50722 100644
+--- a/src/app/auth/launch/[slug]/route.ts
++++ b/src/app/auth/launch/[slug]/route.ts
+@@ -16,6 +16,10 @@
+ // welcome gift / 7-day trial claimed silently, and ChalyClip enforces its
+ // own tier perks once inside.
+ //
++// `?next=` and `?state=` (launch-forward.ts) survive the sign-in bounce and
++// are handed to the engine's /auth/sso: `next` is where to land on the
++// engine, `state` is the engine's own login-CSRF nonce, echoed unchanged.
++//
+ // Under /auth/* so it's excluded from the i18n proxy matcher (no locale
+ // prefix rewriting on a redirect-only endpoint).
+ 
+@@ -28,6 +32,7 @@ import { getEngineLaunchUrl } from '@/lib/engines/launch-actions';
+ import { getEntitlements } from '@/lib/billing/entitlement';
+ import { trialFlowEnabled } from '@/lib/config/flags';
+ import { claimWelcomeGift } from '@/lib/usage/welcome-actions';
++import { launchForwardQuery, readLaunchForward } from '@/lib/engines/launch-forward';
+ 
+ export async function GET(
+   request: NextRequest,
+@@ -35,12 +40,12 @@ export async function GET(
+ ): Promise<NextResponse> {
+   const { slug } = await ctx.params;
+   const origin = request.nextUrl.origin;
++  const forward = readLaunchForward(request.nextUrl.searchParams);
+ 
+   const session = await getSessionUser();
+   if (!session) {
+-    return NextResponse.redirect(
+-      new URL(`/sign-in?next=${encodeURIComponent(`/auth/launch/${slug}`)}`, origin),
+-    );
++    const back = `/auth/launch/${slug}${launchForwardQuery(forward)}`;
++    return NextResponse.redirect(new URL(`/sign-in?next=${encodeURIComponent(back)}`, origin));
+   }
+ 
+   // Full-access gate — for cross-engine launches only. ChalyClip is exempt:
+@@ -123,7 +128,7 @@ export async function GET(
+     // Non-fatal — getEngineLaunchUrl will report if access is still missing.
+   }
+ 
+-  const result = await getEngineLaunchUrl(engineId);
++  const result = await getEngineLaunchUrl(engineId, forward);
+   if (result.ok && result.url) {
+     return NextResponse.redirect(result.url);
+   }
+diff --git a/src/lib/engines/integrations/factory.ts b/src/lib/engines/integrations/factory.ts
+index 2a0b9ef..acdc9bc 100644
+--- a/src/lib/engines/integrations/factory.ts
++++ b/src/lib/engines/integrations/factory.ts
+@@ -252,6 +252,8 @@ export function createEngineIntegration(config: EngineIntegrationConfig): Engine
+       effectiveTier,
+       externalUserId,
+       engine,
++      next,
++      state,
+     }: LaunchTokenInput): Promise<LaunchTokenResult> {
+       if (!engine.externalUrl) {
+         return {
+@@ -288,8 +290,10 @@ export function createEngineIntegration(config: EngineIntegrationConfig): Engine
+         };
+       }
+ 
+-      const base = `${engine.externalUrl}/auth/sso?token=${encodeURIComponent(token)}`;
+-      const url = postSsoPath ? `${base}&next=${encodeURIComponent(postSsoPath)}` : base;
++      let url = `${engine.externalUrl}/auth/sso?token=${encodeURIComponent(token)}`;
++      const landing = next ?? postSsoPath;
++      if (landing) url += `&next=${encodeURIComponent(landing)}`;
++      if (state) url += `&state=${encodeURIComponent(state)}`;
+       return { ok: true, url };
+     },
+ 
+diff --git a/src/lib/engines/integrations/types.ts b/src/lib/engines/integrations/types.ts
+index 8f2f39c..3f6d798 100644
+--- a/src/lib/engines/integrations/types.ts
++++ b/src/lib/engines/integrations/types.ts
+@@ -50,6 +50,10 @@ export interface LaunchTokenInput {
+   /** Credentials blob persisted at provisioning time. */
+   credentials: Record<string, unknown> | null;
+   engine: Engine;
++  /** Already validated (launch-forward.ts). `next` replaces the integration's
++   *  default landing; `state` is echoed for the engine's login-CSRF check. */
++  next?: string;
++  state?: string;
+ }
+ 
+ export interface LaunchTokenResult {
+diff --git a/src/lib/engines/launch-actions.ts b/src/lib/engines/launch-actions.ts
+index 121fb6c..4be1167 100644
+--- a/src/lib/engines/launch-actions.ts
++++ b/src/lib/engines/launch-actions.ts
+@@ -18,10 +18,16 @@ import { getIntegration } from './integrations/registry';
+ import { provisionEngineAccess } from './subscriptions';
+ import { runLaunch, type LaunchResult, type LaunchLogEvent } from './launch-flow';
+ import { hasRiskAck } from '@/lib/tools/consents';
++import { sanitizeLaunchForward, type LaunchForward } from './launch-forward';
+ 
+ export type { LaunchResult } from './launch-flow';
+ 
+-export async function getEngineLaunchUrl(engineId: string): Promise<LaunchResult> {
++export async function getEngineLaunchUrl(
++  engineId: string,
++  forward?: LaunchForward,
++): Promise<LaunchResult> {
++  // A server action's arguments come from the browser: validate again.
++  const { next, state } = sanitizeLaunchForward(forward);
+   const session = await getSessionUser();
+   if (!session) return { ok: false, code: 'SESSION_EXPIRED' };
+ 
+@@ -127,6 +133,8 @@ export async function getEngineLaunchUrl(engineId: string): Promise<LaunchResult
+         externalUserId,
+         credentials: (row?.external_credentials as Record<string, unknown> | null) ?? null,
+         engine,
++        next,
++        state,
+       });
+       return result.ok && result.url
+         ? { ok: true, url: result.url }
+diff --git a/src/lib/engines/launch-forward.ts b/src/lib/engines/launch-forward.ts
+new file mode 100644
+index 0000000..7c04b7a
+--- /dev/null
++++ b/src/lib/engines/launch-forward.ts
+@@ -0,0 +1,53 @@
++// What a launch may carry through to the engine's /auth/sso.
++//
++// An engine that sends a signed-out person to /auth/launch/<slug> wants them
++// back on the screen they started from (`next`), and wants proof that the
++// sign-in it receives is one this browser started (`state`, a nonce it keeps
++// in its own cookie — login-CSRF protection). Both ride the launch URL as
++// query parameters, never the signed token: the engine re-validates `next`
++// against its own routes and compares `state` with its cookie.
++//
++// Anything malformed is dropped, not rejected: the launch still works and the
++// engine falls back to its default landing.
++
++import { safeNextPath } from '@/lib/auth/safe-next';
++
++export interface LaunchForward {
++  /** Relative path on the ENGINE's origin. */
++  next?: string;
++  /** Opaque nonce, echoed back unchanged. */
++  state?: string;
++}
++
++/** base64url, long enough to be a nonce, short enough for a URL. */
++const STATE = /^[A-Za-z0-9_-]{16,128}$/;
++
++/** Keeps only the values that are safe to echo. */
++export function sanitizeLaunchForward(
++  raw:
++    | {
++        next?: string | null;
++        state?: string | null;
++      }
++    | null
++    | undefined,
++): LaunchForward {
++  const out: LaunchForward = {};
++  const next = safeNextPath(raw?.next, '');
++  if (next) out.next = next;
++  if (raw?.state && STATE.test(raw.state)) out.state = raw.state;
++  return out;
++}
++
++export function readLaunchForward(params: URLSearchParams): LaunchForward {
++  return sanitizeLaunchForward({ next: params.get('next'), state: params.get('state') });
++}
++
++/** `?next=…&state=…` (or '') for a URL that has no query yet. */
++export function launchForwardQuery(forward: LaunchForward): string {
++  const q = new URLSearchParams();
++  if (forward.next) q.set('next', forward.next);
++  if (forward.state) q.set('state', forward.state);
++  const s = q.toString();
++  return s ? `?${s}` : '';
++}
+diff --git a/tests/launch-forward.test.ts b/tests/launch-forward.test.ts
+new file mode 100644
+index 0000000..b6c1ee7
+--- /dev/null
++++ b/tests/launch-forward.test.ts
+@@ -0,0 +1,87 @@
++// `next` and `state` on /auth/launch/<slug>: what survives to the engine's
++// /auth/sso, and what is dropped.
++
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  launchForwardQuery,
++  readLaunchForward,
++  sanitizeLaunchForward,
++} from '@/lib/engines/launch-forward';
++import { createEngineIntegration } from '@/lib/engines/integrations/factory';
++
++const STATE = 'A'.repeat(43);
++
++test('keeps a relative next and a base64url state', () => {
++  const f = readLaunchForward(new URLSearchParams({ next: '/n/abc?x=1', state: STATE }));
++  assert.deepEqual(f, { next: '/n/abc?x=1', state: STATE });
++});
++
++test('drops off-site next and malformed state, keeps the rest', () => {
++  for (const next of ['https://evil.com', '//evil.com', '/\\evil.com', '%2F%2Fevil.com', 'n/abc']) {
++    assert.deepEqual(sanitizeLaunchForward({ next, state: STATE }), { state: STATE });
++  }
++  for (const state of ['short', 'has space'.padEnd(20, 'x'), 'a'.repeat(129), 'x/y'.repeat(8)]) {
++    assert.deepEqual(sanitizeLaunchForward({ next: '/a', state }), { next: '/a' });
++  }
++  assert.deepEqual(sanitizeLaunchForward(null), {});
++  assert.deepEqual(sanitizeLaunchForward({ next: null, state: null }), {});
++});
++
++test('rebuilds the query for the sign-in bounce', () => {
++  assert.equal(launchForwardQuery({}), '');
++  assert.equal(
++    launchForwardQuery({ next: '/n/a b', state: STATE }),
++    `?next=%2Fn%2Fa+b&state=${STATE}`,
++  );
++});
++
++const engine = {
++  id: 'e',
++  slug: 'demo',
++  name: 'Demo',
++  externalUrl: 'https://demo.example',
++  adminApiBase: 'https://demo.example/admin',
++  integrationMode: 'external_sso_redirect',
++  requiresProvisioning: true,
++} as never;
++
++const input = {
++  userId: 'u1',
++  email: 'a@b.c',
++  effectiveTier: 'PRO' as const,
++  externalUserId: 'ten_1',
++  credentials: null,
++  engine,
++};
++
++async function launchUrl(
++  postSsoPath: string | undefined,
++  extra: { next?: string; state?: string },
++) {
++  process.env.DEMO_SSO_SECRET = 'secret';
++  try {
++    const integration = createEngineIntegration({ slug: 'demo', displayName: 'Demo', postSsoPath });
++    const result = await integration.buildLaunchUrl({ ...input, ...extra });
++    assert.equal(result.ok, true);
++    return new URL(result.url!);
++  } finally {
++    delete process.env.DEMO_SSO_SECRET;
++  }
++}
++
++test('the engine URL carries next (over postSsoPath) and state', async () => {
++  const url = await launchUrl('/dashboard', { next: '/n/abc', state: STATE });
++  assert.equal(url.pathname, '/auth/sso');
++  assert.ok(url.searchParams.get('token'));
++  assert.equal(url.searchParams.get('next'), '/n/abc');
++  assert.equal(url.searchParams.get('state'), STATE);
++});
++
++test('without them the URL is what it was', async () => {
++  const withDefault = await launchUrl('/dashboard', {});
++  assert.equal(withDefault.searchParams.get('next'), '/dashboard');
++  assert.equal(withDefault.searchParams.has('state'), false);
++  const bare = await launchUrl(undefined, {});
++  assert.deepEqual([...bare.searchParams.keys()], ['token']);
++});
