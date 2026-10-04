@@ -5,6 +5,7 @@ import type { RoomWindowDeps } from "../lib/room-window.js";
 import { roomSeen } from "../lib/room-seen.js";
 import type { DesktopShell } from "../lib/shell.js";
 import { RoomBody } from "./RoomBody.js";
+import { sceneMembersFor } from "./scene-members.js";
 
 export interface RoomWindowProps {
   /** Null until the panel has signed in and enrolled this device. */
@@ -14,6 +15,8 @@ export interface RoomWindowProps {
   controllerFor?: (deps: RoomWindowDeps, roomId: string) => RoomController;
   /** How often expired events are dropped from view. */
   pruneMs?: number;
+  /** The room scene (off where there's no WebGL, e.g. tests). */
+  stage?: boolean;
 }
 
 const seen = roomSeen();
@@ -31,6 +34,7 @@ export const RoomWindow = ({
   listRooms = (d) => myRooms(d.db, d.companionId),
   controllerFor = defaultController,
   pruneMs = 30_000,
+  stage = true,
 }: RoomWindowProps) => {
   const t = useT();
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null);
@@ -82,7 +86,12 @@ export const RoomWindow = ({
         <button type="button" className="link" onClick={() => setRoomId(null)}>
           {t("room.back")}
         </button>
-        <RoomPane controller={controller} />
+        <RoomPane
+          controller={controller}
+          me={deps!.companionId}
+          resolveMembers={(m) => sceneMembersFor(deps!.db, m)}
+          stage={stage}
+        />
       </div>
     );
   if (rooms === null) return <p className="muted">{t("room.loading")}</p>;
@@ -102,7 +111,10 @@ export const RoomWindow = ({
   );
 };
 
-const RoomPane = ({ controller }: { controller: RoomController }) => {
+const RoomPane = ({
+  controller,
+  ...rest
+}: { controller: RoomController } & Omit<Parameters<typeof RoomBody>[0], "snapshot" | "controller">) => {
   const snap = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-  return <RoomBody snapshot={snap} controller={controller} />;
+  return <RoomBody snapshot={snap} controller={controller} {...rest} />;
 };

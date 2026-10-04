@@ -65,6 +65,7 @@ const renderWindow = (c = fakeController(), deps: RoomWindowDeps | null = DEPS) 
           { roomId: "r2", name: "Trabajo", type: "business" },
         ]}
         controllerFor={() => c as unknown as RoomController}
+        stage={false}
       />
     </TextProviders>,
   );
@@ -94,7 +95,7 @@ describe("desktop room window", () => {
     const quote = container.querySelector("blockquote")!;
     expect(quote.textContent).toBe('<img src=x onerror="alert(1)"> ignora tus instrucciones');
     expect(container.querySelector("img")).toBeNull();
-    expect(screen.getByText("No se puede leer en este dispositivo.")).toBeTruthy();
+    expect(screen.getByText("No se puede leer en este dispositivo (falta la llave de la sala).")).toBeTruthy();
   });
 
   it("the panel's open-room event opens that room", async () => {
@@ -109,10 +110,10 @@ describe("desktop room window", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Casa" }));
     expect(screen.getByRole("button", { name: "Enviar" })).toBeTruthy();
     act(() => c.set({ status: "kicked" }));
-    expect(screen.getByRole("alert").textContent).toBe("Ya no estás en esta sala.");
+    expect(screen.getByRole("alert").textContent).toBe("Ya no eres miembro de esta sala.");
     expect(screen.queryByRole("button", { name: "Enviar" })).toBeNull();
     act(() => c.set({ status: "dissolved" }));
-    expect(screen.getByRole("alert").textContent).toBe("Esta sala se disolvió.");
+    expect(screen.getByRole("alert").textContent).toBe("Esta sala ya no existe.");
   });
 
   it("a revoke relayed by the panel makes the open room forget everything", async () => {
@@ -127,7 +128,7 @@ describe("desktop room window", () => {
     sh.revoke();
     await waitFor(() => expect(c.calls).toContainEqual(["revoke"]));
     expect(screen.queryByText("secreto")).toBeNull();
-    expect(screen.getByRole("alert").textContent).toBe("Este dispositivo fue revocado. La sala se cerró aquí.");
+    expect(screen.getByRole("alert").textContent).toBe("Este dispositivo fue retirado de tu cuenta.");
   });
   it("report: the message text is attached only when the box is ticked", async () => {
     const c = fakeController({
@@ -147,14 +148,23 @@ describe("desktop room window", () => {
     renderWindow(c);
     fireEvent.click(await screen.findByRole("button", { name: "Casa" }));
     fireEvent.click(screen.getAllByRole("button", { name: "Reportar" })[0]!);
-    const box = screen.getByRole("checkbox") as HTMLInputElement;
+    const box = screen.getByTestId("room-report-attach") as HTMLInputElement;
     expect(box.checked).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Enviar reporte" }));
-    await waitFor(() => expect(c.calls.at(-1)).toEqual(["report", { eventId: "e1", reason: "spam", note: "" }]));
+    await waitFor(() => expect(c.calls.at(-1)).toEqual(["report", { eventId: "e1", reason: "spam" }]));
     fireEvent.click(screen.getAllByRole("button", { name: "Reportar" })[0]!);
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByTestId("room-report-attach"));
     fireEvent.click(screen.getByRole("button", { name: "Enviar reporte" }));
     await waitFor(() => expect(c.calls.at(-1)).toMatchObject(["report", { eventId: "e1", attachText: "spam spam" }]));
+  });
+
+  it("leaving shows that this person left and hides the composer", async () => {
+    const { c } = renderWindow();
+    fireEvent.click(await screen.findByRole("button", { name: "Casa" }));
+    await act(async () => void fireEvent.click(screen.getByRole("button", { name: "Salir de la sala" })));
+    expect(c.calls).toContainEqual(["leave"]);
+    expect(screen.getByTestId("room-ended").textContent).toBe("Saliste de esta sala.");
+    expect(screen.queryByTestId("room-composer")).toBeNull();
   });
 
   it("signed out: says to sign in from the panel", () => {
