@@ -165,11 +165,26 @@ describe("a Mesa turn on the Claude API (msw)", () => {
     expect(h.store.outbox).toHaveLength(1);
   });
 
-  it("the turn and its usage commit together: a failed write releases the reservation", async () => {
+  it("a failed turn write after a paid call still reports the usage (review R-L9)", async () => {
     const h = await harness();
     h.store.failNextSpend = true;
     await expect(runTurn(h.deps, req(h.mid))).rejects.toThrow("append failed");
-    expect(h.store.outbox).toHaveLength(0);
+    // No turn was stored, but the provider was paid: the event is recorded on its own.
+    expect(
+      [...h.store.turns.values()].filter((t) => t.doc.speaker && (t.doc.speaker as { kind: string }).kind === "brain"),
+    ).toHaveLength(0);
+    expect(h.store.outbox).toHaveLength(1);
+    expect(h.store.outbox[0]).toMatchObject({ kind: "llm.tokens", reservation_id: RESERVATION });
+    expect(m.hub.at(-1)!.body).toEqual({ reservation_id: RESERVATION, outcome: "succeeded" });
+  });
+
+  it("if even the usage can't be recorded, the reservation is released as failed", async () => {
+    const h = await harness();
+    h.store.failNextSpend = true;
+    h.store.enqueueUsage = async () => {
+      throw new Error("db down");
+    };
+    await expect(runTurn(h.deps, req(h.mid))).rejects.toThrow("append failed");
     expect(m.hub.at(-1)!.body).toEqual({ reservation_id: RESERVATION, outcome: "failed" });
   });
 

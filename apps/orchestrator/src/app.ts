@@ -10,7 +10,7 @@ import { processDecisions, type AuditFn } from "./decisions.js";
 import { brainKeyAad, type KeyWrapper } from "./kms.js";
 import type { OidcExpectation, OidcVerifier } from "./oidc.js";
 import type { UsageRow } from "./store.js";
-import { Participant, type MesaDoc } from "./core/mesa.js";
+import { Participant, SafeName, type MesaDoc } from "./core/mesa.js";
 import type { RecentTurn } from "./core/brief.js";
 import { runTurn, type TurnDeps } from "./turn.js";
 
@@ -49,7 +49,7 @@ export const webCors = (webOrigin: string) => {
 const CreateBody = z.object({
   /** Everyone but the person (added automatically). */
   participants: z.array(Participant).min(1).max(7),
-  ownerName: z.string().min(1).max(40).optional(),
+  ownerName: SafeName.optional(),
   budget: z
     .object({
       mesaTokens: z.number().int().positive().nullable().default(null),
@@ -67,7 +67,7 @@ const TurnBody = z.object({
   recent: z
     .array(
       z.object({
-        speaker: z.string().min(1).max(40),
+        speaker: SafeName,
         source: z.union([
           z.enum(["owner", "mcp:claude", "mcp:chatgpt", "room", "card"]),
           z.string().regex(/^participant:[A-Za-z0-9_-]{1,64}$/),
