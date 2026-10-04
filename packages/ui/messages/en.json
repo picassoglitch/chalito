@@ -617,5 +617,12 @@
       "failed": "Couldn't change it. Try again."
     },
     "lookOnly": "Accessories don't change what your companion can do or its limits."
+  },
+  "legal": {
+    "privacy": "Privacy notice",
+    "terms": "Terms of use",
+    "draftTitle": "Draft: pending legal review",
+    "draftBody": "A lawyer hasn't reviewed this text yet and it may change. It isn't the final version.",
+    "onboarding": "By continuing you accept the <terms>Terms of use</terms> and the <privacy>Privacy notice</privacy>."
   }
 }

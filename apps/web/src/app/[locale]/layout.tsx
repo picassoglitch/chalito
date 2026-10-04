@@ -7,6 +7,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { routing } from "@/i18n/routing";
 import { ChalitoProvider } from "@/components/ChalitoProvider";
 import { DevModeBanner } from "@/components/DevModeBanner";
+import { Footer } from "@/components/Footer";
 import { Nav } from "@/components/Nav";
 import { StepUpHost } from "@/components/StepUpHost";
 import { TestModeBanner } from "@/components/TestModeBanner";
@@ -59,6 +60,7 @@ export default async function LocaleLayout({
               <DevModeBanner />
               <Nav />
               <main className="mx-auto max-w-3xl px-4 py-6">{children}</main>
+              <Footer />
               <StepUpHost />
             </ChalitoProvider>
           </UiBridge>

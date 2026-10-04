@@ -617,5 +617,12 @@
       "failed": "No se pudo cambiar. Vuelve a intentarlo."
     },
     "lookOnly": "Los accesorios no cambian lo que tu compañero puede hacer ni sus límites."
+  },
+  "legal": {
+    "privacy": "Aviso de privacidad",
+    "terms": "Términos de uso",
+    "draftTitle": "Borrador: pendiente de revisión legal",
+    "draftBody": "Este texto todavía no lo revisa un abogado y puede cambiar. No es la versión definitiva.",
+    "onboarding": "Al continuar aceptas los <terms>Términos de uso</terms> y el <privacy>Aviso de privacidad</privacy>."
   }
 }

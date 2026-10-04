@@ -26,6 +26,7 @@ type BillingMode = "byo" | "energy" | "both";
 
 export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
   const t = useTranslations("onboarding");
+  const tl = useTranslations("legal");
   const tc = useTranslations("common");
   const ti = useTranslations("integrations");
   const router = useRouter();
@@ -68,6 +69,20 @@ export const Onboarding = ({ agents }: { agents: AgentOption[] }) => {
           <div className="grid gap-3">
             <p>{t("signIn.body")}</p>
             <SignInLink>{t("signIn.cta")}</SignInLink>
+            <p className="text-sm text-neutral-600" data-testid="legal-consent">
+              {tl.rich("onboarding", {
+                terms: (chunks) => (
+                  <Link href="/terminos" className="underline">
+                    {chunks}
+                  </Link>
+                ),
+                privacy: (chunks) => (
+                  <Link href="/privacidad" className="underline">
+                    {chunks}
+                  </Link>
+                ),
+              })}
+            </p>
           </div>
         )
       ) : null}
