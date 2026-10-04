@@ -19,7 +19,7 @@ export const openSecretStore = async (opts: {
   prompt?: () => Promise<string>;
   warn: (message: string) => void;
   keyring?: SecretStore;
-  probe?: () => Promise<boolean>;
+  probe?: () => Promise<boolean | "addon_missing">;
 }): Promise<SecretStore> => {
   const passphrase = async (): Promise<string> => {
     const fromEnv = opts.env.CHALITO_SECRETS_PASSPHRASE;
