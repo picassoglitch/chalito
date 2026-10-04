@@ -116,7 +116,16 @@ jobs:
           } >> "$GITHUB_ENV"
       - run: pnpm --filter @chalito/api test:pg
         env:
-          # The api's least-privilege role (security review S2); postgres holds it with SET.
+          # The services' least-privilege role (security review S2); postgres holds it with SET.
+          CHALITO_DB_ROLE: chalito_server
+      - run: pnpm --filter @chalito/notifier test:pg
+        env:
+          CHALITO_DB_ROLE: chalito_server
+      - run: pnpm --filter @chalito/billing test:pg
+        env:
+          CHALITO_DB_ROLE: chalito_server
+      - run: pnpm --filter @chalito/orchestrator test:pg
+        env:
           CHALITO_DB_ROLE: chalito_server
       - name: Agent SupabaseStore and browser client integration
         run: |

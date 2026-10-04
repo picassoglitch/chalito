@@ -9,6 +9,7 @@ import {
   TrustedClientList,
   generateBoxKeyPair,
   generateSigningKeyPair,
+  openJson,
   randomNonce,
   sealJson,
   signEnvelope,
@@ -17,7 +18,7 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import type { CommandPayload, DecisionBody } from "@chalito/protocol";
+import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { AgentCore, type PolicyHolder } from "../src/agent-core.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
@@ -549,6 +550,50 @@ describe("events and cards", () => {
     expect(JSON.stringify(msg)).not.toContain("login.ts");
     const session = [...h.store.sessions.values()][0]!;
     expect(JSON.stringify(session)).not.toContain("SECRET");
+  });
+});
+
+describe("MCP card sharing (opt-in)", () => {
+  const twoTurns: FakeStep[][] = [[{ say: "voy a revisar src/login.ts" }], [{ say: "listo" }]];
+  const sidOf = (h: Awaited<ReturnType<typeof harness>>) => [...h.core.sessions.keys()][0]!;
+
+  it("off by default: no plaintext card is written", async () => {
+    const h = await harness({ turns: twoTurns });
+    await h.startSession("arregla el login");
+    await waitFor(() => h.store.events.some((e) => e.type === "message.assistant"));
+    expect(h.store.sharedCards.size).toBe(0);
+  });
+
+  it("on: the same redacted card as the sealed one; off: it stops being written", async () => {
+    const h = await harness({ turns: twoTurns });
+    await h.startSession("arregla el login, mi token es sk-ant-api03-SECRETSECRETSECRET");
+    const sid = sidOf(h);
+    h.store.sharing.add(sid);
+    await h.command({ type: "session.prompt", sid, promptCt: await h.sealed(2, "sigue") });
+    await waitFor(() => h.store.sharedCards.has(sid));
+    const shared = h.store.sharedCards.get(sid)!;
+    expect(JSON.stringify(shared)).not.toContain("SECRET");
+    const sealed = h.store.sessions.get(sid)!.card as { ct: SealedEnvelope };
+    expect(await openJson(sealed.ct, h.phone.id, h.phone.box, `card:${sid}`)).toEqual(shared);
+
+    // Turning it off deletes the copy (database trigger) and the agent stops writing it.
+    h.store.sharing.delete(sid);
+    h.store.sharedCards.delete(sid);
+    await h.command({ type: "session.prompt", sid, promptCt: await h.sealed(3, "otra") });
+    await waitFor(() => h.store.events.filter((e) => e.type === "message.assistant").length >= 2);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.store.sharedCards.size).toBe(0);
+  });
+
+  it("device-wide sharing covers every session; a failed write never breaks the session", async () => {
+    const h = await harness({ turns: twoTurns });
+    h.store.sharing.add("device");
+    h.store.writeSharedCard = async () => {
+      throw new Error("rls");
+    };
+    await h.startSession("arregla el login");
+    await waitFor(() => h.store.events.some((e) => e.type === "message.assistant"));
+    expect(h.logs.some((l) => l.includes("card.share_failed"))).toBe(true);
   });
 });
 

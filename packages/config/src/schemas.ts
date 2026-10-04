@@ -105,3 +105,34 @@ export const CatalogConfig = z.object({
   drops: z.record(z.string(), z.unknown()),
 });
 export type CatalogConfig = z.infer<typeof CatalogConfig>;
+
+/** escalation.yaml: the escalation engine's limits and the notifier's channel settings. */
+export const EscalationConfig = z.object({
+  schemaVersion: z.literal(1),
+  caps: z.object({
+    call: z.number().int().nonnegative(),
+    whatsapp: z.number().int().nonnegative(),
+    sms: z.number().int().nonnegative(),
+  }),
+  quietHoursDefault: z.object({ start: z.string().regex(/^\d{2}:\d{2}$/), end: z.string().regex(/^\d{2}:\d{2}$/) }),
+  presenceHoldMs: z.number().int().nonnegative(),
+  approvalTtlMs: z.number().int().positive(),
+  snoozeMs: z.number().int().positive(),
+  mesaRecallLeadMs: z.number().int().nonnegative(),
+  sms: z.object({ defaultOffCountries: z.array(z.string().regex(/^[A-Z]{2}$/)) }),
+  voices: z.object({ es: z.string().min(1), en: z.string().min(1) }),
+  whatsapp: z.object({
+    graphVersion: z.string().regex(/^v\d+\.\d+$/),
+    template: z.string().min(1),
+    languages: z.object({ es: z.string(), en: z.string() }),
+  }),
+});
+export type EscalationConfig = z.infer<typeof EscalationConfig>;
+
+/** copy/recharge.{es,en}.yaml: the companion's in-character out-of-energy lines. */
+export const RechargeCopy = z.object({
+  schemaVersion: z.literal(1),
+  chip: z.string().min(1).max(20),
+  lines: z.array(z.string().min(1).max(200)).min(3),
+});
+export type RechargeCopy = z.infer<typeof RechargeCopy>;
