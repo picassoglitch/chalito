@@ -1,7 +1,9 @@
 import postgres, { type Sql, type TransactionSql } from "postgres";
-import type { DeviceDoc, PairingCodeDoc } from "@chalito/protocol";
+import type { DeviceDoc, DeviceRegistration, Endorsement, PairingCodeDoc } from "@chalito/protocol";
 import type {
   ApiRepo,
+  EndorseCodeRecord,
+  NewEndorseCode,
   StoredRecovery,
   StoredWebAuthnCredential,
   TenantRecord,
@@ -317,6 +319,64 @@ export class PostgresRepo implements ApiRepo {
       return { ok: true as const, agentDeviceId: agent.deviceId };
     });
   }
+
+  // ---- endorsement handoff -------------------------------------------------------------
+
+  async createEndorseCode(r: NewEndorseCode) {
+    const rows = await this.sql`
+      insert into chalito.endorse_codes
+        (code_id, short_code_hash, owner, new_device_id, registration, expires_at, watch_auth_user_id)
+      values (${r.codeId}, ${r.shortCodeHash}, ${r.owner}, ${r.registration.body.deviceId},
+              ${this.sql.json(r.registration as never)}, ${ts(r.expiresAt)}, ${this.#authUser("pairing", r.codeId)})
+      on conflict do nothing
+      returning code_id`;
+    return rows.length ? ("created" as const) : ("exists" as const);
+  }
+
+  async findEndorseCode(codeId: string) {
+    const [row] = await this.sql<EndorseRow[]>`select * from chalito.endorse_codes where code_id = ${codeId}`;
+    return row ? toEndorseCode(row) : null;
+  }
+
+  async findEndorseCodeByShortHash(shortCodeHash: string) {
+    const [row] = await this.sql<EndorseRow[]>`
+      select * from chalito.endorse_codes where short_code_hash = ${shortCodeHash}`;
+    return row ? toEndorseCode(row) : null;
+  }
+
+  async approveEndorseCode(
+    codeId: string,
+    owner: string,
+    e: { endorsement: Endorsement; endorsedByDeviceId: string; endorsedAt: number },
+    now: number,
+  ) {
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx<EndorseRow[]>`
+        select * from chalito.endorse_codes where code_id = ${codeId} and owner = ${owner} for update`;
+      if (!row) return "not_found" as const;
+      if (row.endorsement) return "already_endorsed" as const;
+      if (row.expires_at.getTime() <= now) return "expired" as const;
+      await tx`
+        update chalito.endorse_codes set endorsement = ${tx.json(e.endorsement as never)},
+          endorsed_by_device_id = ${e.endorsedByDeviceId}, endorsed_at = ${ts(e.endorsedAt)}
+        where code_id = ${codeId}`;
+      return "ok" as const;
+    });
+  }
+
+  async takeEndorsement(codeId: string, owner: string, now: number) {
+    return this.sql.begin(async (tx) => {
+      const [row] = await tx<EndorseRow[]>`
+        select * from chalito.endorse_codes where code_id = ${codeId} and owner = ${owner} for update`;
+      if (!row) return { ok: false as const, reason: "not_found" as const };
+      if (row.taken_at) return { ok: false as const, reason: "already_taken" as const };
+      if (row.expires_at.getTime() <= now) return { ok: false as const, reason: "expired" as const };
+      if (!row.endorsement) return { ok: false as const, reason: "not_endorsed" as const };
+      await tx`update chalito.endorse_codes set taken_at = ${ts(now)}, watch_auth_user_id = null
+               where code_id = ${codeId}`;
+      return { ok: true as const, endorsement: row.endorsement as Endorsement };
+    });
+  }
 }
 
 // ---- helpers ---------------------------------------------------------------------------
@@ -413,6 +473,32 @@ interface PairingRow {
   claimer_webauthn_binding?: unknown;
   expires_at: Date;
 }
+
+interface EndorseRow {
+  code_id: string;
+  short_code_hash: string;
+  owner: string;
+  new_device_id: string;
+  registration: DeviceRegistration;
+  endorsement: Endorsement | null;
+  endorsed_by_device_id: string | null;
+  endorsed_at: Date | null;
+  taken_at: Date | null;
+  expires_at: Date;
+}
+
+const toEndorseCode = (r: EndorseRow): EndorseCodeRecord => ({
+  codeId: r.code_id,
+  shortCodeHash: r.short_code_hash,
+  owner: r.owner,
+  newDeviceId: r.new_device_id,
+  registration: r.registration,
+  endorsement: r.endorsement,
+  endorsedByDeviceId: r.endorsed_by_device_id,
+  endorsedAt: ms(r.endorsed_at),
+  takenAt: ms(r.taken_at),
+  expiresAt: r.expires_at.getTime(),
+});
 
 const toPairingCode = (r: PairingRow): PairingCodeDoc => ({
   v: 1,
