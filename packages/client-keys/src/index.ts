@@ -13,7 +13,7 @@ export {
 export type { StepUpAssertion } from "./signing.js";
 export { agentFromGlyph, sealFor } from "./sealing.js";
 export { registerPasskey, stepUpWithPasskey, assertWithServerChallenge, browserCeremonies } from "./webauthn.js";
-export type { Ceremonies } from "./webauthn.js";
+export type { Ceremonies, DeviceSigner } from "./webauthn.js";
 export { httpApi, ApiError } from "./api.js";
 export type { ApiClient } from "./api.js";
 export {
