@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadLiabilityText } from "@chalito/config";
-import { DevModeToggle } from "@chalito/protocol";
+import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import type { FetchFn, PairingWatcher } from "./cloud.js";
 import { AnchorStore } from "./anchor.js";
 import { pinClaude } from "./claude-pin.js";
@@ -18,7 +18,9 @@ import {
   writeConfig,
   type AgentConfig,
 } from "./config.js";
-import { runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
+import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
+import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
+import { readIpcSecret } from "./ipc-server.js";
 import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { osAuthFor, type StatFn } from "./os-auth.js";
@@ -64,6 +66,7 @@ export const USAGE = `chalito <command>
   devmode off [toggle]                 turn Developer mode (or one toggle) off
   devmode reset                        archive a broken Developer-mode log and start over (OS auth)
   claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
+  codex pin [path]                     trust this Codex binary (path + sha256); after updates too
   policy show|path|edit                show, locate or edit ~/.chalito/policy.yaml
   keys set anthropic|openai|xai        save a BYO API key in the OS keychain
   service install|uninstall [--bin p] [--passphrase-file f]
@@ -78,7 +81,7 @@ not from an AI session). Dev/test: CHALITO_SECRETS=file:<path> + CHALITO_SECRETS
 keep keys in an encrypted file instead of the OS keychain.
 `;
 
-const ON_TOGGLES = ["allowSudo", "autoApproveHigh", "autoApproveCritical"] as const;
+const ON_TOGGLES = EnableableDevModeToggle.options;
 const KEY_NAMES = {
   anthropic: SECRET_NAMES.anthropicApiKey,
   openai: SECRET_NAMES.openaiApiKey,
@@ -102,6 +105,10 @@ const T = {
     pinNeedsPair: "Primero empareja esta computadora (`chalito pair`); luego `chalito claude pin`.\n",
     claudeNotFound:
       "No encontré `claude`. Instálalo (https://code.claude.com/docs/en/setup) o pasa su ruta: chalito claude pin <ruta>\n",
+    codexPinned: (p: string, h: string) => `Codex fijado: ${p}\n  sha256 ${h}\n`,
+    codexPinNeedsPair: "Primero empareja esta computadora (`chalito pair`); luego `chalito codex pin`.\n",
+    codexNotFound:
+      "No encontré `codex`. Instálalo (https://developers.openai.com/codex/cli) o pasa su ruta: chalito codex pin <ruta>\n",
     passphrase: "Frase de contraseña del archivo de secretos: ",
     enabled: (t: string) => `Activado: ${t}. Verás "Modo desarrollador ACTIVO" en todas tus apps.\n`,
     authFailed: "La autenticación del sistema falló. No cambió nada.\n",
@@ -141,6 +148,10 @@ const T = {
     pinNeedsPair: "Pair this computer first (`chalito pair`), then run `chalito claude pin`.\n",
     claudeNotFound:
       "`claude` wasn't found. Install it (https://code.claude.com/docs/en/setup) or pass its path: chalito claude pin <path>\n",
+    codexPinned: (p: string, h: string) => `Codex pinned: ${p}\n  sha256 ${h}\n`,
+    codexPinNeedsPair: "Pair this computer first (`chalito pair`), then run `chalito codex pin`.\n",
+    codexNotFound:
+      "`codex` wasn't found. Install it (https://developers.openai.com/codex/cli) or pass its path: chalito codex pin <path>\n",
     passphrase: "Secrets file passphrase: ",
     enabled: (t: string) => `On: ${t}. Every app will show "Developer mode ACTIVE".\n`,
     authFailed: "OS authentication failed. Nothing changed.\n",
@@ -266,7 +277,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   // at a real terminal, and never runs from inside an agent session (CHALITO_SESSION is set
   // by the adapters). Neither check alone is enough: `script -qc` supplies a pty.
   const mutating =
-    ["pair", "keys", "service", "devmode", "claude"].includes(cmd) || (cmd === "policy" && sub === "edit");
+    ["pair", "keys", "service", "devmode", "claude", "codex"].includes(cmd) || (cmd === "policy" && sub === "edit");
   if (mutating) {
     if (io.env.CHALITO_SESSION !== undefined) {
       io.err(t.inSession);
@@ -289,13 +300,31 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     io = { ...io, secrets };
     switch (cmd) {
       case "run": {
-        const d = await (io.daemon ?? runDaemon)({
-          home: io.home,
-          env: io.env,
-          secrets,
-          fetch: io.fetch,
-          now: io.now,
-        });
+        let d: Daemon;
+        try {
+          // Started by the desktop app: its per-launch IPC secret is the first line on stdin.
+          const ipcSecret = io.env.CHALITO_IPC === "stdin" ? await readIpcSecret(io.tty.input) : null;
+          d = await (io.daemon ?? runDaemon)({
+            home: io.home,
+            env: io.env,
+            secrets,
+            fetch: io.fetch,
+            now: io.now,
+            ipcSecret,
+          });
+        } catch (err) {
+          // Distinct codes so the desktop supervisor neither races another agent nor
+          // restarts in a loop while a setup step is missing.
+          if (err instanceof AlreadyRunningError) {
+            io.err(`${err.message}\n`);
+            return EXIT_ALREADY_RUNNING;
+          }
+          if (err instanceof OnboardingError) {
+            io.err(`${err.message}\n`);
+            return EXIT_NEEDS_SETUP;
+          }
+          throw err;
+        }
         await d.done;
         return 0;
       }
@@ -348,26 +377,28 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
         if (!KEY_SHAPE[provider].test(value)) io.err(t.keyShape(provider));
         await secrets.set(KEY_NAMES[provider], value);
         io.out(t.keySaved(provider));
-        // Setup time: pin Claude Code now if this computer is paired and nothing is pinned yet.
-        if (provider === "anthropic" && cfg && isPaired(cfg) && !cfg.claude) {
-          const found = which("claude", io.env, io.platform);
-          if (found) await claudePin(io, dir, locale, found);
-          else io.err(t.claudeNotFound);
+        // Setup time: pin the coding agent now if this computer is paired and nothing is pinned yet.
+        const tool = provider === "anthropic" ? "claude" : provider === "openai" ? "codex" : null;
+        if (tool && cfg && isPaired(cfg) && !cfg[tool]) {
+          const found = which(tool, io.env, io.platform);
+          if (found) await toolPin(io, dir, locale, tool, found);
+          else io.err(tool === "claude" ? t.claudeNotFound : t.codexNotFound);
         }
         return 0;
       }
 
-      case "claude": {
+      case "claude":
+      case "codex": {
         if (sub !== "pin") {
           io.err(USAGE);
           return 1;
         }
-        const found = arg ?? which("claude", io.env, io.platform);
+        const found = arg ?? which(cmd, io.env, io.platform);
         if (!found) {
-          io.err(t.claudeNotFound);
+          io.err(cmd === "claude" ? t.claudeNotFound : t.codexNotFound);
           return 1;
         }
-        return await claudePin(io, dir, locale, found);
+        return await toolPin(io, dir, locale, cmd, found);
       }
 
       case "service":
@@ -384,23 +415,30 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 };
 
 /** Resolves and hashes `found`, then rewrites the signed config with the pin. */
-const claudePin = async (io: CliIo, dir: string, locale: "es" | "en", found: string): Promise<number> => {
+const toolPin = async (
+  io: CliIo,
+  dir: string,
+  locale: "es" | "en",
+  tool: "claude" | "codex",
+  found: string,
+): Promise<number> => {
   const t = T[locale];
+  const needsPair = tool === "claude" ? t.pinNeedsPair : t.codexPinNeedsPair;
   const id = await loadOrCreateIdentity(io.secrets!);
   let cfg: AgentConfig;
   try {
     cfg = readConfig(dir, io.env, { keys: id.sign });
   } catch {
-    io.err(t.pinNeedsPair);
+    io.err(needsPair);
     return 1;
   }
   if (!isPaired(cfg)) {
-    io.err(t.pinNeedsPair);
+    io.err(needsPair);
     return 1;
   }
   const pin = await pinClaude(found);
-  writeConfig(dir, { ...cfg, claude: pin }, id.sign);
-  io.out(t.pinned(pin.path, pin.sha256));
+  writeConfig(dir, { ...cfg, [tool]: pin }, id.sign);
+  io.out((tool === "claude" ? t.pinned : t.codexPinned)(pin.path, pin.sha256));
   return 0;
 };
 
@@ -468,6 +506,12 @@ const status = async (io: CliIo, secrets: SecretStore, dir: string, cfg: AgentCo
     cfg?.claude
       ? `${cfg.claude.path} (pinned, sha256 ${cfg.claude.sha256.slice(0, 12)}…)`
       : "not pinned — `chalito claude pin`",
+  );
+  row(
+    "Codex",
+    cfg?.codex
+      ? `${cfg.codex.path} (pinned, sha256 ${cfg.codex.sha256.slice(0, 12)}…)`
+      : "not pinned — `chalito codex pin` (optional)",
   );
   let svc = "unknown";
   try {

@@ -4,10 +4,12 @@ import type { PhoneVerifier, SettingContext, SettingsValues } from "@chalito/ui"
 import { useT } from "../lib/i18n.js";
 import type { AgentIpc } from "../lib/ipc.js";
 import type { PushToTalk } from "../lib/voice.js";
+import type { LocalAgentApi } from "../lib/local-agent.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
 import { Rooms } from "./Rooms.js";
+import { LocalAgent } from "./LocalAgent.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { Settings } from "./Settings.js";
@@ -34,6 +36,8 @@ export interface PanelProps {
   hubPlansUrl: string;
   phoneVerifier: PhoneVerifier;
   updates?: UpdateController;
+  /** The bundled agent and the `chalito` command (release builds). */
+  localAgent?: LocalAgentApi;
   /** Salas: the rooms list and join; null while signed out. */
   rooms?: RoomsSource | null;
   initialTab?: Tab;
@@ -79,6 +83,7 @@ export const Panel = (p: PanelProps) => {
           />
         )}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
+        {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}
         {tab === "security" && p.client && <SecurityNotices client={p.client} />}
         {tab === "security" && <Security ipc={p.ipc} />}
         {tab === "voice" && <Voice ptt={p.ptt} />}

@@ -15,6 +15,9 @@ import type { AdapterEvent, SessionAdapter, SessionHandle, ToolCall, ToolGate } 
 import {
   AgentEvent,
   CommandEnvelope,
+  Id,
+  type CommandAcceptedMeta,
+  type CommandRejectedMeta,
   isSignedOrigin,
   type AdapterKind,
   type CommandBody,
@@ -28,6 +31,7 @@ import {
 import { ApprovalManager } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
+import { publicReason } from "./command-result.js";
 import type { DevMode } from "./devmode.js";
 import {
   PERMISSION_RANK,
@@ -46,6 +50,13 @@ import { Sealer } from "./sealing.js";
 import type { AgentStore } from "./store.js";
 
 /** Holds the local policy; `set` persists, re-hashes and reports `policyHash`. */
+
+/** What became of a command; `sid` when it started or targets a session. */
+export interface CommandResult {
+  ok: boolean;
+  reason?: string;
+  sid?: string;
+}
 export interface PolicyHolder {
   get(): Policy;
   set(p: Policy, via: "local" | "remote_tighten" | "preset_accepted"): Promise<void>;
@@ -131,18 +142,45 @@ export class AgentCore {
 
   // ---- commands ---------------------------------------------------------------
 
-  async handleCommand(id: string, doc: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> {
+  async handleCommand(id: string, doc: Record<string, unknown>): Promise<CommandResult> {
+    let result: CommandResult;
     try {
-      return await this.#handle(id, doc);
+      result = await this.#handle(id, doc);
     } catch (err) {
       this.d.log.error("command failed", { id, error: err instanceof Error ? err.message : "error" });
-      return { ok: false, reason: "internal" };
+      result = { ok: false, reason: "internal" };
     } finally {
       await this.d.store.deleteCommand(id).catch(() => undefined);
     }
+    await this.#publishResult(id, result);
+    return result;
   }
 
-  async #handle(id: string, doc: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> {
+  /**
+   * One audit row per command for the person's clients (metadata only, CommandAcceptedMeta /
+   * CommandRejectedMeta): accepted with the session id where there is one, or rejected with a
+   * closed reason. The cid is the command row's id, which the client chose; a malformed one is
+   * only logged.
+   */
+  async #publishResult(id: string, r: CommandResult): Promise<void> {
+    if (!Id.safeParse(id).success) return;
+    const meta: CommandAcceptedMeta | CommandRejectedMeta = r.ok
+      ? { cid: id, ...(r.sid ? { sid: r.sid } : {}) }
+      : { cid: id, reason: publicReason(r.reason) };
+    await this.d.store
+      .audit({
+        eid: randomUUID(),
+        t: this.d.now(),
+        type: r.ok ? "command.accepted" : "command.rejected",
+        meta: { ...meta },
+        source: "agent",
+      })
+      .catch((err: unknown) =>
+        this.d.log.warn("command.result_publish_failed", { id, error: err instanceof Error ? err.message : "error" }),
+      );
+  }
+
+  async #handle(id: string, doc: Record<string, unknown>): Promise<CommandResult> {
     const env = doc.env as Record<string, unknown> | undefined;
     const parsed = CommandEnvelope.safeParse(env);
     if (!parsed.success) {
@@ -168,7 +206,7 @@ export class AgentCore {
         this.#audit("remote_enable.rejected", { id, attempted: redact(attempted).slice(0, 64) });
         return { ok: false, reason: "remote_enable_rejected" };
       }
-      this.#audit("command.rejected", { id, reason: "invalid" });
+      this.d.log.warn("command.rejected", { id, reason: "invalid" });
       return { ok: false, reason: "invalid" };
     }
 
@@ -189,15 +227,12 @@ export class AgentCore {
     if (!(await this.d.nonces.claim(body.nonce, body.expiresAt, now))) return this.#reject(id, "replayed_nonce");
     if (!originAllowed(this.d.policy.get().origins, body.origin)) return this.#reject(id, "origin_disabled");
 
-    return this.#dispatch(body.cid, body.payload, body.origin, body);
+    const r = await this.#dispatch(body.cid, body.payload, body.origin, body);
+    const sid = (body.payload as { sid?: unknown }).sid;
+    return r.ok && !r.sid && typeof sid === "string" ? { ...r, sid } : r;
   }
 
-  async #dispatch(
-    cid: string,
-    p: CommandPayload,
-    origin: Origin,
-    body?: CommandBody,
-  ): Promise<{ ok: boolean; reason?: string }> {
+  async #dispatch(cid: string, p: CommandPayload, origin: Origin, body?: CommandBody): Promise<CommandResult> {
     const policy = this.d.policy.get();
     const open = <T>(ct: SealedEnvelope) => openJson<T>(ct, this.d.self.deviceId, this.d.self.box, `command:${cid}`);
     const aboveCeiling = (mode: RemotePermissionMode) =>
@@ -220,14 +255,19 @@ export class AgentCore {
               : false;
         if (!adapter || !enabled) return this.#reject(cid, "adapter_disabled");
         const prompt = await open<string>(p.promptCt);
-        await this.startSession({
-          adapter: p.adapter,
-          workspace: ws,
-          prompt,
-          origin,
-          permissionMode: p.permissionMode,
-        });
-        return { ok: true };
+        try {
+          const sid = await this.startSession({
+            adapter: p.adapter,
+            workspace: ws,
+            prompt,
+            origin,
+            permissionMode: p.permissionMode,
+          });
+          return { ok: true, sid };
+        } catch (err) {
+          this.d.log.error("session.start_failed", { cid, error: err instanceof Error ? err.message : "error" });
+          return this.#reject(cid, "start_failed");
+        }
       }
       case "session.prompt": {
         const s = this.sessions.get(p.sid);
@@ -574,8 +614,9 @@ export class AgentCore {
     return null;
   }
 
+  /** Logged with the internal reason here; the audit row (closed reason) comes from #publishResult. */
   #reject(id: string, reason: string): { ok: false; reason: string } {
-    this.#audit("command.rejected", { id, reason });
+    this.d.log.warn("command.rejected", { id, reason });
     return { ok: false, reason };
   }
 

@@ -158,7 +158,7 @@ describe("prompt_session → HIGH tool → only a signed phone decision releases
     const a = await agentFor(g.o, [pushTurn, pushTurn]);
 
     // A client-origin turn: autoApproveHigh lets the HIGH push run without asking.
-    expect(await a.startSigned("arregla el login")).toEqual({ ok: true });
+    expect(await a.startSigned("arregla el login")).toEqual({ ok: true, sid: expect.any(String) });
     await waitFor(() => a.fake.run.ran.length === 1);
     expect(a.store.pendingApprovals()).toHaveLength(0);
     const sid = [...a.core.sessions.keys()][0]!;
@@ -182,6 +182,7 @@ describe("prompt_session → HIGH tool → only a signed phone decision releases
     // Delivered to the agent: the MCP turn's HIGH push waits.
     expect(await a.core.handleCommand(queued.id, { env: queued.env, fromDeviceId: "mcp-gateway" })).toEqual({
       ok: true,
+      sid: expect.any(String),
     });
     await waitFor(() => a.store.pendingApprovals().length === 1);
     expect(a.store.pendingApprovals()[0]).toMatchObject({ origin: "mcp:claude", risk: "HIGH", stepUpRequired: true });

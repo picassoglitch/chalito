@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
-import { basename, delimiter } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { homedir } from "node:os";
 import type { SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv } from "@chalito/adapters/claude-code";
+import { CodexAdapter } from "@chalito/adapters/codex";
 import { loadLiabilityText } from "@chalito/config";
 import type { NonceStore, TrustedClientList } from "@chalito/crypto";
 import type { AdapterKind, DeviceEvent } from "@chalito/protocol";
@@ -13,12 +14,16 @@ import { checkClaudePin } from "./claude-pin.js";
 import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
-import { DevMode, DevModeStore, type DevModeTamper } from "./devmode.js";
+import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
+import { acquireInstanceLock } from "./instance-lock.js";
+import { ipcHandlers } from "./ipc-handlers.js";
+import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
+import { osAuthFor } from "./os-auth.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, type Logger } from "./redact.js";
-import { which } from "./runner.js";
+import { spawnRunner, which } from "./runner.js";
 import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
@@ -40,6 +45,24 @@ export const CLAUDE_PIN_FAILED = {
       ? "Claude Code updated itself: run `chalito claude pin` again in a terminal to trust the new version."
       : `The pinned Claude Code is no longer safe to run (${r === "world_writable" ? "anyone can modify it" : r}). Check it, then run \`chalito claude pin\` in a terminal.`,
 } as const;
+export const CODEX_PIN_FAILED = {
+  es: (r: string) =>
+    r === "hash_mismatch"
+      ? "Codex se actualizó: ejecuta `chalito codex pin` otra vez en una terminal para confiar en la versión nueva."
+      : r === "missing" || r === "not_pinned"
+        ? "El Codex fijado ya no está. Reinstálalo y ejecuta `chalito codex pin` en una terminal."
+        : `El Codex fijado ya no es seguro de ejecutar (${r === "world_writable" ? "cualquiera puede modificarlo" : r}). Revísalo y ejecuta \`chalito codex pin\` en una terminal.`,
+  en: (r: string) =>
+    r === "hash_mismatch"
+      ? "Codex was updated: run `chalito codex pin` again in a terminal to trust the new version."
+      : r === "missing" || r === "not_pinned"
+        ? "The pinned Codex isn't there any more. Reinstall it, then run `chalito codex pin` in a terminal."
+        : `The pinned Codex is no longer safe to run (${r === "world_writable" ? "anyone can modify it" : r}). Check it, then run \`chalito codex pin\` in a terminal.`,
+} as const;
+export const OPENAI_KEY_MISSING = {
+  es: "Codex está fijado pero falta tu API key de OpenAI. Guárdala con `chalito keys set openai`.",
+  en: "Codex is pinned but your OpenAI API key is missing. Save it with `chalito keys set openai`.",
+} as const;
 export const ANTHROPIC_KEY_MISSING = {
   es: "Falta tu API key de Anthropic. Guárdala con `chalito keys set anthropic`.",
   en: "Your Anthropic API key is missing. Save it with `chalito keys set anthropic`.",
@@ -57,11 +80,7 @@ export interface DaemonDeps {
   fetch?: FetchFn;
   /** Supabase in production; a fake with a MemoryStore in tests. */
   cloud?: (cfg: PairedConfig, mint: MintToken) => Cloud;
-  adapters?: (input: {
-    apiKey: string | null;
-    claudePath: string;
-    log: Logger;
-  }) => Partial<Record<AdapterKind, SessionAdapter>>;
+  adapters?: (input: AdapterInput) => Partial<Record<AdapterKind, SessionAdapter>>;
   nonces?: NonceStore;
   log?: Logger;
   now?: () => number;
@@ -73,6 +92,17 @@ export interface DaemonDeps {
   onSignal?: (sig: NodeJS.Signals, fn: () => void) => void;
   /** Off in tests that don't want fs watchers. */
   watchFiles?: boolean;
+  /** One agent per computer (instance-lock.ts); returns the release function. */
+  lock?: (dir: string) => () => void;
+  /**
+   * The per-launch secret from the desktop app that started this agent (ipc-server.ts). Without
+   * one (the OS service, a terminal) there is no IPC server.
+   */
+  ipcSecret?: string | null;
+  /** Defaults to ~/.chalito/agent.sock (a named pipe on Windows). */
+  ipcPath?: string;
+  /** The OS check for enabling Developer mode from the panel (os-auth.ts in production). */
+  osAuth?: () => OsAuth;
 }
 
 export interface Daemon {
@@ -85,8 +115,18 @@ export interface Daemon {
   readonly done: Promise<void>;
 }
 
-export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, claudePath, log }) =>
-  apiKey
+export interface AdapterInput {
+  /** BYO Anthropic key; null when missing. */
+  apiKey: string | null;
+  /** The pinned Claude Code, or null when its pin is missing or failed (Codex may still run). */
+  claudePath: string | null;
+  /** The pinned Codex and the BYO OpenAI key; absent unless both are there and the pin checks out. */
+  codex?: { path: string; apiKey: string; home: string; env: Record<string, string | undefined> };
+  log: Logger;
+}
+
+export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, claudePath, codex, log }) => ({
+  ...(apiKey && claudePath
     ? {
         "claude-code": new ClaudeCodeAdapter({
           apiKey,
@@ -95,7 +135,17 @@ export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, c
           onInit: (i) => log.info("adapter.init", { ...i }),
         }),
       }
-    : {};
+    : {}),
+  // BYO key only, through the adapter's env-key provider: Codex never logs in or stores it
+  // (R-L12), runs with Chalito's own CODEX_HOME and an allowlisted env, and refuses app-server
+  // builds outside DEFAULT_CODEX_VERSIONS. Sign in with ChatGPT stays off: the agent has no SIWC
+  // token lifecycle yet, and providers.yaml keeps it owner_only (D-003).
+  ...(codex
+    ? {
+        codex: new CodexAdapter({ codexPath: codex.path, apiKey: codex.apiKey, codexHome: codex.home, env: codex.env }),
+      }
+    : {}),
+});
 
 const isInterpreter = (p: string) => /^(node|nodejs|bun|tsx)(\.exe)?$/i.test(basename(p));
 
@@ -138,6 +188,23 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const dir = ensureChalitoDir(chalitoDir(deps.home ?? homedir()), (fixed) =>
     log.warn("chalito_dir.permissions_tightened", { fixed, dirMode: "0700", fileMode: "0600" }),
   );
+  // Before anything else: a second agent (the OS service and the desktop app) exits here.
+  const releaseLock = (deps.lock ?? acquireInstanceLock)(dir);
+  try {
+    return await startDaemon(deps, env, log, dir, releaseLock);
+  } catch (err) {
+    releaseLock();
+    throw err;
+  }
+};
+
+const startDaemon = async (
+  deps: DaemonDeps,
+  env: Record<string, string | undefined>,
+  log: Logger,
+  dir: string,
+  releaseLock: () => void,
+): Promise<Daemon> => {
   const now = deps.now ?? Date.now;
   const secrets =
     deps.secrets ?? (await openSecretStore({ env, warn: (m) => log.warn("secrets.file_store", { message: m }) }));
@@ -194,19 +261,12 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   });
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
-  const devMode = new DevMode({
+  const devModeBase = {
     store: devStore,
-    // The daemon never turns anything on: that happens in `chalito devmode on` or the desktop app.
-    osAuth: { verify: async () => false },
-    prompter: {
-      first: async () => false,
-      second: async () => false,
-      liability: async () => ({ checked: false, typed: "" }),
-    },
     liability: loadLiabilityText(cfg.locale),
     deviceId: id.deviceId,
     now,
-    emit: async (e) => {
+    emit: async (e: { type: string; [k: string]: unknown }) => {
       if (e.type !== "devmode.tampered") return log.warn("audit", e);
       log.error("audit", e);
       publish({
@@ -216,6 +276,17 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
         reason: e.reason as DevModeTamper,
         t: now(),
       });
+    },
+  };
+  const devMode = new DevMode({
+    ...devModeBase,
+    // The daemon never turns anything on by itself: that happens in `chalito devmode on`, or in
+    // the desktop panel through the IPC (which asks the OS and carries the person's answers).
+    osAuth: { verify: async () => false },
+    prompter: {
+      first: async () => false,
+      second: async () => false,
+      liability: async () => ({ checked: false, typed: "" }),
     },
   });
   const reportDevMode = async () => {
@@ -232,17 +303,29 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     });
   };
 
-  // Fail fast, before touching the cloud: run exactly the pinned Claude Code, never a PATH lookup.
+  // Fail fast, before touching the cloud: run exactly the pinned binaries, never a PATH lookup.
+  // Claude Code's pin failing is fatal only when there's no usable Codex either.
   const pin = await checkClaudePin(cfg.claude);
-  if (!pin.ok)
-    throw new OnboardingError(
-      pin.reason === "not_pinned" || pin.reason === "missing"
-        ? CLAUDE_MISSING[cfg.locale]
-        : CLAUDE_PIN_FAILED[cfg.locale](pin.reason),
-    );
-  const claudePath = cfg.claude!.path;
-  const apiKey = await secrets.get(SECRET_NAMES.anthropicApiKey);
-  if (!apiKey) log.error("adapter.claude_code_unavailable", { reason: ANTHROPIC_KEY_MISSING[cfg.locale] });
+  const claudeProblem = pin.ok
+    ? null
+    : pin.reason === "not_pinned" || pin.reason === "missing"
+      ? CLAUDE_MISSING[cfg.locale]
+      : CLAUDE_PIN_FAILED[cfg.locale](pin.reason);
+  const codexPin = cfg.codex ? await checkClaudePin(cfg.codex) : null;
+  const openaiKey = cfg.codex ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
+  if (codexPin && !codexPin.ok)
+    log.error("adapter.codex_unavailable", { reason: CODEX_PIN_FAILED[cfg.locale](codexPin.reason) });
+  else if (codexPin && !openaiKey) log.error("adapter.codex_unavailable", { reason: OPENAI_KEY_MISSING[cfg.locale] });
+  const codex =
+    codexPin?.ok && openaiKey
+      ? { path: cfg.codex!.path, apiKey: openaiKey, home: join(dir, "codex"), env: { ...env } }
+      : undefined;
+  if (claudeProblem && !codex) throw new OnboardingError(claudeProblem);
+  if (claudeProblem) log.error("adapter.claude_code_unavailable", { reason: claudeProblem });
+  const claudePath = claudeProblem ? null : cfg.claude!.path;
+  const apiKey = claudePath ? await secrets.get(SECRET_NAMES.anthropicApiKey) : null;
+  if (claudePath && !apiKey)
+    log.error("adapter.claude_code_unavailable", { reason: ANTHROPIC_KEY_MISSING[cfg.locale] });
 
   // Supabase (ADR 0017): the only data layer.
   const mint: MintToken = () => fetchDeviceToken(fetchFn, cfg, id, now());
@@ -258,7 +341,8 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
     agentBinaries: [...new Set([process.execPath, agentBin].filter((p): p is string => !!p && !isInterpreter(p)))],
     protectedPaths: [
       ...(agentBin ? servicePlanFiles(agentBin, deps.home ?? homedir()) : []),
-      claudePath,
+      ...(claudePath ? [claudePath] : []),
+      ...(cfg.codex ? [cfg.codex.path] : []),
       ...(agentBin ? [agentBin] : []),
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
@@ -266,7 +350,7 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
   const coreDeps: AgentCoreDeps = {
     classifyExtras: () => extras,
     store: signedInStore,
-    adapters: (deps.adapters ?? defaultAdapters)({ apiKey, claudePath, log }),
+    adapters: (deps.adapters ?? defaultAdapters)({ apiKey, claudePath, ...(codex ? { codex } : {}), log }),
     policy,
     devMode,
     trust: () => trust,
@@ -422,13 +506,45 @@ export const runDaemon = async (deps: DaemonDeps = {}): Promise<Daemon> => {
       await s.handle.interrupt().catch(() => undefined);
       s.handle.close();
     }
+    await ipc?.close().catch(() => undefined);
     await cloud.close().catch(() => undefined);
+    releaseLock();
     resolveDone();
     return done;
   };
   const onSignal = deps.onSignal ?? ((sig, fn) => process.once(sig, fn));
   onSignal("SIGTERM", () => void stop("SIGTERM"));
   onSignal("SIGINT", () => void stop("SIGINT"));
+
+  // The desktop panel's local IPC (only with the app's secret).
+  let ipc: IpcServer | null = null;
+  if (deps.ipcSecret) {
+    try {
+      ipc = await startIpcServer({
+        path: deps.ipcPath ?? ipcPath(dir),
+        secret: deps.ipcSecret,
+        handlers: ipcHandlers({
+          policy,
+          devMode,
+          devModeDeps: devModeBase,
+          osAuth:
+            deps.osAuth ??
+            (() =>
+              osAuthFor(process.platform, spawnRunner, (m) => log.warn("os_auth.notice", { message: m }), cfg.locale)),
+          liability: devModeBase.liability,
+          locale: () => cfg.locale,
+          store: signedInStore,
+          now,
+          reportDevMode,
+        }),
+        onError: (method, err) =>
+          log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),
+      });
+      log.info("ipc.ready", { path: ipc.path });
+    } catch (err) {
+      log.error("ipc.unavailable", { error: err instanceof Error ? err.message : "error" });
+    }
+  }
 
   log.info("agent.ready", {
     deviceId: id.deviceId,

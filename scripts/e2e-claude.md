@@ -19,7 +19,7 @@ Expect about 45 minutes. The run uses the local Supabase stack (`supabase start`
 | No claude.ai login that could take over | run `claude` once and type `/status`; whatever it shows, the agent strips `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` and pins `ANTHROPIC_API_KEY` |
 | Node 22 + pnpm, the repo built at the M3 head | `pnpm i && pnpm -r build` (or the compiled binary from `m3-build`) |
 | A running OS keychain (macOS Keychain, GNOME Keyring/KWallet on Linux) | `chalito keys set anthropic` succeeds. Without a reachable keychain (headless Linux) the agent falls back to the passphrase-encrypted `~/.chalito/secrets.enc` and warns. |
-| A **real terminal** you type in | `pair`, `keys`, `claude pin`, `policy edit`, `devmode` and `service` refuse piped stdin and refuse to run inside an agent session (`CHALITO_SESSION` set). Run them yourself, not through a script or an AI tool. |
+| A **real terminal** you type in | `pair`, `keys`, `claude pin`, `codex pin`, `policy edit`, `devmode` and `service` refuse piped stdin and refuse to run inside an agent session (`CHALITO_SESSION` set). Run them yourself, not through a script or an AI tool. |
 | **Local Supabase stack** (default): Docker + the Supabase CLI, then `supabase start` in the repo (applies `supabase/migrations`), plus `apps/api` running locally against it (step 1) | `supabase status` shows API on 54321; `curl localhost:8787/healthz` → `{"ok":true}` |
 | *Or* **dev cloud**: `api.chalito.chalyb.com` deployed | needs the owner's go (externally visible) |
 | The **test phone**: `scripts/e2e-phone.ts`, which holds a test client key in `~/.chalito-e2e-phone.json`, signs commands and decisions, and opens sealed details | `pnpm tsx scripts/e2e-phone.ts help` |
