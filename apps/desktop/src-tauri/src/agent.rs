@@ -27,6 +27,7 @@ const UNPAIRED_POLL: Duration = Duration::from_secs(10);
 const SETUP_POLL: Duration = Duration::from_secs(5);
 const SETUP_MAX_WAIT: Duration = Duration::from_secs(300);
 const ELSEWHERE_WAIT: Duration = Duration::from_secs(60);
+#[cfg(unix)]
 const STOP_GRACE: Duration = Duration::from_secs(5);
 const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 /// A run at least this long counts as healthy: the next crash starts the backoff over.

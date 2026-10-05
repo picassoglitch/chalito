@@ -93,8 +93,10 @@ pub enum InstallError {
 
 pub fn on_path(path_env: &str, dir: &Path, os: Os) -> bool {
     let sep = if os == Os::Windows { ';' } else { ':' };
+    // Separators normalized: the plan for one OS is also built (in tests) on another host.
     let norm = |s: &str| {
-        let t = s.trim_end_matches(['/', '\\']);
+        let t = s.replace('\\', "/");
+        let t = t.trim_end_matches('/');
         if os == Os::Windows { t.to_lowercase() } else { t.to_string() }
     };
     let want = norm(&dir.to_string_lossy());

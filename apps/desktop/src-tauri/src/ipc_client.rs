@@ -37,6 +37,7 @@ pub fn new_secret() -> Result<String, getrandom::Error> {
 }
 
 /// Enabling Developer mode waits for the person at the OS prompt; everything else is quick.
+#[cfg_attr(windows, allow(dead_code))] // a named-pipe file handle has no read timeout
 pub fn timeout_for(method: &str) -> Duration {
     if method == "enableDevToggle" {
         Duration::from_secs(300)
