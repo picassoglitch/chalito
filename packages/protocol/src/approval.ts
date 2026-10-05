@@ -142,9 +142,17 @@ export const StepUp = z
     method: z.enum(["webauthn", "platform_biometric", "typed_confirm"]),
     at: EpochMs,
     assertion: WebAuthnAssertion.optional(),
+    /**
+     * ADR 0020 (revoke-all): one assertion over SHA-256(JCS({ctx: "chalito.revoke-bundle.v1", L}))
+     * where L lists every command's body hash plus the server's entry. Only on device.revokeClient.
+     */
+    bundle: z.array(Hex64).min(1).max(501).optional(),
   })
   .refine((s) => s.method !== "webauthn" || s.assertion !== undefined, {
     message: "webauthn step-up must include the assertion",
+  })
+  .refine((s) => s.bundle === undefined || s.method === "webauthn", {
+    message: "a bundle step-up is a webauthn assertion",
   });
 
 export const DecisionBody = z
@@ -171,7 +179,8 @@ export const DecisionBody = z
   })
   .refine((d) => d.expiresAt > d.issuedAt && d.expiresAt - d.issuedAt <= APPROVAL_TTL_MS, {
     message: "decision expiry must be within 10 minutes of issue",
-  });
+  })
+  .refine((d) => d.stepUp?.bundle === undefined, { message: "decisions take a step-up over their own body only" });
 export type DecisionBody = z.infer<typeof DecisionBody>;
 
 /**

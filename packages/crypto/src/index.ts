@@ -14,5 +14,15 @@ export type { NonceStore } from "./nonce.js";
 export { ENDORSEMENT_MAX_AGE_MS, TrustedClientList, verifyWebAuthnBinding } from "./trust.js";
 export type { EndorseCheck } from "./trust.js";
 export type { TrustedClient, DecisionCheck, BindingCheck } from "./trust.js";
-export { verifyWebAuthnAssertion, stepUpChallenge, parseCoseKey, sha256 } from "./webauthn.js";
+export {
+  verifyWebAuthnAssertion,
+  stepUpChallenge,
+  stepUpBodyHash,
+  revokeAllServerEntry,
+  revokeBundleChallenge,
+  revokeBundleId,
+  REVOKE_BUNDLE_CTX,
+  parseCoseKey,
+  sha256,
+} from "./webauthn.js";
 export type { WebAuthnCredentialRef, WebAuthnAssertionInput, AssertionCheck } from "./webauthn.js";

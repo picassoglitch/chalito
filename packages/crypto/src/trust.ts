@@ -18,6 +18,10 @@ export interface TrustedClient {
    * CRITICAL approvals from this client need an assertion verified against it.
    */
   webauthn?: WebAuthnCredentialRef;
+  /** ADR 0020: the highest passkey sign counter this device accepted from this client. */
+  signCount?: number;
+  /** ADR 0020: the revoke bundle (revokeBundleId) that counter was accepted for, if any. */
+  signBundle?: string;
 }
 
 export type BindingCheck =
@@ -238,6 +242,26 @@ export class TrustedClientList {
       ...(webauthn ? { webauthn } : {}),
     });
     return { ok: true, passkey: webauthn !== undefined };
+  }
+
+  /**
+   * ADR 0020: accepts a verified assertion's sign counter from a trusted client only if it moved
+   * forward, or repeats the counter of the same bundle (several commands of one revoke-all reach
+   * this device). A counter of 0 on both sides is an authenticator without counters: accepted
+   * (each command's own nonce and expiry still bound replay). The caller persists the list.
+   */
+  acceptSignCount(deviceId: string, signCount: number, bundle?: string): boolean {
+    const c = this.#clients.get(deviceId);
+    if (!c) return false;
+    const stored = c.signCount ?? 0;
+    const ok =
+      signCount > stored ||
+      (signCount === 0 && stored === 0) ||
+      (signCount === stored && bundle !== undefined && bundle === c.signBundle);
+    if (!ok) return false;
+    const { signBundle: _old, ...rest } = c;
+    this.#clients.set(deviceId, { ...rest, signCount, ...(bundle !== undefined ? { signBundle: bundle } : {}) });
+    return true;
   }
 
   /** Revocation takes effect immediately, whatever the server still delivers, and sticks. */

@@ -14,8 +14,11 @@ import {
   generateSigningKeyPair,
   openJson,
   randomNonce,
+  revokeAllServerEntry,
+  revokeBundleChallenge,
   sealJson,
   signEnvelope,
+  stepUpBodyHash,
   stepUpChallenge,
   toB64url,
   verifyEnvelope,
@@ -649,6 +652,90 @@ describe("revoking another client takes a passkey step-up (review R-L1)", () => 
   it("while no trusted client has a passkey, a plain revoke still works", async () => {
     const { h, tablet, revoke } = await setup({ phonePasskey: false });
     expect(await revoke(h.phone, tablet.id)).toEqual({ ok: true });
+  });
+});
+
+describe("revoke-all: one passkey assertion over a bundle of commands (ADR 0020)", () => {
+  const setup = async () => {
+    const h = await harness();
+    const others = [await device("dev_tablet"), await device("dev_laptop"), await device("dev_tv")];
+    for (const d of others)
+      await h.trust.addConfirmed({ deviceId: d.id, pubSign: d.pubSign, pubBox: d.pubBox }, Date.now());
+    let n = 0;
+    const unsigned = async (target: string): Promise<Record<string, unknown>> => ({
+      v: 1,
+      cid: `rb${++n}`,
+      uid: OWNER,
+      targetDeviceId: h.agent.id,
+      origin: `client:${h.phone.id}`,
+      nonce: await randomNonce(),
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      payload: { type: "device.revokeClient", clientDeviceId: target },
+    });
+    /** The client's side: hashes, the server entry, ONE assertion, the bundle on every body. */
+    const bundle = async (bodies: Record<string, unknown>[], extra: string[] = []) => {
+      const server = await revokeAllServerEntry({ uid: OWNER, deviceId: h.phone.id, challenge: "srv-challenge" });
+      const L = [...(await Promise.all(bodies.map((b) => stepUpBodyHash(b)))), ...extra, server];
+      const assertion = await h.passkey.stepUp(h.passkeyRef.rpId)(await revokeBundleChallenge(L));
+      for (const b of bodies) b.stepUp = { method: "webauthn", at: Date.now(), assertion, bundle: L };
+      return L;
+    };
+    const send = async (body: Record<string, unknown>) => {
+      const env = await signEnvelope("chalito.command.v1", body, h.phone.id, h.phone.sign.secretKey);
+      return h.core.handleCommand(String(body.cid), { env, fromDeviceId: h.phone.id });
+    };
+    return { h, others, unsigned, bundle, send };
+  };
+
+  it("one assertion covers every command of the bundle", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const bodies = await Promise.all(others.map((d) => unsigned(d.id)));
+    await bundle(bodies);
+    for (const b of bodies) expect(await send(b)).toEqual({ ok: true });
+    for (const d of others) expect(h.trust.has(d.id)).toBe(false);
+  });
+
+  it("a command that isn't in the bundle is refused, even carrying the bundle's assertion", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const [inside, outside] = [await unsigned(others[0]!.id), await unsigned(others[1]!.id)];
+    await bundle([inside]);
+    outside.stepUp = inside.stepUp;
+    expect(await send(outside)).toEqual({ ok: false, reason: "step_up_not_in_bundle" });
+    expect(h.trust.has(others[1]!.id)).toBe(true);
+    expect(await send(inside)).toEqual({ ok: true });
+  });
+
+  it("a bundle whose hashes were changed after the ceremony fails the assertion", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const b = await unsigned(others[0]!.id);
+    const L = await bundle([b]);
+    const forged = await unsigned(others[1]!.id);
+    forged.stepUp = { ...(b.stepUp as object), bundle: [...L, await stepUpBodyHash(forged)] };
+    expect(await send(forged)).toEqual({ ok: false, reason: "step_up_wrong_challenge" });
+    expect(h.trust.has(others[1]!.id)).toBe(true);
+  });
+
+  it("a withheld command from an old bundle is refused once the passkey signed something newer", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const [first, withheld] = [await unsigned(others[0]!.id), await unsigned(others[1]!.id)];
+    await bundle([first, withheld]);
+    expect(await send(first)).toEqual({ ok: true });
+    // A newer revoke-all (the counter moves forward on this computer).
+    const newer = await unsigned(others[2]!.id);
+    await bundle([newer]);
+    expect(await send(newer)).toEqual({ ok: true });
+    expect(await send(withheld)).toEqual({ ok: false, reason: "step_up_replayed" });
+    expect(h.trust.has(others[1]!.id)).toBe(true);
+  });
+
+  it("only device.revokeClient can carry a bundle", async () => {
+    const { unsigned, bundle } = await setup();
+    const b = await unsigned("dev_tablet");
+    await bundle([b]);
+    const { CommandBody } = await import("@chalito/protocol");
+    expect(CommandBody.safeParse(b).success).toBe(true);
+    expect(CommandBody.safeParse({ ...b, payload: { type: "devmode.off" } }).success).toBe(false);
   });
 });
 

@@ -80,6 +80,10 @@ export const CommandBody = z
   // Upper bound only: an already-expired command still parses, so the agent can reject it as "expired".
   .refine((b) => b.expiresAt - b.issuedAt <= COMMAND_TTL_MS, {
     message: "commands expire within 10 minutes of being issued",
+  })
+  // ADR 0020: a bundle step-up (revoke-all) authorizes revokes only.
+  .refine((b) => b.stepUp?.bundle === undefined || b.payload.type === "device.revokeClient", {
+    message: "a bundle step-up only covers device.revokeClient",
   });
 export type CommandBody = z.infer<typeof CommandBody>;
 
