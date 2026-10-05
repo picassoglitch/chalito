@@ -7,8 +7,14 @@ variable "project_number" {
   type = string
 }
 
-variable "amount_usd" {
+variable "amount" {
   type = number
+}
+
+# Must match the billing account's currency (the API rejects any other).
+variable "currency_code" {
+  type    = string
+  default = "USD"
 }
 
 variable "alert_email" {
@@ -33,8 +39,8 @@ resource "google_billing_budget" "this" {
 
   amount {
     specified_amount {
-      currency_code = "USD"
-      units         = tostring(var.amount_usd)
+      currency_code = var.currency_code
+      units         = tostring(var.amount)
     }
   }
 

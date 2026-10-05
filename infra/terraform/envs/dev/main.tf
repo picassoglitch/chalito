@@ -400,7 +400,8 @@ module "budget" {
   source          = "../../modules/budget"
   billing_account = var.billing_account
   project_number  = var.project_number
-  amount_usd      = var.monthly_budget_usd
+  amount          = var.monthly_budget
+  currency_code   = var.budget_currency
   alert_email     = var.alert_email
 
   depends_on = [module.project_services]
