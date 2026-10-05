@@ -32,6 +32,11 @@ export interface ApiConfig {
   skewMs: number;
   /** Proxies in front of Cloud Run that append to X-Forwarded-For (an external load balancer: 1). */
   trustedProxies?: number;
+  /**
+   * Browser origins allowed to call the api (CORS): the web app (CHALITO_WEB_ORIGIN) and the desktop
+   * webview (CHALITO_DESKTOP_ORIGINS). Exact matches only. Absent or empty: no CORS headers.
+   */
+  corsOrigins?: readonly string[];
 }
 
 export interface Deps {
