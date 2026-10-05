@@ -92,6 +92,7 @@ export const API_ROUTES: RouteTable = {
   "GET /v1/store/catalog": user(60, 1, 0),
   "POST /v1/store/purchase": user(20, 0.5, 2 * KB),
   "POST /v1/store/equip": user(60, 1, 2 * KB),
+  "GET /v1/billing/balance": user(60, 1, 0),
 
   // Rooms (sealed payloads)
   "POST /v1/rooms": user(20, 0.2, MEDIUM),
@@ -100,6 +101,7 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/rooms/:roomId/members/:companionId/devices": user(30, 0.5, MEDIUM),
   "POST /v1/rooms/:roomId/keys": user(30, 0.5, SEALED),
   "POST /v1/rooms/:roomId/leave": user(20, 0.2),
+  "POST /v1/rooms/:roomId/members/:companionId/remove": user(20, 0.2),
   "POST /v1/rooms/:roomId/rotate": user(20, 0.2, SEALED),
   "POST /v1/rooms/:roomId/dissolve": user(10, 0.1),
   "POST /v1/rooms/:roomId/events": user(120, 5, SEALED),

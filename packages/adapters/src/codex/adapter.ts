@@ -136,6 +136,9 @@ export const codexLaunch = (
   // passphrase, no other providers' keys reach a model-driven process and its children.
   const env = allowedEnv(config.env ?? process.env);
   env.CODEX_HOME = config.codexHome ?? join(homedir(), ".chalito", "codex");
+  // Marks everything Codex runs as inside a Chalito session: the `chalito` CLI refuses to change
+  // keys, trust, policy or Developer mode from here (as with Claude Code).
+  env.CHALITO_SESSION = "1";
   const args = ["app-server", "--listen", "stdio://"];
   for (const o of HARDENING_OVERRIDES) args.push("-c", o);
   if (config.chatgptPlan) {

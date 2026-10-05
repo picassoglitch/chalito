@@ -22,9 +22,11 @@ import {
   generateRoomKey,
   openJson,
   randomNonce,
+  revokeAllServerEntry,
   sealJson,
   sha256,
   signEnvelope,
+  stepUpBodyHash,
   toB64url,
   utf8,
   verifyEnvelope,
@@ -40,7 +42,7 @@ import {
   signDeviceRegistration,
   type ApiClient,
 } from "@chalito/client-keys";
-import { generateShortCode } from "@chalito/glyph";
+import { generateShortCode, signGlyph, verifyGlyph } from "@chalito/glyph";
 import { EndorsementBody } from "@chalito/protocol";
 import type { DeviceRegistration, Endorsement, GlyphPayload, SealedEnvelope } from "@chalito/protocol";
 import type { PhoneVerifier } from "@chalito/ui";
@@ -52,6 +54,7 @@ import { passkeyRef, savePasskeyRef } from "@/lib/keys";
 import { httpStore } from "@/lib/store";
 import { parseUsage, type UsageApi } from "@/lib/usage";
 import { httpAccount } from "@/lib/account";
+import { httpBalance } from "@/lib/balance";
 import { DEV_CATALOG } from "./catalog";
 import { sealRoomEvent, unwrapKeyring, wrapRoomKeyFor } from "@chalito/rooms";
 import { DEV_MARKER, FakeDb } from "./fake-db";
@@ -131,6 +134,8 @@ export interface DevControls {
     balance(): number;
     setBalance(tokens: number): void;
     failNextPurchase(how: "hub_unavailable" | "network"): void;
+    /** GET /v1/billing/balance: the hub answers, says unlimited (hub admins), or is down (503). */
+    setBalanceMode(mode: "ok" | "unlimited" | "down"): void;
     /** Purchases as the api recorded them (purchaseId → charged). */
     purchases(): Record<string, { cosmeticId: string; charged: number }>;
     seedCompanion(avatar: string): void;
@@ -146,6 +151,12 @@ export interface DevControls {
     /** A one-use invite code to another room ("Proyecto"), keyed to this device on join. */
     inviteCode: string;
     reports(): Row[];
+    /** Ana's companion joins a room with a code this browser's invite returned. */
+    anaJoins(shortCode: string): void;
+    /** Ana leaves the seeded room (it then needs a key rotation). */
+    anaLeaves(): void;
+    /** What the api recorded: rotations (epoch, companions wrapped) and invites (glyph checks). */
+    log(): Row[];
   };
   /** apps/orchestrator's Mesa routes, simulated (M9): the plan's brain limit, energy, the MCP inbox. */
   mesa: {
@@ -887,7 +898,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     post: async <T>(path: string, body: unknown): Promise<T> => {
       const b = body as Record<string, unknown>;
       db.clientWrites.push({ table: "api", op: path.replace(/^\/v1\//, ""), row: { ...b } });
-      if (path.startsWith("/v1/rooms/")) {
+      if (path === "/v1/rooms" || path.startsWith("/v1/rooms/")) {
         if (role() !== "client") throw fail(403, "forbidden");
         return (await roomsApi(path, b)) as T;
       }
@@ -932,13 +943,29 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           await endorse(c, b.endorsement as Endorsement, me.deviceId);
           return { ok: true } as T;
         }
+        case "/v1/webauthn/assert/options": {
+          // A fresh, single-use server challenge (the revoke-all bundle binds it, ADR 0020).
+          needRole("client");
+          lastAssertion.value = `dev_challenge_${Math.random().toString(36).slice(2)}`;
+          return { options: { challenge: lastAssertion.value, rpId: "localhost" } } as T;
+        }
         case "/v1/devices/revoke-all": {
-          // apps/api/src/routes/devices.ts: passkey mandatory, then revoke + ban every other client
-          // and queue the caller's signed revokeClient commands (checked: signer, signature, target).
+          // apps/api/src/routes/devices.ts: passkey mandatory; ONE assertion over the bundle L, whose
+          // server entry binds the challenge above (ADR 0020). Then revoke + ban every other client
+          // and queue the caller's signed revokeClient commands (signer, signature, target, in L).
           needRole("client");
           if (!passkeyRef()) throw fail(403, "passkey_required");
-          if (!b.stepUp) throw fail(401, "step_up_required");
-          if ((b.stepUp as { id?: unknown }).id !== lastAssertion.value) throw fail(401, "step_up_failed");
+          const step = b.stepUp as { bundle?: string[]; assertion?: { credentialId?: string } } | undefined;
+          if (!step?.bundle) throw fail(401, "step_up_required");
+          const challenge = lastAssertion.value;
+          lastAssertion.value = null;
+          if (
+            !challenge ||
+            step.assertion?.credentialId !== passkeyRef()!.credentialId ||
+            !step.bundle.includes(await revokeAllServerEntry({ uid: OWNER, deviceId: me.deviceId, challenge }))
+          )
+            throw fail(401, "step_up_failed");
+          const bundle = step.bundle;
           const others = db
             .rows("devices")
             .filter((r) => r.role === "client" && !r.revoked && r.device_id !== me.deviceId)
@@ -952,11 +979,13 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           let queued = 0;
           const refused: string[] = [];
           for (const cmd of (b.commands as {
-            body: { cid: string; targetDeviceId: string; payload: { type: string } };
+            body: { cid: string; targetDeviceId: string; payload: { type: string }; stepUp?: { bundle?: string[] } };
             signerDeviceId: string;
           }[]) ?? []) {
             const ok =
               cmd.signerDeviceId === me.deviceId &&
+              JSON.stringify(cmd.body.stepUp?.bundle) === JSON.stringify(bundle) &&
+              bundle.includes(await stepUpBodyHash(cmd.body as never)) &&
               cmd.body.payload.type === "device.revokeClient" &&
               agents.includes(cmd.body.targetDeviceId) &&
               (
@@ -1259,7 +1288,26 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     return reply(404, { error: "not_found" });
   }) as typeof fetch;
   const store = httpStore("http://dev.invalid", async () => db.session?.access_token ?? null, storeFetch);
+  // ---- GET /v1/billing/balance (apps/api src/billing/routes.ts), simulated: the store's balance --
+  let balanceMode: "ok" | "unlimited" | "down" = "ok";
+  const balanceFetch = (async () => {
+    db.clientWrites.push({ table: "api", op: "billing/balance", row: {} });
+    if (!role() || role() === "agent") return reply(403, { error: "forbidden" });
+    if (balanceMode === "down") return reply(503, { error: "hub_unavailable" });
+    const unlimited = balanceMode === "unlimited";
+    return reply(200, {
+      remaining: unlimited ? Number.MAX_SAFE_INTEGER : balance,
+      unlimited,
+      monthlyAllocation: 1_000_000,
+      bonus: 50_000,
+      monthlyUsed: 750_000,
+      reserved: 12_000,
+      periodStart: "2026-10-01T00:00:00.000Z",
+    });
+  }) as typeof fetch;
+  const balanceApi = httpBalance("http://dev.invalid", async () => db.session?.access_token ?? null, balanceFetch);
   controls.storeState = {
+    setBalanceMode: (m) => void (balanceMode = m),
     balance: () => balance,
     setBalance: (n) => void (balance = n),
     failNextPurchase: (how) => void (failNext = how),
@@ -1344,7 +1392,42 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   };
   const isMember = (roomId: string, companion: string) =>
     db.rows("room_members").some((m) => m.room_id === roomId && m.companion_id === companion);
+  const anaDevice = await newDevice();
+  const invites = new Map<string, string>(); // shortCode → roomId
+  const roomLog: Row[] = [];
+  const roomRow = (roomId: string) => db.rows("rooms").find((r) => r.room_id === roomId);
+  const isOwner = (roomId: string, companion: string) => roomRow(roomId)?.owner_companion_id === companion;
+  const membersOf = (roomId: string) =>
+    db
+      .rows("room_members")
+      .filter((m) => m.room_id === roomId)
+      .map((m) => String(m.companion_id));
+  const keyRows = (roomId: string, companion: string, epoch: number, wrapped: Record<string, string>) => {
+    for (const [deviceId, ct] of Object.entries(wrapped))
+      if (deviceId === me.deviceId)
+        db.insert("room_member_keys", { room_id: roomId, companion_id: companion, device_id: deviceId, epoch, ct });
+  };
   const roomsApi = async (path: string, b: Row): Promise<unknown> => {
+    // POST /v1/rooms: the creator's client generated epoch 1 and wrapped it to its own devices.
+    if (path === "/v1/rooms") {
+      if (db.rows("rooms").filter((r) => r.owner_companion_id === b.companionId).length >= 3)
+        throw fail(402, "room_limit");
+      const wrapped = b.wrappedKeys as Record<string, string>;
+      db.insert("rooms", {
+        room_id: b.roomId,
+        type: b.type,
+        name: b.name,
+        owner_companion_id: b.companionId,
+        key_epoch: 1,
+        needs_rotation: false,
+        ephemeral_ttl: "PT24H",
+        keep_promoted: true,
+      });
+      db.insert("room_members", { room_id: b.roomId, companion_id: b.companionId, role: "owner" });
+      keyRows(String(b.roomId), String(b.companionId), 1, wrapped);
+      roomLog.push({ op: "create", roomId: b.roomId, devices: Object.keys(wrapped).sort() });
+      return { roomId: b.roomId, keyEpoch: 1 };
+    }
     if (path === "/v1/rooms/join") {
       if (b.shortCode !== INVITE || inviteUsed) throw fail(404, "invite_not_found");
       inviteUsed = true;
@@ -1353,17 +1436,73 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       await keyMe(PROJECT, String(b.companionId)); // a member's client wraps the key to the newcomer
       return { roomId: PROJECT };
     }
-    const m = /^\/v1\/rooms\/([^/]+)\/(events|leave|reports)$/.exec(path);
+    const m =
+      /^\/v1\/rooms\/([^/]+)\/(events|leave|reports|invites|rotate|dissolve|retention|members\/([^/]+)\/(devices|remove))$/.exec(
+        path,
+      );
     if (!m) throw fail(404, "not_found");
     const roomId = decodeURIComponent(m[1]!);
-    if (!isMember(roomId, String(b.companionId))) throw fail(403, "not_a_member");
-    if (m[2] === "events") {
+    const actor = String(b.companionId);
+    if (!roomRow(roomId)) throw fail(404, "room_not_found");
+    if (!isMember(roomId, actor)) throw fail(403, "not_a_member");
+    const what = m[4] ?? m[2];
+    const target = m[3] ? decodeURIComponent(m[3]) : null;
+    if (what === "events") {
+      if (roomRow(roomId)!.needs_rotation) throw fail(409, "rotation_pending");
       insertEvent(roomId, b as never);
       return { ok: true };
     }
-    if (m[2] === "leave") {
-      db.remove("room_members", (r) => r.room_id === roomId && r.companion_id === b.companionId);
-      db.pointer({ table: "room_members", op: "kicked", key: { companion_id: b.companionId } });
+    if (what === "leave") {
+      db.remove("room_members", (r) => r.room_id === roomId && r.companion_id === actor);
+      db.update("rooms", (r) => r.room_id === roomId, { needs_rotation: true });
+      db.pointer({ table: "room_members", op: "kicked", key: { companion_id: actor } });
+      return {};
+    }
+    if (what === "invites") {
+      const glyph = b.glyph as GlyphPayload;
+      const ok = (await verifyGlyph(glyph, Date.now())).ok && glyph.body.issuerPubSign === me.pubSign;
+      roomLog.push({ op: "invite", roomId, purpose: glyph.body.purpose, signedByMe: ok, maxUses: b.maxUses });
+      if (!ok || glyph.body.purpose !== "room_invite") throw fail(400, "bad_glyph");
+      const shortCode = await generateShortCode();
+      invites.set(shortCode, roomId);
+      return { inviteId: glyph.body.codeId, shortCode, expiresAt: glyph.body.expiresAt };
+    }
+    if (what === "devices") {
+      // Each member's client devices, for wrapping: this browser for us, one phone for Ana.
+      if (target === ANA) return { devices: [{ deviceId: anaDevice.deviceId, pubBox: anaDevice.pubBox }] };
+      return { devices: [{ deviceId: me.deviceId, pubBox: me.pubBox }] };
+    }
+    if (what === "rotate") {
+      const room = roomRow(roomId)!;
+      const wrapped = b.wrappedKeys as Record<string, Record<string, string>>;
+      if (b.epoch !== Number(room.key_epoch ?? 1) + 1) throw fail(409, "stale_epoch");
+      if (Object.keys(wrapped).sort().join() !== membersOf(roomId).sort().join()) throw fail(400, "bad_request");
+      db.update("rooms", (r) => r.room_id === roomId, { key_epoch: b.epoch, needs_rotation: false });
+      keyRows(roomId, actor, Number(b.epoch), wrapped[actor] ?? {});
+      roomLog.push({ op: "rotate", roomId, epoch: b.epoch, companions: Object.keys(wrapped).sort() });
+      return {};
+    }
+    if (what === "retention") {
+      if (!isOwner(roomId, actor)) throw fail(403, "not_owner");
+      const r = b.retention as { ephemeralTtl: string; keepPromoted: boolean };
+      db.update("rooms", (x) => x.room_id === roomId, { ephemeral_ttl: r.ephemeralTtl, keep_promoted: r.keepPromoted });
+      roomLog.push({ op: "retention", roomId, ...r });
+      return { retention: r };
+    }
+    if (what === "dissolve") {
+      if (!isOwner(roomId, actor)) throw fail(403, "not_owner");
+      db.remove("rooms", (r) => r.room_id === roomId);
+      db.remove("room_members", (r) => r.room_id === roomId);
+      roomLog.push({ op: "dissolve", roomId });
+      db.pointer({ table: "rooms", op: "dissolve" });
+      return {};
+    }
+    if (what === "remove") {
+      if (!isOwner(roomId, actor) || target === actor) throw fail(403, "not_owner");
+      if (!isMember(roomId, target!)) throw fail(404, "member_not_found");
+      db.remove("room_members", (r) => r.room_id === roomId && r.companion_id === target);
+      db.update("rooms", (r) => r.room_id === roomId, { needs_rotation: true });
+      roomLog.push({ op: "remove", roomId, target });
       return {};
     }
     if (reports.length >= 10) throw fail(429, "rate_limited");
@@ -1412,6 +1551,19 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     },
     inviteCode: INVITE,
     reports: () => reports.map((r) => ({ ...r })),
+    anaJoins: (code) => {
+      const roomId = invites.get(code);
+      if (!roomId) throw new Error("unknown invite");
+      invites.delete(code);
+      db.insert("room_members", { room_id: roomId, companion_id: ANA, role: "member" });
+      db.pointer({ table: "room_members", op: "enter", key: { companion_id: ANA } });
+    },
+    anaLeaves: () => {
+      db.remove("room_members", (r) => r.room_id === ROOM && r.companion_id === ANA);
+      db.update("rooms", (r) => r.room_id === ROOM, { needs_rotation: true });
+      db.pointer({ table: "rooms", op: "update" });
+    },
+    log: () => roomLog.map((r) => ({ ...r })),
   };
 
   // ---- apps/orchestrator Mesa routes (/v1/mesas, turns, decisions check, brain-keys), simulated --
@@ -1718,10 +1870,26 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
               trustedAgents: () => TrustedAgent[];
             },
             // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
-            stepUp: async ({ risk }) =>
-              passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
+            // A revoke-all bundle (ADR 0020) is a passkey assertion, shaped like the real one.
+            stepUp: async ({ risk }, unsigned) =>
+              passkeyRef() && (await confirmStepUp(risk))
+                ? unsigned?.ctx === "chalito.revoke-bundle.v1"
+                  ? {
+                      method: "webauthn",
+                      at: Date.now(),
+                      assertion: {
+                        credentialId: passkeyRef()!.credentialId,
+                        authenticatorData: "ZGV2",
+                        clientDataJSON: "ZGV2",
+                        signature: "ZGV2",
+                      },
+                    }
+                  : { method: "platform_biometric", at: Date.now() }
+                : null,
             forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
             roomKeyring: (rows: readonly { epoch: number; ct: string }[]) => unwrapKeyring(rows, me.box),
+            signGlyph: (body) => signGlyph(body, me.sign.secretKey),
+            identity: { pubSign: me.pubSign, pubBox: me.pubBox },
           }
         : null,
     deviceLogin: (k, owner) => async () => {
@@ -1744,6 +1912,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     mesa: () => mesaApi,
     store: () => store,
     account: () => account,
+    balance: () => balanceApi,
     endorseWatch,
     saveDeviceKeys,
     trustIntroduced,

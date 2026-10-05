@@ -17,6 +17,12 @@ import { SealedEnvelope, signed } from "./crypto.js";
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
 export const DevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical", "bypassStyle"]);
 export type DevModeToggle = z.infer<typeof DevModeToggle>;
+/**
+ * The toggles a person may turn ON locally (CLI or desktop panel, OS auth + three confirmations).
+ * `bypassStyle` can only be turned off.
+ */
+export const EnableableDevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical"]);
+export type EnableableDevModeToggle = z.infer<typeof EnableableDevModeToggle>;
 
 /** Policy presets proposed from the cloud; they take effect only after acceptance on the device. */
 export const PolicyPreset = z.enum(["estricto", "estandar", "relajado"]);
@@ -80,6 +86,10 @@ export const CommandBody = z
   // Upper bound only: an already-expired command still parses, so the agent can reject it as "expired".
   .refine((b) => b.expiresAt - b.issuedAt <= COMMAND_TTL_MS, {
     message: "commands expire within 10 minutes of being issued",
+  })
+  // ADR 0020: a bundle step-up (revoke-all) authorizes revokes only.
+  .refine((b) => b.stepUp?.bundle === undefined || b.payload.type === "device.revokeClient", {
+    message: "a bundle step-up only covers device.revokeClient",
   });
 export type CommandBody = z.infer<typeof CommandBody>;
 

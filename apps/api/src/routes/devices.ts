@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { fromB64url, verifyEnvelope } from "@chalito/crypto";
+import { fromB64url, stepUpBodyHash, verifyEnvelope } from "@chalito/crypto";
 import { z } from "zod";
 import {
   EnrollEndorsedClientRequest,
@@ -7,6 +7,7 @@ import {
   RefreshChallenge,
   RevokeDeviceRequest,
   SignedCommand,
+  StepUp,
 } from "@chalito/protocol";
 import type { Deps } from "../deps.js";
 import { endDeviceVoice } from "../voice/routes.js";
@@ -15,12 +16,15 @@ import { buildDeviceDoc, checkRegistration, mintDeviceToken } from "../lib/devic
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { hashRecoveryCode } from "../lib/recovery.js";
-import { verifyStepUp } from "../lib/step-up.js";
+import { verifyBundleStepUp } from "../lib/step-up.js";
 import { webauthnConfigFromEnv, type WebAuthnConfig } from "./webauthn.js";
 
 const RevokeAllRequest = z.object({
-  /** The caller's passkey assertion (challenge from POST /v1/webauthn/assert/options). */
-  stepUp: z.unknown().optional(),
+  /**
+   * ADR 0020: the caller's ONE passkey assertion over the bundle L (each command's body hash plus
+   * the server's entry over its challenge from POST /v1/webauthn/assert/options).
+   */
+  stepUp: StepUp.optional(),
   /**
    * `device.revokeClient` commands signed by the caller, one per (agent, revoked client), so each
    * agent drops the revoked clients from its trusted list. The server can't sign them itself.
@@ -29,6 +33,9 @@ const RevokeAllRequest = z.object({
 });
 
 const CLIENT_KINDS = ["phone", "web"] as const;
+
+const sameBundle = (a: readonly string[] | undefined, b: readonly string[]) =>
+  a !== undefined && a.length === b.length && a.every((x, i) => x === b[i]);
 
 export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFromEnv()) => {
   const app = new Hono<AuthEnv>();
@@ -188,7 +195,7 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
     if (!caller || caller.revoked !== false || caller.role !== "client") return fail(403, "forbidden");
     // Mandatory step-up: without a passkey on this device, revoke-all isn't available.
     if (!(await deps.repo.getDeviceWebAuthn(p.owner, caller.deviceId))) return fail(403, "passkey_required");
-    const step = await verifyStepUp(deps, wa, {
+    const step = await verifyBundleStepUp(deps, wa, {
       owner: p.owner,
       uid: p.uid,
       deviceId: caller.deviceId,
@@ -214,6 +221,7 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
     }
 
     // Queue the caller's signed revokeClient commands; anything else in the list is refused.
+    const bundle = body.data.stepUp?.bundle ?? [];
     const agents = new Set(await deps.repo.activeAgents(p.owner));
     const pub = new Map([[caller.deviceId, await fromB64url(caller.pubSign)]]);
     let queued = 0;
@@ -228,6 +236,9 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
         agents.has(b.targetDeviceId) &&
         b.payload.clientDeviceId !== caller.deviceId &&
         b.expiresAt > now &&
+        // Covered by the one assertion: the same bundle, and this command's own hash in it.
+        sameBundle(b.stepUp?.bundle, bundle) &&
+        bundle.includes(await stepUpBodyHash(b)) &&
         (await verifyEnvelope(cmd, "chalito.command.v1", pub)).ok;
       if (!ok) {
         refused.push(b.cid);

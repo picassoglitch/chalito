@@ -63,6 +63,29 @@ export const stepUpChallenge = async (decisionBody: Record<string, unknown>): Pr
   return sha256(utf8(canonicalize(rest)));
 };
 
+const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+
+/** ADR 0020: a command's entry in a revoke bundle, hex(SHA-256(JCS(body without stepUp))). */
+export const stepUpBodyHash = async (body: Record<string, unknown>): Promise<string> =>
+  hex(await stepUpChallenge(body));
+
+/** ADR 0020: the server's entry in a revoke bundle, bound to its single-use challenge. */
+export const revokeAllServerEntry = async (r: { uid: string; deviceId: string; challenge: string }): Promise<string> =>
+  hex(
+    await sha256(
+      utf8(canonicalize({ ctx: "chalito.revoke-all.v1", uid: r.uid, deviceId: r.deviceId, challenge: r.challenge })),
+    ),
+  );
+
+/** ADR 0020: what the one passkey assertion of a revoke-all signs. */
+export const REVOKE_BUNDLE_CTX = "chalito.revoke-bundle.v1";
+export const revokeBundleChallenge = async (bundle: readonly string[]): Promise<Uint8Array> =>
+  stepUpChallenge({ ctx: REVOKE_BUNDLE_CTX, L: [...bundle] });
+
+/** ADR 0020: a revoke bundle's identity (for the agent's same-bundle counter rule). */
+export const revokeBundleId = async (bundle: readonly string[]): Promise<string> =>
+  hex(await revokeBundleChallenge(bundle));
+
 const equalBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
 
 // ---------------------------------------------------------------- COSE_Key (minimal CBOR)

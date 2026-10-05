@@ -5,9 +5,11 @@ import {
   canonicalize,
   fromB64url,
   openJson,
+  revokeAllServerEntry,
   sealJson,
   sha256,
   signEnvelope,
+  stepUpBodyHash,
   utf8,
 } from "@chalito/crypto";
 import { CommandBody, CommandPayload, type DecisionBody } from "@chalito/protocol";
@@ -263,10 +265,16 @@ describe("ClientActions commands", () => {
     expect((db.rows("commands")[1]!.env as { body: CommandBody }).body.stepUp).toBeUndefined();
   });
 
-  it("revokeAll: one signed, stepped-up revoke per (trusted computer, other client), then the server's assertion; nothing written directly", async () => {
-    const order: string[] = [];
-    const { agent, db, actions, live, me } = await setup({
-      stepUp: async (a) => (order.push(`cmd:${a.aid}`), { method: "platform_biometric" as const, at: 1 }),
+  const revokeAllSetup = async (stepUp?: StepUpProvider) => {
+    const prompts: { aid: string; unsigned?: Record<string, unknown> }[] = [];
+    const assertion = { credentialId: "Y3JlZA", authenticatorData: "YXV0aA", clientDataJSON: "Y2Q", signature: "c2ln" };
+    const s = await setup({
+      stepUp:
+        stepUp ??
+        (async (a, unsigned) => (
+          prompts.push({ aid: a.aid, unsigned }),
+          { method: "webauthn" as const, at: 1, assertion }
+        )),
     });
     const row = (deviceId: string, role: string, extra: Record<string, unknown> = {}) => ({
       owner: OWNER,
@@ -280,36 +288,44 @@ describe("ClientActions commands", () => {
       last_seen_at: new Date().toISOString(),
       ...extra,
     });
-    db.seed("devices", row(agent.deviceId, "agent"));
-    db.seed("devices", row("dev_untrusted_pc", "agent"));
-    db.seed("devices", row(me.deviceId, "client"));
-    db.seed("devices", row("dev_phone", "client"));
-    db.seed("devices", row("dev_tablet", "client"));
-    db.seed("devices", row("dev_gone", "client", { revoked: true }));
-    await live.resync();
-
-    const posted: { path: string; body: { stepUp: unknown; commands: { body: CommandBody }[] } }[] = [];
+    s.db.seed("devices", row(s.agent.deviceId, "agent"));
+    s.db.seed("devices", row("dev_untrusted_pc", "agent"));
+    s.db.seed("devices", row(s.me.deviceId, "client"));
+    s.db.seed("devices", row("dev_phone", "client"));
+    s.db.seed("devices", row("dev_tablet", "client"));
+    s.db.seed("devices", row("dev_gone", "client", { revoked: true }));
+    await s.live.resync();
+    const posted: { path: string; body: { stepUp: { bundle: string[] }; commands: { body: CommandBody }[] } }[] = [];
     const api = {
       post: async <T>(path: string, body: unknown) => {
         posted.push({ path, body: body as never });
+        if (path === "/v1/webauthn/assert/options") return { options: { challenge: "c3J2LWNoYWxsZW5nZQ" } } as T;
         return { ok: true, revoked: ["dev_phone", "dev_tablet"], commandsQueued: 2, refused: [], banFailed: [] } as T;
       },
     };
-    const r = await actions.revokeAll({
-      api,
-      stepUp: async () => (order.push("server"), { id: "assertion" }),
-    });
-    expect(posted).toHaveLength(1);
-    expect(posted[0]!.path).toBe("/v1/devices/revoke-all");
-    expect(posted[0]!.body.stepUp).toEqual({ id: "assertion" });
-    const cmds = posted[0]!.body.commands.map((c) => c.body);
+    return { ...s, prompts, assertion, posted, api };
+  };
+
+  it("revokeAll: ONE passkey prompt over the bundle covers every revoke and the server (ADR 0020)", async () => {
+    const { agent, db, actions, me, prompts, assertion, posted, api } = await revokeAllSetup();
+    const r = await actions.revokeAll({ api });
+    expect(prompts).toHaveLength(1);
+    expect(posted.map((p) => p.path)).toEqual(["/v1/webauthn/assert/options", "/v1/devices/revoke-all"]);
+    const sent = posted[1]!.body;
+    const cmds = sent.commands.map((c) => c.body);
     expect(cmds.map((b) => [b.targetDeviceId, (b.payload as { clientDeviceId: string }).clientDeviceId])).toEqual([
       [agent.deviceId, "dev_phone"],
       [agent.deviceId, "dev_tablet"],
     ]);
-    expect(cmds.every((b) => b.stepUp !== undefined && b.origin === `client:${me.deviceId}`)).toBe(true);
-    // Each command is stepped up first; the server assertion is the last prompt, right before sending.
-    expect(order).toEqual(["cmd:revoke:dev_phone", "cmd:revoke:dev_tablet", "server"]);
+    // L = each command's body hash, then the server's entry over its own challenge.
+    const L = [
+      ...(await Promise.all(cmds.map((b) => stepUpBodyHash(b as never)))),
+      await revokeAllServerEntry({ uid: OWNER, deviceId: me.deviceId, challenge: "c3J2LWNoYWxsZW5nZQ" }),
+    ];
+    expect(prompts[0]!.unsigned).toEqual({ ctx: "chalito.revoke-bundle.v1", L });
+    expect(sent.stepUp).toEqual({ method: "webauthn", at: 1, assertion, bundle: L });
+    for (const b of cmds) expect(b.stepUp).toEqual(sent.stepUp);
+    expect(cmds.every((b) => b.origin === `client:${me.deviceId}`)).toBe(true);
     expect(db.rows("commands")).toHaveLength(0);
     expect(r).toEqual({
       revoked: ["dev_phone", "dev_tablet"],
@@ -321,20 +337,16 @@ describe("ClientActions commands", () => {
     });
   });
 
-  it("revokeAll: a cancelled passkey sends nothing", async () => {
-    const { agent, db, actions, live } = await setup();
-    db.seed("devices", { owner: OWNER, device_id: agent.deviceId, role: "agent", revoked: false, name: "d" });
-    await live.resync();
-    let posted = 0;
-    await expect(
-      actions.revokeAll({
-        api: { post: async <T>() => (posted++, {} as T) },
-        stepUp: async () => {
-          throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
-        },
-      }),
-    ).rejects.toThrow("cancelled");
-    expect(posted).toBe(0);
+  it("revokeAll: a cancelled passkey sends nothing; no passkey is passkey_required", async () => {
+    const cancelled = await revokeAllSetup(async () => {
+      throw Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
+    });
+    await expect(cancelled.actions.revokeAll({ api: cancelled.api })).rejects.toThrow("cancelled");
+    expect(cancelled.posted.map((p) => p.path)).toEqual(["/v1/webauthn/assert/options"]);
+
+    const none = await revokeAllSetup(async () => null);
+    await expect(none.actions.revokeAll({ api: none.api })).rejects.toMatchObject({ code: "passkey_required" });
+    expect(none.posted.map((p) => p.path)).toEqual(["/v1/webauthn/assert/options"]);
   });
 
   it("without a passkey on this device the revoke goes out plain (the agent decides)", async () => {

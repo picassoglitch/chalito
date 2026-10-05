@@ -122,6 +122,59 @@ export const AgentEvent = z.discriminatedUnion("type", [
 ]);
 export type AgentEvent = z.infer<typeof AgentEvent>;
 
+/**
+ * Why an agent refused a command, as the person's clients see it (`command.rejected`). A closed
+ * set: the agent maps its internal reasons onto it (apps/agent/src/command-result.ts), so no
+ * path, label or free text reaches the row.
+ */
+export const CommandRejectReason = z.enum([
+  /** Not a command envelope this agent understands. */
+  "invalid",
+  /** Tried to turn on Developer mode or a permissive mode remotely (also `remote_enable.rejected`). */
+  "remote_enable_rejected",
+  /** Signed by a client this computer doesn't trust (pair or endorse it first). */
+  "untrusted_signer",
+  "bad_signature",
+  "origin_mismatch",
+  "wrong_device",
+  "wrong_owner",
+  "expired",
+  "replayed_nonce",
+  /** The policy doesn't accept commands from this origin (e.g. MCP prompts off). */
+  "origin_disabled",
+  /** No workspace with that label in this computer's policy. */
+  "unknown_workspace",
+  "permission_mode_above_ceiling",
+  "codex_sandbox_above_ceiling",
+  /** The adapter is off in the policy, or not set up here (Claude Code or Codex not pinned, no key). */
+  "adapter_disabled",
+  "unknown_session",
+  "unknown_question",
+  "policy_would_loosen",
+  "policy_invalid",
+  "step_up_required",
+  "step_up_failed",
+  /** Accepted, but the coding agent failed to start (version, login, binary). */
+  "start_failed",
+  "internal",
+]);
+export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
+
+/**
+ * What became of one command, written by the agent as an audit row (`chalito.audit`: `type` is
+ * "command.accepted" or "command.rejected", `meta` is this, `device_id` the agent). Clients find
+ * it by `meta->>cid`. It goes to the audit trail and not to `devices.last_event`, so it never
+ * overwrites a security notice there (trust.endorsement_refused).
+ */
+export const CommandAcceptedMeta = z.object({
+  cid: Id,
+  /** The new session (session.start) or the session the command targeted. */
+  sid: SessionId.optional(),
+});
+export type CommandAcceptedMeta = z.infer<typeof CommandAcceptedMeta>;
+export const CommandRejectedMeta = z.object({ cid: Id, reason: CommandRejectReason });
+export type CommandRejectedMeta = z.infer<typeof CommandRejectedMeta>;
+
 /** Device-level events (not tied to a session). */
 export const DeviceEvent = z.discriminatedUnion("type", [
   z.object({

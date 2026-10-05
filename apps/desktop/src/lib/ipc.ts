@@ -1,11 +1,13 @@
+import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
 import type { DevModeToggle } from "@chalito/protocol";
 
 /**
  * Local-only surfaces, reached through the agent's IPC (ADR 0004: the agent is a user
  * service; the desktop app talks to it on this machine). They are local on purpose: a
  * remote surface (PWA, phone) can never enable Developer mode or confirm a pairing for this
- * computer. The agent-side IPC server is a follow-up; until it lands the desktop uses
- * `unavailableIpc` and the screens say so.
+ * computer. The agent serves them on a per-user local socket (apps/agent/src/ipc-server.ts),
+ * reached through the native side's `agent_ipc` command with the per-launch secret the app gave
+ * the agent it started (src-tauri/src/ipc_client.rs). Outside Tauri, `unavailableIpc`.
  *
  * Shapes follow the agent: `runPair`'s reverse fingerprint check (apps/agent/src/pair.ts)
  * and `DevMode.enableToggle`'s three confirmations (apps/agent/src/devmode.ts), with the
@@ -99,3 +101,33 @@ export const unavailableIpc: AgentIpc = {
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
 export const answersComplete = (a: DevModeAnswers, phrase: string): boolean =>
   a.first && a.second && a.liability.checked && a.liability.typed.trim() === phrase;
+
+/** What `agent_ipc` rejects with when no agent this app started is answering. */
+export const IPC_UNAVAILABLE = "agent_ipc_unavailable";
+
+type Invoke = <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
+
+/** The real agent, through the native side. Error codes come back as Error messages. */
+export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
+  const call = async <T>(method: string, params?: Record<string, unknown>): Promise<T> => {
+    try {
+      return await invoke<T>("agent_ipc", { method, params: params ?? null });
+    } catch (e) {
+      const code = typeof e === "string" ? e : e instanceof Error ? e.message : "internal";
+      throw code === IPC_UNAVAILABLE ? new IpcUnavailableError() : new Error(code);
+    }
+  };
+  return {
+    ping: () => call("ping"),
+    pendingPairing: () => call("pendingPairing"),
+    confirmPairing: (pairingId, match) => call("confirmPairing", { pairingId, match }),
+    policy: () => call("policy"),
+    devMode: () => call("devMode"),
+    devModeChallenge: (toggle) => call("devModeChallenge", { toggle }),
+    enableDevToggle: (toggle, answers) => call("enableDevToggle", { toggle, answers }),
+    disableDevToggle: (toggle) => call("disableDevToggle", { toggle }),
+    reportPresence: (p) => call("reportPresence", { desktopActive: p.desktopActive }),
+  };
+};
+
+export const agentIpc = (): AgentIpc => (isTauri() ? invokeIpc() : unavailableIpc);

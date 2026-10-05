@@ -27,6 +27,12 @@ export {
 } from "./settings/registry.js";
 export {
   JoinRoomForm,
+  NewRoomForm,
+  ROOM_TTLS,
+  ROOM_TYPES,
+  RoomInvitePanel,
+  RoomOwnerSettings,
+  RoomRotation,
   RoomComposer,
   RoomEnded,
   RoomEventList,
@@ -36,6 +42,7 @@ export {
   type ReportReason,
   type ReportTarget,
   type RoomEndReason,
+  type RoomTypeId,
 } from "./rooms.js";
 export {
   BrainKeysPanel,

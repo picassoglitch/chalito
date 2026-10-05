@@ -181,5 +181,40 @@
       "failed": "Couldn't join. Try again.",
       "no_companion": "Your companion isn't ready yet. Finish setting up your account."
     }
+  },
+  "agent": {
+    "title": "This computer's agent",
+    "state": {
+      "no_sidecar": "This build doesn't include the agent.",
+      "not_paired": "Pair this computer: open a terminal and type “chalito pair”.",
+      "running": "The agent is running.",
+      "restarting": "The agent stopped (code {code}). Restarting it in {seconds} s.",
+      "needs_setup": "The agent needs one more step. Type “chalito status” in a terminal to see which.",
+      "elsewhere": "An agent is already running on this computer (the system service).",
+      "stopped": "The agent is stopped."
+    },
+    "cli": {
+      "title": "The chalito command",
+      "why": "To pair this computer and save your keys you need the “chalito” command in a terminal.",
+      "install": "Install the chalito command",
+      "confirm": {
+        "linux": "This creates {path}, pointing at this app's agent. Continue?",
+        "macos": "This creates {path}. macOS will ask for your administrator password. Continue?",
+        "windows": "This creates {path} and adds its folder to your user PATH. Continue?"
+      },
+      "yes": "Yes, install",
+      "cancel": "Cancel",
+      "installed": "Installed at {path}.",
+      "newTerminal": "Open a new terminal and type “chalito status”.",
+      "notOnPath": "Your terminal won't find it yet: add ~/.local/bin to your PATH.",
+      "error": {
+        "no_sidecar": "This build doesn't include the agent.",
+        "move_to_applications": "Move Chalito to the Applications folder first, and open it from there.",
+        "no_local_app_data": "Couldn't find your user data folder. Nothing changed.",
+        "exists": "There's already another program called chalito at {path}. I didn't replace it.",
+        "cancelled": "Cancelled: nothing changed.",
+        "failed": "Couldn't install it. Nothing changed."
+      }
+    }
   }
 }

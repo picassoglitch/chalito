@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CodexAdapter } from "@chalito/adapters/codex";
 import { describe, expect, it, vi } from "vitest";
 import { verifyEnvelope, type SignedEnvelope } from "@chalito/crypto";
 import type { Cloud, FetchFn } from "../src/cloud.js";
@@ -12,11 +13,15 @@ import {
   ENDORSEMENT_SYNC_MS,
   PRESENCE_HEARTBEAT_MS,
   OnboardingError,
+  OPENAI_KEY_MISSING,
   defaultAdapters,
   runDaemon,
+  type AdapterInput,
   type DaemonDeps,
 } from "../src/daemon.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
+import { AlreadyRunningError, acquireInstanceLock, lockPath } from "../src/instance-lock.js";
+import { ipcCall } from "./ipc-server.test.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { DeviceRevokedError } from "../src/device-auth.js";
@@ -33,7 +38,15 @@ import {
 
 const NOW = 1_790_000_000_000;
 
-const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; apiKey?: boolean } = {}) => {
+const setup = async (
+  opts: {
+    paired?: boolean;
+    claude?: "pinned" | "missing";
+    apiKey?: boolean;
+    codex?: boolean;
+    openaiKey?: boolean;
+  } = {},
+) => {
   const home = mkdtempSync(join(tmpdir(), "chalito-daemon-"));
   const dir = chalitoDir(home);
   const secrets = new MemorySecretStore();
@@ -51,6 +64,11 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
   writeFileSync(join(evilBin, "claude"), "#!/bin/sh\necho pwned\n");
   chmodSync(join(evilBin, "claude"), 0o755);
   const pin = await pinClaude(claude);
+  const codex = join(bin, "codex");
+  writeFileSync(codex, "#!/bin/sh\n# codex\n");
+  chmodSync(codex, 0o755);
+  const codexPin = await pinClaude(codex);
+  if (opts.openaiKey) await secrets.set(SECRET_NAMES.openaiApiKey, "sk-openai-test-123456");
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -65,6 +83,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
         owner: "hub-user-1",
         deviceId: id.deviceId,
         ...(opts.claude === "missing" ? {} : { claude: pin }),
+        ...(opts.codex ? { codex: codexPin } : {}),
       },
       id.sign,
     );
@@ -89,7 +108,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
   const logs: Record<string, unknown>[] = [];
   const refreshers: (() => void)[] = [];
   const refreshEvery: number[] = [];
-  const adapterInputs: { apiKey: string | null; claudePath: string }[] = [];
+  const adapterInputs: AdapterInput[] = [];
   const deps: DaemonDeps = {
     home,
     env: { PATH: `${evilBin}:${bin}` },
@@ -117,6 +136,7 @@ const setup = async (opts: { paired?: boolean; claude?: "pinned" | "missing"; ap
     refreshEvery,
     adapterInputs,
     claude: pin.path,
+    codex: codexPin.path,
     closed: () => closed,
   };
 };
@@ -158,6 +178,10 @@ describe("chalito run (daemon)", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(s.store.commands.size).toBe(0);
     expect(s.store.deviceEvents.map((e) => e.type)).toEqual(["remote_enable.rejected"]);
+    expect(s.store.audits.find((a) => a.type === "command.rejected")?.meta).toEqual({
+      cid: "c1",
+      reason: "remote_enable_rejected",
+    });
     await d.stop();
   });
 
@@ -315,6 +339,195 @@ describe("chalito run (daemon)", () => {
     adapter.config.onInit({ sid: "s1", apiKeySource: "ANTHROPIC_API_KEY", permissionMode: "default" });
     expect(logs[0]).toMatchObject({ msg: "adapter.init", sid: "s1", apiKeySource: "ANTHROPIC_API_KEY" });
     expect(defaultAdapters({ apiKey: null, claudePath: "/usr/bin/claude", log })).toEqual({});
+  });
+
+  it("one agent per computer: a second daemon is refused, and stop() frees the lock", async () => {
+    const s = await setup();
+    const d = await runDaemon(s.deps);
+    const other = { ...s.deps, lock: (dir: string) => acquireInstanceLock(dir, { pid: 999_999, isAlive: () => true }) };
+    await expect(runDaemon(other)).rejects.toBeInstanceOf(AlreadyRunningError);
+    await d.stop();
+    expect(existsSync(lockPath(s.dir))).toBe(false);
+  });
+
+  it("a daemon that fails to start leaves no lock behind", async () => {
+    const s = await setup({ claude: "missing" });
+    await expect(runDaemon(s.deps)).rejects.toBeInstanceOf(OnboardingError);
+    expect(existsSync(lockPath(s.dir))).toBe(false);
+  });
+
+  describe("the desktop panel's IPC", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test-side view of arbitrary JSON results
+    type IpcReply = { ok: boolean; result?: any; error?: string };
+    const SECRET = "c".repeat(64);
+    const withIpc = async (osOk = true) => {
+      const s = await setup();
+      const sock = join(s.home, "ipc.sock");
+      const osChecks: number[] = [];
+      const d = await runDaemon({
+        ...s.deps,
+        ipcSecret: SECRET,
+        ipcPath: sock,
+        osAuth: () => ({ verify: async () => (osChecks.push(1), osOk) }),
+      });
+      const call = async (method: string, params?: unknown) =>
+        ipcCall(sock, { id: 1, token: SECRET, method, params }) as Promise<IpcReply>;
+      return { s, d, sock, call, osChecks };
+    };
+
+    it("only with the app's secret: no secret, no socket", async () => {
+      const s = await setup();
+      const d = await runDaemon(s.deps);
+      expect(existsSync(join(s.dir, "agent.sock"))).toBe(false);
+      await d.stop();
+    });
+
+    it("ping, policy view and Developer-mode state; the socket goes away on stop", async () => {
+      const { d, sock, call } = await withIpc();
+      expect(await call("ping")).toEqual({ id: 1, ok: true, result: { version: expect.any(String) } });
+      const p = (await call("policy")).result;
+      expect(p).toMatchObject({
+        seq: expect.any(Number),
+        hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        prevHash: expect.any(String),
+      });
+      expect(p.rules).toContainEqual({
+        id: "workspaces",
+        summary: "Sin carpetas: no corre ninguna sesión",
+        effect: "deny",
+      });
+      expect((await call("devMode")).result).toEqual({ on: false, toggles: [], since: null });
+      expect((await call("pendingPairing")).result).toBeNull();
+      expect(await call("confirmPairing", { pairingId: "p1", match: true })).toMatchObject({
+        ok: false,
+        error: "no_pending_pairing",
+      });
+      await d.stop();
+      expect(existsSync(sock)).toBe(false);
+    });
+
+    it("enabling a toggle: the agent asks the OS and re-checks all three answers and the typed phrase", async () => {
+      const { s, d, call, osChecks } = await withIpc();
+      const ch = (await call("devModeChallenge", { toggle: "allowSudo" })).result;
+      expect(ch).toMatchObject({ toggle: "allowSudo", examples: expect.any(Array), risk: expect.any(String) });
+      const phrase: string = ch.liability.phrase;
+
+      const answers = (over = {}) => ({
+        first: true,
+        second: true,
+        liability: { checked: true, typed: phrase },
+        ...over,
+      });
+      expect(
+        (await call("enableDevToggle", { toggle: "allowSudo", answers: answers({ second: false }) })).result,
+      ).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect(
+        (
+          await call("enableDevToggle", {
+            toggle: "allowSudo",
+            answers: answers({ liability: { checked: true, typed: "sí" } }),
+          })
+        ).result,
+      ).toEqual({ ok: false, reason: "cancelled" });
+      expect((await call("devMode")).result.on).toBe(false);
+
+      const on = (await call("enableDevToggle", { toggle: "allowSudo", answers: answers() })).result;
+      expect(on).toMatchObject({ ok: true, state: { on: true, toggles: ["allowSudo"] } });
+      expect(osChecks).toHaveLength(3);
+      expect(s.store.device.devMode).toMatchObject({ on: true, toggles: ["allowSudo"] });
+      expect(s.store.deviceEvents.at(-1)).toMatchObject({ type: "devmode.changed", on: true });
+
+      const off = (await call("disableDevToggle", { toggle: "allowSudo" })).result;
+      expect(off).toMatchObject({ on: false, toggles: [] });
+      expect(s.store.device.devMode).toMatchObject({ on: false });
+      expect(await call("enableDevToggle", { toggle: "bypassStyle", answers: answers() })).toMatchObject({
+        error: "bad_params",
+      });
+      await d.stop();
+    });
+
+    it("a failed OS check enables nothing", async () => {
+      const { d, call } = await withIpc(false);
+      const phrase = (await call("devModeChallenge", { toggle: "autoApproveHigh" })).result.liability.phrase;
+      const r = await call("enableDevToggle", {
+        toggle: "autoApproveHigh",
+        answers: { first: true, second: true, liability: { checked: true, typed: phrase } },
+      });
+      expect(r.result).toEqual({ ok: false, reason: "os_auth_failed" });
+      expect((await call("devMode")).result.on).toBe(false);
+      await d.stop();
+    });
+
+    it("presence goes to this agent's device row with lastSeenAt", async () => {
+      const { s, d, call } = await withIpc();
+      expect((await call("reportPresence", { desktopActive: true })).ok).toBe(true);
+      expect(s.store.device).toMatchObject({ presence: { desktopActive: true }, lastSeenAt: NOW });
+      expect(await call("reportPresence", { desktopActive: "yes" })).toMatchObject({ error: "bad_params" });
+      await d.stop();
+    });
+  });
+
+  describe("Codex", () => {
+    it("a pinned Codex with an OpenAI key gets the Codex adapter: pinned path, Chalito's CODEX_HOME", async () => {
+      const s = await setup({ codex: true, openaiKey: true });
+      const d = await runDaemon(s.deps);
+      const input = s.adapterInputs[0]!;
+      expect(input.codex).toMatchObject({ path: s.codex, apiKey: "sk-openai-test-123456", home: join(s.dir, "codex") });
+      expect(input.codex!.path).not.toContain("evil");
+      expect(d.classifyExtras().protectedPaths).toContain(s.codex);
+      await d.stop();
+    });
+
+    it("not pinned, or pinned without a key: no Codex adapter (the key is logged as missing)", async () => {
+      const none = await setup({ openaiKey: true });
+      const d1 = await runDaemon(none.deps);
+      expect(none.adapterInputs[0]!.codex).toBeUndefined();
+      expect(none.logs.some((l) => l.msg === "adapter.codex_unavailable")).toBe(false);
+      await d1.stop();
+
+      const noKey = await setup({ codex: true });
+      const d2 = await runDaemon(noKey.deps);
+      expect(noKey.adapterInputs[0]!.codex).toBeUndefined();
+      expect(noKey.logs.find((l) => l.msg === "adapter.codex_unavailable")?.reason).toBe(OPENAI_KEY_MISSING.es);
+      await d2.stop();
+    });
+
+    it("a Codex that changed since the pin isn't run, and Claude Code keeps working", async () => {
+      const s = await setup({ codex: true, openaiKey: true });
+      writeFileSync(s.codex, "#!/bin/sh\necho swapped\n");
+      const d = await runDaemon(s.deps);
+      expect(s.adapterInputs[0]!.codex).toBeUndefined();
+      expect(s.adapterInputs[0]!.claudePath).toBe(s.claude);
+      expect(s.logs.find((l) => l.msg === "adapter.codex_unavailable")?.reason).toMatch(/chalito codex pin/);
+      await d.stop();
+    });
+
+    it("with Codex usable, a missing Claude Code pin is logged instead of stopping the agent", async () => {
+      const s = await setup({ claude: "missing", codex: true, openaiKey: true });
+      const d = await runDaemon(s.deps);
+      expect(s.adapterInputs[0]).toMatchObject({ claudePath: null, apiKey: null });
+      expect(s.adapterInputs[0]!.codex?.path).toBe(s.codex);
+      expect(s.logs.find((l) => l.msg === "adapter.claude_code_unavailable")?.reason).toBe(CLAUDE_MISSING.es);
+      await d.stop();
+    });
+
+    it("defaultAdapters builds a CodexAdapter on the BYO key only (never SIWC)", () => {
+      const log = createLogger(() => undefined);
+      const a = defaultAdapters({
+        apiKey: null,
+        claudePath: null,
+        codex: { path: "/opt/codex", apiKey: "sk-o", home: "/h/.chalito/codex", env: { PATH: "/usr/bin" } },
+        log,
+      });
+      expect(Object.keys(a)).toEqual(["codex"]);
+      const cfg = (a.codex as unknown as { config: Record<string, unknown> }).config;
+      expect(cfg).toMatchObject({ codexPath: "/opt/codex", apiKey: "sk-o", codexHome: "/h/.chalito/codex" });
+      expect(cfg.chatgptPlan).toBeUndefined();
+      expect(a.codex).toBeInstanceOf(CodexAdapter);
+    });
   });
 
   it("a revoked device found on a refresh tick stops the daemon with a clear log", async () => {

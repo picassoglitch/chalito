@@ -19,7 +19,13 @@ export interface AgentStore {
   watchCommands(onCommand: (id: string, doc: Record<string, unknown>) => void): () => void;
   deleteCommand(id: string): Promise<void>;
 
-  updateDevice(fields: { policyHash?: string; devMode?: unknown; lastSeenAt?: number }): Promise<void>;
+  /** `presence` is the desktop's {desktopActive}, reported through the panel's IPC. */
+  updateDevice(fields: {
+    policyHash?: string;
+    devMode?: unknown;
+    lastSeenAt?: number;
+    presence?: { desktopActive: boolean };
+  }): Promise<void>;
   /** Also appended to the durable audit collection. */
   publishDeviceEvent(e: DeviceEvent): Promise<void>;
   /** Durable, create-only audit trail: users/{uid}/devices/{deviceId}/audit/{eid}. `meta` is already redacted. */

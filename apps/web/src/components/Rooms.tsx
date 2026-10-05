@@ -1,13 +1,13 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { JoinRoomForm } from "@chalito/ui";
+import { JoinRoomForm, NewRoomForm } from "@chalito/ui";
 import { Link, useRouter } from "@/i18n/navigation";
-import { joinRoom, roomList, type RoomListItem, type RoomsDb } from "@chalito/rooms";
+import { createRoom, joinRoom, roomList, type RoomListItem, type RoomsDb } from "@chalito/rooms";
 import { seenRev } from "@/lib/room-seen";
 import { useChalito } from "./ChalitoProvider";
 
-/** /salas: the rooms this companion is in, and "Unirse con código". */
+/** /salas: the rooms this companion is in, "Nueva sala" and "Unirse con código". */
 export const Rooms = () => {
   const t = useTranslations("settings.rooms");
   const { rooms, readCompanion } = useChalito();
@@ -70,6 +70,23 @@ export const Rooms = () => {
           ) : (
             <p className="text-sm text-neutral-600">{t("none")}</p>
           )}
+          <section className="grid gap-2">
+            <h2 className="font-semibold">{t("create.title")}</h2>
+            <NewRoomForm
+              onCreate={async (name, type) => {
+                const r = await createRoom(rooms.api, {
+                  companionId: me,
+                  name,
+                  type,
+                  // Epoch 1 goes to every client device of this owner, so the room opens on all of them.
+                  myDevices: await rooms.myClients().catch(() => []),
+                });
+                if (!r.ok) return r.reason;
+                router.push({ pathname: "/r/[id]", params: { id: r.roomId } });
+                return null;
+              }}
+            />
+          </section>
           <section className="grid gap-2">
             <h2 className="font-semibold">{t("joinTitle")}</h2>
             <JoinRoomForm

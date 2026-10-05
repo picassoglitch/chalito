@@ -181,5 +181,40 @@
       "failed": "No se pudo unir. Inténtalo de nuevo.",
       "no_companion": "Tu compañero aún no está listo. Termina de configurar tu cuenta."
     }
+  },
+  "agent": {
+    "title": "Agente de esta computadora",
+    "state": {
+      "no_sidecar": "Esta compilación no trae el agente.",
+      "not_paired": "Empareja esta computadora: abre una terminal y escribe «chalito pair».",
+      "running": "El agente está funcionando.",
+      "restarting": "El agente se detuvo (código {code}). Lo vuelvo a iniciar en {seconds} s.",
+      "needs_setup": "Al agente le falta un paso. Escribe «chalito status» en una terminal para ver cuál.",
+      "elsewhere": "Ya hay un agente funcionando en esta computadora (el servicio del sistema).",
+      "stopped": "El agente está detenido."
+    },
+    "cli": {
+      "title": "Comando chalito",
+      "why": "Para emparejar esta computadora y guardar tus llaves necesitas el comando «chalito» en una terminal.",
+      "install": "Instalar el comando chalito",
+      "confirm": {
+        "linux": "Voy a crear {path}, que apunta al agente de esta app. ¿Continuar?",
+        "macos": "Voy a crear {path}. macOS te pedirá tu contraseña de administrador. ¿Continuar?",
+        "windows": "Voy a crear {path} y agregar su carpeta a tu PATH de usuario. ¿Continuar?"
+      },
+      "yes": "Sí, instalar",
+      "cancel": "Cancelar",
+      "installed": "Instalado en {path}.",
+      "newTerminal": "Abre una terminal nueva y escribe «chalito status».",
+      "notOnPath": "Tu terminal todavía no lo encuentra: agrega ~/.local/bin a tu PATH.",
+      "error": {
+        "no_sidecar": "Esta compilación no trae el agente.",
+        "move_to_applications": "Primero mueve Chalito a la carpeta Aplicaciones y ábrelo desde ahí.",
+        "no_local_app_data": "No encontré tu carpeta de datos de usuario. No cambió nada.",
+        "exists": "Ya hay otro programa llamado chalito en {path}. No lo reemplacé.",
+        "cancelled": "Cancelaste: no cambió nada.",
+        "failed": "No se pudo instalar. No cambió nada."
+      }
+    }
   }
 }

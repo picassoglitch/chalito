@@ -2,11 +2,12 @@ import * as THREE from "three";
 import { BehaviourMachine, type BehaviourOutput } from "@chalito/avatar";
 import { AvatarDriver, CreatureBinding, FrameLoop, createPlaceholder } from "@chalito/avatar-three";
 import type { EmotionTag } from "@chalito/protocol";
-import { RENDER_DEFAULTS, loadCardAssets, type QualityLevel } from "@chalito/scene";
+import { RENDER_DEFAULTS, loadCardAssets, type QualityLevel, type SceneCosmetic } from "@chalito/scene";
 import { changedEnough, ndcToCanvas, toScreenHitBox, type Rect } from "../lib/hitbox.js";
 import type { PetContext } from "../lib/pet-context.js";
 import type { DesktopShell } from "../lib/shell.js";
 import { loadSettings } from "../lib/settings-local.js";
+import { cosmeticsKey, watchCosmetics } from "./cosmetics.js";
 import { PetLook, QualityResolver } from "./look.js";
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
@@ -35,9 +36,14 @@ const projectBounds = (obj: THREE.Object3D, camera: THREE.Camera) => {
  * it loads), the behaviour machine (focus only at L4) and the hit box for click-through. The
  * render-quality slider (render.yaml) applies here as in the room view: bajo is the flat card
  * impostor at 30 FPS without contact shadow; medio and alto run the driver's bob, squash and
- * gestures; auto settles from the renderer and a short probe.
+ * gestures; auto settles from the renderer and a short probe. The equipped cosmetics (from
+ * `cosmetics`, once the panel is signed in) are placed on the card as in a room.
  */
-export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
+export const startPet = (
+  canvas: HTMLCanvasElement,
+  sh: DesktopShell,
+  cosmetics: () => Promise<SceneCosmetic[] | null> = async () => null,
+) => {
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0);
 
@@ -57,7 +63,9 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
   const driver = new AvatarDriver({ seed: 1 });
   const creature = new CreatureBinding(placeholder);
   let look: PetLook | null = null;
-  let avatar: string | null = null;
+  /** What's drawn (or loading): companion card and its cosmetics. */
+  let shown: string | null = null;
+  let wearing: SceneCosmetic[] = [];
   const rendererName = () => {
     const gl = renderer.getContext();
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
@@ -86,12 +94,12 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
   const applySettings = () => {
     const s = loadSettings();
     applyLevel(quality.set(s.renderQuality));
-    if (s.avatar === avatar) return;
-    avatar = s.avatar;
-    const want = avatar;
-    loadCardAssets(ROSTER_BASE, want).then(
+    const want = `${s.avatar}|${cosmeticsKey(wearing)}`;
+    if (want === shown) return;
+    shown = want;
+    loadCardAssets(ROSTER_BASE, s.avatar, wearing).then(
       (assets) => {
-        if (want !== avatar) return;
+        if (want !== shown) return;
         const next = new PetLook(assets, levelOf(quality.level));
         next.setEmotion(mood);
         if (look) {
@@ -105,7 +113,14 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
       () => undefined, // no art: keep what's drawn
     );
   };
-  const onStorage = () => applySettings();
+  const onStorage = () => {
+    applySettings();
+    void wear.refresh();
+  };
+  const wear = watchCosmetics(cosmetics, (c) => {
+    wearing = c;
+    applySettings();
+  });
   const machine = new BehaviourMachine();
   let ctx: PetContext = { level: null, fullscreen: false, dnd: false, quietHours: false, lowEnergy: false };
   let acked = false;
@@ -166,6 +181,7 @@ export const startPet = (canvas: HTMLCanvasElement, sh: DesktopShell) => {
 
   return () => {
     loop?.stop();
+    wear.stop();
     window.removeEventListener("resize", resize);
     window.removeEventListener("storage", onStorage);
     look?.dispose();

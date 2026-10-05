@@ -435,8 +435,14 @@ export class SupabaseStore implements AgentStore {
 
   // ---- device --------------------------------------------------------------------
 
-  async updateDevice(fields: { policyHash?: string; devMode?: unknown; lastSeenAt?: number }) {
+  async updateDevice(fields: {
+    policyHash?: string;
+    devMode?: unknown;
+    lastSeenAt?: number;
+    presence?: { desktopActive: boolean };
+  }) {
     const patch: Record<string, unknown> = {};
+    if (fields.presence !== undefined) patch.presence = { desktopActive: fields.presence.desktopActive };
     if (fields.policyHash !== undefined) patch.policy_hash = fields.policyHash;
     if (fields.devMode !== undefined) patch.dev_mode = fields.devMode;
     if (fields.lastSeenAt !== undefined) patch.last_seen_at = iso(fields.lastSeenAt);

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import type { SigningKeyPair } from "@chalito/crypto";
@@ -136,6 +136,20 @@ export class FilePolicyHolder implements PolicyHolder {
 
   get seq(): number {
     return this.#seq;
+  }
+
+  /** The lock's link to the policy it replaced (GENESIS for the first, or before any lock). */
+  get prevHash(): string {
+    return this.#readLock()?.prevHash ?? GENESIS;
+  }
+
+  /** When the lock in force was written (ms), or null before the first one. */
+  get updatedAt(): number | null {
+    try {
+      return statSync(this.lockFile).mtimeMs;
+    } catch {
+      return null;
+    }
   }
 
   /** Whether what's on disk was refused (unsigned edit, or a rolled-back lock). */

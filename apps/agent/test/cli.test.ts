@@ -8,7 +8,8 @@ import { generateSigningKeyPair } from "@chalito/crypto";
 import { lineDiff, main, parseArgs, type CliIo } from "../src/cli.js";
 import { AnchorStore } from "../src/anchor.js";
 import { chalitoDir, readConfig, writeConfig } from "../src/config.js";
-import type { Daemon } from "../src/daemon.js";
+import { OnboardingError, type Daemon } from "../src/daemon.js";
+import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "../src/instance-lock.js";
 import { DevModeStore } from "../src/devmode.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { FilePolicyHolder, policyToYaml } from "../src/policy-file.js";
@@ -106,6 +107,33 @@ describe("chalito CLI", () => {
     expect(c.out()).toContain("devmode on <toggle>");
     expect(await c.run(["bogus"])).toBe(1);
     expect(c.err()).toContain("Unknown command: bogus");
+  });
+
+  it("run: another agent running exits 75; a setup step missing exits 78 with its message", async () => {
+    const c = cli();
+    const io = (fail: Error) => ({
+      out: () => undefined,
+      err: (s: string) => void errs.push(s),
+      tty: { input: new PassThrough(), output: new PassThrough() },
+      env: {},
+      home: c.home,
+      platform: "linux" as const,
+      secrets: c.secrets,
+      runner: { run: async () => ({ code: 0, stdout: "", stderr: "" }) },
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+      now: Date.now,
+      execPath: "/x",
+      tmpdir: tmpdir(),
+      daemon: async () => {
+        throw fail;
+      },
+    });
+    const errs: string[] = [];
+    expect(await main(["run"], io(new AlreadyRunningError(1234)))).toBe(EXIT_ALREADY_RUNNING);
+    expect(errs.join("")).toMatch(/already running.*pid 1234/);
+    expect(await main(["run"], io(new OnboardingError("Pin Claude Code first.")))).toBe(EXIT_NEEDS_SETUP);
+    expect(errs.join("")).toContain("Pin Claude Code first.");
+    expect([EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP]).toEqual([75, 78]);
   });
 
   it("run: starts the daemon with the CLI's I/O and waits for it", async () => {
@@ -394,6 +422,7 @@ describe("chalito CLI", () => {
       [["devmode", "off"], []],
       [["devmode", "reset"], ["RESET"]],
       [["claude", "pin", "/usr/bin/true"], []],
+      [["codex", "pin", "/usr/bin/true"], []],
     ];
 
     for (const [argv, lines] of mutating) {
@@ -451,6 +480,45 @@ describe("chalito CLI", () => {
       const c = cli();
       expect(await c.run(["claude", "pin", "/usr/bin/true"])).toBe(1);
       expect(c.err()).toMatch(/Pair this computer first/);
+    });
+
+    it("codex pin: path + sha256 into the signed config, next to the Claude Code pin", async () => {
+      const c = cli();
+      const id = await paired(c);
+      const real = join(c.home, "codex-0.162");
+      writeFileSync(real, "#!/bin/sh\n# codex\n");
+      symlinkSync(real, join(c.home, "codex"));
+      expect(await c.run(["codex", "pin", join(c.home, "codex")])).toBe(0);
+      const cfg = readConfig(c.dir, {}, { keys: id.sign });
+      expect(cfg.codex).toEqual({
+        path: real,
+        sha256: createHash("sha256").update("#!/bin/sh\n# codex\n").digest("hex"),
+      });
+      expect(c.out()).toMatch(/Codex pinned/);
+      c.reset();
+      expect(await c.run(["status"])).toBe(0);
+      expect(c.out()).toMatch(/Codex\s+.*codex-0\.162 \(pinned, sha256/);
+    });
+
+    it("codex pin: needs a paired computer, and says how to install Codex when it isn't found", async () => {
+      const c = cli({ env: { PATH: "/nonexistent" } });
+      expect(await c.run(["codex", "pin", "/usr/bin/true"])).toBe(1);
+      expect(c.err()).toMatch(/then run `chalito codex pin`/);
+      await paired(c);
+      c.reset();
+      expect(await c.run(["codex", "pin"])).toBe(1);
+      expect(c.err()).toMatch(/`codex` wasn't found.*developers\.openai\.com\/codex/);
+    });
+
+    it("keys set openai pins the Codex found on PATH when nothing is pinned yet", async () => {
+      const bin = mkdtempSync(join(tmpdir(), "chalito-cli-bin-"));
+      writeFileSync(join(bin, "codex"), "#!/bin/sh\n");
+      chmodSync(join(bin, "codex"), 0o755);
+      const c = cli({ env: { PATH: bin } });
+      const id = await paired(c);
+      expect(await c.run(["keys", "set", "openai"], ["sk-proj-abcdefgh12345678"])).toBe(0);
+      expect(readConfig(c.dir, {}, { keys: id.sign }).codex?.path).toBe(join(bin, "codex"));
+      expect(c.out()).toMatch(/Codex pinned/);
     });
   });
 });

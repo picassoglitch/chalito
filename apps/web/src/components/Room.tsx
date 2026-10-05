@@ -1,13 +1,17 @@
 "use client";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslations } from "next-intl";
-import { RoomController, type ReportInput, type RoomSnapshot, type RoomsDb } from "@chalito/rooms";
+import { RoomController, type ReportInput, type RoomError, type RoomSnapshot, type RoomsDb } from "@chalito/rooms";
+import type { GlyphPayload } from "@chalito/protocol";
 import {
   RoomComposer,
   RoomEnded,
   RoomEventList,
+  RoomInvitePanel,
   RoomMembers,
+  RoomOwnerSettings,
   RoomReportDialog,
+  RoomRotation,
   memberLabel,
   type ReportTarget,
   type RoomEndReason,
@@ -19,6 +23,7 @@ import { markSeen } from "@/lib/room-seen";
 import type { StoreItem } from "@/lib/store";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { RoomStage } from "./RoomStage";
+import { GlyphCanvas } from "./Glyph";
 
 type Report = ReportTarget & { label: string };
 
@@ -89,6 +94,9 @@ export const Room = ({ roomId }: { roomId: string }) => {
             roomId,
             // Unread markers on /salas: the newest event this view has shown.
             onSeen: (rev) => markSeen(roomId, rev),
+            // Invites are glyphs signed by this device's key, inside the key loader.
+            signGlyph: rooms.signGlyph,
+            identity: rooms.identity,
           })
         : null,
     [rooms, deviceId, me, roomId],
@@ -98,8 +106,15 @@ export const Room = ({ roomId }: { roomId: string }) => {
     void ctl.start();
     // Expired events disappear even without new traffic.
     const timer = setInterval(() => ctl.prune(), 30_000);
+    // The room row (a pending rotation, retention) doesn't broadcast: re-read it now and then, and
+    // when the person comes back to the tab.
+    const reread = setInterval(() => void ctl.refresh(), 20_000);
+    const onFocus = () => void ctl.refresh();
+    window.addEventListener("focus", onFocus);
     return () => {
       clearInterval(timer);
+      clearInterval(reread);
+      window.removeEventListener("focus", onFocus);
       void ctl.stop();
     };
   }, [ctl]);
@@ -207,6 +222,8 @@ export const Room = ({ roomId }: { roomId: string }) => {
       setNote(t(`error.${r.reason}`));
     }
   };
+  const owner = snap.members.some((m) => m.me && m.role === "owner");
+  const errOf = (r: { ok: true } | { ok: false; reason: RoomError }): RoomError | null => (r.ok ? null : r.reason);
   const sendReport = async (input: ReportInput) => {
     const r = await ctl.report(input);
     setReport(null);
@@ -244,6 +261,7 @@ export const Room = ({ roomId }: { roomId: string }) => {
           {note}
         </p>
       ) : null}
+      {!ended && snap.room?.needsRotation ? <RoomRotation onRotate={async () => errOf(await ctl.rotateKey())} /> : null}
       {!ended ? <RoomStage roomId={roomId} label={t("stage")} members={stageMembers} events={stageEvents} /> : null}
       <section className="grid gap-2">
         <RoomEventList
@@ -269,8 +287,31 @@ export const Room = ({ roomId }: { roomId: string }) => {
           onReport={
             snap.status === "revoked" ? undefined : (id) => setReport({ memberCompanionId: id, label: label(id) })
           }
+          onRemove={
+            owner && !ended
+              ? async (id) => {
+                  const r = await ctl.removeMember(id);
+                  // The room now needs a new key before anyone posts: show the rotation right away.
+                  if (r.ok) await ctl.refresh();
+                  return errOf(r);
+                }
+              : undefined
+          }
         />
+        {!ended ? (
+          <RoomInvitePanel
+            onInvite={() => ctl.invite()}
+            renderGlyph={(g) => <GlyphCanvas glyph={g as GlyphPayload} label={t("invite.create")} size={200} />}
+          />
+        ) : null}
       </section>
+      {owner && !ended && snap.room ? (
+        <RoomOwnerSettings
+          retention={snap.room.retention}
+          onRetention={async (r) => errOf(await ctl.setRetention(r))}
+          onDissolve={async () => errOf(await ctl.dissolve())}
+        />
+      ) : null}
     </div>
   );
 };

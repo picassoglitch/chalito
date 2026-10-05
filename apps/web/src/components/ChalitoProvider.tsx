@@ -29,6 +29,7 @@ import {
 import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
 import type { AccountApi } from "@/lib/account";
+import type { BalanceApi } from "@/lib/balance";
 import { disablePush, enablePush, type PushDb, type PushResult } from "@/lib/push";
 import { env } from "@/lib/env";
 import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
@@ -78,7 +79,15 @@ interface Ctx {
    */
   revokeAll: (() => Promise<RevokeAllResult | "cancelled" | "no_passkey" | "failed">) | null;
   /** Rooms (/salas, /r/[id]): reads with this device's session, api calls, and its room keys. */
-  rooms: { db: unknown; api: ApiClient; keyring: DeviceKeys["roomKeyring"] } | null;
+  rooms: {
+    db: unknown;
+    api: ApiClient;
+    keyring: DeviceKeys["roomKeyring"];
+    signGlyph: DeviceKeys["signGlyph"];
+    identity: DeviceKeys["identity"];
+    /** This owner's active client devices (a new room's key is wrapped to each). */
+    myClients: () => Promise<{ deviceId: string; pubBox: string }[]>;
+  } | null;
   /** Mesa (/m, /m/[id], "Tus claves"): RLS reads as this device, the orchestrator, its keys. Null until paired. */
   mesa: MesaCtx | null;
   /** The store (/tienda) and the companion it dresses; null when signed out. */
@@ -86,6 +95,8 @@ interface Ctx {
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
   /** Account deletion and export (/v1/account/*); null when signed out. Requesting needs `client`. */
   account: AccountApi | null;
+  /** The hub balance in tokens (/creditos); null when signed out. */
+  balance: BalanceApi | null;
   /** Web Push on this browser (its own push_subscriptions row, written as this device). Null until paired. */
   push: { enable: () => Promise<PushResult>; disable: () => Promise<PushResult> } | null;
 }
@@ -173,6 +184,7 @@ const INITIAL: Ctx = {
   revokeAll: null,
   push: null,
   account: null,
+  balance: null,
 };
 const Chalito = createContext<Ctx>(INITIAL);
 
@@ -358,6 +370,7 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         readSharing: sharingReader(platform.db),
         store: platform.store(token),
         account: platform.account(token),
+        balance: platform.balance(token),
         readCompanion: () => readCompanion(platform.db, owner),
       };
       const keys = await platform.loadDeviceKeys();
@@ -408,7 +421,17 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           assertPasskey: () => platform.assertPasskey(token),
           newDevice: null,
           addDevice: addDevice(platform, keys, owner, token),
-          rooms: { db: platform.db, api: platform.api(token), keyring: keys.roomKeyring },
+          rooms: {
+            db: platform.db,
+            api: platform.api(token),
+            keyring: keys.roomKeyring,
+            signGlyph: keys.signGlyph,
+            identity: keys.identity,
+            myClients: async () =>
+              (await readDirectory(platform.db, owner))
+                .filter((d) => d.role === "client" && !d.revoked && d.pubBox)
+                .map((d) => ({ deviceId: d.deviceId, pubBox: d.pubBox })),
+          },
           usage: platform.usage(token),
           mesa: {
             db: platform.db as unknown as MesaDb,

@@ -25,9 +25,12 @@ import {
   fingerprint,
   openJson,
   randomNonce,
+  revokeAllServerEntry,
+  revokeBundleChallenge,
   sealJson,
   signEnvelope,
   sha256,
+  stepUpBodyHash,
   stepUpChallenge,
   utf8,
 } from "@chalito/crypto";
@@ -559,7 +562,10 @@ describe.skipIf(!READY)("7. a room: create, invite, join, post, report; leaving 
   it("the members' RoomControllers see a post as plain text; a report lands; leave → kicked; dissolve → dissolved", async () => {
     const [dad, son, mom] = [await s.person("papa"), await s.person("hijo"), await s.person("mama")];
     const companion = async (p: Person) => {
-      const { data, error } = await p.phone.db.rpc("create_my_companion", { p_name: p.name, p_avatar: "starter_owl" });
+      const { data, error } = await p.phone.db.rpc("create_my_companion", {
+        p_name: p.name,
+        p_avatar: "starter_owl",
+      });
       if (error) throw new Error(error.message);
       return (data as { companion_id: string }).companion_id;
     };
@@ -644,6 +650,33 @@ describe.skipIf(!READY)("7. a room: create, invite, join, post, report; leaving 
     expect(first).toEqual({ ok: true, duplicate: false });
     expect(await sonRoom.report({ eventId: req.eid, reason: "spam" })).toEqual({ ok: true, duplicate: true });
 
+    // The owner removes a member (kick): her open feed stops itself (R-L14) and nobody posts until a
+    // remaining member's client rotates the key. A member can't remove anyone.
+    const cousin = await s.person("prima");
+    const cc = await companion(cousin);
+    expect(await joinRoom(cousin.phone.api, cc, await invite())).toEqual({ ok: true, roomId: ROOM });
+    const cdevs = await s.call(`/v1/rooms/${ROOM}/members/${cc}/devices`, { companionId: cd }, dad.phone.token);
+    const cwrapped = await wrapRoomKeyFor(created.key, 1, cdevs.json.devices);
+    expect(
+      (
+        await s.call(
+          `/v1/rooms/${ROOM}/keys`,
+          { companionId: cd, targetCompanionId: cc, epoch: 1, wrappedKeys: cwrapped },
+          dad.phone.token,
+        )
+      ).status,
+    ).toBe(204);
+    const cousinRoom = await open(cousin, cc);
+    const dadRoom = await open(dad, cd);
+    expect(await momRoom.removeMember(cc)).toEqual({ ok: false, reason: "not_owner" });
+    expect((await s.call(`/v1/rooms/${ROOM}/members/${cc}/remove`, { companionId: cm }, mom.phone.token)).status).toBe(
+      403,
+    );
+    expect(await dadRoom.removeMember(cc)).toEqual({ ok: true });
+    await waitFor(() => cousinRoom.getSnapshot().status === "kicked", 20_000, "the removed member's feed to stop");
+    expect(dadRoom.getSnapshot().members.some((m) => m.companionId === cc)).toBe(false);
+    expect(await dadRoom.postNotice("¿siguen ahí?")).toEqual({ ok: false, reason: "failed" }); // 409: rotation pending
+
     // Son leaves through the api (another of his devices, say): his open feed stops itself (R-L14).
     expect((await s.call(`/v1/rooms/${ROOM}/leave`, { companionId: cs }, son.phone.token)).status).toBe(204);
     await waitFor(() => sonRoom.getSnapshot().status === "kicked", 20_000, "son's feed to stop");
@@ -653,8 +686,6 @@ describe.skipIf(!READY)("7. a room: create, invite, join, post, report; leaving 
     await waitFor(() => momRoom.getSnapshot().status === "dissolved", 20_000, "mom's feed to end");
     expect(await momRoom.postNotice("¿hola?")).toEqual({ ok: false, reason: "ended" });
   });
-
-  it.skip("an owner removes a member (kick) → the member's feed stops: needs the remove-member route (-8d)", () => {});
 });
 
 describe.skipIf(!READY)("8. revoke-all: the agent drops the other clients (R-H5)", () => {
@@ -680,8 +711,9 @@ describe.skipIf(!READY)("8. revoke-all: the agent drops the other clients (R-H5)
     expect(await trust.addEndorsed(endorsement, Date.now())).toMatchObject({ ok: true });
     agent = await startAgent({ owner: p.owner, device: agentDevice, trust });
 
-    // One signed device.revokeClient per (agent, other client), each with the phone's passkey
-    // step-up over its own body (R-L1), as the Security page would send them.
+    // One signed device.revokeClient per (agent, other client), all covered by ONE passkey
+    // assertion over the bundle L = [body hashes…, the server's entry] (ADR 0020), as
+    // ClientActions.revokeAll sends them.
     const base = CommandBody.parse({
       v: 1,
       cid: `cmd_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
@@ -693,23 +725,34 @@ describe.skipIf(!READY)("8. revoke-all: the agent drops the other clients (R-H5)
       expiresAt: Date.now() + 5 * 60_000,
       payload: { type: "device.revokeClient", clientDeviceId: web.deviceId },
     });
-    const body = CommandBody.parse({
-      ...base,
-      stepUp: {
-        method: "webauthn",
-        at: Date.now(),
-        assertion: await p.passkey!.stepUp(RP_ID)(await stepUpChallenge(base)),
-      },
-    });
-    const command = await signEnvelope("chalito.command.v1", body, p.phone.deviceId, p.phone.sign.secretKey);
+    const bundle = async () => {
+      const opts = await s.call("/v1/webauthn/assert/options", {}, p.phone.token);
+      expect(opts.status).toBe(200);
+      const L = [
+        await stepUpBodyHash(base),
+        await revokeAllServerEntry({
+          uid: p.owner,
+          deviceId: p.phone.deviceId,
+          challenge: String(opts.json.options.challenge),
+        }),
+      ];
+      const assertion = await p.passkey!.stepUp(RP_ID)(await revokeBundleChallenge(L));
+      const stepUp = { method: "webauthn" as const, at: Date.now(), assertion, bundle: L };
+      const body = CommandBody.parse({ ...base, stepUp });
+      return {
+        stepUp,
+        command: await signEnvelope("chalito.command.v1", body, p.phone.deviceId, p.phone.sign.secretKey),
+      };
+    };
 
-    // Without a fresh step-up, the api refuses.
+    // Without the step-up, the api refuses.
+    const { command } = await bundle();
     expect((await s.call("/v1/devices/revoke-all", { commands: [command] }, p.phone.token)).json.error).toBe(
       "step_up_required",
     );
     const res = await s.call(
       "/v1/devices/revoke-all",
-      { stepUp: await s.stepUp(p), commands: [command] },
+      await bundle().then((b) => ({ stepUp: b.stepUp, commands: [b.command] })),
       p.phone.token,
     );
     expect(res.status).toBe(200);

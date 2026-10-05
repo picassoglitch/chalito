@@ -14,17 +14,22 @@ import {
   generateSigningKeyPair,
   openJson,
   randomNonce,
+  revokeAllServerEntry,
+  revokeBundleChallenge,
   sealJson,
   signEnvelope,
+  stepUpBodyHash,
   stepUpChallenge,
   toB64url,
   verifyEnvelope,
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
+import { CommandAcceptedMeta, CommandRejectedMeta } from "@chalito/protocol";
 import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { AgentCore, type PolicyHolder } from "../src/agent-core.js";
+import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
@@ -248,7 +253,7 @@ const pushTurn: FakeStep[][] = [[{ tool: "Bash", input: { command: "git push ori
 describe("signed approvals end to end (fake Claude Code)", () => {
   it("a MED edit waits for the phone; a signed allow releases it", async () => {
     const h = await harness({ turns: editTurn });
-    expect(await h.startSession()).toEqual({ ok: true });
+    expect(await h.startSession()).toEqual({ ok: true, sid: expect.any(String) });
     await waitFor(() => h.store.pendingApprovals().length === 1);
     expect(h.fake.run.ran).toHaveLength(0);
     await h.decide(true);
@@ -652,6 +657,90 @@ describe("revoking another client takes a passkey step-up (review R-L1)", () => 
   });
 });
 
+describe("revoke-all: one passkey assertion over a bundle of commands (ADR 0020)", () => {
+  const setup = async () => {
+    const h = await harness();
+    const others = [await device("dev_tablet"), await device("dev_laptop"), await device("dev_tv")];
+    for (const d of others)
+      await h.trust.addConfirmed({ deviceId: d.id, pubSign: d.pubSign, pubBox: d.pubBox }, Date.now());
+    let n = 0;
+    const unsigned = async (target: string): Promise<Record<string, unknown>> => ({
+      v: 1,
+      cid: `rb${++n}`,
+      uid: OWNER,
+      targetDeviceId: h.agent.id,
+      origin: `client:${h.phone.id}`,
+      nonce: await randomNonce(),
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      payload: { type: "device.revokeClient", clientDeviceId: target },
+    });
+    /** The client's side: hashes, the server entry, ONE assertion, the bundle on every body. */
+    const bundle = async (bodies: Record<string, unknown>[], extra: string[] = []) => {
+      const server = await revokeAllServerEntry({ uid: OWNER, deviceId: h.phone.id, challenge: "srv-challenge" });
+      const L = [...(await Promise.all(bodies.map((b) => stepUpBodyHash(b)))), ...extra, server];
+      const assertion = await h.passkey.stepUp(h.passkeyRef.rpId)(await revokeBundleChallenge(L));
+      for (const b of bodies) b.stepUp = { method: "webauthn", at: Date.now(), assertion, bundle: L };
+      return L;
+    };
+    const send = async (body: Record<string, unknown>) => {
+      const env = await signEnvelope("chalito.command.v1", body, h.phone.id, h.phone.sign.secretKey);
+      return h.core.handleCommand(String(body.cid), { env, fromDeviceId: h.phone.id });
+    };
+    return { h, others, unsigned, bundle, send };
+  };
+
+  it("one assertion covers every command of the bundle", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const bodies = await Promise.all(others.map((d) => unsigned(d.id)));
+    await bundle(bodies);
+    for (const b of bodies) expect(await send(b)).toEqual({ ok: true });
+    for (const d of others) expect(h.trust.has(d.id)).toBe(false);
+  });
+
+  it("a command that isn't in the bundle is refused, even carrying the bundle's assertion", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const [inside, outside] = [await unsigned(others[0]!.id), await unsigned(others[1]!.id)];
+    await bundle([inside]);
+    outside.stepUp = inside.stepUp;
+    expect(await send(outside)).toEqual({ ok: false, reason: "step_up_not_in_bundle" });
+    expect(h.trust.has(others[1]!.id)).toBe(true);
+    expect(await send(inside)).toEqual({ ok: true });
+  });
+
+  it("a bundle whose hashes were changed after the ceremony fails the assertion", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const b = await unsigned(others[0]!.id);
+    const L = await bundle([b]);
+    const forged = await unsigned(others[1]!.id);
+    forged.stepUp = { ...(b.stepUp as object), bundle: [...L, await stepUpBodyHash(forged)] };
+    expect(await send(forged)).toEqual({ ok: false, reason: "step_up_wrong_challenge" });
+    expect(h.trust.has(others[1]!.id)).toBe(true);
+  });
+
+  it("a withheld command from an old bundle is refused once the passkey signed something newer", async () => {
+    const { h, others, unsigned, bundle, send } = await setup();
+    const [first, withheld] = [await unsigned(others[0]!.id), await unsigned(others[1]!.id)];
+    await bundle([first, withheld]);
+    expect(await send(first)).toEqual({ ok: true });
+    // A newer revoke-all (the counter moves forward on this computer).
+    const newer = await unsigned(others[2]!.id);
+    await bundle([newer]);
+    expect(await send(newer)).toEqual({ ok: true });
+    expect(await send(withheld)).toEqual({ ok: false, reason: "step_up_replayed" });
+    expect(h.trust.has(others[1]!.id)).toBe(true);
+  });
+
+  it("only device.revokeClient can carry a bundle", async () => {
+    const { unsigned, bundle } = await setup();
+    const b = await unsigned("dev_tablet");
+    await bundle([b]);
+    const { CommandBody } = await import("@chalito/protocol");
+    expect(CommandBody.safeParse(b).success).toBe(true);
+    expect(CommandBody.safeParse({ ...b, payload: { type: "devmode.off" } }).success).toBe(false);
+  });
+});
+
 describe("MCP card sharing (opt-in)", () => {
   const twoTurns: FakeStep[][] = [[{ say: "voy a revisar src/login.ts" }], [{ say: "listo" }]];
   const sidOf = (h: Awaited<ReturnType<typeof harness>>) => [...h.core.sessions.keys()][0]!;
@@ -720,7 +809,7 @@ describe("turn origin follows the least trusted voice in the turn (review #10)",
   it("a signed answer keeps Developer-mode auto-approve for the client turn", async () => {
     const h = await harness({ turns: askThenPush, devToggles: ["autoApproveHigh"] });
     await h.startSession();
-    expect(await answer(h, {})).toEqual({ ok: true });
+    expect(await answer(h, {})).toEqual({ ok: true, sid: expect.any(String) });
     await waitFor(() => h.fake.run.ran.length === 2);
     expect(h.store.pendingApprovals()).toHaveLength(0);
   });
@@ -752,7 +841,7 @@ describe("the Codex sandbox ceiling is enforced remotely", () => {
     });
     expect(res).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
 
-    expect(await h.startSession()).toEqual({ ok: true });
+    expect(await h.startSession()).toEqual({ ok: true, sid: expect.any(String) });
     const sid = [...h.core.sessions.keys()][0]!;
     const set = await h.command({
       type: "session.setPermissionMode",
@@ -763,7 +852,7 @@ describe("the Codex sandbox ceiling is enforced remotely", () => {
     expect(set).toEqual({ ok: false, reason: "codex_sandbox_above_ceiling" });
     expect(
       await h.command({ type: "session.setPermissionMode", sid, permissionMode: "default", codexSandbox: "read-only" }),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: true, sid: expect.any(String) });
   });
 });
 
@@ -784,7 +873,7 @@ describe("durable audit trail", () => {
       throw new Error("offline");
     };
     expect((await h.command({ type: "session.interrupt", sid: "nope" })).reason).toBe("unknown_session");
-    await waitFor(() => h.logs.some((l) => l.includes("audit write failed")));
+    await waitFor(() => h.logs.some((l) => l.includes("command.result_publish_failed")));
   });
 
   it("audit meta is redacted before it reaches the store", async () => {
@@ -971,5 +1060,72 @@ describe("R-H1: a decision is bound to what the agent signed (ADR 0019)", () => 
     await h.decide(true, { detailsHash: fakeHash });
     await new Promise((r) => setTimeout(r, 50));
     expect(h.fake.run.ran).toHaveLength(0);
+  });
+});
+
+describe("command results reach the person's clients (audit: command.accepted / command.rejected)", () => {
+  const results = (h: Awaited<ReturnType<typeof harness>>) =>
+    h.store.audits
+      .filter((a) => a.type === "command.accepted" || a.type === "command.rejected")
+      .map((a) => ({ type: a.type, source: a.source, meta: a.meta }));
+
+  it("an accepted session.start says which session it started, and touches no device event", async () => {
+    const h = await harness({ turns: editTurn });
+    const r = await h.startSession();
+    expect(results(h)).toEqual([{ type: "command.accepted", source: "agent", meta: { cid: "c1", sid: r.sid } }]);
+    expect(CommandAcceptedMeta.parse(results(h)[0]!.meta)).toEqual({ cid: "c1", sid: r.sid });
+    expect(h.core.sessions.has(r.sid!)).toBe(true);
+    // devices.last_event keeps whatever security notice it holds.
+    expect(h.store.deviceEvents.filter((e) => e.type.startsWith("command."))).toEqual([]);
+  });
+
+  it("refusals carry a closed reason and nothing else (no labels, paths or text), one row each", async () => {
+    const h = await harness();
+    const start = (over: Partial<CommandPayload>) =>
+      h.sealed(0, "x").then((promptCt) =>
+        h.command({
+          type: "session.start",
+          adapter: "claude-code",
+          workspaceLabel: "chalito",
+          promptCt,
+          permissionMode: "default",
+          ...over,
+        } as CommandPayload),
+      );
+    await start({ workspaceLabel: "/home/ana/secret-project" });
+    await start({ adapter: "codex" });
+    await h.command({ type: "session.interrupt", sid: "nope" });
+    await h.command({ type: "devmode.off" }, { expiresAt: Date.now() - 1 });
+    const stranger = await device("dev_stranger");
+    await h.command({ type: "devmode.off" }, { signer: stranger });
+    const r = results(h);
+    expect(r.map((e) => [e.type, e.meta])).toEqual([
+      ["command.rejected", { cid: "c1", reason: "unknown_workspace" }],
+      ["command.rejected", { cid: "c2", reason: "adapter_disabled" }],
+      ["command.rejected", { cid: "c3", reason: "unknown_session" }],
+      ["command.rejected", { cid: "c4", reason: "expired" }],
+      ["command.rejected", { cid: "c5", reason: "untrusted_signer" }],
+    ]);
+    for (const e of r) expect(CommandRejectedMeta.strict().safeParse(e.meta).success).toBe(true);
+    expect(JSON.stringify(h.store.audits)).not.toContain("secret-project");
+  });
+
+  it("a garbled command row is reported as invalid; a malformed row id gets no row", async () => {
+    const h = await harness();
+    await h.core.handleCommand("c9", { env: { nope: true } });
+    await h.core.handleCommand("bad id/../x", { env: { nope: true } });
+    expect(results(h)).toEqual([{ type: "command.rejected", source: "agent", meta: { cid: "c9", reason: "invalid" } }]);
+  });
+
+  it("internal reasons map onto the closed set", () => {
+    expect(publicReason("unknown_workspace")).toBe("unknown_workspace");
+    expect(publicReason("invalid_signature")).toBe("bad_signature");
+    expect(publicReason("wrong_context")).toBe("bad_signature");
+    expect(publicReason("would_loosen")).toBe("policy_would_loosen");
+    expect(publicReason("invalid_patch")).toBe("policy_invalid");
+    expect(publicReason("step_up_counter")).toBe("step_up_failed");
+    expect(publicReason("step_up_required")).toBe("step_up_required");
+    expect(publicReason("/etc/passwd")).toBe("internal");
+    expect(publicReason(undefined)).toBe("internal");
   });
 });
