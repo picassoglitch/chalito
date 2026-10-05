@@ -1,7 +1,8 @@
 "use client";
 import { useState } from "react";
 import { useTranslations } from "next-intl";
-import { ActionError, type ApprovalView } from "@chalito/client";
+import { ActionError, type ApprovalView, type MesaDecisionView } from "@chalito/client";
+import { MesaDecisionCard } from "@chalito/ui";
 import { Link } from "@/i18n/navigation";
 import { approvalText } from "@/lib/approval-text";
 import { useChalito, useLive, useNow } from "./ChalitoProvider";
@@ -31,8 +32,59 @@ const mmss = (ms: number) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
+/**
+ * A Mesa decision (raised by the orchestrator, not an agent): the question and options as text; a
+ * pick is a signed Decision (body.choice, target "orchestrator", MED: no passkey), then the
+ * orchestrator is poked to verify it. Never shown as an unverified tool approval.
+ */
+const MesaApprovalCard = ({ a, m }: { a: ApprovalView; m: MesaDecisionView }) => {
+  const t = useTranslations("settings.mesa.decision");
+  const { client, mesa } = useChalito();
+  const now = useNow(1000);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const expired = a.status === "expired" || (a.status === "pending" && a.expiresAt <= now);
+  const answer = async (choice: number | null) => {
+    if (!client) return;
+    setBusy(true);
+    try {
+      await client.actions.decide(a.aid, choice !== null, choice !== null ? { choice } : {});
+      const status = (await mesa?.api.checkDecision(a.aid)) ?? "pending";
+      setNote(
+        status === "pending" || status === "error"
+          ? t("pending")
+          : choice !== null
+            ? t("sent", { option: m.options[choice]! })
+            : t("dismissed"),
+      );
+    } catch {
+      setNote(t("error"));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const resolved = a.status !== "pending" || expired ? t("resolved") : null;
+  return (
+    <article data-testid="approval" data-aid={a.aid} data-status={expired ? "expired" : a.status} data-kind="mesa">
+      <h2 className="mb-2 font-semibold">{t("title")}</h2>
+      <MesaDecisionCard
+        from={m.from}
+        question={m.question}
+        options={m.options}
+        busy={busy || !client}
+        done={note ?? resolved}
+        onPick={(i) => void answer(i)}
+        onDismiss={() => void answer(null)}
+      />
+    </article>
+  );
+};
+
 /** One approval: risk, countdown, opened details, approve/deny (HIGH asks for step-up). */
-export const ApprovalCard = ({ a }: { a: ApprovalView }) => {
+export const ApprovalCard = ({ a }: { a: ApprovalView }) =>
+  a.mesa ? <MesaApprovalCard a={a} m={a.mesa} /> : <ToolApprovalCard a={a} />;
+
+const ToolApprovalCard = ({ a }: { a: ApprovalView }) => {
   const t = useTranslations("live.approval");
   const { client, passkey } = useChalito();
   const now = useNow(1000);

@@ -37,3 +37,20 @@ export {
   type ReportTarget,
   type RoomEndReason,
 } from "./rooms.js";
+export {
+  BrainKeysPanel,
+  MESA_BRAINS,
+  MESA_MAX_SESSIONS,
+  MesaComposer,
+  MesaDecisionCard,
+  MesaFeed,
+  MesaInbox,
+  MesaList,
+  NewMesaForm,
+  type BrainProvider,
+  type LinkLike,
+  type MesaFeedTurn,
+  type MesaListItem,
+  type MesaPerson,
+  type NewMesaInput,
+} from "./mesa.js";

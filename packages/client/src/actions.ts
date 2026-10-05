@@ -26,7 +26,8 @@ export class ActionError extends Error {
       | "untrusted_agent"
       | "not_allowed"
       /** ADR 0019: the agent's signed request didn't verify here; only a deny is possible. */
-      | "unverified_request",
+      | "unverified_request"
+      | "bad_choice",
     message?: string,
   ) {
     super(message ?? code);
@@ -120,7 +121,11 @@ export class ClientActions {
     if (!a) throw new ActionError("unknown_approval");
     if (a.status !== "pending") throw new ActionError("not_pending");
     // ADR 0019 (R-H1): only what the agent signed can be allowed; a deny is always possible.
-    if (allow && !a.verified) throw new ActionError("unverified_request");
+    // A Mesa decision has no agent: the orchestrator verifies the signed answer, and allowing it
+    // means picking one of its options.
+    if (allow && !a.verified && !a.mesa) throw new ActionError("unverified_request");
+    if (allow && a.mesa && (opts.choice === undefined || opts.choice < 0 || opts.choice >= a.mesa.options.length))
+      throw new ActionError("bad_choice");
     const now = this.#now();
     if (a.expiresAt <= now) throw new ActionError("expired");
 

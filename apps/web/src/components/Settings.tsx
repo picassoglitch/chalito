@@ -7,6 +7,7 @@ import { Link, getPathname } from "@/i18n/navigation";
 import { useSettings } from "./useSettings";
 import { PushOptIn } from "./PushOptIn";
 import { AccountDeletion } from "./AccountDeletion";
+import { BrainKeys } from "./BrainKeys";
 
 export const Settings = () => {
   const t = useTranslations("settings");
@@ -40,6 +41,7 @@ export const Settings = () => {
         usageHref={getPathname({ href: "/uso", locale })}
         phoneVerifier={phoneVerifier}
       />
+      <BrainKeys />
       <AccountDeletion />
     </div>
   );

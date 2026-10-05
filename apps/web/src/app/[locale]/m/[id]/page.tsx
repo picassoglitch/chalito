@@ -1,13 +1,18 @@
 import { notFound } from "next/navigation";
-import { getTranslations, setRequestLocale } from "next-intl/server";
-import { Stub } from "@/components/Stub";
+import { setRequestLocale } from "next-intl/server";
+import { LiveGate } from "@/components/LiveGate";
+import { Mesa } from "@/components/Mesa";
 
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-export default async function Page({ params }: { params: Promise<{ locale: string; id: string }> }) {
+/** /(en/)m/{mid}: one Mesa (deep links from notifications land here). */
+export default async function MesaPage({ params }: { params: Promise<{ locale: string; id: string }> }) {
   const { locale, id } = await params;
   setRequestLocale(locale);
   if (!ID.test(id)) notFound();
-  const t = await getTranslations("deeplinks");
-  return <Stub title={t("mesa", { id })} />;
+  return (
+    <LiveGate>
+      <Mesa mid={id} />
+    </LiveGate>
+  );
 }

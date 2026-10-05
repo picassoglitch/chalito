@@ -18,6 +18,7 @@ import { supabase } from "./supabase";
 import { httpStore, type StoreApi } from "./store";
 import { httpUsage, type UsageApi } from "./usage";
 import { httpAccount, type AccountApi } from "./account";
+import { httpMesa, type MesaApi } from "@chalito/client";
 
 /**
  * Everything the app shell needs from the outside world. Production builds it from env (this
@@ -37,6 +38,8 @@ export interface Platform {
   assertPasskey(token: () => Promise<string | null>): Promise<Record<string, unknown>>;
   /** GET /v1/usage/daily (orchestrator) as this device. */
   usage(token: () => Promise<string | null>): UsageApi;
+  /** apps/orchestrator's Mesa routes (create, turns, decisions check, BYO keys) as this device. */
+  mesa(token: () => Promise<string | null>): MesaApi;
   /** /v1/store (catalog, purchase, equip) as whoever is signed in (person or device). */
   store(token: () => Promise<string | null>): StoreApi;
   /** /v1/account/* (deletion and export) as whoever is signed in (person or device). */
@@ -67,6 +70,7 @@ export const productionPlatform = (): Platform => ({
     (await assertWithServerChallenge(httpApi({ baseUrl: env.apiBase, token }))) as unknown as Record<string, unknown>,
   api: (token) => httpApi({ baseUrl: env.apiBase, token }),
   usage: (token) => httpUsage(env.orchestratorBase, token),
+  mesa: (token) => httpMesa(env.orchestratorBase, token),
   store: (token) => httpStore(env.apiBase, token),
   account: (token) => httpAccount(env.apiBase, token),
   endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),

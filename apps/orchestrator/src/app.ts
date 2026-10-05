@@ -32,14 +32,14 @@ export interface AppDeps extends TurnDeps {
 
 /**
  * CORS for the web app only: one exact origin (no wildcard), bearer auth (no cookies, so no
- * credentials), GET/POST/OPTIONS, a short preflight cache. Any other origin gets no
+ * credentials), GET/POST/PUT/DELETE/OPTIONS (BYO keys use PUT/DELETE), a short preflight cache. Any other origin gets no
  * Access-Control-Allow-Origin, so browsers refuse to read the response.
  */
 export const webCors = (webOrigin: string) => {
   const allowed = new URL(webOrigin).origin;
   return cors({
     origin: (origin) => (origin === allowed ? allowed : null),
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowHeaders: ["Authorization", "Content-Type"],
     credentials: false,
     maxAge: 600,
