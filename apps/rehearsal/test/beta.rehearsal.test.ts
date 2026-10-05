@@ -675,7 +675,7 @@ describe.skipIf(!READY)("7. a room: create, invite, join, post, report; leaving 
     expect(await dadRoom.removeMember(cc)).toEqual({ ok: true });
     await waitFor(() => cousinRoom.getSnapshot().status === "kicked", 20_000, "the removed member's feed to stop");
     expect(dadRoom.getSnapshot().members.some((m) => m.companionId === cc)).toBe(false);
-    expect(await dadRoom.postNotice("¿siguen ahí?")).toEqual({ ok: false, reason: "failed" }); // 409: rotation pending
+    expect(await dadRoom.postNotice("¿siguen ahí?")).toEqual({ ok: false, reason: "conflict" }); // 409: rotation pending
 
     // Son leaves through the api (another of his devices, say): his open feed stops itself (R-L14).
     expect((await s.call(`/v1/rooms/${ROOM}/leave`, { companionId: cs }, son.phone.token)).status).toBe(204);
