@@ -22,9 +22,11 @@ import {
   generateRoomKey,
   openJson,
   randomNonce,
+  revokeAllServerEntry,
   sealJson,
   sha256,
   signEnvelope,
+  stepUpBodyHash,
   toB64url,
   utf8,
   verifyEnvelope,
@@ -920,13 +922,29 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           await endorse(c, b.endorsement as Endorsement, me.deviceId);
           return { ok: true } as T;
         }
+        case "/v1/webauthn/assert/options": {
+          // A fresh, single-use server challenge (the revoke-all bundle binds it, ADR 0020).
+          needRole("client");
+          lastAssertion.value = `dev_challenge_${Math.random().toString(36).slice(2)}`;
+          return { options: { challenge: lastAssertion.value, rpId: "localhost" } } as T;
+        }
         case "/v1/devices/revoke-all": {
-          // apps/api/src/routes/devices.ts: passkey mandatory, then revoke + ban every other client
-          // and queue the caller's signed revokeClient commands (checked: signer, signature, target).
+          // apps/api/src/routes/devices.ts: passkey mandatory; ONE assertion over the bundle L, whose
+          // server entry binds the challenge above (ADR 0020). Then revoke + ban every other client
+          // and queue the caller's signed revokeClient commands (signer, signature, target, in L).
           needRole("client");
           if (!passkeyRef()) throw fail(403, "passkey_required");
-          if (!b.stepUp) throw fail(401, "step_up_required");
-          if ((b.stepUp as { id?: unknown }).id !== lastAssertion.value) throw fail(401, "step_up_failed");
+          const step = b.stepUp as { bundle?: string[]; assertion?: { credentialId?: string } } | undefined;
+          if (!step?.bundle) throw fail(401, "step_up_required");
+          const challenge = lastAssertion.value;
+          lastAssertion.value = null;
+          if (
+            !challenge ||
+            step.assertion?.credentialId !== passkeyRef()!.credentialId ||
+            !step.bundle.includes(await revokeAllServerEntry({ uid: OWNER, deviceId: me.deviceId, challenge }))
+          )
+            throw fail(401, "step_up_failed");
+          const bundle = step.bundle;
           const others = db
             .rows("devices")
             .filter((r) => r.role === "client" && !r.revoked && r.device_id !== me.deviceId)
@@ -940,11 +958,13 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           let queued = 0;
           const refused: string[] = [];
           for (const cmd of (b.commands as {
-            body: { cid: string; targetDeviceId: string; payload: { type: string } };
+            body: { cid: string; targetDeviceId: string; payload: { type: string }; stepUp?: { bundle?: string[] } };
             signerDeviceId: string;
           }[]) ?? []) {
             const ok =
               cmd.signerDeviceId === me.deviceId &&
+              JSON.stringify(cmd.body.stepUp?.bundle) === JSON.stringify(bundle) &&
+              bundle.includes(await stepUpBodyHash(cmd.body as never)) &&
               cmd.body.payload.type === "device.revokeClient" &&
               agents.includes(cmd.body.targetDeviceId) &&
               (
@@ -1425,8 +1445,22 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
               trustedAgents: () => TrustedAgent[];
             },
             // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
-            stepUp: async ({ risk }) =>
-              passkeyRef() && (await confirmStepUp(risk)) ? { method: "platform_biometric", at: Date.now() } : null,
+            // A revoke-all bundle (ADR 0020) is a passkey assertion, shaped like the real one.
+            stepUp: async ({ risk }, unsigned) =>
+              passkeyRef() && (await confirmStepUp(risk))
+                ? unsigned?.ctx === "chalito.revoke-bundle.v1"
+                  ? {
+                      method: "webauthn",
+                      at: Date.now(),
+                      assertion: {
+                        credentialId: passkeyRef()!.credentialId,
+                        authenticatorData: "ZGV2",
+                        clientDataJSON: "ZGV2",
+                        signature: "ZGV2",
+                      },
+                    }
+                  : { method: "platform_biometric", at: Date.now() }
+                : null,
             forget: async () => window.localStorage.setItem(DEV_PAIRED_KEY, "0"),
             roomKeyring: (rows: readonly { epoch: number; ct: string }[]) => unwrapKeyring(rows, me.box),
           }

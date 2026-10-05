@@ -5,7 +5,10 @@ import {
   generateBoxKeyPair,
   generateSigningKeyPair,
   randomNonce,
+  revokeAllServerEntry,
+  revokeBundleChallenge,
   signEnvelope,
+  stepUpBodyHash,
   toB64url,
   type SigningKeyPair,
 } from "@chalito/crypto";
@@ -157,25 +160,50 @@ const setup = async () => {
       (await post("/v1/webauthn/register/verify", { response: await auth.create(opts.json.options) }, "phone")).status,
     ).toBe(201);
   };
-  const stepUp = async () => auth.get((await post("/v1/webauthn/assert/options", {}, "phone")).json.options);
-  const revokeCmd = async (target: string, client: string, by: Keys = phone, over: Partial<CommandBody> = {}) =>
+  let n = 0;
+  /** An unsigned revoke command (the client builds them all before the one ceremony). */
+  const revokeBody = (target: string, client: string, by: Keys = phone, over: Partial<CommandBody> = {}) =>
+    randomNonce().then((nonce): Record<string, unknown> => ({
+      v: 1,
+      cid: `cmd_${++n}`,
+      uid: o,
+      targetDeviceId: target,
+      origin: `client:${by.deviceId}`,
+      nonce,
+      issuedAt: NOW,
+      expiresAt: NOW + 5 * 60_000,
+      payload: { type: "device.revokeClient", clientDeviceId: client },
+      ...over,
+    }));
+  const signAs = (body: Record<string, unknown>, by: Keys = phone) =>
     signEnvelope(
       "chalito.command.v1",
-      CommandBody.parse({
-        v: 1,
-        cid: `cmd_${Math.random().toString(36).slice(2, 12)}`,
-        uid: o,
-        targetDeviceId: target,
-        origin: `client:${by.deviceId}`,
-        nonce: await randomNonce(),
-        issuedAt: NOW,
-        expiresAt: NOW + 5 * 60_000,
-        payload: { type: "device.revokeClient", clientDeviceId: client },
-        ...over,
-      }),
+      CommandBody.parse(body),
       by.deviceId,
       by.sign.secretKey,
     ) as Promise<SignedCommand>;
+  /**
+   * The client side of ADR 0020: a server challenge, L = [body hashes…, server entry], ONE
+   * assertion over L, the bundle on every body, then each is signed by its signer.
+   */
+  const bundled = async (items: { body: Record<string, unknown>; by?: Keys; inBundle?: boolean }[] = []) => {
+    const { options } = (await post("/v1/webauthn/assert/options", {}, "phone")).json;
+    const L = [
+      ...(await Promise.all(items.filter((i) => i.inBundle !== false).map((i) => stepUpBodyHash(i.body)))),
+      await revokeAllServerEntry({ uid: o, deviceId: phone.deviceId, challenge: options.challenge }),
+    ];
+    const r = await auth.get({ ...options, challenge: await toB64url(await revokeBundleChallenge(L)) });
+    const assertion = {
+      credentialId: r.id,
+      authenticatorData: r.response.authenticatorData,
+      clientDataJSON: r.response.clientDataJSON,
+      signature: r.response.signature,
+    };
+    const stepUp = { method: "webauthn" as const, at: NOW, assertion, bundle: L };
+    const commands = [];
+    for (const i of items) commands.push(await signAs({ ...i.body, stepUp }, i.by));
+    return { stepUp, commands };
+  };
   return {
     o,
     phone,
@@ -192,8 +220,9 @@ const setup = async () => {
     hungUp,
     post,
     enrolPasskey,
-    stepUp,
-    revokeCmd,
+    auth,
+    revokeBody,
+    bundled,
   };
 };
 
@@ -212,13 +241,13 @@ describe("POST /v1/devices/revoke-all", () => {
   it("revokes and bans every other client, keeps the caller and the agents, and queues the caller's signed commands", async () => {
     const s = await setup();
     await s.enrolPasskey();
-    const commands = [
-      await s.revokeCmd(s.agent.deviceId, s.tablet.deviceId),
-      await s.revokeCmd(s.agent.deviceId, s.web.deviceId),
-      await s.revokeCmd(s.agent2.deviceId, s.tablet.deviceId),
-      await s.revokeCmd(s.agent2.deviceId, s.web.deviceId),
-    ];
-    const r = await s.post("/v1/devices/revoke-all", { stepUp: await s.stepUp(), commands }, "phone");
+    const req = await s.bundled([
+      { body: await s.revokeBody(s.agent.deviceId, s.tablet.deviceId) },
+      { body: await s.revokeBody(s.agent.deviceId, s.web.deviceId) },
+      { body: await s.revokeBody(s.agent2.deviceId, s.tablet.deviceId) },
+      { body: await s.revokeBody(s.agent2.deviceId, s.web.deviceId) },
+    ]);
+    const r = await s.post("/v1/devices/revoke-all", req, "phone");
     expect(r.status).toBe(200);
     expect(r.json).toMatchObject({ ok: true, commandsQueued: 4, refused: [], banFailed: [] });
     expect(r.json.revoked).toEqual([s.tablet.deviceId, s.web.deviceId].sort());
@@ -236,24 +265,52 @@ describe("POST /v1/devices/revoke-all", () => {
     expect((await s.post("/v1/devices/revoke-all", {}, "tablet")).json.error).toBe("device_revoked");
   });
 
-  it("refuses commands that aren't the caller's revokeClient to its own agents", async () => {
+  it("refuses commands that aren't the caller's revokeClient to its own agents, or aren't in the bundle", async () => {
     const s = await setup();
     await s.enrolPasskey();
-    const forged = await s.revokeCmd(s.agent.deviceId, s.web.deviceId, s.tablet); // signed by another client
-    const notAgent = await s.revokeCmd(s.tablet.deviceId, s.web.deviceId); // target isn't an agent
-    const self = await s.revokeCmd(s.agent.deviceId, s.phone.deviceId); // the caller itself
-    const expired = await s.revokeCmd(s.agent.deviceId, s.web.deviceId, s.phone, { expiresAt: NOW - 1 });
-    const tampered = { ...(await s.revokeCmd(s.agent.deviceId, s.web.deviceId)) };
-    tampered.body = { ...tampered.body, targetDeviceId: s.agent2.deviceId };
-    const r = await s.post(
-      "/v1/devices/revoke-all",
-      { stepUp: await s.stepUp(), commands: [forged, notAgent, self, expired, tampered] },
-      "phone",
-    );
+    const tamperedBody = await s.revokeBody(s.agent.deviceId, s.web.deviceId);
+    const req = await s.bundled([
+      { body: await s.revokeBody(s.agent.deviceId, s.web.deviceId, s.tablet), by: s.tablet }, // another client
+      { body: await s.revokeBody(s.tablet.deviceId, s.web.deviceId) }, // target isn't an agent
+      { body: await s.revokeBody(s.agent.deviceId, s.phone.deviceId) }, // the caller itself
+      { body: await s.revokeBody(s.agent.deviceId, s.web.deviceId, s.phone, { expiresAt: NOW - 1 }) },
+      { body: tamperedBody },
+      { body: await s.revokeBody(s.agent2.deviceId, s.web.deviceId), inBundle: false }, // not covered
+    ]);
+    const t = req.commands[4]!;
+    req.commands[4] = { ...t, body: { ...t.body, targetDeviceId: s.agent2.deviceId } };
+    const r = await s.post("/v1/devices/revoke-all", req, "phone");
     expect(r.status).toBe(200);
     expect(r.json.commandsQueued).toBe(0);
-    expect(r.json.refused).toHaveLength(5);
+    expect(r.json.refused).toHaveLength(6);
     expect(s.mem.commands).toEqual([]);
+  });
+
+  it("one assertion is good once: a replayed request, or an assertion over another bundle, is refused", async () => {
+    const s = await setup();
+    await s.enrolPasskey();
+    const req = await s.bundled([{ body: await s.revokeBody(s.agent.deviceId, s.web.deviceId) }]);
+    // An assertion whose bundle was changed after the ceremony doesn't verify.
+    const forged = { ...req, stepUp: { ...req.stepUp, bundle: [...req.stepUp.bundle, "0".repeat(64)] } };
+    expect(await s.post("/v1/devices/revoke-all", forged, "phone")).toMatchObject({
+      status: 401,
+      json: { error: "step_up_failed" },
+    });
+    expect(s.devices.filter((d) => d.revoked)).toHaveLength(0);
+    // The server's challenge is single-use: the real request now fails too, and so does a replay.
+    expect((await s.post("/v1/devices/revoke-all", req, "phone")).status).toBe(401);
+    const fresh = await s.bundled([{ body: await s.revokeBody(s.agent.deviceId, s.web.deviceId) }]);
+    expect((await s.post("/v1/devices/revoke-all", fresh, "phone")).status).toBe(200);
+    expect((await s.post("/v1/devices/revoke-all", fresh, "phone")).status).toBe(401);
+  });
+
+  it("the old separate server assertion (no bundle) isn't accepted any more", async () => {
+    const s = await setup();
+    await s.enrolPasskey();
+    const { options } = (await s.post("/v1/webauthn/assert/options", {}, "phone")).json;
+    const old = await s.post("/v1/devices/revoke-all", { stepUp: await s.auth.get(options) }, "phone");
+    expect(old).toMatchObject({ status: 400, json: { error: "bad_request" } });
+    expect(s.devices.filter((d) => d.revoked)).toHaveLength(0);
   });
 
   it("ends the revoked clients' open desktop voice (billed to now, hung up, settled), not the caller's", async () => {
@@ -273,7 +330,7 @@ describe("POST /v1/devices/revoke-all", () => {
         callId: `rtc_${deviceId.slice(0, 6)}`,
       });
     await open(s.tablet.deviceId, `voice_${"a".repeat(32)}`, NOW - 90_000);
-    const r = await s.post("/v1/devices/revoke-all", { stepUp: await s.stepUp() }, "phone");
+    const r = await s.post("/v1/devices/revoke-all", await s.bundled(), "phone");
     expect(r.status).toBe(200);
     const tablet = s.voiceSessions.sessions.get(`voice_${"a".repeat(32)}`)!;
     expect(tablet.endedAt).toBe(NOW);

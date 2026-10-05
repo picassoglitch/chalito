@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
   openJson,
+  revokeBundleChallenge,
+  revokeBundleId,
+  stepUpBodyHash,
   stepUpChallenge,
   verifyWebAuthnAssertion,
   type BoxKeyPair,
@@ -552,14 +555,23 @@ export class AgentCore {
     if (!credential) return "step_up_required";
     const step = body?.stepUp;
     if (!body || !step || step.method !== "webauthn" || !step.assertion) return "step_up_required";
+    // ADR 0020: a revoke-all signs one bundle of body hashes; this command must be in it.
+    const bundle = step.bundle;
+    if (bundle && !bundle.includes(await stepUpBodyHash(body))) return "step_up_not_in_bundle";
     const res = await verifyWebAuthnAssertion({
       assertion: step.assertion,
       credential,
-      expectedChallenge: await stepUpChallenge(body),
+      expectedChallenge: bundle ? await revokeBundleChallenge(bundle) : await stepUpChallenge(body),
       rpId: credential.rpId,
       origin: [`https://${credential.rpId}`],
     });
-    return res.ok ? null : `step_up_${res.reason}`;
+    if (!res.ok) return `step_up_${res.reason}`;
+    // A monotonic sign counter per client: an older assertion (a withheld command from an old
+    // bundle) is refused once this client's passkey signed something newer here.
+    if (!trust.acceptSignCount(signer!, res.signCount, bundle ? await revokeBundleId(bundle) : undefined))
+      return "step_up_replayed";
+    await this.d.saveTrust();
+    return null;
   }
 
   #reject(id: string, reason: string): { ok: false; reason: string } {

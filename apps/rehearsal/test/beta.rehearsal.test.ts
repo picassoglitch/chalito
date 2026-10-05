@@ -25,9 +25,12 @@ import {
   fingerprint,
   openJson,
   randomNonce,
+  revokeAllServerEntry,
+  revokeBundleChallenge,
   sealJson,
   signEnvelope,
   sha256,
+  stepUpBodyHash,
   stepUpChallenge,
   utf8,
 } from "@chalito/crypto";
@@ -708,8 +711,9 @@ describe.skipIf(!READY)("8. revoke-all: the agent drops the other clients (R-H5)
     expect(await trust.addEndorsed(endorsement, Date.now())).toMatchObject({ ok: true });
     agent = await startAgent({ owner: p.owner, device: agentDevice, trust });
 
-    // One signed device.revokeClient per (agent, other client), each with the phone's passkey
-    // step-up over its own body (R-L1), as the Security page would send them.
+    // One signed device.revokeClient per (agent, other client), all covered by ONE passkey
+    // assertion over the bundle L = [body hashes…, the server's entry] (ADR 0020), as
+    // ClientActions.revokeAll sends them.
     const base = CommandBody.parse({
       v: 1,
       cid: `cmd_${randomUUID().replace(/-/g, "").slice(0, 12)}`,
@@ -721,23 +725,34 @@ describe.skipIf(!READY)("8. revoke-all: the agent drops the other clients (R-H5)
       expiresAt: Date.now() + 5 * 60_000,
       payload: { type: "device.revokeClient", clientDeviceId: web.deviceId },
     });
-    const body = CommandBody.parse({
-      ...base,
-      stepUp: {
-        method: "webauthn",
-        at: Date.now(),
-        assertion: await p.passkey!.stepUp(RP_ID)(await stepUpChallenge(base)),
-      },
-    });
-    const command = await signEnvelope("chalito.command.v1", body, p.phone.deviceId, p.phone.sign.secretKey);
+    const bundle = async () => {
+      const opts = await s.call("/v1/webauthn/assert/options", {}, p.phone.token);
+      expect(opts.status).toBe(200);
+      const L = [
+        await stepUpBodyHash(base),
+        await revokeAllServerEntry({
+          uid: p.owner,
+          deviceId: p.phone.deviceId,
+          challenge: String(opts.json.options.challenge),
+        }),
+      ];
+      const assertion = await p.passkey!.stepUp(RP_ID)(await revokeBundleChallenge(L));
+      const stepUp = { method: "webauthn" as const, at: Date.now(), assertion, bundle: L };
+      const body = CommandBody.parse({ ...base, stepUp });
+      return {
+        stepUp,
+        command: await signEnvelope("chalito.command.v1", body, p.phone.deviceId, p.phone.sign.secretKey),
+      };
+    };
 
-    // Without a fresh step-up, the api refuses.
+    // Without the step-up, the api refuses.
+    const { command } = await bundle();
     expect((await s.call("/v1/devices/revoke-all", { commands: [command] }, p.phone.token)).json.error).toBe(
       "step_up_required",
     );
     const res = await s.call(
       "/v1/devices/revoke-all",
-      { stepUp: await s.stepUp(p), commands: [command] },
+      await bundle().then((b) => ({ stepUp: b.stepUp, commands: [b.command] })),
       p.phone.token,
     );
     expect(res.status).toBe(200);

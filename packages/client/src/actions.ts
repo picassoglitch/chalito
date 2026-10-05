@@ -10,6 +10,7 @@ import {
   type RemoteCodexSandbox,
   type RemotePermissionMode,
 } from "@chalito/protocol";
+import { REVOKE_BUNDLE_CTX, revokeAllServerEntry, stepUpBodyHash } from "@chalito/crypto";
 import type { ClientKeys, StepUpProvider } from "./keys.js";
 import type { LiveStore } from "./live.js";
 import { writeWithRetry, type RetryOptions, type SupaClient } from "./supa.js";
@@ -26,7 +27,9 @@ export class ActionError extends Error {
       | "untrusted_agent"
       | "not_allowed"
       /** ADR 0019: the agent's signed request didn't verify here; only a deny is possible. */
-      | "unverified_request",
+      | "unverified_request"
+      /** revoke-all needs this device's passkey (ADR 0020). */
+      | "passkey_required",
     message?: string,
   ) {
     super(message ?? code);
@@ -250,34 +253,44 @@ export class ClientActions {
   }
 
   /**
-   * "Cerrar sesión en todos los demás dispositivos" (POST /v1/devices/revoke-all, -41's api): the
-   * server revokes and bans every other client at once after this device's passkey assertion
-   * (`stepUp`: over a server challenge). Agents keep their own trust lists, so this device also
-   * signs one `device.revokeClient` per (computer it trusts, other active client), each with its
-   * own step-up like revokeClient (R-L1), and the api queues them. Computers this device doesn't
-   * trust can't get a command from here (`untrusted`).
+   * "Cerrar sesión en todos los demás dispositivos" (POST /v1/devices/revoke-all): the server
+   * revokes and bans every other client at once. Agents keep their own trust lists, so this device
+   * also signs one `device.revokeClient` per (computer it trusts, other active client), and the
+   * api queues them. Computers this device doesn't trust can't get a command from here
+   * (`untrusted`).
+   *
+   * ONE passkey prompt covers it all (ADR 0020): the assertion signs the bundle
+   * L = [each command's body hash…, the server's entry over its fresh challenge], every command
+   * and the request carry `stepUp.bundle = L`, and each verifier checks its own item is in L.
+   * `stepUp` (the old separate server assertion) is no longer used.
    */
-  async revokeAll(o: { api: RevokeAllApi; stepUp: () => Promise<unknown> }): Promise<RevokeAllResult> {
+  async revokeAll(o: { api: RevokeAllApi; stepUp?: unknown }): Promise<RevokeAllResult> {
     const devices = this.live.getSnapshot().devices.filter((d) => !d.revoked);
     const clients = devices
       .filter((d) => d.role === "client" && d.deviceId !== this.keys.deviceId)
       .map((d) => d.deviceId);
     const agents = devices.filter((d) => d.role === "agent").map((d) => d.deviceId);
     const trusted = agents.filter((a) => this.keys.trustedAgentBoxKey(a));
-    const commands = [];
+    const bases = [];
     for (const agent of trusted)
       for (const clientDeviceId of clients)
-        commands.push(
-          (
-            await this.#signCommand(
-              agent,
-              async () => ({ type: "device.revokeClient", clientDeviceId }),
-              this.#revokeStepUp(agent, clientDeviceId),
-            )
-          ).env,
-        );
-    // The server's assertion comes last, right before sending (a cancel sends nothing).
-    const stepUp = await o.stepUp();
+        bases.push(await this.#commandBase(agent, async () => ({ type: "device.revokeClient", clientDeviceId })));
+
+    const { options } = await o.api.post<{ options: { challenge: string } }>("/v1/webauthn/assert/options", {});
+    const L = [
+      ...(await Promise.all(bases.map((b) => stepUpBodyHash(b)))),
+      await revokeAllServerEntry({ uid: this.live.owner, deviceId: this.keys.deviceId, challenge: options.challenge }),
+    ];
+    const step = await this.opts.stepUp(
+      { aid: "revoke-all", risk: "CRITICAL", agentDeviceId: this.keys.deviceId },
+      { ctx: REVOKE_BUNDLE_CTX, L },
+    );
+    // No passkey on this device: the api refuses revoke-all without one.
+    if (step?.method !== "webauthn") throw new ActionError("passkey_required");
+    const stepUp = { ...step, bundle: L };
+    const commands = [];
+    for (const base of bases)
+      commands.push(await this.keys.sign("chalito.command.v1", CommandBody.parse({ ...base, stepUp })));
     const r = await o.api.post<{
       revoked?: string[];
       commandsQueued?: number;
@@ -328,18 +341,14 @@ export class ClientActions {
     );
   }
 
-  /** Signs a command for one agent (not sent). */
-  async #signCommand(
-    agentDeviceId: string,
-    build: (cid: string) => Promise<CommandPayload>,
-    stepUp?: (unsignedBody: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>,
-  ) {
+  /** The unsigned body of a command for one agent (no stepUp). */
+  async #commandBase(agentDeviceId: string, build: (cid: string) => Promise<CommandPayload>) {
     if (!this.keys.trustedAgentBoxKey(agentDeviceId)) throw new ActionError("untrusted_agent");
     const cid = this.#newId();
     const payload = await build(cid);
     if (!CLIENT_COMMANDS.has(payload.type)) throw new ActionError("not_allowed");
     const now = this.#now();
-    const base = CommandBody.parse({
+    return CommandBody.parse({
       v: 1,
       cid,
       uid: this.live.owner,
@@ -350,6 +359,16 @@ export class ClientActions {
       expiresAt: now + this.#ttl,
       payload,
     });
+  }
+
+  /** Signs a command for one agent (not sent). */
+  async #signCommand(
+    agentDeviceId: string,
+    build: (cid: string) => Promise<CommandPayload>,
+    stepUp?: (unsignedBody: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>,
+  ) {
+    const base = await this.#commandBase(agentDeviceId, build);
+    const cid = base.cid;
     const step = stepUp ? await stepUp({ ...base }) : undefined;
     const body = step ? CommandBody.parse({ ...base, stepUp: step }) : base;
     const env = await this.keys.sign("chalito.command.v1", body);
