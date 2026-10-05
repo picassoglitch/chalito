@@ -300,11 +300,63 @@
         "full": "La sala está llena.",
         "no_key": "Todavía no tienes la llave de la sala.",
         "failed": "No se pudo. Vuelve a intentarlo.",
-        "ended": "Esta sala ya terminó para ti."
+        "ended": "Esta sala ya terminó para ti.",
+        "not_owner": "Solo quien creó la sala puede hacerlo.",
+        "conflict": "La sala cambió mientras tanto. Vuelve a intentarlo.",
+        "unsupported": "Este dispositivo no puede hacerlo todavía."
       },
       "memberCount": "{n, plural, one {# miembro} other {# miembros}}",
       "unread": "Nuevo",
-      "stage": "Los compañeros de la sala"
+      "stage": "Los compañeros de la sala",
+      "remove": "Quitar de la sala",
+      "removeConfirm": "¿Quitar a {member}? Ya no verá los mensajes nuevos.",
+      "removeYes": "Sí, quitar",
+      "types": {
+        "family": "Familia",
+        "business": "Negocio",
+        "project": "Proyecto"
+      },
+      "create": {
+        "title": "Nueva sala",
+        "name": "Nombre",
+        "type": "Tipo",
+        "submit": "Crear sala",
+        "error": {
+          "limit": "Tu plan ya no permite más salas.",
+          "rate_limited": "Demasiados intentos; espera un momento.",
+          "no_devices": "Este dispositivo no está listo para crear salas.",
+          "failed": "No se pudo crear la sala. Vuelve a intentarlo."
+        }
+      },
+      "invite": {
+        "create": "Invitar",
+        "again": "Crear otra invitación",
+        "how": "Que la otra persona escanee el glifo o escriba este código en Salas → Unirse con código. Sirve una vez.",
+        "expires": "Vence el {date}"
+      },
+      "rotation": {
+        "why": "Alguien salió de la sala. Para seguir escribiendo, cambia la llave: quien salió no podrá leer lo nuevo.",
+        "rotate": "Rotar la llave"
+      },
+      "ownerTitle": "Ajustes de la sala",
+      "retention": {
+        "ttl": "Los mensajes duran",
+        "ttls": {
+          "PT1H": "1 hora",
+          "PT24H": "24 horas",
+          "P7D": "7 días",
+          "P30D": "30 días",
+          "until_dissolved": "Hasta disolver la sala"
+        },
+        "keepPromoted": "Guardar los registros que alguien conserve",
+        "save": "Guardar",
+        "saved": "Guardado."
+      },
+      "dissolve": {
+        "button": "Disolver sala",
+        "confirm": "¿Disolver la sala? Se borran sus mensajes, miembros e invitaciones para todos. No se puede deshacer.",
+        "yes": "Sí, disolver"
+      }
     }
   },
   "integrations": {
@@ -840,6 +892,19 @@
       "recharge": "Recargas en Chalyb y los tokens nuevos se usan aquí de inmediato."
     },
     "recharge": "Recargar en Chalyb",
-    "usage": "Ver tu uso"
+    "usage": "Ver tu uso",
+    "balance": {
+      "title": "Tu saldo",
+      "loading": "Cargando…",
+      "remaining": "Te quedan {tokens} tokens",
+      "unlimited": "Tokens ilimitados",
+      "monthly": "Incluidos cada mes",
+      "bonus": "Extra",
+      "used": "Usados desde el {date}",
+      "reserved": "Apartados por trabajo en curso",
+      "tokens": "{tokens} tokens",
+      "unavailable": "Chalyb no respondió. Vuelve a intentarlo en un momento.",
+      "error": "No pudimos ver tu saldo."
+    }
   }
 }

@@ -1,5 +1,13 @@
 import { useId, useState, type FormEvent } from "react";
-import type { ReportInput, RoomError, RoomEventView, RoomMemberView } from "@chalito/rooms";
+import type { ReactNode } from "react";
+import type {
+  ReportInput,
+  RoomError,
+  RoomEventView,
+  RoomInvite,
+  RoomMemberView,
+  RoomRetentionView,
+} from "@chalito/rooms";
 import { useUiText } from "./text.js";
 
 /**
@@ -74,34 +82,345 @@ export const RoomEventList = ({
 export const RoomMembers = ({
   members,
   onReport,
+  onRemove,
 }: {
   members: readonly RoomMemberView[];
   onReport?: (companionId: string) => void;
+  /** "Quitar de la sala": pass it only when this companion owns the room. Never on yourself or the owner. */
+  onRemove?: (companionId: string) => Promise<RoomError | null>;
 }) => {
   const { t } = useUiText();
+  const [asking, setAsking] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<RoomError | null>(null);
+  const remove = async (id: string) => {
+    if (!onRemove) return;
+    setBusy(true);
+    const err = await onRemove(id);
+    setBusy(false);
+    setError(err);
+    if (!err) setAsking(null);
+  };
   return (
-    <ul className="grid gap-1" aria-label={t("rooms.members")}>
-      {members.map((m) => (
-        <li
-          key={m.companionId}
-          data-testid="room-member"
-          data-companion={m.companionId}
-          className="flex items-center gap-2 text-sm"
+    <div className="grid gap-1">
+      <ul className="grid gap-1" aria-label={t("rooms.members")}>
+        {members.map((m) => (
+          <li
+            key={m.companionId}
+            data-testid="room-member"
+            data-companion={m.companionId}
+            className="flex flex-wrap items-center gap-2 text-sm"
+          >
+            <span>{memberLabel(m.companionId, m.me, t)}</span>
+            {m.role === "owner" ? <span className="text-xs text-neutral-600">{t("rooms.owner")}</span> : null}
+            <span className="ml-auto flex items-center gap-3">
+              {onRemove && !m.me && m.role !== "owner" ? (
+                asking === m.companionId ? (
+                  <span className="flex items-center gap-2 text-xs">
+                    {t("rooms.removeConfirm", { member: memberLabel(m.companionId, false, t) })}
+                    <button
+                      type="button"
+                      className="rounded bg-red-700 px-2 py-0.5 text-white disabled:opacity-50"
+                      disabled={busy}
+                      onClick={() => void remove(m.companionId)}
+                    >
+                      {t("rooms.removeYes")}
+                    </button>
+                    <button type="button" className="rounded border px-2 py-0.5" onClick={() => setAsking(null)}>
+                      {t("rooms.cancel")}
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-xs text-red-800 underline"
+                    onClick={() => (setError(null), setAsking(m.companionId))}
+                  >
+                    {t("rooms.remove")}
+                  </button>
+                )
+              ) : null}
+              {onReport && !m.me ? (
+                <button
+                  type="button"
+                  className="text-xs text-red-800 underline"
+                  onClick={() => onReport(m.companionId)}
+                >
+                  {t("rooms.report")}
+                </button>
+              ) : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {error ? (
+        <p role="alert" className="text-sm text-red-800">
+          {t(`rooms.error.${error}`)}
+        </p>
+      ) : null}
+    </div>
+  );
+};
+
+/** Event lifetimes the owner can pick (rooms.yaml allowedEphemeralTtl; the database checks the same list). */
+export const ROOM_TTLS = ["PT1H", "PT24H", "P7D", "P30D", "until_dissolved"] as const;
+export const ROOM_TYPES = ["family", "business", "project"] as const;
+export type RoomTypeId = (typeof ROOM_TYPES)[number];
+
+/** "Nueva sala": a name and a type; the shell creates it (createRoom) and opens it. */
+export const NewRoomForm = ({
+  onCreate,
+}: {
+  /** Resolves to null when created (the shell navigates), or an error key under rooms.create.error. */
+  onCreate: (name: string, type: RoomTypeId) => Promise<string | null>;
+}) => {
+  const { t } = useUiText();
+  const nameId = useId();
+  const typeId = useId();
+  const [name, setName] = useState("");
+  const [type, setType] = useState<RoomTypeId>("family");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <form
+      data-testid="room-new"
+      className="grid gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!name.trim()) return;
+        setBusy(true);
+        setError(null);
+        void onCreate(name.trim(), type).then((err) => {
+          setBusy(false);
+          setError(err);
+        });
+      }}
+    >
+      <div className="flex flex-wrap items-end gap-2">
+        <label htmlFor={nameId} className="grid gap-1">
+          <span className="text-sm font-medium">{t("rooms.create.name")}</span>
+          <input
+            id={nameId}
+            className="rounded-lg border px-3 py-2"
+            maxLength={60}
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label htmlFor={typeId} className="grid gap-1">
+          <span className="text-sm font-medium">{t("rooms.create.type")}</span>
+          <select
+            id={typeId}
+            className="rounded-lg border px-3 py-2"
+            value={type}
+            onChange={(e) => setType(e.target.value as RoomTypeId)}
+          >
+            {ROOM_TYPES.map((x) => (
+              <option key={x} value={x}>
+                {t(`rooms.types.${x}`)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          className="rounded-lg bg-emerald-700 px-4 py-2 text-white disabled:opacity-50"
+          disabled={busy || !name.trim()}
         >
-          <span>{memberLabel(m.companionId, m.me, t)}</span>
-          {m.role === "owner" ? <span className="text-xs text-neutral-600">{t("rooms.owner")}</span> : null}
-          {onReport && !m.me ? (
+          {t("rooms.create.submit")}
+        </button>
+      </div>
+      {error ? (
+        <p role="alert" data-testid="room-new-error" className="text-sm text-red-800">
+          {t(`rooms.create.error.${error}`)}
+        </p>
+      ) : null}
+    </form>
+  );
+};
+
+/** "Invitar": a new invite's glyph (drawn by the shell) and short code, with its expiry. */
+export const RoomInvitePanel = ({
+  onInvite,
+  renderGlyph,
+}: {
+  onInvite: () => Promise<{ ok: true; invite: RoomInvite } | { ok: false; reason: RoomError }>;
+  /** The shell's glyph canvas. */
+  renderGlyph: (glyph: RoomInvite["glyph"]) => ReactNode;
+}) => {
+  const { t, locale } = useUiText();
+  const [invite, setInvite] = useState<RoomInvite | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<RoomError | null>(null);
+  const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
+  return (
+    <div className="grid gap-2" data-testid="room-invite">
+      <button
+        type="button"
+        className="w-fit rounded-lg border px-3 py-1.5 text-sm disabled:opacity-50"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setError(null);
+          void onInvite().then((r) => {
+            setBusy(false);
+            if (r.ok) setInvite(r.invite);
+            else setError(r.reason);
+          });
+        }}
+      >
+        {invite ? t("rooms.invite.again") : t("rooms.invite.create")}
+      </button>
+      {invite ? (
+        <div className="grid gap-2 rounded-lg border bg-white p-3">
+          <p className="text-sm">{t("rooms.invite.how")}</p>
+          {renderGlyph(invite.glyph)}
+          <p className="font-mono text-2xl tracking-widest" data-testid="room-invite-code">
+            {invite.shortCode}
+          </p>
+          <p className="text-xs text-neutral-600">
+            {t("rooms.invite.expires", { date: date.format(invite.expiresAt) })}
+          </p>
+        </div>
+      ) : null}
+      {error ? (
+        <p role="alert" className="text-sm text-red-800">
+          {t(`rooms.error.${error}`)}
+        </p>
+      ) : null}
+    </div>
+  );
+};
+
+/** Someone left or was removed: posting is refused until a remaining member rotates the key. */
+export const RoomRotation = ({ onRotate }: { onRotate: () => Promise<RoomError | null> }) => {
+  const { t } = useUiText();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<RoomError | null>(null);
+  return (
+    <div role="status" data-testid="room-rotation" className="grid gap-2 rounded-lg bg-amber-50 p-3 text-amber-900">
+      <p>{t("rooms.rotation.why")}</p>
+      <button
+        type="button"
+        className="w-fit rounded-lg bg-amber-800 px-3 py-1.5 text-white disabled:opacity-50"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          void onRotate().then((err) => {
+            setBusy(false);
+            setError(err);
+          });
+        }}
+      >
+        {t("rooms.rotation.rotate")}
+      </button>
+      {error ? <p role="alert">{t(`rooms.error.${error}`)}</p> : null}
+    </div>
+  );
+};
+
+/** The owner's settings: how long events last, whether promoted records stay, and dissolving. */
+export const RoomOwnerSettings = ({
+  retention,
+  onRetention,
+  onDissolve,
+}: {
+  retention: RoomRetentionView;
+  onRetention: (r: RoomRetentionView) => Promise<RoomError | null>;
+  onDissolve: () => Promise<RoomError | null>;
+}) => {
+  const { t } = useUiText();
+  const ttlId = useId();
+  const [ttl, setTtl] = useState(retention.ephemeralTtl);
+  const [keep, setKeep] = useState(retention.keepPromoted);
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<RoomError | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const run = async (fn: () => Promise<RoomError | null>, after?: () => void) => {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    const err = await fn();
+    setBusy(false);
+    setError(err);
+    if (!err) after?.();
+  };
+  const changed = ttl !== retention.ephemeralTtl || keep !== retention.keepPromoted;
+  return (
+    <section className="grid gap-3 rounded-lg border p-3" data-testid="room-owner">
+      <h2 className="font-semibold">{t("rooms.ownerTitle")}</h2>
+      <label htmlFor={ttlId} className="grid gap-1 text-sm">
+        <span className="font-medium">{t("rooms.retention.ttl")}</span>
+        <select
+          id={ttlId}
+          className="w-fit rounded-lg border px-3 py-2"
+          value={ttl}
+          onChange={(e) => setTtl(e.target.value)}
+        >
+          {ROOM_TTLS.map((x) => (
+            <option key={x} value={x}>
+              {t(`rooms.retention.ttls.${x}`)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} />
+        {t("rooms.retention.keepPromoted")}
+      </label>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          className="w-fit rounded-lg bg-emerald-700 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+          disabled={busy || !changed}
+          onClick={() =>
+            void run(
+              () => onRetention({ ephemeralTtl: ttl, keepPromoted: keep }),
+              () => setSaved(true),
+            )
+          }
+        >
+          {t("rooms.retention.save")}
+        </button>
+        {saved ? (
+          <span role="status" data-testid="room-retention-saved" className="text-sm text-emerald-800">
+            {t("rooms.retention.saved")}
+          </span>
+        ) : null}
+      </div>
+      {confirm ? (
+        <div className="grid gap-2 rounded-md bg-red-50 p-3 text-sm text-red-900">
+          <p>{t("rooms.dissolve.confirm")}</p>
+          <div className="flex gap-2">
             <button
               type="button"
-              className="ml-auto text-xs text-red-800 underline"
-              onClick={() => onReport(m.companionId)}
+              className="rounded bg-red-700 px-3 py-1 text-white disabled:opacity-50"
+              disabled={busy}
+              onClick={() => void run(onDissolve, () => setConfirm(false))}
             >
-              {t("rooms.report")}
+              {t("rooms.dissolve.yes")}
             </button>
-          ) : null}
-        </li>
-      ))}
-    </ul>
+            <button type="button" className="rounded border px-3 py-1" onClick={() => setConfirm(false)}>
+              {t("rooms.cancel")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="w-fit rounded-lg border border-red-800 px-3 py-1.5 text-sm text-red-900"
+          onClick={() => setConfirm(true)}
+        >
+          {t("rooms.dissolve.button")}
+        </button>
+      )}
+      {error ? (
+        <p role="alert" className="text-sm text-red-800">
+          {t(`rooms.error.${error}`)}
+        </p>
+      ) : null}
+    </section>
   );
 };
 

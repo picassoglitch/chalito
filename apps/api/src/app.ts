@@ -17,6 +17,7 @@ import { releasesRoutes } from "./routes/releases.js";
 import { webauthnRoutes } from "./routes/webauthn.js";
 import { oauthRoutes } from "./routes/oauth.js";
 import { storeRoutes } from "./store/routes.js";
+import { billingRoutes } from "./billing/routes.js";
 import { roomsRoutes } from "./routes/rooms.js";
 
 /** Browser-facing prefixes. Server-to-server routes (hub /tenants, scheduler /tasks, webhooks) get no CORS. */
@@ -67,6 +68,7 @@ export const createApp = (deps: Deps) => {
   if (deps.phone) app.route("/v1/phone", phoneRoutes(deps, deps.phone));
   if (deps.voice) app.route("/v1/voice", voiceRoutes(deps, deps.voice));
   if (deps.store) app.route("/v1/store", storeRoutes(deps, deps.store));
+  if (deps.billing) app.route("/v1/billing", billingRoutes(deps, deps.billing));
   app.route("/v1/rooms", roomsRoutes(deps));
   if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));
   if (deps.account) {

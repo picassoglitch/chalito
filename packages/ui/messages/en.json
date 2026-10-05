@@ -300,11 +300,63 @@
         "full": "The room is full.",
         "no_key": "You don't have the room key yet.",
         "failed": "That didn't work. Try again.",
-        "ended": "This room has ended for you."
+        "ended": "This room has ended for you.",
+        "not_owner": "Only the person who created the room can do this.",
+        "conflict": "The room changed in the meantime. Try again.",
+        "unsupported": "This device can't do that yet."
       },
       "memberCount": "{n, plural, one {# member} other {# members}}",
       "unread": "New",
-      "stage": "The room's companions"
+      "stage": "The room's companions",
+      "remove": "Remove from room",
+      "removeConfirm": "Remove {member}? They won't see new messages.",
+      "removeYes": "Yes, remove",
+      "types": {
+        "family": "Family",
+        "business": "Business",
+        "project": "Project"
+      },
+      "create": {
+        "title": "New room",
+        "name": "Name",
+        "type": "Type",
+        "submit": "Create room",
+        "error": {
+          "limit": "Your plan doesn't allow more rooms.",
+          "rate_limited": "Too many tries; wait a moment.",
+          "no_devices": "This device isn't ready to create rooms.",
+          "failed": "We couldn't create the room. Try again."
+        }
+      },
+      "invite": {
+        "create": "Invite",
+        "again": "Create another invite",
+        "how": "Have the other person scan the glyph or type this code in Rooms → Join with a code. It works once.",
+        "expires": "Expires {date}"
+      },
+      "rotation": {
+        "why": "Someone left the room. To keep writing, change the key: whoever left can't read anything new.",
+        "rotate": "Rotate the key"
+      },
+      "ownerTitle": "Room settings",
+      "retention": {
+        "ttl": "Messages last",
+        "ttls": {
+          "PT1H": "1 hour",
+          "PT24H": "24 hours",
+          "P7D": "7 days",
+          "P30D": "30 days",
+          "until_dissolved": "Until the room is dissolved"
+        },
+        "keepPromoted": "Keep records someone saves",
+        "save": "Save",
+        "saved": "Saved."
+      },
+      "dissolve": {
+        "button": "Dissolve room",
+        "confirm": "Dissolve the room? Its messages, members and invites are deleted for everyone. This can't be undone.",
+        "yes": "Yes, dissolve"
+      }
     }
   },
   "integrations": {
@@ -840,6 +892,19 @@
       "recharge": "You recharge on Chalyb and the new tokens work here right away."
     },
     "recharge": "Recharge on Chalyb",
-    "usage": "See your usage"
+    "usage": "See your usage",
+    "balance": {
+      "title": "Your balance",
+      "loading": "Loading…",
+      "remaining": "{tokens} tokens left",
+      "unlimited": "Unlimited tokens",
+      "monthly": "Included each month",
+      "bonus": "Extra",
+      "used": "Used since {date}",
+      "reserved": "Held for work in progress",
+      "tokens": "{tokens} tokens",
+      "unavailable": "Chalyb didn't answer. Try again in a moment.",
+      "error": "We couldn't see your balance."
+    }
   }
 }

@@ -18,6 +18,7 @@ import { supabase } from "./supabase";
 import { httpStore, type StoreApi } from "./store";
 import { httpUsage, type UsageApi } from "./usage";
 import { httpAccount, type AccountApi } from "./account";
+import { httpBalance, type BalanceApi } from "./balance";
 
 /**
  * Everything the app shell needs from the outside world. Production builds it from env (this
@@ -41,6 +42,8 @@ export interface Platform {
   store(token: () => Promise<string | null>): StoreApi;
   /** /v1/account/* (deletion and export) as whoever is signed in (person or device). */
   account(token: () => Promise<string | null>): AccountApi;
+  /** GET /v1/billing/balance (the hub balance in tokens) as whoever is signed in. */
+  balance(token: () => Promise<string | null>): BalanceApi;
   /** The api as whoever the bearer is (/v1/endorse: the person on a new browser, the device on a trusted one). */
   api(token: () => Promise<string | null>): ApiClient;
   /** Hears the endorsement pointer on `chalito:pairing:<codeId>` with the code's scoped watch token. */
@@ -69,6 +72,7 @@ export const productionPlatform = (): Platform => ({
   usage: (token) => httpUsage(env.orchestratorBase, token),
   store: (token) => httpStore(env.apiBase, token),
   account: (token) => httpAccount(env.apiBase, token),
+  balance: (token) => httpBalance(env.apiBase, token),
   endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),
   saveDeviceKeys,
   passkeyAssertion: (ref) => stepUpWithPasskey(ref),

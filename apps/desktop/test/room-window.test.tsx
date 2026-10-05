@@ -11,7 +11,14 @@ afterEach(cleanup);
 const fakeController = (initial: Partial<RoomSnapshot> = {}) => {
   let snap: RoomSnapshot = {
     status: "live",
-    room: { roomId: "r1", name: "Casa", type: "family" },
+    room: {
+      roomId: "r1",
+      name: "Casa",
+      type: "family",
+      keyEpoch: 1,
+      needsRotation: false,
+      retention: { ephemeralTtl: "PT24H", keepPromoted: true },
+    },
     members: [],
     events: [],
     ...initial,
