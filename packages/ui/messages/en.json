@@ -21,7 +21,8 @@
     "sessions": "Sessions",
     "devices": "Devices",
     "store": "Store",
-    "rooms": "Rooms"
+    "rooms": "Rooms",
+    "mesas": "Mesas"
   },
   "home": {
     "title": "Hi, I'm {name}",
@@ -356,6 +357,121 @@
         "button": "Dissolve room",
         "confirm": "Dissolve the room? Its messages, members and invites are deleted for everyone. This can't be undone.",
         "yes": "Yes, dissolve"
+      }
+    },
+    "mesa": {
+      "list": "Your Mesas",
+      "listEmpty": "You don't have any Mesas yet.",
+      "title": "Mesas",
+      "intro": "A Mesa brings your companion and the brains you pick together to think something through with you. Only whoever you name answers.",
+      "status": {
+        "open": "Open",
+        "budget_reached": "Reached its token cap",
+        "closed": "Closed"
+      },
+      "new": {
+        "title": "New Mesa",
+        "who": "Who sits at the table?",
+        "companion": "{name} (your companion)",
+        "noCompanion": "You don't have a companion yet; you can seat brains only.",
+        "limit": "Your plan allows {n, plural, one {# brain} other {# brains}} per Mesa.",
+        "limitNone": "Your plan doesn't include brains at the Mesa. With your own key you can still use them.",
+        "limitUnknown": "Your plan sets how many brains fit at a Mesa.",
+        "sessions": "Live sessions as reference (up to {n})",
+        "sessionsNote": "Their card is shared as data. The Mesa never gives them instructions.",
+        "create": "Create Mesa",
+        "errors": {
+          "mesa_brains_limit": "Your plan allows up to {n, plural, one {# brain} other {# brains}} per Mesa.",
+          "mesa_brains_none": "Your plan doesn't include brains at the Mesa.",
+          "bad_participants": "Check who's seated: up to 2 sessions, no repeats.",
+          "network": "No connection. Try again.",
+          "error": "Couldn't create the Mesa. Try again."
+        }
+      },
+      "goal": "Goal",
+      "goalPlaceholder": "What do you want to decide or get done?",
+      "goalSave": "Save goal",
+      "goalMissing": "Write this Mesa's goal (it's kept only on this device).",
+      "feed": "Mesa conversation",
+      "empty": "Nobody has spoken yet. Write something to start.",
+      "you": "You",
+      "unknownSpeaker": "Someone",
+      "sealed": "Can't be read on this device.",
+      "proposals": "Proposals",
+      "objections": "Objections",
+      "byo": "with your key",
+      "recharge": "Recharge",
+      "decide": "Decide",
+      "decisionForwarded": "This didn't come from you, so no decision was opened.",
+      "emotion": {
+        "happy": "happy",
+        "angry": "angry",
+        "sad": "sad",
+        "relaxed": "relaxed",
+        "surprised": "surprised",
+        "excited": "excited",
+        "tired": "tired",
+        "thinking": "thinking",
+        "worried": "worried"
+      },
+      "composer": "Write to the Mesa",
+      "composerHint": "Use @name to talk to someone, or @all.",
+      "mentions": "Mention",
+      "everyone": "all",
+      "send": "Send",
+      "thinking": "Thinking…",
+      "from": {
+        "mcp:claude": "forwarded from {app}",
+        "mcp:chatgpt": "forwarded from {app}",
+        "room": "forwarded from a room"
+      },
+      "inbox": {
+        "title": "From your connected apps ({n})",
+        "note": "Text a connected app sent to your Mesa. It goes in as a quote, never as an instruction.",
+        "bring": "Bring to this Mesa",
+        "from": "From {app}"
+      },
+      "errors": {
+        "budget_reached": "This Mesa reached its token cap.",
+        "closed": "This Mesa is closed.",
+        "not_found": "This Mesa doesn't exist.",
+        "no_clients": "There are no devices to encrypt the answer for.",
+        "duplicate": "That message was already sent.",
+        "network": "No connection. Try again.",
+        "error": "Couldn't send. Try again.",
+        "load": "Couldn't load the Mesa.",
+        "notFound": "We couldn't find this Mesa."
+      },
+      "back": "All Mesas",
+      "keys": {
+        "title": "Your keys",
+        "intro": "Use your own provider keys for the Mesa's brains. What you spend with them isn't charged by Chalito.",
+        "loading": "Loading…",
+        "none": "You haven't added any keys yet.",
+        "provider": "Provider",
+        "key": "Key",
+        "save": "Save key",
+        "remove": "Remove",
+        "cloudOn": "in the cloud",
+        "cloudOff": "only on your devices",
+        "cloud": "Also use it in the cloud, for Mesa turns when your devices aren't open.",
+        "cloudWarning": "For this the key is sent once, unencrypted, to Chalito, which protects it with its key service. If you'd rather it never leave your devices, leave this box unchecked.",
+        "localOnly": "It's encrypted for your devices; Chalito can't read it.",
+        "saved": "Key saved.",
+        "removed": "Key removed.",
+        "error": "Couldn't save. Try again.",
+        "noDevices": "We couldn't find your devices to encrypt the key."
+      },
+      "decision": {
+        "title": "Mesa decision",
+        "from": "{name} asks you to decide",
+        "none": "None",
+        "note": "Your answer is signed on this device.",
+        "sent": "Done. You picked: {option}",
+        "dismissed": "Done. You picked none.",
+        "resolved": "This decision was already resolved.",
+        "error": "Couldn't send your answer. Try again.",
+        "pending": "Sent; the Mesa confirms it in a moment."
       }
     }
   },

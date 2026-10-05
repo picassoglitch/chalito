@@ -34,8 +34,49 @@ export interface ApprovalView {
    * isn't a recipient. Unverified details are shown as such.
    */
   details: Record<string, unknown> | null;
+  /**
+   * A Mesa decision (kind=decision raised by the orchestrator, not by an agent): the question and
+   * options it sealed to this device, bound to this row's Mesa (sid) and turn (requestId). Not an
+   * agent's signed request, so `verified` stays false; the orchestrator verifies the signed
+   * answer instead (apps/orchestrator decisions.ts). Absent for every other approval.
+   */
+  mesa?: MesaDecisionView;
   rev: number;
 }
+
+export interface MesaDecisionView {
+  mid: string;
+  tid: string;
+  /** Which participant asked (display only). */
+  from: string;
+  question: string;
+  options: string[];
+}
+
+/** The orchestrator's device_id on the decision approvals it raises. */
+export const ORCHESTRATOR_DEVICE = "orchestrator";
+
+const mesaDecisionOf = (
+  opened: unknown,
+  row: { kind: string; agentDeviceId: string; sid: string; requestId: string },
+) => {
+  if (row.kind !== "decision" || row.agentDeviceId !== ORCHESTRATOR_DEVICE) return undefined;
+  const d = opened as Record<string, unknown> | null;
+  if (d?.kind !== "mesa.decision" || d.mid !== row.sid || d.tid !== row.requestId) return undefined;
+  if (typeof d.question !== "string" || !Array.isArray(d.options)) return undefined;
+  const options = d.options
+    .filter((o): o is string => typeof o === "string")
+    .slice(0, 6)
+    .map((o) => o.slice(0, 120));
+  if (options.length < 2) return undefined;
+  return {
+    mid: row.sid,
+    tid: row.requestId,
+    from: typeof d.from === "string" ? d.from.slice(0, 40) : "",
+    question: d.question.slice(0, 300),
+    options,
+  } satisfies MesaDecisionView;
+};
 
 export interface SessionView {
   sid: string;
@@ -185,6 +226,16 @@ export class LiveStore {
   /** Stable between changes (a new object only when something changed). */
   getSnapshot = (): Snapshot => this.#snapshot;
 
+  readonly #pointerListeners = new Set<(table: string, key: unknown) => void>();
+  /**
+   * Pointers for tables this store doesn't pull (e.g. mesas, mesa_turns): a screen that reads
+   * them hears that something changed and pulls under RLS itself. Pointers carry no content.
+   */
+  onPointer = (listener: (table: string, key: unknown) => void): (() => void) => {
+    this.#pointerListeners.add(listener);
+    return () => this.#pointerListeners.delete(listener);
+  };
+
   // ---- lifecycle --------------------------------------------------------------------
 
   #joining: Promise<void> | null = null;
@@ -265,6 +316,7 @@ export class LiveStore {
     }
     const table = (p as { table?: unknown } | null)?.table;
     if (typeof table === "string" && (TABLES as readonly string[]).includes(table)) void this.#pull(table as Table);
+    else if (typeof table === "string") for (const l of this.#pointerListeners) l(table, (p as { key?: unknown }).key);
   }
 
   /** Coalesced: while a pull runs, further requests for the table schedule exactly one more. */
@@ -373,11 +425,13 @@ export class LiveStore {
       // Unverified: show what was opened (legacy or unsigned payloads), but it can only be denied.
       const legacy =
         opened && typeof opened === "object" ? ((opened as { details?: unknown }).details ?? opened) : null;
+      const mesa = mesaDecisionOf(opened, base);
       return {
         ...base,
         verified: false,
         detailsHash: null,
         details: (legacy as Record<string, unknown> | null) ?? null,
+        ...(mesa ? { mesa } : {}),
       };
     }
     return {

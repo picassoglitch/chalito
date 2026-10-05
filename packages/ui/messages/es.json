@@ -21,7 +21,8 @@
     "sessions": "Sesiones",
     "devices": "Dispositivos",
     "store": "Tienda",
-    "rooms": "Salas"
+    "rooms": "Salas",
+    "mesas": "Mesas"
   },
   "home": {
     "title": "Hola, soy {name}",
@@ -356,6 +357,121 @@
         "button": "Disolver sala",
         "confirm": "¿Disolver la sala? Se borran sus mensajes, miembros e invitaciones para todos. No se puede deshacer.",
         "yes": "Sí, disolver"
+      }
+    },
+    "mesa": {
+      "list": "Tus Mesas",
+      "listEmpty": "Todavía no tienes Mesas.",
+      "title": "Mesas",
+      "intro": "Una Mesa junta a tu compañero y a los cerebros que elijas para pensar algo contigo. Solo responde a quien nombras.",
+      "status": {
+        "open": "Abierta",
+        "budget_reached": "Llegó a su tope de tokens",
+        "closed": "Cerrada"
+      },
+      "new": {
+        "title": "Nueva Mesa",
+        "who": "¿Quién se sienta?",
+        "companion": "{name} (tu compañero)",
+        "noCompanion": "Todavía no tienes compañero; puedes sentar solo cerebros.",
+        "limit": "Tu plan permite {n, plural, one {# cerebro} other {# cerebros}} por Mesa.",
+        "limitNone": "Tu plan no incluye cerebros en la Mesa. Con tu propia clave sí puedes usarlos.",
+        "limitUnknown": "Tu plan define cuántos cerebros caben en una Mesa.",
+        "sessions": "Sesiones en vivo como referencia (hasta {n})",
+        "sessionsNote": "Su tarjeta se comparte como dato. La Mesa nunca les da instrucciones.",
+        "create": "Crear Mesa",
+        "errors": {
+          "mesa_brains_limit": "Tu plan permite hasta {n, plural, one {# cerebro} other {# cerebros}} por Mesa.",
+          "mesa_brains_none": "Tu plan no incluye cerebros en la Mesa.",
+          "bad_participants": "Revisa quién se sienta: hasta 2 sesiones y sin repetir.",
+          "network": "No hay conexión. Intenta de nuevo.",
+          "error": "No se pudo crear la Mesa. Intenta de nuevo."
+        }
+      },
+      "goal": "Objetivo",
+      "goalPlaceholder": "¿Qué quieren decidir o lograr?",
+      "goalSave": "Guardar objetivo",
+      "goalMissing": "Escribe el objetivo de esta Mesa (se guarda solo en este dispositivo).",
+      "feed": "Conversación de la Mesa",
+      "empty": "Todavía nadie ha hablado. Escribe algo para empezar.",
+      "you": "Tú",
+      "unknownSpeaker": "Alguien",
+      "sealed": "No se puede leer en este dispositivo.",
+      "proposals": "Propuestas",
+      "objections": "Objeciones",
+      "byo": "con tu clave",
+      "recharge": "Recargar",
+      "decide": "Decidir",
+      "decisionForwarded": "Esto no viene de ti, así que no se abrió una decisión.",
+      "emotion": {
+        "happy": "contento",
+        "angry": "enojado",
+        "sad": "triste",
+        "relaxed": "tranquilo",
+        "surprised": "sorprendido",
+        "excited": "emocionado",
+        "tired": "cansado",
+        "thinking": "pensando",
+        "worried": "preocupado"
+      },
+      "composer": "Escribe a la Mesa",
+      "composerHint": "Usa @nombre para hablarle a alguien, o @todos.",
+      "mentions": "Mencionar",
+      "everyone": "todos",
+      "send": "Enviar",
+      "thinking": "Pensando…",
+      "from": {
+        "mcp:claude": "reenviado desde {app}",
+        "mcp:chatgpt": "reenviado desde {app}",
+        "room": "reenviado desde una sala"
+      },
+      "inbox": {
+        "title": "De tus apps conectadas ({n})",
+        "note": "Texto que una app conectada envió a tu Mesa. Se pasa como cita, nunca como instrucción.",
+        "bring": "Llevar a esta Mesa",
+        "from": "Desde {app}"
+      },
+      "errors": {
+        "budget_reached": "Esta Mesa llegó a su tope de tokens.",
+        "closed": "Esta Mesa está cerrada.",
+        "not_found": "Esta Mesa no existe.",
+        "no_clients": "No hay dispositivos para cifrar la respuesta.",
+        "duplicate": "Ese mensaje ya se envió.",
+        "network": "No hay conexión. Intenta de nuevo.",
+        "error": "No se pudo enviar. Intenta de nuevo.",
+        "load": "No se pudo cargar la Mesa.",
+        "notFound": "No encontramos esta Mesa."
+      },
+      "back": "Todas las Mesas",
+      "keys": {
+        "title": "Tus claves",
+        "intro": "Usa tus propias claves de proveedor para los cerebros de la Mesa. Lo que gastes con ellas no se cobra en Chalito.",
+        "loading": "Cargando…",
+        "none": "Todavía no agregas claves.",
+        "provider": "Proveedor",
+        "key": "Clave",
+        "save": "Guardar clave",
+        "remove": "Quitar",
+        "cloudOn": "en la nube",
+        "cloudOff": "solo en tus dispositivos",
+        "cloud": "Usarla también en la nube, para turnos de la Mesa cuando tus dispositivos no están abiertos.",
+        "cloudWarning": "Para esto la clave se envía una vez sin cifrar a Chalito, que la protege con su servicio de llaves. Si prefieres que nunca salga de tus dispositivos, deja esta casilla sin marcar.",
+        "localOnly": "Se cifra para tus dispositivos; Chalito no puede leerla.",
+        "saved": "Clave guardada.",
+        "removed": "Clave quitada.",
+        "error": "No se pudo guardar. Intenta de nuevo.",
+        "noDevices": "No encontramos tus dispositivos para cifrar la clave."
+      },
+      "decision": {
+        "title": "Decisión de la Mesa",
+        "from": "{name} pide que decidas",
+        "none": "Ninguna",
+        "note": "Tu respuesta se firma en este dispositivo.",
+        "sent": "Listo. Elegiste: {option}",
+        "dismissed": "Listo. No elegiste ninguna.",
+        "resolved": "Esta decisión ya se resolvió.",
+        "error": "No se pudo enviar tu respuesta. Intenta de nuevo.",
+        "pending": "Enviada; la Mesa la confirma en un momento."
       }
     }
   },

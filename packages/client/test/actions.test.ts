@@ -436,3 +436,70 @@ describe("R-H1: only what the agent signed can be allowed (ADR 0019)", () => {
     expect(live.approval("t1")?.verified).toBe(false);
   });
 });
+
+describe("Mesa decisions (kind=decision from the orchestrator)", () => {
+  const mesaPayload = (o: Record<string, unknown> = {}) => ({
+    kind: "mesa.decision",
+    mid: "m_a",
+    tid: "t_9",
+    from: "Claude",
+    question: "¿A o B?",
+    options: ["A", "B"],
+    ...o,
+  });
+  const seedMesa = (
+    db: FakeSupabase,
+    agent: Device,
+    me: Device,
+    aid: string,
+    payload: unknown,
+    device = "orchestrator",
+  ) =>
+    seedApproval(
+      db,
+      agent,
+      me,
+      aid,
+      { device_id: device, kind: "decision", sid: "m_a", request_id: "t_9", origin: "client:x" },
+      payload,
+    );
+
+  it("shows the question and options, and a pick is a signed Decision for the orchestrator with the choice", async () => {
+    const { me, agent, db, live, actions } = await setup();
+    await seedMesa(db, agent, me, "apr_1", mesaPayload());
+    await live.resync();
+    const a = live.approval("apr_1")!;
+    expect(a.verified).toBe(false);
+    expect(a.mesa).toEqual({ mid: "m_a", tid: "t_9", from: "Claude", question: "¿A o B?", options: ["A", "B"] });
+
+    await expect(actions.decide("apr_1", true)).rejects.toMatchObject({ code: "bad_choice" });
+    await expect(actions.decide("apr_1", true, { choice: 2 })).rejects.toMatchObject({ code: "bad_choice" });
+    await actions.decide("apr_1", true, { choice: 1 });
+    const decision = db.rows("approval_decisions")[0]!.decision as { body: DecisionBody; signerDeviceId: string };
+    expect(decision.signerDeviceId).toBe(me.deviceId);
+    expect(decision.body).toMatchObject({
+      aid: "apr_1",
+      requestId: "t_9",
+      uid: OWNER,
+      targetDeviceId: "orchestrator",
+      allow: true,
+      choice: 1,
+    });
+    expect(decision.body.stepUp).toBeUndefined(); // MED: no passkey
+    expect(decision.body.detailsHash).toBeUndefined();
+  });
+
+  it("a payload for another Mesa or turn, or from an agent device, is not a Mesa decision (deny only)", async () => {
+    const { me, agent, db, live, actions } = await setup();
+    await seedMesa(db, agent, me, "apr_2", mesaPayload({ mid: "m_other" }));
+    await seedMesa(db, agent, me, "apr_3", mesaPayload({ tid: "t_other" }));
+    await seedMesa(db, agent, me, "apr_4", mesaPayload(), agent.deviceId);
+    await live.resync();
+    for (const aid of ["apr_2", "apr_3", "apr_4"]) {
+      expect(live.approval(aid)!.mesa).toBeUndefined();
+      await expect(actions.decide(aid, true, { choice: 0 })).rejects.toBeInstanceOf(ActionError);
+    }
+    await actions.decide("apr_2", false);
+    expect(db.rows("approval_decisions")).toHaveLength(1);
+  });
+});

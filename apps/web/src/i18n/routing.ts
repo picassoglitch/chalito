@@ -29,6 +29,7 @@ export const routing = defineRouting({
     "/creditos": "/creditos",
     "/auth/sso": "/auth/sso",
     "/a/[id]": "/a/[id]",
+    "/m": "/m",
     "/m/[id]": "/m/[id]",
     "/r/[id]": "/r/[id]",
     "/n/[nid]": "/n/[nid]",

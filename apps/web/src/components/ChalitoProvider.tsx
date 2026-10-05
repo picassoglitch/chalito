@@ -5,6 +5,11 @@ import {
   connect,
   ensureSession,
   type ChalitoClient,
+  sealedMesaState,
+  type ClientKeys,
+  type MesaApi,
+  type MesaDb,
+  type MesaStateStore,
   type RevokeAllResult,
   type Snapshot,
 } from "@chalito/client";
@@ -83,6 +88,8 @@ interface Ctx {
     /** This owner's active client devices (a new room's key is wrapped to each). */
     myClients: () => Promise<{ deviceId: string; pubBox: string }[]>;
   } | null;
+  /** Mesa (/m, /m/[id], "Tus claves"): RLS reads as this device, the orchestrator, its keys. Null until paired. */
+  mesa: MesaCtx | null;
   /** The store (/tienda) and the companion it dresses; null when signed out. */
   store: StoreApi | null;
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
@@ -93,6 +100,26 @@ interface Ctx {
   /** Web Push on this browser (its own push_subscriptions row, written as this device). Null until paired. */
   push: { enable: () => Promise<PushResult>; disable: () => Promise<PushResult> } | null;
 }
+
+export interface MesaCtx {
+  db: MesaDb;
+  api: MesaApi;
+  keys: ClientKeys;
+  owner: string;
+  /** This device's goal + card per Mesa, sealed to itself in localStorage. */
+  state: MesaStateStore;
+}
+
+/** localStorage, or a no-op stand-in where it's blocked (the goal is then asked for again). */
+const localStore = (): Pick<Storage, "getItem" | "setItem"> => {
+  try {
+    const s = window.localStorage;
+    s.getItem("chalito.probe");
+    return s;
+  } catch {
+    return { getItem: () => null, setItem: () => undefined };
+  }
+};
 
 export interface AddDevice {
   resolve(input: { glyph: unknown } | { shortCode: string }): Promise<Resolved>;
@@ -152,6 +179,7 @@ const INITIAL: Ctx = {
   store: null,
   readCompanion: null,
   rooms: null,
+  mesa: null,
   revokeDevice: null,
   revokeAll: null,
   push: null,
@@ -405,6 +433,13 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
                 .map((d) => ({ deviceId: d.deviceId, pubBox: d.pubBox })),
           },
           usage: platform.usage(token),
+          mesa: {
+            db: platform.db as unknown as MesaDb,
+            api: platform.mesa(token),
+            keys: keys.keys,
+            owner,
+            state: sealedMesaState(keys.keys, localStore()),
+          },
           push: {
             enable: () =>
               enablePush({

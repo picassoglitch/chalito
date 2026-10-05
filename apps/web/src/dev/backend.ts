@@ -33,7 +33,7 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import type { ClientKeys, EndorseWatch } from "@chalito/client";
+import type { ClientKeys, EndorseWatch, MesaApi } from "@chalito/client";
 import {
   ApiError,
   type TrustedAgent,
@@ -157,6 +157,17 @@ export interface DevControls {
     anaLeaves(): void;
     /** What the api recorded: rotations (epoch, companions wrapped) and invites (glyph checks). */
     log(): Row[];
+  };
+  /** apps/orchestrator's Mesa routes, simulated (M9): the plan's brain limit, energy, the MCP inbox. */
+  mesa: {
+    /** limits.mesaBrains (default 2). */
+    setBrainsLimit(n: number): void;
+    /** "out": managed speakers are refused and the companion says it's tired (free_min), once per round. */
+    setEnergy(mode: "ok" | "out"): void;
+    /** A connected app's post_to_mesa (sealed to the client devices, mid mcp_inbox). */
+    postFromApp(text: string, origin?: "mcp:claude" | "mcp:chatgpt"): Promise<void>;
+    /** The briefs the browser sent with each turn (what the orchestrator would receive). */
+    turns(): Row[];
   };
   /** /v1/endorse: the other side of "Añadir un dispositivo" / "Esperando aprobación". */
   endorse: {
@@ -442,6 +453,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
         if (
           !check.ok ||
           !a ||
+          a.device_id !== agent.deviceId || // a Mesa decision is the orchestrator's to check
           a.status !== "pending" ||
           a.request_id !== body.requestId ||
           body.expiresAt <= Date.now() ||
@@ -607,8 +619,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   db.setSession(personSession);
   const role = () => (db.session?.user.app_metadata.chalito as { role?: string } | undefined)?.role;
 
-  const controls: Omit<DevControls, "endorse" | "setUsage" | "storeState" | "rooms"> &
-    Partial<Pick<DevControls, "endorse" | "setUsage" | "storeState" | "rooms">> = {
+  const controls: Omit<DevControls, "endorse" | "setUsage" | "storeState" | "rooms" | "mesa"> &
+    Partial<Pick<DevControls, "endorse" | "setUsage" | "storeState" | "rooms" | "mesa">> = {
     marker: DEV_MARKER,
     owner: OWNER,
     get me() {
@@ -1554,6 +1566,287 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     log: () => roomLog.map((r) => ({ ...r })),
   };
 
+  // ---- apps/orchestrator Mesa routes (/v1/mesas, turns, decisions check, brain-keys), simulated --
+  // Same shapes and rules as apps/orchestrator: plan brain limit, ≤2 session refs, turns sealed to
+  // the client devices (AAD mesa:<mid>), addressed-only speakers, BYO only with the cloud opt-in,
+  // free_min's tired line once, decisions only from the person's own words, signed answers checked.
+  let mesaCursor = 0;
+  let mesaBrainsLimit = 2;
+  let mesaEnergy: "ok" | "out" = "ok";
+  const mesaBriefs: Row[] = [];
+  const clientBoxes = async () => {
+    const out: Record<string, Uint8Array> = {};
+    for (const d of db.rows("devices"))
+      if (d.role === "client" && d.revoked === false) out[String(d.device_id)] = await fromB64url(String(d.pub_box));
+    return out;
+  };
+  const sealToClients = async (value: unknown, aad: string) => sealJson(value, await clientBoxes(), aad);
+  const mesaId = () => `m_${crypto.randomUUID().replace(/-/g, "")}`;
+  type Part = { kind: string; pid: string; name: string; provider?: string; companionId?: string; sid?: string };
+  const refOf = (p: Part) =>
+    p.kind === "companion"
+      ? { kind: "companion", companionId: p.companionId }
+      : p.kind === "brain"
+        ? { kind: "brain", pid: p.pid, provider: p.provider, modelRef: "auto" }
+        : { kind: "human", uid: OWNER };
+  const norm = (x: string) => x.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+  const mesaApi: MesaApi = {
+    create: async (participants, ownerName) => {
+      db.clientWrites.push({ table: "api", op: "mesas/create", row: { participants, ownerName } });
+      if (role() !== "client") return { ok: false, error: "forbidden" };
+      const pids = new Set(participants.map((p) => p.pid));
+      if (pids.size !== participants.length || participants.filter((p) => p.kind === "session").length > 2)
+        return { ok: false, error: "bad_participants" };
+      if (participants.filter((p) => p.kind === "brain").length > mesaBrainsLimit)
+        return { ok: false, error: "mesa_brains_limit", limit: mesaBrainsLimit };
+      const mid = mesaId();
+      db.insert("mesas", {
+        owner: OWNER,
+        mid,
+        cursor: ++mesaCursor,
+        doc: {
+          v: 1,
+          kind: "mesa",
+          participants: [{ kind: "human", pid: "owner", name: ownerName ?? "Tú", uid: OWNER }, ...participants],
+          budget: { mesaTokens: null, perParticipant: null },
+          used: { total: 0, byParticipant: {} },
+          status: "open",
+          createdAt: Date.now(),
+        },
+      });
+      return { ok: true, mid };
+    },
+    turn: async (mid, input) => {
+      mesaBriefs.push(structuredClone(input) as unknown as Row);
+      db.clientWrites.push({ table: "api", op: "mesas/turns", row: { mid, tid: input.tid } });
+      if (role() !== "client") return { ok: false, error: "forbidden" };
+      const m = db.rows("mesas").find((r) => r.mid === mid);
+      const doc = m?.doc as { kind?: string; status?: string; participants?: Part[] } | undefined;
+      if (!m || doc?.kind !== "mesa") return { ok: false, error: "not_found" };
+      if (doc.status !== "open") return { ok: false, error: "closed", stopped: doc.status };
+      if (db.rows("mesa_turns").some((r) => r.mid === mid && r.tid === input.tid))
+        return { ok: false, error: "duplicate" };
+      const aad = `mesa:${mid}`;
+      const trustedInput = input.source === "owner";
+      const speakers = (doc.participants ?? []).filter((p) => p.kind === "companion" || p.kind === "brain");
+      const text = norm(input.text);
+      const all = /(^|\s)@(todos|all|everyone)\b/.test(text);
+      let addressed = all ? speakers : speakers.filter((p) => new RegExp(`(^|\\s)@${norm(p.name)}\\b`).test(text));
+      if (!addressed.length) addressed = speakers.filter((p) => p.kind === "companion").slice(0, 1);
+      if (!addressed.length) addressed = speakers.slice(0, 1);
+      db.insert("mesa_turns", {
+        owner: OWNER,
+        mid,
+        tid: input.tid,
+        cursor: ++mesaCursor,
+        doc: {
+          v: 1,
+          mid,
+          tid: input.tid,
+          speaker: { kind: "human", uid: OWNER },
+          addressed: addressed.map(refOf),
+          outCt: await sealToClients({ say: input.text, source: input.source }, aad),
+          usage: { in: 0, out: 0, cached: 0 },
+          emotion: { tag: "neutral", intensity: 0 },
+          t: Date.now(),
+          source: input.source,
+        },
+      });
+      const decisions: Record<string, string> = {};
+      let energy: { line: string; chip: { label: string; href: string } } | null = null;
+      for (const s of addressed) {
+        const byo =
+          s.kind === "brain" && db.rows("brain_keys").some((k) => k.provider === s.provider && k.cloud === true);
+        if (!byo && mesaEnergy === "out") {
+          if (energy) continue;
+          const companion = speakers.find((p) => p.kind === "companion") ?? s;
+          energy = {
+            line: input.locale === "es" ? "Me quedé sin energía. ¿Me recargas?" : "I'm out of energy. Recharge me?",
+            chip: {
+              label: input.locale === "es" ? "Recargar" : "Recharge",
+              href: input.locale === "es" ? "/creditos" : "/en/creditos",
+            },
+          };
+          const tid = mesaId().replace(/^m_/, "t_");
+          db.insert("mesa_turns", {
+            owner: OWNER,
+            mid,
+            tid,
+            cursor: ++mesaCursor,
+            doc: {
+              v: 1,
+              mid,
+              tid,
+              speaker: refOf(companion),
+              addressed: [],
+              outCt: await sealToClients(
+                { say: energy.line, proposals: [], objections: [], emotion: { tag: "tired", intensity: 0.8 } },
+                aad,
+              ),
+              usage: { in: 0, out: 0, cached: 0 },
+              emotion: { tag: "tired", intensity: 0.8 },
+              t: Date.now(),
+              profile: "free_min",
+              billingMode: "free_min",
+              energy: { kind: "out_of_energy", animation: "tired", chip: energy.chip, presentation: "inline" },
+            },
+          });
+          continue;
+        }
+        const ask = /decid|decision/.test(text)
+          ? {
+              question: input.locale === "es" ? "¿Qué opción prefieres?" : "Which option do you prefer?",
+              options: ["A", "B"],
+            }
+          : undefined;
+        const output = {
+          say: `${s.name}: ${input.locale === "es" ? "entendido" : "got it"} <i>${input.text.slice(0, 80)}</i>`,
+          proposals: [],
+          objections: [],
+          ...(ask ? { decision_needed: ask } : {}),
+          emotion: { tag: ask ? "thinking" : "happy", intensity: 0.5 },
+        };
+        const tid = mesaId().replace(/^m_/, "t_");
+        db.insert("mesa_turns", {
+          owner: OWNER,
+          mid,
+          tid,
+          cursor: ++mesaCursor,
+          doc: {
+            v: 1,
+            mid,
+            tid,
+            speaker: refOf(s),
+            addressed: [],
+            outCt: await sealToClients(output, aad),
+            usage: { in: 120, out: 40, cached: 0 },
+            emotion: output.emotion,
+            t: Date.now(),
+            billingMode: byo ? "byo" : "managed",
+          },
+        });
+        // Only the person's own words may raise a decision (review R-L11).
+        if (ask && trustedInput) {
+          const aid = `apr_${crypto.randomUUID().replace(/-/g, "")}`;
+          const created = Date.now();
+          db.insert("approvals", {
+            owner: OWNER,
+            aid,
+            device_id: "orchestrator",
+            sid: mid,
+            request_id: tid,
+            kind: "decision",
+            risk: "MED",
+            origin: `client:${me.deviceId}`,
+            step_up_required: false,
+            details_ct: await sealToClients(
+              { kind: "mesa.decision", mid, tid, from: s.name, question: ask.question, options: ask.options },
+              `approval:${aid}`,
+            ),
+            status: "pending",
+            created_at: iso(created),
+            expires_at: iso(created + 10 * 60 * 1000),
+            recommendations: [],
+          });
+          decisions[tid] = aid;
+        }
+      }
+      return {
+        ok: true,
+        card: { v: 1, mid, goal: input.goal.slice(0, 240), agreed: [], open: [], nextSpeaker: [] },
+        decisions,
+        energy,
+        stopped: null,
+      };
+    },
+    putBrainKey: async (provider, body) => {
+      db.clientWrites.push({ table: "api", op: "brain-keys/put", row: { provider, ...structuredClone(body) } as Row });
+      if (role() !== "client" || body.cloud !== (body.key !== undefined)) return "error";
+      db.remove("brain_keys", (r) => r.provider === provider);
+      db.insert("brain_keys", {
+        owner: OWNER,
+        provider,
+        sealed_ct: body.sealedCt,
+        hint: (body.key ?? body.hint ?? "").slice(-4),
+        cloud: body.cloud,
+      });
+      return "ok";
+    },
+    deleteBrainKey: async (provider) => {
+      db.clientWrites.push({ table: "api", op: "brain-keys/delete", row: { provider } });
+      if (!db.rows("brain_keys").some((r) => r.provider === provider)) return "not_found";
+      db.remove("brain_keys", (r) => r.provider === provider);
+      return "ok";
+    },
+    // Like apps/orchestrator decisions.ts: the poke carries no authority; the signature decides.
+    checkDecision: async (aid) => {
+      db.clientWrites.push({ table: "api", op: "decisions/check", row: { aid } });
+      const a = db.rows("approvals").find((r) => r.aid === aid && r.device_id === "orchestrator");
+      if (!a) return "pending";
+      if (a.status !== "pending") return a.status === "approved" || a.status === "denied" ? a.status : "pending";
+      for (const row of db.rows("approval_decisions").filter((r) => r.aid === aid)) {
+        const env = row.decision as Parameters<typeof verifyEnvelope>[0] & { signerDeviceId: string };
+        const signer = db
+          .rows("devices")
+          .find((d) => d.device_id === env.signerDeviceId && d.role === "client" && d.revoked === false);
+        if (!signer) continue;
+        const ok = await verifyEnvelope(
+          env,
+          "chalito.decision.v1",
+          new Map([[env.signerDeviceId, await fromB64url(String(signer.pub_sign))]]),
+        );
+        const b = env.body as {
+          aid: string;
+          requestId: string;
+          uid: string;
+          targetDeviceId: string;
+          allow: boolean;
+          choice?: number;
+          expiresAt: number;
+        };
+        if (
+          !ok.ok ||
+          b.aid !== aid ||
+          b.requestId !== a.request_id ||
+          b.uid !== OWNER ||
+          b.targetDeviceId !== "orchestrator"
+        )
+          continue;
+        if (b.expiresAt <= Date.now()) continue;
+        const status = b.allow ? "approved" : "denied";
+        db.update("approvals", (r) => r.aid === aid, {
+          status,
+          reason: `signed:${env.signerDeviceId}${b.choice !== undefined ? `:choice=${b.choice}` : ""}`,
+          resolved_at: iso(Date.now()),
+        });
+        return status;
+      }
+      return "pending";
+    },
+  };
+  controls.mesa = {
+    setBrainsLimit: (n) => void (mesaBrainsLimit = n),
+    setEnergy: (m) => void (mesaEnergy = m),
+    postFromApp: async (text, origin = "mcp:claude") => {
+      if (!db.rows("mesas").some((r) => r.mid === "mcp_inbox"))
+        db.insert("mesas", { owner: OWNER, mid: "mcp_inbox", cursor: ++mesaCursor, doc: { kind: "mcp_inbox" } });
+      const tid = `t_${crypto.randomUUID().replace(/-/g, "")}`;
+      db.insert("mesa_turns", {
+        owner: OWNER,
+        mid: "mcp_inbox",
+        tid,
+        cursor: ++mesaCursor,
+        doc: {
+          origin,
+          ct: await sealToClients({ v: 1, origin, text, at: Date.now() }, "mesa:mcp_inbox"),
+          t: Date.now(),
+        },
+      });
+    },
+    turns: () => mesaBriefs.map((b) => structuredClone(b)),
+  };
+
   // DEV/TEST: start with the seeded room ("chalito.dev.rooms" = "1"), so a page load lands in it.
   try {
     if (window.localStorage.getItem("chalito.dev.rooms") === "1") await controls.rooms.seed();
@@ -1616,6 +1909,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     mcp: () => mcp,
     api: () => api,
     usage: () => usage,
+    mesa: () => mesaApi,
     store: () => store,
     account: () => account,
     balance: () => balanceApi,

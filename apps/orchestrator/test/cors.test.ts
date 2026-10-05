@@ -14,23 +14,36 @@ const app = async (webOrigin?: string) => {
     ...(webOrigin ? { webOrigin } : {}),
   });
 };
-const preflight = (a: Awaited<ReturnType<typeof app>>, origin: string, method = "GET") =>
-  a.request("/v1/usage/daily", {
+const preflight = (a: Awaited<ReturnType<typeof app>>, origin: string, method = "GET", path = "/v1/usage/daily") =>
+  a.request(path, {
     method: "OPTIONS",
     headers: { origin, "access-control-request-method": method, "access-control-request-headers": "authorization" },
   });
 
 describe("CORS: the web origin only", () => {
-  it("the web origin's preflight is allowed: exact origin, bearer headers, GET/POST, no credentials, short cache", async () => {
+  it("the web origin's preflight is allowed: exact origin, bearer headers, GET/POST/PUT/DELETE, no credentials, short cache", async () => {
     const a = await app(WEB);
     const res = await preflight(a, WEB);
     expect(res.status).toBe(204);
     expect(res.headers.get("access-control-allow-origin")).toBe(WEB);
-    expect(res.headers.get("access-control-allow-methods")).toBe("GET,POST,OPTIONS");
+    expect(res.headers.get("access-control-allow-methods")).toBe("GET,POST,PUT,DELETE,OPTIONS");
     expect(res.headers.get("access-control-allow-headers")?.toLowerCase()).toBe("authorization,content-type");
     expect(res.headers.get("access-control-allow-credentials")).toBeNull();
     expect(Number(res.headers.get("access-control-max-age"))).toBeLessThanOrEqual(600);
     expect(res.headers.get("vary")).toMatch(/origin/i);
+  });
+
+  it.each(["PUT", "DELETE"])("BYO keys: the web origin may %s /v1/brain-keys/:provider", async (method) => {
+    const a = await app(WEB);
+    const res = await preflight(a, WEB, method, "/v1/brain-keys/openai");
+    expect(res.status).toBe(204);
+    expect(res.headers.get("access-control-allow-origin")).toBe(WEB);
+    expect(res.headers.get("access-control-allow-methods")?.split(",")).toContain(method);
+    expect(
+      (await preflight(a, "https://evil.example", method, "/v1/brain-keys/openai")).headers.get(
+        "access-control-allow-origin",
+      ),
+    ).toBeNull();
   });
 
   it("the actual request from the web origin carries the header", async () => {
