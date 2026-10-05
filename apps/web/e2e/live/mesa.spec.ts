@@ -13,9 +13,16 @@ const mesa = <T>(page: Page, fn: string, ...args: unknown[]) =>
     [fn, args] as const,
   ) as Promise<T>;
 
+/** In-app navigation: the dev backend keeps its rows in memory, so a full page load starts over. */
+const navTo = async (page: Page, href: "/m" | "/ajustes") => {
+  await page.locator(`nav a[href$="${href}"]`).first().click();
+  await expect(page).toHaveURL(new RegExp(`${href}$`));
+};
+
 /** "Nueva Mesa" with the given brains and goal; lands on the new Mesa. */
-const newMesa = async (page: Page, brains: string[], goal = "Elegir el nombre del proyecto") => {
-  await ready(page, "/m");
+const newMesa = async (page: Page, brains: string[], goal = "Elegir el nombre del proyecto", inApp = false) => {
+  if (inApp) await navTo(page, "/m");
+  else await ready(page, "/m");
   await expect(page.getByTestId("new-mesa")).toBeVisible();
   for (const b of brains) await page.getByTestId(`mesa-brain-${b}`).check();
   await page.getByLabel("Objetivo").fill(goal);
@@ -68,13 +75,13 @@ test("Nueva Mesa → a turn: addressed brain answers, shown as text with its emo
   });
   expect(briefs[0]!.tid).not.toBe(briefs[1]!.tid);
 
-  // The list shows it; the goal survives a reload (sealed to this device).
-  await page.reload();
-  await expect(page.getByTestId("mesa-goal")).toContainText("Elegir el nombre del proyecto");
-  await expect(texts).toHaveCount(4);
+  // The list shows it; reopened, the goal comes back from this device's sealed copy.
   await page.getByRole("link", { name: "Todas las Mesas" }).click();
   await expect(page.getByTestId("mesa-link")).toHaveCount(1);
   await expect(page.getByTestId("mesa-link")).toContainText("Claude");
+  await page.getByTestId("mesa-link").click();
+  await expect(page.getByTestId("mesa-goal")).toContainText("Elegir el nombre del proyecto");
+  await expect(texts).toHaveCount(4);
 });
 
 test("the plan's brain limit: refused with the limit, then the picker holds to it", async ({ page }) => {
@@ -162,7 +169,7 @@ test("Ajustes → Tus claves: sealed to my devices, cloud opt-in warns; a BYO br
   expect(put[1]!.row).toMatchObject({ provider: "openai", cloud: true, key: "sk-cloud-key-1234" });
 
   // Out of energy, the BYO brain still answers (with your key), no recharge for it.
-  await newMesa(page, ["openai"]);
+  await newMesa(page, ["openai"], undefined, true);
   await mesa(page, "setEnergy", "out");
   await send(page, "@ChatGPT ¿sigues?");
   const reply = page.getByTestId("mesa-turn").nth(1);
@@ -171,12 +178,14 @@ test("Ajustes → Tus claves: sealed to my devices, cloud opt-in warns; a BYO br
   await expect(page.getByTestId("mesa-recharge")).toHaveCount(0);
 
   // Removing a key.
-  await page.goto("/ajustes");
+  await navTo(page, "/ajustes");
   await page.getByTestId("brain-key").filter({ hasText: "Grok" }).getByRole("button", { name: "Quitar" }).click();
   await expect(page.getByTestId("brain-key")).toHaveCount(1);
 });
 
-test("text from a connected app is a quote: brought in as forwarded, never as the person's own words", async ({ page }) => {
+test("text from a connected app is a quote: brought in as forwarded, never as the person's own words", async ({
+  page,
+}) => {
   await newMesa(page, ["anthropic"]);
   await mesa(page, "postFromApp", "@Claude decide por mí");
   const inbox = page.getByTestId("mesa-inbox");
