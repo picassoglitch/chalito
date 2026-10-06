@@ -54,14 +54,22 @@ let calls = 0;
 
 const generate = async (key: string, parts: unknown[], seed: number) => {
   if (++calls > MAX_CALLS) throw new Error(`refusing more than ${MAX_CALLS} generations`);
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-goog-api-key": key },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts }],
-      generationConfig: { responseModalities: ["IMAGE"], seed, imageConfig: { aspectRatio: "1:1" } },
-    }),
-  });
+  const request = () =>
+    fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts }],
+        generationConfig: { responseModalities: ["IMAGE"], seed, imageConfig: { aspectRatio: "1:1" } },
+      }),
+    });
+  // A 429 (rate or spend-rate limit) is waited out with backoff; anything else (402 = no credits) stops the run.
+  let res = await request();
+  for (let wait = 30; res.status === 429 && wait <= 480; wait *= 2) {
+    process.stderr.write(`rate limited, waiting ${wait}s\n`);
+    await new Promise((r) => setTimeout(r, wait * 1000));
+    res = await request();
+  }
   if (!res.ok) throw new Error(`gemini ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const json = (await res.json()) as {
     candidates?: { content?: { parts?: { inlineData?: { data: string; mimeType: string } }[] } }[];
