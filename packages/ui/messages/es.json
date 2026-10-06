@@ -38,7 +38,7 @@
     "toInbox": "Ir a tu bandeja",
     "roster": {
       "title": "Elige a tu compañero",
-      "body": "Seis personajes para empezar. Puedes cambiarlo cuando quieras."
+      "body": "220 personajes gratis en 11 categorías; aquí tienes a seis. Puedes cambiarlo cuando quieras."
     },
     "tryon": {
       "title": "Vístelo a tu gusto",
@@ -202,7 +202,13 @@
       "to": "a"
     },
     "avatar": {
-      "label": "Compañero"
+      "label": "Compañero",
+      "search": "Buscar compañero",
+      "searchPlaceholder": "Busca por nombre",
+      "categories": "Categorías",
+      "all": "Todos",
+      "selected": "Elegiste a {name}.",
+      "empty": "No encontramos a nadie con ese nombre."
     },
     "companionName": {
       "label": "Nombre",

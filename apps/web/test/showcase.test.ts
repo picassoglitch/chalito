@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ROSTER } from "@chalito/roster";
+import { ORIGINAL_IDS } from "@chalito/roster";
 import { missingShowcase, showcase } from "@/lib/showcase";
 import manifest from "../public/showcase/manifest.json";
 
@@ -22,8 +22,8 @@ describe("showcase renders", () => {
     for (const file of sources(SRC)) {
       const text = readFileSync(file, "utf8");
       for (const m of text.matchAll(/showcase\(\s*"([^"]+)"\s*\)/g)) ids.add(m[1]!);
-      // Template ids: the landing builds roster-<id> from ROSTER.
-      if (text.includes("showcase(`roster-${r.id}`)")) for (const r of ROSTER) ids.add(`roster-${r.id}`);
+      // Template ids: the landing builds roster-<id> for the six launch companions.
+      if (text.includes("showcase(`roster-${r.id}`)")) for (const id of ORIGINAL_IDS) ids.add(`roster-${id}`);
     }
     expect(ids.size).toBeGreaterThan(5);
     expect(missingShowcase([...ids], manifest.assets)).toEqual([]);
