@@ -20,9 +20,15 @@ variable "alert_email" {
   type = string
 }
 
-variable "monthly_budget_usd" {
-  description = "Owner-set monthly budget for app=chalito resources."
+variable "monthly_budget" {
+  description = "Owner-set monthly budget for app=chalito resources, in budget_currency."
   type        = number
+}
+
+variable "budget_currency" {
+  description = "The billing account's currency (gcloud billing accounts describe <id> --format='value(currencyCode)')."
+  type        = string
+  default     = "USD"
 }
 
 variable "domain" {
@@ -75,6 +81,24 @@ variable "vapid_public_key" {
 
 variable "realtime_sip_uri" {
   description = "Optional: OpenAI Realtime SIP URI for calls (sip:<proj>@sip.api.openai.com;transport=tls;secure=true)."
+  type        = string
+  default     = ""
+}
+
+variable "web_origin" {
+  description = "Origin of Chalito's screens (CORS, Web Push subject). Empty: https://<domain>. Inside the hub: https://www.chalyb.com."
+  type        = string
+  default     = ""
+}
+
+variable "app_url" {
+  description = "Base URL for links to Chalito's screens (notifications). Empty: https://<domain>. Inside the hub: https://www.chalyb.com/app/chalito."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_resource" {
+  description = "The MCP gateway's resource URL. Empty: https://mcp.<domain>/mcp."
   type        = string
   default     = ""
 }

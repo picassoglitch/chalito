@@ -77,7 +77,12 @@ export type Level = z.infer<typeof Level>;
 export const Platform = z.enum(["linux", "windows", "macos", "ios", "android", "web"]);
 export const DeviceKind = z.enum(["desktop", "laptop", "phone", "web"]);
 
-export const AdapterKind = z.enum(["claude-code", "codex", "acp"]);
+/**
+ * The coding agent behind a session. "grok" (Grok Build) and "gemini" (Gemini CLI) run over the
+ * one ACP adapter (D-022). "acp" was the placeholder for that adapter before it had profiles; it
+ * stays so stored cards and events still parse, and no device starts an "acp" session.
+ */
+export const AdapterKind = z.enum(["claude-code", "codex", "acp", "grok", "gemini"]);
 export type AdapterKind = z.infer<typeof AdapterKind>;
 
 /**

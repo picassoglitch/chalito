@@ -6,7 +6,7 @@ import { PERMISSION_RANK, Policy, SANDBOX_RANK } from "./schema.js";
 const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 const subsetOf = (a: string[], b: string[]) => a.every((x) => b.includes(x));
-const flagsOnlyOff = <T extends Record<string, boolean>>(next: T, cur: T) =>
+const flagsOnlyOff = <T extends Record<string, boolean | undefined>>(next: T, cur: T) =>
   Object.keys(next).every((k) => !next[k] || cur[k]);
 
 /** True when `next` grants nothing that `cur` doesn't: the only kind of change a remote surface may make. */

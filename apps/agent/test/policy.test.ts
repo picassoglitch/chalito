@@ -15,7 +15,7 @@ import {
   presetPolicy,
   splitShell,
   type DevModeState,
-  type Policy,
+  Policy,
 } from "../src/policy/index.js";
 
 const HOME = "/home/aldo";
@@ -276,6 +276,17 @@ describe("policy changes", () => {
     const a = policyHash(policy);
     expect(policyHash({ ...policy, origins: { ...policy.origins, mcp: false } })).not.toBe(a);
     expect(policyHash(structuredClone(policy))).toBe(a);
+  });
+
+  it("grok/gemini are optional: an older policy keeps its hash, and only a local edit turns them on", () => {
+    const { grok: _g, gemini: _m, ...older } = DEFAULT_POLICY.adapters;
+    const old = { ...policy, adapters: older };
+    // Parsing doesn't add the keys, so a lock signed before they existed still verifies.
+    expect(Policy.parse(old)).toEqual(old);
+    expect(policyHash(Policy.parse(old))).toBe(policyHash(old));
+    expect(applyRemoteTighten(old, { adapters: { grok: true } })).toEqual({ ok: false, reason: "would_loosen" });
+    expect(applyRemoteTighten(policy, { adapters: { gemini: false } })).toMatchObject({ ok: true });
+    expect(DEFAULT_POLICY.adapters).toEqual({ claudeCode: true, codex: true, grok: true, gemini: true });
   });
 
   it("remote tightening applies; remote loosening is rejected", () => {

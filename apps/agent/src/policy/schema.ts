@@ -14,7 +14,18 @@ export const Policy = z.object({
   version: z.literal(1),
   /** No workspaces = nothing runs. Chosen by the user at setup. */
   workspaces: z.array(Workspace).default([]),
-  adapters: z.object({ claudeCode: z.boolean(), codex: z.boolean() }),
+  /**
+   * `grok` (Grok Build) and `gemini` (Gemini CLI) run over the ACP adapter. They are optional so
+   * a policy written before they existed keeps its hash (the signed lock still verifies), and a
+   * missing key means off: turning one on in an existing policy is a local edit, like any
+   * loosening (ADR 0008).
+   */
+  adapters: z.object({
+    claudeCode: z.boolean(),
+    codex: z.boolean(),
+    grok: z.boolean().optional(),
+    gemini: z.boolean().optional(),
+  }),
   remote: z.object({
     /** Highest Claude permission mode a remote surface may set. Never bypassPermissions. */
     maxPermissionMode: RemotePermissionMode,
@@ -36,7 +47,7 @@ export type Policy = z.infer<typeof Policy>;
 export const DEFAULT_POLICY: Policy = {
   version: 1,
   workspaces: [],
-  adapters: { claudeCode: true, codex: true },
+  adapters: { claudeCode: true, codex: true, grok: true, gemini: true },
   remote: { maxPermissionMode: "acceptEdits", maxCodexSandbox: "workspace-write" },
   origins: { local: true, client: true, mcp: true, call: true },
   approvals: { ttlSeconds: 600 },
