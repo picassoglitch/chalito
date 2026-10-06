@@ -24,6 +24,10 @@ const T = {
     mcpCards: "Compartir tarjetas con apps conectadas (sin cifrar)",
     allowlist: (n: number) => `${n} comandos de prueba, lint o build sin preguntar`,
     domains: (n: number) => `${n} dominios web permitidos sin preguntar`,
+    computer: (n: number | null) =>
+      n === null
+        ? "Control del equipo (pantalla, mouse y teclado): apagado"
+        : `Control del equipo: encendido, con aprobación por sesión, hasta ${n} acciones por minuto`,
   },
   en: {
     workspace: (l: string, p: string) => `Folder “${l}”: ${p}`,
@@ -42,6 +46,10 @@ const T = {
     mcpCards: "Share cards with connected apps (unencrypted)",
     allowlist: (n: number) => `${n} test, lint or build commands without asking`,
     domains: (n: number) => `${n} web domains allowed without asking`,
+    computer: (n: number | null) =>
+      n === null
+        ? "Computer control (screen, mouse and keyboard): off"
+        : `Computer control: on, approved per session, up to ${n} actions a minute`,
   },
 } as const;
 
@@ -73,5 +81,8 @@ export const policyRules = (p: Policy, locale: "es" | "en"): PolicyRule[] => {
     { id: "web.allowDomains", summary: t.domains(p.web.allowDomains.length), effect: "allow" },
     { id: "egress.callLines", summary: t.callLines, effect: on(p.egress.callLines) },
     { id: "egress.mcpCards", summary: t.mcpCards, effect: on(p.egress.mcpCards) },
+    p.computer?.enabled
+      ? { id: "computer", summary: t.computer(p.computer.maxActionsPerMinute), effect: "ask" }
+      : { id: "computer", summary: t.computer(null), effect: "deny" },
   ];
 };

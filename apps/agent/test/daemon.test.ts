@@ -490,6 +490,52 @@ describe("chalito run (daemon)", () => {
       await d.stop();
     });
 
+    it("computer control: local enable (OS + answers), the indicator poll, the kill switch, the broker", async () => {
+      const { s, d, call, osChecks } = await withIpc();
+      expect(existsSync(join(s.dir, "computer.sock"))).toBe(true);
+      expect(d.computer).not.toBeNull();
+      expect((await call("computerStatus", { indicatorShown: false })).result).toEqual({
+        enabled: false,
+        active: [],
+        pending: [],
+      });
+      const ch = (await call("computerChallenge")).result;
+      expect(ch).toMatchObject({ examples: expect.any(Array), risk: expect.any(String), phrase: expect.any(String) });
+      const answers = (over = {}) => ({ first: true, second: true, typed: ch.phrase as string, ...over });
+      expect((await call("enableComputer", { answers: answers({ typed: "no" }) })).result).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect(d.policy.get().computer).toBeUndefined();
+      expect((await call("enableComputer", { answers: answers() })).result).toEqual({ ok: true });
+      expect(osChecks).toHaveLength(2);
+      expect(d.policy.get().computer).toEqual({ enabled: true, maxActionsPerMinute: 60 });
+      expect((await call("computerStatus", { indicatorShown: true })).result.enabled).toBe(true);
+      expect(s.store.deviceEvents.some((e) => e.type === "computer.changed" && e.enabled)).toBe(true);
+      expect((await call("computerKill", { via: "hotkey" })).result).toEqual({ stopped: 0 });
+      expect(await call("computerKill", { via: "remote" })).toMatchObject({ error: "bad_params" });
+      expect((await call("disableComputer")).result).toEqual({ changed: true });
+      expect(d.policy.get().computer?.enabled).toBe(false);
+      await d.stop();
+      expect(existsSync(join(s.dir, "computer.sock"))).toBe(false);
+    });
+
+    it("computer control: a failed OS check enables nothing; no desktop app, no broker", async () => {
+      const { d, call } = await withIpc(false);
+      const phrase = (await call("computerChallenge")).result.phrase;
+      expect((await call("enableComputer", { answers: { first: true, second: true, typed: phrase } })).result).toEqual({
+        ok: false,
+        reason: "os_auth_failed",
+      });
+      expect(d.policy.get().computer).toBeUndefined();
+      await d.stop();
+      const s = await setup();
+      const bare = await runDaemon(s.deps);
+      expect(bare.computer).toBeNull();
+      expect(existsSync(join(s.dir, "computer.sock"))).toBe(false);
+      await bare.stop();
+    });
+
     it("presence goes to this agent's device row with lastSeenAt", async () => {
       const { s, d, call } = await withIpc();
       expect((await call("reportPresence", { desktopActive: true })).ok).toBe(true);

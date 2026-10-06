@@ -15,6 +15,7 @@ import {
   Decision,
   approvalSummary,
   type Origin,
+  type ApprovalKind,
   type ResolutionReason,
   type RiskTier,
 } from "@chalito/protocol";
@@ -89,6 +90,8 @@ export class ApprovalManager {
     risk: RiskTier;
     stepUp: boolean;
     origin: Origin;
+    /** `tool` (default) for one tool call; `computer_control` for a session's computer-control grant. */
+    kind?: Extract<ApprovalKind, "tool" | "computer_control">;
     /** The summary is built here (R-M10: no format/control characters, explicit truncation). */
     details: { toolName: string; input: unknown; reasons: string[] };
     onRequested?: (aid: string, expiresAt: number) => void;
@@ -121,7 +124,7 @@ export class ApprovalManager {
         requestId,
         sid: input.sid,
         deviceId,
-        kind: "tool",
+        kind: input.kind ?? "tool",
         risk: input.risk,
         stepUpRequired: input.stepUp,
         origin: input.origin,
@@ -139,7 +142,7 @@ export class ApprovalManager {
       deviceId,
       sid: input.sid,
       requestId,
-      kind: "tool",
+      kind: input.kind ?? "tool",
       risk: input.risk,
       origin: input.origin,
       stepUpRequired: input.stepUp,

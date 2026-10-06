@@ -20,7 +20,12 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   next.approvals.ttlSeconds <= cur.approvals.ttlSeconds &&
   subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
   subsetOf(next.web.allowDomains, cur.web.allowDomains) &&
-  subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools);
+  subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
+  computerTighterOrEqual(next.computer, cur.computer);
+
+/** Computer control can only be turned off or slowed down; never on (that's `chalito computer enable`). */
+export const computerTighterOrEqual = (next: Policy["computer"], cur: Policy["computer"]): boolean =>
+  !next?.enabled || (!!cur?.enabled && next.maxActionsPerMinute <= cur.maxActionsPerMinute);
 
 export type TightenResult = { ok: true; policy: Policy } | { ok: false; reason: "invalid_patch" | "would_loosen" };
 

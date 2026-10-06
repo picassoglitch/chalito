@@ -8,6 +8,10 @@ import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import type { FetchFn, PairingWatcher } from "./cloud.js";
 import { AnchorStore } from "./anchor.js";
 import { pinClaude } from "./claude-pin.js";
+import { brokerCall } from "./computer/broker.js";
+import { runMcpServer } from "./computer/mcp-server.js";
+import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/native.js";
+import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
 import {
   ConfigTamperedError,
   chalitoDir,
@@ -65,6 +69,8 @@ export const USAGE = `chalito <command>
   devmode on <toggle>                  turn a Developer-mode toggle on (local only, 3 confirmations)
   devmode off [toggle]                 turn Developer mode (or one toggle) off
   devmode reset                        archive a broken Developer-mode log and start over (OS auth)
+  computer enable|disable|status       computer control: let approved sessions use this screen,
+                                       mouse and keyboard (enable: local only, OS auth + confirmations)
   claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   codex pin [path]                     trust this Codex binary (path + sha256); after updates too
   grok pin [path]                      trust this Grok Build binary (path + sha256); after updates too
@@ -102,6 +108,22 @@ const T = {
   es: {
     unknown: (c: string) => `Comando desconocido: ${c}\n`,
     toggleOnUsage: `Uso: chalito devmode on <${ON_TOGGLES.join("|")}>\n`,
+    computerTitle: "\n!!  ¿Activar el control del equipo?  !!\nCon esto, una sesión aprobada puede:\n",
+    computerContinue: "¿Continuar? [s/N] ",
+    computerSecond: "\nConfirmación 2 de 3. ",
+    computerSure: "¿Seguro que quieres activarlo? [s/N] ",
+    computerType: (p: string) => `\nConfirmación 3 de 3. Escribe exactamente "${p}": `,
+    computerOn:
+      "Control del equipo activado. Cada sesión pedirá tu aprobación con passkey; la app de escritorio debe estar abierta.\n",
+    computerAlready: "El control del equipo ya está activado.\n",
+    computerOff: "Control del equipo desactivado. Las sesiones que lo tenían lo perdieron.\n",
+    computerWasOff: "El control del equipo ya estaba desactivado.\n",
+    computerStatus: (on: boolean, n: number) =>
+      on
+        ? `Control del equipo: activado (hasta ${n} acciones por minuto por sesión).\n`
+        : "Control del equipo: desactivado.\n",
+    computerNotInPolicyEdit:
+      "El control del equipo no se activa editando la política. Usa `chalito computer enable`.\n",
     needTty:
       "Este comando cambia la seguridad de Chalito: solo funciona en una terminal donde estés escribiendo tú (no con entrada redirigida).\n",
     inSession:
@@ -151,6 +173,19 @@ const T = {
   en: {
     unknown: (c: string) => `Unknown command: ${c}\n`,
     toggleOnUsage: `Usage: chalito devmode on <${ON_TOGGLES.join("|")}>\n`,
+    computerTitle: "\n!!  Turn on computer control?  !!\nWith it, an approved session can:\n",
+    computerContinue: "Continue? [y/N] ",
+    computerSecond: "\nConfirmation 2 of 3. ",
+    computerSure: "Are you sure you want to turn it on? [y/N] ",
+    computerType: (p: string) => `\nConfirmation 3 of 3. Type exactly "${p}": `,
+    computerOn:
+      "Computer control is on. Every session will ask for your passkey approval; the desktop app must be open.\n",
+    computerAlready: "Computer control is already on.\n",
+    computerOff: "Computer control is off. Sessions that had it lost it.\n",
+    computerWasOff: "Computer control was already off.\n",
+    computerStatus: (on: boolean, n: number) =>
+      on ? `Computer control: on (up to ${n} actions a minute per session).\n` : "Computer control: off.\n",
+    computerNotInPolicyEdit: "Computer control isn't turned on by editing the policy. Use `chalito computer enable`.\n",
     needTty:
       "This command changes Chalito's security settings, so it only runs in a terminal you're typing in (not with piped input).\n",
     inSession:
@@ -296,12 +331,31 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     return cmd || flags.help ? 0 : 1;
   }
 
+  // Started by Claude Code or Codex inside a session (CHALITO_SESSION is set): the stdio MCP
+  // server for computer control. It changes nothing locally and holds no secrets beyond its
+  // session's token; the agent decides every call (computer/control.ts).
+  if (cmd === "computer" && sub === "mcp") {
+    const socket = io.env.CHALITO_COMPUTER_SOCKET;
+    const token = io.env.CHALITO_COMPUTER_TOKEN;
+    if (!socket || !token) {
+      io.err("chalito computer mcp is started by Chalito for a session, not by hand.\n");
+      return 1;
+    }
+    await runMcpServer({
+      input: io.tty.input,
+      write: io.out,
+      call: (tool, args) => brokerCall(socket, token, tool, args),
+    });
+    return 0;
+  }
+
   // Everything that changes trust, keys, policy, Developer mode or the service needs a human
   // at a real terminal, and never runs from inside an agent session (CHALITO_SESSION is set
   // by the adapters). Neither check alone is enough: `script -qc` supplies a pty.
   const mutating =
     ["pair", "keys", "service", "devmode", "claude", "codex", "grok", "gemini"].includes(cmd) ||
-    (cmd === "policy" && sub === "edit");
+    (cmd === "policy" && sub === "edit") ||
+    (cmd === "computer" && sub !== "status");
   if (mutating) {
     if (io.env.CHALITO_SESSION !== undefined) {
       io.err(t.inSession);
@@ -386,6 +440,9 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 
       case "policy":
         return await policy(io, dir, locale, sub);
+
+      case "computer":
+        return await computer(io, dir, locale, sub);
 
       case "keys": {
         if (sub !== "set" || !arg || !(arg in KEY_NAMES)) {
@@ -629,6 +686,61 @@ const devmode = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string
   }
 };
 
+const computer = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string) => {
+  const t = T[locale];
+  const id = await loadOrCreateIdentity(io.secrets!);
+  const holder = new FilePolicyHolder(dir, id.sign, { anchor: await new AnchorStore(io.secrets!).load() });
+  // The running daemon sees the policy change, reports it and ends any control on disable.
+  const emit = () => undefined;
+  if (sub === "status") {
+    const c = holder.get().computer;
+    io.out(t.computerStatus(c?.enabled === true, c?.maxActionsPerMinute ?? 0));
+    return 0;
+  }
+  if (sub === "disable") {
+    const changed = await disableComputer({ policy: holder, emit }, "cli");
+    io.out(changed ? t.computerOff : t.computerWasOff);
+    return 0;
+  }
+  if (sub !== "enable") {
+    io.err(USAGE);
+    return 1;
+  }
+  const reader = new LineReader(io.tty);
+  try {
+    const prompter: ComputerPrompter = {
+      first: async (examples) => {
+        io.out(`${t.computerTitle}${examples.map((e) => `  - ${e}\n`).join("")}`);
+        return isYes(await reader.ask(t.computerContinue));
+      },
+      second: async (risk) => {
+        io.out(`${t.computerSecond}${risk}\n`);
+        return isYes(await reader.ask(t.computerSure));
+      },
+      typed: async (phrase) => (await reader.ask(t.computerType(phrase))) ?? "",
+    };
+    const res = await enableComputer({
+      policy: holder,
+      osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+      prompter,
+      locale,
+      emit,
+    });
+    if (!res.ok) {
+      io.err(
+        res.reason === "already_on" ? t.computerAlready : res.reason === "os_auth_failed" ? t.authFailed : t.cancelled,
+      );
+      return res.reason === "already_on" ? 0 : 1;
+    }
+    io.out(t.computerOn);
+    if (io.platform === "darwin") io.out(`${MAC_PERMISSION_HINT}\n`);
+    if (isWayland(io.env, io.platform)) io.err(`${WAYLAND_MESSAGE}\n`);
+    return 0;
+  } finally {
+    reader.close();
+  }
+};
+
 const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string) => {
   const t = T[locale];
   const id = await loadOrCreateIdentity(io.secrets!);
@@ -669,6 +781,11 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
     const parsed = parsePolicyYaml(readFileSync(file, "utf8"));
     if (!parsed.ok) {
       io.err(t.invalidPolicy(parsed.error));
+      return 1;
+    }
+    // Only `chalito computer enable` turns computer control on (its own confirmations).
+    if (parsed.policy.computer?.enabled && !holder.get().computer?.enabled) {
+      io.err(t.computerNotInPolicyEdit);
       return 1;
     }
     if (policyHash(parsed.policy) === holder.hash) {

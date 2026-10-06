@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { DevModeToggle, EnableableDevModeToggle, Provider } from "@chalito/protocol";
 import type { LiabilityText } from "@chalito/config";
+import type { ComputerControl } from "./computer/control.js";
+import { COMPUTER_COPY, disableComputer, enableComputer } from "./computer/toggle.js";
 import { DevMode, RISK_COPY, type DevModeDeps, type OsAuth } from "./devmode.js";
 import { IpcError, type IpcHandlers } from "./ipc-server.js";
 import type { FilePolicyHolder } from "./policy-file.js";
@@ -23,6 +25,12 @@ const Enable = z.object({
   }),
 });
 const Presence = z.object({ desktopActive: z.boolean() });
+/** The native poller always sends `indicatorShown` (the heartbeat); the panel reads without it. */
+const ComputerBeat = z.object({ indicatorShown: z.boolean().optional() });
+const ComputerKill = z.object({ via: z.enum(["hotkey", "tray", "panel", "indicator"]) });
+const ComputerEnable = z.object({
+  answers: z.object({ first: z.boolean(), second: z.boolean(), typed: z.string().max(200) }),
+});
 const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boolean() });
 const ForProvider = z.object({ provider: Provider });
 const ProviderKey = z.object({ provider: Provider, key: z.string().min(1).max(512) });
@@ -48,6 +56,10 @@ export interface IpcDeps {
   reportDevMode: () => Promise<void>;
   /** "Connect your AI" (providers.ts); absent in setups that don't manage providers. */
   providers?: ProviderManager;
+  /** Computer control; null when this agent has no broker (it then never attaches the tools). */
+  computer: ComputerControl | null;
+  /** Agent audit trail (computer.enabled / computer.disabled). */
+  audit: (type: string, meta: Record<string, unknown>) => void;
 }
 
 const providerCall = async (d: IpcDeps, run: (m: ProviderManager) => Promise<ProviderResult>) => {
@@ -119,6 +131,48 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     await d.reportDevMode();
     return state;
   },
+
+  /**
+   * The desktop app's poll (every 500 ms, from its native side): it shows the always-on-top
+   * indicator while `active` isn't empty and reports whether it is on screen. Actions wait for
+   * that report (computer/control.ts), so nothing acts without the indicator showing.
+   */
+  computerStatus: async (params) => {
+    const { indicatorShown } = parse(ComputerBeat, params ?? {});
+    if (d.computer) return indicatorShown === undefined ? d.computer.status() : d.computer.heartbeat(indicatorShown);
+    return { enabled: d.policy.get().computer?.enabled === true, active: [], pending: [] };
+  },
+
+  /** The kill switch (global hotkey, tray item, indicator button, panel): ends control now. */
+  computerKill: async (params) => {
+    const { via } = parse(ComputerKill, params);
+    return { stopped: d.computer ? await d.computer.kill(via) : 0 };
+  },
+
+  computerChallenge: async () => COMPUTER_COPY[d.locale()],
+
+  /** Local-only enable, same rules as the CLI: the agent asks the OS itself and re-checks the answers. */
+  enableComputer: async (params) => {
+    const { answers } = parse(ComputerEnable, params);
+    return enableComputer({
+      policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) },
+      osAuth: d.osAuth(),
+      prompter: {
+        first: async () => answers.first,
+        second: async () => answers.second,
+        typed: async () => answers.typed,
+      },
+      locale: d.locale(),
+      emit: (type, meta) => d.audit(type, { ...meta, via: "panel" }),
+    });
+  },
+
+  disableComputer: async () => ({
+    changed: await disableComputer(
+      { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
+      "panel",
+    ),
+  }),
 
   reportPresence: async (params) => {
     const { desktopActive } = parse(Presence, params);

@@ -12,6 +12,9 @@ import type { AdapterKind, DeviceEvent, Provider } from "@chalito/protocol";
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
+import { brokerPath, startBroker, type Broker } from "./computer/broker.js";
+import { ComputerControl } from "./computer/control.js";
+import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
 import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, writeConfig, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
@@ -25,7 +28,7 @@ import { PROVIDER_CLI, spawnProviderProcs, type ProviderProcs } from "./provider
 import { ProviderManager } from "./providers.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
-import { createLogger, type Logger } from "./redact.js";
+import { createLogger, redactDeep, type Logger } from "./redact.js";
 import { spawnRunner, which } from "./runner.js";
 import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
@@ -153,10 +156,16 @@ export interface DaemonDeps {
   osAuth?: () => OsAuth;
   /** The providers' CLIs (install, sign-in, status); tests pass a fake. */
   providerProcs?: ProviderProcs;
+  /** Computer control's native layer (computer/native.ts in production; a fake in tests). */
+  computerDriver?: () => NativeDriver;
+  /** Defaults to ~/.chalito/computer.sock (a named pipe on Windows). */
+  brokerPath?: string;
 }
 
 export interface Daemon {
   core: AgentCore;
+  /** Null when this agent runs without the desktop app (no indicator, so no computer control). */
+  computer: ComputerControl | null;
   store: AgentStore;
   policy: FilePolicyHolder;
   /** What the classifier treats as the agent's own binaries, protected files and Claude's PATH. */
@@ -254,6 +263,16 @@ export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({
 });
 
 const isInterpreter = (p: string) => /^(node|nodejs|bun|tsx)(\.exe)?$/i.test(basename(p));
+
+/** How a coding agent starts `chalito computer mcp`: this very binary (or this script under node/tsx). */
+export const computerMcpCommand = (
+  execPath: string = process.execPath,
+  argv: string[] = process.argv,
+  execArgv: string[] = process.execArgv,
+): { command: string; args: string[] } =>
+  isInterpreter(execPath) && argv[1]
+    ? { command: execPath, args: [...execArgv, argv[1], "computer", "mcp"] }
+    : { command: execPath, args: ["computer", "mcp"] };
 
 const servicePlanFiles = (bin: string, home: string): string[] => {
   try {
@@ -354,6 +373,7 @@ const startDaemon = async (
     onTamper: ({ fileHash, inForceHash }) =>
       publish({ v: 1, type: "policy.tampered", deviceId: id.deviceId, fileHash, inForceHash, t: now() }),
     onChange: async (hash) => {
+      await computer?.onPolicyChange();
       if (!store) return;
       await store.updateDevice({ policyHash: hash });
       await store.publishDeviceEvent({
@@ -365,6 +385,9 @@ const startDaemon = async (
       });
     },
   });
+
+  // Late-bound: created once signed in (it reports through the store), only with the desktop app.
+  let computer: ComputerControl | null = null;
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
   const devModeBase = {
@@ -549,7 +572,65 @@ const startDaemon = async (
     log,
     ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
   };
+
+  // Computer control (computer/control.ts): only when the desktop app started this agent, since
+  // the app shows the on-screen indicator and holds the kill switch. The broker socket is what
+  // the per-session MCP server talks to.
+  const auditAgent = (type: string, meta: Record<string, unknown>) => {
+    log.info(type, meta);
+    void signedInStore
+      .audit({
+        eid: randomUUID(),
+        t: now(),
+        type,
+        meta: redactDeep(meta) as Record<string, unknown>,
+        source: "agent",
+      })
+      .catch((err: unknown) =>
+        log.error("audit write failed", { type, error: err instanceof Error ? err.message : "error" }),
+      );
+  };
+  let broker: Broker | null = null;
+  if (deps.ipcSecret) {
+    const mcp = computerMcpCommand();
+    computer = new ComputerControl({
+      policy: () => policy.get().computer,
+      requestApproval: (sid, input) => core.requestComputerApproval(sid, input),
+      interrupt: async (sid) => {
+        await core.sessions.get(sid)?.handle.interrupt();
+      },
+      driver: deps.computerDriver ?? (() => loadNativeDriver({ runner: spawnRunner, env })),
+      audit: auditAgent,
+      publish: (st) =>
+        publish({
+          v: 1,
+          type: "computer.changed",
+          deviceId: id.deviceId,
+          enabled: st.enabled,
+          activeSessions: st.activeSessions,
+          ...(st.by ? { by: st.by } : {}),
+          t: now(),
+        }),
+      mcpLaunch: () => (broker ? { ...mcp, socket: broker.path } : null),
+      now,
+      locale: () => cfg.locale,
+    });
+    coreDeps.computer = computer;
+  }
   const core = new AgentCore(coreDeps);
+  if (computer) {
+    const control = computer;
+    try {
+      broker = await startBroker({
+        path: deps.brokerPath ?? brokerPath(dir),
+        call: (token, tool, args) => control.call(token, tool, args),
+      });
+      log.info("computer.broker_ready", { path: broker.path, enabled: control.enabled() });
+    } catch (err) {
+      log.error("computer.broker_unavailable", { error: err instanceof Error ? err.message : "error" });
+    }
+    await control.onPolicyChange();
+  }
 
   // A provider was connected, signed out, installed or re-pinned: rebuild what can run. Running
   // sessions keep their adapter; new ones get the new one.
@@ -717,10 +798,13 @@ const startDaemon = async (
     unwatchCommands();
     policy.close();
     devWatcher?.close();
+    const st = computer?.status();
+    if (st && (st.active.length || st.pending.length)) await computer?.kill("agent_stop").catch(() => undefined);
     for (const s of core.sessions.values()) {
       await s.handle.interrupt().catch(() => undefined);
       s.handle.close();
     }
+    await broker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
     await cloud.close().catch(() => undefined);
     releaseLock();
@@ -752,6 +836,8 @@ const startDaemon = async (
           now,
           reportDevMode,
           providers,
+          computer,
+          audit: auditAgent,
         }),
         onError: (method, err) =>
           log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),
@@ -768,5 +854,5 @@ const startDaemon = async (
     workspaces: policy.get().workspaces.length,
     policyHash: policy.hash,
   });
-  return { core, store: signedInStore, policy, classifyExtras: () => extras, stop, done };
+  return { core, computer, store: signedInStore, policy, classifyExtras: () => extras, stop, done };
 };

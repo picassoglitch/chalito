@@ -29,6 +29,7 @@ import { CommandAcceptedMeta, CommandRejectedMeta } from "@chalito/protocol";
 import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { AgentCore, type PolicyHolder, type ProviderCommands } from "../src/agent-core.js";
+import { ComputerControl } from "../src/computer/control.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
@@ -69,6 +70,8 @@ const harness = async (
     devToggles?: ("allowSudo" | "autoApproveHigh" | "autoApproveCritical")[];
     classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
     providers?: ProviderCommands;
+    /** Wire computer control (its native layer is never reached in these tests). */
+    computer?: boolean;
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -114,6 +117,22 @@ const harness = async (
   const timers: (() => void)[] = [];
   const logs: string[] = [];
   const fake = fakeClaudeCode(opts.turns ?? []);
+  const computerAudits: string[] = [];
+  let coreRef: AgentCore | null = null;
+  const computer = opts.computer
+    ? new ComputerControl({
+        policy: () => policy.computer,
+        requestApproval: (sid, input) => coreRef!.requestComputerApproval(sid, input),
+        interrupt: async (sid) => void (await coreRef!.sessions.get(sid)?.handle.interrupt()),
+        driver: () => {
+          throw new Error("no native layer in tests");
+        },
+        audit: (type) => void computerAudits.push(type),
+        publish: () => undefined,
+        mcpLaunch: () => ({ command: "/opt/chalito/chalito-agent", args: ["computer", "mcp"], socket: "/tmp/c.sock" }),
+        now: Date.now,
+      })
+    : undefined;
   const core = new AgentCore({
     store,
     adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
@@ -130,11 +149,14 @@ const harness = async (
     log: createLogger((l) => logs.push(l)),
     ...(opts.classifyExtras ? { classifyExtras: opts.classifyExtras } : {}),
     ...(opts.providers ? { providers: opts.providers } : {}),
+    ...(computer ? { computer } : {}),
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
     },
   });
+
+  coreRef = core;
 
   let n = 0;
   const command = async (
@@ -244,6 +266,8 @@ const harness = async (
     passkey,
     passkeyRef,
     getPolicy: () => policy,
+    computer,
+    computerAudits,
   };
 };
 
@@ -1196,5 +1220,106 @@ describe("provider.* commands (connect your AI)", () => {
     const stranger = await device("dev_stranger");
     expect((await h.command({ type: "provider.disconnect", provider: "openai" }, { signer: stranger })).ok).toBe(false);
     expect(r.calls).toEqual([]);
+  });
+});
+
+describe("computer control in sessions", () => {
+  const ON = { computer: { enabled: true, maxActionsPerMinute: 60 } };
+  const clickTurn: FakeStep[][] = [[{ tool: "mcp__chalito_computer__click", input: { x: 1, y: 1 } }, { say: "ok" }]];
+
+  it("attaches the MCP server to Claude Code sessions only while it's on", async () => {
+    const off = await harness({ computer: true, turns: [[{ say: "hola" }]] });
+    await off.startSession();
+    await waitFor(() => off.fake.run.options !== undefined);
+    expect(off.fake.run.options!.mcpServers).toBeUndefined();
+
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    await h.startSession();
+    await waitFor(() => h.fake.run.options !== undefined);
+    const servers = h.fake.run.options!.mcpServers as Record<string, Record<string, unknown>>;
+    expect(Object.keys(servers)).toEqual(["chalito_computer"]);
+    expect(servers.chalito_computer).toMatchObject({
+      type: "stdio",
+      command: "/opt/chalito/chalito-agent",
+      args: ["computer", "mcp"],
+      env: { CHALITO_COMPUTER_SOCKET: "/tmp/c.sock", CHALITO_COMPUTER_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    expect(h.fake.run.options!.strictMcpConfig).toBe(true);
+  });
+
+  it("the tool gate lets computer tools through to the broker only while control can be granted", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: clickTurn });
+    await h.startSession();
+    await waitFor(() => h.fake.run.ran.length === 1);
+    // No per-tool approval: the session-level grant happens in the broker.
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+
+    const off = await harness({ computer: true, turns: clickTurn });
+    await off.startSession();
+    await waitFor(() => off.fake.run.refused.length === 1);
+  });
+
+  it("asks for a computer_control approval: HIGH, passkey step-up, signed by the agent", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    const { sid } = (await h.startSession()) as { sid: string };
+    const asked = h.core.requestComputerApproval(sid, {
+      origin: "client:dev_phone",
+      details: { toolName: "computer_control", input: { session: "chalito" }, reasons: ["pantalla"] },
+    });
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const row = h.store.pendingApprovals()[0]!;
+    expect(row).toMatchObject({ kind: "computer_control", risk: "HIGH", stepUpRequired: true });
+    const opened = await openJson<{ request: { body: { kind: string } } }>(
+      row.detailsCt,
+      h.phone.id,
+      h.phone.box,
+      `approval:${row.aid}`,
+    );
+    expect(opened.request.body.kind).toBe("computer_control");
+    // Without the passkey assertion an allow doesn't count.
+    await h.decide(true);
+    await new Promise((r) => setTimeout(r, 30));
+    await h.decide(true, { stepUp: true });
+    await expect(asked).resolves.toMatchObject({ allow: true, reason: "signed_allow" });
+    expect(h.store.events.some((e) => e.type === "approval.requested")).toBe(true);
+  });
+
+  it("never asks for unsigned origins", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    const { sid } = (await h.startSession()) as { sid: string };
+    await expect(
+      h.core.requestComputerApproval(sid, {
+        origin: "mcp:claude",
+        details: { toolName: "computer_control", input: {}, reasons: [] },
+      }),
+    ).resolves.toEqual({ allow: false, reason: "policy_block" });
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+  });
+
+  it("a remote command that tries to enable it is rejected and reported", async () => {
+    const h = await harness({ computer: true });
+    for (const type of ["computer.enable", "computer.on", "computer_control.grant"]) {
+      expect(await h.command({ type })).toEqual({ ok: false, reason: "remote_enable_rejected" });
+    }
+    expect(h.getPolicy().computer).toBeUndefined();
+    expect(h.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected")).toHaveLength(3);
+  });
+
+  it("a remote policy.tighten can turn it off but not on", async () => {
+    const h = await harness({ computer: true });
+    const loosen = await h.command({
+      type: "policy.tighten",
+      patchCt: await h.sealed(1, { computer: { enabled: true, maxActionsPerMinute: 60 } }),
+    });
+    expect(loosen).toEqual({ ok: false, reason: "would_loosen" });
+    expect(h.getPolicy().computer).toBeUndefined();
+
+    const on = await harness({ computer: true, policy: ON });
+    const off = await on.command({
+      type: "policy.tighten",
+      patchCt: await on.sealed(1, { computer: { enabled: false } }),
+    });
+    expect(off).toEqual({ ok: true });
+    expect(on.getPolicy().computer).toEqual({ enabled: false, maxActionsPerMinute: 60 });
   });
 });

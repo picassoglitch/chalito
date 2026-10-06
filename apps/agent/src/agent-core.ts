@@ -25,6 +25,7 @@ import {
   type Origin,
   type Provider,
   type RemotePermissionMode,
+  type RiskTier,
   type SealedEnvelope,
   type SessionState,
   approvalSummary,
@@ -33,6 +34,8 @@ import { ApprovalManager } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
 import { publicReason } from "./command-result.js";
+import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
+import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
 import {
   PERMISSION_RANK,
@@ -90,6 +93,8 @@ export interface AgentCoreDeps {
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
   /** Host facts for the classifier's hard floor (agent binaries, service files, the session's PATH dirs). */
   classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
+  /** Computer control (computer/control.ts); absent = never attached. */
+  computer?: ComputerControl;
 }
 
 interface Session {
@@ -109,11 +114,14 @@ interface Session {
   turnOriginFloor?: Origin;
 }
 
+/** Adapters that get the computer-control MCP server (see startSession). */
+const COMPUTER_ADAPTERS: ReadonlySet<AdapterKind> = new Set<AdapterKind>(["claude-code", "codex"]);
+
 const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
 const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
 
 const REMOTE_ENABLE_ATTEMPT =
-  /devmode\.(on|enable|toggleOn)|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
+  /devmode\.(on|enable|toggleOn)|computer|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
 
 /**
  * The device agent's brain (ADR 0008): verifies commands against the local trusted list,
@@ -449,12 +457,26 @@ export class AgentCore {
       permissionMode: input.permissionMode,
     });
 
+    // Computer control: only when the person turned it on here, for signed origins, with the
+    // desktop app running. Its tools stay inert until this session's computer_control approval.
+    // Claude Code and Codex only: the ACP agents (Grok Build, Gemini CLI) name and permission MCP
+    // tool calls their own way, which the gate can't recognise yet, so they don't get it.
+    const computer = COMPUTER_ADAPTERS.has(input.adapter)
+      ? this.d.computer?.attach(sid, {
+          label: session.label,
+          adapter: input.adapter,
+          origin: input.origin,
+        })
+      : null;
     session.handle = await this.d.adapters[input.adapter]!.start({
       sid,
       cwd: session.cwd,
       prompt: input.prompt,
       origin: input.origin,
       permissionMode: input.permissionMode,
+      ...(computer
+        ? { mcpServers: { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } }
+        : {}),
       gate: this.#gate(session),
       askUser: async (q) => {
         const first = q.questions[0]?.question ?? null;
@@ -486,6 +508,17 @@ export class AgentCore {
   #gate(s: Session): ToolGate {
     return async (gated: ToolCall) => {
       const call = s.turnOriginFloor ? { ...gated, origin: lowerTrust(gated.origin, s.turnOriginFloor) } : gated;
+      // Computer-control tools: the broker does the per-action checks (grant, indicator, rate,
+      // audit); here they're refused outright when control is off, ended or denied, or the turn
+      // comes from an unsigned origin. Not on the card: inputs can be typed text.
+      if (call.toolName.startsWith(COMPUTER_TOOL_PREFIX)) {
+        const r = this.d.computer?.gate(s.sid, call.origin) ?? { allow: false as const, reason: "computer_disabled" };
+        if (!r.allow) {
+          s.card.blocker(`Control del equipo bloqueado (${r.reason})`);
+          await this.#publishCard(s);
+        }
+        return r;
+      }
       const policy = this.d.policy.get();
       const classification = classifyToolCall(call.toolName, call.input, this.#classifyContext(policy, s));
       const decision = decide({
@@ -507,56 +540,95 @@ export class AgentCore {
         await this.#publishCard(s);
         return { allow: false, reason: decision.reason };
       }
-      let aid: string | undefined;
-      // The "requested" side effects (event, card, call line) run while the approval waits. Keep
-      // the promise: the resolution below must not remove the call line before it was published,
-      // or a fast decision leaves a stale plaintext line behind (seen over Supabase round-trips).
-      let announced: Promise<void> = Promise.resolve();
-      const outcome = await this.approvals.request({
-        sid: s.sid,
+      const outcome = await this.#approve(s, {
         risk: classification.tier,
         stepUp: decision.stepUp,
         origin: call.origin,
         details: { toolName: call.toolName, input: call.input, reasons: classification.reasons },
-        onRequested: (requested, expiresAt) => {
-          aid = requested;
-          announced = (async () => {
-            s.card.approvalPending(requested, true);
-            await this.#event(s, {
-              type: "approval.requested",
-              aid: requested,
-              risk: classification.tier,
-              expiresAt,
-              urgency: classification.tier === "HIGH" ? "high" : "normal",
-            });
-            await this.#publishCard(s);
-            await this.callLines.publish(`${s.sid}_${requested}`, {
-              notificationId: `a_${requested}`,
-              sid: s.sid,
-              sessionLabel: s.label,
-              question: null,
-            });
-          })().catch((err: unknown) =>
-            this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" }),
-          );
-        },
       });
-      await announced;
-      if (aid) {
-        s.card.approvalPending(aid, false);
-        await this.callLines.remove(`${s.sid}_${aid}`);
-        await this.#event(s, {
-          type: "approval.resolved",
-          aid,
-          allow: outcome.allow,
-          reason: outcome.reason,
-          ...(outcome.byDeviceId ? { byDeviceId: outcome.byDeviceId } : {}),
-        });
-      }
       if (outcome.allow) s.card.action(summary);
       await this.#publishCard(s);
       return outcome.allow ? { allow: true } : { allow: false, reason: outcome.reason };
     };
+  }
+
+  /**
+   * Asks the person's trusted devices (signed, sealed request) and announces it: session event,
+   * card, call line. Resolves with the verified outcome; no answer within the TTL is a deny.
+   */
+  async #approve(
+    s: Session,
+    input: {
+      risk: RiskTier;
+      stepUp: boolean;
+      origin: Origin;
+      kind?: "tool" | "computer_control";
+      details: { toolName: string; input: unknown; reasons: string[] };
+    },
+  ): Promise<ComputerApprovalOutcome> {
+    let aid: string | undefined;
+    // The "requested" side effects (event, card, call line) run while the approval waits. Keep
+    // the promise: the resolution below must not remove the call line before it was published,
+    // or a fast decision leaves a stale plaintext line behind (seen over Supabase round-trips).
+    let announced: Promise<void> = Promise.resolve();
+    const outcome = await this.approvals.request({
+      sid: s.sid,
+      risk: input.risk,
+      stepUp: input.stepUp,
+      origin: input.origin,
+      ...(input.kind ? { kind: input.kind } : {}),
+      details: input.details,
+      onRequested: (requested, expiresAt) => {
+        aid = requested;
+        announced = (async () => {
+          s.card.approvalPending(requested, true);
+          await this.#event(s, {
+            type: "approval.requested",
+            aid: requested,
+            risk: input.risk,
+            expiresAt,
+            urgency: input.risk === "HIGH" ? "high" : "normal",
+          });
+          await this.#publishCard(s);
+          await this.callLines.publish(`${s.sid}_${requested}`, {
+            notificationId: `a_${requested}`,
+            sid: s.sid,
+            sessionLabel: s.label,
+            question: null,
+          });
+        })().catch((err: unknown) =>
+          this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" }),
+        );
+      },
+    });
+    await announced;
+    if (aid) {
+      s.card.approvalPending(aid, false);
+      await this.callLines.remove(`${s.sid}_${aid}`);
+      await this.#event(s, {
+        type: "approval.resolved",
+        aid,
+        allow: outcome.allow,
+        reason: outcome.reason,
+        ...(outcome.byDeviceId ? { byDeviceId: outcome.byDeviceId } : {}),
+      });
+    }
+    return outcome;
+  }
+
+  /**
+   * A session's `computer_control` grant (computer/control.ts): HIGH, with a passkey step-up,
+   * from a trusted device. The origin is the session's own, lowered by an unsigned answer.
+   */
+  async requestComputerApproval(
+    sid: string,
+    input: { origin: Origin; details: { toolName: string; input: unknown; reasons: string[] } },
+  ): Promise<ComputerApprovalOutcome> {
+    const s = this.sessions.get(sid);
+    if (!s) return { allow: false, reason: "policy_block" };
+    const origin = s.turnOriginFloor ? lowerTrust(input.origin, s.turnOriginFloor) : input.origin;
+    if (!isSignedOrigin(origin)) return { allow: false, reason: "policy_block" };
+    return this.#approve(s, { risk: "HIGH", stepUp: true, origin, kind: "computer_control", details: input.details });
   }
 
   #classifyContext(policy: Policy, s: Session): ClassifyContext {
@@ -595,6 +667,7 @@ export class AgentCore {
         return;
       case "state":
         if (e.state !== "running") s.turnOriginFloor = undefined;
+        if (e.state === "completed" || e.state === "failed") this.d.computer?.end(s.sid);
         s.card.state(e.state as SessionState);
         await this.#event(s, { type: "session.state", state: e.state });
         await this.d.store.upsertSession(s.sid, { state: e.state, updatedAt: this.d.now() });

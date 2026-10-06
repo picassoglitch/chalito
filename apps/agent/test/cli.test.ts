@@ -251,6 +251,59 @@ describe("chalito CLI", () => {
     });
   });
 
+  describe("computer", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("enable: OS auth, two confirmations and the phrase turn it on in the signed policy", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["computer", "status"])).toBe(0);
+      expect(c.out()).toMatch(/Computer control: off/);
+      expect(await c.run(["computer", "enable"], ["y", "y", "CONTROL MY COMPUTER"])).toBe(0);
+      expect(c.runs).toEqual([{ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true }]);
+      expect(c.out()).toMatch(/Computer control is on/);
+      expect((await policyOf(c)).computer).toEqual({ enabled: true, maxActionsPerMinute: 60 });
+      expect(await c.run(["computer", "disable"])).toBe(0);
+      expect((await policyOf(c)).computer).toEqual({ enabled: false, maxActionsPerMinute: 60 });
+    });
+
+    it("enable: failed OS auth, a no, or a wrong phrase change nothing", async () => {
+      for (const [o, lines] of [
+        [{ runner: () => 126 }, ["y", "y", "CONTROL MY COMPUTER"]],
+        [{}, ["n"]],
+        [{}, ["y", "n"]],
+        [{}, ["y", "y", "control my computer"]],
+      ] as const) {
+        const c = cli({ tty: true, ...o });
+        expect(await c.run(["computer", "enable"], [...lines])).toBe(1);
+        expect((await policyOf(c)).computer).toBeUndefined();
+      }
+    });
+
+    it("enable: macOS points at Screen Recording and Accessibility; Wayland is called out", async () => {
+      const mac = cli({ tty: true, platform: "darwin" });
+      expect(await mac.run(["computer", "enable"], ["y", "y", "CONTROL MY COMPUTER"])).toBe(0);
+      expect(mac.out()).toMatch(/Screen Recording/);
+      const wl = cli({ tty: true, env: { XDG_SESSION_TYPE: "wayland" } });
+      expect(await wl.run(["computer", "enable"], ["y", "y", "CONTROL MY COMPUTER"])).toBe(0);
+      expect(wl.err()).toMatch(/Wayland/);
+    });
+
+    it("policy edit can't turn it on", async () => {
+      const on = policyToYaml({ ...DEFAULT_POLICY, computer: { enabled: true, maxActionsPerMinute: 60 } });
+      const c = cli({ runner: (r) => (writeFileSync(r.args.at(-1)!, on), 0) });
+      expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito computer enable/);
+      expect((await policyOf(c)).computer).toBeUndefined();
+    });
+
+    it("mcp: only with the session's socket and token", async () => {
+      const c = cli({ tty: false, outTty: false, env: { CHALITO_SESSION: "1" } });
+      expect(await c.run(["computer", "mcp"])).toBe(1);
+      expect(c.err()).toMatch(/started by Chalito/);
+    });
+  });
+
   describe("policy", () => {
     const editTo = (text: string) => (r: Run) => {
       if (r.cmd !== "/usr/bin/pkexec") writeFileSync(r.args.at(-1)!, text);
@@ -423,6 +476,11 @@ describe("chalito CLI", () => {
       [["devmode", "reset"], ["RESET"]],
       [["claude", "pin", "/usr/bin/true"], []],
       [["codex", "pin", "/usr/bin/true"], []],
+      [
+        ["computer", "enable"],
+        ["y", "y", "CONTROL MY COMPUTER"],
+      ],
+      [["computer", "disable"], []],
     ];
 
     for (const [argv, lines] of mutating) {

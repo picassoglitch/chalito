@@ -40,6 +40,20 @@ export const Policy = z.object({
   allowlist: z.object({ commands: z.array(z.string().min(1)).default([]) }),
   web: z.object({ allowDomains: z.array(z.string().min(1)).default([]) }),
   mcp: z.object({ readOnlyTools: z.array(z.string().min(1)).default([]) }),
+  /**
+   * Computer control (screen, mouse, keyboard; apps/agent/src/computer). Absent = off, which is
+   * also what every policy written before it reads as (no default here, so their hash and the
+   * signed lock stay as they were). Turned on only by `chalito computer enable` or the desktop
+   * panel (OS auth + confirmations); `chalito policy edit` and remote surfaces can only turn it
+   * off or lower the rate.
+   */
+  computer: z
+    .object({
+      enabled: z.boolean(),
+      /** Ceiling on screen/mouse/keyboard actions per session per minute (screenshots count). */
+      maxActionsPerMinute: z.number().int().min(1).max(600),
+    })
+    .optional(),
 });
 export type Policy = z.infer<typeof Policy>;
 
@@ -84,6 +98,9 @@ export const DEFAULT_POLICY: Policy = {
   web: { allowDomains: [] },
   mcp: { readOnlyTools: [] },
 };
+
+/** What `chalito computer enable` writes when the policy has no `computer` entry yet. */
+export const DEFAULT_COMPUTER = { enabled: false, maxActionsPerMinute: 60 } as const;
 
 export const PERMISSION_RANK = { plan: 0, default: 1, acceptEdits: 2 } as const;
 export const SANDBOX_RANK = { "read-only": 0, "workspace-write": 1 } as const;
