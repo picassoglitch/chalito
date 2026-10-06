@@ -78,6 +78,11 @@ export interface AppView {
   supported: boolean;
   /** The official install for this OS, if any. */
   install: RecipeInstall | null;
+  /**
+   * Whether the person allowed this app's sessions on this computer (off until allowed here,
+   * owner decision 2026-10-06). Null for the four former providers (policy.adapters decides).
+   */
+  sessions: boolean | null;
 }
 
 /** A custom recipe file that didn't load (local only). */
@@ -102,6 +107,10 @@ export interface CustomChallenge {
 
 export type CustomEnableResult =
   { ok: true } | { ok: false; reason: "unknown_recipe" | "already_on" | "os_auth_failed" | "cancelled" };
+
+export type SessionsEnableResult =
+  | { ok: true }
+  | { ok: false; reason: "unknown_recipe" | "not_applicable" | "already_on" | "os_auth_failed" | "cancelled" };
 
 /** Computer control as the agent reports it (apps/agent/src/computer/control.ts `status`). */
 export interface ComputerStatus {
@@ -210,6 +219,10 @@ export interface AgentIpc {
   customRecipeChallenge(appId: string): Promise<CustomChallenge>;
   enableCustomRecipe(appId: string, answers: { review: boolean; typed: string }): Promise<CustomEnableResult>;
   disableCustomRecipe(appId: string): Promise<void>;
+  /** An app's sessions on this computer: allowed only here (OS check, review, typed id). */
+  appSessionsChallenge(appId: string): Promise<CustomChallenge>;
+  enableAppSessions(appId: string, answers: { review: boolean; typed: string }): Promise<SessionsEnableResult>;
+  disableAppSessions(appId: string): Promise<void>;
   /**
    * Computer control. Reading the state here doesn't count as the indicator's heartbeat (the
    * native side sends that); enabling asks the OS in the agent and re-checks the answers.
@@ -272,6 +285,9 @@ export const unavailableIpc: AgentIpc = {
   customRecipeChallenge: unavailable,
   enableCustomRecipe: unavailable,
   disableCustomRecipe: unavailable,
+  appSessionsChallenge: unavailable,
+  enableAppSessions: unavailable,
+  disableAppSessions: unavailable,
   computerStatus: unavailable,
   computerChallenge: unavailable,
   enableComputer: unavailable,
@@ -331,6 +347,9 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     customRecipeChallenge: (appId) => call("customRecipeChallenge", { appId }),
     enableCustomRecipe: (appId, answers) => call("enableCustomRecipe", { appId, answers }),
     disableCustomRecipe: async (appId) => void (await call("disableCustomRecipe", { appId })),
+    appSessionsChallenge: (appId) => call("appSessionsChallenge", { appId }),
+    enableAppSessions: (appId, answers) => call("enableAppSessions", { appId, answers }),
+    disableAppSessions: async (appId) => void (await call("disableAppSessions", { appId })),
     // No `indicatorShown`: only the native poller's report counts as the indicator's heartbeat.
     computerStatus: () => call("computerStatus"),
     computerChallenge: () => call("computerChallenge"),

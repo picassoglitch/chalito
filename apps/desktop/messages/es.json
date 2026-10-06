@@ -270,6 +270,12 @@
         "shadows_curated": "{file}: usa el id de una app curada; cámbialo.",
         "duplicate_id": "{file}: ese id ya lo usa otra receta.",
         "too_large": "{file}: el archivo es demasiado grande."
+      },
+      "sessions": {
+        "on": "Sesiones: permitidas en esta computadora.",
+        "off": "Sesiones: apagadas en esta computadora hasta que las permitas aquí.",
+        "allow": "Permitir sesiones aquí",
+        "disallow": "Apagar sesiones"
       }
     }
   },

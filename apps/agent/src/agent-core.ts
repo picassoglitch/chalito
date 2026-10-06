@@ -500,8 +500,8 @@ export class AgentCore {
   /**
    * What `session.start` runs: the four built-in adapters (by `adapter`, or by their app id),
    * gated by `policy.adapters` as before; any other app by its id, through the session adapter a
-   * registered driver built for it, while the app is ready here and `policy.apps.sessions` doesn't
-   * turn it off.
+   * registered driver built for it, while the app is ready here and the person allowed its
+   * sessions on this computer (`policy.apps.sessions[appId] === true`, set only locally).
    */
   async #sessionTarget(
     adapter: AdapterKind | undefined,
@@ -527,7 +527,9 @@ export class AgentCore {
     if (!this.d.apps?.sessionReady) return { ok: false, reason: "unknown_app" };
     const ready = await this.d.apps.sessionReady(appId);
     if (!ready.ok) return ready;
-    if (policy.apps?.sessions?.[appId] === false) return { ok: false, reason: "adapter_disabled" };
+    // Owner decision 2026-10-06: off until the person allows this app's sessions on this computer
+    // (`chalito apps sessions enable` / the desktop panel); missing = off.
+    if (policy.apps?.sessions?.[appId] !== true) return { ok: false, reason: "adapter_disabled" };
     const appAdapter =
       this.d.appAdapters && Object.hasOwn(this.d.appAdapters, appId) ? this.d.appAdapters[appId] : undefined;
     if (!appAdapter) return { ok: false, reason: "adapter_disabled" };

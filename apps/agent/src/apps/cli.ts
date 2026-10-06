@@ -9,10 +9,12 @@ import { createLogger } from "../redact.js";
 import { LineReader, isYes, type TtyIo } from "../tty.js";
 import { AppCatalog } from "./catalog.js";
 import { disableCustomRecipe, enableCustomRecipe } from "./custom-toggle.js";
+import { disableAppSessions, enableAppSessions, sessionsApply } from "./sessions-toggle.js";
 
 const T = {
   es: {
-    usage: "chalito apps list | apps custom list | apps custom enable <id> | apps custom disable <id>\n",
+    usage:
+      "chalito apps list | apps custom list|enable <id>|disable <id> | apps sessions list|enable <id>|disable <id>\n",
     curated: "Curadas:\n",
     custom: "Personalizadas (~/.chalito/recipes):\n",
     none: "  (ninguna)\n",
@@ -30,9 +32,18 @@ const T = {
       `Receta «${id}» activada en esta computadora. Si editas el archivo, se desactiva hasta que la actives otra vez.\n`,
     disabled: (id: string) => `Receta «${id}» desactivada.\n`,
     wasOff: (id: string) => `La receta «${id}» ya estaba desactivada.\n`,
+    sessions: "Sesiones permitidas en esta computadora (las demás apps: no, hasta que las permitas aquí):\n",
+    sessionsUnknown: (id: string) =>
+      `No hay una app «${id}» que use este permiso (o es una receta personalizada sin activar).\n`,
+    sessionsAlready: "Esa app ya puede iniciar sesiones aquí.\n",
+    sessionsOn: (id: string) =>
+      `Sesiones de «${id}» permitidas en esta computadora. Cada acción sigue pidiendo tu aprobación.\n`,
+    sessionsOff: (id: string) => `Sesiones de «${id}» desactivadas.\n`,
+    sessionsWasOff: (id: string) => `Las sesiones de «${id}» ya estaban desactivadas.\n`,
   },
   en: {
-    usage: "chalito apps list | apps custom list | apps custom enable <id> | apps custom disable <id>\n",
+    usage:
+      "chalito apps list | apps custom list|enable <id>|disable <id> | apps sessions list|enable <id>|disable <id>\n",
     curated: "Curated:\n",
     custom: "Custom (~/.chalito/recipes):\n",
     none: "  (none)\n",
@@ -50,6 +61,14 @@ const T = {
       `Recipe "${id}" is on for this computer. Editing the file turns it off until you turn it on again.\n`,
     disabled: (id: string) => `Recipe "${id}" is off.\n`,
     wasOff: (id: string) => `Recipe "${id}" was already off.\n`,
+    sessions: "Apps allowed to start sessions on this computer (every other app: off until you allow it here):\n",
+    sessionsUnknown: (id: string) =>
+      `There's no app "${id}" this applies to (or it's a custom recipe that isn't on).\n`,
+    sessionsAlready: "That app can already start sessions here.\n",
+    sessionsOn: (id: string) =>
+      `"${id}" sessions are allowed on this computer. Every action still asks for your approval.\n`,
+    sessionsOff: (id: string) => `"${id}" sessions are off.\n`,
+    sessionsWasOff: (id: string) => `"${id}" sessions were already off.\n`,
   },
 };
 
@@ -103,6 +122,7 @@ export const appsCli = async (
     listCustom();
     return 0;
   }
+  if (sub === "sessions") return appSessions(io, locale, t, holder, catalog, action, id);
   if (sub !== "custom") {
     io.err(t.usage);
     return 1;
@@ -153,6 +173,75 @@ export const appsCli = async (
       return res.reason === "already_on" ? 0 : 1;
     }
     io.out(t.enabled(id));
+    return 0;
+  } finally {
+    reader.close();
+  }
+};
+
+/** `chalito apps sessions …`: which apps may start sessions here. ON is local only, like custom. */
+const appSessions = async (
+  io: AppsCliIo,
+  locale: Locale,
+  t: (typeof T)[Locale],
+  holder: FilePolicyHolder,
+  catalog: AppCatalog,
+  action: string | undefined,
+  id: string | undefined,
+): Promise<number> => {
+  if (action === "list" || action === undefined) {
+    io.out(t.sessions);
+    const on = Object.entries(holder.get().apps?.sessions ?? {}).filter(([, v]) => v === true);
+    if (!on.length) io.out(t.none);
+    for (const [appId] of on) io.out(`  ${appId}  ${catalog.get(appId)?.recipe.name ?? ""}\n`);
+    return 0;
+  }
+  if (!id || (action !== "enable" && action !== "disable")) {
+    io.err(t.usage);
+    return 1;
+  }
+  const emit = () => undefined;
+  if (action === "disable") {
+    const changed = await disableAppSessions({ policy: holder, emit }, id, "cli");
+    io.out(changed ? t.sessionsOff(id) : t.sessionsWasOff(id));
+    return 0;
+  }
+  if (!sessionsApply(id)) {
+    io.err(t.sessionsUnknown(id));
+    return 1;
+  }
+  const reader = new LineReader(io.tty);
+  try {
+    const res = await enableAppSessions(
+      {
+        policy: holder,
+        catalog,
+        osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+        prompter: {
+          review: async ([title, warn, ...lines]) => {
+            io.out(`\n${title}\n${warn}\n\n${lines.map((l) => `  ${l}\n`).join("")}\n`);
+            return isYes(await reader.ask(t.continue));
+          },
+          typed: async (q) => (await reader.ask(`${q}: `)) ?? "",
+        },
+        locale,
+        emit,
+      },
+      id,
+    );
+    if (!res.ok) {
+      io.err(
+        res.reason === "unknown_recipe" || res.reason === "not_applicable"
+          ? t.sessionsUnknown(id)
+          : res.reason === "already_on"
+            ? t.sessionsAlready
+            : res.reason === "os_auth_failed"
+              ? t.authFailed
+              : t.cancelled,
+      );
+      return res.reason === "already_on" ? 0 : 1;
+    }
+    io.out(t.sessionsOn(id));
     return 0;
   } finally {
     reader.close();

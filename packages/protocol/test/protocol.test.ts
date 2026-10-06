@@ -139,6 +139,38 @@ describe("remote surfaces can never widen the device", () => {
     }
   });
 
+  it("no command variant can enable a custom recipe or an app's sessions (local-only, owner decision 2026-10-06)", () => {
+    const types = CommandPayload.options.map((o) => o.shape.type.value as string);
+    // app.* only connect, disconnect, install, report and launch.
+    expect(types.filter((t) => /^apps?\.|recipe|custom/i.test(t)).sort()).toEqual([
+      "app.connect",
+      "app.disconnect",
+      "app.install",
+      "app.launch",
+      "app.status",
+    ]);
+    for (const type of [
+      "app.enable",
+      "apps.custom.enable",
+      "apps.sessions.enable",
+      "app.sessions",
+      "recipe.enable",
+      "recipe.add",
+    ]) {
+      expect(CommandPayload.safeParse({ type, appId: "goose", enabled: true }).success).toBe(false);
+    }
+    // A session.start by app id can't carry a switch either.
+    const start = CommandPayload.parse({
+      type: "session.start",
+      appId: "goose",
+      workspaceLabel: "w",
+      promptCt: { alg: "xchacha20poly1305+sealedbox", nonce: b64(24), ct: b64(10), keys: { d1: b64(80) } },
+      sessions: true,
+      apps: { sessions: { goose: true } },
+    });
+    expect(Object.keys(start).filter((k) => /sessions|apps|enabled/i.test(k))).toEqual([]);
+  });
+
   it("no command variant can enable remote terminal or the raw shell (local-only, like computer control)", () => {
     // The terminal variants only open, feed, resize and close a terminal.
     const types = CommandPayload.options.map((o) => o.shape.type.value as string);

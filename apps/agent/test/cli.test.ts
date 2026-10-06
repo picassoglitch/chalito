@@ -368,6 +368,33 @@ describe("chalito CLI", () => {
     });
   });
 
+  describe("apps sessions (owner decision 2026-10-06)", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("off until enabled here: OS auth, the review and the typed id; disable turns it off", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["apps", "sessions", "list"])).toBe(0);
+      expect(c.out()).toMatch(/\(none\)/);
+      expect(await c.run(["apps", "sessions", "enable", "goose"], ["y", "codex"])).toBe(1);
+      expect((await policyOf(c)).apps?.sessions?.goose).toBeUndefined();
+      expect(await c.run(["apps", "sessions", "enable", "codex"], ["y", "codex"])).toBe(1);
+      expect(await c.run(["apps", "sessions", "enable", "goose"], ["y", "goose"])).toBe(0);
+      expect(c.runs).toContainEqual({ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true });
+      expect((await policyOf(c)).apps?.sessions?.goose).toBe(true);
+      expect(await c.run(["apps", "sessions", "disable", "goose"])).toBe(0);
+      expect((await policyOf(c)).apps?.sessions?.goose).toBe(false);
+    });
+
+    it("policy edit can't allow an app's sessions", async () => {
+      const on = policyToYaml({ ...DEFAULT_POLICY, apps: { sessions: { goose: true } } });
+      const c = cli({ runner: (r) => (writeFileSync(r.args.at(-1)!, on), 0) });
+      expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito apps sessions enable/);
+      expect((await policyOf(c)).apps?.sessions).toBeUndefined();
+    });
+  });
+
   describe("screen", () => {
     const policyOf = async (c: ReturnType<typeof cli>) =>
       new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();

@@ -1455,9 +1455,11 @@ describe("session.start by app id (connect engine)", () => {
         a === "goose" ? { ok: true } : { ok: false, reason: "recipe_disabled" }
       ),
     };
+    // Owner decision 2026-10-06: the person allowed goose's sessions on this computer.
     const h = await harness({
       apps,
       appAdapters: { goose: new ClaudeCodeAdapter({ apiKey: "x", queryFn: goose.queryFn, env: {} }) },
+      policy: { apps: { sessions: { goose: true } } },
     });
     const res = await h.command({
       type: "session.start",
@@ -1495,6 +1497,28 @@ describe("session.start by app id (connect engine)", () => {
         promptCt: await offPolicy.sealed(1, "x"),
       }),
     ).toMatchObject({ ok: false, reason: "adapter_disabled" });
+    // Missing = off: connected and ready, but never allowed here, it doesn't start.
+    const notAllowed = await harness({
+      apps,
+      appAdapters: { goose: new ClaudeCodeAdapter({ apiKey: "x", queryFn: goose.queryFn, env: {} }) },
+    });
+    expect(
+      await notAllowed.command({
+        type: "session.start",
+        appId: "goose",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await notAllowed.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "adapter_disabled" });
+    // …and no remote policy.tighten can allow it (only off).
+    expect(
+      await notAllowed.command({
+        type: "policy.tighten",
+        patchCt: await notAllowed.sealed(2, { apps: { sessions: { goose: true } } }),
+      }),
+    ).toMatchObject({ ok: false });
+    expect(notAllowed.getPolicy().apps?.sessions?.goose).toBeUndefined();
     const noEngine = await harness();
     expect(
       await noEngine.command({

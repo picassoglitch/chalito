@@ -139,6 +139,14 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     }),
     enableCustomRecipe: async (...a) => (calls.push(["enableCustomRecipe", ...a]), { ok: true as const }),
     disableCustomRecipe: async (...a) => void calls.push(["disableCustomRecipe", ...a]),
+    appSessionsChallenge: async (appId) => ({
+      title: `Permitir sesiones de «${appId}»`,
+      warn: "Esto ejecuta:",
+      type: `Escribe «${appId}»`,
+      summary: ["acp: goose acp"],
+    }),
+    enableAppSessions: async (...a) => (calls.push(["enableAppSessions", ...a]), { ok: true as const }),
+    disableAppSessions: async (...a) => void calls.push(["disableAppSessions", ...a]),
     computerStatus: async () => computer,
     computerChallenge: async () => ({
       examples: ["Ver todo lo que hay en tu pantalla"],
@@ -641,6 +649,7 @@ describe("panel: IA conectadas (catalog)", () => {
     installRequestedUntil: null,
     supported: true,
     install: Object.values(recipe(id).platforms)[0]?.install ?? null,
+    sessions: null,
     ...o,
   });
   const mine = {
@@ -754,6 +763,40 @@ describe("panel: IA conectadas (catalog)", () => {
     await waitFor(() =>
       expect(ipc.calls).toContainEqual(["enableCustomRecipe", "mi-agente", { review: true, typed: "mi-agente" }]),
     );
+  });
+
+  it("an app's sessions are off until allowed here (review + typed id); turning them off is one click", async () => {
+    const ipc = fakeIpc({
+      apps: async () => ({
+        apps: [
+          app("goose", doc("connected", "acp", { mode: "signin" }), { sessions: false }),
+          app("opencode", doc("connected", "acp", { mode: "signin" }), { sessions: true }),
+          // The four former providers (null: policy.adapters decides) and web apps show nothing.
+          app("codex", doc("connected", "codex", { mode: "api_key" })),
+          app("chatgpt", doc("available", "web-app"), { sessions: false }),
+        ],
+        problems: [],
+        catalog: null,
+      }),
+    });
+    const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
+    await waitFor(() => expect(row(container, "goose")).toBeTruthy());
+    expect(row(container, "goose").querySelector('[data-sessions="off"]')).not.toBeNull();
+    expect(row(container, "opencode").querySelector('[data-sessions="on"]')).not.toBeNull();
+    expect(row(container, "codex").querySelector("[data-sessions]")).toBeNull();
+    expect(row(container, "chatgpt").querySelector("[data-sessions]")).toBeNull();
+
+    fireEvent.click(within(row(container, "goose")).getByText("Allow sessions here"));
+    await waitFor(() => expect(row(container, "goose").textContent).toContain("acp: goose acp"));
+    const yes = within(row(container, "goose")).getByText("Yes, turn it on") as HTMLButtonElement;
+    expect(yes.disabled).toBe(true);
+    fireEvent.change(row(container, "goose").querySelector("input")!, { target: { value: "goose" } });
+    fireEvent.click(yes);
+    await waitFor(() =>
+      expect(ipc.calls).toContainEqual(["enableAppSessions", "goose", { review: true, typed: "goose" }]),
+    );
+    fireEvent.click(within(row(container, "opencode")).getByText("Turn sessions off"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["disableAppSessions", "opencode"]));
   });
 
   it("without the local agent it says so", async () => {

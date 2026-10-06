@@ -84,6 +84,9 @@ export const USAGE = `chalito <command>
   apps custom list|enable <id>|disable <id>
                                        your own recipes (~/.chalito/recipes); enable: local only,
                                        OS auth + review of what it runs
+  apps sessions list|enable <id>|disable <id>
+                                       which apps may start sessions here (off until enabled;
+                                       enable: local only, OS auth + review)
   terminal enable|disable|status       remote terminal: open an AI's terminal app from a trusted browser
                                        after a passkey approval (enable: local only, OS auth + confirmations)
   terminal shell enable|disable        the full shell over remote terminal (stronger confirmation)
@@ -144,6 +147,8 @@ const T = {
       "El control del equipo no se activa editando la política. Usa `chalito computer enable`.\n",
     customNotInPolicyEdit:
       "Una receta personalizada no se activa editando la política. Usa `chalito apps custom enable <id>`.\n",
+    appSessionsNotInPolicyEdit:
+      "Las sesiones de una app no se permiten editando la política. Usa `chalito apps sessions enable <id>`.\n",
     terminalTitle: "\n!!  ¿Activar la terminal remota?  !!\nCon esto, una terminal aprobada puede:\n",
     shellTitle: "\n!!  ¿Activar la SHELL COMPLETA remota?  !!\nCon esto, una shell aprobada puede:\n",
     shellFinal: "\nConfirmación 4 de 4. ",
@@ -248,6 +253,8 @@ const T = {
     computerNotInPolicyEdit: "Computer control isn't turned on by editing the policy. Use `chalito computer enable`.\n",
     customNotInPolicyEdit:
       "A custom recipe isn't turned on by editing the policy. Use `chalito apps custom enable <id>`.\n",
+    appSessionsNotInPolicyEdit:
+      "An app's sessions aren't allowed by editing the policy. Use `chalito apps sessions enable <id>`.\n",
     terminalTitle: "\n!!  Turn on remote terminal?  !!\nWith it, an approved terminal can:\n",
     shellTitle: "\n!!  Turn on the remote FULL SHELL?  !!\nWith it, an approved shell can:\n",
     shellFinal: "\nConfirmation 4 of 4. ",
@@ -1038,6 +1045,16 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
       !appsTighterOrEqual({ custom: parsed.policy.apps?.custom ?? {} }, { custom: holder.get().apps?.custom ?? {} })
     ) {
       io.err(t.customNotInPolicyEdit);
+      return 1;
+    }
+    // Only `chalito apps sessions enable` lets an app start sessions here.
+    if (
+      !appsTighterOrEqual(
+        { sessions: parsed.policy.apps?.sessions ?? {} },
+        { sessions: holder.get().apps?.sessions ?? {} },
+      )
+    ) {
+      io.err(t.appSessionsNotInPolicyEdit);
       return 1;
     }
     // Only `chalito terminal enable` / `chalito terminal shell enable` turn these on.

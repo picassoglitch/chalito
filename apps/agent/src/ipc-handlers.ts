@@ -20,6 +20,7 @@ import type { Policy } from "./policy/schema.js";
 import { policyRules } from "./policy-view.js";
 import type { AppCatalog } from "./apps/catalog.js";
 import { CUSTOM_COPY, disableCustomRecipe, enableCustomRecipe, recipeSummary } from "./apps/custom-toggle.js";
+import { disableAppSessions, enableAppSessions, sessionsApply, sessionsChallenge } from "./apps/sessions-toggle.js";
 import type { AppManager, AppResult } from "./apps/manager.js";
 import type { TerminalControl } from "./terminal/control.js";
 import {
@@ -361,8 +362,14 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   // `installApp` is the person's local yes (the panel asks before calling it).
   apps: async () => {
     if (!d.apps) throw new IpcError("unavailable");
+    const sessions = d.policy.get().apps?.sessions ?? {};
     return {
-      apps: await d.apps.view(),
+      // `sessions`: whether the person allowed this app's sessions here (null: the four former
+      // providers, which policy.adapters decides).
+      apps: (await d.apps.view()).map((v) => ({
+        ...v,
+        sessions: sessionsApply(v.appId) ? sessions[v.appId] === true : null,
+      })),
       // Custom files that didn't load: shown here only, never reported.
       problems: d.catalog?.custom().problems ?? [],
       catalog: d.catalog ? { source: d.catalog.source, issuedAt: d.catalog.issuedAt } : null,
@@ -434,6 +441,39 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
       "panel",
     );
     if (changed) await d.apps?.report(appId);
+    return { changed };
+  },
+
+  /** What allowing an app's sessions shows (its commands), before the OS prompt. */
+  appSessionsChallenge: async (params) => {
+    const { appId } = parse(ForApp, params);
+    const c = d.catalog ? sessionsChallenge(d.catalog, d.locale(), appId) : null;
+    if (!c) throw new IpcError("unknown_recipe");
+    return c;
+  },
+  /** Local-only, like the CLI: the agent asks the OS itself and re-checks the answers. */
+  enableAppSessions: async (params) => {
+    const { appId, answers } = parse(CustomEnable, params);
+    if (!d.catalog) throw new IpcError("unavailable");
+    return enableAppSessions(
+      {
+        policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) },
+        catalog: d.catalog,
+        osAuth: d.osAuth(),
+        prompter: { review: async () => answers.review, typed: async () => answers.typed },
+        locale: d.locale(),
+        emit: (type, meta) => d.audit(type, { ...meta, via: "panel" }),
+      },
+      appId,
+    );
+  },
+  disableAppSessions: async (params) => {
+    const { appId } = parse(ForApp, params);
+    const changed = await disableAppSessions(
+      { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
+      appId,
+      "panel",
+    );
     return { changed };
   },
 

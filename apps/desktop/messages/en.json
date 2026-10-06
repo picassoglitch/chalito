@@ -270,6 +270,12 @@
         "shadows_curated": "{file}: uses a curated app's id; change it.",
         "duplicate_id": "{file}: another recipe already uses that id.",
         "too_large": "{file}: the file is too large."
+      },
+      "sessions": {
+        "on": "Sessions: allowed on this computer.",
+        "off": "Sessions: off on this computer until you allow them here.",
+        "allow": "Allow sessions here",
+        "disallow": "Turn sessions off"
       }
     }
   },

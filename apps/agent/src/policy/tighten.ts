@@ -27,12 +27,13 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   screenTighterOrEqual(next.screen, cur.screen);
 
 /**
- * Engine: an app's sessions can only be turned off (an id without an entry counts as allowed, so
- * a new `true` is fine only where it wasn't `false`), and a custom recipe can only be disabled or
- * removed, never enabled or re-pointed at another file hash (that's `chalito apps custom enable`).
+ * Engine: an app's sessions can only be turned off (an id without an entry is off, so a `true` is
+ * fine only where it already was `true`; that's `chalito apps sessions enable`), and a custom
+ * recipe can only be disabled or removed, never enabled or re-pointed at another file hash
+ * (that's `chalito apps custom enable`).
  */
 export const appsTighterOrEqual = (next: Policy["apps"], cur: Policy["apps"]): boolean =>
-  Object.entries(next?.sessions ?? {}).every(([id, on]) => !on || cur?.sessions?.[id] !== false) &&
+  Object.entries(next?.sessions ?? {}).every(([id, on]) => !on || cur?.sessions?.[id] === true) &&
   Object.entries(next?.custom ?? {}).every(([id, c]) => {
     const was = cur?.custom?.[id];
     return !c.enabled || (!!was?.enabled && was.sha256 === c.sha256);

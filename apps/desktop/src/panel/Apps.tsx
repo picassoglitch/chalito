@@ -7,7 +7,17 @@ import { IpcUnavailableError, type AgentIpc, type AppView, type AppsView, type C
 export const APPS_POLL_MS = 3000;
 
 type Confirm = { appId: string; kind: "install" | "disconnect" } | null;
-type Enabling = { appId: string; challenge: CustomChallenge; typed: string; result?: string } | null;
+type Enabling = {
+  appId: string;
+  /** A custom recipe, or (owner decision 2026-10-06) an app's sessions on this computer. */
+  what: "custom" | "sessions";
+  challenge: CustomChallenge;
+  typed: string;
+  result?: string;
+} | null;
+
+/** Recipe kinds that run sessions (the rest only open an app or a website). */
+const SESSION_KINDS: RecipeKind[] = ["claude-sdk", "codex", "acp"];
 
 /** The sections of the catalog, in order; an app goes in its recipe's first kind. */
 const GROUPS: { id: string; kinds: RecipeKind[] }[] = [
@@ -72,11 +82,21 @@ export const Apps = ({ ipc, pollMs = APPS_POLL_MS }: { ipc: AgentIpc; pollMs?: n
       setKeyFor(null);
     });
 
-  const startEnable = (appId: string) =>
-    act(appId, async () => setEnabling({ appId, challenge: await ipc.customRecipeChallenge(appId), typed: "" }));
+  const startEnable = (appId: string, what: "custom" | "sessions" = "custom") =>
+    act(appId, async () =>
+      setEnabling({
+        appId,
+        what,
+        challenge: await (what === "custom" ? ipc.customRecipeChallenge(appId) : ipc.appSessionsChallenge(appId)),
+        typed: "",
+      }),
+    );
   const finishEnable = (e: NonNullable<Enabling>) =>
     act(e.appId, async () => {
-      const r = await ipc.enableCustomRecipe(e.appId, { review: true, typed: e.typed });
+      const answers = { review: true, typed: e.typed };
+      const r = await (e.what === "custom"
+        ? ipc.enableCustomRecipe(e.appId, answers)
+        : ipc.enableAppSessions(e.appId, answers));
       setEnabling(r.ok ? null : { ...e, result: r.reason });
     });
 
@@ -115,8 +135,11 @@ export const Apps = ({ ipc, pollMs = APPS_POLL_MS }: { ipc: AgentIpc; pollMs?: n
           </p>
         )}
 
-        {v.custom && enabling?.appId === id ? (
-          <div role="group" aria-label={t("integrations.apps.enable")}>
+        {enabling?.appId === id ? (
+          <div
+            role="group"
+            aria-label={t(enabling.what === "custom" ? "integrations.apps.enable" : "integrations.apps.sessions.allow")}
+          >
             <p>
               <strong>{enabling.challenge.title}</strong>
             </p>
@@ -155,6 +178,21 @@ export const Apps = ({ ipc, pollMs = APPS_POLL_MS }: { ipc: AgentIpc; pollMs?: n
             <button disabled={busy} onClick={() => void startEnable(id)}>
               {t("integrations.apps.enable")}
             </button>
+          </div>
+        ) : kindOk && v.sessions !== null && r.kinds.some((k) => SESSION_KINDS.includes(k)) ? (
+          <div className="row" data-sessions={v.sessions ? "on" : "off"}>
+            <span className="muted">
+              {t(v.sessions ? "integrations.apps.sessions.on" : "integrations.apps.sessions.off")}
+            </span>
+            {v.sessions ? (
+              <button disabled={busy} onClick={() => void act(id, () => ipc.disableAppSessions(id))}>
+                {t("integrations.apps.sessions.disallow")}
+              </button>
+            ) : (
+              <button disabled={busy} onClick={() => void startEnable(id, "sessions")}>
+                {t("integrations.apps.sessions.allow")}
+              </button>
+            )}
           </div>
         ) : null}
 

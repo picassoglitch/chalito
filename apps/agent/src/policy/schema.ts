@@ -57,9 +57,10 @@ export const Policy = z.object({
   /**
    * Connect engine (apps/agent/src/apps). Absent = nothing set (policies written before it keep
    * their hash and the signed lock).
-   * - `sessions`: an app id set to false can't start sessions here (remote surfaces may only turn
-   *   one off); a curated app without an entry may, once it's connected. The four former providers
-   *   keep `adapters.*`.
+   * - `sessions`: an app may start sessions here only when its id is set to true (owner decision
+   *   2026-10-06; missing = off). Turned on only by `chalito apps sessions enable <id>` or the
+   *   desktop panel (OS auth + confirmation); remote surfaces and `chalito policy edit` can only
+   *   turn one off. The four former providers keep `adapters.*`.
    * - `custom`: the person's own recipes enabled ON THIS COMPUTER, each with the sha256 of its
    *   file at enable time (an edited file is off until enabled again). Turned on only by
    *   `chalito apps custom enable` or the desktop panel (OS auth + confirmation); `chalito policy

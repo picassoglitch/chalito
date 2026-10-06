@@ -7,6 +7,7 @@ import { KeyFile, RECIPES_DIR, buildCatalog, catalogText, readSources, signCatal
 import { AppCatalog, BUILTIN_CATALOG, loadCustomRecipes, verifyCatalog } from "../src/apps/catalog.js";
 import { CATALOG_KEYS } from "../src/apps/catalog-keys.js";
 import { disableCustomRecipe, enableCustomRecipe, recipeSummary } from "../src/apps/custom-toggle.js";
+import { disableAppSessions, enableAppSessions } from "../src/apps/sessions-toggle.js";
 import { buildDrivers, driverFactory, registerDriver } from "../src/drivers/registry.js";
 import { DEFAULT_POLICY, applyRemoteTighten, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
@@ -264,6 +265,45 @@ describe("custom recipes (~/.chalito/recipes, local-only enable)", () => {
     expect(applyRemoteTighten(on, { apps: { sessions: { goose: false } } }).ok).toBe(true);
     const sessionsOff = { ...on, apps: { ...on.apps, sessions: { goose: false } } };
     expect(applyRemoteTighten(sessionsOff, { apps: { sessions: { goose: true } } }).ok).toBe(false);
+    // Missing = off (owner decision 2026-10-06): a remote `true` for an app never allowed here is a loosening.
+    expect(applyRemoteTighten(on, { apps: { sessions: { goose: true } } })).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+  });
+});
+
+describe("app sessions (owner decision 2026-10-06: off until allowed on this computer)", () => {
+  it("enable needs the OS check, the review and the typed id; off is always allowed", async () => {
+    const s = customSetup();
+    const deps = (o: { os?: boolean; review?: boolean; typed?: string } = {}) => ({
+      ...s.toggleDeps(o),
+      prompter: { review: async () => o.review ?? true, typed: async () => o.typed ?? "goose" },
+    });
+    expect(s.policy().apps?.sessions?.goose).toBeUndefined();
+    expect(await enableAppSessions(deps({ os: false }), "goose")).toEqual({ ok: false, reason: "os_auth_failed" });
+    expect(await enableAppSessions(deps({ review: false }), "goose")).toEqual({ ok: false, reason: "cancelled" });
+    expect(await enableAppSessions(deps({ typed: "codex" }), "goose")).toEqual({ ok: false, reason: "cancelled" });
+    expect(s.policy().apps?.sessions?.goose).toBeUndefined();
+    // The four former providers keep policy.adapters; unknown apps and custom recipes that aren't on can't.
+    expect(await enableAppSessions(deps(), "codex")).toEqual({ ok: false, reason: "not_applicable" });
+    expect(await enableAppSessions(deps(), "no-such-app")).toEqual({ ok: false, reason: "unknown_recipe" });
+    writeFileSync(join(s.dir, "recipes", "mi.yaml"), customRecipe("mi-agente"));
+    expect(await enableAppSessions(deps({ typed: "mi-agente" }), "mi-agente")).toEqual({
+      ok: false,
+      reason: "unknown_recipe",
+    });
+
+    expect(await enableAppSessions(deps(), "goose")).toEqual({ ok: true });
+    expect(s.policy().apps?.sessions?.goose).toBe(true);
+    expect(await enableAppSessions(deps(), "goose")).toEqual({ ok: false, reason: "already_on" });
+    expect(s.audits).toEqual(["apps.sessions_enabled"]);
+    // Once on, a remote tighten may turn it off (and keep it on), never more.
+    expect(applyRemoteTighten(s.policy(), { apps: { sessions: { goose: true } } }).ok).toBe(true);
+    expect(applyRemoteTighten(s.policy(), { apps: { sessions: { goose: false } } }).ok).toBe(true);
+    expect(await disableAppSessions(s.toggleDeps(), "goose", "cli")).toBe(true);
+    expect(s.policy().apps?.sessions?.goose).toBe(false);
+    expect(await disableAppSessions(s.toggleDeps(), "goose", "cli")).toBe(false);
   });
 });
 
