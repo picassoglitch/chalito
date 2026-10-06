@@ -36,6 +36,7 @@ import type { StoreDeps } from "./store/routes.js";
 import type { AvatarDeps } from "./avatar/routes.js";
 import { GcsAvatarFiles } from "./avatar/files.js";
 import { PostgresAvatarRepo } from "./avatar/repo.js";
+import { markerKey } from "./avatar/free-marker.js";
 import { pgVoiceCap } from "./voice/caps.js";
 import type { VoiceDeps } from "./voice/routes.js";
 
@@ -121,6 +122,8 @@ const backend = (): {
             files: new GcsAvatarFiles(new Storage(), env("AVATAR_BUCKET")),
             hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
             quote: avatarQuote(loadPrices(), loadModels().images.avatar, reserveBasis),
+            // Free creation once per person: keyed hashes kept past account deletion (free-marker.ts).
+            markerKey: markerKey(process.env.AVATAR_FREE_MARKER_KEY, env("CHALITO_SSO_SECRET")),
           },
         }
       : {}),

@@ -53,7 +53,7 @@ Chalito will send these kinds to `POST /api/engines/chalito/usage`, each with `c
 | `whatsapp.messages` | meta | standard |
 | `sms.segments` | twilio | standard |
 | `compute.seconds` | gcp | standard |
-| **`image.generations`** | google | standard: custom companions from a photo (5 images each; the first one per user is free and sends no event) |
+| **`image.generations`** | google | standard: custom companions from a photo (5 images each; the first one per person is free and sends no event; "per person" survives a Chalito account deletion, see migration `20261005000200`) |
 | **`store.purchase`** | chalito | **already a price**, like `boost.fee`: `ceil(cost_usd_micros / 4)` |
 
 Please confirm the hub accepts the new kinds (the `/usage` route and any `kind` enum), and add `store.purchase` to the "already a price" branch of the billing formula (D-030). Custom companions are admitted with `operation: avatar.create` (`class: job`) before any image is generated.

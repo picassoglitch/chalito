@@ -11,6 +11,19 @@ export const ACTIVE: readonly CreationStatus[] = ["awaiting_upload", "queued", "
 export const TERMINAL: readonly CreationStatus[] = ["succeeded", "failed", "expired"];
 export const UPLOAD_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export type UploadType = (typeof UPLOAD_TYPES)[number];
+/** The age bands a person can attest to and still create (under 13 can't). */
+export type AgeBand = "13_17" | "18_plus";
+
+/**
+ * What the person confirmed when starting a creation (self-attestation, recorded on the row):
+ * the photo is of themselves, their age band and, for 13–17, a parent's or guardian's permission.
+ */
+export interface Attestation {
+  ownPhoto: true;
+  ageBand: AgeBand;
+  guardianConsent: boolean;
+  at: number;
+}
 
 /** The card the job wrote (card.json), as far as the api reads it. */
 export interface CardManifestLike {
@@ -34,6 +47,8 @@ export interface CreationRecord {
   uploadDeadline: number;
   claimedAt: number | null;
   createdAt: number;
+  /** Onboarding: the companion wears the card as soon as it succeeds (migration 20261005000200). */
+  useWhenReady: boolean;
 }
 
 export interface NewCreation {
@@ -46,6 +61,10 @@ export interface NewCreation {
   contentType: UploadType;
   uploadDeadline: number;
   createdAt: number;
+  attestation: Attestation;
+  useWhenReady: boolean;
+  /** A free creation's markers (src/avatar/free-marker.ts): recorded once it succeeds. Null when paid. */
+  freeMarkers: string[] | null;
 }
 
 /**
@@ -59,8 +78,13 @@ export interface AvatarRepo {
   get(creationId: string): Promise<CreationRecord | null>;
   /** The owner's creation in flight (awaiting_upload, queued or generating), if any. */
   active(owner: string): Promise<CreationRecord | null>;
-  /** The first creation is free: no free creation in flight or succeeded yet. */
-  freeAvailable(owner: string): Promise<boolean>;
+  /**
+   * The first creation is free, once per person: no free creation of this owner in flight or
+   * succeeded, and none of `markers` left by a free success (this account or a deleted one).
+   */
+  freeAvailable(owner: string, markers: readonly string[]): Promise<boolean>;
+  /** The hub account's email Chalito has for the owner (chalito.users.email, from SSO). */
+  ownerEmail(owner: string): Promise<string | null>;
   /** Creations started since `since` (every attempt counts: the daily cap). */
   startedSince(owner: string, since: number): Promise<number>;
   insert(c: NewCreation): Promise<InsertResult>;
@@ -104,6 +128,7 @@ type Row = {
   upload_deadline: Date;
   claimed_at: Date | null;
   created_at: Date;
+  use_when_ready: boolean;
 };
 
 const record = (r: Row): CreationRecord => ({
@@ -121,6 +146,7 @@ const record = (r: Row): CreationRecord => ({
   uploadDeadline: r.upload_deadline.getTime(),
   claimedAt: r.claimed_at?.getTime() ?? null,
   createdAt: r.created_at.getTime(),
+  useWhenReady: r.use_when_ready,
 });
 
 const COLS = [
@@ -138,6 +164,7 @@ const COLS = [
   "upload_deadline",
   "claimed_at",
   "created_at",
+  "use_when_ready",
 ];
 
 export class PostgresAvatarRepo implements AvatarRepo {
@@ -156,13 +183,20 @@ export class PostgresAvatarRepo implements AvatarRepo {
     return r ? record(r) : null;
   }
 
-  async freeAvailable(owner: string) {
+  async freeAvailable(owner: string, markers: readonly string[]) {
     const [r] = await this.sql<{ taken: boolean }[]>`
       select exists (
         select 1 from chalito.avatar_creations
         where owner = ${owner} and free and status in ('awaiting_upload', 'queued', 'generating', 'succeeded')
+      ) or exists (
+        select 1 from chalito_private.avatar_free_markers where marker = any(${this.sql.array([...markers])}::text[])
       ) as taken`;
     return !r!.taken;
+  }
+
+  async ownerEmail(owner: string) {
+    const [r] = await this.sql<{ email: string | null }[]>`select email from chalito.users where id = ${owner}`;
+    return r?.email ?? null;
   }
 
   async startedSince(owner: string, since: number) {
@@ -176,9 +210,12 @@ export class PostgresAvatarRepo implements AvatarRepo {
     try {
       await this.sql`
         insert into chalito.avatar_creations
-          (creation_id, owner, asset_id, free, reservation_id, est_tokens, content_type, upload_deadline, created_at)
+          (creation_id, owner, asset_id, free, reservation_id, est_tokens, content_type, upload_deadline, created_at,
+           attest_own_photo, attest_age_band, attest_guardian, attested_at, use_when_ready, free_markers)
         values (${c.creationId}, ${c.owner}, ${c.assetId}, ${c.free}, ${c.reservationId}, ${c.estTokens},
-                ${c.contentType}, ${new Date(c.uploadDeadline)}, ${new Date(c.createdAt)})`;
+                ${c.contentType}, ${new Date(c.uploadDeadline)}, ${new Date(c.createdAt)},
+                ${c.attestation.ownPhoto}, ${c.attestation.ageBand}, ${c.attestation.guardianConsent},
+                ${new Date(c.attestation.at)}, ${c.useWhenReady}, ${c.freeMarkers ? this.sql.array(c.freeMarkers) : null}::text[])`;
       return "inserted";
     } catch (err) {
       const e = err as { code?: string; constraint_name?: string };
@@ -258,7 +295,11 @@ export class PostgresAvatarRepo implements AvatarRepo {
 
 /** The same rules in memory (unit tests, the dev backend): unique ids, one in flight, one free. */
 export class MemoryAvatarRepo implements AvatarRepo {
-  readonly rows = new Map<string, CreationRecord>();
+  readonly rows = new Map<string, CreationRecord & { attestation: Attestation; freeMarkers: string[] | null }>();
+  /** chalito_private.avatar_free_markers: survives deleteOwner, like the table survives delete_account. */
+  readonly markers = new Set<string>();
+  /** chalito.users.email */
+  readonly emails = new Map<string, string>();
   /** owner → the companion's custom card (undefined: the owner has no companion). */
   readonly companions = new Map<string, { assetId: string; manifest: CardManifestLike } | null>();
   /** roomId → its members (room_members). */
@@ -272,10 +313,27 @@ export class MemoryAvatarRepo implements AvatarRepo {
     const r = [...this.rows.values()].find((x) => x.owner === owner && ACTIVE.includes(x.status));
     return r ? { ...r } : null;
   }
-  async freeAvailable(owner: string) {
+  async freeAvailable(owner: string, markers: readonly string[]) {
+    if (markers.some((m) => this.markers.has(m))) return false;
     return ![...this.rows.values()].some(
       (x) => x.owner === owner && x.free && (ACTIVE.includes(x.status) || x.status === "succeeded"),
     );
+  }
+  async ownerEmail(owner: string) {
+    return this.emails.get(owner) ?? null;
+  }
+  /** What the avatar job's success does here, with the migration's trigger (markers, use_when_ready). */
+  succeed(creationId: string, manifest: CardManifestLike) {
+    const r = this.rows.get(creationId)!;
+    Object.assign(r, { status: "succeeded", manifest });
+    if (r.free) for (const m of r.freeMarkers ?? []) this.markers.add(m);
+    if (r.useWhenReady && this.companions.has(r.owner)) this.companions.set(r.owner, { assetId: r.assetId, manifest });
+  }
+  /** chalito_private.delete_account: the owner's rows and companion go; the free markers stay. */
+  deleteOwner(owner: string) {
+    for (const [id, r] of this.rows) if (r.owner === owner) this.rows.delete(id);
+    this.companions.delete(owner);
+    this.emails.delete(owner);
   }
   async startedSince(owner: string, since: number) {
     return [...this.rows.values()].filter((x) => x.owner === owner && x.createdAt >= since).length;
@@ -283,7 +341,7 @@ export class MemoryAvatarRepo implements AvatarRepo {
   async insert(c: NewCreation): Promise<InsertResult> {
     if (this.rows.has(c.creationId)) return "duplicate_id";
     if (await this.active(c.owner)) return "busy";
-    if (c.free && !(await this.freeAvailable(c.owner))) return "free_taken";
+    if (c.free && !(await this.freeAvailable(c.owner, []))) return "free_taken";
     this.rows.set(c.creationId, {
       ...c,
       status: "awaiting_upload",

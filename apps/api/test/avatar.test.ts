@@ -13,6 +13,7 @@ import {
   type AvatarDeps,
 } from "../src/avatar/routes.js";
 import type { AvatarFiles } from "../src/avatar/files.js";
+import { freeMarkers, markerKey } from "../src/avatar/free-marker.js";
 import { MemoryAvatarRepo, type CardManifestLike } from "../src/avatar/repo.js";
 import { MemoryAudit } from "../src/deps.js";
 import type { ApiRepo, IdentityIssuer } from "../src/repo.js";
@@ -24,6 +25,8 @@ const OWNER = "hub-user-1";
 const ID1 = "cr_0123456789abcdef01";
 const ID2 = "cr_0123456789abcdef02";
 const ID3 = "cr_0123456789abcdef03";
+const KEY = "k".repeat(32);
+const ADULT = { ownPhoto: true, ageBand: "18_plus" };
 
 const MANIFEST: CardManifestLike = {
   v: 1,
@@ -74,6 +77,7 @@ const setup = () => {
   const clock = { now: 1_790_000_000_000 };
   const repo = new MemoryAvatarRepo();
   repo.companions.set(OWNER, null);
+  repo.emails.set(OWNER, "Ana@Example.com");
   const files = new FakeFiles();
   const devices = new Map([
     ["dev_phone", { deviceId: "dev_phone", role: "client", revoked: false } as DeviceDoc],
@@ -90,6 +94,7 @@ const setup = () => {
     files,
     hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "chalito-admin-token" }),
     quote,
+    markerKey: KEY,
   };
   const app = createApp({
     repo: { getDevice: async (_o: string, id: string) => devices.get(id) ?? null } as unknown as ApiRepo,
@@ -107,12 +112,12 @@ const setup = () => {
     });
     return { status: res.status, json: (await res.json()) as Record<string, unknown> };
   };
-  const start = (creationId: string, contentType = "image/jpeg", token?: string) =>
-    call("POST", "/creations", { creationId, contentType }, token);
+  const start = (creationId: string, contentType = "image/jpeg", token?: string, extra: object = {}) =>
+    call("POST", "/creations", { creationId, contentType, attestation: ADULT, ...extra }, token);
   /** What the avatar job does (apps/avatar-jobs src/creation.ts), in the shared table. */
   const job = (creationId: string, outcome: "succeeded" | "failed") => {
     const r = repo.rows.get(creationId)!;
-    if (outcome === "succeeded") Object.assign(r, { status: "succeeded", manifest: MANIFEST });
+    if (outcome === "succeeded") repo.succeed(creationId, MANIFEST);
     else Object.assign(r, { status: "failed", failure: "refused" });
   };
   const upload = (creationId: string) => {
@@ -413,5 +418,154 @@ describe("custom companion: co-members in a room", () => {
     const { call, repo } = setup();
     room(repo);
     expect((await call("GET", "/rooms/room_fam/cards", undefined, "agent:dev_agent")).status).toBe(403);
+  });
+});
+
+describe("custom companion: consent (self-attestation)", () => {
+  const attempt = (attestation: unknown) => {
+    const s = setup();
+    return s
+      .call("POST", "/creations", { creationId: ID1, contentType: "image/jpeg", attestation })
+      .then((r) => ({ ...r, s }));
+  };
+
+  it("requires the attestation: missing, or the photo not confirmed as theirs → 400, nothing created", async () => {
+    for (const a of [undefined, { ownPhoto: false, ageBand: "18_plus" }, { ownPhoto: true }, { ageBand: "18_plus" }]) {
+      const r = await attempt(a);
+      expect(r.status).toBe(400);
+      expect(r.s.repo.rows.size).toBe(0);
+    }
+    expect((await attempt({ ownPhoto: false, ageBand: "18_plus" })).json.error).toBe("attestation_required");
+    expect((await attempt({ ownPhoto: "yes", ageBand: "18_plus" })).json.error).toBe("bad_request");
+    expect((await attempt({ ownPhoto: true, ageBand: "adult" })).json.error).toBe("bad_request");
+  });
+
+  it("under 13 can't create (403 age_refused), guardian or not", async () => {
+    for (const guardianConsent of [undefined, true]) {
+      const r = await attempt({ ownPhoto: true, ageBand: "under_13", guardianConsent });
+      expect(r.status).toBe(403);
+      expect(r.json.error).toBe("age_refused");
+      expect(r.s.repo.rows.size).toBe(0);
+      expect(r.s.files.uploads).toEqual([]);
+    }
+  });
+
+  it("13–17 needs a parent's or guardian's permission", async () => {
+    for (const guardianConsent of [undefined, false]) {
+      const r = await attempt({ ownPhoto: true, ageBand: "13_17", guardianConsent });
+      expect(r.status).toBe(403);
+      expect(r.json.error).toBe("guardian_required");
+      expect(r.s.repo.rows.size).toBe(0);
+    }
+    const ok = await attempt({ ownPhoto: true, ageBand: "13_17", guardianConsent: true });
+    expect(ok.status).toBe(201);
+    expect(ok.s.repo.rows.get(ID1)!.attestation).toEqual({
+      ownPhoto: true,
+      ageBand: "13_17",
+      guardianConsent: true,
+      at: expect.any(Number),
+    });
+  });
+
+  it("records what an adult attested, with the time", async () => {
+    const { start, repo, clock } = setup();
+    expect((await start(ID1)).status).toBe(201);
+    expect(repo.rows.get(ID1)!.attestation).toEqual({
+      ownPhoto: true,
+      ageBand: "18_plus",
+      guardianConsent: false,
+      at: clock.now,
+    });
+  });
+
+  it("a retried start still needs it (no attestation, no replay)", async () => {
+    const { start, call } = setup();
+    await start(ID1);
+    expect((await call("POST", "/creations", { creationId: ID1, contentType: "image/jpeg" })).status).toBe(400);
+  });
+});
+
+describe("custom companion: the free creation is once per person", () => {
+  it("markers are keyed hashes of the hub id and the lowercased email, never the data itself", () => {
+    const m = freeMarkers(KEY, OWNER, " Ana@Example.com ");
+    expect(m).toHaveLength(2);
+    for (const x of m) expect(x).toMatch(/^[0-9a-f]{64}$/);
+    expect(m).toEqual(freeMarkers(KEY, OWNER, "ana@example.com"));
+    expect(m.join()).not.toContain("ana");
+    expect(freeMarkers("z".repeat(32), OWNER, "ana@example.com")).not.toEqual(m);
+    expect(freeMarkers(KEY, OWNER, null)).toEqual([m[0]]);
+    expect(markerKey(undefined, "sso")).toMatch(/^[0-9a-f]{64}$/);
+    expect(() => markerKey("short", "sso")).toThrow();
+  });
+
+  it("a free creation carries its markers; a paid one doesn't", async () => {
+    const { start, job, repo } = setup();
+    await start(ID1);
+    expect(repo.rows.get(ID1)!.freeMarkers).toEqual(freeMarkers(KEY, OWNER, "ana@example.com"));
+    expect(repo.markers.size).toBe(0); // only a success leaves them
+    job(ID1, "succeeded");
+    expect(repo.markers.size).toBe(2);
+    await start(ID2);
+    expect(repo.rows.get(ID2)!.freeMarkers).toBeNull();
+  });
+
+  it("deleting the account and signing up again (same hub user) doesn't give a second free one", async () => {
+    const { call, start, job, repo } = setup();
+    await start(ID1);
+    job(ID1, "succeeded");
+    repo.deleteOwner(OWNER); // chalito_private.delete_account: rows cascade, markers stay
+    expect(repo.rows.size).toBe(0);
+    // Re-signup: SSO upserts the user again, onboarding creates a companion.
+    repo.emails.set(OWNER, "ana@example.com");
+    repo.companions.set(OWNER, null);
+    expect((await call("GET", "/quote")).json).toMatchObject({ free: false });
+    const again = await start(ID2);
+    expect(again.status).toBe(201);
+    expect(again.json).toMatchObject({ free: false, priceTokens: quote.priceTokens });
+    expect(hubCalls.map((c) => c.path)).toEqual(["admit"]);
+  });
+
+  it("a new hub account with the same email doesn't either; a different person does", async () => {
+    const { call, start, job, repo } = setup();
+    await start(ID1);
+    job(ID1, "succeeded");
+    repo.deleteOwner(OWNER);
+    repo.emails.set("hub-user-2", "ANA@example.com");
+    expect((await call("GET", "/quote", undefined, "client:dev_phone:hub-user-2")).json).toMatchObject({ free: false });
+    repo.emails.set("hub-user-3", "bea@example.com");
+    expect((await call("GET", "/quote", undefined, "client:dev_phone:hub-user-3")).json).toMatchObject({ free: true });
+  });
+
+  it("a failed free attempt leaves no marker (the credit survives a deletion too)", async () => {
+    const { call, start, job, repo } = setup();
+    await start(ID1);
+    job(ID1, "failed");
+    repo.deleteOwner(OWNER);
+    repo.emails.set(OWNER, "ana@example.com");
+    expect(repo.markers.size).toBe(0);
+    expect((await call("GET", "/quote")).json).toMatchObject({ free: true });
+  });
+
+  it("the daily cap stays at 5", () => {
+    expect(DAILY_CREATIONS).toBe(5);
+  });
+});
+
+describe("custom companion: onboarding (useWhenReady)", () => {
+  it("the companion wears the card as soon as the creation succeeds, without a /use call", async () => {
+    const { start, job, repo } = setup();
+    const r = await start(ID1, "image/jpeg", undefined, { useWhenReady: true });
+    expect(r.status).toBe(201);
+    expect(repo.rows.get(ID1)!.useWhenReady).toBe(true);
+    expect(repo.companions.get(OWNER)).toBeNull();
+    job(ID1, "succeeded");
+    expect(repo.companions.get(OWNER)).toEqual({ assetId: repo.rows.get(ID1)!.assetId, manifest: MANIFEST });
+  });
+
+  it("without it, a success leaves the companion alone", async () => {
+    const { start, job, repo } = setup();
+    await start(ID1);
+    job(ID1, "succeeded");
+    expect(repo.companions.get(OWNER)).toBeNull();
   });
 });

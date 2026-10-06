@@ -8,6 +8,7 @@ import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { cardObject, uploadObject, type AvatarFiles } from "./files.js";
+import { freeMarkers } from "./free-marker.js";
 import { UPLOAD_TYPES, type AvatarRepo, type CardManifestLike, type CreationRecord } from "./repo.js";
 
 export interface AvatarDeps {
@@ -16,6 +17,8 @@ export interface AvatarDeps {
   hub: Pick<HubClient, "admit" | "settle">;
   /** What one creation costs and reserves (avatarQuote from @chalito/billing, prices.yaml). */
   quote: AvatarQuote;
+  /** Keys the free-creation markers (src/avatar/free-marker.ts markerKey). */
+  markerKey: string;
 }
 
 /** The job's own limit (apps/avatar-jobs src/process.ts LIMITS.maxBytes); the signed PUT enforces it too. */
@@ -37,7 +40,23 @@ const RoomId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const RESERVATION_TTL_SECONDS = 60 * 60;
 
 const CreationId = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
-const Start = z.object({ creationId: CreationId, contentType: z.enum(UPLOAD_TYPES) });
+/**
+ * Self-attestation, required on every start (owner decision 2026-10-05): the photo is of the person,
+ * they're 13 or older and, at 13–17, a parent or guardian allows it. "under_13" is accepted only to
+ * answer it with a clear refusal. Recorded on the creation (migration 20261005000200).
+ */
+const AttestationIn = z.object({
+  ownPhoto: z.boolean(),
+  ageBand: z.enum(["under_13", "13_17", "18_plus"]),
+  guardianConsent: z.boolean().optional(),
+});
+const Start = z.object({
+  creationId: CreationId,
+  contentType: z.enum(UPLOAD_TYPES),
+  attestation: AttestationIn.optional(),
+  /** Onboarding: the companion wears the card as soon as it's ready. */
+  useWhenReady: z.boolean().optional(),
+});
 const Use = z.object({ creationId: CreationId.nullable() });
 
 /** 128 random bits, lowercase hex: a valid path segment for the job (and companions.asset_id). */
@@ -48,8 +67,9 @@ const noTokens = () => ({ error: "no_tokens", chips: [{ label: "¿Por qué?", hr
 /**
  * Custom companions (photo → the roster's five drawings in the Chalito style, apps/avatar-jobs).
  *
- *   POST /creations           start: free if it's the owner's first, otherwise admitted by the hub
- *                             before any work; answers a signed PUT for the photo
+ *   POST /creations           start: needs the self-attestation (own photo, 13+, guardian at 13–17);
+ *                             free if it's the person's first, otherwise admitted by the hub before
+ *                             any work; answers a signed PUT for the photo
  *   POST /creations/:id/uploaded  the photo is up (the bucket's finalize event starts the job)
  *   GET  /creations/:id       status; the finished card with signed URLs
  *   POST /use                 the companion wears that card (or, with null, its roster avatar again)
@@ -133,6 +153,10 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     return c;
   };
 
+  /** Free eligibility: once per person (this account, or a deleted one with the same hub id or email). */
+  const freeFor = async (owner: string) =>
+    av.repo.freeAvailable(owner, freeMarkers(av.markerKey, owner, await av.repo.ownerEmail(owner)));
+
   app.get("/quote", auth, limiter, async (c) => {
     const p = principal(c);
     for (const u of await av.repo.unsettled(p.owner)) await settle(u);
@@ -140,7 +164,7 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     if (active) active = await reconcile(active);
     const started = await av.repo.startedSince(p.owner, deps.now() - 24 * 3_600_000);
     return c.json({
-      free: await av.repo.freeAvailable(p.owner),
+      free: await freeFor(p.owner),
       priceTokens: av.quote.priceTokens,
       dailyLeft: Math.max(0, DAILY_CREATIONS - started),
       active: active && !["succeeded", "failed", "expired"].includes(active.status) ? await view(active) : null,
@@ -151,7 +175,11 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     const p = principal(c);
     const body = Start.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
-    const { creationId, contentType } = body.data;
+    const { creationId, contentType, attestation, useWhenReady = false } = body.data;
+    if (!attestation?.ownPhoto) return fail(400, "attestation_required");
+    if (attestation.ageBand === "under_13") return fail(403, "age_refused");
+    if (attestation.ageBand === "13_17" && attestation.guardianConsent !== true) return fail(403, "guardian_required");
+    const ageBand = attestation.ageBand;
 
     // A retry of a start: answer it again (a fresh upload URL while it waits), never admit twice.
     const prior = await av.repo.get(creationId);
@@ -171,7 +199,8 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     if (active && ["awaiting_upload", "queued", "generating"].includes((await reconcile(active)).status))
       return c.json({ error: "busy", creationId: active.creationId }, 409);
 
-    const free = await av.repo.freeAvailable(p.owner);
+    const markers = freeMarkers(av.markerKey, p.owner, await av.repo.ownerEmail(p.owner));
+    const free = await av.repo.freeAvailable(p.owner, markers);
     let reservationId: string | null = null;
     if (!free) {
       let admit;
@@ -211,6 +240,9 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
       contentType,
       uploadDeadline: now + UPLOAD_WINDOW_MS,
       createdAt: now,
+      attestation: { ownPhoto: true, ageBand, guardianConsent: ageBand === "13_17", at: now },
+      useWhenReady,
+      freeMarkers: free ? markers : null,
     });
     if (result === "duplicate_id") {
       // A concurrent retry with the same id won: same external_job_id, so the same reservation. Keep it.
@@ -228,7 +260,7 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
       owner: p.owner,
       actor: p.uid,
       target: creationId,
-      meta: { free },
+      meta: { free, useWhenReady },
     });
     return c.json({ ...(await view(created)), upload: await upload(created) }, 201);
   });

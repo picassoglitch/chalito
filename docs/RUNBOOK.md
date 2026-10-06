@@ -96,7 +96,8 @@ Images go to the Artifact Registry repo created by `module "artifact_registry"`.
    ```sh
    gcloud run jobs update chalito-avatar-jobs --image …:<sha>
    ```
-3. Each upload runs it automatically (`infra/terraform/envs/dev/avatar_jobs.tf`): GCS object finalized in the assets bucket → Eventarc → Workflow `chalito-avatar-upload`, which runs the job with `UPLOAD_PATH` set for `uploads/<owner>/<asset>/original` objects only. By hand:
+3. **`GEMINI_API_KEY` must come from a paid-tier AI Studio project** (billing enabled), so user photos aren't used to train Google's models (Gemini API terms: only unpaid-service content is used to improve products). Before the first deploy and after every key change, open AI Studio → API keys and check that the key's project shows a paid tier. If it doesn't, don't deploy the key, and keep custom companions off on the api too (no `AVATAR_BUCKET` on the api): **don't just unset `GEMINI_API_KEY`**, because without it the job treats an upload as a plain image card (`processUpload`), not a creation.
+4. Each upload runs it automatically (`infra/terraform/envs/dev/avatar_jobs.tf`): GCS object finalized in the assets bucket → Eventarc → Workflow `chalito-avatar-upload`, which runs the job with `UPLOAD_PATH` set for `uploads/<owner>/<asset>/original` objects only. By hand:
    ```sh
    gcloud run jobs execute chalito-avatar-jobs --update-env-vars UPLOAD_PATH=uploads/<owner>/<asset>/original
    ```
@@ -188,6 +189,8 @@ General steps for a secret in Secret Manager (`module "secrets"`):
 | OpenAI / Anthropic / xAI keys | orchestrator, notifier, api | Create a new key in the provider console, deploy it, then revoke the old one. |
 | Supabase secret key (`SUPABASE_SECRET_KEY`) | api | It's the hub's project. Create a new secret key in Supabase (API keys), deploy, then delete the old one. Coordinate with Chalyb, who may share the project. |
 | Database login (`DATABASE_URL`) | api, notifier, orchestrator | Rotate the password of the login that holds `chalito_server` (or `chalito_gateway`). Deploy the new URL, then expire the old password. |
+| `GEMINI_API_KEY` (`chalito-gemini-api-key`) | avatar-jobs | Create the new key **in the same paid-tier AI Studio project** (1.3 step 3), deploy, then delete the old one. |
+| `AVATAR_FREE_MARKER_KEY` | api | **Don't rotate** unless it leaked: the markers in `chalito_private.avatar_free_markers` are keyed by it, so a new key forgets who used their free custom companion (each person could get one more free creation). If it leaked, rotate and accept that. |
 | Updater signing key | GitHub Actions secret only | Rotating means shipping a release whose embedded public key is the new one, signed by the **old** key. Do it before the old key is lost. M14, **not yet built**. |
 
 ---
@@ -351,6 +354,7 @@ Rooms: `apps/api/src/routes/rooms.ts`, mounted at `/v1/rooms`. Members can only 
    - runs `chalito_private.delete_account`: everything cascades from `chalito.users`, plus the legacy credit tables and sent usage. Unsent usage stays until the drainer reports it.
    - Each step is idempotent: a failed owner is retried on the next run.
 4. **Not touched:** the hub account, its balance and payments (Chalyb's). Point the person to Chalyb for those.
+   - **Kept on purpose:** `chalito_private.avatar_free_markers` (migration `20261005000200`). Each row is only a keyed hash (HMAC-SHA256 under `AVATAR_FREE_MARKER_KEY`) of the hub user id or the lowercased email of someone who used their free custom companion, with no owner column and no link to anything else. It survives deletion so that deleting the account and signing up again doesn't give a second free creation. It's disclosed in the privacy text (draft: `packages/config/legal/drafts/custom-companion.*.md`). If counsel decides a person can ask for it to go too, delete the two markers computed with `freeMarkers()` (`apps/api/src/avatar/free-marker.ts`) from their hub user id and email.
 5. **For an operator-run request** (e.g. by email, identity checked): schedule it with `insert into chalito_private.account_deletions …`, or ask the owner to use the app. The 20-business-day ARCO clock covers the 7-day grace.
 
 ### 6.7 Release rollback

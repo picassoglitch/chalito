@@ -38,14 +38,44 @@ export interface Quote {
   active: Creation | null;
 }
 
+export type AgeBand = "under_13" | "13_17" | "18_plus";
+
+/**
+ * What the person confirms before making a character (self-attestation; the api requires and records
+ * it): the photo is of themselves, their age band, and at 13–17 a parent's or guardian's permission.
+ */
+export interface Attestation {
+  ownPhoto: boolean;
+  ageBand: AgeBand | null;
+  guardianConsent: boolean;
+}
+
+/** Under 13, or anything unconfirmed: no character. */
+export const attestationOk = (a: Attestation): boolean =>
+  a.ownPhoto && (a.ageBand === "18_plus" || (a.ageBand === "13_17" && a.guardianConsent));
+
 export type StartResult =
   | { ok: true; creation: Creation; upload: { url: string; headers: Record<string, string> } }
   | { ok: false; reason: "no_tokens"; chipHref: string }
-  | { ok: false; reason: "busy" | "daily_limit" | "retry" | "failed" };
+  | {
+      ok: false;
+      reason:
+        "busy" | "daily_limit" | "retry" | "failed" | "age_refused" | "guardian_required" | "attestation_required";
+    };
+
+export interface StartOptions {
+  /** Onboarding: the companion wears the card as soon as it's ready, even if this page is gone. */
+  useWhenReady?: boolean;
+}
 
 export interface AvatarApi {
   quote(): Promise<Quote | "error">;
-  start(creationId: string, contentType: PhotoType): Promise<StartResult>;
+  start(
+    creationId: string,
+    contentType: PhotoType,
+    attestation: Attestation,
+    opts?: StartOptions,
+  ): Promise<StartResult>;
   /** PUT the photo to the signed URL; true when the bucket took it. */
   upload(target: { url: string; headers: Record<string, string> }, photo: Blob): Promise<boolean>;
   uploaded(creationId: string): Promise<Creation | "error">;
@@ -160,13 +190,25 @@ export const httpAvatar = (
       const active = b.active ? parseCreation(b.active) : null;
       return { free: b.free, priceTokens: b.priceTokens, dailyLeft: b.dailyLeft, active };
     },
-    start: async (creationId, contentType) => {
-      const r = await call("/creations", { creationId, contentType });
+    start: async (creationId, contentType, attestation, opts = {}) => {
+      const r = await call("/creations", {
+        creationId,
+        contentType,
+        attestation: {
+          ownPhoto: attestation.ownPhoto,
+          ageBand: attestation.ageBand,
+          ...(attestation.ageBand === "13_17" ? { guardianConsent: attestation.guardianConsent } : {}),
+        },
+        ...(opts.useWhenReady ? { useWhenReady: true } : {}),
+      });
       if (!r || r.status >= 500) return { ok: false, reason: "retry" };
       const b = (await json(r)) as { error?: unknown; upload?: { url?: unknown; headers?: unknown } } | null;
       if (r.status === 402 && b?.error === "no_tokens")
         return { ok: false, reason: "no_tokens", chipHref: chipHref(b) };
       if (r.status === 409 && b?.error === "busy") return { ok: false, reason: "busy" };
+      if (r.status === 403 && (b?.error === "age_refused" || b?.error === "guardian_required"))
+        return { ok: false, reason: b.error };
+      if (r.status === 400 && b?.error === "attestation_required") return { ok: false, reason: "attestation_required" };
       if (r.status === 429) return { ok: false, reason: b?.error === "daily_limit" ? "daily_limit" : "retry" };
       const c = r.ok ? parseCreation(b) : null;
       const headers = strMap(b?.upload?.headers, (k) => k === "content-type" || k.startsWith("x-goog-"));

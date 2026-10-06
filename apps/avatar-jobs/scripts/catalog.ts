@@ -148,7 +148,8 @@ export const PROMPTS: Record<CatalogId, string> = {
   futbolamericano:
     "Touchdown, an American football player with a helmet, big shoulder pads, a jersey, holding a football",
   // Professions.
-  doctora: "Dr. Health, a young woman doctor with a long dark ponytail, a white coat, a stethoscope around the neck, a clipboard, a kind smile",
+  doctora:
+    "Dr. Health, a young woman doctor with a long dark ponytail, a white coat, a stethoscope around the neck, a clipboard, a kind smile",
   enfermero: "Nurse Ramon, a male nurse in teal scrubs, a lanyard badge, holding a small first-aid kit",
   abogada:
     "Attorney Justa, a lawyer in a navy suit with a neat bun, holding a briefcase and a small scales-of-justice emblem pin",
@@ -168,7 +169,8 @@ export const PROMPTS: Record<CatalogId, string> = {
   veterinaria: "Vet Mimi, a veterinarian in light-green scrubs, a stethoscope, holding a small puppy",
   cartero: "Mailman Lucho, a mail carrier with a blue cap, a satchel full of letters, holding an envelope",
   granjero: "Farmer Pancho, a farmer with a straw hat, denim overalls, a plaid shirt, holding a basket of vegetables",
-  dentista: "Dr. Smile, a young woman dentist with curly brown hair in a bun, a white coat and mask pulled down, holding a giant toothbrush, a sparkling smile",
+  dentista:
+    "Dr. Smile, a young woman dentist with curly brown hair in a bun, a white coat and mask pulled down, holding a giant toothbrush, a sparkling smile",
   mecanico: "Mechanic Nacho, a mechanic in grease-stained blue coveralls, a cap, a wrench, a smudge on the cheek",
   detective: "Detective Lens, a detective in a tan trench coat and deerstalker hat, holding a magnifying glass",
   fotografa: "Photo Fer, a photographer with a big camera, a camera strap, a vest with pockets, a beanie",
@@ -295,7 +297,8 @@ export const PROMPTS: Record<CatalogId, string> = {
   ovni: "UFO, a silver flying saucer with a glass dome, colorful lights around the rim, a face on the dome",
   satelite: "Sat, a small satellite character with blue solar panel wings, an antenna, a face on its body",
   "astronauta-perro": "Laika, a little dog astronaut in a white space suit with a round clear bubble helmet",
-  carro: "Zoom, a small round go-kart character in teal and yellow, big round headlights as the eyes on the front bumper, a grille smile, chunky wheels, no windshield eyes, no numbers",
+  carro:
+    "Zoom, a small round go-kart character in teal and yellow, big round headlights as the eyes on the front bumper, a grille smile, chunky wheels, no windshield eyes, no numbers",
   camion: "Trucky, a yellow dump truck character with headlights as eyes, a smiling bumper, chunky wheels",
   tren: "Choo, a tiny chubby toy steam locomotive in green and gold, puffing a heart-shaped cloud, two round lamp eyes on the cab windows, a smile on the cowcatcher, no face on the smokebox front",
   avion: "Jetty, a small white and blue airplane character with a face on the nose, wings as arms",

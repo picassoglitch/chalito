@@ -100,7 +100,7 @@
     },
     "companion": {
       "title": "Choose your companion",
-      "body": "You can change it any time. Soon you'll be able to upload your own image or model."
+      "body": "You can change it any time. You can also create one from your photo."
     },
     "name": {
       "title": "Name it",
@@ -1044,7 +1044,7 @@
     "intro": "Upload a photo of yourself and we'll turn it into your own companion, drawn in Chalito's style with all five faces.",
     "free": "Free the first time",
     "price": "{tokens} tokens",
-    "privacy": "Your photo is only a reference for drawing you with AI, and we delete it as soon as your character is ready. Use a photo of just you, facing the camera, in good light.",
+    "privacy": "Your photo is sent to Google (Gemini) only to draw you, and we delete it as soon as that's done, whether it worked or not. Use a photo of just you, facing the camera, in good light.",
     "choose": "Choose photo",
     "previewAlt": "The photo you chose",
     "create": "Create my character",
@@ -1084,6 +1084,23 @@
       "tired": "Tired"
     },
     "current": "Your character",
-    "currentNote": "This is how you look in your rooms, in the store and on your desktop."
+    "currentNote": "This is how you look in your rooms, in the store and on your desktop.",
+    "onboardingTitle": "Create your character from your photo (free the first time)",
+    "onboardingWorking": "You can carry on with the next steps: your character will be put on as soon as it's ready.",
+    "consent": {
+      "title": "Before you start",
+      "ownPhoto": "The photo is of me: I'm the person in it.",
+      "age": "How old are you?",
+      "band": {
+        "18_plus": "18 or older",
+        "13_17": "13 to 17",
+        "under_13": "Under 13"
+      },
+      "guardian": "I have permission from my mom, dad or guardian",
+      "under13": "You need to be at least 13 to create a character from your photo. You can pick any companion from the list."
+    },
+    "ageRefused": "You need to be at least 13 to create a character from your photo.",
+    "guardianRequired": "You need permission from your mom, dad or guardian.",
+    "attestationRequired": "Confirm the photo is of you and tell us your age."
   }
 }
