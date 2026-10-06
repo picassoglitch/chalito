@@ -157,6 +157,8 @@ describe("sidecar", () => {
     ]);
     expect(sidecarPlan("windows", "d", "b")[0]!.to).toBe("b/chalito-agent-x86_64-pc-windows-msvc.exe");
     expect(sidecarPlan("macos", "d", "b")).toEqual([
+      { kind: "copy", from: ["d/chalito-agent-aarch64-apple-darwin"], to: "b/chalito-agent-aarch64-apple-darwin" },
+      { kind: "copy", from: ["d/chalito-agent-x86_64-apple-darwin"], to: "b/chalito-agent-x86_64-apple-darwin" },
       {
         kind: "lipo",
         from: ["d/chalito-agent-aarch64-apple-darwin", "d/chalito-agent-x86_64-apple-darwin"],
