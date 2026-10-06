@@ -1,6 +1,7 @@
 import type { SessionAdapter } from "@chalito/adapters";
 import type { Recipe, RecipeKind } from "@chalito/protocol";
 import type { Logger } from "../redact.js";
+import type { AppLaunchDriver } from "./app-launch.js";
 
 /**
  * Driver hook (engine contract v2 §3): how the other builders plug a way of running an app into
@@ -39,6 +40,8 @@ export interface Driver {
    * browser profile). Resolves false when it couldn't.
    */
   launch?: () => Promise<boolean>;
+  /** The `web-app` / `desktop-app` drivers (drivers/apps.ts): also used by remote screen and the computer MCP. */
+  app?: AppLaunchDriver;
   /** Anything else a builder's driver exposes (terminal, screen) to its own command handlers. */
   [extension: string]: unknown;
 }

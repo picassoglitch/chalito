@@ -27,6 +27,10 @@ const Display = z
   .optional()
   .describe("Display index from `screenshot` (default: 0, the primary)");
 const Button = z.enum(["left", "right", "middle"]).default("left");
+const AppId = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{1,40}$/)
+  .describe("An app id from `list_apps`");
 
 /** Keys `key` accepts besides single letters and digits. */
 export const NAMED_KEYS = [
@@ -111,7 +115,23 @@ export const ToolArgs = {
   list_windows: z.object({}).strict(),
   focus_window: z.object({ id: z.number().int().min(0) }).strict(),
   wait: z.object({ ms: z.number().int().min(1).max(WAIT_MAX_MS) }).strict(),
+  // App control (engine contract): only the person's recipes, each app approved per session.
+  list_apps: z.object({}).strict(),
+  launch_app: z.object({ appId: AppId }).strict(),
+  open_web_app: z
+    .object({
+      appId: AppId,
+      url: z
+        .string()
+        .max(2048)
+        .optional()
+        .describe("A page on that app's own site (default: its start page). Other sites are refused."),
+    })
+    .strict(),
 } as const;
+
+/** Tools that open apps: each app needs its own `app_control` approval in the session. */
+export const APP_TOOLS: ReadonlySet<string> = new Set(["launch_app", "open_web_app"]);
 
 export type ToolName = keyof typeof ToolArgs;
 export const TOOL_NAMES = Object.keys(ToolArgs) as ToolName[];
@@ -130,6 +150,11 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   list_windows: "List the open windows (id, app, title, position, size, focused).",
   focus_window: "Bring the window with this id (from list_windows) to the front.",
   wait: `Wait up to ${WAIT_MAX_MS} ms, e.g. for an app to open.`,
+  list_apps: "List the AI apps and websites the person set up on this computer (id, name, kind).",
+  launch_app:
+    "Open one of those apps (or bring it to the front). The first time in this session the person approves controlling that app on their phone.",
+  open_web_app:
+    "Open an AI website from `list_apps` in its own browser profile, where the person is signed in. Only that site's pages; the person approves it once per session.",
 };
 
 /** The MCP `tools/list` entries. */
@@ -143,9 +168,11 @@ export const mcpTools = () =>
       name,
       description: DESCRIPTIONS[name],
       inputSchema,
-      annotations: { readOnlyHint: name === "screenshot" || name === "list_windows" || name === "wait" },
+      annotations: {
+        readOnlyHint: name === "screenshot" || name === "list_windows" || name === "wait" || name === "list_apps",
+      },
     };
   });
 
 /** Tools that don't touch the input devices or the screen; not counted against the rate limit. */
-export const UNCOUNTED: ReadonlySet<ToolName> = new Set(["wait"]);
+export const UNCOUNTED: ReadonlySet<ToolName> = new Set(["wait", "list_apps"]);

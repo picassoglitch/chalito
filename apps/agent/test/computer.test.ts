@@ -82,6 +82,7 @@ const setup = (
     policy?: Policy["computer"];
     approve?: (sid: string) => Promise<ComputerApprovalOutcome>;
     launch?: boolean;
+    apps?: ComputerDeps["apps"];
   } = {},
 ) => {
   let policy: Policy["computer"] = "policy" in o ? o.policy : ON;
@@ -112,6 +113,7 @@ const setup = (
       await Promise.resolve();
     },
     newToken: () => "tok_1",
+    ...(o.apps ? { apps: o.apps } : {}),
   };
   const c = new ComputerControl(deps);
   return {
@@ -162,6 +164,9 @@ describe("computer MCP tool schemas", () => {
       "list_windows",
       "focus_window",
       "wait",
+      "list_apps",
+      "launch_app",
+      "open_web_app",
     ]);
     for (const t of tools) {
       expect(t.inputSchema.type).toBe("object");
@@ -186,7 +191,11 @@ describe("computer MCP tool schemas", () => {
     expect(ok("wait", { ms: 10_001 })).toBe(false);
     expect(ok("scroll", { dy: 3 })).toBe(true);
     expect(ok("drag", { fromX: 1, fromY: 1, toX: 2, toY: 2 })).toBe(true);
-    expect(TOOL_NAMES).toHaveLength(11);
+    expect(ok("launch_app", { appId: "chatgpt-desktop" })).toBe(true);
+    expect(ok("launch_app", { appId: "../etc" })).toBe(false);
+    expect(ok("launch_app", { appId: "x", path: "/bin/sh" })).toBe(false);
+    expect(ok("open_web_app", { appId: "chatgpt", url: "https://chatgpt.com/" })).toBe(true);
+    expect(TOOL_NAMES).toHaveLength(14);
   });
 
   it("parses key combos into robotjs names", () => {
@@ -214,7 +223,7 @@ describe("computer MCP server (stdio)", () => {
     const list = (await handleMcpMessage({ id: 3, method: "tools/list" }, { call })) as {
       result: { tools: { name: string }[] };
     };
-    expect(list.result.tools).toHaveLength(11);
+    expect(list.result.tools).toHaveLength(14);
     expect(await handleMcpMessage({ method: "notifications/initialized" }, { call })).toBeNull();
     expect(await handleMcpMessage({ id: 4, method: "resources/list" }, { call })).toMatchObject({
       error: { code: -32601 },
@@ -625,5 +634,110 @@ describe("enabling is local-only (OS auth + confirmations)", () => {
     expect(applyRemoteTighten(on, { computer: { maxActionsPerMinute: 10 } })).toMatchObject({ ok: true });
     expect(isTighterOrEqual(on, off)).toBe(false);
     expect(isTighterOrEqual(off, on)).toBe(true);
+  });
+});
+
+// ---- app control (engine contract: AI driving desktop / web apps) -------------------------
+
+describe("app control through the computer MCP", () => {
+  const appsFake = () => {
+    const launched: { appId: string; opts: unknown }[] = [];
+    const apps: NonNullable<ComputerDeps["apps"]> = {
+      list: () => [
+        { id: "chatgpt", name: "ChatGPT", kind: "web-app" },
+        { id: "claude-desktop", name: "Claude", kind: "desktop-app" },
+      ],
+      has: (id, kind) =>
+        (id === "chatgpt" && (!kind || kind === "web-app")) || (id === "claude-desktop" && kind !== "web-app"),
+      launch: async (appId, opts) => {
+        launched.push({ appId, opts });
+        if (opts?.url && !opts.url.startsWith("https://chatgpt.com/"))
+          return { ok: false, reason: "origin_not_allowed" };
+        return { ok: true };
+      },
+    };
+    return { apps, launched };
+  };
+
+  it("each app needs its own app_control approval (HIGH via the core); it also grants control", async () => {
+    const { apps, launched } = appsFake();
+    const h = setup({ apps });
+    attached(h);
+    const first = h.c.call("tok_1", "launch_app", { appId: "claude-desktop" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.asked).toHaveLength(1);
+    expect(h.asked[0]).toMatchObject({
+      sid: "s1",
+      input: {
+        kind: "app_control",
+        origin: "client:dev_phone",
+        details: { toolName: "app_control", input: { app: "claude-desktop" } },
+      },
+    });
+    expect(launched).toEqual([]);
+    h.allow();
+    await expect(first).resolves.toEqual({ text: "ok" });
+    expect(launched).toEqual([{ appId: "claude-desktop", opts: {} }]);
+    // Approving the app grants the session control: screenshots and clicks don't ask again.
+    await h.c.call("tok_1", "click", { x: 1, y: 1 });
+    expect(h.asked).toHaveLength(1);
+    // Another app asks again.
+    const second = h.c.call("tok_1", "open_web_app", { appId: "chatgpt", url: "https://chatgpt.com/c/42?q=secret" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.asked).toHaveLength(2);
+    h.allow();
+    await expect(second).resolves.toEqual({ text: "ok" });
+    const audit = h.actions().find((a) => a.meta.tool === "open_web_app")!;
+    expect(audit.meta).toMatchObject({ appId: "chatgpt", urlOrigin: "https://chatgpt.com" });
+    expect(JSON.stringify(h.audits)).not.toContain("secret");
+    expect(h.audits.map((a) => a.type)).toContain("computer.app_granted");
+  });
+
+  it("only the person's recipes; other sites refused; a deny sticks for that app", async () => {
+    const { apps, launched } = appsFake();
+    const h = setup({ apps, approve: async () => ({ allow: false, reason: "signed_deny" }) });
+    attached(h);
+    await expect(h.c.call("tok_1", "launch_app", { appId: "notion" })).rejects.toMatchObject({ code: "unknown_app" });
+    await expect(h.c.call("tok_1", "open_web_app", { appId: "claude-desktop" })).rejects.toMatchObject({
+      code: "unknown_app",
+    });
+    await expect(h.c.call("tok_1", "launch_app", { appId: "chatgpt" })).rejects.toMatchObject({ code: "app_denied" });
+    await expect(h.c.call("tok_1", "launch_app", { appId: "chatgpt" })).rejects.toMatchObject({ code: "app_denied" });
+    expect(h.asked).toHaveLength(1);
+    expect(launched).toEqual([]);
+
+    const ok = setup({ apps, approve: async () => ({ allow: true, reason: "signed_allow" }) });
+    attached(ok);
+    await expect(
+      ok.c.call("tok_1", "open_web_app", { appId: "chatgpt", url: "https://evil.example/" }),
+    ).rejects.toMatchObject({ code: "origin_not_allowed" });
+  });
+
+  it("honors every computer-control gate: off, unsigned, no desktop, kill", async () => {
+    const { apps, launched } = appsFake();
+    const off = setup({ apps, policy: undefined });
+    off.c.attach("s1", { label: "x", adapter: "claude-code", origin: "client:p" });
+    await expect(off.c.call("tok_1", "launch_app", { appId: "chatgpt" })).rejects.toMatchObject({
+      code: "unknown_session",
+    });
+    const h = setup({ apps });
+    h.c.attach("s1", { label: "x", adapter: "claude-code", origin: "client:p" });
+    await expect(h.c.call("tok_1", "launch_app", { appId: "chatgpt" })).rejects.toMatchObject({ code: "no_desktop" });
+    h.c.heartbeat(true);
+    const pending = h.c.call("tok_1", "launch_app", { appId: "chatgpt" });
+    await new Promise((r) => setTimeout(r, 0));
+    await h.c.kill("hotkey");
+    h.allow();
+    await expect(pending).rejects.toMatchObject({ code: "revoked" });
+    expect(launched).toEqual([]);
+  });
+
+  it("list_apps needs no grant and lists only recipes", async () => {
+    const { apps } = appsFake();
+    const h = setup({ apps });
+    attached(h);
+    const r = await h.c.call("tok_1", "list_apps", {});
+    expect(JSON.parse(r.text)).toEqual(apps.list());
+    expect(h.asked).toEqual([]);
   });
 });

@@ -1274,3 +1274,9 @@ Notable findings:
 | `perplexity` | Perplexity | web-app | web | `signin.url`; `driver.web.allowedOrigins`; `termsUrl` |
 | `qwen-code` | Qwen Code | acp, terminal | cli | `signin.command`; `driver.acp.authMethods`; `apiKey.env`; `termsUrl` |
 | `windsurf` | Devin Desktop (formerly Windsurf) | desktop-app | desktop-app | `name`; `platforms.windows.detect.paths`; `platforms.*.detect.commands`; `platforms.linux`; `signin.url` |
+
+## Remote screen (ADR 0021)
+- `werift` 0.24.4: `RTCPeerConnection({iceServers})`, `createDataChannel(label, {ordered, maxRetransmits})`, `createOffer` / `setLocalDescription` / `setRemoteDescription({type: "answer", sdp})`, `addIceCandidate`, `iceGatheringStateChange`, `connectionStateChange`, `onDataChannel`; channel `send`, `bufferedAmount`, `stateChanged`, `onMessage`. Source: the package's `lib/webrtc/src/*.d.ts` (checked 2026-10-06). A werift↔werift loopback (host candidates, a 60 KB message on an unordered channel) ran on the build host. Browser interop (Chrome, Safari, Firefox answering a werift offer) is UNVERIFIED.
+- `jpeg-js` 0.4.4 `encode({width, height, data: RGBA}, quality)`. Source: its `index.d.ts` (checked 2026-10-06).
+- Chrome/Edge/Chromium flags `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--app=<url>`: long-standing Chromium switches; not re-run on each OS here (UNVERIFIED). Branded Chrome ignores `--load-extension` since 137, so no extension-based origin lock is used.
+- `open -a` / `open -b` (macOS), `explorer.exe shell:AppsFolder\<AUMID>` (Windows): documented OS launch paths; the curated recipes' bundle ids and AUMIDs are the ENGINE builder's to verify.

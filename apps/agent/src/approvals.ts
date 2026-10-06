@@ -92,9 +92,13 @@ export class ApprovalManager {
     origin: Origin;
     /**
      * `tool` (default) for one tool call; `computer_control` for a session's computer-control
-     * grant; `terminal` for opening a remote terminal (terminal/control.ts).
+     * grant; `terminal` for opening a remote terminal (terminal/control.ts); `app_control` for one
+     * app in a session; `remote_view` / `remote_control` for a screen session (screen/manager.ts).
      */
-    kind?: Extract<ApprovalKind, "tool" | "computer_control" | "terminal">;
+    kind?: Extract<
+      ApprovalKind,
+      "tool" | "computer_control" | "terminal" | "app_control" | "remote_view" | "remote_control"
+    >;
     /** The summary is built here (R-M10: no format/control characters, explicit truncation). */
     details: { toolName: string; input: unknown; reasons: string[] };
     onRequested?: (aid: string, expiresAt: number) => void;

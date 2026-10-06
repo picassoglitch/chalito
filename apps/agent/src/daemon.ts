@@ -7,7 +7,7 @@ import { ClaudeCodeAdapter, claudeEnv, type ClaudeAuth } from "@chalito/adapters
 import { CodexAdapter } from "@chalito/adapters/codex";
 import { builtinAcpRecipe } from "@chalito/adapters/acp";
 import { loadLiabilityText, loadProviders } from "@chalito/config";
-import type { NonceStore, TrustedClientList } from "@chalito/crypto";
+import { fromB64url, sealJson, signEnvelope, type NonceStore, type TrustedClientList } from "@chalito/crypto";
 import {
   PROVIDER_APP,
   isLegacyApp,
@@ -17,6 +17,7 @@ import {
   type Recipe,
   type RecipeCatalog,
   type RecipeKind,
+  type SignedScreenSignal,
 } from "@chalito/protocol";
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
@@ -27,6 +28,11 @@ import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
 import { TerminalControl } from "./terminal/control.js";
 import { rawShellLaunch, resolveProgram, type TerminalLaunch } from "./terminal/driver.js";
 import { loadPtyBackend, type PtyBackend } from "./terminal/pty.js";
+import { AppLauncher, registerAppDrivers } from "./drivers/apps.js";
+import type { Launcher } from "./drivers/launcher.js";
+import type { AppDriverContext, LaunchableRecipe } from "./drivers/app-launch.js";
+import { ScreenManager } from "./screen/manager.js";
+import { iceServersFrom, weriftPeer, type PeerFactory } from "./screen/peer.js";
 import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, writeConfig, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
@@ -188,6 +194,15 @@ export interface DaemonDeps {
    * and custom recipes enabled on this computer); the raw shell is its own local toggle.
    */
   terminalRecipes?: (appId: string) => Recipe | null;
+  /** Remote screen's WebRTC peer (screen/peer.ts werift in production; a fake in tests). */
+  screenPeer?: PeerFactory;
+  /**
+   * The recipes remote screen and the computer MCP may launch. Defaults to the engine's catalog
+   * (curated, and custom recipes enabled on this computer).
+   */
+  recipes?: () => readonly LaunchableRecipe[];
+  /** How the app drivers start programs (drivers/launcher.ts); tests pass a fake. */
+  appLauncher?: (ctx: AppDriverContext) => Launcher;
 }
 
 export interface Daemon {
@@ -201,6 +216,8 @@ export interface Daemon {
   computer: ComputerControl | null;
   /** Null without the desktop app, like computer control (no indicator, so no remote terminal). */
   terminal: TerminalControl | null;
+  /** Remote screen; null without the desktop app, like computer control. */
+  screen: ScreenManager | null;
   store: AgentStore;
   policy: FilePolicyHolder;
   /** What the classifier treats as the agent's own binaries, protected files and Claude's PATH. */
@@ -416,6 +433,7 @@ const startDaemon = async (
     onChange: async (hash) => {
       await computer?.onPolicyChange();
       await terminal?.onPolicyChange();
+      await screen?.onPolicyChange();
       if (!store) return;
       await store.updateDevice({ policyHash: hash });
       await store.publishDeviceEvent({
@@ -431,6 +449,7 @@ const startDaemon = async (
   // Late-bound: created once signed in (it reports through the store), only with the desktop app.
   let computer: ComputerControl | null = null;
   let terminal: TerminalControl | null = null;
+  let screen: ScreenManager | null = null;
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
   const devModeBase = {
@@ -684,6 +703,15 @@ const startDaemon = async (
       );
   };
   let broker: Broker | null = null;
+  // Launchable apps (recipes) behind the engine's driver hook: web-app (managed browser
+  // profile) and desktop-app (open / focus).
+  // `app.launch` reaches them through the registry too (rebuildDrivers → AppManager.launch).
+  registerAppDrivers(deps.appLauncher, deps.home ?? homedir());
+  const appLauncher = new AppLauncher({
+    recipes: deps.recipes ?? (() => catalog.entries().flatMap((e) => (!e.custom || e.enabled ? [e.recipe] : []))),
+    ctx: { home: deps.home ?? homedir(), platform: process.platform, env },
+    log,
+  });
   if (deps.ipcSecret) {
     const mcp = computerMcpCommand();
     computer = new ComputerControl({
@@ -707,6 +735,7 @@ const startDaemon = async (
       mcpLaunch: () => (broker ? { ...mcp, socket: broker.path } : null),
       now,
       locale: () => cfg.locale,
+      apps: appLauncher,
     });
     coreDeps.computer = computer;
 
@@ -771,6 +800,58 @@ const startDaemon = async (
       ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
     });
     coreDeps.terminal = terminal;
+
+    // Remote screen (screen/manager.ts): same desktop-app condition, indicator and kill switch.
+    const control = computer;
+    screen = new ScreenManager({
+      policy: () => policy.get().screen,
+      driver: deps.computerDriver ?? (() => loadNativeDriver({ runner: spawnRunner, env })),
+      desktopPresent: () => control.desktopPresent(),
+      indicatorShown: () => control.indicatorShown(),
+      requestApproval: (sid, input) =>
+        core.approvals.request({
+          sid,
+          risk: "HIGH",
+          stepUp: true,
+          origin: input.origin,
+          kind: input.kind,
+          details: input.details,
+          onRequested: input.onRequested,
+        }),
+      writeEvent: (e) => signedInStore.writeEvent(e),
+      upsertSession: (sid, doc) => signedInStore.upsertSession(sid, doc),
+      // Signaling goes to the one browser that opened the session (and this agent), nobody else.
+      sealFor: async (clientDeviceId, value, aad) => {
+        const key = trust.recipients()[clientDeviceId];
+        if (!key) return null;
+        return sealJson(
+          value,
+          { [id.deviceId]: await fromB64url(id.pubBox), [clientDeviceId]: await fromB64url(key) },
+          aad,
+        );
+      },
+      signSignal: async (body) =>
+        (await signEnvelope("chalito.screen-signal.v1", body, id.deviceId, id.sign.secretKey)) as SignedScreenSignal,
+      peer: deps.screenPeer ?? weriftPeer,
+      iceServers: () => iceServersFrom(env),
+      apps: { has: (a) => appLauncher.has(a), focusOrLaunch: (a) => appLauncher.focusOrLaunch(a) },
+      audit: auditAgent,
+      publish: (st) =>
+        publish({
+          v: 1,
+          type: "screen.changed",
+          deviceId: id.deviceId,
+          view: st.view,
+          control: st.control,
+          activeSessions: st.activeSessions,
+          ...(st.by ? { by: st.by } : {}),
+          t: now(),
+        }),
+      deviceId: id.deviceId,
+      now,
+      locale: () => cfg.locale,
+    });
+    coreDeps.screen = screen;
   }
   const core = new AgentCore(coreDeps);
   if (computer) {
@@ -785,6 +866,7 @@ const startDaemon = async (
       log.error("computer.broker_unavailable", { error: err instanceof Error ? err.message : "error" });
     }
     await control.onPolicyChange();
+    await screen?.onPolicyChange();
   }
   await terminal?.onPolicyChange();
   // The indicator watchdog: open terminals close when the desktop app stops showing it.
@@ -1025,6 +1107,7 @@ const startDaemon = async (
     if (st && (st.active.length || st.pending.length)) await computer?.kill("agent_stop").catch(() => undefined);
     terminalWatchdog?.clear();
     await terminal?.kill("agent_stop").catch(() => undefined);
+    await screen?.stopAll().catch(() => undefined);
     for (const s of core.sessions.values()) {
       await s.handle.interrupt().catch(() => undefined);
       s.handle.close();
@@ -1064,6 +1147,7 @@ const startDaemon = async (
           catalog,
           computer,
           terminal,
+          screen,
           audit: auditAgent,
         }),
         onError: (method, err) =>
@@ -1088,6 +1172,7 @@ const startDaemon = async (
     drivers: () => builtDrivers,
     computer,
     terminal,
+    screen,
     store: signedInStore,
     policy,
     classifyExtras: () => extras,

@@ -96,6 +96,23 @@
         "step1": "¿Activar la shell completa remota? Una shell aprobada podría:"
       }
     },
+    "screen": {
+      "title": "Pantalla remota",
+      "intro": "Permite ver esta pantalla (o también usar su mouse y teclado) desde tu navegador de confianza. La imagen va directo y cifrada entre ese navegador y esta computadora. Cada sesión pide tu aprobación con passkey.",
+      "off": "Desactivada",
+      "view": "Solo ver",
+      "control": "Ver y controlar",
+      "enableView": "Activar ver",
+      "enableControl": "Activar control",
+      "disable": "Desactivar",
+      "disableControl": "Quitar control",
+      "active": "Sesión abierta: {labels}",
+      "pending": "Esperando tu aprobación: {labels}",
+      "close": "Cerrar",
+      "step1View": "¿Activar ver esta pantalla a distancia? Tu navegador de confianza podría:",
+      "step1Control": "¿Activar el control remoto de esta pantalla? Tu navegador de confianza podría:",
+      "failed": "No se activó: {reason}"
+    },
     "notices": {
       "title": "Avisos de seguridad",
       "missingStepUp": "«{computer}» rechazó un dispositivo nuevo: el dispositivo que lo aprobó no usó su llave de acceso. Vuelve a aprobarlo desde tu teléfono con la llave de acceso.",

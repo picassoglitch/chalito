@@ -54,6 +54,8 @@ export const SigningContext = z.enum([
   "chalito.webauthn-binding.v1",
   /** The curated recipe catalog (packages/protocol/src/recipe.ts), signed by Chalito's catalog key. */
   "chalito.recipe-catalog.v1",
+  /** Remote screen (screen.ts): the agent's WebRTC offer / ICE, inside the sealed screen.signal event. */
+  "chalito.screen-signal.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 

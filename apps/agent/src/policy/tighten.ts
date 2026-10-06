@@ -23,7 +23,8 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
   computerTighterOrEqual(next.computer, cur.computer) &&
   appsTighterOrEqual(next.apps, cur.apps) &&
-  remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal);
+  remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
+  screenTighterOrEqual(next.screen, cur.screen);
 
 /**
  * Engine: an app's sessions can only be turned off (an id without an entry counts as allowed, so
@@ -58,6 +59,19 @@ export const remoteTerminalTighterOrEqual = (
     (!next.rawShell || !!cur?.rawShell) &&
     next.maxSessions <= base.maxSessions &&
     next.maxInputPerMinute <= base.maxInputPerMinute
+  );
+};
+
+/** Remote screen: view/control can only be turned off and the limits lowered; never on (`chalito screen enable`). */
+export const screenTighterOrEqual = (next: Policy["screen"], cur: Policy["screen"]): boolean => {
+  if (!next?.view && !next?.control) return true;
+  if (!cur) return false;
+  return (
+    (!next.view || cur.view) &&
+    (!next.control || cur.control) &&
+    next.maxFps <= cur.maxFps &&
+    next.maxInputsPerMinute <= cur.maxInputsPerMinute &&
+    next.maxSessionMinutes <= cur.maxSessionMinutes
   );
 };
 

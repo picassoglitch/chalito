@@ -166,6 +166,16 @@ export interface TerminalAnswers {
 export type TerminalEnableResult =
   { ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" | "already_on" | "terminal_off" | "unavailable" };
 
+/** Remote screen as the agent reports it (apps/agent/src/screen/manager.ts `status`). */
+export interface ScreenStatus {
+  view: boolean;
+  control: boolean;
+  active: { sid: string; label: string; mode: "view" | "control"; since: number }[];
+  pending: { sid: string; label: string; mode: "view" | "control" }[];
+}
+
+export type ScreenMode = "view" | "control";
+
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
@@ -223,6 +233,13 @@ export interface AgentIpc {
   enableRawShell(answers: TerminalAnswers): Promise<TerminalEnableResult>;
   disableRemoteTerminal(): Promise<void>;
   disableRawShell(): Promise<void>;
+  /** Remote screen: enabling asks the OS in the agent and re-checks the answers, like computer control. */
+  screenStatus(): Promise<ScreenStatus>;
+  screenChallenge(mode: ScreenMode): Promise<ComputerChallenge>;
+  enableScreen(mode: ScreenMode, answers: ComputerAnswers): Promise<ComputerEnableResult>;
+  /** `control` drops back to view only; `all` turns remote screen off. */
+  disableScreen(what: "control" | "all"): Promise<void>;
+  closeScreen(sid: string): Promise<void>;
 }
 
 export class IpcUnavailableError extends Error {
@@ -268,6 +285,11 @@ export const unavailableIpc: AgentIpc = {
   enableRawShell: unavailable,
   disableRemoteTerminal: unavailable,
   disableRawShell: unavailable,
+  screenStatus: unavailable,
+  screenChallenge: unavailable,
+  enableScreen: unavailable,
+  disableScreen: unavailable,
+  closeScreen: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -323,6 +345,11 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     enableRawShell: (answers) => call("enableRawShell", { answers }),
     disableRemoteTerminal: async () => void (await call("disableRemoteTerminal")),
     disableRawShell: async () => void (await call("disableRawShell")),
+    screenStatus: () => call("screenStatus"),
+    screenChallenge: (mode) => call("screenChallenge", { mode }),
+    enableScreen: (mode, answers) => call("enableScreen", { mode, answers }),
+    disableScreen: async (what) => void (await call("disableScreen", { what })),
+    closeScreen: async (sid) => void (await call("closeScreen", { sid })),
   };
 };
 

@@ -17,6 +17,7 @@ import {
   randomNonce,
   revokeAllServerEntry,
   revokeBundleChallenge,
+  fromB64url,
   sealJson,
   signEnvelope,
   stepUpBodyHash,
@@ -34,6 +35,9 @@ import { ComputerControl } from "../src/computer/control.js";
 import { TerminalControl } from "../src/terminal/control.js";
 import { rawShellLaunch } from "../src/terminal/driver.js";
 import type { PtyBackend, PtySpawnOptions } from "../src/terminal/pty.js";
+import { ScreenManager } from "../src/screen/manager.js";
+import { DEFAULT_ICE_SERVERS } from "../src/screen/peer.js";
+import { fakeDriver, fakePeers, manualTimers } from "./screen-fakes.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
@@ -80,6 +84,8 @@ const harness = async (
     computer?: boolean;
     /** Wire remote terminal with an echoing fake PTY (aider is the only recipe). */
     terminal?: boolean;
+    /** Wire remote screen (fake capture and fake WebRTC peer). */
+    screen?: boolean;
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -188,6 +194,44 @@ const harness = async (
       })
     : undefined;
   terminal?.heartbeat(true);
+  const screenPeers = fakePeers();
+  const screenDriver = fakeDriver();
+  const screenAudits: string[] = [];
+  const screenMgr = opts.screen
+    ? new ScreenManager({
+        policy: () => policy.screen,
+        driver: () => screenDriver.driver,
+        desktopPresent: () => true,
+        indicatorShown: () => true,
+        requestApproval: (sid, input) =>
+          coreRef!.approvals.request({
+            sid,
+            risk: "HIGH",
+            stepUp: true,
+            origin: input.origin,
+            kind: input.kind,
+            details: input.details,
+            onRequested: input.onRequested,
+          }),
+        writeEvent: (e) => store.writeEvent(e),
+        upsertSession: (sid, doc) => store.upsertSession(sid, doc),
+        sealFor: async (clientDeviceId, value, aad) => {
+          const key = trust.recipients()[clientDeviceId];
+          if (!key) return null;
+          return sealJson(value, { [agent.id]: agent.box.publicKey, [clientDeviceId]: await fromB64url(key) }, aad);
+        },
+        signSignal: async (body) =>
+          (await signEnvelope("chalito.screen-signal.v1", body, agent.id, agent.sign.secretKey)) as never,
+        peer: screenPeers.factory,
+        iceServers: () => DEFAULT_ICE_SERVERS,
+        audit: (type) => void screenAudits.push(type),
+        publish: () => undefined,
+        deviceId: agent.id,
+        now: Date.now,
+        every: manualTimers().every,
+        after: manualTimers().after,
+      })
+    : undefined;
   const core = new AgentCore({
     store,
     adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
@@ -207,6 +251,7 @@ const harness = async (
     ...(opts.appAdapters ? { appAdapters: opts.appAdapters } : {}),
     ...(computer ? { computer } : {}),
     ...(terminal ? { terminal } : {}),
+    ...(screenMgr ? { screen: screenMgr } : {}),
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
@@ -328,6 +373,10 @@ const harness = async (
     terminal,
     ptys,
     terminalAudits,
+    screen: screenMgr,
+    screenPeers: screenPeers.peers,
+    screenOps: screenDriver.ops,
+    screenAudits,
   };
 };
 
@@ -1689,3 +1738,95 @@ const CommandEnvelopeParse = (o: { relayedBy: string; payload: unknown }) =>
       payload: o.payload,
     },
   }).success;
+
+describe("remote screen through signed commands", () => {
+  const VIEW = {
+    screen: { view: true, control: false, maxFps: 5, maxInputsPerMinute: 600, maxSessionMinutes: 60 },
+  };
+
+  it("no remote command can turn remote view, control or app control on", async () => {
+    const h = await harness({ screen: true });
+    for (const type of [
+      "screen.enable",
+      "screen.on",
+      "screen.grant",
+      "remote_view.enable",
+      "remote_control.on",
+      "remoteControl",
+      "app_control.enable",
+    ]) {
+      expect(await h.command({ type, mode: "control" })).toEqual({ ok: false, reason: "remote_enable_rejected" });
+    }
+    expect(h.getPolicy().screen).toBeUndefined();
+    expect(h.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected")).toHaveLength(7);
+    // policy.tighten can't turn it on either.
+    const loosen = await h.command({
+      type: "policy.tighten",
+      patchCt: await h.sealed(8, { screen: VIEW.screen }),
+    });
+    expect(loosen).toEqual({ ok: false, reason: "would_loosen" });
+    // And screen.open only asks: while off it is refused, nothing is captured.
+    expect(await h.command({ type: "screen.open", mode: "view" })).toEqual({ ok: false, reason: "screen_disabled" });
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    expect(h.screenPeers).toHaveLength(0);
+  });
+
+  it("screen.open asks a HIGH remote_view approval with passkey; the offer is signed and sealed to that browser", async () => {
+    const h = await harness({ screen: true, policy: VIEW });
+    const opened = await h.command({ type: "screen.open", mode: "view" });
+    expect(opened).toEqual({ ok: true, sid: expect.any(String) });
+    const sid = (opened as { sid: string }).sid;
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const row = h.store.pendingApprovals()[0]!;
+    expect(row).toMatchObject({ kind: "remote_view", risk: "HIGH", stepUpRequired: true, sid });
+    expect(h.screenPeers).toHaveLength(0);
+    // Without the passkey assertion an allow doesn't count.
+    await h.decide(true);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.screenPeers).toHaveLength(0);
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.store.events.some((e) => e.type === "screen.signal"));
+    const ev = h.store.events.find((e) => e.type === "screen.signal") as unknown as { ct: SealedEnvelope };
+    expect(Object.keys(ev.ct.keys).sort()).toEqual([h.agent.id, h.phone.id].sort());
+    const signal = await openJson<{ ctx: string; body: { sid: string; signal: { kind: string } } }>(
+      ev.ct,
+      h.phone.id,
+      h.phone.box,
+      `screen:${sid}`,
+    );
+    expect(signal.body).toMatchObject({ sid, signal: { kind: "offer" } });
+    const verified = await verifyEnvelope(
+      signal as never,
+      "chalito.screen-signal.v1",
+      new Map([[h.agent.id, h.agent.sign.publicKey]]),
+    );
+    expect(verified.ok).toBe(true);
+    // The browser's answer comes back sealed in a signed command.
+    const answered = await h.command({
+      type: "screen.signal",
+      sid,
+      signalCt: await h.sealed(2, { kind: "answer", sdp: "v=0 answer" }),
+    });
+    expect(answered).toEqual({ ok: true, sid });
+    expect(h.screenPeers[0]!.answer).toBe("v=0 answer");
+    expect(await h.command({ type: "screen.close", sid })).toEqual({ ok: true, sid });
+    expect(h.screenPeers[0]!.closed).toBe(true);
+    expect(h.screenAudits).toEqual(["screen.requested", "screen.granted", "screen.ended"]);
+  });
+
+  it("control needs control enabled; relayed origins can't open; revoking the client ends its sessions", async () => {
+    const h = await harness({ screen: true, policy: VIEW });
+    expect(await h.command({ type: "screen.open", mode: "control" })).toEqual({ ok: false, reason: "screen_disabled" });
+    expect(
+      await h.command({ type: "screen.open", mode: "view" }, { origin: "mcp:chatgpt", relayed: "mcp-gateway" }),
+    ).toEqual({ ok: false, reason: "invalid" });
+    const r = (await h.command({ type: "screen.open", mode: "view" })) as { sid: string };
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.screenPeers.length === 1);
+    await h.command({ type: "device.revokeClient", clientDeviceId: h.phone.id });
+    await waitFor(() => h.screenPeers[0]!.closed);
+    expect(h.screen!.status().active).toEqual([]);
+    expect(r.sid).toBeTruthy();
+  });
+});

@@ -3,7 +3,10 @@ import { isSignedOrigin, type Origin, type ResolutionReason } from "@chalito/pro
 import type { Policy } from "../policy/schema.js";
 import { downscaleRgba, encodePngRgb, fitSize } from "./image.js";
 import { ComputerUnsupportedError, type DisplayInfo, type NativeDriver } from "./native.js";
-import { COMPUTER_SERVER, ToolArgs, UNCOUNTED, isToolName, parseCombo, type ToolName } from "./tools.js";
+import { COMPUTER_SERVER, APP_TOOLS, ToolArgs, UNCOUNTED, isToolName, parseCombo, type ToolName } from "./tools.js";
+import type { LaunchableApp } from "../drivers/apps.js";
+import type { AppLaunchResult } from "../drivers/app-launch.js";
+import { originOf } from "../drivers/web-app.js";
 
 /**
  * Computer control on this device (owner design, 2026-10-05): who may act, when, and how fast.
@@ -39,7 +42,12 @@ export interface ComputerDeps {
   /** A `computer_control` approval for this session, announced to the person's devices like any other. */
   requestApproval: (
     sid: string,
-    input: { origin: Origin; details: { toolName: string; input: unknown; reasons: string[] } },
+    input: {
+      origin: Origin;
+      /** `computer_control` (default) for the session's grant; `app_control` for one app (launch_app / open_web_app). */
+      kind?: "computer_control" | "app_control";
+      details: { toolName: string; input: unknown; reasons: string[] };
+    },
   ) => Promise<ComputerApprovalOutcome>;
   interrupt: (sid: string) => Promise<void>;
   /** The native layer, loaded on first use; throws ComputerUnsupportedError where it can't run. */
@@ -58,6 +66,15 @@ export interface ComputerDeps {
   indicatorWaitMs?: number;
   /** The desktop app polls every 500 ms; a heartbeat older than this means it's gone (default 2 s). */
   heartbeatTtlMs?: number;
+  /**
+   * The person's launchable apps (drivers/apps.ts AppLauncher): `list_apps`, `launch_app` and
+   * `open_web_app`. Absent = those tools answer that no apps are set up.
+   */
+  apps?: {
+    list(): LaunchableApp[];
+    has(appId: string, kind?: LaunchableApp["kind"]): boolean;
+    launch(appId: string, opts?: { kind?: LaunchableApp["kind"]; url?: string }): Promise<AppLaunchResult>;
+  };
 }
 
 export type SessionControl = "idle" | "pending" | "granted" | "denied" | "revoked";
@@ -76,6 +93,10 @@ interface Ctl {
   shot: Map<number, { width: number; height: number }>;
   buttonDown: boolean;
   rateAudited: number;
+  /** Apps this session may launch and drive (each one approved as `app_control`). */
+  apps: Set<string>;
+  appsDenied: Set<string>;
+  appPending: Map<string, Promise<boolean>>;
 }
 
 export interface ComputerStatus {
@@ -127,6 +148,22 @@ const MESSAGES = {
   rate_limited: "Too many actions in the last minute; wait a moment and try again.",
   bad_args: "Invalid arguments.",
   no_window: "No window with that id; call list_windows again.",
+  unknown_app: "No app with that id on this computer; call list_apps.",
+  app_denied: "The person denied controlling that app in this session.",
+  origin_not_allowed: "That page isn't on the app's own site.",
+  launch_failed: "The app couldn't be opened on this computer.",
+} as const;
+
+/** What the `app_control` approval says. */
+const APP_REASONS = {
+  es: (name: string) => [
+    `La sesión pide abrir ${name} y usarlo con el mouse y el teclado de esta computadora hasta que termine.`,
+    "Incluye ver tu pantalla. Se detiene con Ctrl+Alt+Esc o con «Detener control» en el ícono de Chalito.",
+  ],
+  en: (name: string) => [
+    `This session asks to open ${name} and use it with this computer's mouse and keyboard until it ends.`,
+    "That includes seeing your screen. Stop it with Ctrl+Alt+Esc or “Stop control” in Chalito's tray icon.",
+  ],
 } as const;
 
 export class ComputerControl {
@@ -169,6 +206,9 @@ export class ComputerControl {
       shot: new Map(),
       buttonDown: false,
       rateAudited: 0,
+      apps: new Set(),
+      appsDenied: new Set(),
+      appPending: new Map(),
     };
     this.#byToken.set(token, ctl);
     this.#bySid.set(sid, ctl);
@@ -194,6 +234,16 @@ export class ComputerControl {
     return { allow: true };
   }
 
+  /** The desktop app polled recently (it shows the indicator and holds the kill switch). */
+  desktopPresent(): boolean {
+    return !!this.#beat && this.d.now() - this.#beat.at <= (this.d.heartbeatTtlMs ?? 2000);
+  }
+
+  /** …and the indicator is on screen now (remote screen streams only while this holds). */
+  indicatorShown(): boolean {
+    return this.desktopPresent() && this.#beat!.indicatorShown;
+  }
+
   /** The desktop app's poll: it shows the indicator while `active` isn't empty and says whether it is shown. */
   heartbeat(indicatorShown: boolean): ComputerStatus {
     this.#beat = { at: this.d.now(), indicatorShown };
@@ -207,13 +257,18 @@ export class ComputerControl {
       active: all
         .filter((c) => c.state === "granted")
         .map((c) => ({ sid: c.sid, label: c.label, since: c.since ?? 0 })),
-      pending: all.filter((c) => c.state === "pending").map((c) => ({ sid: c.sid, label: c.label })),
+      pending: all
+        .filter((c) => c.state === "pending" || (c.state === "idle" && c.appPending.size > 0))
+        .map((c) => ({ sid: c.sid, label: c.label })),
     };
   }
 
   /** Stops every session's control now. Returns how many sessions lost it. */
   async kill(by: string): Promise<number> {
-    const affected = [...this.#bySid.values()].filter((c) => c.state === "granted" || c.state === "pending");
+    // Includes sessions waiting on an app_control approval: its answer must grant nothing.
+    const affected = [...this.#bySid.values()].filter(
+      (c) => c.state === "granted" || c.state === "pending" || c.appPending.size > 0,
+    );
     for (const c of affected) c.state = "revoked";
     if (affected.some((c) => c.buttonDown) && this.#driver) {
       for (const c of affected) c.buttonDown = false;
@@ -243,7 +298,9 @@ export class ComputerControl {
   /** After any policy change: turned off ends every grant; the state is reported either way. */
   async onPolicyChange(): Promise<void> {
     if (!this.enabled()) {
-      const active = [...this.#bySid.values()].some((c) => c.state === "granted" || c.state === "pending");
+      const active = [...this.#bySid.values()].some(
+        (c) => c.state === "granted" || c.state === "pending" || c.appPending.size > 0,
+      );
       if (active) {
         await this.kill("policy");
         return;
@@ -264,8 +321,20 @@ export class ComputerControl {
         throw new ComputerError("bad_args", `${MESSAGES.bad_args} ${parsed.error.issues[0]?.message ?? ""}`.trim());
       const args = parsed.data as Record<string, unknown>;
       this.#checkLive(ctl);
-      if (ctl.state !== "granted") {
-        if (!this.#desktopPresent()) throw new ComputerError("no_desktop", MESSAGES.no_desktop);
+      if (APP_TOOLS.has(name)) {
+        // One app at a time, each approved (`app_control`), which also grants this session control.
+        const appId = args.appId as string;
+        if (!this.d.apps?.has(appId, name === "open_web_app" ? "web-app" : undefined))
+          throw new ComputerError("unknown_app", MESSAGES.unknown_app);
+        if (!ctl.apps.has(appId)) {
+          if (!this.desktopPresent()) throw new ComputerError("no_desktop", MESSAGES.no_desktop);
+          if (!(await this.#grantApp(ctl, appId, name))) {
+            this.#checkLive(ctl);
+            throw new ComputerError("app_denied", MESSAGES.app_denied);
+          }
+        }
+      } else if (ctl.state !== "granted" && name !== "list_apps") {
+        if (!this.desktopPresent()) throw new ComputerError("no_desktop", MESSAGES.no_desktop);
         if (!(await this.#grant(ctl, name))) this.#checkLive(ctl, "denied");
       }
       if (!UNCOUNTED.has(name)) this.#take(ctl);
@@ -302,14 +371,10 @@ export class ComputerControl {
     if (ctl.state === "denied" || fallback === "denied") throw new ComputerError("denied", MESSAGES.denied);
   }
 
-  #desktopPresent(): boolean {
-    return !!this.#beat && this.d.now() - this.#beat.at <= (this.d.heartbeatTtlMs ?? 2000);
-  }
-
   async #indicator(): Promise<void> {
     const deadline = this.d.now() + (this.d.indicatorWaitMs ?? 3000);
     for (;;) {
-      if (this.#desktopPresent() && this.#beat!.indicatorShown) return;
+      if (this.indicatorShown()) return;
       if (this.d.now() >= deadline) throw new ComputerError("indicator", MESSAGES.indicator);
       await this.#sleep(100);
     }
@@ -345,6 +410,8 @@ export class ComputerControl {
       } catch {
         outcome = { allow: false, reason: "timeout_deny" };
       }
+      // An app_control approval granted control meanwhile.
+      if ((ctl.state as SessionControl) === "granted" && this.enabled()) return true;
       // Killed, ended or turned off while the person was deciding: the answer no longer applies.
       if (ctl.state !== "pending" || !this.enabled()) {
         if (ctl.state === "pending") ctl.state = "revoked";
@@ -363,6 +430,69 @@ export class ComputerControl {
       ctl.pending = null;
     });
     return ctl.pending;
+  }
+
+  /** An `app_control` approval for one app in this session (HIGH, passkey step-up). */
+  #grantApp(ctl: Ctl, appId: string, first: ToolName): Promise<boolean> {
+    if (ctl.apps.has(appId)) return Promise.resolve(true);
+    if (ctl.appsDenied.has(appId) || ctl.state === "denied" || ctl.state === "revoked") return Promise.resolve(false);
+    const existing = ctl.appPending.get(appId);
+    if (existing) return existing;
+    const name = this.d.apps?.list().find((a) => a.id === appId)?.name ?? appId;
+    const p = (async () => {
+      this.d.audit("computer.app_requested", { sid: ctl.sid, adapter: ctl.adapter, appId, firstTool: first });
+      let outcome: ComputerApprovalOutcome;
+      try {
+        outcome = await this.d.requestApproval(ctl.sid, {
+          origin: ctl.origin,
+          kind: "app_control",
+          details: {
+            toolName: "app_control",
+            input: { session: ctl.label, adapter: ctl.adapter, app: appId, appName: name, firstAction: first },
+            reasons: [...APP_REASONS[this.d.locale?.() ?? "es"](name)],
+          },
+        });
+      } catch {
+        outcome = { allow: false, reason: "timeout_deny" };
+      }
+      // Killed, ended or turned off while the person was deciding.
+      if (ctl.state === "revoked" || ctl.state === "denied" || !this.enabled()) return false;
+      this.d.audit(outcome.allow ? "computer.app_granted" : "computer.app_denied", {
+        sid: ctl.sid,
+        appId,
+        reason: outcome.reason,
+        ...(outcome.byDeviceId ? { by: outcome.byDeviceId } : {}),
+      });
+      if (!outcome.allow) {
+        ctl.appsDenied.add(appId);
+        return false;
+      }
+      ctl.apps.add(appId);
+      if (ctl.state !== "granted") {
+        ctl.state = "granted";
+        ctl.since = this.d.now();
+        this.#publish();
+      }
+      return true;
+    })().finally(() => ctl.appPending.delete(appId));
+    ctl.appPending.set(appId, p);
+    return p;
+  }
+
+  async #launch(appId: string, opts: { kind?: LaunchableApp["kind"]; url?: string }): Promise<ToolOutput> {
+    const r = await this.d.apps!.launch(appId, opts);
+    if (r.ok) return { text: "ok" };
+    const code = r.reason === "origin_not_allowed" ? "origin_not_allowed" : r.reason;
+    throw new ComputerError(
+      code,
+      r.reason === "origin_not_allowed"
+        ? MESSAGES.origin_not_allowed
+        : r.reason === "no_browser"
+          ? "Opening AI websites needs Chrome, Edge or Chromium installed on this computer."
+          : r.reason === "not_installed"
+            ? "That app isn't installed on this computer."
+            : MESSAGES.launch_failed,
+    );
   }
 
   #native(): NativeDriver {
@@ -471,6 +601,15 @@ export class ComputerControl {
         await n.focus(win);
         return { text: "ok" };
       }
+      case "list_apps":
+        return { text: JSON.stringify(this.d.apps?.list() ?? []) };
+      case "launch_app":
+        return this.#launch(a.appId as string, {});
+      case "open_web_app":
+        return this.#launch(a.appId as string, {
+          kind: "web-app",
+          ...(typeof a.url === "string" ? { url: a.url } : {}),
+        });
       case "wait": {
         let left = a.ms as number;
         while (left > 0) {
@@ -488,8 +627,25 @@ export class ComputerControl {
   #audit(ctl: Ctl, tool: string, a: Record<string, unknown>, ok: boolean, reason?: string): void {
     const meta: Record<string, unknown> = { sid: ctl.sid, tool, ok };
     if (reason) meta.reason = reason;
-    for (const k of ["display", "x", "y", "fromX", "fromY", "toX", "toY", "button", "dx", "dy", "keys", "id", "ms"])
+    for (const k of [
+      "display",
+      "x",
+      "y",
+      "fromX",
+      "fromY",
+      "toX",
+      "toY",
+      "button",
+      "dx",
+      "dy",
+      "keys",
+      "id",
+      "ms",
+      "appId",
+    ])
       if (a[k] !== undefined) meta[k] = a[k];
+    // A URL's path and query can carry content: only its origin is kept.
+    if (typeof a.url === "string") meta.urlOrigin = originOf(a.url) ?? "invalid";
     if (typeof a.text === "string") meta.textLength = [...a.text].length;
     this.d.audit("computer.action", meta);
   }

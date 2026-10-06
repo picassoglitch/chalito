@@ -96,6 +96,23 @@
         "step1": "Turn on the remote full shell? An approved shell could:"
       }
     },
+    "screen": {
+      "title": "Remote screen",
+      "intro": "Lets your trusted browser see this screen (or also use its mouse and keyboard). The picture goes straight between that browser and this computer, encrypted. Every session asks for your passkey approval.",
+      "off": "Off",
+      "view": "View only",
+      "control": "View and control",
+      "enableView": "Turn on viewing",
+      "enableControl": "Turn on control",
+      "disable": "Turn off",
+      "disableControl": "Remove control",
+      "active": "Open session: {labels}",
+      "pending": "Waiting for your approval: {labels}",
+      "close": "Close",
+      "step1View": "Turn on viewing this screen remotely? Your trusted browser could:",
+      "step1Control": "Turn on remote control of this screen? Your trusted browser could:",
+      "failed": "Not turned on: {reason}"
+    },
     "notices": {
       "title": "Security notices",
       "missingStepUp": "“{computer}” refused a new device: the device that approved it didn't use its passkey. Approve it again from your phone with your passkey.",

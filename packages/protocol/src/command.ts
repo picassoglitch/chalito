@@ -17,6 +17,7 @@ import { SealedEnvelope, signed } from "./crypto.js";
 import { ProviderConnectMethod } from "./provider.js";
 import { AppId } from "./recipe.js";
 import { TerminalCommands } from "./terminal.js";
+import { ScreenMode } from "./screen.js";
 
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
 export const DevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical", "bypassStyle"]);
@@ -61,6 +62,8 @@ const ProviderConnect = z
  * The terminal.* commands open, feed, resize and close a remote terminal only after the
  * person turned remote terminal on locally and approved that terminal (terminal.ts); nothing
  * here can turn remote terminal or the raw shell on.
+ * Remote screen follows the same rule: `screen.open` only asks; it never enables remote view or
+ * control, which are turned on only on the device (`chalito screen enable`).
  */
 // ---- ENGINE (connect engine, contract v2): the app.* commands --------------------------------
 /**
@@ -138,6 +141,32 @@ export const CommandPayload = z.discriminatedUnion("type", [
   // ---- TERMINAL (Connect engine, remote terminal; packages/protocol/src/terminal.ts) ----
   ...TerminalCommands,
   // ---- end TERMINAL ----
+
+  // ---- SCREEN (remote view / control; screen.ts) --------------------------------------------
+  // Refused unless the person enabled remote view (or control) on the device itself. Each
+  // session waits for a `remote_view` / `remote_control` approval (HIGH, passkey) before any
+  // capture; frames and input then go peer-to-peer over WebRTC, never through the cloud.
+  /**
+   * Opens a screen session. `display` is a display index ("0" = primary); `appId` (a recipe id)
+   * launches or focuses that app (or its managed browser profile) before streaming starts.
+   */
+  z.object({
+    type: z.literal("screen.open"),
+    mode: ScreenMode,
+    display: z
+      .string()
+      .regex(/^[0-9]{1,2}$/)
+      .optional(),
+    appId: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{1,40}$/)
+      .optional(),
+  }),
+  /** Ends a screen session (either end may; the agent also ends it on kill switch / disable). */
+  z.object({ type: z.literal("screen.close"), sid: SessionId }),
+  /** The browser's WebRTC answer / ICE candidate, sealed to the device (`ScreenSignal`). */
+  z.object({ type: z.literal("screen.signal"), sid: SessionId, signalCt: SealedEnvelope }),
+  // ---- end SCREEN ---------------------------------------------------------------------------
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;
 
