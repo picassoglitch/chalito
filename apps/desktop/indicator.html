@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chalito controla este equipo</title>
+    <link rel="stylesheet" href="/src/indicator/indicator.css" />
+  </head>
+  <body>
+    <main class="indicator" role="alert" aria-live="assertive">
+      <span class="dot" aria-hidden="true"></span>
+      <p>
+        <strong id="title">Chalito está controlando este equipo</strong>
+        <span id="detail">Ctrl+Alt+Esc para detener</span>
+      </p>
+      <button id="stop" type="button">Detener control</button>
+    </main>
+    <script type="module" src="/src/indicator/main.ts"></script>
+  </body>
+</html>

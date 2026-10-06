@@ -7,7 +7,13 @@ import { DEFAULT_SETTINGS, SETTINGS } from "@chalito/ui";
 import es from "../messages/es.json";
 import en from "../messages/en.json";
 import { TextProviders } from "../src/lib/i18n.js";
-import { unavailableIpc, type AgentIpc, type DevModeState, type ProviderView } from "../src/lib/ipc.js";
+import {
+  unavailableIpc,
+  type AgentIpc,
+  type ComputerStatus,
+  type DevModeState,
+  type ProviderView,
+} from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
 import { Panel, type PanelProps, type Tab } from "../src/panel/Panel.js";
 import { SignIn } from "../src/panel/SignIn.js";
@@ -67,6 +73,11 @@ describe("desktop catalogs", () => {
 const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] } => {
   const calls: unknown[][] = [];
   let dev: DevModeState = { on: false, toggles: [], since: null };
+  let computer: ComputerStatus = {
+    enabled: false,
+    active: [{ sid: "s1", label: "chalito", since: 1 }],
+    pending: [],
+  };
   return {
     calls,
     ping: async () => ({ version: "test" }),
@@ -109,6 +120,32 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     disconnectProvider: async (...a) => void calls.push(["disconnectProvider", ...a]),
     installProvider: async (...a) => void calls.push(["installProvider", ...a]),
     declineProviderInstall: async (...a) => void calls.push(["declineProviderInstall", ...a]),
+    computerStatus: async () => computer,
+    computerChallenge: async () => ({
+      examples: ["Ver todo lo que hay en tu pantalla"],
+      risk: "Cada sesión pedirá tu aprobación.",
+      phrase: "CONTROLAR MI EQUIPO",
+    }),
+    enableComputer: async (answers) => {
+      calls.push(["enableComputer", answers]);
+      computer = { ...computer, enabled: true };
+      return { ok: true };
+    },
+    disableComputer: async () => {
+      calls.push(["disableComputer"]);
+      computer = { ...computer, enabled: false };
+    },
+    stopComputer: async () => {
+      calls.push(["stopComputer"]);
+      computer = { ...computer, active: [] };
+    },
+    computerPermissions: async () => ({
+      platform: "macos",
+      screenRecording: false,
+      accessibility: true,
+      wayland: false,
+    }),
+    openComputerSettings: async (pane) => void calls.push(["openComputerSettings", pane]),
     ...over,
   };
 };
@@ -116,7 +153,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(3));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(4));
   });
 
   it("reverse check: shows the phone's fingerprint and sends the local verdict", async () => {
@@ -160,6 +197,33 @@ describe("panel: local-only security screens", () => {
       "autoApproveHigh",
       { first: true, second: true, liability: { checked: true, typed: "ACEPTO" } },
     ]);
+  });
+
+  it("computer control: local enable with two confirmations and the phrase; stop and permissions", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    expect(await screen.findByText("In control now: chalito")).toBeTruthy();
+    fireEvent.click(screen.getByText("Stop control"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["stopComputer"]));
+    expect(await screen.findByText(/Screen Recording: missing/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Open Settings"));
+    expect(ipc.calls).toContainEqual(["openComputerSettings", "screenRecording"]);
+
+    fireEvent.click(container.querySelector('[data-computer="off"] button')!);
+    await screen.findByText(/Ver todo lo que hay/);
+    fireEvent.click(screen.getByText("Continue"));
+    expect(screen.getByText(/aprobación/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Continue"));
+    const confirm = screen.getByText("Turn on (asks for your password)", {
+      selector: '[data-step="3"] button',
+    }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("CONTROLAR MI EQUIPO"), { target: { value: "controlar" } });
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("CONTROLAR MI EQUIPO"), { target: { value: "CONTROLAR MI EQUIPO" } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(container.querySelector('[data-computer="on"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["enableComputer", { first: true, second: true, typed: "CONTROLAR MI EQUIPO" }]);
   });
 
   it("Developer mode: cancelling sends nothing", async () => {

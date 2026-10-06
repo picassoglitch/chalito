@@ -125,6 +125,19 @@ Mitigations:
 | Social engineering: "turn on autoApproveCritical" | Explicit risk examples, typed liability phrase, persistent badge on every client and on the companion, off from anywhere instantly. Auto-approve never applies to unsigned origins. |
 | Liability dispute | Text + version + timestamp + device + toggle, in the local hash-chained log and the cloud audit. The text version must match the ToS clause (CI check, M15). |
 
+### 4.8a Computer control (screen, mouse, keyboard)
+`apps/agent/src/computer`. A local stdio MCP server the agent attaches to Claude Code and Codex sessions; the agent itself holds the policy, the grants, the native layer (`@jitsi/robotjs`, `node-screenshots`) and the audit.
+
+| Threat | Mitigation |
+|---|---|
+| Remote enable (cloud/phone/MCP/call/room) | No command can express it (`CommandPayload` has no `computer.*`; pinned by a protocol test). `policy.tighten` can only turn it off or lower the rate (`computerTighterOrEqual`). Remote attempts are rejected and audited as `remote_enable.rejected`. |
+| Enabled by a session or a shell write | It lives in the signed, keychain-anchored policy. Only `chalito computer enable` or the desktop panel turn it on: OS auth, two confirmations and a typed phrase. Both refuse inside a session (`CHALITO_SESSION`) or without a TTY, and `chalito policy edit` refuses to turn it on. |
+| A session drives the computer without the person knowing | Each session needs a `computer_control` approval (HIGH, passkey step-up) from a trusted device. A deny sticks for that session. Unsigned origins (`mcp:*`, `call:*`) never get the tools or a grant. |
+| Acting while nobody can see it | Every action waits for the desktop app's heartbeat saying the always-on-top indicator is on screen. With no desktop app there is no broker and nothing is attached. |
+| Runaway or hijacked session | Per-session rate limit (`policy.computer.maxActionsPerMinute`, default 60). Kill switch: Ctrl+Alt+Esc, the tray item "Detener control", the indicator's button, the panel, or turning it off. It revokes every grant at once, stops typing mid-text, releases a held mouse button, and interrupts the sessions. |
+| Leaking what was on screen or typed | Audit rows (`computer.*`) carry metadata only: tool, coordinates, key combo, text length. Never the image, the typed text or window titles. Screenshots go only to the session's model. |
+| Session token reuse | The MCP server gets one random token per session in its environment, never the desktop IPC secret. Same-user processes could read it (`/proc/<pid>/environ`, `ps` for Codex's `-c` args). It only allows what that session's grant allows, still behind the indicator, the rate limit and the audit. Same-user malware is out of scope, as for Developer mode. |
+
 ### 4.9 Rooms
 | Threat | Mitigation |
 |---|---|
@@ -199,5 +212,6 @@ Listed per milestone in `docs/PLAN.md`. The most important:
 - webhook forgery + idempotency + concurrent consumption + cost guard (M12)
 - pay-to-win property (M8/M12)
 - updater rejects unsigned manifests (M14)
+- computer control: no command enables it, remote tighten can't, approval per session, kill switch, metadata-only audit (`apps/agent/test/computer.test.ts`, `packages/protocol/test/protocol.test.ts`)
 
 Several are already enforced at the schema level in `packages/protocol` (tests in `packages/protocol/test`).

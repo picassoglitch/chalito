@@ -71,6 +71,37 @@ export interface ProviderView {
   installRequestedUntil: number | null;
 }
 
+/** Computer control as the agent reports it (apps/agent/src/computer/control.ts `status`). */
+export interface ComputerStatus {
+  enabled: boolean;
+  active: { sid: string; label: string; since: number }[];
+  pending: { sid: string; label: string }[];
+}
+
+/** What the agent asks before turning computer control on (computer/toggle.ts `COMPUTER_COPY`). */
+export interface ComputerChallenge {
+  examples: string[];
+  risk: string;
+  phrase: string;
+}
+
+export interface ComputerAnswers {
+  first: boolean;
+  second: boolean;
+  typed: string;
+}
+
+export type ComputerEnableResult =
+  { ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" | "already_on" | "unavailable" };
+
+/** macOS privacy permissions as the app has them (src-tauri/src/computer.rs); null elsewhere. */
+export interface ComputerPermissions {
+  platform: "macos" | "windows" | "linux";
+  screenRecording: boolean | null;
+  accessibility: boolean | null;
+  wayland: boolean;
+}
+
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
@@ -96,6 +127,19 @@ export interface AgentIpc {
   installProvider(provider: Provider): Promise<void>;
   /** The person's no to a remote install request. */
   declineProviderInstall(provider: Provider): Promise<void>;
+  /**
+   * Computer control. Reading the state here doesn't count as the indicator's heartbeat (the
+   * native side sends that); enabling asks the OS in the agent and re-checks the answers.
+   */
+  computerStatus(): Promise<ComputerStatus>;
+  computerChallenge(): Promise<ComputerChallenge>;
+  enableComputer(answers: ComputerAnswers): Promise<ComputerEnableResult>;
+  disableComputer(): Promise<void>;
+  /** The panel's kill switch (through the native side, like the hotkey and the tray item). */
+  stopComputer(): Promise<void>;
+  /** Native, not the agent: macOS Screen Recording / Accessibility, Wayland on Linux. */
+  computerPermissions(): Promise<ComputerPermissions>;
+  openComputerSettings(pane: "screenRecording" | "accessibility"): Promise<void>;
 }
 
 export class IpcUnavailableError extends Error {
@@ -124,6 +168,13 @@ export const unavailableIpc: AgentIpc = {
   disconnectProvider: unavailable,
   installProvider: unavailable,
   declineProviderInstall: unavailable,
+  computerStatus: unavailable,
+  computerChallenge: unavailable,
+  enableComputer: unavailable,
+  disableComputer: unavailable,
+  stopComputer: unavailable,
+  computerPermissions: unavailable,
+  openComputerSettings: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -161,6 +212,14 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     disconnectProvider: async (provider) => void (await call("disconnectProvider", { provider })),
     installProvider: async (provider) => void (await call("installProvider", { provider })),
     declineProviderInstall: async (provider) => void (await call("declineProviderInstall", { provider })),
+    // No `indicatorShown`: only the native poller's report counts as the indicator's heartbeat.
+    computerStatus: () => call("computerStatus"),
+    computerChallenge: () => call("computerChallenge"),
+    enableComputer: (answers) => call("enableComputer", { answers }),
+    disableComputer: () => call("disableComputer"),
+    stopComputer: () => invoke("computer_stop", {}),
+    computerPermissions: () => invoke("computer_permissions", {}),
+    openComputerSettings: (pane) => invoke("computer_open_settings", { pane }),
   };
 };
 

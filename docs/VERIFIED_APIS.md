@@ -124,6 +124,10 @@ Method: official docs (code.claude.com, platform.claude.com, claude.com/docs, an
   - claude.ai MCP connectors, when the session is authenticated with a claude.ai login (disable with `strictMcpConfig: true` or `ENABLE_CLAUDEAI_MCP_SERVERS=false`)
   - Source: same (checked 2026-10-03)
 
+#### mcpServers (computer control)
+- `Options.mcpServers?: Record<string, McpServerConfig>`; a stdio entry is `{ type?: 'stdio', command, args?, env?, timeout? }` where `timeout` is a per-server tool-call limit in ms. `Query.setMcpServers()` exists too (not used). With `strictMcpConfig: true` only these servers load. Source: sdk.d.ts 0.3.289 (`McpStdioServerConfig`, L1334-1343) (checked 2026-10-05)
+- Chalito attaches only its own `chalito_computer` server, with an 11-minute `timeout` so a first call can wait out the 10-minute approval. Its calls still reach the PreToolUse gate as `mcp__chalito_computer__<tool>`.
+
 #### Auth
 - Precedence used by the CLI, and therefore by the SDK:
   1. cloud provider (`CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY`, plus `CLAUDE_CODE_USE_ANTHROPIC_AWS`)
@@ -500,6 +504,7 @@ The orchestrator makes every brain answer through ONE forced function, `respond`
 - The help.openai.com developer-mode article returned 403. Plan eligibility was taken from the developers.openai.com guide instead.
 - Realtime per-minute cost figures are derived from token rates, not quoted.
 - Grok Build availability by plan (free tier limits, which SuperGrok tiers) was not detailed in the docs fetched (UNVERIFIED).
+- Codex `mcp_servers.<name>.{command,args,env,startup_timeout_sec,tool_timeout_sec}` as `-c` overrides (used for computer control, `mcpServerOverrides`) come from the Codex config docs; not re-checked against codex-rs at 550eb50 or run against a real app-server. Also unchecked: whether app-server sends an approval request for MCP tool calls (the adapter answers unknown server requests with an error, which would decline them) (UNVERIFIED).
 
 
 ---
