@@ -208,7 +208,8 @@
       "categories": "Categories",
       "all": "All",
       "selected": "You picked {name}.",
-      "empty": "No one by that name."
+      "empty": "No one by that name.",
+      "custom": "Your companion is now your own character. Pick someone from the list to switch back to a catalog companion."
     },
     "companionName": {
       "label": "Name",
@@ -1081,6 +1082,8 @@
       "sad": "Sad",
       "surprised": "Surprised",
       "tired": "Tired"
-    }
+    },
+    "current": "Your character",
+    "currentNote": "This is how you look in your rooms, in the store and on your desktop."
   }
 }

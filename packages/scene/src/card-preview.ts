@@ -8,12 +8,14 @@ import {
   type SkinId,
 } from "@chalito/avatar-three";
 import { loadCardAssets, type CardLoaders } from "./card-assets.js";
+import type { CardRef } from "./custom-card.js";
 
 export interface CardPreviewOptions extends CardLoaders {
   canvas: HTMLCanvasElement;
   /** URL prefix where @chalito/roster's assets/ are served, e.g. "/roster/". */
   assetBase: string;
-  avatar: string;
+  /** A roster id, or a card's own files (the person's custom companion: signed URLs). */
+  avatar: CardRef;
   /** Which drawing to show (card.json emotions key). */
   drawing?: string;
   fps?: number;

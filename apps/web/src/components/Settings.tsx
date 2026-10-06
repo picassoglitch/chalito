@@ -9,13 +9,21 @@ import { PushOptIn } from "./PushOptIn";
 import { AccountDeletion } from "./AccountDeletion";
 import { BrainKeys } from "./BrainKeys";
 import { CreateCharacter } from "./CreateCharacter";
+import { useMyCard } from "./useMyCard";
 
 export const Settings = () => {
   const t = useTranslations("settings");
   const tw = useTranslations("live.settings");
   const ti = useTranslations("integrations");
-  const { phoneVerifier } = useChalito();
-  const { values, set, error, persisted } = useSettings();
+  const { phoneVerifier, avatar } = useChalito();
+  const { values, set: setValue, error, persisted } = useSettings();
+  const mine = useMyCard();
+  // Picking a roster companion while wearing the custom character goes back to the roster one,
+  // even when it's the same avatar underneath (the server only clears asset_id on a change).
+  const set: typeof setValue = (k, v) => {
+    if (k === "avatar" && mine.wearing && avatar) void avatar.use(null).then(() => mine.refresh());
+    setValue(k, v);
+  };
   const locale = useLocale();
   if (!values) return null;
   return (
@@ -42,6 +50,7 @@ export const Settings = () => {
         usageHref={getPathname({ href: "/uso", locale })}
         phoneVerifier={phoneVerifier}
         companionExtra={<CreateCharacter />}
+        customCompanion={mine.wearing}
       />
       <BrainKeys />
       <AccountDeletion />

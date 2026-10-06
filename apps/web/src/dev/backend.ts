@@ -56,6 +56,7 @@ import { parseUsage, type UsageApi } from "@/lib/usage";
 import { httpAccount } from "@/lib/account";
 import { httpBalance } from "@/lib/balance";
 import type { AvatarApi, Creation } from "@/lib/avatar";
+import type { SignedCard } from "@chalito/scene/custom-card";
 import { DEV_CATALOG } from "./catalog";
 import { sealRoomEvent, unwrapKeyring, wrapRoomKeyFor } from "@chalito/rooms";
 import { DEV_MARKER, FakeDb } from "./fake-db";
@@ -1311,6 +1312,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   // "finishes" two polls after the upload, and the card is Chalito's roster drawings.
   const AVATAR_PRICE = 217_750;
   const creations = new Map<string, Creation & { polls: number; uploaded: boolean }>();
+  /** The creation the companion wears (POST /use), if any. */
+  let wearing: string | null = null;
   const devCard = () => {
     const dir = "/roster/assets/chalito/";
     const emotions = Object.fromEntries(
@@ -1373,7 +1376,24 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     },
     use: async (creationId) => {
       db.clientWrites.push({ table: "api", op: "avatar/use", row: { creationId } });
+      wearing = creationId;
       return "ok";
+    },
+    // GET /rooms/:id/cards: nobody else in the dev rooms wears a custom card.
+    roomCards: async () => new Map(),
+    // GET /companion: the card in use, "signed" for 60 minutes (here: Chalito's roster files).
+    companion: async () => {
+      const c = wearing ? creations.get(wearing) : undefined;
+      if (!c?.card) return null;
+      const manifest = (await fetch("/roster/assets/chalito/card.json").then((r) =>
+        r.json(),
+      )) as SignedCard["manifest"];
+      return {
+        assetId: "devcustomcard0000000000000000000",
+        manifest,
+        urls: { ...c.card.urls, "card.json": "/roster/assets/chalito/card.json" },
+        expiresAt: Date.now() + 60 * 60_000,
+      };
     },
   };
   controls.storeState = {

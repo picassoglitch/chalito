@@ -12,6 +12,7 @@ import {
   type Quote,
 } from "@/lib/avatar";
 import { useChalito } from "./ChalitoProvider";
+import { useMyCard } from "./useMyCard";
 
 const EMOTIONS = ["neutral", "happy", "sad", "surprised", "tired"] as const;
 const POLL_MS = 3000;
@@ -35,6 +36,7 @@ export const CreateCharacter = () => {
   const t = useTranslations("createCharacter");
   const locale = useLocale();
   const { avatar } = useChalito();
+  const mine = useMyCard();
   const [quote, setQuote] = useState<Quote | null>(null);
   const [photo, setPhoto] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -132,8 +134,11 @@ export const CreateCharacter = () => {
     setNote(null);
     const r = await avatar.use(creation.creationId);
     setBusy(false);
-    if (r === "ok") setPhase({ kind: "done", creation, used: true });
-    else setNote({ kind: r === "no_companion" ? "noCompanion" : "useError" });
+    if (r === "ok") {
+      setPhase({ kind: "done", creation, used: true });
+      // Everywhere the companion is drawn picks the new card up.
+      void mine.refresh();
+    } else setNote({ kind: r === "no_companion" ? "noCompanion" : "useError" });
   };
 
   const tokens = new Intl.NumberFormat(locale);
@@ -155,6 +160,23 @@ export const CreateCharacter = () => {
           {quote.free ? t("free") : t("price", { tokens: tokens.format(quote.priceTokens) })}
         </span>
       </div>
+      {mine.card && mine.thumb ? (
+        <figure className="flex items-center gap-3" data-testid="create-character-current">
+          <img
+            src={mine.thumb}
+            onError={mine.onError}
+            alt={t("current")}
+            width={64}
+            height={64}
+            decoding="async"
+            className="h-16 w-16 rounded-full bg-emerald-50 object-cover object-top"
+          />
+          <figcaption className="grid text-sm">
+            <span className="font-medium">{t("current")}</span>
+            <span className="text-neutral-600">{t("currentNote")}</span>
+          </figcaption>
+        </figure>
+      ) : null}
       <p className="text-sm text-neutral-700">{t("intro")}</p>
 
       {phase.kind === "idle" || phase.kind === "failed" ? (

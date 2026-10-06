@@ -7,6 +7,7 @@ import { Link } from "@/i18n/navigation";
 import { hubLaunchUrl } from "@/lib/hub";
 import { signInAndReturn } from "@/lib/next-cookie";
 import type { CardPreview } from "@chalito/scene";
+import type { CardRef } from "@chalito/scene/custom-card";
 import {
   isSkin,
   newPurchaseId,
@@ -17,6 +18,7 @@ import {
   type StoreItem,
 } from "@/lib/store";
 import { useChalito } from "./ChalitoProvider";
+import { useMyCard, type MyCard } from "./useMyCard";
 
 const ROSTER = "/roster";
 const asset = (path: string) => `${ROSTER}/${path}`;
@@ -79,7 +81,8 @@ const SkinLayer = ({
   skin,
   onReady,
 }: {
-  avatar: string;
+  /** The roster id, or the person's own custom card's files. */
+  avatar: CardRef;
   skin: SkinEffect | null;
   onReady: (ready: boolean) => void;
 }) => {
@@ -125,25 +128,33 @@ const SkinLayer = ({
 
 /**
  * The companion's card with what it wears, placed by `placeOnCard` (negative z sits behind the body),
- * and the skin (worn, or being tried on) drawn over it by the card renderer.
+ * and the skin (worn, or being tried on) drawn over it by the card renderer. The person's own
+ * custom character, when the companion wears one, with its own anchors; else the roster card.
  */
 const Preview = ({
   look,
+  mine,
   items,
   skin,
   label,
 }: {
   look: CompanionLook;
+  mine: MyCard;
   items: StoreItem[];
   skin: SkinEffect | null;
   label: string;
 }) => {
-  const [card, setCard] = useState<Card | null>(null);
+  const [rosterCard, setCard] = useState<Card | null>(null);
   const [aspects, setAspects] = useState<Record<string, number>>({});
   const [skinned, setSkinned] = useState(false);
   const [gl, setGl] = useState(false);
   if (skin && !skinned) setSkinned(true);
   const entry = rosterEntry(look.avatar);
+  const custom = mine.card;
+  const card: Card | null = custom
+    ? { width: custom.manifest.width, height: custom.manifest.height, anchors: custom.manifest.anchors ?? {} }
+    : rosterCard;
+  const drawing = mine.drawing ?? (entry ? asset(entry.drawings.neutral) : null);
   useEffect(() => {
     if (!entry) return;
     let alive = true;
@@ -155,7 +166,7 @@ const Preview = ({
       alive = false;
     };
   }, [entry]);
-  if (!entry) return null;
+  if (!entry && !custom) return null;
   const worn = items.filter((i): i is AccessoryItem => !isSkin(i) && look.equipped[i.slot] === i.id);
   if (!card) return <div aria-hidden className="mx-auto mt-12 aspect-[3/4] w-48 sm:w-56" />;
   const cardAspect = card.height / card.width;
@@ -169,9 +180,11 @@ const Preview = ({
       data-testid="store-preview"
       data-worn={worn.map((i) => i.id).join(" ")}
       data-skin={skin ?? ""}
+      data-custom={custom ? "true" : undefined}
     >
       <img
-        src={asset(entry.drawings.neutral)}
+        src={drawing ?? undefined}
+        onError={custom ? mine.onError : undefined}
         alt=""
         className="absolute inset-0 h-full w-full object-contain"
         style={{ zIndex: 0, visibility: skin && gl ? "hidden" : "visible" }}
@@ -185,14 +198,14 @@ const Preview = ({
           style={{
             zIndex: 0,
             background: SKIN_SWATCH[skin],
-            maskImage: `url(${asset(entry.drawings.neutral)})`,
-            WebkitMaskImage: `url(${asset(entry.drawings.neutral)})`,
+            maskImage: `url(${drawing})`,
+            WebkitMaskImage: `url(${drawing})`,
             maskSize: "100% 100%",
             WebkitMaskSize: "100% 100%",
           }}
         />
       ) : null}
-      {skinned ? <SkinLayer avatar={look.avatar} skin={skin} onReady={setGl} /> : null}
+      {skinned ? <SkinLayer avatar={mine.files ?? look.avatar} skin={skin} onReady={setGl} /> : null}
       {worn.map((i) => {
         const anchor = card.anchors[i.slot];
         const aspect = aspects[i.id];
@@ -237,6 +250,7 @@ export const Store = () => {
   const t = useTranslations("store");
   const locale = useLocale() as "es" | "en";
   const { status, store, readCompanion } = useChalito();
+  const mine = useMyCard();
   const [items, setItems] = useState<StoreItem[] | "error" | null>(null);
   const [look, setLook] = useState<CompanionLook | null | "error" | undefined>(undefined);
   const [busy, setBusy] = useState<string | null>(null);
@@ -323,7 +337,7 @@ export const Store = () => {
   const wornSkin = look && look !== "error" ? all.find((i) => isSkin(i) && look.equipped.skin === i.id) : undefined;
   const shownSkin = trying ?? (wornSkin && isSkin(wornSkin) ? wornSkin.skin : null);
   const entry = look && look !== "error" ? rosterEntry(look.avatar) : null;
-  const drawing = entry ? asset(entry.drawings.neutral) : null;
+  const drawing = mine.drawing ?? (entry ? asset(entry.drawings.neutral) : null);
   const shown = all.filter((i) => (tab === "skins") === isSkin(i));
   return (
     <div className="grid gap-6" data-testid="store">
@@ -335,6 +349,7 @@ export const Store = () => {
       {look && look !== "error" ? (
         <Preview
           look={look}
+          mine={mine}
           items={all}
           skin={shownSkin}
           label={t("previewLabel", { name: companionName(look.avatar, locale) })}

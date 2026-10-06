@@ -259,14 +259,27 @@ export const PhoneField = ({
  * category), and the grid's pictures load lazily as they scroll into view. It opens on the chosen
  * companion's category so the selection is visible.
  */
-export const CompanionPicker = ({ value, onChange }: { value: CompanionId; onChange: (c: CompanionId) => void }) => {
+export const CompanionPicker = ({
+  value,
+  onChange,
+  customActive = false,
+}: {
+  value: CompanionId;
+  onChange: (c: CompanionId) => void;
+  /**
+   * The companion wears the person's own custom character (the PWA's "Crea tu personaje"): no roster
+   * companion shows as chosen, and picking any of them (the one underneath too) switches back.
+   */
+  customActive?: boolean;
+}) => {
   const { t, locale } = useUiText();
   const asset = useRosterAsset();
   const searchId = useId();
   const [category, setCategory] = useState<Category | null>(() => rosterEntry(value)?.category ?? null);
   const [query, setQuery] = useState("");
   const shown = useMemo(() => searchRoster(query, category), [query, category]);
-  const selected = rosterEntry(value);
+  const selected = customActive ? undefined : rosterEntry(value);
+  const chosen = (id: string) => !customActive && value === id;
   const chip = (active: boolean) =>
     `shrink-0 rounded-full border px-3 py-1 text-sm whitespace-nowrap ${active ? "border-emerald-700 bg-emerald-700 text-white" : "bg-white"}`;
   return (
@@ -316,6 +329,11 @@ export const CompanionPicker = ({ value, onChange }: { value: CompanionId; onCha
           </button>
         ))}
       </div>
+      {customActive ? (
+        <p className="text-sm text-neutral-600" data-testid="companion-custom" aria-live="polite">
+          {t("avatar.custom")}
+        </p>
+      ) : null}
       {selected ? (
         <p className="text-sm text-neutral-600" data-testid="companion-selected" aria-live="polite">
           {t("avatar.selected", { name: companionName(selected.id, locale) })} {selected.blurb[locale]}
@@ -331,14 +349,14 @@ export const CompanionPicker = ({ value, onChange }: { value: CompanionId; onCha
             <label
               key={r.id}
               title={r.blurb[locale]}
-              className={`cursor-pointer rounded-xl border p-2 text-center ${value === r.id ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
+              className={`cursor-pointer rounded-xl border p-2 text-center ${chosen(r.id) ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
             >
               <input
                 type="radio"
                 name="companion"
                 className="sr-only"
                 value={r.id}
-                checked={value === r.id}
+                checked={chosen(r.id)}
                 onChange={() => onChange(r.id)}
               />
               <span aria-hidden className="mx-auto mb-1 block h-16 w-16 overflow-hidden rounded-full bg-emerald-50">
