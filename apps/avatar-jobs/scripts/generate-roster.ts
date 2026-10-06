@@ -108,17 +108,33 @@ const main = async () => {
   }
   const ids = only.length ? only : Object.keys(CHARACTERS);
   const allIds = Object.keys(CHARACTERS);
+  // A safety block answers with no image: retry once with another seed, then skip (and report) it.
+  const skipped: string[] = [];
+  const attempt = async (parts: unknown[], seed: number, label: string) => {
+    for (const s of [seed, seed + 500]) {
+      try {
+        return { ...(await generate(key, parts, s)), seed: s };
+      } catch (e) {
+        if (!(e instanceof Error && e.message === "gemini returned no image")) throw e;
+      }
+    }
+    skipped.push(label);
+    process.stderr.write(`skipped ${label}: no image\n`);
+    return null;
+  };
   for (const id of ids) {
     if (!CHARACTERS[id]) throw new Error(`unknown character ${id}`);
     const seed = 1000 + allIds.indexOf(id);
     const neutralPath = join(outDir, `${id}-neutral.png`);
     if (!existsSync(neutralPath)) {
       const prompt = `${CHARACTERS[id]}. Neutral, calm, gently smiling expression, relaxed standing pose. ${STYLE}`;
-      const { bytes, mime } = await generate(key, [{ text: prompt }], seed);
+      const out = await attempt([{ text: prompt }], seed, `${id}-neutral`);
+      if (!out) continue;
+      const { bytes, mime } = out;
       writeFileSync(neutralPath, bytes);
       appendFileSync(
         log,
-        `${JSON.stringify({ file: `${id}-neutral.png`, model: MODEL, prompt, seed, mime, date: new Date().toISOString() })}\n`,
+        `${JSON.stringify({ file: `${id}-neutral.png`, model: MODEL, prompt, seed: out.seed, mime, date: new Date().toISOString() })}\n`,
       );
       process.stdout.write(`${id} neutral\n`);
     }
@@ -133,20 +149,22 @@ const main = async () => {
       const prompt =
         `This exact same character, with an identical design, colors, outline, proportions and art style, the same framing and size, ` +
         `on the same flat pure magenta (#FF00FF) background. Change only the expression and pose to look ${how}. No text, no letters.`;
-      const { bytes, mime } = await generate(
-        key,
+      const out = await attempt(
         [{ text: prompt }, { inlineData: { mimeType: refMime, data: ref } }],
         seed,
+        `${id}-${emotion}`,
       );
+      if (!out) continue;
+      const { bytes, mime } = out;
       writeFileSync(path, bytes);
       appendFileSync(
         log,
-        `${JSON.stringify({ file: `${id}-${emotion}.png`, model: MODEL, prompt, seed, reference: `${id}-neutral.png`, mime, date: new Date().toISOString() })}\n`,
+        `${JSON.stringify({ file: `${id}-${emotion}.png`, model: MODEL, prompt, seed: out.seed, reference: `${id}-neutral.png`, mime, date: new Date().toISOString() })}\n`,
       );
       process.stdout.write(`${id} ${emotion}\n`);
     }
   }
-  process.stdout.write(`done: ${calls} generations\n`);
+  process.stdout.write(`done: ${calls} generations${skipped.length ? `, skipped: ${skipped.join(" ")}` : ""}\n`);
 };
 
 if (process.argv[1]?.endsWith("generate-roster.ts"))
