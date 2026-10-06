@@ -153,13 +153,26 @@ export type AccessoryItem = z.infer<typeof AccessoryItem>;
  * A skin: a material effect over the whole companion, drawn by the card renderer's shader
  * (@chalito/avatar-three `setSkin`). No art, no placement, so it fits every roster character.
  */
-export const SkinItem = z.object({
-  name: CosmeticName,
-  slot: z.literal("skin"),
-  free: z.boolean(),
-  priceTokens: PriceTokens,
-  skin: SkinEffect,
-});
+export const SkinItem = z
+  .object({
+    name: CosmeticName,
+    slot: z.literal("skin"),
+    free: z.boolean(),
+    priceTokens: PriceTokens,
+    skin: SkinEffect,
+    /**
+     * Hub tiers that wear this skin at no token cost while they're on that tier (owner decision
+     * 2026-10-06: VIP gets Galaxia and Holográfico). Everyone else still buys it at priceTokens.
+     */
+    includedIn: z
+      .array(z.enum(["free", "pro", "vip"]))
+      .min(1)
+      .optional(),
+  })
+  .refine((c) => !c.includedIn || !c.free, {
+    message: "only paid skins can be included in a plan",
+    path: ["includedIn"],
+  });
 export type SkinItem = z.infer<typeof SkinItem>;
 
 export const CosmeticItem = priced(z.discriminatedUnion("slot", [AccessoryItem, SkinItem]));

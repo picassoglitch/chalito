@@ -280,6 +280,7 @@ cosmetics:
     free: false
     priceTokens: 10000 # placeholder, owner to confirm
     skin: galaxy
+    includedIn: [vip] # owner decision 2026-10-06: included for VIP; others buy it
   skin_neon:
     name: { es: Neón, en: Neon }
     slot: skin
@@ -298,6 +299,7 @@ cosmetics:
     free: false
     priceTokens: 10000 # placeholder, owner to confirm
     skin: holo
+    includedIn: [vip] # owner decision 2026-10-06: included for VIP; others buy it
   skin_shadow:
     name: { es: Sombra, en: Shadow }
     slot: skin

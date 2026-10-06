@@ -18,6 +18,8 @@ export type CommitResult = "committed" | "duplicate_purchase" | "already_owned";
  */
 export interface StoreRepo {
   owned(owner: string): Promise<Set<string>>;
+  /** The owner's hub tier (chalito.users.tier, from the last SSO launch), lowercase; null if unknown. */
+  tier(owner: string): Promise<string | null>;
   findPurchase(purchaseId: string): Promise<PurchaseRecord | null>;
   /**
    * One transaction: the purchase row, the inventory row and the store.purchase usage event in
@@ -36,6 +38,11 @@ export class PostgresStoreRepo implements StoreRepo {
     const rows = await this.sql<{ cosmetic_id: string }[]>`
       select cosmetic_id from chalito.inventory where owner = ${owner}`;
     return new Set(rows.map((r) => r.cosmetic_id));
+  }
+
+  async tier(owner: string) {
+    const [r] = await this.sql<{ tier: string | null }[]>`select tier from chalito.users where id = ${owner}`;
+    return r?.tier ? r.tier.toLowerCase() : null;
   }
 
   async findPurchase(purchaseId: string) {
@@ -98,9 +105,13 @@ export class MemoryStoreRepo implements StoreRepo {
   readonly purchases = new Map<string, PurchaseRecord & { reservationId: string }>();
   readonly outbox: HubUsageEvent[] = [];
   readonly companions = new Map<string, Partial<Record<CosmeticSlot, string>>>();
+  readonly tiers = new Map<string, string>();
 
   async owned(owner: string) {
     return new Set(this.inventory.get(owner) ?? []);
+  }
+  async tier(owner: string) {
+    return this.tiers.get(owner) ?? null;
   }
   async findPurchase(purchaseId: string) {
     const p = this.purchases.get(purchaseId);

@@ -237,6 +237,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 10000,
     skin: "galaxy",
+    includedIn: ["vip"],
   },
   skin_neon: {
     name: { es: "Neón", en: "Neon" },
@@ -258,6 +259,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 10000,
     skin: "holo",
+    includedIn: ["vip"],
   },
   skin_shadow: {
     name: { es: "Sombra", en: "Shadow" },
@@ -287,6 +289,6 @@ export const DEV_CATALOG = {
           | { width: number; pivot: readonly [number, number]; anchorY?: "neck" }
           | { neckWidth: number; pivot: readonly [number, number] };
       }
-    | { skin: string }
+    | { skin: string; includedIn?: readonly string[] }
   )
 >;

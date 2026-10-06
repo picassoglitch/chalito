@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CosmeticSlot, HubUsageEvent } from "@chalito/protocol";
+import { CatalogConfig } from "@chalito/config";
 import { CID, PID, RID, catalog, hubCalls, hubState, storeSetup } from "./store-harness.js";
 
 describe("catalog", () => {
@@ -241,6 +242,46 @@ describe("skins (a material effect over the companion, one at a time)", () => {
     expect(store.companions.get(`hub-user-1/${CID}`)).toEqual({ head: "viking_hat", skin: "skin_neon" });
     expect((await equip("skin", null)).status).toBe(200);
     expect(store.companions.get(`hub-user-1/${CID}`)).toEqual({ head: "viking_hat" });
+  });
+});
+
+describe("VIP-included skins (Galaxia, Holográfico)", () => {
+  const equip = (call: ReturnType<typeof storeSetup>["call"], cosmeticId: string) =>
+    call("POST", "/equip", { companionId: CID, slot: "skin", cosmeticId });
+
+  it("a VIP sees them owned and included, buys them for 0 and can equip them; nothing is written or billed", async () => {
+    const { call, store } = storeSetup();
+    store.tiers.set("hub-user-1", "vip");
+    const items = (await call("GET", "/catalog")).json.items as Record<string, unknown>[];
+    for (const id of ["skin_galaxy", "skin_holo"])
+      expect(items.find((i) => i.id === id)).toMatchObject({ owned: true, includedInPlan: true, includedIn: ["vip"] });
+    expect(items.find((i) => i.id === "skin_gold")).toMatchObject({ owned: false });
+    expect(items.find((i) => i.id === "skin_gold")).not.toHaveProperty("includedInPlan");
+    const res = await call("POST", "/purchase", { cosmeticId: "skin_galaxy", purchaseId: "pur_vip000000000001" });
+    expect(res.json).toMatchObject({ status: "owned", charged: 0, includedInPlan: true });
+    expect(store.outbox).toEqual([]);
+    expect(await store.owned("hub-user-1")).toEqual(new Set());
+    expect((await equip(call, "skin_holo")).status).toBe(200);
+    expect((await equip(call, "skin_gold")).status).toBe(403);
+  });
+
+  it("anyone else (Gratis, Pro, unknown tier) pays the normal price", async () => {
+    for (const tier of ["free", "pro", undefined]) {
+      const { call, store } = storeSetup();
+      if (tier) store.tiers.set("hub-user-1", tier);
+      const items = (await call("GET", "/catalog")).json.items as Record<string, unknown>[];
+      expect(items.find((i) => i.id === "skin_galaxy")).toMatchObject({ owned: false, includedIn: ["vip"] });
+      expect((await equip(call, "skin_galaxy")).status).toBe(403);
+      const res = await call("POST", "/purchase", { cosmeticId: "skin_galaxy", purchaseId: "pur_vip000000000002" });
+      expect(res.json).toMatchObject({ status: "owned", charged: catalog.cosmetics.skin_galaxy!.priceTokens });
+      expect((await equip(call, "skin_galaxy")).status).toBe(200);
+    }
+  });
+
+  it("only paid skins can be included in a plan", () => {
+    const raw = structuredClone(catalog) as unknown as { cosmetics: Record<string, Record<string, unknown>> };
+    raw.cosmetics.skin_gold = { ...raw.cosmetics.skin_gold, free: true, priceTokens: undefined, includedIn: ["vip"] };
+    expect(CatalogConfig.safeParse(raw).success).toBe(false);
   });
 });
 

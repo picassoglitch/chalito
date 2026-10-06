@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { CatalogConfig } from "@chalito/config";
+import type { CatalogConfig, CosmeticItem } from "@chalito/config";
 import { HubUnavailable, type HubClient } from "@chalito/billing";
 import { CosmeticSlot, type HubUsageEvent } from "@chalito/protocol";
 import type { Deps } from "../deps.js";
@@ -21,6 +21,10 @@ export const MICROS_PER_TOKEN = 4;
 /** Own keys only: `__proto__`, `constructor` and friends match the id pattern but aren't items (R-L9). */
 const itemOf = (catalog: CatalogConfig, id: string) =>
   Object.hasOwn(catalog.cosmetics, id) ? catalog.cosmetics[id] : undefined;
+
+/** True when the owner's hub tier wears this item at no cost (catalog `includedIn`). */
+const includedFor = (item: CosmeticItem, tier: string | null) =>
+  !!tier && item.slot === "skin" && (item.includedIn as readonly string[] | undefined)?.includes(tier) === true;
 
 const PurchaseId = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
 const CosmeticId = z.string().regex(/^[a-z0-9_]{1,64}$/);
@@ -43,7 +47,8 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
   const limiter = rateLimit({ capacity: 20, refillPerSec: 0.5, now: deps.now });
 
   app.get("/catalog", auth, async (c) => {
-    const owned = await store.repo.owned(principal(c).owner);
+    const owner = principal(c).owner;
+    const [owned, tier] = await Promise.all([store.repo.owned(owner), store.repo.tier(owner)]);
     const items = Object.entries(store.catalog.cosmetics).map(([id, x]) => ({
       id,
       name: x.name,
@@ -52,7 +57,10 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
       ...(x.priceTokens !== undefined ? { priceTokens: x.priceTokens } : {}),
       // A drawn item has art and a placement; a skin names the card renderer's effect.
       ...(x.slot === "skin" ? { skin: x.skin } : { art: x.art, card: x.card }),
-      owned: x.free || owned.has(id),
+      ...(x.slot === "skin" && x.includedIn ? { includedIn: x.includedIn } : {}),
+      // Included by the plan: worn at no cost while on that tier (not an inventory row).
+      ...(includedFor(x, tier) ? { includedInPlan: true } : {}),
+      owned: x.free || owned.has(id) || includedFor(x, tier),
     }));
     return c.json({ items });
   });
@@ -69,6 +77,9 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
       await store.repo.grantFree(p.owner, cosmeticId);
       return c.json({ status: "owned", cosmeticId, charged: 0 });
     }
+    // Included in the owner's plan: nothing to buy while on it (never charged, nothing written).
+    if (includedFor(item, await store.repo.tier(p.owner)))
+      return c.json({ status: "owned", cosmeticId, charged: 0, includedInPlan: true });
     const price = item.priceTokens!;
 
     // A retry of a purchase that went through: answer it again, never charge again.
@@ -148,7 +159,8 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
       if (!item) return fail(404, "unknown_cosmetic");
       if (item.slot !== slot) return fail(400, "wrong_slot");
       if (item.free) await store.repo.grantFree(p.owner, cosmeticId);
-      else if (!(await store.repo.owned(p.owner)).has(cosmeticId)) return fail(403, "not_owned");
+      else if (!(await store.repo.owned(p.owner)).has(cosmeticId) && !includedFor(item, await store.repo.tier(p.owner)))
+        return fail(403, "not_owned");
     }
     if (!(await store.repo.equip(p.owner, companionId, slot, cosmeticId))) return fail(404, "unknown_companion");
     return c.json({ ok: true, slot, cosmeticId });
