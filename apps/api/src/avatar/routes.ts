@@ -7,9 +7,9 @@ import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
-import { cardObject, uploadObject, type AvatarFiles } from "./files.js";
+import { cardObject, cardPrefix, uploadObject, uploadPrefix, type AvatarFiles } from "./files.js";
 import { freeMarkers } from "./free-marker.js";
-import { UPLOAD_TYPES, type AvatarRepo, type CardManifestLike, type CreationRecord } from "./repo.js";
+import { ACTIVE, UPLOAD_TYPES, type AvatarRepo, type CardManifestLike, type CreationRecord } from "./repo.js";
 
 export interface AvatarDeps {
   repo: AvatarRepo;
@@ -36,6 +36,8 @@ export const READ_URL_SECONDS = 60 * 60;
 /** Signed read URLs for a co-member's card: shorter, since they reach other people. */
 export const ROOM_READ_URL_SECONDS = 15 * 60;
 const RoomId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+/** How many kept characters GET /creations lists (newest first). */
+export const KEPT_LIST_MAX = 20;
 /** The hub reservation outlives the upload window plus generation. */
 const RESERVATION_TTL_SECONDS = 60 * 60;
 
@@ -72,6 +74,11 @@ const noTokens = () => ({ error: "no_tokens", chips: [{ label: "¿Por qué?", hr
  *                             any work; answers a signed PUT for the photo
  *   POST /creations/:id/uploaded  the photo is up (the bucket's finalize event starts the job)
  *   GET  /creations/:id       status; the finished card with signed URLs
+ *   GET  /creations           the owner's kept characters (succeeded, not deleted), with thumbnails
+ *   DELETE /creations/:id     "Eliminar mi personaje": deletes the drawings (every object version),
+ *                             keeps the row as 'deleted' (billing, audit); a companion wearing it goes
+ *                             back to its roster avatar. Never refunds, never gives the free creation
+ *                             back. Refused while that creation is in flight. Idempotent.
  *   POST /use                 the companion wears that card (or, with null, its roster avatar again)
  *   GET  /quote, GET /companion
  *   GET  /rooms/:roomId/cards  co-members' custom cards (members of that room only, 15-minute URLs)
@@ -92,7 +99,8 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     try {
       const r = await av.hub.settle({
         reservation_id: c.reservationId,
-        outcome: c.status === "succeeded" ? "succeeded" : "cancelled",
+        // A deleted creation succeeded first: it stays billed.
+        outcome: c.status === "succeeded" || c.status === "deleted" ? "succeeded" : "cancelled",
       });
       if (r.ok || r.closed) await av.repo.markSettled(c.creationId, deps.now());
       else console.error("[avatar] settle failed", r.httpStatus);
@@ -117,7 +125,7 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
       });
     }
     const fresh = moved ? ((await av.repo.get(c.creationId)) ?? c) : c;
-    if (fresh.reservationId && !fresh.settled && ["succeeded", "failed", "expired"].includes(fresh.status)) {
+    if (fresh.reservationId && !fresh.settled && !ACTIVE.includes(fresh.status)) {
       await settle(fresh);
       return (await av.repo.get(c.creationId)) ?? fresh;
     }
@@ -282,6 +290,69 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     return c.json(await view(await reconcile(await owned(p.owner, c.req.param("id")))));
   });
 
+  /** The owner's kept characters (so each one can be worn or deleted), with a signed thumbnail. */
+  app.get("/creations", auth, limiter, async (c) => {
+    const p = principal(c);
+    const worn = (await av.repo.companionCard(p.owner))?.assetId ?? null;
+    const out = [];
+    for (const k of await av.repo.kept(p.owner, KEPT_LIST_MAX)) {
+      const thumbs = Object.entries(k.manifest.thumbs ?? {}).sort(([a], [b]) => Number(a) - Number(b));
+      const thumb = (thumbs.find(([size]) => Number(size) >= 128) ?? thumbs.at(-1))?.[1];
+      out.push({
+        creationId: k.creationId,
+        createdAt: k.createdAt,
+        worn: k.assetId === worn,
+        ...(thumb && /^[a-z0-9-]+\.webp$/.test(thumb)
+          ? { thumb: await av.files.signedRead(cardObject(p.owner, k.assetId, thumb), READ_URL_SECONDS) }
+          : {}),
+      });
+    }
+    return c.json({ creations: out });
+  });
+
+  /**
+   * "Eliminar mi personaje" (owner decision 2026-10-05, migration 20261005000400). Order: the row
+   * first (from then on nobody is handed the card: not the owner, not a room), then the bucket. If
+   * the bucket step fails the answer is 503 and a retry finishes it; files_deleted_at records it done.
+   */
+  app.delete("/creations/:id", auth, limiter, async (c) => {
+    const p = principal(c);
+    // reconcile: a stale creation moves on (and is then not deletable), a paid one is settled first.
+    let cr = await reconcile(await owned(p.owner, c.req.param("id")));
+    if (ACTIVE.includes(cr.status)) return c.json({ error: "in_flight" }, 409);
+    if (cr.status === "failed" || cr.status === "expired") return fail(409, "not_deletable");
+    let wasWorn = false;
+    if (cr.status === "succeeded") {
+      wasWorn = (await av.repo.companionCard(p.owner))?.assetId === cr.assetId;
+      if (!(await av.repo.markDeleted(cr.creationId, deps.now()))) {
+        cr = (await av.repo.get(cr.creationId)) ?? cr;
+        if (cr.status !== "deleted") return fail(409, "not_deletable");
+      } else {
+        await deps.audit.record({
+          action: "avatar.delete",
+          owner: p.owner,
+          actor: p.uid,
+          target: cr.creationId,
+          meta: { free: cr.free, wasWorn },
+        });
+        cr = (await av.repo.get(cr.creationId)) ?? cr;
+      }
+    }
+    if (!cr.filesDeleted) {
+      try {
+        await av.files.deletePrefix(cardPrefix(cr.owner, cr.assetId));
+        await av.files.deletePrefix(uploadPrefix(cr.owner, cr.assetId));
+        await av.repo.markFilesDeleted(cr.creationId, deps.now());
+      } catch (err) {
+        console.error("[avatar] delete card files failed", errorMessage(err));
+        return c.json({ error: "retry", creationId: cr.creationId, status: "deleted" }, 503);
+      }
+    }
+    // A paid creation's reservation may still be open (hub down at reconcile): try again now.
+    await settle(cr);
+    return c.json({ ok: true, creationId: cr.creationId, status: "deleted", wasWorn });
+  });
+
   app.post("/use", auth, limiter, async (c) => {
     const p = principal(c);
     const body = Use.safeParse(await c.req.json().catch(() => null));
@@ -291,6 +362,7 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
       return c.json({ ok: true, assetId: null });
     }
     const cr = await owned(p.owner, body.data.creationId);
+    if (cr.status === "deleted") return fail(409, "deleted");
     if (cr.status !== "succeeded" || !cr.manifest) return fail(409, "not_ready");
     if (!(await av.repo.setCompanion(p.owner, { assetId: cr.assetId, manifest: cr.manifest })))
       return fail(404, "no_companion");

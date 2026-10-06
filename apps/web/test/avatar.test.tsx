@@ -11,6 +11,7 @@ import {
   parseCreation,
   type AvatarApi,
   type Creation,
+  type DeleteResult,
 } from "@/lib/avatar";
 
 const ADULT = { ownPhoto: true, ageBand: "18_plus", guardianConsent: false } as const;
@@ -223,6 +224,36 @@ describe("custom companion client (/v1/avatar)", () => {
     expect(await api({ error: "x" }, 500).roomCards("room_fam")).toBe("error");
   });
 
+  it("lists kept characters (bucket thumbnails only) and deletes with DELETE /creations/:id", async () => {
+    const seen: { url: string; method: string }[] = [];
+    const api = (status: number, body: unknown) =>
+      httpAvatar("https://api.test", async () => "tok", (async (url: string, init: RequestInit) => {
+        seen.push({ url, method: init.method ?? "GET" });
+        return new Response(JSON.stringify(body), { status });
+      }) as unknown as typeof fetch);
+    expect(
+      await api(200, {
+        creations: [
+          { creationId: "cr_0123456789abcdef", createdAt: 1, worn: true, thumb: `${GCS}/thumb-128.webp?s` },
+          { creationId: "cr_0123456789abcdeg", createdAt: 2, worn: false, thumb: "https://evil.example/x" },
+          { creationId: 5 },
+        ],
+      }).kept(),
+    ).toEqual([
+      { creationId: "cr_0123456789abcdef", createdAt: 1, worn: true, thumb: `${GCS}/thumb-128.webp?s` },
+      { creationId: "cr_0123456789abcdeg", createdAt: 2, worn: false },
+    ]);
+    expect(seen.at(-1)).toEqual({ url: "https://api.test/v1/avatar/creations", method: "GET" });
+    expect(await api(200, { ok: true, status: "deleted" }).remove("cr_0123456789abcdef")).toBe("ok");
+    expect(seen.at(-1)).toEqual({ url: "https://api.test/v1/avatar/creations/cr_0123456789abcdef", method: "DELETE" });
+    expect(await api(409, { error: "in_flight" }).remove("cr_0123456789abcdef")).toBe("in_flight");
+    expect(await api(503, { error: "retry" }).remove("cr_0123456789abcdef")).toBe("retry");
+    expect(await api(404, { error: "unknown_creation" }).remove("cr_0123456789abcdef")).toBe("error");
+    expect(parseCreation({ creationId: "cr_0123456789abcdef", status: "deleted", free: true, priceTokens: 0 })).toEqual(
+      { creationId: "cr_0123456789abcdef", status: "deleted", free: true, priceTokens: 0 },
+    );
+  });
+
   it("es and en carry the same createCharacter strings", () => {
     const keys = (o: unknown, p = ""): string[] =>
       typeof o === "object" && o ? Object.entries(o).flatMap(([k, v]) => keys(v, `${p}${k}.`)) : [p];
@@ -244,11 +275,19 @@ const MINE: SignedCard = {
   urls: CARD.urls,
   expiresAt: Date.now() + 3_600_000,
 };
-const fakeApi = (o: { free: boolean; startReason?: "no_tokens" }) => {
+const fakeApi = (o: {
+  free: boolean;
+  startReason?: "no_tokens";
+  /** Kept characters (GET /creations); the first one is worn. */
+  kept?: string[];
+  removeResult?: DeleteResult;
+}) => {
   const calls: string[] = [];
   const starts: unknown[][] = [];
   let polls = 0;
   let wearing = false;
+  let kept = [...(o.kept ?? [])];
+  wearing = kept.length > 0;
   const api: AvatarApi = {
     quote: async () => ({ free: o.free, priceTokens: 217_750, dailyLeft: 5, active: null }),
     start: async (id, ...rest) => {
@@ -275,6 +314,22 @@ const fakeApi = (o: { free: boolean; startReason?: "no_tokens" }) => {
     use: async (id) => (calls.push(`use:${id}`), (wearing = id !== null), "ok"),
     companion: async () => (calls.push("companion"), wearing ? MINE : null),
     roomCards: async () => new Map(),
+    kept: async () =>
+      kept.map((id, i) => ({
+        creationId: id,
+        createdAt: Date.UTC(2026, 9, 5),
+        worn: i === 0 && wearing,
+        thumb: CARD.urls["thumb-128.webp"],
+      })),
+    remove: async (id) => {
+      calls.push(`remove:${id}`);
+      const r = o.removeResult ?? "ok";
+      if (r === "ok") {
+        if (kept[0] === id) wearing = false;
+        kept = kept.filter((k) => k !== id);
+      }
+      return r;
+    },
   };
   return { api, calls, starts };
 };
@@ -444,5 +499,81 @@ describe("Crea tu personaje", () => {
     fireEvent.click(screen.getByTestId("create-character-go"));
     expect(await screen.findByTestId("create-character-note")).toBeTruthy();
     expect(calls).toEqual([]);
+  });
+});
+
+describe("Eliminar mi personaje", () => {
+  afterEach(() => {
+    cleanup();
+    ctx.myCard?.dispose();
+    ctx.myCard = null;
+  });
+  const ID = "cr_0123456789abcdef";
+
+  it("asks in the page first (no browser dialog); cancel keeps it; confirm deletes and the roster avatar comes back", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+    const { api, calls } = fakeApi({ free: false, kept: [ID] });
+    ctx.avatar = api;
+    ctx.myCard = myCardSource(api);
+    renderIt();
+    const item = await screen.findByTestId("kept-character");
+    expect(item.textContent).toContain("En uso");
+    expect(await screen.findByTestId("create-character-current")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("kept-character-delete"));
+    const confirmBox = screen.getByTestId("kept-character-confirm");
+    expect(confirmBox.textContent).toContain("¿Eliminar este personaje?");
+    expect(confirmBox.textContent).toContain("Es permanente");
+    expect(confirmBox.textContent).toContain("borramos sus dibujos");
+    expect(confirmBox.textContent).toContain("No te devuelve los tokens que costó ni la creación gratis");
+    expect(confirmBox.textContent).toContain("volverá a verse como el personaje de la lista");
+    expect(document.activeElement).toBe(confirmBox);
+    expect(calls.filter((c) => c.startsWith("remove:"))).toEqual([]);
+
+    fireEvent.click(screen.getByTestId("kept-character-confirm-no"));
+    expect(screen.queryByTestId("kept-character-confirm")).toBeNull();
+    expect(calls.filter((c) => c.startsWith("remove:"))).toEqual([]);
+
+    fireEvent.click(screen.getByTestId("kept-character-delete"));
+    fireEvent.click(screen.getByTestId("kept-character-confirm-yes"));
+    expect((await screen.findByTestId("kept-character-note")).textContent).toContain("eliminamos tu personaje");
+    expect(calls.filter((c) => c.startsWith("remove:"))).toEqual([`remove:${ID}`]);
+    await waitFor(() => expect(screen.queryByTestId("kept-characters")).toBeNull());
+    // The card source was refreshed: no custom card any more, the roster avatar is drawn.
+    await waitFor(() => expect(screen.queryByTestId("create-character-current")).toBeNull());
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("in flight: says to wait, keeps it listed", async () => {
+    const { api } = fakeApi({ free: false, kept: [ID], removeResult: "in_flight" });
+    ctx.avatar = api;
+    renderIt();
+    fireEvent.click(await screen.findByTestId("kept-character-delete"));
+    fireEvent.click(screen.getByTestId("kept-character-confirm-yes"));
+    expect((await screen.findByTestId("kept-character-note")).textContent).toContain("todavía se está dibujando");
+    expect(screen.getByTestId("kept-character")).toBeTruthy();
+  });
+
+  it("English strings", async () => {
+    const { api } = fakeApi({ free: false, kept: [ID] });
+    ctx.avatar = api;
+    render(
+      <NextIntlClientProvider locale="en" messages={en}>
+        <CreateCharacter />
+      </NextIntlClientProvider>,
+    );
+    fireEvent.click(await screen.findByText("Delete my character"));
+    expect(screen.getByTestId("kept-character-confirm").textContent).toContain(
+      "It doesn't give back the tokens it cost or the free creation.",
+    );
+  });
+
+  it("not offered in onboarding", async () => {
+    const { api } = fakeApi({ free: true, kept: [ID] });
+    ctx.avatar = api;
+    renderIt({ onboarding: { ensureCompanion: async () => true } });
+    await screen.findByTestId("create-character");
+    expect(screen.queryByTestId("kept-characters")).toBeNull();
   });
 });

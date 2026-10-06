@@ -34,6 +34,8 @@ With `GEMINI_API_KEY` and `DATABASE_URL` set, an upload is a **creation** starte
 
 **Consent and the free creation** are the api's (`apps/api/src/avatar/routes.ts`, migration `20261005000200`): a creation is started only with the person's self-attestation (own photo; 18+, or 13–17 with a parent's or guardian's permission), recorded on the row. The free creation is once per person: a free success leaves keyed-hash markers (`chalito_private.avatar_free_markers`, written by a trigger on the success) that account deletion keeps. A creation started in onboarding (`use_when_ready`) is put on the companion by the same trigger.
 
+**Deleting a character** is the api's too ("Eliminar mi personaje", `DELETE /v1/avatar/creations/:id`, migration `20261005000400`, `docs/RUNBOOK.md` 6.8): it deletes every version of everything under `avatars/<owner>/<assetId>/` and keeps the row as `deleted` (no refund; the free creation stays used). It's refused while the creation is in flight, so it never races this job.
+
 **`GEMINI_API_KEY` must be a paid-tier key** (billing-enabled AI Studio project), so photos aren't used for training: `docs/OPS.md` §5, `docs/RUNBOOK.md` 1.3.
 
 **Failures are never billed:** a safety block or a refusal (`refused`), provider errors after 3 attempts (`provider`), a rejected file (`rejected`), or a missing upload. A failed free attempt doesn't use up the free credit. The api settles the hub reservation (`cancelled` for failures).

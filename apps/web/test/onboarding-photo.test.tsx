@@ -33,6 +33,8 @@ const avatar: AvatarApi = {
   use: async (id) => (log.push(`use:${id}`), "ok"),
   companion: async () => null,
   roomCards: async () => new Map(),
+  kept: async () => [],
+  remove: async () => "ok",
 };
 
 vi.mock("@/i18n/navigation", () => ({

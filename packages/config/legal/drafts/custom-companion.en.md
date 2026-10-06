@@ -13,7 +13,8 @@ Note for counsel: Chalyb's (the hub's) privacy notice currently says Chalyb "is 
 ### Add to "2. What data we process":
 
 - **Photo to create your character (optional):** if you choose "Create your character", you upload a photo of yourself. We use it only as a reference to draw your character and delete it as soon as the drawing is done, whether it worked or not. We don't keep the photo or its metadata (location and other EXIF data are removed before it's sent).
-- **Your character:** the five resulting drawings (you, in Chalito's style). They're your data and we keep them as your companion.
+- **Your character:** the five resulting drawings (you, in Chalito's style). They're your data and we keep them as your companion until you delete them.
+- **A record of each creation:** when you asked for it, whether it was free or how many tokens it cost, what generating it cost, and whether it finished, failed or you deleted it. It contains neither the photo nor the drawings.
 - **What you confirm when creating your character:** that the photo is of you, your age range (13 to 17, or 18 or older) and, if you're 13 to 17, that you have permission from your mom, dad or guardian, with the date and time you confirmed it. We don't ask for your date of birth.
 - **"Free character already used" marker:** a one-way code (a keyed hash) computed from your Chalyb account identifier and your email. It doesn't contain your email or identifier, and can't be reversed to get them. See "How long we keep it".
 
@@ -33,8 +34,8 @@ Note for counsel: Chalyb's (the hub's) privacy notice currently says Chalyb "is 
 ### Add to "5. How long we keep it":
 
 - **Your photo:** deleted as soon as the creation ends, whether it succeeded or failed. If something is interrupted, an automatic storage rule deletes it within 1 day at most.
-- **Your character:** for as long as you keep it. It's deleted when you delete it or delete your account.
-- **What you confirmed when creating your character:** kept with that creation's record; deleted with your account.
+- **Your character:** for as long as you keep it. You can delete it at any time with "Delete my character" (in Settings, under "Create your character"): we delete its drawings right away, including the storage's backup copies, and they can't be recovered. If it was your companion, it goes back to looking like the character from the list you had, in your rooms and on your desktop too. It's also deleted when you delete your account.
+- **The record of each creation and what you confirmed when creating your character:** kept even if you delete the character, only for billing, auditing and knowing you've used the free character; they include neither the photo nor the drawings. Deleted with your account. [Counsel to confirm the basis and whether there must be a maximum period.]
 - **"Free character already used" marker:** kept even after you delete your account, only so the free character can't be used again by creating a new account. It can't identify you or recover your email. [Counsel to confirm the basis (legitimate interest / abuse prevention) and whether it needs a maximum period.]
 
 ### New section "Minors" (or add to the existing one):
@@ -56,6 +57,7 @@ You must be at least 13 to create a character from your photo. If you're 13 to 1
 - **Your first character is free, once per person.** "Per person" means that deleting your account and creating another one (with the same Chalyb account or the same email) doesn't give another free character.
 - **Later ones cost Chalyb tokens.** The price is shown in tokens before you create, and is based on what generating the five drawings costs with the provider (today: 5 Gemini images at [US$0.067] each) plus Chalyb's margin. With the current configuration that's [217,750 tokens] per character. [Counsel and owner to confirm how the price is expressed and whether it must also be shown in pesos.]
 - **If a creation fails, you're not charged.** Only a finished character is charged.
+- **You can delete your character at any time** ("Delete my character"). It's permanent: its drawings are deleted and can't be recovered. Deleting it doesn't give back the tokens it cost or the free creation (if it was your free character, the next one is charged). It can't be deleted while it's being drawn: wait for it to finish.
 - You can create up to 5 characters a day.
 
 ### Add to "6. AI-generated content":

@@ -1101,6 +1101,24 @@
     },
     "ageRefused": "You need to be at least 13 to create a character from your photo.",
     "guardianRequired": "You need permission from your mom, dad or guardian.",
-    "attestationRequired": "Confirm the photo is of you and tell us your age."
+    "attestationRequired": "Confirm the photo is of you and tell us your age.",
+    "kept": {
+      "title": "Your characters",
+      "worn": "In use",
+      "thumbAlt": "Your character from {date}",
+      "created": "Created {date}"
+    },
+    "delete": {
+      "action": "Delete my character",
+      "confirmTitle": "Delete this character?",
+      "confirmBody": "This is permanent: we delete its drawings and they can't be recovered. It doesn't give back the tokens it cost or the free creation.",
+      "confirmWorn": "It's your companion right now: it will go back to looking like the character from the list you had.",
+      "confirm": "Yes, delete it for good",
+      "cancel": "Cancel",
+      "done": "Done: we deleted your character and its drawings.",
+      "inFlight": "That character is still being drawn. Wait for it to finish before deleting it.",
+      "retry": "Deleting didn't finish. Try again.",
+      "error": "Couldn't delete it. Try again."
+    }
   }
 }

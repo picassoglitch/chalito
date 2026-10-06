@@ -1390,6 +1390,29 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       wearing = creationId;
       return "ok";
     },
+    // GET /creations: the kept characters, newest first.
+    kept: async () =>
+      [...creations.values()]
+        .filter((c) => c.status === "succeeded" && c.card)
+        .reverse()
+        .map((c) => ({
+          creationId: c.creationId,
+          createdAt: Date.now(),
+          worn: c.creationId === wearing,
+          thumb: c.card!.urls["thumb-128.webp"]!,
+        })),
+    // DELETE /creations/:id: the drawings go, the row stays as deleted (the free creation stays used).
+    remove: async (creationId) => {
+      const c = creations.get(creationId);
+      if (!c) return "error";
+      if (["awaiting_upload", "queued", "generating"].includes(c.status)) return "in_flight";
+      if (c.status !== "succeeded" && c.status !== "deleted") return "error";
+      db.clientWrites.push({ table: "api", op: "avatar/delete", row: { creationId } });
+      c.status = "deleted";
+      delete c.card;
+      if (wearing === creationId) wearing = null;
+      return "ok";
+    },
     // GET /rooms/:id/cards: nobody else in the dev rooms wears a custom card.
     roomCards: async () => new Map(),
     // GET /companion: the card in use, "signed" for 60 minutes (here: Chalito's roster files).
