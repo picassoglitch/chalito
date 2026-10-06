@@ -247,12 +247,14 @@ export class AgentCore {
         if (aboveCeiling(p.permissionMode)) return this.#reject(cid, "permission_mode_above_ceiling");
         if (sandboxAboveCeiling(p.codexSandbox)) return this.#reject(cid, "codex_sandbox_above_ceiling");
         const adapter = this.d.adapters[p.adapter];
-        const enabled =
-          p.adapter === "claude-code"
-            ? policy.adapters.claudeCode
-            : p.adapter === "codex"
-              ? policy.adapters.codex
-              : false;
+        // "acp" (the old placeholder kind) is never enabled; a missing grok/gemini key is off.
+        const enabled = {
+          "claude-code": policy.adapters.claudeCode,
+          codex: policy.adapters.codex,
+          grok: policy.adapters.grok ?? false,
+          gemini: policy.adapters.gemini ?? false,
+          acp: false,
+        }[p.adapter];
         if (!adapter || !enabled) return this.#reject(cid, "adapter_disabled");
         const prompt = await open<string>(p.promptCt);
         try {

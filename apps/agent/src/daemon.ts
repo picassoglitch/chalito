@@ -5,7 +5,8 @@ import { homedir } from "node:os";
 import type { SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv } from "@chalito/adapters/claude-code";
 import { CodexAdapter } from "@chalito/adapters/codex";
-import { loadLiabilityText } from "@chalito/config";
+import { AcpAdapter } from "@chalito/adapters/acp";
+import { loadLiabilityText, loadProviders } from "@chalito/config";
 import type { NonceStore, TrustedClientList } from "@chalito/crypto";
 import type { AdapterKind, DeviceEvent } from "@chalito/protocol";
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
@@ -68,6 +69,47 @@ export const ANTHROPIC_KEY_MISSING = {
   en: "Your Anthropic API key is missing. Save it with `chalito keys set anthropic`.",
 } as const;
 
+const ACP_TITLE = { grok: "Grok Build", gemini: "Gemini CLI" } as const;
+type AcpTool = keyof typeof ACP_TITLE;
+export const ACP_PIN_FAILED = {
+  es: (tool: AcpTool, r: string) =>
+    r === "hash_mismatch"
+      ? `${ACP_TITLE[tool]} se actualizó: ejecuta \`chalito ${tool} pin\` otra vez en una terminal para confiar en la versión nueva.`
+      : r === "missing" || r === "not_pinned"
+        ? `El ${ACP_TITLE[tool]} fijado ya no está. Reinstálalo y ejecuta \`chalito ${tool} pin\` en una terminal.`
+        : `El ${ACP_TITLE[tool]} fijado ya no es seguro de ejecutar (${r === "world_writable" ? "cualquiera puede modificarlo" : r}). Revísalo y ejecuta \`chalito ${tool} pin\` en una terminal.`,
+  en: (tool: AcpTool, r: string) =>
+    r === "hash_mismatch"
+      ? `${ACP_TITLE[tool]} was updated: run \`chalito ${tool} pin\` again in a terminal to trust the new version.`
+      : r === "missing" || r === "not_pinned"
+        ? `The pinned ${ACP_TITLE[tool]} isn't there any more. Reinstall it, then run \`chalito ${tool} pin\` in a terminal.`
+        : `The pinned ${ACP_TITLE[tool]} is no longer safe to run (${r === "world_writable" ? "anyone can modify it" : r}). Check it, then run \`chalito ${tool} pin\` in a terminal.`,
+} as const;
+export const ACP_AUTH_MISSING = {
+  es: (tool: AcpTool) =>
+    tool === "grok"
+      ? "Grok Build está fijado pero falta tu API key de xAI. Guárdala con `chalito keys set xai`."
+      : "Gemini CLI está fijado pero falta tu API key de Gemini. Guárdala con `chalito keys set google`.",
+  en: (tool: AcpTool) =>
+    tool === "grok"
+      ? "Grok Build is pinned but your xAI API key is missing. Save it with `chalito keys set xai`."
+      : "Gemini CLI is pinned but your Gemini API key is missing. Save it with `chalito keys set google`.",
+} as const;
+
+/**
+ * Whether the CLI's own sign-in (the person's plan) may be used for this provider:
+ * `providers.yaml: <provider>.subscriptionLocal` is `on` or `approved`. `owner_only` and `off`
+ * (and an unreadable providers.yaml) mean API key only.
+ */
+export const signInAllowed = (provider: "xai" | "google", load: typeof loadProviders = loadProviders): boolean => {
+  try {
+    const s = load().providers[provider]?.subscriptionLocal;
+    return s === "on" || s === "approved";
+  } catch {
+    return false;
+  }
+};
+
 /** A setup step the user has to do; the CLI prints it without a stack trace. */
 export class OnboardingError extends Error {
   override name = "OnboardingError";
@@ -90,6 +132,8 @@ export interface DaemonDeps {
   every?: (fn: () => void, ms: number) => { clear(): void };
   /** Installs SIGTERM/SIGINT handlers; tests pass a no-op. */
   onSignal?: (sig: NodeJS.Signals, fn: () => void) => void;
+  /** Whether a provider's CLI sign-in may be used (signInAllowed in production). */
+  signInAllowed?: (provider: "xai" | "google") => boolean;
   /** Off in tests that don't want fs watchers. */
   watchFiles?: boolean;
   /** One agent per computer (instance-lock.ts); returns the release function. */
@@ -122,10 +166,31 @@ export interface AdapterInput {
   claudePath: string | null;
   /** The pinned Codex and the BYO OpenAI key; absent unless both are there and the pin checks out. */
   codex?: { path: string; apiKey: string; home: string; env: Record<string, string | undefined> };
+  /** Pinned Grok Build / Gemini CLI with a BYO key, or the CLI's own sign-in where allowed. */
+  grok?: AcpInput;
+  gemini?: AcpInput;
   log: Logger;
 }
 
-export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, claudePath, codex, log }) => ({
+export interface AcpInput {
+  path: string;
+  /** BYO key (wins over sign-in). */
+  apiKey?: string;
+  /** No key: use the CLI's own login, which providers.yaml allows for this provider. */
+  signIn: boolean;
+  /** Chalito's own state dir for the CLI (~/.chalito/<tool>). */
+  home: string;
+  env: Record<string, string | undefined>;
+}
+
+export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({
+  apiKey,
+  claudePath,
+  codex,
+  grok,
+  gemini,
+  log,
+}) => ({
   ...(apiKey && claudePath
     ? {
         "claude-code": new ClaudeCodeAdapter({
@@ -145,6 +210,26 @@ export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({ apiKey, c
         codex: new CodexAdapter({ codexPath: codex.path, apiKey: codex.apiKey, codexHome: codex.home, env: codex.env }),
       }
     : {}),
+  // Over ACP (D-022): every permission request goes through the gate; the key runs with
+  // Chalito's own CLI home, sign-in with the person's own login (never started or read by us).
+  ...Object.fromEntries(
+    (["grok", "gemini"] as const).flatMap((kind) => {
+      const i = kind === "grok" ? grok : gemini;
+      return i
+        ? [
+            [
+              kind,
+              new AcpAdapter(kind, {
+                binPath: i.path,
+                ...(i.apiKey ? { apiKey: i.apiKey } : { signIn: i.signIn }),
+                home: i.home,
+                env: i.env,
+              }),
+            ],
+          ]
+        : [];
+    }),
+  ),
 });
 
 const isInterpreter = (p: string) => /^(node|nodejs|bun|tsx)(\.exe)?$/i.test(basename(p));
@@ -320,7 +405,26 @@ const startDaemon = async (
     codexPin?.ok && openaiKey
       ? { path: cfg.codex!.path, apiKey: openaiKey, home: join(dir, "codex"), env: { ...env } }
       : undefined;
-  if (claudeProblem && !codex) throw new OnboardingError(claudeProblem);
+  const allowSignIn = deps.signInAllowed ?? ((p: "xai" | "google") => signInAllowed(p));
+  const acpTool = async (tool: AcpTool): Promise<AcpInput | undefined> => {
+    const pinned = cfg[tool];
+    if (!pinned) return undefined;
+    const check = await checkClaudePin(pinned);
+    if (!check.ok) {
+      log.error(`adapter.${tool}_unavailable`, { reason: ACP_PIN_FAILED[cfg.locale](tool, check.reason) });
+      return undefined;
+    }
+    const key = await secrets.get(tool === "grok" ? SECRET_NAMES.xaiApiKey : SECRET_NAMES.googleApiKey);
+    const signIn = !key && allowSignIn(tool === "grok" ? "xai" : "google");
+    if (!key && !signIn) {
+      log.error(`adapter.${tool}_unavailable`, { reason: ACP_AUTH_MISSING[cfg.locale](tool) });
+      return undefined;
+    }
+    return { path: pinned.path, ...(key ? { apiKey: key } : {}), signIn, home: join(dir, tool), env: { ...env } };
+  };
+  const grok = await acpTool("grok");
+  const gemini = await acpTool("gemini");
+  if (claudeProblem && !codex && !grok && !gemini) throw new OnboardingError(claudeProblem);
   if (claudeProblem) log.error("adapter.claude_code_unavailable", { reason: claudeProblem });
   const claudePath = claudeProblem ? null : cfg.claude!.path;
   const apiKey = claudePath ? await secrets.get(SECRET_NAMES.anthropicApiKey) : null;
@@ -343,6 +447,8 @@ const startDaemon = async (
       ...(agentBin ? servicePlanFiles(agentBin, deps.home ?? homedir()) : []),
       ...(claudePath ? [claudePath] : []),
       ...(cfg.codex ? [cfg.codex.path] : []),
+      ...(cfg.grok ? [cfg.grok.path] : []),
+      ...(cfg.gemini ? [cfg.gemini.path] : []),
       ...(agentBin ? [agentBin] : []),
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
@@ -350,7 +456,14 @@ const startDaemon = async (
   const coreDeps: AgentCoreDeps = {
     classifyExtras: () => extras,
     store: signedInStore,
-    adapters: (deps.adapters ?? defaultAdapters)({ apiKey, claudePath, ...(codex ? { codex } : {}), log }),
+    adapters: (deps.adapters ?? defaultAdapters)({
+      apiKey,
+      claudePath,
+      ...(codex ? { codex } : {}),
+      ...(grok ? { grok } : {}),
+      ...(gemini ? { gemini } : {}),
+      log,
+    }),
     policy,
     devMode,
     trust: () => trust,

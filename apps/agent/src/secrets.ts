@@ -101,4 +101,6 @@ export const SECRET_NAMES = {
   anthropicApiKey: "byo-anthropic-api-key",
   openaiApiKey: "byo-openai-api-key",
   xaiApiKey: "byo-xai-api-key",
+  /** Gemini API key (Google AI Studio) for Gemini CLI. */
+  googleApiKey: "byo-google-api-key",
 } as const;

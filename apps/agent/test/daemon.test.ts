@@ -2,12 +2,14 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "@chalito/adapters/codex";
+import { AcpAdapter } from "@chalito/adapters/acp";
 import { describe, expect, it, vi } from "vitest";
 import { verifyEnvelope, type SignedEnvelope } from "@chalito/crypto";
 import type { Cloud, FetchFn } from "../src/cloud.js";
 import { pinClaude } from "../src/claude-pin.js";
 import { ConfigTamperedError, chalitoDir, writeConfig, readConfig, configPath } from "../src/config.js";
 import {
+  ACP_AUTH_MISSING,
   CLAUDE_MISSING,
   CLAUDE_PIN_FAILED,
   ENDORSEMENT_SYNC_MS,
@@ -16,6 +18,7 @@ import {
   OPENAI_KEY_MISSING,
   defaultAdapters,
   runDaemon,
+  signInAllowed,
   type AdapterInput,
   type DaemonDeps,
 } from "../src/daemon.js";
@@ -45,6 +48,11 @@ const setup = async (
     apiKey?: boolean;
     codex?: boolean;
     openaiKey?: boolean;
+    grok?: boolean;
+    xaiKey?: boolean;
+    gemini?: boolean;
+    googleKey?: boolean;
+    signIn?: ("xai" | "google")[];
   } = {},
 ) => {
   const home = mkdtempSync(join(tmpdir(), "chalito-daemon-"));
@@ -69,6 +77,16 @@ const setup = async (
   chmodSync(codex, 0o755);
   const codexPin = await pinClaude(codex);
   if (opts.openaiKey) await secrets.set(SECRET_NAMES.openaiApiKey, "sk-openai-test-123456");
+  const acpPin = async (name: string) => {
+    const p = join(bin, name);
+    writeFileSync(p, `#!/bin/sh\n# ${name}\n`);
+    chmodSync(p, 0o755);
+    return pinClaude(p);
+  };
+  const grokPin = await acpPin("grok");
+  const geminiPin = await acpPin("gemini");
+  if (opts.xaiKey) await secrets.set(SECRET_NAMES.xaiApiKey, "xai-test-123456");
+  if (opts.googleKey) await secrets.set(SECRET_NAMES.googleApiKey, "AIza-test-123456");
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -84,6 +102,8 @@ const setup = async (
         deviceId: id.deviceId,
         ...(opts.claude === "missing" ? {} : { claude: pin }),
         ...(opts.codex ? { codex: codexPin } : {}),
+        ...(opts.grok ? { grok: grokPin } : {}),
+        ...(opts.gemini ? { gemini: geminiPin } : {}),
       },
       id.sign,
     );
@@ -121,6 +141,7 @@ const setup = async (
     every: (fn, ms) => (refreshers.push(fn), refreshEvery.push(ms), { clear: () => undefined }),
     onSignal: () => undefined,
     watchFiles: false,
+    signInAllowed: (p) => (opts.signIn ?? []).includes(p),
   };
   return {
     home,
@@ -137,6 +158,8 @@ const setup = async (
     adapterInputs,
     claude: pin.path,
     codex: codexPin.path,
+    grok: grokPin.path,
+    gemini: geminiPin.path,
     closed: () => closed,
   };
 };
@@ -527,6 +550,86 @@ describe("chalito run (daemon)", () => {
       expect(cfg).toMatchObject({ codexPath: "/opt/codex", apiKey: "sk-o", codexHome: "/h/.chalito/codex" });
       expect(cfg.chatgptPlan).toBeUndefined();
       expect(a.codex).toBeInstanceOf(CodexAdapter);
+    });
+  });
+
+  describe("ACP: Grok Build and Gemini CLI", () => {
+    it("a pinned CLI with a BYO key gets its adapter: pinned path, Chalito's own home, key over sign-in", async () => {
+      const s = await setup({ grok: true, xaiKey: true, gemini: true, googleKey: true, signIn: ["xai", "google"] });
+      const d = await runDaemon(s.deps);
+      const input = s.adapterInputs[0]!;
+      expect(input.grok).toMatchObject({
+        path: s.grok,
+        apiKey: "xai-test-123456",
+        signIn: false,
+        home: join(s.dir, "grok"),
+      });
+      expect(input.gemini).toMatchObject({
+        path: s.gemini,
+        apiKey: "AIza-test-123456",
+        signIn: false,
+        home: join(s.dir, "gemini"),
+      });
+      expect(d.classifyExtras().protectedPaths).toEqual(expect.arrayContaining([s.grok, s.gemini]));
+      await d.stop();
+    });
+
+    it("no key: the CLI's own sign-in only where providers.yaml allows it; otherwise unavailable with a hint", async () => {
+      const s = await setup({ grok: true, gemini: true, signIn: ["xai"] });
+      const d = await runDaemon(s.deps);
+      const input = s.adapterInputs[0]!;
+      expect(input.grok).toMatchObject({ path: s.grok, signIn: true });
+      expect(input.grok!.apiKey).toBeUndefined();
+      expect(input.gemini).toBeUndefined();
+      expect(s.logs.find((l) => l.msg === "adapter.gemini_unavailable")?.reason).toBe(ACP_AUTH_MISSING.es("gemini"));
+      await d.stop();
+    });
+
+    it("a CLI that changed since the pin isn't run", async () => {
+      const s = await setup({ grok: true, xaiKey: true });
+      writeFileSync(s.grok, "#!/bin/sh\necho swapped\n");
+      const d = await runDaemon(s.deps);
+      expect(s.adapterInputs[0]!.grok).toBeUndefined();
+      expect(s.logs.find((l) => l.msg === "adapter.grok_unavailable")?.reason).toMatch(/chalito grok pin/);
+      await d.stop();
+    });
+
+    it("with Grok usable, a missing Claude Code pin doesn't stop the agent", async () => {
+      const s = await setup({ claude: "missing", grok: true, xaiKey: true });
+      const d = await runDaemon(s.deps);
+      expect(s.adapterInputs[0]!.grok?.path).toBe(s.grok);
+      await d.stop();
+    });
+
+    it("defaultAdapters builds AcpAdapters for the given kinds", () => {
+      const log = createLogger(() => undefined);
+      const a = defaultAdapters({
+        apiKey: null,
+        claudePath: null,
+        grok: { path: "/opt/grok", signIn: true, home: "/h/.chalito/grok", env: {} },
+        gemini: { path: "/opt/gemini", apiKey: "AIza-k", signIn: false, home: "/h/.chalito/gemini", env: {} },
+        log,
+      });
+      expect(Object.keys(a).sort()).toEqual(["gemini", "grok"]);
+      expect(a.grok).toBeInstanceOf(AcpAdapter);
+      expect(a.grok!.kind).toBe("grok");
+      expect(a.gemini!.kind).toBe("gemini");
+      const cfg = (a.gemini as unknown as { config: Record<string, unknown> }).config;
+      expect(cfg).toMatchObject({ binPath: "/opt/gemini", apiKey: "AIza-k", home: "/h/.chalito/gemini" });
+      expect(cfg.signIn).toBeUndefined();
+    });
+
+    it("signInAllowed reads providers.yaml and fails closed", () => {
+      const fake = (s: string) => () => ({ providers: { xai: { subscriptionLocal: s } } }) as never;
+      expect(signInAllowed("xai", fake("on"))).toBe(true);
+      expect(signInAllowed("xai", fake("approved"))).toBe(true);
+      expect(signInAllowed("xai", fake("owner_only"))).toBe(false);
+      expect(signInAllowed("google", fake("on"))).toBe(false);
+      expect(
+        signInAllowed("xai", () => {
+          throw new Error("no providers.yaml");
+        }),
+      ).toBe(false);
     });
   });
 

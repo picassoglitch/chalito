@@ -59,6 +59,8 @@ export const policyRules = (p: Policy, locale: "es" | "en"): PolicyRule[] => {
       : [{ id: "workspaces", summary: t.noWorkspaces, effect: "deny" as const }]),
     { id: "adapters.claudeCode", summary: t.adapter("Claude Code"), effect: on(p.adapters.claudeCode) },
     { id: "adapters.codex", summary: t.adapter("Codex"), effect: on(p.adapters.codex) },
+    { id: "adapters.grok", summary: t.adapter("Grok Build"), effect: on(p.adapters.grok ?? false) },
+    { id: "adapters.gemini", summary: t.adapter("Gemini CLI"), effect: on(p.adapters.gemini ?? false) },
     ...(["local", "client", "mcp", "call"] as const).map((o) => ({
       id: `origins.${o}`,
       summary: t.origin[o],
