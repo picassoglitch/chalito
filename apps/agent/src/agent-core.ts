@@ -16,6 +16,7 @@ import {
   AgentEvent,
   CommandEnvelope,
   Id,
+  TerminalData,
   type CommandAcceptedMeta,
   type CommandRejectedMeta,
   isSignedOrigin,
@@ -60,10 +61,24 @@ export interface CommandResult {
   ok: boolean;
   reason?: string;
   sid?: string;
+  /** Accepted, but too frequent to audit one by one (terminal input and resizes). */
+  quiet?: boolean;
 }
 export interface PolicyHolder {
   get(): Policy;
   set(p: Policy, via: "local" | "remote_tighten" | "preset_accepted"): Promise<void>;
+}
+
+/** Remote terminals (terminal/control.ts); absent = every terminal.* command is refused. */
+export interface TerminalCommands {
+  has(tid: string): boolean;
+  open(
+    input: { appId: string; workspaceLabel: string; cols: number; rows: number },
+    origin: Origin,
+  ): Promise<{ ok: true; tid?: string } | { ok: false; reason: string }>;
+  input(tid: string, data: string, origin: Origin): { ok: true } | { ok: false; reason: string };
+  resize(tid: string, cols: number, rows: number, origin: Origin): { ok: true } | { ok: false; reason: string };
+  close(tid: string, origin: Origin): Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 /** "Connect your AI" (providers.ts); absent in setups that don't manage providers. */
@@ -95,6 +110,8 @@ export interface AgentCoreDeps {
   classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
   /** Computer control (computer/control.ts); absent = never attached. */
   computer?: ComputerControl;
+  /** Remote terminal (terminal/control.ts); absent = terminal.* refused. */
+  terminal?: TerminalCommands;
 }
 
 interface Session {
@@ -121,7 +138,7 @@ const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 
 const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
 
 const REMOTE_ENABLE_ATTEMPT =
-  /devmode\.(on|enable|toggleOn)|computer|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
+  /devmode\.(on|enable|toggleOn)|computer|remoteTerminal|rawShell|(terminal|shell)\.(enable|on)|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
 
 /**
  * The device agent's brain (ADR 0008): verifies commands against the local trusted list,
@@ -171,7 +188,7 @@ export class AgentCore {
     } finally {
       await this.d.store.deleteCommand(id).catch(() => undefined);
     }
-    await this.#publishResult(id, result);
+    if (!(result.ok && result.quiet)) await this.#publishResult(id, result);
     return result;
   }
 
@@ -395,6 +412,33 @@ export class AgentCore {
         if (!this.d.providers) return this.#reject(cid, "provider_failed");
         await this.d.providers.report();
         return { ok: true };
+      // ---- TERMINAL: open only what the person turned on here, after their passkey approval ----
+      case "terminal.open": {
+        if (!this.d.terminal) return this.#reject(cid, "terminal_disabled");
+        const r = await this.d.terminal.open(
+          { appId: p.appId, workspaceLabel: p.workspaceLabel, cols: p.cols ?? 80, rows: p.rows ?? 24 },
+          origin,
+        );
+        return r.ok ? { ok: true, ...(r.tid ? { sid: r.tid } : {}) } : this.#reject(cid, r.reason);
+      }
+      case "terminal.input": {
+        // Unknown terminals are refused before anything is decrypted.
+        if (!this.d.terminal?.has(p.tid)) return this.#reject(cid, "unknown_session");
+        const parsed = TerminalData.safeParse(await open<unknown>(p.dataCt));
+        if (!parsed.success) return this.#reject(cid, "invalid");
+        const r = this.d.terminal.input(p.tid, parsed.data.data, origin);
+        return r.ok ? { ok: true, quiet: true } : this.#reject(cid, r.reason);
+      }
+      case "terminal.resize": {
+        if (!this.d.terminal?.has(p.tid)) return this.#reject(cid, "unknown_session");
+        const r = this.d.terminal.resize(p.tid, p.cols, p.rows, origin);
+        return r.ok ? { ok: true, quiet: true } : this.#reject(cid, r.reason);
+      }
+      case "terminal.close": {
+        if (!this.d.terminal) return this.#reject(cid, "unknown_session");
+        const r = await this.d.terminal.close(p.tid, origin);
+        return r.ok ? { ok: true, sid: p.tid } : this.#reject(cid, r.reason);
+      }
     }
   }
 

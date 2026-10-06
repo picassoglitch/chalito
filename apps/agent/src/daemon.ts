@@ -15,6 +15,10 @@ import { checkClaudePin } from "./claude-pin.js";
 import { brokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
+import { driverFactory, registerDriver, type DriverRecipe } from "./drivers/registry.js";
+import { TerminalControl } from "./terminal/control.js";
+import { rawShellLaunch, resolveProgram, terminalDriverFactory, type TerminalLaunch } from "./terminal/driver.js";
+import { loadPtyBackend, type PtyBackend } from "./terminal/pty.js";
 import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, writeConfig, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
@@ -160,12 +164,22 @@ export interface DaemonDeps {
   computerDriver?: () => NativeDriver;
   /** Defaults to ~/.chalito/computer.sock (a named pipe on Windows). */
   brokerPath?: string;
+  /** Remote terminal's PTY layer (terminal/pty.ts in production; a fake in tests). */
+  ptyBackend?: () => PtyBackend;
+  /**
+   * The recipes remote terminal may open (`{id, name?, driver: {terminal: {command}}}`), by app
+   * id. The Connect engine's catalog plugs in here; until then no recipe is known and only the
+   * raw shell (its own local toggle) can open.
+   */
+  terminalRecipes?: (appId: string) => DriverRecipe | null;
 }
 
 export interface Daemon {
   core: AgentCore;
   /** Null when this agent runs without the desktop app (no indicator, so no computer control). */
   computer: ComputerControl | null;
+  /** Null without the desktop app, like computer control (no indicator, so no remote terminal). */
+  terminal: TerminalControl | null;
   store: AgentStore;
   policy: FilePolicyHolder;
   /** What the classifier treats as the agent's own binaries, protected files and Claude's PATH. */
@@ -374,6 +388,7 @@ const startDaemon = async (
       publish({ v: 1, type: "policy.tampered", deviceId: id.deviceId, fileHash, inForceHash, t: now() }),
     onChange: async (hash) => {
       await computer?.onPolicyChange();
+      await terminal?.onPolicyChange();
       if (!store) return;
       await store.updateDevice({ policyHash: hash });
       await store.publishDeviceEvent({
@@ -388,6 +403,7 @@ const startDaemon = async (
 
   // Late-bound: created once signed in (it reports through the store), only with the desktop app.
   let computer: ComputerControl | null = null;
+  let terminal: TerminalControl | null = null;
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
   const devModeBase = {
@@ -616,6 +632,55 @@ const startDaemon = async (
       locale: () => cfg.locale,
     });
     coreDeps.computer = computer;
+
+    // Remote terminal (terminal/control.ts): also only with the desktop app, which shows the
+    // indicator and holds the kill switch it shares with computer control.
+    registerDriver("terminal", terminalDriverFactory);
+    const recipes = deps.terminalRecipes ?? (() => null);
+    terminal = new TerminalControl({
+      deviceId: id.deviceId,
+      policy: () => policy.get().remoteTerminal,
+      workspaces: () => policy.get().workspaces,
+      launch: (appId) => {
+        const recipe = recipes(appId);
+        const factory = driverFactory("terminal");
+        return recipe && factory ? ((factory(recipe) as TerminalLaunch | null) ?? null) : null;
+      },
+      rawShell: () => rawShellLaunch(env),
+      pty: deps.ptyBackend ?? (() => loadPtyBackend()),
+      resolve: (program) => resolveProgram(program, env),
+      env: () => env,
+      requestApproval: (tid, input, onRequested) =>
+        core.approvals.request({
+          sid: tid,
+          risk: "HIGH",
+          stepUp: true,
+          origin: input.origin,
+          kind: "terminal",
+          details: input.details,
+          onRequested,
+        }),
+      seal: (value, aad) => core.sealer.seal(value, aad),
+      writeEvent: (e) => signedInStore.writeEvent(e),
+      upsertSession: (tid, data) => signedInStore.upsertSession(tid, data),
+      audit: auditAgent,
+      publish: (st) =>
+        publish({
+          v: 1,
+          type: "terminal.changed",
+          deviceId: id.deviceId,
+          enabled: st.enabled,
+          rawShell: st.rawShell,
+          activeSessions: st.activeSessions,
+          ...(st.by ? { by: st.by } : {}),
+          t: now(),
+        }),
+      now,
+      locale: () => cfg.locale,
+      log: (msg, meta) => log.warn(msg, meta),
+      ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
+    });
+    coreDeps.terminal = terminal;
   }
   const core = new AgentCore(coreDeps);
   if (computer) {
@@ -631,6 +696,9 @@ const startDaemon = async (
     }
     await control.onPolicyChange();
   }
+  await terminal?.onPolicyChange();
+  // The indicator watchdog: open terminals close when the desktop app stops showing it.
+  const terminalWatchdog = terminal ? every(() => void terminal?.tick(), 1000) : null;
 
   // A provider was connected, signed out, installed or re-pinned: rebuild what can run. Running
   // sessions keep their adapter; new ones get the new one.
@@ -800,6 +868,8 @@ const startDaemon = async (
     devWatcher?.close();
     const st = computer?.status();
     if (st && (st.active.length || st.pending.length)) await computer?.kill("agent_stop").catch(() => undefined);
+    terminalWatchdog?.clear();
+    await terminal?.kill("agent_stop").catch(() => undefined);
     for (const s of core.sessions.values()) {
       await s.handle.interrupt().catch(() => undefined);
       s.handle.close();
@@ -837,6 +907,7 @@ const startDaemon = async (
           reportDevMode,
           providers,
           computer,
+          terminal,
           audit: auditAgent,
         }),
         onError: (method, err) =>
@@ -854,5 +925,5 @@ const startDaemon = async (
     workspaces: policy.get().workspaces.length,
     policyHash: policy.hash,
   });
-  return { core, computer, store: signedInStore, policy, classifyExtras: () => extras, stop, done };
+  return { core, computer, terminal, store: signedInStore, policy, classifyExtras: () => extras, stop, done };
 };

@@ -15,7 +15,7 @@ const root = resolve(import.meta.dirname, "..");
 
 describe("compiled agent binary", () => {
   it.skipIf(!hasBun)(
-    "loads the keyring addon and libsodium; a keychain round-trip works or is cleanly unavailable",
+    "loads the keyring addon and libsodium; a keychain round-trip works or is cleanly unavailable; a PTY round-trips",
     () => {
       const build = spawnSync("pnpm", ["exec", "tsx", "scripts/build.ts", "src/smoke.ts"], {
         cwd: root,
@@ -33,6 +33,8 @@ describe("compiled agent binary", () => {
       expect([0, 2], run.stderr).toContain(run.status);
       const report = JSON.parse(run.stdout.trim());
       expect(report).toMatchObject({ smoke: "chalito-agent", addonLoaded: true, sodium: true });
+      // Remote terminal: Bun's built-in PTY works inside the compiled binary (no addon to embed).
+      if (process.platform !== "win32") expect(report).toMatchObject({ pty: "ok", ptyBackend: "bun" });
       expect(report.keyring).toBe(run.status === 0 ? "ok" : "unavailable");
     },
     120_000,

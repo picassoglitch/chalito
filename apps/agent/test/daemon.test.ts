@@ -498,6 +498,7 @@ describe("chalito run (daemon)", () => {
         enabled: false,
         active: [],
         pending: [],
+        terminal: { enabled: false, rawShell: false, pending: [] },
       });
       const ch = (await call("computerChallenge")).result;
       expect(ch).toMatchObject({ examples: expect.any(Array), risk: expect.any(String), phrase: expect.any(String) });
@@ -520,6 +521,54 @@ describe("chalito run (daemon)", () => {
       expect(existsSync(join(s.dir, "computer.sock"))).toBe(false);
     });
 
+    it("remote terminal: local enable (OS + answers), raw shell separately, shared indicator poll and kill switch", async () => {
+      const { d, call, osChecks } = await withIpc();
+      expect(d.terminal).not.toBeNull();
+      expect((await call("terminalStatus")).result).toEqual({
+        enabled: false,
+        rawShell: false,
+        active: [],
+        pending: [],
+      });
+      const ch = (await call("terminalChallenge")).result;
+      const answers = (phrase: string, over = {}) => ({ first: true, second: true, typed: phrase, ...over });
+      // The raw shell needs remote terminal on first.
+      expect((await call("enableRawShell", { answers: answers(ch.rawShell.phrase, { final: true }) })).result).toEqual({
+        ok: false,
+        reason: "terminal_off",
+      });
+      expect((await call("enableRemoteTerminal", { answers: answers("no") })).result).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect(d.policy.get().remoteTerminal).toBeUndefined();
+      expect((await call("enableRemoteTerminal", { answers: answers(ch.terminal.phrase) })).result).toEqual({
+        ok: true,
+      });
+      expect(d.policy.get().remoteTerminal).toMatchObject({ enabled: true, rawShell: false });
+      // Its own, stronger confirmation: without the last step it stays off.
+      expect((await call("enableRawShell", { answers: answers(ch.rawShell.phrase) })).result).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect((await call("enableRawShell", { answers: answers(ch.rawShell.phrase, { final: true }) })).result).toEqual({
+        ok: true,
+      });
+      expect(d.policy.get().remoteTerminal?.rawShell).toBe(true);
+      expect(osChecks.length).toBeGreaterThanOrEqual(3);
+      // The native poll sees it (the hotkey is held while it's on) and the kill switch covers it.
+      expect((await call("computerStatus", { indicatorShown: true })).result.terminal).toEqual({
+        enabled: true,
+        rawShell: true,
+        pending: [],
+      });
+      expect((await call("computerKill", { via: "hotkey" })).result).toEqual({ stopped: 0 });
+      expect((await call("disableRawShell")).result).toEqual({ changed: true });
+      expect((await call("disableRemoteTerminal")).result).toEqual({ changed: true });
+      expect(d.policy.get().remoteTerminal).toMatchObject({ enabled: false, rawShell: false });
+      await d.stop();
+    });
+
     it("computer control: a failed OS check enables nothing; no desktop app, no broker", async () => {
       const { d, call } = await withIpc(false);
       const phrase = (await call("computerChallenge")).result.phrase;
@@ -532,6 +581,7 @@ describe("chalito run (daemon)", () => {
       const s = await setup();
       const bare = await runDaemon(s.deps);
       expect(bare.computer).toBeNull();
+      expect(bare.terminal).toBeNull();
       expect(existsSync(join(s.dir, "computer.sock"))).toBe(false);
       await bare.stop();
     });
