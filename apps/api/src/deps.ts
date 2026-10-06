@@ -52,6 +52,11 @@ export interface Deps {
   rooms?: RoomsRepo;
   identity: IdentityIssuer;
   audit: AuditSink;
+  /**
+   * The signed curated recipe catalog (GET /v1/recipes/catalog), e.g. read from
+   * CHALITO_RECIPE_CATALOG_FILE. Unset: the route answers 404 (agents keep their built-in catalog).
+   */
+  recipeCatalog?: () => Promise<unknown | null>;
   /** The private releases bucket (ADR 0014). Unset (dev, tests): /releases isn't mounted. */
   releases?: ReleaseStore;
   config: ApiConfig;

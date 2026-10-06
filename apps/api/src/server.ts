@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { installConsoleRedaction } from "@chalito/redact";
 import { serve } from "@hono/node-server";
 import { PubSub } from "@google-cloud/pubsub";
@@ -183,6 +184,15 @@ const app = createApp({
     ],
   },
   now: Date.now,
+  // Connect engine: the signed recipe catalog, re-read on each request (it's small, and a new
+  // signed file takes effect without a deploy). Signed offline with the production catalog key
+  // (docs/OPS.md); agents verify it, the api only relays it.
+  ...(process.env.CHALITO_RECIPE_CATALOG_FILE
+    ? {
+        recipeCatalog: async () =>
+          JSON.parse(await readFile(process.env.CHALITO_RECIPE_CATALOG_FILE!, "utf8")) as unknown,
+      }
+    : {}),
   // ADR 0014: signed download URLs from the private releases bucket, signed as the release signer.
   ...(process.env.CHALITO_RELEASES_BUCKET && process.env.CHALITO_RELEASES_SIGNER
     ? { releases: new GcsReleaseStore(process.env.CHALITO_RELEASES_BUCKET, process.env.CHALITO_RELEASES_SIGNER) }
