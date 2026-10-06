@@ -115,6 +115,18 @@ describe("remote surfaces can never widen the device", () => {
     });
     expect(Object.keys(start)).not.toContain("computer");
     expect(Object.keys(start)).not.toContain("computerControl");
+    // provider.* (connect your AI) manage credentials and CLIs only: they carry no computer field either.
+    const keyCt = { alg: "xchacha20poly1305+sealedbox", nonce: b64(24), ct: b64(10), keys: { d1: b64(80) } };
+    for (const payload of [
+      { type: "provider.connect", provider: "openai", method: "api_key", keyCt },
+      { type: "provider.connect", provider: "xai", method: "signin" },
+      { type: "provider.disconnect", provider: "google" },
+      { type: "provider.install", provider: "anthropic" },
+      { type: "provider.status" },
+    ]) {
+      const parsed = CommandPayload.parse({ ...payload, computer: { enabled: true }, enabled: true });
+      expect(Object.keys(parsed).filter((k) => /computer|enabled/i.test(k))).toEqual([]);
+    }
   });
 
   it("relayed (unsigned) commands may only prompt, each relay from its own origin (review R-L2)", () => {
