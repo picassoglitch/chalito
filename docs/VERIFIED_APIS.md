@@ -1226,3 +1226,47 @@ Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landi
   - A new engine = one `engines` map entry in Chalyb's `infra/terraform/terraform.tfvars`: SA, 3 secrets, public scale-to-zero Cloud Run, bucket access, domain mapping `<slug>.chalyb.com`.
   - Workers need `cpu_idle = false`. Scheduled jobs default to paused.
 - **Hub pricing (MXN, before 16% IVA):** Pro $749/mo, $7,490/yr; VIP $2,499/mo; packs 100k $149, 500k $599, 2M $1,999. The trial and its rules live in `PRICING.trial`; Chalito follows them (D-026).
+
+
+---
+
+## Connect engine recipes (checked 2026-10-06)
+
+Method: each app's official docs, `npm view`, and the CLI's own `--help` from a throwaway `npm install --prefix <tmp>` (never global); Homebrew's formula/cask API and winget-pkgs manifests for desktop installs. Nothing was signed in to. Every recipe lists its sources and what couldn't be confirmed in its `verification` block (`recipes/<id>.yaml`); this table summarizes the unverified fields.
+
+Notable findings:
+- The four former providers are unchanged at Claude Code 2.1.291, codex-cli 0.160.1, grok 1.0.46, Gemini CLI 0.62.0 (Gemini's ACP auth methods: `oauth-personal`, `gemini-api-key`, `vertex-ai`, `gateway`; `--experimental-acp` is deprecated in favour of `--acp`).
+- Windsurf is now **Devin Desktop** (Cognition): windsurf.com redirects to devin.ai/desktop; brew cask `devin-desktop`, winget `CognitionAI.DevinDesktop`; bundle id still `com.exafunction.windsurf`. The recipe keeps id `windsurf` and detects both names.
+- The **ChatGPT desktop app** is now the Codex-based app (bundle id `com.openai.codex`, brew cask `chatgpt`; Windows: Microsoft Store `9PLM9XGG6VKS` via `winget -s msstore`); `com.openai.chat` is "ChatGPT Classic".
+- **Qwen Code**'s free Qwen OAuth tier ended 2026-04-15; sign-in is `/auth` inside its TUI only, and its ACP mode offers only the `openai` (API key) method. The recipe marks the sign-in `interactive` (never run headless).
+- **Cursor CLI**'s binary is now `agent` (installer keeps a `cursor-agent` link, which the recipe uses to avoid a generic name); ACP via `cursor-agent acp`, sign-in method `cursor_login`.
+- **Copilot CLI** (`@github/copilot` 1.0.92): `copilot login` and `--acp` (method `copilot-login`), no status or logout subcommand.
+- **goose** moved to the Agentic AI Foundation (aaif-goose/goose); brew formula `block-goose-cli`. **Aider** has no ACP mode, no login command and no npm package (install docs page only). The `aider` brew formula and the `ollama-app` cask are community-maintained (the Ollama recipe uses the cask; noted in its source).
+- Claude desktop now has a Linux beta (Debian/Ubuntu).
+
+| id | App | kinds | sign-in | unverified fields |
+|---|---|---|---|---|
+| `aider` | Aider | terminal | cli | `signin`; `signin.linkHosts`; `platforms.*.install`; `platforms.mac.detect.paths` |
+| `chatgpt-desktop` | ChatGPT (desktop) | desktop-app | desktop-app | `platforms.mac.detect.bundleIds`; `platforms.windows.install`; `platforms.windows.detect`; `driver.desktopApp.exe` |
+| `chatgpt` | ChatGPT | web-app | web | `driver.web.allowedOrigins`; `termsUrl` |
+| `claude-code` | Claude Code | claude-sdk, terminal | cli | `apiKey.docsUrl` |
+| `claude-desktop` | Claude (desktop) | desktop-app | desktop-app | `platforms.windows.detect.paths`; `platforms.windows.install`; `platforms.linux`; `driver.desktopApp.exe` |
+| `claude` | Claude | web-app | web | `driver.web.allowedOrigins` |
+| `codex` | Codex | codex, terminal | cli | none |
+| `copilot-cli` | GitHub Copilot CLI | acp, terminal | cli | `signin.statusCommand`; `signin.logoutCommand`; `signin.openLinks`; `platforms.mac.install` |
+| `copilot` | Microsoft Copilot | web-app | web | `signin.url` |
+| `cursor-cli` | Cursor CLI | acp, terminal | cli | `signin.statusCommand`; `signin.openLinks`; `launch.command`; `driver.acp` |
+| `cursor` | Cursor | desktop-app | desktop-app | `platforms.windows.detect.paths`; `platforms.mac.detect.bundleIds`; `platforms.linux.detect`; `platforms.windows.install` |
+| `deepseek` | DeepSeek | web-app | web | `signin.url`; `driver.web.allowedOrigins` |
+| `gemini-web` | Gemini | web-app | web | `termsUrl` |
+| `gemini` | Gemini CLI | acp, terminal | acp | none |
+| `goose` | goose | acp, terminal | cli | `signin`; `driver.acp.authMethods`; `platforms.mac.detect.paths`; `platforms.windows`; `vendor` |
+| `grok-web` | Grok | web-app | web | `driver.web.allowedOrigins` |
+| `grok` | Grok Build | acp, terminal | cli | `homepage` |
+| `lm-studio` | LM Studio | desktop-app, terminal | desktop-app | `signin`; `platforms.*.detect.paths`; `driver.acp`; `platforms.linux` |
+| `mistral-le-chat` | Le Chat | web-app | web | `signin.url`; `driver.web.allowedOrigins` |
+| `ollama` | Ollama | desktop-app, terminal | cli | `signin`; `driver.terminal.command`; `platforms.mac.detect.bundleIds`; `platforms.windows.detect.paths`; `platforms.linux.launch`; `platforms.mac.install` |
+| `opencode` | OpenCode | acp, terminal | cli | `signin.statusCommand`; `signin.command`; `platforms.*.install` |
+| `perplexity` | Perplexity | web-app | web | `signin.url`; `driver.web.allowedOrigins`; `termsUrl` |
+| `qwen-code` | Qwen Code | acp, terminal | cli | `signin.command`; `driver.acp.authMethods`; `apiKey.env`; `termsUrl` |
+| `windsurf` | Devin Desktop (formerly Windsurf) | desktop-app | desktop-app | `name`; `platforms.windows.detect.paths`; `platforms.*.detect.commands`; `platforms.linux`; `signin.url` |
