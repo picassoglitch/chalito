@@ -45,6 +45,41 @@ export const COSMETICS: Record<string, string> = {
   sparkle_aura: "a soft glowing ring of pastel sparkles and tiny stars forming an oval halo, airy and light",
   portal_swirl:
     "a flat glowing swirl portal seen from slightly above, teal and violet light ring on the ground with small sparkles",
+  // Wearables that fit any body (owner 2026-10-06): neck pieces sit on a detected neck point, back
+  // pieces are drawn behind the character. No shirts or suits: an overlay can't follow 220 shapes.
+  // Neck (anchors.neck, detected per character by detect-wear-anchors.ts).
+  bow_tie: "a single cute bow tie, teal with small white polka dots, front view, nothing else",
+  bow_tie_red: "a single cute bow tie, glossy cherry red, front view, nothing else",
+  necktie: "a short cute necktie with a small knot, navy blue with thin gold diagonal stripes, front view, nothing else",
+  bell_collar: "a thin red collar band seen straight from the front as a flat gentle smile-shaped curve (not a ring, not seen from above), with a shiny gold jingle bell hanging from the middle, nothing else",
+  pearl_necklace: "a short necklace of round white pearls seen from the front as a gentle U-shaped curve, nothing else",
+  gold_medal:
+    "a round shiny gold medal with a star on it hanging from a short red, white and green ribbon loop, front view, nothing else",
+  marigold_necklace:
+    "a short necklace of round orange cempasuchil marigold flowers seen from the front as a gentle U-shaped curve, nothing else",
+  flower_lei:
+    "a short Hawaiian flower lei of pink, white and yellow hibiscus flowers seen from the front as a gentle U-shaped curve, nothing else",
+  // Head and face (fixed anchors work for these).
+  charro_hat:
+    "a small cute Mexican charro sombrero, black with silver embroidery on the wide brim, front view, the hat alone floating, no head, no face, no person",
+  crown: "a small cute golden crown with three points and colorful round gems, front view, as worn on a head",
+  cap: "a small cute baseball cap, bright blue with a white front panel, front view, the cap alone floating, no head, no face, no person, no logo, no letters",
+  party_hat: "a small cone-shaped party hat, pink with yellow polka dots and a fluffy pompom on top, front view",
+  flower_headband: "a thin arched headband decorated with small pink and white flowers, front view, the headband alone floating, no head, no hair, no face, no person",
+  sunglasses: "a pair of cute black sunglasses with rounded rectangular lenses and a small shine, front view, nothing else",
+  heart_glasses: "a pair of cute heart-shaped glasses with pink tinted lenses, front view, nothing else",
+  mustache: "a single big curly dark-brown cartoon mustache, front view, nothing else",
+  // Back (drawn behind the character).
+  angel_wings: "a pair of small fluffy white angel wings spread open, seen from the front, symmetric, nothing else",
+  butterfly_wings:
+    "a pair of small translucent butterfly wings, pastel pink and lilac with little spots, spread open, front view, symmetric, nothing else",
+  bat_wings: "a pair of small cute purple bat wings spread open, seen from the front, symmetric, nothing else",
+  dragon_wings:
+    "a pair of small green dragon wings with pale membranes spread open, seen from the front, symmetric, nothing else",
+  hero_cape:
+    "a short flowing red superhero cape seen from the front as if hanging behind shoulders, the collar at the top, nothing else",
+  jetpack:
+    "a small cute retro jetpack with two silver rocket tanks side by side and little orange flames at the bottom, seen from the front as if worn on the back, nothing else",
 };
 const OBJECT_STYLE =
   "Cute sticker-style game item art matching a chibi companion: soft cel shading, clean thick dark-brown outline, warm pastel palette, " +
