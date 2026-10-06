@@ -11,6 +11,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CATALOG } from "./catalog.js";
 
 export const MODEL = "gemini-3.1-flash-image";
 const MAX_CALLS = 40;
@@ -29,6 +30,8 @@ export const CHARACTERS: Record<string, string> = {
   tito: "Tito, a round little owl with soft brown and cream feathers, huge amber eyes, tiny tufted ears, small wings",
   canela: "Canela, a small orange fox with a white-tipped bushy tail, white chest, dark paws, big curious eyes",
   nube: "Nube, a fluffy white bunny with long floppy ears with pink insides, a pink nose, a round cotton tail, sky-blue eyes",
+  // The catalog (catalog.ts) adds the rest; the six above keep their order so their seeds don't change.
+  ...Object.fromEntries(CATALOG.map((ch) => [ch.id, ch.prompt])),
 };
 
 export const EMOTIONS: Record<string, string> = {
@@ -104,8 +107,10 @@ const main = async () => {
     return;
   }
   const ids = only.length ? only : Object.keys(CHARACTERS);
-  for (const [i, id] of ids.entries()) {
-    const seed = 1000 + i;
+  const allIds = Object.keys(CHARACTERS);
+  for (const id of ids) {
+    if (!CHARACTERS[id]) throw new Error(`unknown character ${id}`);
+    const seed = 1000 + allIds.indexOf(id);
     const neutralPath = join(outDir, `${id}-neutral.png`);
     if (!existsSync(neutralPath)) {
       const prompt = `${CHARACTERS[id]}. Neutral, calm, gently smiling expression, relaxed standing pose. ${STYLE}`;
