@@ -2,11 +2,28 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ProviderConnectionDoc, type Provider } from "@chalito/protocol";
+import { AppConnectionDoc, PROVIDER_APP, type Provider } from "@chalito/protocol";
 import type { ClaudePin } from "../src/claude-pin.js";
-import { officialLink, parseVersion, PROVIDER_CLI } from "../src/provider-cli.js";
+import { officialLink, parseVersion } from "../src/provider-cli.js";
 import { signInAllowed } from "../src/daemon.js";
-import { INSTALL_CONFIRM_MS, ProviderManager } from "../src/providers.js";
+import { BUILTIN_CATALOG, type CatalogEntry } from "../src/apps/catalog.js";
+import { AppManager, INSTALL_CONFIRM_MS } from "../src/apps/manager.js";
+
+/**
+ * #30's ProviderManager behaviour, now through the connect engine (AppManager driven by the
+ * built-in recipes). Every case still speaks in providers, mapped to their app ids, which is
+ * what the provider.* aliases do.
+ */
+const LEGACY = Object.values(PROVIDER_APP) as string[];
+const PROVIDER_OF = Object.fromEntries(Object.entries(PROVIDER_APP).map(([p, a]) => [a, p])) as Record<
+  string,
+  Provider
+>;
+const legacyEntries = (): CatalogEntry[] =>
+  BUILTIN_CATALOG.recipes
+    .filter((r) => LEGACY.includes(r.id))
+    .sort((a, b) => LEGACY.indexOf(a.id) - LEGACY.indexOf(b.id))
+    .map((recipe) => ({ recipe, custom: false, enabled: true }));
 
 type SubscriptionLocal = "off" | "owner_only" | "approved" | "on";
 import { createLogger } from "../src/redact.js";
@@ -45,7 +62,7 @@ const setup = (
   });
   const secrets = new MemorySecretStore();
   const pins = new Map<Provider, ClaudePin>();
-  const reports: [Provider, ProviderConnectionDoc][] = [];
+  const reports: [Provider, AppConnectionDoc][] = [];
   const logs: string[] = [];
   let changes = 0;
   let now = NOW;
@@ -56,19 +73,42 @@ const setup = (
     google: "on",
     ...o.settings,
   };
-  const m = new ProviderManager({
+  const allowed = (p: Provider) =>
+    signInAllowed(p, () => ({ providers: { [p]: { subscriptionLocal: settings[p] } } }) as never);
+  const mgr = new AppManager({
     dir,
     env: { PATH: bin, HOME: home },
     platform: "linux",
     secrets,
     procs: fake.procs,
-    signinAllowed: (p) => signInAllowed(p, () => ({ providers: { [p]: { subscriptionLocal: settings[p] } } }) as never),
-    pins: { get: (p) => pins.get(p), set: async (p, pin) => void pins.set(p, pin) },
-    report: async (p, doc) => void reports.push([p, ProviderConnectionDoc.parse(doc)]),
+    entries: legacyEntries,
+    // The daemon's rule for the former providers: providers.yaml decides (their recipes mirror it).
+    signinAllowed: (e) => allowed(PROVIDER_OF[e.recipe.id]!),
+    pins: { get: (a) => pins.get(PROVIDER_OF[a]!), set: async (a, pin) => void pins.set(PROVIDER_OF[a]!, pin) },
+    report: async (a, doc) => void reports.push([PROVIDER_OF[a]!, AppConnectionDoc.parse(doc)]),
     onChange: () => void changes++,
     now: () => now,
     log: createLogger((l) => logs.push(l)),
   });
+  // The provider.* aliases: provider → app id.
+  const A = (p: Provider) => PROVIDER_APP[p];
+  const m = {
+    connectKey: (p: Provider, k: unknown) => mgr.connectKey(A(p), k),
+    signin: (p: Provider) => mgr.signin(A(p)),
+    disconnect: (p: Provider) => mgr.disconnect(A(p)),
+    requestInstall: (p: Provider) => mgr.requestInstall(A(p)),
+    install: (p: Provider) => mgr.install(A(p)),
+    activeMode: (p: Provider) => mgr.activeMode(A(p)),
+    status: async (p: Provider) => (await mgr.status(A(p)))!,
+    view: async () => (await mgr.view()).map((v) => ({ ...v, provider: PROVIDER_OF[v.appId]! })),
+    report: (p?: Provider) => mgr.report(p && A(p)),
+    get signingIn() {
+      return mgr.signingIn;
+    },
+    get installing() {
+      return mgr.installing;
+    },
+  };
   const last = (p: Provider) => reports.filter(([q]) => q === p).at(-1)?.[1];
   return {
     m,
@@ -100,7 +140,7 @@ describe("plan sign-in gate (providers.yaml subscriptionLocal)", () => {
 
 describe("provider CLI helpers", () => {
   it("opens only links on the provider's own hosts", () => {
-    const hosts = PROVIDER_CLI.xai.linkHosts;
+    const hosts = BUILTIN_CATALOG.recipes.find((r) => r.id === "grok")!.signin.linkHosts!;
     expect(officialLink("  https://accounts.x.ai/oauth2/device?user_code=26ZT-74YM", hosts)).toBe(
       "https://accounts.x.ai/oauth2/device?user_code=26ZT-74YM",
     );
@@ -117,7 +157,7 @@ describe("provider CLI helpers", () => {
   });
 });
 
-describe("ProviderManager", () => {
+describe("AppManager on the former providers (provider.* aliases)", () => {
   it("reports every provider: not installed, or installed and waiting for a key or sign-in", async () => {
     const s = setup({ installed: ["codex"] });
     await s.m.report();
@@ -129,6 +169,8 @@ describe("ProviderManager", () => {
       cli: { installed: false, version: null },
       error: null,
       at: NOW,
+      kind: "claude-sdk",
+      custom: false,
     });
     expect(s.last("openai")).toMatchObject({ state: "needs_auth", cli: { installed: true, version: "1.2.3" } });
   });
@@ -141,7 +183,7 @@ describe("ProviderManager", () => {
     expect(s.pins.get("openai")?.path).toBe(join(s.bin, "codex"));
     expect(s.changes()).toBe(1);
     expect(JSON.stringify([s.reports, s.logs])).not.toContain("sk-proj-secret");
-    expect(readFileSync(join(s.dir, "providers.json"), "utf8")).not.toContain("sk-proj");
+    expect(readFileSync(join(s.dir, "apps.json"), "utf8")).not.toContain("sk-proj");
   });
 
   it("refuses an empty or multi-line key, and a key for Gemini lands in its own keychain slot", async () => {
@@ -241,7 +283,7 @@ describe("ProviderManager", () => {
     await s.m.signin("google");
     await s.m.signingIn;
     const off = setup({ installed: ["gemini"], settings: { google: "off" } });
-    writeFileSync(join(off.dir, "providers.json"), readFileSync(join(s.dir, "providers.json")));
+    writeFileSync(join(off.dir, "apps.json"), readFileSync(join(s.dir, "apps.json")));
     expect(off.m.activeMode("google")).toBeNull();
     expect((await off.m.status("google")).state).toBe("blocked_by_policy");
   });

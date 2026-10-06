@@ -1,0 +1,42 @@
+# Grok Build (xAI). Was provider "xai" (#30); ACP profile in packages/adapters/src/acp (D-062).
+v: 1
+id: grok
+name: Grok Build
+vendor: xAI
+homepage: https://x.ai/grok
+termsUrl: https://x.ai/legal/terms-of-service
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect: { commands: [grok] }
+    install: { via: npm, ref: "@xai-official/grok" }
+  linux:
+    detect: { commands: [grok] }
+    install: { via: npm, ref: "@xai-official/grok" }
+  windows:
+    detect: { commands: [grok] }
+    install: { via: npm, ref: "@xai-official/grok" }
+signin:
+  via: cli
+  # Without a terminal, `grok login` prints an accounts.x.ai link and code and waits; the agent opens it.
+  command: [grok, login]
+  logoutCommand: [grok, logout]
+  linkHosts: [accounts.x.ai, auth.x.ai]
+  openLinks: true
+  planSignin: "on"
+apiKey:
+  env: XAI_API_KEY
+  label: xAI API key
+  docsUrl: https://docs.x.ai/docs/overview
+driver:
+  acp: { command: [grok, --no-auto-update, agent, --no-leader, stdio], authMethods: [xai.api_key] }
+  terminal: { command: [grok] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config (sandbox flag added per mode)"
+    - "grok --help, grok login --help (@xai-official/grok 1.0.46), DEVIATIONS D-062"
+  unverified:
+    - field: homepage
+      note: "Grok Build product page URL not re-checked"

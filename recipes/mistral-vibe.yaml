@@ -1,0 +1,72 @@
+v: 1
+id: mistral-vibe
+name: Mistral Vibe
+vendor: Mistral AI
+homepage: https://github.com/mistralai/mistral-vibe
+termsUrl: https://mistral.ai/terms
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect:
+      commands: [vibe-acp, vibe]
+      paths: ["~/.local/bin/vibe-acp"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://github.com/mistralai/mistral-vibe
+    launch:
+      command: [vibe]
+  windows:
+    detect:
+      commands: [vibe-acp, vibe]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://github.com/mistralai/mistral-vibe
+    launch:
+      command: [vibe]
+  linux:
+    detect:
+      commands: [vibe-acp, vibe]
+      paths: ["~/.local/bin/vibe-acp"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://github.com/mistralai/mistral-vibe
+    launch:
+      command: [vibe]
+signin:
+  via: cli
+  # API key only: the first `vibe` run asks for it in its own terminal UI. No plan sign-in.
+  interactive: true
+  command: [vibe]
+  planSignin: "off"
+apiKey:
+  env: MISTRAL_API_KEY
+  label: Mistral API key
+  docsUrl: https://docs.mistral.ai/getting-started/quickstart/
+driver:
+  # The ACP preset holds Vibe's `ask` mode for the whole session.
+  acp: { command: [vibe-acp], authMethods: [] }
+  terminal: { command: [vibe] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config (ask mode held)"
+    - "acp-generic builder: ACP handshake VERIFIED against Mistral Vibe 2.25.8 (`vibe-acp`), key in MISTRAL_API_KEY"
+  unverified:
+    - field: platforms.*.install
+      note: "Official install is a script or `uv tool install mistral-vibe` (Python); neither npm/brew/winget, so the recipe only opens the project page. Not re-checked during integration."
+    - field: platforms.*.detect.paths
+      note: "~/.local/bin is uv's default tool bin dir; not checked on a real install."
+    - field: signin
+      note: "Vibe has no vendor sign-in; the first interactive run asks for the API key. Not run during integration."
+    - field: termsUrl
+      note: "Mistral's general terms page; not re-read."
+    - field: apiKey.docsUrl
+      note: "Mistral quickstart (API keys); not re-read."

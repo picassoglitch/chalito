@@ -19,6 +19,9 @@ The catalogue of security-relevant events behind the owner-readable audit views.
 | `chalito.audit_devmode` | `audit_trail` filtered to `devmode` |
 | `chalito.audit_connectors` | `audit_trail` filtered to `connectors` |
 | `chalito.audit_store` | `audit_trail` filtered to `store` |
+| `chalito.audit_computer` | `audit_trail` filtered to `computer` |
+| `chalito.audit_screen` | `audit_trail` filtered to `screen` |
+| `chalito.audit_terminal` | `audit_trail` filtered to `terminal` |
 | `chalito.audit_approvals` | Every non-pending row of `chalito.approvals`, as `approval.<status>` with sid, kind, risk, origin, step-up, reason and the last signer device. The sealed details and the signature are left out. Plus the `approvals` category of `audit_trail`. |
 
 **Category:** `chalito.audit_category(type)` sets it from the type prefix:
@@ -28,6 +31,9 @@ The catalogue of security-relevant events behind the owner-readable audit views.
 | `devices` | `device.*`, `pairing.*`, `recovery.*`, `webauthn.*`, `trust.*`, `command.rejected` |
 | `approvals` | `approval.*` |
 | `devmode` | `devmode.*`, `policy.*`, `remote_enable.rejected` |
+| `computer` | `computer.*` (migration `20261005000100_chalito_computer_control.sql`) |
+| `terminal` | `terminal.*` (migration `20261006000400_chalito_remote_terminal.sql`) |
+| `screen` | `screen.*` (migration `20261006000600_chalito_remote_screen.sql`) |
 | `connectors` | `mcp.*`, `oauth.*`, `connector.*` |
 | `store` | `store.*` |
 | `channels` | `phone.*`, `channel.*` |
@@ -98,6 +104,30 @@ Written by the agent into `chalito.audit`. `actor` is the device id. Meta is red
 | `command.rejected` | devices | `agent` | `apps/agent/src/agent-core.ts` (invalid or refused signed command) | `{id, reason}` |
 | `trust.client_removed` | devices | `agent` | `apps/agent/src/agent-core.ts` | `{clientDeviceId, by}` |
 | `approval.decision_rejected` | approvals | `agent` | `apps/agent/src/approvals.ts` | `{aid, reason: invalid_signature, missing_step_up or a verify reason, signer?}` |
+| `computer.changed` | computer | `deviceEvent` | `apps/agent/src/daemon.ts` (computer control turned on/off, a session got or lost control) | `{deviceId, enabled, activeSessions, by?, t}` |
+| `computer.enabled`, `computer.disabled` | computer | `agent` | `apps/agent/src/ipc-handlers.ts` (desktop panel) | `{copyVersion, locale, via}` / `{by}`. The CLI's changes show as `policy.changed` + `computer.changed` |
+| `computer.requested` | computer | `agent` | `apps/agent/src/computer/control.ts` (a session's first action asks for the `computer_control` approval) | `{sid, adapter, firstTool}` |
+| `computer.granted`, `computer.denied` | computer | `agent` | `apps/agent/src/computer/control.ts` | `{sid, reason, by?}` |
+| `computer.action` | computer | `agent` | `apps/agent/src/computer/control.ts` (every tool call, allowed or refused) | `{sid, tool, ok, reason?}` plus `display, x, y, fromX…toY, button, dx, dy, keys, id, ms, textLength` when given. Never the screenshot, the typed text or window titles. A rate-limit refusal is recorded once a minute per session. |
+| `computer.killed` | computer | `agent` | `apps/agent/src/computer/control.ts` (hotkey, tray, indicator, panel, policy, agent stop) | `{by, sessions}` |
+| `terminal.changed` | terminal | `deviceEvent` | `apps/agent/src/daemon.ts` (remote terminal or the raw shell turned on/off, a terminal opened or closed) | `{deviceId, enabled, rawShell, activeSessions, by?, t}` |
+| `terminal.enabled`, `terminal.disabled`, `terminal.raw_shell_enabled`, `terminal.raw_shell_disabled` | terminal | `agent` | `apps/agent/src/ipc-handlers.ts` (desktop panel) | `{copyVersion, locale, via}` / `{by}`. The CLI's changes show as `policy.changed` + `terminal.changed` |
+| `terminal.requested` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (`terminal.open` passed the local checks; the `terminal` approval is asked) | `{tid, appId, rawShell, origin, cols, rows}` |
+| `terminal.granted`, `terminal.denied` | terminal | `agent` | `apps/agent/src/terminal/control.ts` | `{tid, reason, by?}` |
+| `terminal.opened` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (the program started in the PTY) | `{tid, appId, rawShell, cols, rows, pty}` |
+| `terminal.closed` | terminal | `agent` | `apps/agent/src/terminal/control.ts` | `{tid, appId, reason, exitCode?, durationMs?, inputChars, outputChars, droppedChars}`. Never the typed or printed bytes. |
+| `terminal.refused` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (an open, input or resize refused) | `{reason, appId?, origin?, why?}` or `{tid, reason, what}`; input/resize refusals at most once a minute per terminal |
+| `terminal.killed` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (hotkey, tray, indicator, panel, indicator lost, agent stop) | `{by, sessions}` |
+| `computer.app_requested` | computer | `agent` | `apps/agent/src/computer/control.ts` (`launch_app` / `open_web_app` asks the `app_control` approval for one app) | `{sid, adapter, appId, firstTool}` |
+| `computer.app_granted`, `computer.app_denied` | computer | `agent` | `apps/agent/src/computer/control.ts` | `{sid, appId, reason, by?}`. `computer.action` rows for the app tools carry `appId` and `urlOrigin` (never the path or query) |
+| `screen.changed` | screen | `deviceEvent` | `apps/agent/src/daemon.ts` (remote view/control turned on/off, a screen session started or ended) | `{deviceId, view, control, activeSessions, by?, t}` |
+| `screen.enabled`, `screen.disabled` | screen | `agent` | `apps/agent/src/ipc-handlers.ts` (desktop panel) | `{mode, copyVersion, locale, via}` / `{what, by}`. The CLI's changes show as `policy.changed` + `screen.changed` |
+| `screen.requested` | screen | `agent` | `apps/agent/src/screen/manager.ts` (`screen.open` from a trusted browser) | `{sid, mode, by, display, appId?}` |
+| `screen.granted`, `screen.denied` | screen | `agent` | `apps/agent/src/screen/manager.ts` (`remote_view` / `remote_control` approval) | `{sid, mode, reason, by?}` |
+| `screen.live` | screen | `agent` | `apps/agent/src/screen/manager.ts` (the browser's data channel opened) | `{sid, mode}` |
+| `screen.ended` | screen | `agent` | `apps/agent/src/screen/manager.ts` | `{sid, mode, reason, by?, durationMs, frames, inputs: {click, key, text, …: counts}, dropped}`. Never pixels, keys or typed text |
+| `screen.killed` | screen | `agent` | `apps/agent/src/screen/manager.ts` (hotkey, tray, indicator, panel) | `{by, sessions}` |
+| `screen.rate_limited`, `screen.channel_refused`, `screen.app_focus` | screen | `agent` | `apps/agent/src/screen/manager.ts` | `{sid}` (once a minute) / `{sid}` (a browser-opened data channel was closed) / `{sid, appId, ok, reason?}` |
 
 The DeviceEvent schemas are in `packages/protocol/src/agentEvent.ts` (`DeviceEvent`). Local Developer-mode history is also kept on the device, hash-chained (`~/.chalito/audit/devmode.jsonl`, `apps/agent/src/devmode.ts`).
 

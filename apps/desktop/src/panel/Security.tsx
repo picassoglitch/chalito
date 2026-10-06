@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import { useT } from "../lib/i18n.js";
+import { RemoteTerminal } from "./RemoteTerminal.js";
 import {
   IpcUnavailableError,
   answersComplete,
   type AgentIpc,
+  type ComputerChallenge,
+  type ComputerPermissions,
+  type ComputerStatus,
   type DevModeChallenge,
   type DevModeState,
   type PendingPairing,
   type PolicyView,
+  type ScreenMode,
+  type ScreenStatus,
 } from "../lib/ipc.js";
 
 type Load<T> =
@@ -215,6 +221,234 @@ const DevMode = ({ ipc }: { ipc: AgentIpc }) => {
   );
 };
 
+/** Two confirmations and the typed phrase, one screen each; the agent asks the OS and re-checks. */
+const ComputerEnableFlow = ({
+  ipc,
+  challenge,
+  onDone,
+  enable,
+  title,
+}: {
+  ipc: AgentIpc;
+  challenge: ComputerChallenge;
+  onDone: (failure?: string) => void;
+  /** What confirms (default: computer control); remote screen passes its own. */
+  enable?: (answers: { first: boolean; second: boolean; typed: string }) => ReturnType<AgentIpc["enableComputer"]>;
+  title?: string;
+}) => {
+  const t = useT();
+  const confirm = enable ?? ((a) => ipc.enableComputer(a));
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [typed, setTyped] = useState("");
+  const cancel = <button onClick={() => onDone()}>{t("security.devmode.cancel")}</button>;
+  if (step === 1)
+    return (
+      <div className="card" data-step="1">
+        <p>{title ?? t("security.computer.step1")}</p>
+        <ul>
+          {challenge.examples.map((e) => (
+            <li key={e}>{e}</li>
+          ))}
+        </ul>
+        <div className="row">
+          <button onClick={() => setStep(2)}>{t("security.devmode.continue")}</button>
+          {cancel}
+        </div>
+      </div>
+    );
+  if (step === 2)
+    return (
+      <div className="card" data-step="2">
+        <p>{t("security.computer.step2")}</p>
+        <p className="warn">{challenge.risk}</p>
+        <div className="row">
+          <button onClick={() => setStep(3)}>{t("security.devmode.continue")}</button>
+          {cancel}
+        </div>
+      </div>
+    );
+  return (
+    <div className="card" data-step="3">
+      <p>{t("security.computer.step3", { phrase: challenge.phrase })}</p>
+      <input aria-label={challenge.phrase} value={typed} onChange={(e) => setTyped(e.target.value)} />
+      <div className="row">
+        <button
+          disabled={typed.trim() !== challenge.phrase}
+          onClick={() =>
+            void confirm({ first: true, second: true, typed }).then(
+              (r) => onDone(r.ok ? undefined : r.reason),
+              (e: unknown) => onDone(String(e)),
+            )
+          }
+        >
+          {t("security.computer.confirm")}
+        </button>
+        {cancel}
+      </div>
+    </div>
+  );
+};
+
+const MacPermissions = ({ ipc, p }: { ipc: AgentIpc; p: ComputerPermissions }) => {
+  const t = useT();
+  if (p.wayland) return <p className="warn">{t("security.computer.wayland")}</p>;
+  if (p.platform !== "macos") return null;
+  return (
+    <div className="card" data-section="computer-permissions">
+      <p>{t("security.computer.macPermissions")}</p>
+      <ul className="list">
+        {(["screenRecording", "accessibility"] as const).map((pane) => (
+          <li key={pane} className="row">
+            <span>
+              {t(`security.computer.${pane}`)}: {t(`security.computer.${p[pane] ? "granted" : "missing"}`)}
+            </span>
+            {!p[pane] && (
+              <button onClick={() => void ipc.openComputerSettings(pane)}>{t("security.computer.openSettings")}</button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const Computer = ({ ipc }: { ipc: AgentIpc }) => {
+  const t = useT();
+  const fetch = useCallback(() => ipc.computerStatus(), [ipc]);
+  const [s, reload] = useAgent<ComputerStatus>(fetch);
+  const [challenge, setChallenge] = useState<ComputerChallenge | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [perms, setPerms] = useState<ComputerPermissions | null>(null);
+  useEffect(() => {
+    ipc.computerPermissions().then(setPerms, () => setPerms(null));
+  }, [ipc]);
+  const labels = (xs: { label: string }[]) => xs.map((x) => x.label).join(", ");
+  return (
+    <section aria-labelledby="sec-computer" data-section="computer">
+      <h2 id="sec-computer">{t("security.computer.title")}</h2>
+      <p className="muted">{t("security.computer.intro")}</p>
+      {s.state === "unavailable" && <Unavailable />}
+      {s.state === "error" && <p role="alert">{s.error}</p>}
+      {failure && <p role="alert">{t("security.computer.failed", { reason: failure })}</p>}
+      {perms && <MacPermissions ipc={ipc} p={perms} />}
+      {s.state === "ok" && (
+        <>
+          {s.value.active.length > 0 && (
+            <div className="banner warn">
+              <p>{t("security.computer.active", { labels: labels(s.value.active) })}</p>
+              <button onClick={() => void ipc.stopComputer().finally(reload)}>{t("security.computer.stop")}</button>
+            </div>
+          )}
+          {s.value.pending.length > 0 && (
+            <p className="muted">{t("security.computer.pending", { labels: labels(s.value.pending) })}</p>
+          )}
+          {challenge ? (
+            <ComputerEnableFlow
+              ipc={ipc}
+              challenge={challenge}
+              onDone={(why) => {
+                setChallenge(null);
+                setFailure(why ?? null);
+                reload();
+              }}
+            />
+          ) : (
+            <div className="row" data-computer={s.value.enabled ? "on" : "off"}>
+              <span>{t(s.value.enabled ? "security.computer.on" : "security.computer.off")}</span>
+              {s.value.enabled ? (
+                <button onClick={() => void ipc.disableComputer().finally(reload)}>
+                  {t("security.computer.disable")}
+                </button>
+              ) : (
+                <button
+                  onClick={() => void ipc.computerChallenge().then(setChallenge, (e: unknown) => setFailure(String(e)))}
+                >
+                  {t("security.computer.enable")}
+                </button>
+              )}
+            </div>
+          )}
+          {s.value.enabled && <p className="muted">{t("security.computer.hotkey")}</p>}
+        </>
+      )}
+    </section>
+  );
+};
+
+/**
+ * Remote screen (apps/agent/src/screen): turned on here only, view or view + control, with the
+ * same OS check and confirmations as computer control. Open sessions show with a close button;
+ * the indicator, Ctrl+Alt+Esc and the tray's "Detener control" end them too.
+ */
+const RemoteScreen = ({ ipc }: { ipc: AgentIpc }) => {
+  const t = useT();
+  const fetch = useCallback(() => ipc.screenStatus(), [ipc]);
+  const [s, reload] = useAgent<ScreenStatus>(fetch);
+  const [flow, setFlow] = useState<{ mode: ScreenMode; challenge: ComputerChallenge } | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const labels = (xs: { label: string }[]) => xs.map((x) => x.label).join(", ");
+  const start = (mode: ScreenMode) =>
+    void ipc.screenChallenge(mode).then(
+      (challenge) => setFlow({ mode, challenge }),
+      (e: unknown) => setFailure(String(e)),
+    );
+  const level = s.state === "ok" ? (s.value.control ? "control" : s.value.view ? "view" : "off") : "off";
+  return (
+    <section aria-labelledby="sec-screen" data-section="screen">
+      <h2 id="sec-screen">{t("security.screen.title")}</h2>
+      <p className="muted">{t("security.screen.intro")}</p>
+      {s.state === "unavailable" && <Unavailable />}
+      {s.state === "error" && <p role="alert">{s.error}</p>}
+      {failure && <p role="alert">{t("security.screen.failed", { reason: failure })}</p>}
+      {s.state === "ok" && (
+        <>
+          {s.value.active.map((a) => (
+            <div key={a.sid} className="banner warn" data-screen-session={a.sid}>
+              <p>{t("security.screen.active", { labels: a.label })}</p>
+              <button onClick={() => void ipc.closeScreen(a.sid).finally(reload)}>{t("security.screen.close")}</button>
+            </div>
+          ))}
+          {s.value.pending.length > 0 && (
+            <p className="muted">{t("security.screen.pending", { labels: labels(s.value.pending) })}</p>
+          )}
+          {flow ? (
+            <ComputerEnableFlow
+              ipc={ipc}
+              challenge={flow.challenge}
+              title={t(flow.mode === "control" ? "security.screen.step1Control" : "security.screen.step1View")}
+              enable={(answers) => ipc.enableScreen(flow.mode, answers)}
+              onDone={(why) => {
+                setFlow(null);
+                setFailure(why ?? null);
+                reload();
+              }}
+            />
+          ) : (
+            <div className="row" data-screen={level}>
+              <span>{t(`security.screen.${level}`)}</span>
+              {level === "off" && <button onClick={() => start("view")}>{t("security.screen.enableView")}</button>}
+              {level !== "control" && (
+                <button onClick={() => start("control")}>{t("security.screen.enableControl")}</button>
+              )}
+              {level === "control" && (
+                <button onClick={() => void ipc.disableScreen("control").finally(reload)}>
+                  {t("security.screen.disableControl")}
+                </button>
+              )}
+              {level !== "off" && (
+                <button onClick={() => void ipc.disableScreen("all").finally(reload)}>
+                  {t("security.screen.disable")}
+                </button>
+              )}
+            </div>
+          )}
+          {level !== "off" && <p className="muted">{t("security.computer.hotkey")}</p>}
+        </>
+      )}
+    </section>
+  );
+};
+
 export const Security = ({ ipc }: { ipc: AgentIpc }) => {
   const t = useT();
   return (
@@ -223,6 +457,9 @@ export const Security = ({ ipc }: { ipc: AgentIpc }) => {
       <ReverseCheck ipc={ipc} />
       <Policy ipc={ipc} />
       <DevMode ipc={ipc} />
+      <Computer ipc={ipc} />
+      <RemoteTerminal ipc={ipc} />
+      <RemoteScreen ipc={ipc} />
     </div>
   );
 };

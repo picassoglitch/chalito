@@ -19,6 +19,7 @@ import { oauthRoutes } from "./routes/oauth.js";
 import { storeRoutes } from "./store/routes.js";
 import { billingRoutes } from "./billing/routes.js";
 import { roomsRoutes } from "./routes/rooms.js";
+import { recipesRoutes } from "./routes/recipes.js";
 
 /** Browser-facing prefixes. Server-to-server routes (hub /tenants, scheduler /tasks, webhooks) get no CORS. */
 export const CORS_PATHS = ["/v1/*", "/sso/*", "/oauth/requests/*", "/releases/*"] as const;
@@ -70,6 +71,7 @@ export const createApp = (deps: Deps) => {
   if (deps.store) app.route("/v1/store", storeRoutes(deps, deps.store));
   if (deps.billing) app.route("/v1/billing", billingRoutes(deps, deps.billing));
   app.route("/v1/rooms", roomsRoutes(deps));
+  app.route("/v1/recipes", recipesRoutes(deps));
   if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));
   if (deps.account) {
     app.route("/v1/account", accountRoutes(deps, deps.account));

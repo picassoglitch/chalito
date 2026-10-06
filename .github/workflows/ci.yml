@@ -112,6 +112,7 @@ jobs:
           [ "$code" = 0 ] || [ "$code" = 2 ]
           grep -q '"addonLoaded":true' smoke.json
           grep -q '"sodium":true' smoke.json
+          grep -q '"pty":"ok"' smoke.json
       - run: pnpm --filter @chalito/agent exec vitest run test/binary-smoke.test.ts
 
   supabase:

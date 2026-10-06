@@ -48,6 +48,13 @@ export type AdapterEvent =
       message?: string;
     };
 
+/** A local stdio MCP server the agent attaches to a session (computer control). */
+export interface LocalMcpServer {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
 export interface SessionStartOptions {
   sid: string;
   cwd: string;
@@ -59,6 +66,11 @@ export interface SessionStartOptions {
   gate: ToolGate;
   askUser: AskUser;
   onEvent: (e: AdapterEvent) => void;
+  /**
+   * Agent-owned local MCP servers for this session, by name (today only computer control, when
+   * the person turned it on locally). Nothing else: adapters keep refusing any other MCP server.
+   */
+  mcpServers?: Record<string, LocalMcpServer>;
 }
 
 export interface SessionHandle {

@@ -11,6 +11,8 @@ export default defineConfig({
     target: "es2022",
     // Loaded from disk by the webview, not the network: three + three-vrm in one chunk is fine.
     chunkSizeWarningLimit: 1500,
-    rolldownOptions: { input: { pet: "pet.html", panel: "panel.html", room: "room.html" } },
+    rolldownOptions: {
+      input: { pet: "pet.html", panel: "panel.html", room: "room.html", indicator: "indicator.html" },
+    },
   },
 });

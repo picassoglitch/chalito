@@ -1,0 +1,65 @@
+v: 1
+id: windsurf
+name: Devin Desktop (formerly Windsurf)
+vendor: Cognition
+homepage: https://devin.ai/desktop
+termsUrl: https://cognition.com/legal/platform-terms-of-service
+kinds: [desktop-app]
+platforms:
+  mac:
+    detect:
+      commands: [devin-desktop, windsurf]
+      paths: ["/Applications/Devin.app", "/Applications/Windsurf.app"]
+      bundleIds: [com.exafunction.windsurf]
+      appUserModelIds: []
+    install:
+      via: brew
+      ref: devin-desktop
+      cask: true
+    launch:
+      app: Devin
+  windows:
+    detect:
+      commands: [devin-desktop, windsurf]
+      paths: ["%LOCALAPPDATA%\\Programs\\Devin\\Devin.exe", "%LOCALAPPDATA%\\Programs\\Windsurf\\Windsurf.exe"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: winget
+      ref: CognitionAI.DevinDesktop
+  linux:
+    detect:
+      commands: [devin-desktop, windsurf]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://devin.ai/download
+signin:
+  via: desktop-app
+  url: https://devin.ai/desktop
+  planSignin: "on"
+driver:
+  desktopApp: { bundleId: com.exafunction.windsurf, exe: Devin.exe }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "https://devin.ai/desktop FAQ: 'Devin Desktop is the new name for Windsurf.'"
+    - "curl https://windsurf.com/ -> 308 https://devin.ai/desktop"
+    - "https://formulae.brew.sh/api/cask/devin-desktop.json (3.10.48; old_tokens [windsurf]; Devin.app; binary devin-desktop; quit com.exafunction.windsurf)"
+    - "github.com/microsoft/winget-pkgs manifests/c/CognitionAI/DevinDesktop (latest 3.10.31, DevinUserSetup/DevinSetup exe); Codeium.Windsurf stops at 2.3.15"
+    - "https://devin.ai/download (macOS arm64/Intel, Windows x64/arm64, Linux download + apt/rpm)"
+    - "https://windsurf.com/terms-of-service-individual -> https://cognition.com/legal/platform-terms-of-service"
+  unverified:
+    - field: name
+      note: "Windsurf was renamed to Devin Desktop; there is no 'windsurf' Homebrew cask any more (renamed to devin-desktop) and winget Codeium.Windsurf is stale. Kept id 'windsurf' as requested."
+    - field: platforms.windows.detect.paths
+      note: "Install dirs and exe names (Devin.exe / Windsurf.exe) not documented; inferred from the installer names."
+    - field: platforms.*.detect.commands
+      note: "devin-desktop confirmed only on mac (brew binary artifact); the windsurf shell command is the pre-rename name. Windows/Linux shell command names not checked."
+    - field: platforms.linux
+      note: "Linux formats (apt/rpm/tarball) and desktop file id not checked; launch omitted."
+    - field: signin.url
+      note: "Sign-in happens inside the app; no vendor login page confirmed (sign-up link is app.devin.ai/auth/signup)."

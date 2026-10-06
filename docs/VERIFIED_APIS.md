@@ -124,6 +124,14 @@ Method: official docs (code.claude.com, platform.claude.com, claude.com/docs, an
   - claude.ai MCP connectors, when the session is authenticated with a claude.ai login (disable with `strictMcpConfig: true` or `ENABLE_CLAUDEAI_MCP_SERVERS=false`)
   - Source: same (checked 2026-10-03)
 
+#### mcpServers (computer control)
+- `Options.mcpServers?: Record<string, McpServerConfig>`; a stdio entry is `{ type?: 'stdio', command, args?, env?, timeout? }` where `timeout` is a per-server tool-call limit in ms. `Query.setMcpServers()` exists too (not used). With `strictMcpConfig: true` only these servers load. Source: sdk.d.ts 0.3.289 (`McpStdioServerConfig`, L1334-1343) (checked 2026-10-05)
+- Chalito attaches only its own `chalito_computer` server, with an 11-minute `timeout` so a first call can wait out the 10-minute approval. Its calls still reach the PreToolUse gate as `mcp__chalito_computer__<tool>`.
+
+#### PTY (remote terminal)
+- Bun `Bun.spawn(argv, { cwd, env, terminal: { cols, rows, data(terminal, bytes) } })` returns a subprocess with `.terminal` (`write`, `resize`, `close`, `setRawMode`, …), `.exited`, `.kill(signal)`. POSIX only. Checked by running it on Bun 1.4.2 (the version CI pins), both `bun run` and inside a `bun build --compile` binary (`src/smoke.ts` reports `"pty":"ok"`) (checked 2026-10-06).
+- `@lydell/node-pty` 1.1.0: prebuilt N-API binaries (linux/darwin/win32 × x64/arm64, as optional packages) of Microsoft's node-pty 1.1.0, same API (`spawn(file, args, {name, cols, rows, cwd, env})`, `onData`, `onExit`, `write`, `resize`, `kill(signal)`, `pause`, `resume`). Checked under Node 22 on Linux. Under Bun it fails to write (`this._socket.write is not a function`: its master fd is a `tty.ReadStream`), and `bun build --compile` doesn't embed a dynamic require, so the compiled agent uses Bun's PTY on macOS/Linux. Windows inside the compiled agent (ConPTY through node-pty under Bun, or the addon next to the binary) was not run (UNVERIFIED).
+
 #### Auth
 - Precedence used by the CLI, and therefore by the SDK:
   1. cloud provider (`CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY`, plus `CLAUDE_CODE_USE_ANTHROPIC_AWS`)
@@ -500,6 +508,7 @@ The orchestrator makes every brain answer through ONE forced function, `respond`
 - The help.openai.com developer-mode article returned 403. Plan eligibility was taken from the developers.openai.com guide instead.
 - Realtime per-minute cost figures are derived from token rates, not quoted.
 - Grok Build availability by plan (free tier limits, which SuperGrok tiers) was not detailed in the docs fetched (UNVERIFIED).
+- Codex `mcp_servers.<name>.{command,args,env,startup_timeout_sec,tool_timeout_sec}` as `-c` overrides (used for computer control, `mcpServerOverrides`) come from the Codex config docs; not re-checked against codex-rs at 550eb50 or run against a real app-server. Also unchecked: whether app-server sends an approval request for MCP tool calls (the adapter answers unknown server requests with an error, which would decline them) (UNVERIFIED).
 
 
 ---
@@ -1221,3 +1230,53 @@ Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landi
   - A new engine = one `engines` map entry in Chalyb's `infra/terraform/terraform.tfvars`: SA, 3 secrets, public scale-to-zero Cloud Run, bucket access, domain mapping `<slug>.chalyb.com`.
   - Workers need `cpu_idle = false`. Scheduled jobs default to paused.
 - **Hub pricing (MXN, before 16% IVA):** Pro $749/mo, $7,490/yr; VIP $2,499/mo; packs 100k $149, 500k $599, 2M $1,999. The trial and its rules live in `PRICING.trial`; Chalito follows them (D-026).
+
+
+---
+
+## Connect engine recipes (checked 2026-10-06)
+
+Method: each app's official docs, `npm view`, and the CLI's own `--help` from a throwaway `npm install --prefix <tmp>` (never global); Homebrew's formula/cask API and winget-pkgs manifests for desktop installs. Nothing was signed in to. Every recipe lists its sources and what couldn't be confirmed in its `verification` block (`recipes/<id>.yaml`); this table summarizes the unverified fields.
+
+Notable findings:
+- The four former providers are unchanged at Claude Code 2.1.291, codex-cli 0.160.1, grok 1.0.46, Gemini CLI 0.62.0 (Gemini's ACP auth methods: `oauth-personal`, `gemini-api-key`, `vertex-ai`, `gateway`; `--experimental-acp` is deprecated in favour of `--acp`).
+- Windsurf is now **Devin Desktop** (Cognition): windsurf.com redirects to devin.ai/desktop; brew cask `devin-desktop`, winget `CognitionAI.DevinDesktop`; bundle id still `com.exafunction.windsurf`. The recipe keeps id `windsurf` and detects both names.
+- The **ChatGPT desktop app** is now the Codex-based app (bundle id `com.openai.codex`, brew cask `chatgpt`; Windows: Microsoft Store `9PLM9XGG6VKS` via `winget -s msstore`); `com.openai.chat` is "ChatGPT Classic".
+- **Qwen Code**'s free Qwen OAuth tier ended 2026-04-15; sign-in is `/auth` inside its TUI only, and its ACP mode offers only the `openai` (API key) method. The recipe marks the sign-in `interactive` (never run headless).
+- **Cursor CLI**'s binary is now `agent` (installer keeps a `cursor-agent` link, which the recipe uses to avoid a generic name); ACP via `cursor-agent acp`, sign-in method `cursor_login`.
+- **Copilot CLI** (`@github/copilot` 1.0.92): `copilot login` and `--acp` (method `copilot-login`), no status or logout subcommand.
+- **goose** moved to the Agentic AI Foundation (aaif-goose/goose); brew formula `block-goose-cli`. **Aider** has no ACP mode, no login command and no npm package (install docs page only). The `aider` brew formula and the `ollama-app` cask are community-maintained (the Ollama recipe uses the cask; noted in its source).
+- Claude desktop now has a Linux beta (Debian/Ubuntu).
+
+| id | App | kinds | sign-in | unverified fields |
+|---|---|---|---|---|
+| `aider` | Aider | terminal | cli | `signin`; `signin.linkHosts`; `platforms.*.install`; `platforms.mac.detect.paths` |
+| `chatgpt-desktop` | ChatGPT (desktop) | desktop-app | desktop-app | `platforms.mac.detect.bundleIds`; `platforms.windows.install`; `platforms.windows.detect`; `driver.desktopApp.exe` |
+| `chatgpt` | ChatGPT | web-app | web | `driver.web.allowedOrigins`; `termsUrl` |
+| `claude-code` | Claude Code | claude-sdk, terminal | cli | `apiKey.docsUrl` |
+| `claude-desktop` | Claude (desktop) | desktop-app | desktop-app | `platforms.windows.detect.paths`; `platforms.windows.install`; `platforms.linux`; `driver.desktopApp.exe` |
+| `claude-web` | Claude | web-app | web | `driver.web.allowedOrigins` |
+| `codex` | Codex | codex, terminal | cli | none |
+| `copilot-cli` | GitHub Copilot CLI | acp, terminal | cli | `signin.statusCommand`; `signin.logoutCommand`; `signin.openLinks`; `platforms.mac.install` |
+| `copilot-web` | Microsoft Copilot | web-app | web | `signin.url` |
+| `cursor-cli` | Cursor CLI | acp, terminal | cli | `signin.statusCommand`; `signin.openLinks`; `launch.command`; `driver.acp` |
+| `cursor` | Cursor | desktop-app | desktop-app | `platforms.windows.detect.paths`; `platforms.mac.detect.bundleIds`; `platforms.linux.detect`; `platforms.windows.install` |
+| `deepseek` | DeepSeek | web-app | web | `signin.url`; `driver.web.allowedOrigins` |
+| `gemini-web` | Gemini | web-app | web | `termsUrl` |
+| `gemini` | Gemini CLI | acp, terminal | acp | none |
+| `goose` | goose | acp, terminal | cli | `signin`; `driver.acp.authMethods`; `platforms.mac.detect.paths`; `platforms.windows`; `vendor` |
+| `grok-web` | Grok | web-app | web | `driver.web.allowedOrigins` |
+| `grok` | Grok Build | acp, terminal | cli | `homepage` |
+| `lm-studio` | LM Studio | desktop-app, terminal | desktop-app | `signin`; `platforms.*.detect.paths`; `driver.acp`; `platforms.linux` |
+| `mistral-le-chat` | Le Chat | web-app | web | `signin.url`; `driver.web.allowedOrigins` |
+| `ollama` | Ollama | desktop-app, terminal | cli | `signin`; `driver.terminal.command`; `platforms.mac.detect.bundleIds`; `platforms.windows.detect.paths`; `platforms.linux.launch`; `platforms.mac.install` |
+| `opencode` | OpenCode | acp, terminal | cli | `signin.statusCommand`; `signin.command`; `platforms.*.install` |
+| `perplexity` | Perplexity | web-app | web | `signin.url`; `driver.web.allowedOrigins`; `termsUrl` |
+| `qwen-code` | Qwen Code | acp, terminal | cli | `signin.command`; `driver.acp.authMethods`; `apiKey.env`; `termsUrl` |
+| `windsurf` | Devin Desktop (formerly Windsurf) | desktop-app | desktop-app | `name`; `platforms.windows.detect.paths`; `platforms.*.detect.commands`; `platforms.linux`; `signin.url` |
+
+## Remote screen (ADR 0021)
+- `werift` 0.24.4: `RTCPeerConnection({iceServers})`, `createDataChannel(label, {ordered, maxRetransmits})`, `createOffer` / `setLocalDescription` / `setRemoteDescription({type: "answer", sdp})`, `addIceCandidate`, `iceGatheringStateChange`, `connectionStateChange`, `onDataChannel`; channel `send`, `bufferedAmount`, `stateChanged`, `onMessage`. Source: the package's `lib/webrtc/src/*.d.ts` (checked 2026-10-06). A werift↔werift loopback (host candidates, a 60 KB message on an unordered channel) ran on the build host. Browser interop (Chrome, Safari, Firefox answering a werift offer) is UNVERIFIED.
+- `jpeg-js` 0.4.4 `encode({width, height, data: RGBA}, quality)`. Source: its `index.d.ts` (checked 2026-10-06).
+- Chrome/Edge/Chromium flags `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--app=<url>`: long-standing Chromium switches; not re-run on each OS here (UNVERIFIED). Branded Chrome ignores `--load-extension` since 137, so no extension-based origin lock is used.
+- `open -a` / `open -b` (macOS), `explorer.exe shell:AppsFolder\<AUMID>` (Windows): documented OS launch paths; the curated recipes' bundle ids and AUMIDs are the ENGINE builder's to verify.

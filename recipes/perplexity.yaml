@@ -1,0 +1,25 @@
+v: 1
+id: perplexity
+name: Perplexity
+vendor: Perplexity AI
+homepage: https://www.perplexity.ai/
+termsUrl: https://www.perplexity.ai/hub/legal/terms-of-service
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://www.perplexity.ai/
+  planSignin: "on"
+driver:
+  web: { startUrl: https://www.perplexity.ai/, allowedOrigins: [https://www.perplexity.ai] }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources: ["curl www.perplexity.ai (403 Cloudflare)"]
+  unverified:
+    - field: signin.url
+      note: "Perplexity sign-in is a modal on www.perplexity.ai (no stable standalone login page confirmed). Not observed due to Cloudflare."
+    - field: driver.web.allowedOrigins
+      note: "Email-code login stays on www.perplexity.ai; Google/Apple SSO would add https://accounts.google.com / https://appleid.apple.com. Not observed."
+    - field: termsUrl
+      note: "403 to curl; not confirmed."

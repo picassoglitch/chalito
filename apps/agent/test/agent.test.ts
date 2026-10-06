@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
+import type { SessionAdapter } from "@chalito/adapters";
 import { loadLiabilityText } from "@chalito/config";
 import {
   MemoryNonceStore,
@@ -16,6 +17,7 @@ import {
   randomNonce,
   revokeAllServerEntry,
   revokeBundleChallenge,
+  fromB64url,
   sealJson,
   signEnvelope,
   stepUpBodyHash,
@@ -25,10 +27,17 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import { CommandAcceptedMeta, CommandRejectedMeta } from "@chalito/protocol";
+import { CommandAcceptedMeta, CommandEnvelope, CommandRejectedMeta } from "@chalito/protocol";
 import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
-import { AgentCore, type PolicyHolder, type ProviderCommands } from "../src/agent-core.js";
+import { AgentCore, type AppCommands, type PolicyHolder } from "../src/agent-core.js";
+import { ComputerControl } from "../src/computer/control.js";
+import { TerminalControl } from "../src/terminal/control.js";
+import { rawShellLaunch } from "../src/terminal/driver.js";
+import type { PtyBackend, PtySpawnOptions } from "../src/terminal/pty.js";
+import { ScreenManager } from "../src/screen/manager.js";
+import { DEFAULT_ICE_SERVERS } from "../src/screen/peer.js";
+import { fakeDriver, fakePeers, manualTimers } from "./screen-fakes.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
@@ -68,7 +77,15 @@ const harness = async (
     policy?: Partial<Policy>;
     devToggles?: ("allowSudo" | "autoApproveHigh" | "autoApproveCritical")[];
     classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
-    providers?: ProviderCommands;
+    apps?: AppCommands;
+    /** Engine: session adapters for apps beyond the built-in four, by app id. */
+    appAdapters?: Record<string, SessionAdapter>;
+    /** Wire computer control (its native layer is never reached in these tests). */
+    computer?: boolean;
+    /** Wire remote terminal with an echoing fake PTY (aider is the only recipe). */
+    terminal?: boolean;
+    /** Wire remote screen (fake capture and fake WebRTC peer). */
+    screen?: boolean;
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -114,6 +131,107 @@ const harness = async (
   const timers: (() => void)[] = [];
   const logs: string[] = [];
   const fake = fakeClaudeCode(opts.turns ?? []);
+  const computerAudits: string[] = [];
+  let coreRef: AgentCore | null = null;
+  const computer = opts.computer
+    ? new ComputerControl({
+        policy: () => policy.computer,
+        requestApproval: (sid, input) => coreRef!.requestComputerApproval(sid, input),
+        interrupt: async (sid) => void (await coreRef!.sessions.get(sid)?.handle.interrupt()),
+        driver: () => {
+          throw new Error("no native layer in tests");
+        },
+        audit: (type) => void computerAudits.push(type),
+        publish: () => undefined,
+        mcpLaunch: () => ({ command: "/opt/chalito/chalito-agent", args: ["computer", "mcp"], socket: "/tmp/c.sock" }),
+        now: Date.now,
+      })
+    : undefined;
+  const ptys: { file: string; args: string[]; o: PtySpawnOptions; writes: string[] }[] = [];
+  const terminalAudits: { type: string; meta: Record<string, unknown> }[] = [];
+  const fakePty: PtyBackend = {
+    name: "fake",
+    spawn: (file, args, o) => {
+      const rec = { file, args, o, writes: [] as string[] };
+      ptys.push(rec);
+      return {
+        pid: 1,
+        write: (d) => {
+          rec.writes.push(d);
+          o.onData(`echo:${d}`);
+        },
+        resize: () => undefined,
+        kill: () => undefined,
+      };
+    },
+  };
+  const terminal = opts.terminal
+    ? new TerminalControl({
+        deviceId: agent.id,
+        policy: () => policy.remoteTerminal,
+        workspaces: () => policy.workspaces,
+        launch: (appId) => (appId === "aider" ? { appId, name: "Aider", command: ["aider"], rawShell: false } : null),
+        rawShell: () => rawShellLaunch({ SHELL: "/bin/bash" }, "linux"),
+        pty: () => fakePty,
+        resolve: (p) => `/usr/bin/${p}`,
+        env: () => ({ PATH: "/usr/bin" }),
+        requestApproval: (tid, input, onRequested) =>
+          coreRef!.approvals.request({
+            sid: tid,
+            risk: "HIGH",
+            stepUp: true,
+            origin: input.origin,
+            kind: "terminal",
+            details: input.details,
+            onRequested,
+          }),
+        seal: (v, aad) => coreRef!.sealer.seal(v, aad),
+        writeEvent: (e) => store.writeEvent(e),
+        upsertSession: (tid, data) => store.upsertSession(tid, data),
+        audit: (type, meta) => void terminalAudits.push({ type, meta }),
+        publish: () => undefined,
+        now: Date.now,
+      })
+    : undefined;
+  terminal?.heartbeat(true);
+  const screenPeers = fakePeers();
+  const screenDriver = fakeDriver();
+  const screenAudits: string[] = [];
+  const screenMgr = opts.screen
+    ? new ScreenManager({
+        policy: () => policy.screen,
+        driver: () => screenDriver.driver,
+        desktopPresent: () => true,
+        indicatorShown: () => true,
+        requestApproval: (sid, input) =>
+          coreRef!.approvals.request({
+            sid,
+            risk: "HIGH",
+            stepUp: true,
+            origin: input.origin,
+            kind: input.kind,
+            details: input.details,
+            onRequested: input.onRequested,
+          }),
+        writeEvent: (e) => store.writeEvent(e),
+        upsertSession: (sid, doc) => store.upsertSession(sid, doc),
+        sealFor: async (clientDeviceId, value, aad) => {
+          const key = trust.recipients()[clientDeviceId];
+          if (!key) return null;
+          return sealJson(value, { [agent.id]: agent.box.publicKey, [clientDeviceId]: await fromB64url(key) }, aad);
+        },
+        signSignal: async (body) =>
+          (await signEnvelope("chalito.screen-signal.v1", body, agent.id, agent.sign.secretKey)) as never,
+        peer: screenPeers.factory,
+        iceServers: () => DEFAULT_ICE_SERVERS,
+        audit: (type) => void screenAudits.push(type),
+        publish: () => undefined,
+        deviceId: agent.id,
+        now: Date.now,
+        every: manualTimers().every,
+        after: manualTimers().after,
+      })
+    : undefined;
   const core = new AgentCore({
     store,
     adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
@@ -129,12 +247,18 @@ const harness = async (
     now: Date.now,
     log: createLogger((l) => logs.push(l)),
     ...(opts.classifyExtras ? { classifyExtras: opts.classifyExtras } : {}),
-    ...(opts.providers ? { providers: opts.providers } : {}),
+    ...(opts.apps ? { apps: opts.apps } : {}),
+    ...(opts.appAdapters ? { appAdapters: opts.appAdapters } : {}),
+    ...(computer ? { computer } : {}),
+    ...(terminal ? { terminal } : {}),
+    ...(screenMgr ? { screen: screenMgr } : {}),
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
     },
   });
+
+  coreRef = core;
 
   let n = 0;
   const command = async (
@@ -244,6 +368,15 @@ const harness = async (
     passkey,
     passkeyRef,
     getPolicy: () => policy,
+    computer,
+    computerAudits,
+    terminal,
+    ptys,
+    terminalAudits,
+    screen: screenMgr,
+    screenPeers: screenPeers.peers,
+    screenOps: screenDriver.ops,
+    screenAudits,
   };
 };
 
@@ -1132,42 +1265,52 @@ describe("command results reach the person's clients (audit: command.accepted / 
   });
 });
 
-describe("provider.* commands (connect your AI)", () => {
-  const recorder = (result: { ok: boolean; reason?: string } = { ok: true }) => {
+describe("app.* commands, and provider.* as their aliases (connect engine)", () => {
+  const recorder = (
+    result: { ok: boolean; reason?: string } = { ok: true },
+    ready: { ok: true } | { ok: false; reason: string } = { ok: true },
+  ) => {
     const calls: unknown[][] = [];
-    const providers: ProviderCommands = {
-      connectKey: async (p, key) => (calls.push(["connectKey", p, key]), result),
-      signin: async (p) => (calls.push(["signin", p]), result),
-      disconnect: async (p) => (calls.push(["disconnect", p]), result),
-      requestInstall: async (p) => (calls.push(["requestInstall", p]), result),
-      report: async () => void calls.push(["report"]),
+    const apps: AppCommands = {
+      connectKey: async (a, key) => (calls.push(["connectKey", a, key]), result),
+      signin: async (a) => (calls.push(["signin", a]), result),
+      disconnect: async (a) => (calls.push(["disconnect", a]), result),
+      requestInstall: async (a) => (calls.push(["requestInstall", a]), result),
+      launch: async (a) => (calls.push(["launch", a]), result),
+      report: async (a) => void calls.push(a === undefined ? ["report"] : ["report", a]),
+      sessionReady: async (a) => (calls.push(["sessionReady", a]), ready),
     };
-    return { providers, calls };
+    return { apps, calls };
   };
 
   it("an API key arrives sealed to this device and is opened only here; it never reaches the audit trail", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     const keyCt = await h.sealed(1, "sk-proj-sealed-key");
     const res = await h.command({ type: "provider.connect", provider: "openai", method: "api_key", keyCt });
     expect(res.ok).toBe(true);
-    expect(r.calls).toEqual([["connectKey", "openai", "sk-proj-sealed-key"]]);
+    expect(r.calls).toEqual([["connectKey", "codex", "sk-proj-sealed-key"]]);
     expect(JSON.stringify([h.store.audits, h.logs])).not.toContain("sk-proj-sealed-key");
-    expect(h.store.audits.some((a) => a.type === "provider.connect")).toBe(true);
+    expect(h.store.audits.some((a) => a.type === "app.connect")).toBe(true);
+
+    const keyCt2 = await h.sealed(2, "lm-key-123");
+    expect((await h.command({ type: "app.connect", appId: "goose", method: "api_key", keyCt: keyCt2 })).ok).toBe(true);
+    expect(r.calls.at(-1)).toEqual(["connectKey", "goose", "lm-key-123"]);
+    expect(JSON.stringify([h.store.audits, h.logs])).not.toContain("lm-key-123");
   });
 
   it("a key sealed for another command can't be replayed into this one", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     const keyCt = await h.sealed(7, "sk-proj-sealed-key");
     const res = await h.command({ type: "provider.connect", provider: "openai", method: "api_key", keyCt });
     expect(res.ok).toBe(false);
     expect(r.calls).toEqual([]);
   });
 
-  it("sign-in, disconnect, install request and status reach the provider manager", async () => {
+  it("provider.* still work: each is the app.* command of that provider's app", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     for (const payload of [
       { type: "provider.connect", provider: "xai", method: "signin" },
       { type: "provider.disconnect", provider: "google" },
@@ -1175,26 +1318,539 @@ describe("provider.* commands (connect your AI)", () => {
       { type: "provider.status" },
     ])
       expect((await h.command(payload)).ok).toBe(true);
-    expect(r.calls).toEqual([["signin", "xai"], ["disconnect", "google"], ["requestInstall", "anthropic"], ["report"]]);
+    expect(r.calls).toEqual([
+      ["signin", "grok"],
+      ["disconnect", "gemini"],
+      ["requestInstall", "claude-code"],
+      ["report"],
+    ]);
   });
 
-  it("a refused sign-in is a closed reason in command.rejected", async () => {
+  it("app.* reach the engine for any recipe id", async () => {
+    const r = recorder();
+    const h = await harness({ apps: r.apps });
+    for (const payload of [
+      { type: "app.connect", appId: "chatgpt", method: "signin" },
+      { type: "app.disconnect", appId: "opencode" },
+      { type: "app.install", appId: "lm-studio" },
+      { type: "app.status", appId: "cursor" },
+      { type: "app.status" },
+      { type: "app.launch", appId: "claude-desktop" },
+    ])
+      expect((await h.command(payload)).ok).toBe(true);
+    expect(r.calls).toEqual([
+      ["signin", "chatgpt"],
+      ["disconnect", "opencode"],
+      ["requestInstall", "lm-studio"],
+      ["report", "cursor"],
+      ["report"],
+      ["launch", "claude-desktop"],
+    ]);
+    expect(h.store.audits.filter((a) => a.type.startsWith("app.")).map((a) => a.type)).toEqual([
+      "app.connect",
+      "app.disconnect",
+      "app.install_requested",
+      "app.launch",
+    ]);
+  });
+
+  it("a refused sign-in or a disabled custom recipe is a closed reason in command.rejected", async () => {
     const r = recorder({ ok: false, reason: "blocked_by_policy" });
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     const res = await h.command({ type: "provider.connect", provider: "anthropic", method: "signin" });
     expect(res).toMatchObject({ ok: false, reason: "blocked_by_policy" });
     const row = h.store.audits.find((a) => a.type === "command.rejected");
     expect(CommandRejectedMeta.parse(row?.meta).reason).toBe("blocked_by_policy");
+
+    const off = recorder({ ok: false, reason: "recipe_disabled" });
+    const h2 = await harness({ apps: off.apps });
+    expect(await h2.command({ type: "app.launch", appId: "my-agent" })).toMatchObject({ reason: "recipe_disabled" });
+    const rows = h2.store.audits.filter((a) => a.type === "command.rejected");
+    expect(CommandRejectedMeta.parse(rows.at(-1)?.meta).reason).toBe("recipe_disabled");
   });
 
-  it("relays can't carry provider commands, and an untrusted signer is refused before the manager", async () => {
+  it("relays can't carry app or provider commands, and an untrusted signer is refused before the engine", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     expect((await h.command({ type: "provider.status" }, { origin: "mcp:claude", relayed: "mcp-gateway" })).ok).toBe(
       false,
     );
+    expect(
+      (
+        await h.command(
+          { type: "app.launch", appId: "chatgpt" },
+          { origin: "call:CA" + "0".repeat(32), relayed: "notifier" },
+        )
+      ).ok,
+    ).toBe(false);
     const stranger = await device("dev_stranger");
     expect((await h.command({ type: "provider.disconnect", provider: "openai" }, { signer: stranger })).ok).toBe(false);
+    expect((await h.command({ type: "app.install", appId: "goose" }, { signer: stranger })).ok).toBe(false);
     expect(r.calls).toEqual([]);
+  });
+
+  it("no command shape enables a custom recipe: the attempt is rejected as a remote enable", async () => {
+    const r = recorder();
+    const h = await harness({ apps: r.apps });
+    for (const type of ["apps.custom.enable", "app.enable", "app.custom", "recipe.enable", "recipe.add"]) {
+      const res = await h.command({ type, appId: "my-agent", enabled: true });
+      expect(res).toMatchObject({ ok: false, reason: "remote_enable_rejected" });
+    }
+    // A tighten can turn one off, never on.
+    const patchOn = await h.sealed(6, { apps: { custom: { "my-agent": { enabled: true, sha256: "a".repeat(64) } } } });
+    expect(await h.command({ type: "policy.tighten", patchCt: patchOn })).toMatchObject({ ok: false });
+    expect(h.core["d"].policy.get().apps).toBeUndefined();
+    expect(r.calls).toEqual([]);
+  });
+});
+
+describe("session.start by app id (connect engine)", () => {
+  it("the built-in four: appId selects their adapter, gated by policy.adapters as before", async () => {
+    const h = await harness({ turns: [[{ say: "hola" }]] });
+    const res = await h.command({
+      type: "session.start",
+      appId: "claude-code",
+      workspaceLabel: "chalito",
+      permissionMode: "default",
+      promptCt: await h.sealed(1, "hola"),
+    });
+    expect(res).toEqual({ ok: true, sid: expect.any(String) });
+    const doc = h.store.sessions.get(res.sid!) as Record<string, unknown>;
+    expect(doc).toMatchObject({ adapter: "claude-code", appId: "claude-code", kind: "agent" });
+
+    // Mismatched adapter and app id, or an adapter that's off: adapter_disabled.
+    const bad = await h.command({
+      type: "session.start",
+      adapter: "codex",
+      appId: "claude-code",
+      workspaceLabel: "chalito",
+      permissionMode: "default",
+      promptCt: await h.sealed(2, "hola"),
+    });
+    expect(bad).toMatchObject({ ok: false, reason: "adapter_disabled" });
+    const off = await harness({ policy: { adapters: { claudeCode: false, codex: true } } });
+    expect(
+      await off.command({
+        type: "session.start",
+        appId: "claude-code",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await off.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "adapter_disabled" });
+  });
+
+  it("any other app runs through the adapter its driver built, while the engine says it's ready", async () => {
+    const goose = fakeClaudeCode([[{ say: "hola desde goose" }]]);
+    const r = { calls: [] as string[] };
+    const apps: AppCommands = {
+      connectKey: async () => ({ ok: true }),
+      signin: async () => ({ ok: true }),
+      disconnect: async () => ({ ok: true }),
+      requestInstall: async () => ({ ok: true }),
+      launch: async () => ({ ok: true }),
+      report: async () => undefined,
+      sessionReady: async (a) => (
+        r.calls.push(a),
+        a === "goose" ? { ok: true } : { ok: false, reason: "recipe_disabled" }
+      ),
+    };
+    // Owner decision 2026-10-06: the person allowed goose's sessions on this computer.
+    const h = await harness({
+      apps,
+      appAdapters: { goose: new ClaudeCodeAdapter({ apiKey: "x", queryFn: goose.queryFn, env: {} }) },
+      policy: { apps: { sessions: { goose: true } } },
+    });
+    const res = await h.command({
+      type: "session.start",
+      appId: "goose",
+      workspaceLabel: "chalito",
+      permissionMode: "default",
+      promptCt: await h.sealed(1, "hola"),
+    });
+    expect(res.ok).toBe(true);
+    await waitFor(() => goose.run.options !== undefined);
+    expect(h.fake.run.options).toBeUndefined();
+    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "acp", appId: "goose", kind: "agent" });
+
+    // A disabled custom recipe, an unknown app, or one the policy turned off never starts.
+    expect(
+      await h.command({
+        type: "session.start",
+        appId: "my-agent",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await h.sealed(2, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "recipe_disabled" });
+    const offPolicy = await harness({
+      apps,
+      appAdapters: { goose: new ClaudeCodeAdapter({ apiKey: "x", queryFn: goose.queryFn, env: {} }) },
+      policy: { apps: { sessions: { goose: false } } },
+    });
+    expect(
+      await offPolicy.command({
+        type: "session.start",
+        appId: "goose",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await offPolicy.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "adapter_disabled" });
+    // Missing = off: connected and ready, but never allowed here, it doesn't start.
+    const notAllowed = await harness({
+      apps,
+      appAdapters: { goose: new ClaudeCodeAdapter({ apiKey: "x", queryFn: goose.queryFn, env: {} }) },
+    });
+    expect(
+      await notAllowed.command({
+        type: "session.start",
+        appId: "goose",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await notAllowed.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "adapter_disabled" });
+    // …and no remote policy.tighten can allow it (only off).
+    expect(
+      await notAllowed.command({
+        type: "policy.tighten",
+        patchCt: await notAllowed.sealed(2, { apps: { sessions: { goose: true } } }),
+      }),
+    ).toMatchObject({ ok: false });
+    expect(notAllowed.getPolicy().apps?.sessions?.goose).toBeUndefined();
+    const noEngine = await harness();
+    expect(
+      await noEngine.command({
+        type: "session.start",
+        appId: "goose",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await noEngine.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "unknown_app" });
+  });
+});
+
+describe("computer control in sessions", () => {
+  const ON = { computer: { enabled: true, maxActionsPerMinute: 60 } };
+  const clickTurn: FakeStep[][] = [[{ tool: "mcp__chalito_computer__click", input: { x: 1, y: 1 } }, { say: "ok" }]];
+
+  it("attaches the MCP server to Claude Code sessions only while it's on", async () => {
+    const off = await harness({ computer: true, turns: [[{ say: "hola" }]] });
+    await off.startSession();
+    await waitFor(() => off.fake.run.options !== undefined);
+    expect(off.fake.run.options!.mcpServers).toBeUndefined();
+
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    await h.startSession();
+    await waitFor(() => h.fake.run.options !== undefined);
+    const servers = h.fake.run.options!.mcpServers as Record<string, Record<string, unknown>>;
+    expect(Object.keys(servers)).toEqual(["chalito_computer"]);
+    expect(servers.chalito_computer).toMatchObject({
+      type: "stdio",
+      command: "/opt/chalito/chalito-agent",
+      args: ["computer", "mcp"],
+      env: { CHALITO_COMPUTER_SOCKET: "/tmp/c.sock", CHALITO_COMPUTER_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    });
+    expect(h.fake.run.options!.strictMcpConfig).toBe(true);
+  });
+
+  it("the tool gate lets computer tools through to the broker only while control can be granted", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: clickTurn });
+    await h.startSession();
+    await waitFor(() => h.fake.run.ran.length === 1);
+    // No per-tool approval: the session-level grant happens in the broker.
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+
+    const off = await harness({ computer: true, turns: clickTurn });
+    await off.startSession();
+    await waitFor(() => off.fake.run.refused.length === 1);
+  });
+
+  it("asks for a computer_control approval: HIGH, passkey step-up, signed by the agent", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    const { sid } = (await h.startSession()) as { sid: string };
+    const asked = h.core.requestComputerApproval(sid, {
+      origin: "client:dev_phone",
+      details: { toolName: "computer_control", input: { session: "chalito" }, reasons: ["pantalla"] },
+    });
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const row = h.store.pendingApprovals()[0]!;
+    expect(row).toMatchObject({ kind: "computer_control", risk: "HIGH", stepUpRequired: true });
+    const opened = await openJson<{ request: { body: { kind: string } } }>(
+      row.detailsCt,
+      h.phone.id,
+      h.phone.box,
+      `approval:${row.aid}`,
+    );
+    expect(opened.request.body.kind).toBe("computer_control");
+    // Without the passkey assertion an allow doesn't count.
+    await h.decide(true);
+    await new Promise((r) => setTimeout(r, 30));
+    await h.decide(true, { stepUp: true });
+    await expect(asked).resolves.toMatchObject({ allow: true, reason: "signed_allow" });
+    expect(h.store.events.some((e) => e.type === "approval.requested")).toBe(true);
+  });
+
+  it("never asks for unsigned origins", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    const { sid } = (await h.startSession()) as { sid: string };
+    await expect(
+      h.core.requestComputerApproval(sid, {
+        origin: "mcp:claude",
+        details: { toolName: "computer_control", input: {}, reasons: [] },
+      }),
+    ).resolves.toEqual({ allow: false, reason: "policy_block" });
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+  });
+
+  it("a remote command that tries to enable it is rejected and reported", async () => {
+    const h = await harness({ computer: true });
+    for (const type of ["computer.enable", "computer.on", "computer_control.grant"]) {
+      expect(await h.command({ type })).toEqual({ ok: false, reason: "remote_enable_rejected" });
+    }
+    expect(h.getPolicy().computer).toBeUndefined();
+    expect(h.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected")).toHaveLength(3);
+  });
+
+  it("a remote policy.tighten can turn it off but not on", async () => {
+    const h = await harness({ computer: true });
+    const loosen = await h.command({
+      type: "policy.tighten",
+      patchCt: await h.sealed(1, { computer: { enabled: true, maxActionsPerMinute: 60 } }),
+    });
+    expect(loosen).toEqual({ ok: false, reason: "would_loosen" });
+    expect(h.getPolicy().computer).toBeUndefined();
+
+    const on = await harness({ computer: true, policy: ON });
+    const off = await on.command({
+      type: "policy.tighten",
+      patchCt: await on.sealed(1, { computer: { enabled: false } }),
+    });
+    expect(off).toEqual({ ok: true });
+    expect(on.getPolicy().computer).toEqual({ enabled: false, maxActionsPerMinute: 60 });
+  });
+});
+
+describe("remote terminal over signed commands and sealed events", () => {
+  const ON = { remoteTerminal: { enabled: true, rawShell: false, maxSessions: 3, maxInputPerMinute: 65_536 } };
+
+  it("a remote command that tries to turn on remote terminal or the raw shell is rejected and reported", async () => {
+    const h = await harness({ terminal: true });
+    for (const type of ["terminal.enable", "remoteTerminal.on", "rawShell.enable", "shell.on", "terminal.on"])
+      expect(await h.command({ type, enabled: true })).toEqual({ ok: false, reason: "remote_enable_rejected" });
+    // A real terminal.open carrying a switch is refused (the parsed body drops it, so the signature no longer matches).
+    expect(
+      await h.command({ type: "terminal.open", appId: "aider", workspaceLabel: "chalito", rawShell: true }),
+    ).toMatchObject({ ok: false });
+    expect(h.getPolicy().remoteTerminal).toBeUndefined();
+    expect(h.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected")).toHaveLength(5);
+    // And policy.tighten can't turn it on, nor stage the raw shell.
+    for (const patch of [ON, { remoteTerminal: { ...ON.remoteTerminal, enabled: false, rawShell: true } }])
+      expect(
+        await h.command({ type: "policy.tighten", patchCt: await h.sealed(h.store.audits.length + 99, patch) }),
+      ).toMatchObject({ ok: false });
+    expect(h.getPolicy().remoteTerminal).toBeUndefined();
+  });
+
+  it("open → passkey approval → sealed input and output, end to end", async () => {
+    const h = await harness({ terminal: true, policy: ON });
+    const opened = await h.command({
+      type: "terminal.open",
+      appId: "aider",
+      workspaceLabel: "chalito",
+      cols: 90,
+      rows: 20,
+    });
+    expect(opened).toMatchObject({ ok: true, sid: expect.any(String) });
+    const tid = (opened as { sid: string }).sid;
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const row = h.store.pendingApprovals()[0]!;
+    expect(row).toMatchObject({ kind: "terminal", risk: "HIGH", stepUpRequired: true, sid: tid });
+    const details = await openJson<{
+      details: { toolName: string; input: unknown };
+      request: { body: { kind: string } };
+    }>(row.detailsCt, h.phone.id, h.phone.box, `approval:${row.aid}`);
+    expect(details.request.body.kind).toBe("terminal");
+    expect(details.details).toMatchObject({ toolName: "terminal", input: { appId: "aider", command: "aider" } });
+    // Without the passkey assertion an allow doesn't count: nothing runs.
+    await h.decide(true);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.ptys).toHaveLength(0);
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.ptys.length === 1);
+    expect(h.ptys[0]).toMatchObject({ file: "/usr/bin/aider", o: { cols: 90, rows: 20, cwd: WS } });
+    await waitFor(() => h.store.events.some((e) => e.type === "terminal.started"));
+
+    // Input: sealed to this device for this command (AAD command:<cid>).
+    const audits = h.store.audits.length;
+    const typed = await h.command({ type: "terminal.input", tid, dataCt: await h.sealed(2, { data: "ls\r" }) });
+    expect(typed).toEqual({ ok: true, quiet: true });
+    expect(h.ptys[0]!.writes).toEqual(["ls\r"]);
+    // Keystrokes aren't audited one by one.
+    expect(h.store.audits.slice(audits).filter((a) => a.type === "command.accepted")).toHaveLength(0);
+
+    // Output: sealed to the trusted clients, bound to the terminal and the seq.
+    await waitFor(() => h.store.events.some((e) => e.type === "terminal.output"));
+    const out = h.store.events.find((e) => e.type === "terminal.output") as Extract<
+      (typeof h.store.events)[number],
+      { type: "terminal.output" }
+    >;
+    expect(await openJson(out.dataCt, h.phone.id, h.phone.box, `terminal:${tid}:${out.seq}`)).toEqual({
+      data: "echo:ls\r",
+    });
+    await expect(openJson(out.dataCt, h.phone.id, h.phone.box, `terminal:${tid}:${out.seq + 1}`)).rejects.toThrow();
+    expect(JSON.stringify(h.store.events)).not.toContain("ls\\r");
+    expect(JSON.stringify(h.store.audits)).not.toContain("echo:");
+
+    // Unsealed or mis-bound input is refused; unknown terminals before anything is decrypted.
+    expect(await h.command({ type: "terminal.input", tid, dataCt: await h.sealed(99, { data: "x" }) })).toMatchObject({
+      ok: false,
+    });
+    expect(await h.command({ type: "terminal.input", tid: "nope", dataCt: await h.sealed(5, { data: "x" }) })).toEqual({
+      ok: false,
+      reason: "unknown_session",
+    });
+    expect(await h.command({ type: "terminal.resize", tid, cols: 100, rows: 30 })).toEqual({ ok: true, quiet: true });
+    expect(await h.command({ type: "terminal.close", tid })).toEqual({ ok: true, sid: tid });
+    expect(h.store.events.at(-1)).toMatchObject({ type: "terminal.closed", reason: "closed" });
+  });
+
+  it("the raw shell needs its own toggle", async () => {
+    const h = await harness({ terminal: true, policy: ON });
+    expect(await h.command({ type: "terminal.open", appId: "shell", workspaceLabel: "chalito" })).toEqual({
+      ok: false,
+      reason: "raw_shell_disabled",
+    });
+    const shell = await harness({
+      terminal: true,
+      policy: { remoteTerminal: { ...ON.remoteTerminal, rawShell: true } },
+    });
+    expect(await shell.command({ type: "terminal.open", appId: "shell", workspaceLabel: "chalito" })).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("relayed (unsigned) commands can't reach a terminal", () => {
+    // RelayedCommand only carries session.prompt; a terminal command never parses as a relay.
+    expect(
+      CommandEnvelopeParse({
+        relayedBy: "mcp-gateway",
+        payload: {
+          type: "terminal.input",
+          tid: "t1",
+          dataCt: { alg: "xchacha20poly1305+sealedbox", nonce: "A".repeat(32), ct: "AA", keys: { d: "A".repeat(107) } },
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+const CommandEnvelopeParse = (o: { relayedBy: string; payload: unknown }) =>
+  CommandEnvelope.safeParse({
+    relayedBy: o.relayedBy,
+    body: {
+      v: 1,
+      cid: "c1",
+      uid: OWNER,
+      targetDeviceId: "dev_agent",
+      origin: "mcp:claude",
+      nonce: "A".repeat(22),
+      issuedAt: 1,
+      expiresAt: 2,
+      payload: o.payload,
+    },
+  }).success;
+
+describe("remote screen through signed commands", () => {
+  const VIEW = {
+    screen: { view: true, control: false, maxFps: 5, maxInputsPerMinute: 600, maxSessionMinutes: 60 },
+  };
+
+  it("no remote command can turn remote view, control or app control on", async () => {
+    const h = await harness({ screen: true });
+    for (const type of [
+      "screen.enable",
+      "screen.on",
+      "screen.grant",
+      "remote_view.enable",
+      "remote_control.on",
+      "remoteControl",
+      "app_control.enable",
+    ]) {
+      expect(await h.command({ type, mode: "control" })).toEqual({ ok: false, reason: "remote_enable_rejected" });
+    }
+    expect(h.getPolicy().screen).toBeUndefined();
+    expect(h.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected")).toHaveLength(7);
+    // policy.tighten can't turn it on either.
+    const loosen = await h.command({
+      type: "policy.tighten",
+      patchCt: await h.sealed(8, { screen: VIEW.screen }),
+    });
+    expect(loosen).toEqual({ ok: false, reason: "would_loosen" });
+    // And screen.open only asks: while off it is refused, nothing is captured.
+    expect(await h.command({ type: "screen.open", mode: "view" })).toEqual({ ok: false, reason: "screen_disabled" });
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    expect(h.screenPeers).toHaveLength(0);
+  });
+
+  it("screen.open asks a HIGH remote_view approval with passkey; the offer is signed and sealed to that browser", async () => {
+    const h = await harness({ screen: true, policy: VIEW });
+    const opened = await h.command({ type: "screen.open", mode: "view" });
+    expect(opened).toEqual({ ok: true, sid: expect.any(String) });
+    const sid = (opened as { sid: string }).sid;
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const row = h.store.pendingApprovals()[0]!;
+    expect(row).toMatchObject({ kind: "remote_view", risk: "HIGH", stepUpRequired: true, sid });
+    expect(h.screenPeers).toHaveLength(0);
+    // Without the passkey assertion an allow doesn't count.
+    await h.decide(true);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.screenPeers).toHaveLength(0);
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.store.events.some((e) => e.type === "screen.signal"));
+    const ev = h.store.events.find((e) => e.type === "screen.signal") as unknown as { ct: SealedEnvelope };
+    expect(Object.keys(ev.ct.keys).sort()).toEqual([h.agent.id, h.phone.id].sort());
+    const signal = await openJson<{ ctx: string; body: { sid: string; signal: { kind: string } } }>(
+      ev.ct,
+      h.phone.id,
+      h.phone.box,
+      `screen:${sid}`,
+    );
+    expect(signal.body).toMatchObject({ sid, signal: { kind: "offer" } });
+    const verified = await verifyEnvelope(
+      signal as never,
+      "chalito.screen-signal.v1",
+      new Map([[h.agent.id, h.agent.sign.publicKey]]),
+    );
+    expect(verified.ok).toBe(true);
+    // The browser's answer comes back sealed in a signed command.
+    const answered = await h.command({
+      type: "screen.signal",
+      sid,
+      signalCt: await h.sealed(2, { kind: "answer", sdp: "v=0 answer" }),
+    });
+    expect(answered).toEqual({ ok: true, sid });
+    expect(h.screenPeers[0]!.answer).toBe("v=0 answer");
+    expect(await h.command({ type: "screen.close", sid })).toEqual({ ok: true, sid });
+    expect(h.screenPeers[0]!.closed).toBe(true);
+    expect(h.screenAudits).toEqual(["screen.requested", "screen.granted", "screen.ended"]);
+  });
+
+  it("control needs control enabled; relayed origins can't open; revoking the client ends its sessions", async () => {
+    const h = await harness({ screen: true, policy: VIEW });
+    expect(await h.command({ type: "screen.open", mode: "control" })).toEqual({ ok: false, reason: "screen_disabled" });
+    expect(
+      await h.command({ type: "screen.open", mode: "view" }, { origin: "mcp:chatgpt", relayed: "mcp-gateway" }),
+    ).toEqual({ ok: false, reason: "invalid" });
+    const r = (await h.command({ type: "screen.open", mode: "view" })) as { sid: string };
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.screenPeers.length === 1);
+    await h.command({ type: "device.revokeClient", clientDeviceId: h.phone.id });
+    await waitFor(() => h.screenPeers[0]!.closed);
+    expect(h.screen!.status().active).toEqual([]);
+    expect(r.sid).toBeTruthy();
   });
 });

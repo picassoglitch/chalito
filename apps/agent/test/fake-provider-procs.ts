@@ -15,6 +15,8 @@ export const fakeProviderProcs = (answer: (c: ProcCall) => Partial<RunResult> & 
   const calls: ProcCall[] = [];
   const acp: (ProcCall & { methodId: string })[] = [];
   const opened: string[] = [];
+  const launched: ProcCall[] = [];
+  const launchResult = { ok: true };
   const acpResult = { ok: true };
   const procs: ProviderProcs = {
     run: async (cmd, args, opts) => {
@@ -30,6 +32,10 @@ export const fakeProviderProcs = (answer: (c: ProcCall) => Partial<RunResult> & 
       return acpResult.ok;
     },
     openUrl: async (url) => void opened.push(url),
+    launch: async (cmd, args, opts) => {
+      launched.push({ cmd, args, env: opts.env });
+      return launchResult.ok;
+    },
   };
-  return { procs, calls, acp, opened, acpResult };
+  return { procs, calls, acp, opened, acpResult, launched, launchResult };
 };

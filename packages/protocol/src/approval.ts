@@ -5,7 +5,33 @@ import { SealedEnvelope, signed } from "./crypto.js";
 /** Approvals expire 10 minutes after creation; an unanswered approval is a deny. */
 export const APPROVAL_TTL_MS = 10 * 60 * 1000;
 
-export const ApprovalKind = z.enum(["tool", "decision"]);
+/**
+ * `computer_control`: a session asks to see the screen and drive the mouse and keyboard of the
+ * device (apps/agent/src/computer). Only offered once the person enabled computer control
+ * locally on that device; always HIGH with a passkey step-up, once per session.
+ * `terminal`: a trusted client asks to open a remote terminal (a recipe's terminal app, or the
+ * raw shell) on the device (terminal.ts). Only once remote terminal is on locally; always HIGH
+ * with a passkey step-up, once per terminal.
+ */
+/**
+ * Engine contract (2026-10-06): every remote session kind gets its own per-session approval,
+ * always HIGH with a passkey step-up, only once the person enabled it locally:
+ * - `terminal`: a remote terminal session (remote-terminal).
+ * - `remote_view`: a trusted browser sees this device's screen (screen.ts, view mode).
+ * - `remote_control`: a trusted browser sees it and sends mouse/keyboard input (control mode).
+ * - `app_control`: an AI session launches and drives one app or AI website (computer MCP
+ *   `launch_app` / `open_web_app`); it also grants that session computer control.
+ */
+export const ApprovalKind = z.enum([
+  "tool",
+  "decision",
+  "computer_control",
+  "terminal",
+  "remote_view",
+  "remote_control",
+  "app_control",
+]);
+export type ApprovalKind = z.infer<typeof ApprovalKind>;
 export const ApprovalStatus = z.enum(["pending", "approved", "denied", "expired", "rejected_invalid"]);
 
 /** Bidi/format (Cf) and control (Cc) characters: they can hide or reorder text on screen (R-M10). */

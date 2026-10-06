@@ -28,6 +28,8 @@ import type { Provider } from "@chalito/protocol";
 import { ipcCall } from "./ipc-server.test.js";
 import { fakeProviderProcs } from "./fake-provider-procs.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
+import { BUILTIN_CATALOG } from "../src/apps/catalog.js";
+import { KeyFile, RECIPES_DIR, signCatalog } from "../scripts/recipes.js";
 import { createLogger } from "../src/redact.js";
 import { DeviceRevokedError } from "../src/device-auth.js";
 import { MemorySecretStore, SECRET_NAMES } from "../src/secrets.js";
@@ -147,6 +149,8 @@ const setup = async (
     onSignal: () => undefined,
     watchFiles: false,
     signInAllowed: (p) => (opts.signIn ?? []).includes(p),
+    // No network: the served catalog is tested in recipes.test.ts / "recipe catalog" below.
+    catalogFetch: false,
   };
   return {
     home,
@@ -490,6 +494,102 @@ describe("chalito run (daemon)", () => {
       await d.stop();
     });
 
+    it("computer control: local enable (OS + answers), the indicator poll, the kill switch, the broker", async () => {
+      const { s, d, call, osChecks } = await withIpc();
+      expect(existsSync(join(s.dir, "computer.sock"))).toBe(true);
+      expect(d.computer).not.toBeNull();
+      expect((await call("computerStatus", { indicatorShown: false })).result).toEqual({
+        enabled: false,
+        active: [],
+        pending: [],
+        terminal: { enabled: false, rawShell: false, pending: [] },
+      });
+      const ch = (await call("computerChallenge")).result;
+      expect(ch).toMatchObject({ examples: expect.any(Array), risk: expect.any(String), phrase: expect.any(String) });
+      const answers = (over = {}) => ({ first: true, second: true, typed: ch.phrase as string, ...over });
+      expect((await call("enableComputer", { answers: answers({ typed: "no" }) })).result).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect(d.policy.get().computer).toBeUndefined();
+      expect((await call("enableComputer", { answers: answers() })).result).toEqual({ ok: true });
+      expect(osChecks).toHaveLength(2);
+      expect(d.policy.get().computer).toEqual({ enabled: true, maxActionsPerMinute: 60 });
+      expect((await call("computerStatus", { indicatorShown: true })).result.enabled).toBe(true);
+      expect(s.store.deviceEvents.some((e) => e.type === "computer.changed" && e.enabled)).toBe(true);
+      expect((await call("computerKill", { via: "hotkey" })).result).toEqual({ stopped: 0 });
+      expect(await call("computerKill", { via: "remote" })).toMatchObject({ error: "bad_params" });
+      expect((await call("disableComputer")).result).toEqual({ changed: true });
+      expect(d.policy.get().computer?.enabled).toBe(false);
+      await d.stop();
+      expect(existsSync(join(s.dir, "computer.sock"))).toBe(false);
+    });
+
+    it("remote terminal: local enable (OS + answers), raw shell separately, shared indicator poll and kill switch", async () => {
+      const { d, call, osChecks } = await withIpc();
+      expect(d.terminal).not.toBeNull();
+      expect((await call("terminalStatus")).result).toEqual({
+        enabled: false,
+        rawShell: false,
+        active: [],
+        pending: [],
+      });
+      const ch = (await call("terminalChallenge")).result;
+      const answers = (phrase: string, over = {}) => ({ first: true, second: true, typed: phrase, ...over });
+      // The raw shell needs remote terminal on first.
+      expect((await call("enableRawShell", { answers: answers(ch.rawShell.phrase, { final: true }) })).result).toEqual({
+        ok: false,
+        reason: "terminal_off",
+      });
+      expect((await call("enableRemoteTerminal", { answers: answers("no") })).result).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect(d.policy.get().remoteTerminal).toBeUndefined();
+      expect((await call("enableRemoteTerminal", { answers: answers(ch.terminal.phrase) })).result).toEqual({
+        ok: true,
+      });
+      expect(d.policy.get().remoteTerminal).toMatchObject({ enabled: true, rawShell: false });
+      // Its own, stronger confirmation: without the last step it stays off.
+      expect((await call("enableRawShell", { answers: answers(ch.rawShell.phrase) })).result).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect((await call("enableRawShell", { answers: answers(ch.rawShell.phrase, { final: true }) })).result).toEqual({
+        ok: true,
+      });
+      expect(d.policy.get().remoteTerminal?.rawShell).toBe(true);
+      expect(osChecks.length).toBeGreaterThanOrEqual(3);
+      // The native poll sees it (the hotkey is held while it's on) and the kill switch covers it.
+      expect((await call("computerStatus", { indicatorShown: true })).result.terminal).toEqual({
+        enabled: true,
+        rawShell: true,
+        pending: [],
+      });
+      expect((await call("computerKill", { via: "hotkey" })).result).toEqual({ stopped: 0 });
+      expect((await call("disableRawShell")).result).toEqual({ changed: true });
+      expect((await call("disableRemoteTerminal")).result).toEqual({ changed: true });
+      expect(d.policy.get().remoteTerminal).toMatchObject({ enabled: false, rawShell: false });
+      await d.stop();
+    });
+
+    it("computer control: a failed OS check enables nothing; no desktop app, no broker", async () => {
+      const { d, call } = await withIpc(false);
+      const phrase = (await call("computerChallenge")).result.phrase;
+      expect((await call("enableComputer", { answers: { first: true, second: true, typed: phrase } })).result).toEqual({
+        ok: false,
+        reason: "os_auth_failed",
+      });
+      expect(d.policy.get().computer).toBeUndefined();
+      await d.stop();
+      const s = await setup();
+      const bare = await runDaemon(s.deps);
+      expect(bare.computer).toBeNull();
+      expect(bare.terminal).toBeNull();
+      expect(existsSync(join(s.dir, "computer.sock"))).toBe(false);
+      await bare.stop();
+    });
+
     it("presence goes to this agent's device row with lastSeenAt", async () => {
       const { s, d, call } = await withIpc();
       expect((await call("reportPresence", { desktopActive: true })).ok).toBe(true);
@@ -644,11 +744,13 @@ describe("chalito run (daemon)", () => {
     const signedIn = (dir: string, providers: Record<string, unknown>) =>
       writeFileSync(join(dir, "providers.json"), JSON.stringify(providers));
 
-    it("reports every provider's status to chalito.connections at start", async () => {
+    it("reports every app's status to chalito.connections at start, the former providers by app id", async () => {
       const s = await setup({ codex: true, openaiKey: true });
       const d = await runDaemon(s.deps);
-      await vi.waitFor(() => expect(s.store.connections.size).toBe(4));
-      expect(s.store.connections.get("anthropic")).toMatchObject({ cli: { installed: true } });
+      await vi.waitFor(() => expect(s.store.connections.size).toBe(BUILTIN_CATALOG.recipes.length));
+      expect(s.store.connections.get("claude-code")).toMatchObject({ cli: { installed: true }, kind: "claude-sdk" });
+      expect(s.store.connections.get("codex")).toMatchObject({ kind: "codex", cli: { installed: true } });
+      expect(s.store.connections.has("anthropic")).toBe(false);
       await d.stop();
     });
 
@@ -729,6 +831,87 @@ describe("chalito run (daemon)", () => {
         ok: false,
         error: "bad_params",
       });
+      await d.stop();
+    });
+  });
+
+  describe("recipe catalog (connect engine)", () => {
+    const DEV = KeyFile.parse(
+      JSON.parse(readFileSync(join(RECIPES_DIR, "test-fixtures/dev-catalog-key.json"), "utf8")),
+    );
+    const served = (body: unknown) => async (url: string) => {
+      expect(url).toMatch(/\/v1\/recipes\/catalog$/);
+      return { ok: true, status: 200, json: async () => body };
+    };
+    const newer = () => ({ ...BUILTIN_CATALOG, issuedAt: BUILTIN_CATALOG.issuedAt + 1 });
+
+    it("uses a served catalog only when a compiled-in key verifies it", async () => {
+      const s = await setup();
+      const signed = await signCatalog(newer(), DEV);
+      // Release agents don't trust the dev key: the served catalog is ignored.
+      const d1 = await runDaemon({ ...s.deps, catalogFetch: served(signed) });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(d1.catalog.source).toBe("builtin");
+      await d1.stop();
+
+      const s2 = await setup();
+      const keys = { [DEV.keyId]: DEV.publicKey };
+      const tampered = structuredClone(signed);
+      tampered.body.recipes.find((r) => r.id === "codex")!.platforms.linux!.install!.ref = "evil-codex";
+      const d2 = await runDaemon({ ...s2.deps, catalogKeys: keys, catalogFetch: served(tampered) });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(d2.catalog.source).toBe("builtin");
+      expect(s2.logs.some((l) => l.msg === "recipes.catalog_rejected")).toBe(true);
+      await d2.stop();
+
+      const s3 = await setup();
+      const d3 = await runDaemon({ ...s3.deps, catalogKeys: keys, catalogFetch: served(signed) });
+      await vi.waitFor(() => expect(d3.catalog.source).toBe("remote"));
+      await d3.stop();
+    });
+
+    it("the panel lists the catalog and can't enable a custom recipe without the OS check", async () => {
+      const SECRET = "e".repeat(64);
+      const s = await setup();
+      mkdirSync(join(s.dir, "recipes"), { recursive: true });
+      writeFileSync(
+        join(s.dir, "recipes", "mi.yaml"),
+        [
+          "v: 1",
+          "id: mi-agente",
+          "name: Mi agente",
+          "vendor: Yo",
+          "homepage: https://example.com",
+          "termsUrl: https://example.com/terms",
+          "kinds: [terminal]",
+          "platforms: { linux: { detect: { commands: [miagente] } } }",
+          'signin: { via: cli, command: [miagente, login], planSignin: "on" }',
+          "driver: { terminal: { command: [miagente] } }",
+          "capabilities: [terminal]",
+        ].join("\n"),
+      );
+      const sock = join(s.home, "ipc2.sock");
+      const d = await runDaemon({
+        ...s.deps,
+        ipcSecret: SECRET,
+        ipcPath: sock,
+        osAuth: () => ({ verify: async () => false }),
+      });
+      const call = (method: string, params?: unknown) =>
+        ipcCall(sock, { id: 1, token: SECRET, method, params }) as Promise<{ ok: boolean; result?: unknown }>;
+      const apps = (await call("apps")).result as { apps: { appId: string; custom: boolean; enabled: boolean }[] };
+      expect(apps.apps.find((a) => a.appId === "mi-agente")).toMatchObject({ custom: true, enabled: false });
+      expect(apps.apps.filter((a) => !a.custom)).toHaveLength(BUILTIN_CATALOG.recipes.length);
+      expect(
+        (await call("enableCustomRecipe", { appId: "mi-agente", answers: { review: true, typed: "mi-agente" } }))
+          .result,
+      ).toEqual({ ok: false, reason: "os_auth_failed" });
+      expect(d.policy.get().apps).toBeUndefined();
+      expect((await call("launchApp", { appId: "mi-agente" })).ok).toBe(false);
+      // Reported as id, name and status only.
+      await vi.waitFor(() =>
+        expect(s.store.connections.get("mi-agente")).toMatchObject({ name: "Mi agente", custom: true }),
+      );
       await d.stop();
     });
   });

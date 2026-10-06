@@ -57,6 +57,62 @@
       "confirm": "Turn on (asks for your password)",
       "failed": "Not turned on: {reason}"
     },
+    "computer": {
+      "title": "Computer control",
+      "intro": "Lets an approved session see your screen and use this computer's mouse and keyboard. Every session asks for your passkey approval.",
+      "off": "Off",
+      "on": "On",
+      "enable": "Turn on",
+      "disable": "Turn off",
+      "active": "In control now: {labels}",
+      "pending": "Waiting for your approval: {labels}",
+      "stop": "Stop control",
+      "hotkey": "You can also stop it with Ctrl+Alt+Esc or “Stop control” in Chalito's tray icon.",
+      "step1": "Turn on computer control? An approved session could:",
+      "step2": "Confirm again:",
+      "step3": "Type “{phrase}” to continue.",
+      "confirm": "Turn on (asks for your password)",
+      "failed": "Not turned on: {reason}",
+      "wayland": "This Linux session uses Wayland: computer control needs an X11 (Xorg) session.",
+      "macPermissions": "On macOS, Chalito needs these permissions:",
+      "screenRecording": "Screen Recording",
+      "accessibility": "Accessibility",
+      "granted": "granted",
+      "missing": "missing",
+      "openSettings": "Open Settings"
+    },
+    "terminal": {
+      "title": "Remote terminal",
+      "intro": "Lets you open an AI's terminal app (aider, opencode…) on this computer and use it from your trusted browser. Every terminal asks for your passkey approval.",
+      "active": "Open terminals: {labels}",
+      "hotkey": "Close them with Ctrl+Alt+Esc or “Stop control” in Chalito's tray icon.",
+      "step1": "Turn on remote terminal? An approved terminal could:",
+      "step2": "Confirm again:",
+      "step3": "Type “{phrase}” to continue.",
+      "confirm": "Turn on (asks for your password)",
+      "failed": "Not turned on: {reason}",
+      "shell": {
+        "title": "Full shell",
+        "step1": "Turn on the remote full shell? An approved shell could:"
+      }
+    },
+    "screen": {
+      "title": "Remote screen",
+      "intro": "Lets your trusted browser see this screen (or also use its mouse and keyboard). The picture goes straight between that browser and this computer, encrypted. Every session asks for your passkey approval.",
+      "off": "Off",
+      "view": "View only",
+      "control": "View and control",
+      "enableView": "Turn on viewing",
+      "enableControl": "Turn on control",
+      "disable": "Turn off",
+      "disableControl": "Remove control",
+      "active": "Open session: {labels}",
+      "pending": "Waiting for your approval: {labels}",
+      "close": "Close",
+      "step1View": "Turn on viewing this screen remotely? Your trusted browser could:",
+      "step1Control": "Turn on remote control of this screen? Your trusted browser could:",
+      "failed": "Not turned on: {reason}"
+    },
     "notices": {
       "title": "Security notices",
       "missingStepUp": "“{computer}” refused a new device: the device that approved it didn't use its passkey. Approve it again from your phone with your passkey.",
@@ -130,7 +186,8 @@
         "signing_in": "Finish signing in in the browser that opened.",
         "connected": "Connected",
         "error": "Couldn't connect.",
-        "blocked_by_policy": "Signing in with your plan isn't available for your account. Use an API key."
+        "blocked_by_policy": "Signing in with your plan isn't available for your account. Use an API key.",
+        "available": "Ready. You sign in inside the app."
       },
       "mode": {
         "api_key": "with your API key",
@@ -145,7 +202,11 @@
         "signin_timeout": "Signing in took too long. Try again.",
         "key_invalid": "That API key isn't valid.",
         "keychain_failed": "I couldn't save the key in the system keychain.",
-        "status_failed": "I couldn't check the status."
+        "status_failed": "I couldn't check the status.",
+        "launch_failed": "It couldn't be opened on this computer.",
+        "unsupported_platform": "It isn't available for this operating system.",
+        "install_unavailable": "There's no official installer that can run here (brew or winget is missing).",
+        "recipe_disabled": "This custom recipe is off on this computer."
       },
       "failure": {
         "blocked_by_policy": "Signing in with your plan isn't available for your account.",
@@ -170,6 +231,51 @@
         "openai": "Signing in with your ChatGPT plan: Chalito team only for now.",
         "xai": "Signing in with Grok isn't available for now.",
         "google": "Signing in with Google isn't available for now."
+      }
+    },
+    "apps": {
+      "intro": "All your AIs in one place. Each one signs in with its own app, its CLI or its official website; Chalito never sees your passwords.",
+      "group": {
+        "agents": "Coding and terminal agents",
+        "desktop": "Desktop apps",
+        "web": "AI websites",
+        "custom": "Custom"
+      },
+      "custom": "Custom",
+      "customHint": "Your own recipes in ~/.chalito/recipes. They're turned on only here, on this computer, and only their id, name and status leave it.",
+      "enable": "Turn on for this computer",
+      "enableYes": "Yes, turn it on",
+      "disable": "Turn off",
+      "enableResult": {
+        "os_auth_failed": "Couldn't verify your identity with the system. Nothing changed.",
+        "cancelled": "Cancelled. Nothing changed."
+      },
+      "open": "Open",
+      "openSignin": "Open (sign in there)",
+      "installVia": "I'll install the official package {ref} with {via} on this computer.",
+      "installPage": "I'll open {vendor}'s official download page; you install it from there.",
+      "terms": "{vendor}'s terms",
+      "remoteInstall": "You asked to install {name} from another device. Install it on this computer?",
+      "signinTerminal": "To sign in, open a terminal on this computer and run: {cmd}",
+      "signinOff": "Signing in with your plan isn't available for your account yet. Use an API key.",
+      "failure": {
+        "blocked_by_policy": "Signing in with your plan isn't available for your account.",
+        "provider_busy": "An install or a sign-in is already running.",
+        "recipe_disabled": "Turn this recipe on for this computer first.",
+        "app_unavailable": "That isn't available for this app on this computer.",
+        "other": "That didn't work. Try again."
+      },
+      "problem": {
+        "invalid": "{file}: not a valid recipe.",
+        "shadows_curated": "{file}: uses a curated app's id; change it.",
+        "duplicate_id": "{file}: another recipe already uses that id.",
+        "too_large": "{file}: the file is too large."
+      },
+      "sessions": {
+        "on": "Sessions: allowed on this computer.",
+        "off": "Sessions: off on this computer until you allow them here.",
+        "allow": "Allow sessions here",
+        "disallow": "Turn sessions off"
       }
     }
   },

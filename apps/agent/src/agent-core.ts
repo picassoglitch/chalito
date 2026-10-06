@@ -16,6 +16,7 @@ import {
   AgentEvent,
   CommandEnvelope,
   Id,
+  TerminalData,
   type CommandAcceptedMeta,
   type CommandRejectedMeta,
   isSignedOrigin,
@@ -23,17 +24,24 @@ import {
   type CommandBody,
   type CommandPayload,
   type Origin,
-  type Provider,
   type RemotePermissionMode,
+  type RiskTier,
   type SealedEnvelope,
   type SessionState,
+  ScreenSignal,
   approvalSummary,
+  APP_ADAPTER,
+  PROVIDER_APP,
+  isLegacyApp,
 } from "@chalito/protocol";
 import { ApprovalManager } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
 import { publicReason } from "./command-result.js";
+import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
+import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
+import type { ScreenManager } from "./screen/manager.js";
 import {
   PERMISSION_RANK,
   SANDBOX_RANK,
@@ -57,25 +65,53 @@ export interface CommandResult {
   ok: boolean;
   reason?: string;
   sid?: string;
+  /** Accepted, but too frequent to audit one by one (terminal input and resizes). */
+  quiet?: boolean;
 }
 export interface PolicyHolder {
   get(): Policy;
   set(p: Policy, via: "local" | "remote_tighten" | "preset_accepted"): Promise<void>;
 }
 
-/** "Connect your AI" (providers.ts); absent in setups that don't manage providers. */
-export interface ProviderCommands {
-  connectKey(p: Provider, key: unknown): Promise<{ ok: boolean; reason?: string }>;
-  signin(p: Provider): Promise<{ ok: boolean; reason?: string }>;
-  disconnect(p: Provider): Promise<{ ok: boolean; reason?: string }>;
-  requestInstall(p: Provider): Promise<{ ok: boolean; reason?: string }>;
-  report(): Promise<void>;
+/** Remote terminals (terminal/control.ts); absent = every terminal.* command is refused. */
+export interface TerminalCommands {
+  has(tid: string): boolean;
+  open(
+    input: { appId: string; workspaceLabel: string; cols: number; rows: number },
+    origin: Origin,
+  ): Promise<{ ok: true; tid?: string } | { ok: false; reason: string }>;
+  input(tid: string, data: string, origin: Origin): { ok: true } | { ok: false; reason: string };
+  resize(tid: string, cols: number, rows: number, origin: Origin): { ok: true } | { ok: false; reason: string };
+  close(tid: string, origin: Origin): Promise<{ ok: true } | { ok: false; reason: string }>;
+}
+
+/**
+ * The connect engine (apps/manager.ts AppManager); absent in setups that don't manage apps. The
+ * provider.* commands are aliases of app.* for the four former providers.
+ */
+export interface AppCommands {
+  connectKey(appId: string, key: unknown): Promise<{ ok: boolean; reason?: string }>;
+  signin(appId: string): Promise<{ ok: boolean; reason?: string }>;
+  disconnect(appId: string): Promise<{ ok: boolean; reason?: string }>;
+  requestInstall(appId: string): Promise<{ ok: boolean; reason?: string }>;
+  launch(appId: string): Promise<{ ok: boolean; reason?: string }>;
+  report(appId?: string): Promise<void>;
+  /**
+   * Whether `session.start {appId}` may run this app here: known, a custom recipe enabled on
+   * this computer, connected. The legacy four are gated by `policy.adapters` instead.
+   */
+  sessionReady?(appId: string): Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 export interface AgentCoreDeps {
   store: AgentStore;
   adapters: Partial<Record<AdapterKind, SessionAdapter>>;
-  providers?: ProviderCommands;
+  /**
+   * Engine: session adapters for apps beyond the four built-in ones, by app id, from the drivers
+   * registered with drivers/registry.ts (e.g. any recipe with driver.acp).
+   */
+  appAdapters?: Readonly<Record<string, SessionAdapter>>;
+  apps?: AppCommands;
   policy: PolicyHolder;
   devMode: DevMode;
   trust: () => TrustedClientList;
@@ -90,11 +126,19 @@ export interface AgentCoreDeps {
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
   /** Host facts for the classifier's hard floor (agent binaries, service files, the session's PATH dirs). */
   classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
+  /** Computer control (computer/control.ts); absent = never attached. */
+  computer?: ComputerControl;
+  /** Remote terminal (terminal/control.ts); absent = terminal.* refused. */
+  terminal?: TerminalCommands;
+  /** Remote screen (screen/manager.ts); absent = `screen.*` commands are refused. */
+  screen?: ScreenManager;
 }
 
 interface Session {
   sid: string;
   adapter: AdapterKind;
+  /** The recipe id this session runs (engine); the four built-in adapters map to theirs. */
+  appId?: string;
   cwd: string;
   label: string;
   workspaceLabel: string;
@@ -109,11 +153,14 @@ interface Session {
   turnOriginFloor?: Origin;
 }
 
+/** Adapters that get the computer-control MCP server (see startSession). */
+const COMPUTER_ADAPTERS: ReadonlySet<AdapterKind> = new Set<AdapterKind>(["claude-code", "codex"]);
+
 const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
 const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
 
 const REMOTE_ENABLE_ATTEMPT =
-  /devmode\.(on|enable|toggleOn)|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
+  /devmode\.(on|enable|toggleOn)|computer|remoteTerminal|rawShell|(terminal|shell)\.(enable|on)|screen\.(enable|on|grant|allow)|remote_?(view|control)|app_?control|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access|apps?\.(custom|enable)|recipe\.(enable|add)/i;
 
 /**
  * The device agent's brain (ADR 0008): verifies commands against the local trusted list,
@@ -163,7 +210,7 @@ export class AgentCore {
     } finally {
       await this.d.store.deleteCommand(id).catch(() => undefined);
     }
-    await this.#publishResult(id, result);
+    if (!(result.ok && result.quiet)) await this.#publishResult(id, result);
     return result;
   }
 
@@ -257,20 +304,14 @@ export class AgentCore {
         if (!ws) return this.#reject(cid, "unknown_workspace");
         if (aboveCeiling(p.permissionMode)) return this.#reject(cid, "permission_mode_above_ceiling");
         if (sandboxAboveCeiling(p.codexSandbox)) return this.#reject(cid, "codex_sandbox_above_ceiling");
-        const adapter = this.d.adapters[p.adapter];
-        // "acp" (the old placeholder kind) is never enabled; a missing grok/gemini key is off.
-        const enabled = {
-          "claude-code": policy.adapters.claudeCode,
-          codex: policy.adapters.codex,
-          grok: policy.adapters.grok ?? false,
-          gemini: policy.adapters.gemini ?? false,
-          acp: false,
-        }[p.adapter];
-        if (!adapter || !enabled) return this.#reject(cid, "adapter_disabled");
+        const target = await this.#sessionTarget(p.adapter, p.appId);
+        if (!target.ok) return this.#reject(cid, target.reason);
         const prompt = await open<string>(p.promptCt);
         try {
           const sid = await this.startSession({
-            adapter: p.adapter,
+            adapter: target.adapter,
+            ...(target.appId ? { appId: target.appId } : {}),
+            ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
             workspace: ws,
             prompt,
             origin,
@@ -355,44 +396,159 @@ export class AgentCore {
         await this.d.saveTrust();
         for (const s of this.sessions.values())
           if (s.startedBy === `client:${p.clientDeviceId}`) await s.handle.interrupt();
+        await this.d.screen?.endForClient(p.clientDeviceId);
         this.#audit("trust.client_removed", { clientDeviceId: p.clientDeviceId, by: origin });
         return { ok: true };
       }
-      // Credentials and the provider's CLI only: none of these touches policy, trust or
-      // Developer mode. An install still waits for a yes on this computer, and a sign-in
-      // happens in this computer's browser.
-      case "provider.connect": {
-        const providers = this.d.providers;
-        if (!providers) return this.#reject(cid, "provider_failed");
+      // Credentials, the app's own sign-in, its official install and launching it: none of
+      // these touches policy, trust or Developer mode, and none enables a custom recipe (that's
+      // only on the device). An install still waits for a yes on this computer, and a sign-in
+      // happens on this computer. provider.* are aliases for the four former providers.
+      case "provider.connect":
+      case "app.connect": {
+        const apps = this.d.apps;
+        if (!apps) return this.#reject(cid, "provider_failed");
+        const appId = p.type === "app.connect" ? p.appId : PROVIDER_APP[p.provider];
         const r =
           p.method === "api_key"
-            ? await providers.connectKey(p.provider, await open<string>(p.keyCt!))
-            : await providers.signin(p.provider);
-        this.#audit("provider.connect", { provider: p.provider, method: p.method, by: origin, ok: r.ok });
+            ? await apps.connectKey(appId, await open<string>(p.keyCt!))
+            : await apps.signin(appId);
+        this.#audit("app.connect", { appId, method: p.method, by: origin, ok: r.ok, via: p.type });
         return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "provider_failed");
       }
-      case "provider.disconnect": {
-        if (!this.d.providers) return this.#reject(cid, "provider_failed");
-        const r = await this.d.providers.disconnect(p.provider);
-        this.#audit("provider.disconnect", { provider: p.provider, by: origin, ok: r.ok });
+      case "provider.disconnect":
+      case "app.disconnect": {
+        if (!this.d.apps) return this.#reject(cid, "provider_failed");
+        const appId = p.type === "app.disconnect" ? p.appId : PROVIDER_APP[p.provider];
+        const r = await this.d.apps.disconnect(appId);
+        this.#audit("app.disconnect", { appId, by: origin, ok: r.ok, via: p.type });
         return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "provider_failed");
       }
-      case "provider.install": {
-        if (!this.d.providers) return this.#reject(cid, "provider_failed");
-        const r = await this.d.providers.requestInstall(p.provider);
-        this.#audit("provider.install_requested", { provider: p.provider, by: origin, ok: r.ok });
+      case "provider.install":
+      case "app.install": {
+        if (!this.d.apps) return this.#reject(cid, "provider_failed");
+        const appId = p.type === "app.install" ? p.appId : PROVIDER_APP[p.provider];
+        const r = await this.d.apps.requestInstall(appId);
+        this.#audit("app.install_requested", { appId, by: origin, ok: r.ok, via: p.type });
         return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "provider_failed");
       }
       case "provider.status":
-        if (!this.d.providers) return this.#reject(cid, "provider_failed");
-        await this.d.providers.report();
+      case "app.status":
+        if (!this.d.apps) return this.#reject(cid, "provider_failed");
+        await this.d.apps.report(p.type === "app.status" ? p.appId : undefined);
         return { ok: true };
+      case "app.launch": {
+        if (!this.d.apps) return this.#reject(cid, "provider_failed");
+        const r = await this.d.apps.launch(p.appId);
+        this.#audit("app.launch", { appId: p.appId, by: origin, ok: r.ok });
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "app_unavailable");
+      }
+      // ---- TERMINAL: open only what the person turned on here, after their passkey approval ----
+      case "terminal.open": {
+        if (!this.d.terminal) return this.#reject(cid, "terminal_disabled");
+        const r = await this.d.terminal.open(
+          { appId: p.appId, workspaceLabel: p.workspaceLabel, cols: p.cols ?? 80, rows: p.rows ?? 24 },
+          origin,
+        );
+        return r.ok ? { ok: true, ...(r.tid ? { sid: r.tid } : {}) } : this.#reject(cid, r.reason);
+      }
+      case "terminal.input": {
+        // Unknown terminals are refused before anything is decrypted.
+        if (!this.d.terminal?.has(p.tid)) return this.#reject(cid, "unknown_session");
+        const parsed = TerminalData.safeParse(await open<unknown>(p.dataCt));
+        if (!parsed.success) return this.#reject(cid, "invalid");
+        const r = this.d.terminal.input(p.tid, parsed.data.data, origin);
+        return r.ok ? { ok: true, quiet: true } : this.#reject(cid, r.reason);
+      }
+      case "terminal.resize": {
+        if (!this.d.terminal?.has(p.tid)) return this.#reject(cid, "unknown_session");
+        const r = this.d.terminal.resize(p.tid, p.cols, p.rows, origin);
+        return r.ok ? { ok: true, quiet: true } : this.#reject(cid, r.reason);
+      }
+      case "terminal.close": {
+        if (!this.d.terminal) return this.#reject(cid, "unknown_session");
+        const r = await this.d.terminal.close(p.tid, origin);
+        return r.ok ? { ok: true, sid: p.tid } : this.#reject(cid, r.reason);
+      }
+
+      // ---- SCREEN (screen/manager.ts): asks only; enabling is local (`chalito screen enable`).
+      case "screen.open": {
+        if (!this.d.screen) return this.#reject(cid, "screen_disabled");
+        const r = await this.d.screen.open({
+          origin,
+          mode: p.mode,
+          ...(p.display !== undefined ? { display: p.display } : {}),
+          ...(p.appId ? { appId: p.appId } : {}),
+        });
+        return r.ok ? { ok: true, sid: r.sid } : this.#reject(cid, r.reason);
+      }
+      case "screen.close": {
+        if (!this.d.screen) return this.#reject(cid, "unknown_session");
+        const r = await this.d.screen.close(p.sid, origin);
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "unknown_session");
+      }
+      case "screen.signal": {
+        if (!this.d.screen) return this.#reject(cid, "unknown_session");
+        const signal = ScreenSignal.safeParse(await open<unknown>(p.signalCt));
+        if (!signal.success) return this.#reject(cid, "bad_signal");
+        const r = await this.d.screen.signal(p.sid, origin, signal.data);
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "bad_signal");
+      }
     }
   }
 
-  /** The daemon rebuilds the adapters when a provider is connected, signed out or installed. */
-  setAdapters(adapters: Partial<Record<AdapterKind, SessionAdapter>>): void {
+  /**
+   * What `session.start` runs: the four built-in adapters (by `adapter`, or by their app id),
+   * gated by `policy.adapters` as before; any other app by its id, through the session adapter a
+   * registered driver built for it, while the app is ready here and the person allowed its
+   * sessions on this computer (`policy.apps.sessions[appId] === true`, set only locally).
+   */
+  async #sessionTarget(
+    adapter: AdapterKind | undefined,
+    appId: string | undefined,
+  ): Promise<
+    { ok: true; adapter: AdapterKind; appId?: string; appAdapter?: SessionAdapter } | { ok: false; reason: string }
+  > {
+    const policy = this.d.policy.get();
+    if (appId === undefined || isLegacyApp(appId)) {
+      const kind = appId !== undefined ? APP_ADAPTER[appId as keyof typeof APP_ADAPTER] : adapter!;
+      if (adapter !== undefined && adapter !== kind) return { ok: false, reason: "adapter_disabled" };
+      // "acp" alone (no app) is never enabled; a missing grok/gemini key is off.
+      const enabled = {
+        "claude-code": policy.adapters.claudeCode,
+        codex: policy.adapters.codex,
+        grok: policy.adapters.grok ?? false,
+        gemini: policy.adapters.gemini ?? false,
+        acp: false,
+      }[kind];
+      if (!this.d.adapters[kind] || !enabled) return { ok: false, reason: "adapter_disabled" };
+      return { ok: true, adapter: kind, ...(appId ? { appId } : {}) };
+    }
+    if (!this.d.apps?.sessionReady) return { ok: false, reason: "unknown_app" };
+    const ready = await this.d.apps.sessionReady(appId);
+    if (!ready.ok) return ready;
+    // Owner decision 2026-10-06: off until the person allows this app's sessions on this computer
+    // (`chalito apps sessions enable` / the desktop panel); missing = off.
+    if (policy.apps?.sessions?.[appId] !== true) return { ok: false, reason: "adapter_disabled" };
+    const appAdapter =
+      this.d.appAdapters && Object.hasOwn(this.d.appAdapters, appId) ? this.d.appAdapters[appId] : undefined;
+    if (!appAdapter) return { ok: false, reason: "adapter_disabled" };
+    // The card names the protocol family; the session doc carries the app id.
+    return { ok: true, adapter: adapter ?? "acp", appId, appAdapter };
+  }
+
+  /** The daemon rebuilds the adapters when an app is connected, signed out or installed. */
+  setAdapters(
+    adapters: Partial<Record<AdapterKind, SessionAdapter>>,
+    appAdapters?: Readonly<Record<string, SessionAdapter>>,
+  ): void {
     this.d.adapters = adapters;
+    if (appAdapters) this.d.appAdapters = appAdapters;
+  }
+
+  /** Engine: the session adapters registered drivers built for apps beyond the built-in four. */
+  setAppAdapters(appAdapters: Readonly<Record<string, SessionAdapter>>): void {
+    this.d.appAdapters = appAdapters;
   }
 
   /** Local acceptance of a cloud-proposed preset (desktop app or CLI). */
@@ -407,6 +563,9 @@ export class AgentCore {
 
   async startSession(input: {
     adapter: AdapterKind;
+    /** Engine: the recipe id, and the adapter its driver built (apps beyond the built-in four). */
+    appId?: string;
+    appAdapter?: SessionAdapter;
     workspace: { label: string; path: string };
     prompt: string;
     origin: Origin;
@@ -422,6 +581,7 @@ export class AgentCore {
     const session: Session = {
       sid,
       adapter: input.adapter,
+      ...(input.appId ? { appId: input.appId } : {}),
       cwd: input.workspace.path,
       label: input.workspace.label,
       workspaceLabel: input.workspace.label,
@@ -436,6 +596,9 @@ export class AgentCore {
     await this.d.store.upsertSession(sid, {
       deviceId: this.d.self.deviceId,
       adapter: input.adapter,
+      // Engine: chalito.sessions.kind / app_id are generated from these (migration 20261006000300).
+      kind: "agent",
+      ...(input.appId ? { appId: input.appId } : {}),
       label: session.label,
       cwdLabel: session.workspaceLabel,
       state: "starting",
@@ -449,12 +612,27 @@ export class AgentCore {
       permissionMode: input.permissionMode,
     });
 
-    session.handle = await this.d.adapters[input.adapter]!.start({
+    // Computer control: only when the person turned it on here, for signed origins, with the
+    // desktop app running. Its tools stay inert until this session's computer_control approval.
+    // Claude Code and Codex only: the ACP agents (Grok Build, Gemini CLI) name and permission MCP
+    // tool calls their own way, which the gate can't recognise yet, so they don't get it.
+    const computer =
+      COMPUTER_ADAPTERS.has(input.adapter) && !input.appAdapter
+        ? this.d.computer?.attach(sid, {
+            label: session.label,
+            adapter: input.adapter,
+            origin: input.origin,
+          })
+        : null;
+    session.handle = await (input.appAdapter ?? this.d.adapters[input.adapter]!).start({
       sid,
       cwd: session.cwd,
       prompt: input.prompt,
       origin: input.origin,
       permissionMode: input.permissionMode,
+      ...(computer
+        ? { mcpServers: { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } }
+        : {}),
       gate: this.#gate(session),
       askUser: async (q) => {
         const first = q.questions[0]?.question ?? null;
@@ -486,6 +664,17 @@ export class AgentCore {
   #gate(s: Session): ToolGate {
     return async (gated: ToolCall) => {
       const call = s.turnOriginFloor ? { ...gated, origin: lowerTrust(gated.origin, s.turnOriginFloor) } : gated;
+      // Computer-control tools: the broker does the per-action checks (grant, indicator, rate,
+      // audit); here they're refused outright when control is off, ended or denied, or the turn
+      // comes from an unsigned origin. Not on the card: inputs can be typed text.
+      if (call.toolName.startsWith(COMPUTER_TOOL_PREFIX)) {
+        const r = this.d.computer?.gate(s.sid, call.origin) ?? { allow: false as const, reason: "computer_disabled" };
+        if (!r.allow) {
+          s.card.blocker(`Control del equipo bloqueado (${r.reason})`);
+          await this.#publishCard(s);
+        }
+        return r;
+      }
       const policy = this.d.policy.get();
       const classification = classifyToolCall(call.toolName, call.input, this.#classifyContext(policy, s));
       const decision = decide({
@@ -507,56 +696,105 @@ export class AgentCore {
         await this.#publishCard(s);
         return { allow: false, reason: decision.reason };
       }
-      let aid: string | undefined;
-      // The "requested" side effects (event, card, call line) run while the approval waits. Keep
-      // the promise: the resolution below must not remove the call line before it was published,
-      // or a fast decision leaves a stale plaintext line behind (seen over Supabase round-trips).
-      let announced: Promise<void> = Promise.resolve();
-      const outcome = await this.approvals.request({
-        sid: s.sid,
+      const outcome = await this.#approve(s, {
         risk: classification.tier,
         stepUp: decision.stepUp,
         origin: call.origin,
         details: { toolName: call.toolName, input: call.input, reasons: classification.reasons },
-        onRequested: (requested, expiresAt) => {
-          aid = requested;
-          announced = (async () => {
-            s.card.approvalPending(requested, true);
-            await this.#event(s, {
-              type: "approval.requested",
-              aid: requested,
-              risk: classification.tier,
-              expiresAt,
-              urgency: classification.tier === "HIGH" ? "high" : "normal",
-            });
-            await this.#publishCard(s);
-            await this.callLines.publish(`${s.sid}_${requested}`, {
-              notificationId: `a_${requested}`,
-              sid: s.sid,
-              sessionLabel: s.label,
-              question: null,
-            });
-          })().catch((err: unknown) =>
-            this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" }),
-          );
-        },
       });
-      await announced;
-      if (aid) {
-        s.card.approvalPending(aid, false);
-        await this.callLines.remove(`${s.sid}_${aid}`);
-        await this.#event(s, {
-          type: "approval.resolved",
-          aid,
-          allow: outcome.allow,
-          reason: outcome.reason,
-          ...(outcome.byDeviceId ? { byDeviceId: outcome.byDeviceId } : {}),
-        });
-      }
       if (outcome.allow) s.card.action(summary);
       await this.#publishCard(s);
       return outcome.allow ? { allow: true } : { allow: false, reason: outcome.reason };
     };
+  }
+
+  /**
+   * Asks the person's trusted devices (signed, sealed request) and announces it: session event,
+   * card, call line. Resolves with the verified outcome; no answer within the TTL is a deny.
+   */
+  async #approve(
+    s: Session,
+    input: {
+      risk: RiskTier;
+      stepUp: boolean;
+      origin: Origin;
+      kind?: "tool" | "computer_control" | "app_control";
+      details: { toolName: string; input: unknown; reasons: string[] };
+    },
+  ): Promise<ComputerApprovalOutcome> {
+    let aid: string | undefined;
+    // The "requested" side effects (event, card, call line) run while the approval waits. Keep
+    // the promise: the resolution below must not remove the call line before it was published,
+    // or a fast decision leaves a stale plaintext line behind (seen over Supabase round-trips).
+    let announced: Promise<void> = Promise.resolve();
+    const outcome = await this.approvals.request({
+      sid: s.sid,
+      risk: input.risk,
+      stepUp: input.stepUp,
+      origin: input.origin,
+      ...(input.kind ? { kind: input.kind } : {}),
+      details: input.details,
+      onRequested: (requested, expiresAt) => {
+        aid = requested;
+        announced = (async () => {
+          s.card.approvalPending(requested, true);
+          await this.#event(s, {
+            type: "approval.requested",
+            aid: requested,
+            risk: input.risk,
+            expiresAt,
+            urgency: input.risk === "HIGH" ? "high" : "normal",
+          });
+          await this.#publishCard(s);
+          await this.callLines.publish(`${s.sid}_${requested}`, {
+            notificationId: `a_${requested}`,
+            sid: s.sid,
+            sessionLabel: s.label,
+            question: null,
+          });
+        })().catch((err: unknown) =>
+          this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" }),
+        );
+      },
+    });
+    await announced;
+    if (aid) {
+      s.card.approvalPending(aid, false);
+      await this.callLines.remove(`${s.sid}_${aid}`);
+      await this.#event(s, {
+        type: "approval.resolved",
+        aid,
+        allow: outcome.allow,
+        reason: outcome.reason,
+        ...(outcome.byDeviceId ? { byDeviceId: outcome.byDeviceId } : {}),
+      });
+    }
+    return outcome;
+  }
+
+  /**
+   * A session's `computer_control` grant (computer/control.ts): HIGH, with a passkey step-up,
+   * from a trusted device. The origin is the session's own, lowered by an unsigned answer.
+   */
+  async requestComputerApproval(
+    sid: string,
+    input: {
+      origin: Origin;
+      kind?: "computer_control" | "app_control";
+      details: { toolName: string; input: unknown; reasons: string[] };
+    },
+  ): Promise<ComputerApprovalOutcome> {
+    const s = this.sessions.get(sid);
+    if (!s) return { allow: false, reason: "policy_block" };
+    const origin = s.turnOriginFloor ? lowerTrust(input.origin, s.turnOriginFloor) : input.origin;
+    if (!isSignedOrigin(origin)) return { allow: false, reason: "policy_block" };
+    return this.#approve(s, {
+      risk: "HIGH",
+      stepUp: true,
+      origin,
+      kind: input.kind ?? "computer_control",
+      details: input.details,
+    });
   }
 
   #classifyContext(policy: Policy, s: Session): ClassifyContext {
@@ -595,6 +833,7 @@ export class AgentCore {
         return;
       case "state":
         if (e.state !== "running") s.turnOriginFloor = undefined;
+        if (e.state === "completed" || e.state === "failed") this.d.computer?.end(s.sid);
         s.card.state(e.state as SessionState);
         await this.#event(s, { type: "session.state", state: e.state });
         await this.d.store.upsertSession(s.sid, { state: e.state, updatedAt: this.d.now() });

@@ -42,6 +42,7 @@ const runTurn = async (steps) => {
     if (cancelled) break;
     if (step.say) notify(SID, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: step.say } });
     if (step.mode) notify(SID, { sessionUpdate: "current_mode_update", currentModeId: step.mode });
+    if (step.config) notify(SID, { sessionUpdate: "config_option_update", configOptions: step.config });
     if (step.crash) process.exit(3);
     if (step.tool) {
       const tc = { toolCallId: step.tool.id, title: step.tool.title ?? step.tool.id, kind: step.tool.kind };
@@ -53,7 +54,7 @@ const runTurn = async (steps) => {
         const res = await request("session/request_permission", {
           sessionId: SID,
           toolCall: { toolCallId: step.tool.id },
-          options: [
+          options: script.permissionOptions ?? [
             { optionId: "allow-once", name: "Allow", kind: "allow_once" },
             { optionId: "allow-always", name: "Always allow", kind: "allow_always" },
             { optionId: "reject-once", name: "Reject", kind: "reject_once" },
@@ -101,7 +102,14 @@ const handle = async (m) => {
         });
         return send({ id, result: {} });
       }
-      send({ id, result: { sessionId: SID, ...(script.modes ? { modes: script.modes } : {}) } });
+      send({
+        id,
+        result: {
+          sessionId: SID,
+          ...(script.modes ? { modes: script.modes } : {}),
+          ...(script.configOptions ? { configOptions: script.configOptions } : {}),
+        },
+      });
       if (script.commands)
         notify(SID, {
           sessionUpdate: "available_commands_update",
@@ -110,7 +118,10 @@ const handle = async (m) => {
       return;
     }
     case "session/set_mode":
+      if (script.setModeFails) return send({ id, error: { code: -32602, message: "unknown mode" } });
       return send({ id, result: {} });
+    case "session/set_config_option":
+      return send({ id, result: { configOptions: script.configOptions ?? [] } });
     case "session/prompt": {
       const steps = script.turns?.[turnIndex++] ?? [];
       const result = await runTurn(steps);

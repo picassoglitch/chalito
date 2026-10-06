@@ -12,6 +12,7 @@ import {
   HARDENING_OVERRIDES,
   checkCodexVersion,
   codexVersionFromUserAgent,
+  mcpServerOverrides,
   CodexAdapter,
   type CodexConfig,
   type CodexTransport,
@@ -631,5 +632,35 @@ describe("Codex adapter: tools that skip approvals", () => {
     });
     expect(fake.run.received.some((m) => m.method === "turn/start")).toBe(false);
     expect(events).toEqual([]);
+  });
+
+  it("the agent's own computer-control server is defined by -c overrides and allowed; others still refuse", async () => {
+    const own = {
+      chalito_computer: {
+        command: "C:\\Program Files\\Chalito\\chalito-agent.exe",
+        args: ["computer", "mcp"],
+        env: { CHALITO_COMPUTER_SOCKET: "/s", CHALITO_COMPUTER_TOKEN: 't"ok' },
+      },
+    };
+    expect(mcpServerOverrides(own)).toEqual([
+      'mcp_servers.chalito_computer.command="C:\\\\Program Files\\\\Chalito\\\\chalito-agent.exe"',
+      'mcp_servers.chalito_computer.args=["computer","mcp"]',
+      'mcp_servers.chalito_computer.env={CHALITO_COMPUTER_SOCKET="/s",CHALITO_COMPUTER_TOKEN="t\\"ok"}',
+      "mcp_servers.chalito_computer.startup_timeout_sec=20",
+      "mcp_servers.chalito_computer.tool_timeout_sec=660",
+    ]);
+    expect(() => mcpServerOverrides({ "bad name": own.chalito_computer })).toThrow(/Refused/);
+    expect(() => mcpServerOverrides({ x: { ...own.chalito_computer, env: { "A=B": "1" } } })).toThrow(/Refused/);
+
+    const fake = fakeCodex([[{ say: "hola" }]], undefined, { mcpServers: ["chalito_computer"] });
+    const ok = session({ apiKey: "k", spawn: fake.spawn, env: {} }, { mcpServers: own });
+    const h = await ok.start();
+    expect(fake.run.spawned!.args).toContain("mcp_servers.chalito_computer.tool_timeout_sec=660");
+    h.close();
+
+    const extra = fakeCodex([[{ say: "never" }]], undefined, { mcpServers: ["chalito_computer", "corp-db"] });
+    await expect(
+      session({ apiKey: "k", spawn: extra.spawn, env: {} }, { mcpServers: own }).start(),
+    ).rejects.toMatchObject({ code: "mcp_not_allowed", message: expect.stringContaining("(corp-db)") });
   });
 });

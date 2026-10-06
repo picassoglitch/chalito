@@ -24,6 +24,20 @@ const T = {
     mcpCards: "Compartir tarjetas con apps conectadas (sin cifrar)",
     allowlist: (n: number) => `${n} comandos de prueba, lint o build sin preguntar`,
     domains: (n: number) => `${n} dominios web permitidos sin preguntar`,
+    computer: (n: number | null) =>
+      n === null
+        ? "Control del equipo (pantalla, mouse y teclado): apagado"
+        : `Control del equipo: encendido, con aprobación por sesión, hasta ${n} acciones por minuto`,
+    terminal: (n: number | null, shell: boolean) =>
+      n === null
+        ? "Terminal remota: apagada"
+        : `Terminal remota: encendida, con aprobación por terminal, hasta ${n} a la vez${shell ? "; incluye la shell completa" : ""}`,
+    screen: (m: "off" | "view" | "control") =>
+      m === "off"
+        ? "Pantalla remota: apagada"
+        : m === "view"
+          ? "Pantalla remota: solo ver, con aprobación por sesión"
+          : "Pantalla remota: ver y controlar, con aprobación por sesión",
   },
   en: {
     workspace: (l: string, p: string) => `Folder “${l}”: ${p}`,
@@ -42,6 +56,20 @@ const T = {
     mcpCards: "Share cards with connected apps (unencrypted)",
     allowlist: (n: number) => `${n} test, lint or build commands without asking`,
     domains: (n: number) => `${n} web domains allowed without asking`,
+    computer: (n: number | null) =>
+      n === null
+        ? "Computer control (screen, mouse and keyboard): off"
+        : `Computer control: on, approved per session, up to ${n} actions a minute`,
+    terminal: (n: number | null, shell: boolean) =>
+      n === null
+        ? "Remote terminal: off"
+        : `Remote terminal: on, approved per terminal, up to ${n} at once${shell ? "; includes the full shell" : ""}`,
+    screen: (m: "off" | "view" | "control") =>
+      m === "off"
+        ? "Remote screen: off"
+        : m === "view"
+          ? "Remote screen: view only, approved per session"
+          : "Remote screen: view and control, approved per session",
   },
 } as const;
 
@@ -73,5 +101,20 @@ export const policyRules = (p: Policy, locale: "es" | "en"): PolicyRule[] => {
     { id: "web.allowDomains", summary: t.domains(p.web.allowDomains.length), effect: "allow" },
     { id: "egress.callLines", summary: t.callLines, effect: on(p.egress.callLines) },
     { id: "egress.mcpCards", summary: t.mcpCards, effect: on(p.egress.mcpCards) },
+    p.computer?.enabled
+      ? { id: "computer", summary: t.computer(p.computer.maxActionsPerMinute), effect: "ask" }
+      : { id: "computer", summary: t.computer(null), effect: "deny" },
+    p.remoteTerminal?.enabled
+      ? {
+          id: "remoteTerminal",
+          summary: t.terminal(p.remoteTerminal.maxSessions, p.remoteTerminal.rawShell),
+          effect: "ask",
+        }
+      : { id: "remoteTerminal", summary: t.terminal(null, false), effect: "deny" },
+    p.screen?.control
+      ? { id: "screen", summary: t.screen("control"), effect: "ask" }
+      : p.screen?.view
+        ? { id: "screen", summary: t.screen("view"), effect: "ask" }
+        : { id: "screen", summary: t.screen("off"), effect: "deny" },
   ];
 };

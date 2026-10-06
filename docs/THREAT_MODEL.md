@@ -125,6 +125,47 @@ Mitigations:
 | Social engineering: "turn on autoApproveCritical" | Explicit risk examples, typed liability phrase, persistent badge on every client and on the companion, off from anywhere instantly. Auto-approve never applies to unsigned origins. |
 | Liability dispute | Text + version + timestamp + device + toggle, in the local hash-chained log and the cloud audit. The text version must match the ToS clause (CI check, M15). |
 
+### 4.8a Computer control (screen, mouse, keyboard)
+`apps/agent/src/computer`. A local stdio MCP server the agent attaches to Claude Code and Codex sessions; the agent itself holds the policy, the grants, the native layer (`@jitsi/robotjs`, `node-screenshots`) and the audit.
+
+| Threat | Mitigation |
+|---|---|
+| Remote enable (cloud/phone/MCP/call/room) | No command can express it (`CommandPayload` has no `computer.*`; pinned by a protocol test). `policy.tighten` can only turn it off or lower the rate (`computerTighterOrEqual`). Remote attempts are rejected and audited as `remote_enable.rejected`. |
+| Enabled by a session or a shell write | It lives in the signed, keychain-anchored policy. Only `chalito computer enable` or the desktop panel turn it on: OS auth, two confirmations and a typed phrase. Both refuse inside a session (`CHALITO_SESSION`) or without a TTY, and `chalito policy edit` refuses to turn it on. |
+| A session drives the computer without the person knowing | Each session needs a `computer_control` approval (HIGH, passkey step-up) from a trusted device. A deny sticks for that session. Unsigned origins (`mcp:*`, `call:*`) never get the tools or a grant. |
+| Acting while nobody can see it | Every action waits for the desktop app's heartbeat saying the always-on-top indicator is on screen. With no desktop app there is no broker and nothing is attached. |
+| Runaway or hijacked session | Per-session rate limit (`policy.computer.maxActionsPerMinute`, default 60). Kill switch: Ctrl+Alt+Esc, the tray item "Detener control", the indicator's button, the panel, or turning it off. It revokes every grant at once, stops typing mid-text, releases a held mouse button, and interrupts the sessions. |
+| Leaking what was on screen or typed | Audit rows (`computer.*`) carry metadata only: tool, coordinates, key combo, text length. Never the image, the typed text or window titles. Screenshots go only to the session's model. |
+| Session token reuse | The MCP server gets one random token per session in its environment, never the desktop IPC secret. Same-user processes could read it (`/proc/<pid>/environ`, `ps` for Codex's `-c` args). It only allows what that session's grant allows, still behind the indicator, the rate limit and the audit. Same-user malware is out of scope, as for Developer mode. |
+
+### 4.8b Remote terminal (a recipe's terminal app, or the raw shell, in a PTY)
+`apps/agent/src/terminal`. A trusted browser opens a recipe's terminal app (aider, opencode, any CLI AI) in a PTY on the device and sees and types into it. The command line comes from the recipe on the device (signed catalog or the person's own local recipe); the remote command only names the recipe (`appId`) and an allowed workspace label. PTY: Bun's built-in PTY in the compiled agent, `@lydell/node-pty` under Node and on Windows (`terminal/pty.ts`).
+
+| Threat | Mitigation |
+|---|---|
+| Remote enable (cloud/phone/MCP/call/room) | No command can express it (`terminal.*` only open/input/resize/close; pinned by a protocol test). `policy.tighten` can only turn it off or lower the limits, and can't stage `rawShell` or bigger limits while it's off (`remoteTerminalTighterOrEqual`). Remote attempts are rejected and audited as `remote_enable.rejected`. |
+| Enabled by a session or a shell write | It lives in the signed, keychain-anchored policy. Only `chalito terminal enable` or the desktop panel turn it on (OS auth, two confirmations, typed phrase); both refuse inside a session (`CHALITO_SESSION`, which every terminal's program also gets) or without a TTY; `chalito policy edit` refuses. |
+| Full shell access | The raw shell (`appId: "shell"`) is a separate switch with a stronger confirmation (OS auth, four steps, a longer phrase); turning remote terminal on (again) always leaves it off; turning it off closes open shells. It is equivalent to sitting at the keyboard as that user (including running `chalito` after unsetting `CHALITO_SESSION`; OS-auth prompts still appear on the device's own screen). |
+| A terminal opens without the person knowing | Each terminal needs a `terminal` approval (HIGH, passkey step-up) from a trusted device, showing the app, folder and command. Only signed `client:*` origins can open, type or resize. Nothing runs before the desktop app's heartbeat says the indicator is on screen; input is refused without it, and open terminals close after 10 s without it. |
+| Runaway or hijacked terminal | Kill switch shared with computer control (Ctrl+Alt+Esc, tray "Detener control", indicator button, panel): every terminal is hung up (SIGHUP, then SIGKILL after 2 s). Limits: `remoteTerminal.maxSessions` (default 3), 6 opens a minute, `maxInputPerMinute` characters per terminal (default 65 536), 600 input/resize commands a minute. |
+| Leaking terminal contents | Input is sealed to the device (AAD `command:<cid>`); output is sealed to the trusted clients per chunk (AAD `terminal:<tid>:<seq>`, so the relay can't reorder, replay or move chunks). Output events expire after 1 hour. The audit has ids, sizes, counts and reasons only. The terminal's program never inherits `CHALITO_*`/`SUPABASE_*` variables. |
+| Relay overload / flooding | Output is coalesced (≤ 16 KiB per event, every 40 ms), bounded by a device-wide 15 events/s budget and 4 writes in flight; the device holds at most 1 MiB unsent (oldest dropped, the count reported as `dropped`); node-pty is paused above 256 KiB. |
+
+### 4.8c Remote screen (view / control) and AI-driven apps
+`apps/agent/src/screen`, `apps/agent/src/drivers`, ADR 0021. A trusted browser sees (and in control mode drives) the device's screen over WebRTC; an AI session may launch and drive the person's AI apps through the computer MCP.
+
+| Threat | Mitigation |
+|---|---|
+| Remote enable | No command can express it: `screen.open` only asks; there is no `screen.enable` (protocol test). `policy.tighten` / `chalito policy edit` can only turn it off, drop control or lower limits (`screenTighterOrEqual`). Attempts are rejected as `remote_enable.rejected`. Enabling needs OS auth, two confirmations and a typed phrase on the device. |
+| The cloud watches or injects | Frames and input travel only over the WebRTC peer (DTLS) between the browser and the device. The offer is signed by the agent (`chalito.screen-signal.v1`) and sealed to the requesting client only; the answer is a signed command with the SDP sealed to the device. A relay can't read the SDP, can't swap the DTLS fingerprint, and can't open channels: the agent creates both and closes any the browser opens. TURN (owner action) only relays DTLS packets. |
+| Someone else's browser joins | Only the opener's origin can answer, signal or close; a client revocation ends its sessions; signaling is sealed to that one client. |
+| A session watches without the person knowing | Per-session `remote_view` / `remote_control` approval (HIGH, passkey step-up). The desktop indicator must be on screen for every frame and every input (3 s grace, then the session ends). |
+| Runaway input | Control mode only; validated `ScreenInput`; rate limit (`maxInputsPerMinute`), pointer moves coalesced; text typed in chunks so the kill switch stops it; held buttons released on end. Session time limit (`maxSessionMinutes`). |
+| Kill switch | The same Ctrl+Alt+Esc, tray "Detener control", indicator button and panel end every screen session (and computer control) at once; turning it off in the policy does too. |
+| Leaks in the audit | `screen.*` rows carry counts and reasons only: never pixels, keys or text. App tools audit `appId` and the URL's origin, never its path or query. |
+| AI opens arbitrary programs or sites | `launch_app` / `open_web_app` take recipe ids only (curated or the person's own local recipes); URLs must be on the recipe's `allowedOrigins`; each app needs its own `app_control` approval (HIGH, passkey) in the session, on top of every computer-control gate. |
+| Web-app credentials leave the device | Each AI website runs in the system browser with its own profile (`~/.chalito/browsers/<appId>`, 0700). Chalito never reads that profile; the person signs in on the real site. Not mitigated: the person can browse anywhere inside that window (no per-profile URL lock in Chrome). |
+
 ### 4.9 Rooms
 | Threat | Mitigation |
 |---|---|
@@ -199,5 +240,8 @@ Listed per milestone in `docs/PLAN.md`. The most important:
 - webhook forgery + idempotency + concurrent consumption + cost guard (M12)
 - pay-to-win property (M8/M12)
 - updater rejects unsigned manifests (M14)
+- computer control: no command enables it, remote tighten can't, approval per session, kill switch, metadata-only audit (`apps/agent/test/computer.test.ts`, `packages/protocol/test/protocol.test.ts`)
+- remote terminal: no command enables it or the raw shell, remote tighten can't, approval per terminal, sealed I/O round-trip, kill switch, raw shell as a separate gate (`apps/agent/test/terminal.test.ts`, `apps/agent/test/agent.test.ts`, `packages/protocol/test/protocol.test.ts`)
+- remote screen and app control: no command enables them, approvals per session (`remote_view`, `remote_control`, `app_control`), signaling signed and sealed to the opener, kill switch ends streams and input, browser profile path and origin allowlist (`apps/agent/test/screen.test.ts`, `apps/agent/test/drivers.test.ts`, `apps/agent/test/agent.test.ts`, `packages/protocol/test/protocol.test.ts`)
 
 Several are already enforced at the schema level in `packages/protocol` (tests in `packages/protocol/test`).

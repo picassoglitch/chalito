@@ -4,7 +4,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Origin, RemotePermissionMode } from "@chalito/protocol";
-import type { AdapterEvent, Question, SessionAdapter, SessionHandle, SessionStartOptions, ToolCall } from "../core.js";
+import type {
+  AdapterEvent,
+  LocalMcpServer,
+  Question,
+  SessionAdapter,
+  SessionHandle,
+  SessionStartOptions,
+  ToolCall,
+} from "../core.js";
 import { allowedEnv } from "../env.js";
 
 /**
@@ -137,8 +145,35 @@ export const API_KEY_OVERRIDES = [
   "model_providers.chalito_openai_key.supports_websockets=false",
 ];
 
+const TOML_KEY = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * `-c` overrides that define the agent's own local MCP servers (computer control) for this run.
+ * Values are JSON string literals, which are valid TOML basic strings. A tool call may wait for the
+ * person's approval, so the tool timeout outlasts the 10-minute approval window.
+ */
+export const mcpServerOverrides = (servers: Record<string, LocalMcpServer> = {}): string[] => {
+  const out: string[] = [];
+  for (const [name, m] of Object.entries(servers)) {
+    if (!TOML_KEY.test(name) || Object.keys(m.env).some((k) => !TOML_KEY.test(k)))
+      throw new Error(`Refused MCP server definition ${JSON.stringify(name.slice(0, 40))}`);
+    const p = `mcp_servers.${name}`;
+    out.push(`${p}.command=${JSON.stringify(m.command)}`);
+    out.push(`${p}.args=[${m.args.map((a) => JSON.stringify(a)).join(",")}]`);
+    out.push(
+      `${p}.env={${Object.entries(m.env)
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .join(",")}}`,
+    );
+    out.push(`${p}.startup_timeout_sec=20`);
+    out.push(`${p}.tool_timeout_sec=660`);
+  }
+  return out;
+};
+
 export const codexLaunch = (
   config: CodexConfig,
+  mcpServers?: Record<string, LocalMcpServer>,
 ): { command: string; args: string[]; env: Record<string, string | undefined> } => {
   // An allowlist, never the daemon's whole environment (review R-L12): no Chalito secrets, no
   // passphrase, no other providers' keys reach a model-driven process and its children.
@@ -149,6 +184,7 @@ export const codexLaunch = (
   env.CHALITO_SESSION = "1";
   const args = ["app-server", "--listen", "stdio://"];
   for (const o of HARDENING_OVERRIDES) args.push("-c", o);
+  for (const o of mcpServerOverrides(mcpServers)) args.push("-c", o);
   if (config.chatgptPlan) {
     if (!config.chatgptPlanEnabled) throw new Error("ChatGPT plan usage is not enabled for this user");
     env.ACCESS_TOKEN = config.chatgptPlan.accessToken;
@@ -318,7 +354,8 @@ export class CodexAdapter implements SessionAdapter {
   constructor(private readonly config: CodexConfig) {}
 
   async start(opts: SessionStartOptions): Promise<SessionHandle> {
-    const launch = codexLaunch(this.config);
+    const launch = codexLaunch(this.config, opts.mcpServers);
+    const ownServers = new Set(Object.keys(opts.mcpServers ?? {}));
     const keepLogin = !!this.config.chatgptLogin && !this.config.chatgptPlan && !this.config.apiKey;
     const t = (this.config.spawn ?? spawnTransport)(launch.command, launch.args, launch.env, opts.cwd, { keepLogin });
 
@@ -582,7 +619,8 @@ export class CodexAdapter implements SessionAdapter {
         threadId,
         detail: "toolsAndAuthOnly",
       });
-      const servers = (mcp.data ?? []).map((s) => s.name);
+      // The agent's own servers (computer control) are expected; anything else is refused.
+      const servers = (mcp.data ?? []).map((s) => s.name).filter((n) => !ownServers.has(n));
       if (servers.length > 0) {
         throw Object.assign(
           new Error(

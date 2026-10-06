@@ -39,6 +39,22 @@
         "center": true
       },
       {
+        "label": "indicator",
+        "url": "indicator.html",
+        "title": "Chalito controla este equipo",
+        "width": 520,
+        "height": 60,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focus": false,
+        "visible": false,
+        "visibleOnAllWorkspaces": true,
+        "minimizable": false,
+        "closable": false
+      },
+      {
         "label": "room",
         "url": "room.html",
         "title": "Chalito",

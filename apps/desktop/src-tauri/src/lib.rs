@@ -1,16 +1,22 @@
 mod agent;
 mod cli_install;
+mod computer;
 mod hittest;
 mod ipc_client;
 #[cfg(debug_assertions)]
 mod loopback;
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agent::Supervisor;
+use computer::{ComputerUi, SharedUi, View};
 use hittest::{Activity, ClickThrough, Rect};
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// Whether this build carries the dev-only SSO loopback (never in release; see loopback.rs).
 pub const DEV_LOOPBACK: bool = cfg!(debug_assertions);
@@ -97,6 +103,145 @@ async fn agent_ipc(
     .map_err(|_| ipc_client::UNAVAILABLE.to_string())?
 }
 
+/// The computer-control kill switch: Ctrl+Alt+Esc (Ctrl+Option+Esc on macOS).
+fn kill_hotkey() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Escape)
+}
+
+/// Ends computer control now and interrupts the sessions that had it (agent `computerKill`).
+fn computer_kill(app: &AppHandle, via: &'static str) {
+    let Some(sup) = app.try_state::<Supervisor>() else { return };
+    let Some(token) = sup.secret().map(str::to_string) else { return };
+    let Ok(home) = app.path().home_dir() else { return };
+    std::thread::spawn(move || {
+        let r = ipc_client::call(&ipc_client::socket_path(&home), &token, "computerKill", &computer::kill_params(via));
+        if let Err(e) = r {
+            eprintln!("computer control: kill via {via} failed: {e}");
+        }
+    });
+}
+
+/// The indicator's "Detener control" button, or the panel's.
+#[tauri::command]
+fn computer_stop(app: AppHandle, window: tauri::Window) -> Result<(), String> {
+    let via = match window.label() {
+        computer::INDICATOR => "indicator",
+        "panel" => "panel",
+        _ => return Err("not allowed".into()),
+    };
+    computer_kill(&app, via);
+    Ok(())
+}
+
+/// macOS Screen Recording / Accessibility as this app has them; Wayland on Linux.
+#[tauri::command]
+fn computer_permissions() -> computer::Permissions {
+    computer::permissions()
+}
+
+/// Panel only: opens the macOS System Settings pane for one permission (fixed URLs).
+#[tauri::command]
+fn computer_open_settings(window: tauri::Window, pane: String) -> Result<(), String> {
+    if window.label() != "panel" {
+        return Err("not allowed".into());
+    }
+    let url = computer::settings_url(&pane).ok_or("unknown pane")?;
+    std::process::Command::new("/usr/bin/open").arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Top centre of the primary screen.
+fn place_indicator(w: &tauri::WebviewWindow) {
+    if let (Ok(Some(m)), Ok(size)) = (w.primary_monitor(), w.outer_size()) {
+        let x = m.position().x + (m.size().width as i32 - size.width as i32) / 2;
+        let _ = w.set_position(tauri::PhysicalPosition::new(x, m.position().y + 24));
+    }
+}
+
+/// The hotkey is held only while computer control is enabled; (un)registered on the main thread.
+fn set_kill_hotkey(app: &AppHandle, on: bool) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let gs = handle.global_shortcut();
+        let r = if on { gs.register(kill_hotkey()) } else { gs.unregister(kill_hotkey()) };
+        if let Err(e) = r {
+            eprintln!("computer control: hotkey {} {}: {e}", computer::HOTKEY_LABEL, if on { "register" } else { "unregister" });
+        }
+    });
+}
+
+/// Every 500 ms: ask the agent who has control, show or hide the indicator, enable the tray item,
+/// and tell the agent whether the indicator is on screen (it acts only when it is).
+fn spawn_computer_poll(app: AppHandle, ui: SharedUi, stop_item: Option<MenuItem<tauri::Wry>>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(computer::POLL);
+        let shown = ui.shown.load(Ordering::SeqCst);
+        let next = match (app.try_state::<Supervisor>(), app.path().home_dir()) {
+            (Some(sup), Ok(home)) => match sup.secret() {
+                Some(token) => ipc_client::call(
+                    &ipc_client::socket_path(&home),
+                    token,
+                    "computerStatus",
+                    &computer::status_params(shown),
+                )
+                .map(|v| computer::parse_status(&v))
+                .unwrap_or_default(),
+                None => View::default(),
+            },
+            _ => View::default(),
+        };
+        let prev = match ui.view.lock() {
+            Ok(mut v) => std::mem::replace(&mut *v, next.clone()),
+            Err(_) => View::default(),
+        };
+        let ch = computer::changes(&prev, &next);
+        let mut visible = false;
+        if let Some(w) = app.get_webview_window(computer::INDICATOR) {
+            if ch.show_indicator {
+                if !w.is_visible().unwrap_or(false) {
+                    place_indicator(&w);
+                    let _ = w.show();
+                }
+                let _ = w.set_always_on_top(true);
+                let _ = w.emit("computer-status", &next.active);
+                visible = w.is_visible().unwrap_or(false);
+            } else {
+                let _ = w.hide();
+            }
+        }
+        ui.shown.store(visible, Ordering::SeqCst);
+        if let Some(item) = &stop_item {
+            let _ = item.set_enabled(ch.stop_enabled);
+        }
+        if let Some(on) = ch.hotkey {
+            set_kill_hotkey(&app, on);
+        }
+    });
+}
+
+/// Tray icon: open the panel, and "Detener control" (enabled while a session has control).
+fn build_tray(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
+    let open = MenuItem::with_id(app, computer::TRAY_OPEN, "Abrir Chalito", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, computer::TRAY_STOP, "Detener control", false, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &stop])?;
+    let mut tray = TrayIconBuilder::with_id("chalito").menu(&menu).tooltip("Chalito").on_menu_event(|app, event| {
+        match event.id().as_ref() {
+            computer::TRAY_STOP => computer_kill(app, "tray"),
+            computer::TRAY_OPEN => {
+                if let Some(panel) = app.get_webview_window("panel") {
+                    let _ = panel.show();
+                    let _ = panel.set_focus();
+                }
+            }
+            _ => {}
+        }
+    });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(stop)
+}
+
 /// What installing the `chalito` command would do here (cli_install.rs), or that it's done.
 fn cli_input(app: &AppHandle) -> Option<cli_install::Input> {
     let sidecar = agent::sidecar_path(&std::env::current_exe().ok()?)?;
@@ -171,6 +316,7 @@ fn prefer_xwayland() {}
 pub fn run() {
     prefer_xwayland();
     let state: SharedState = Arc::default();
+    let computer_ui: SharedUi = Arc::new(ComputerUi::default());
     let builder = tauri::Builder::default()
         // First: a second launch (e.g. the OS opening a chalito:// link) hands its arguments
         // to this instance (the deep-link feature forwards the URL) and exits.
@@ -183,7 +329,18 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
-        .manage(state.clone());
+        // Computer control's kill switch. The shortcut is registered only while it's enabled.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed && shortcut == &kill_hotkey() {
+                        computer_kill(app, "hotkey");
+                    }
+                })
+                .build(),
+        )
+        .manage(state.clone())
+        .manage(computer_ui.clone());
     // The updater exists only in release builds: CI adds `plugins.updater` (public key +
     // endpoint) through the release config overlay. Dev and plain debug builds have no updater.
     let context = tauri::generate_context!();
@@ -202,6 +359,9 @@ pub fn run() {
         agent_ipc,
         cli_status,
         install_cli,
+        computer_stop,
+        computer_permissions,
+        computer_open_settings,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -213,7 +373,10 @@ pub fn run() {
         agent_status,
         agent_ipc,
         cli_status,
-        install_cli
+        install_cli,
+        computer_stop,
+        computer_permissions,
+        computer_open_settings
     ]);
     builder
         .setup(move |app| {
@@ -233,6 +396,16 @@ pub fn run() {
             // A fresh secret per launch: only the agent this app starts serves the panel's IPC.
             let secret = sidecar.as_ref().and_then(|_| ipc_client::new_secret().ok());
             app.manage(Supervisor::start(sidecar, home, logs, secret));
+            // A tray that can't be created (no tray host on some Linux desktops) leaves the
+            // hotkey and the indicator's own button as the kill switch.
+            let stop_item = match build_tray(handle) {
+                Ok(item) => Some(item),
+                Err(e) => {
+                    eprintln!("tray unavailable: {e}");
+                    None
+                }
+            };
+            spawn_computer_poll(handle.clone(), computer_ui.clone(), stop_item);
             Ok(())
         })
         .build(context)

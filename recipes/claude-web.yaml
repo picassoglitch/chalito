@@ -1,0 +1,21 @@
+v: 1
+id: claude-web
+name: Claude
+vendor: Anthropic
+homepage: https://claude.ai/
+termsUrl: https://www.anthropic.com/legal/consumer-terms
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://claude.ai/login
+  planSignin: "on"
+driver:
+  web: { startUrl: https://claude.ai/, allowedOrigins: [https://claude.ai] }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources: ["curl claude.ai/login (403 Cloudflare)", "https://www.anthropic.com/legal/consumer-terms (200)"]
+  unverified:
+    - field: driver.web.allowedOrigins
+      note: "Login redirect not observed (Cloudflare 403 to curl). Email magic-link login happens on claude.ai itself; Google SSO adds https://accounts.google.com, Apple adds https://appleid.apple.com."
