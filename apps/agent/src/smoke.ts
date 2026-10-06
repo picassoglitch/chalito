@@ -83,7 +83,19 @@ const main = async () => {
     });
   }
   try {
-    const back = entry.getPassword();
+    let back: string | null;
+    try {
+      back = entry.getPassword();
+    } catch (err) {
+      // A locked keychain (the macOS CI runner's, under Rosetta for x86_64) can accept the write
+      // and refuse the read back: no usable backend here, not a broken binary.
+      return report(2, {
+        addonLoaded: true,
+        sodium: true,
+        keyring: "unavailable",
+        message: `OS keychain refused the read back (${err instanceof Error ? err.message : "error"}).`,
+      });
+    }
     if (back !== value) return report(1, { addonLoaded: true, sodium: true, keyring: "mismatch" });
   } finally {
     try {
