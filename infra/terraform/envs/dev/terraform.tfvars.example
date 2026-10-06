@@ -17,7 +17,8 @@ domain         = "chalito.chalyb.com" # base host (ADR 0015): web on Vercel, api
 # --- Budget (module.budget, app=chalito resources) ---
 billing_account    = "" # gcloud billing accounts list
 alert_email        = "" # who gets the budget alerts
-monthly_budget_usd = 0  # owner-set; the budget module alerts against it
+monthly_budget     = 0     # owner-set, in budget_currency; the budget module alerts against it
+budget_currency    = "USD" # the billing account's currency (gcloud billing accounts describe <id> --format='value(currencyCode)')
 
 # --- From Chalyb's apply (step 1) ---
 api_service_account    = "" # chalito@<project_id>.iam.gserviceaccount.com (Chalyb output: engine service account)
@@ -34,3 +35,8 @@ vapid_public_key = "" # npx web-push generate-vapid-keys (public half; GO_LIVE 5
 
 # --- Optional: OpenAI Realtime SIP for calls (GO_LIVE 5.2) ---
 realtime_sip_uri = "" # sip:<proj>@sip.api.openai.com;transport=tls;secure=true
+
+# --- Optional: Chalito inside the hub (screens at https://www.chalyb.com/app/chalito) ---
+web_origin   = "" # https://www.chalyb.com
+app_url      = "" # https://www.chalyb.com/app/chalito
+mcp_resource = "" # the mcp-gateway's URL + /mcp when it has no mcp.<domain> host

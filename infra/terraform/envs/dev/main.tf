@@ -207,7 +207,7 @@ module "orchestrator" {
     VERTEX_LOCATION       = "global"
     GOOGLE_CLOUD_PROJECT  = var.project_id
     CHALYB_BASE_URL       = "https://www.chalyb.com"
-    CHALITO_WEB_ORIGIN    = "https://${var.domain}"
+    CHALITO_WEB_ORIGIN    = local.web_origin
     BRAIN_KEYS_KMS_KEY    = module.kms.byo_key_id
     SCHEDULER_SA_EMAIL    = local.push
     SUPABASE_URL          = var.supabase_url
@@ -276,14 +276,14 @@ module "notifier" {
   env = merge({
     GOOGLE_CLOUD_PROJECT = var.project_id
     CHALYB_BASE_URL      = "https://www.chalyb.com"
-    APP_URL              = "https://${var.domain}"
+    APP_URL              = local.app_url
     PUBLIC_BASE_URL      = var.notifier_public_url
     PUBSUB_SA_EMAIL      = local.push
     TASKS_SA_EMAIL       = local.push
     SCHEDULER_SA_EMAIL   = local.push
     TASKS_LOCATION       = var.region
     TASKS_QUEUE          = "chalito-escalation"
-    VAPID_SUBJECT        = "https://${var.domain}"
+    VAPID_SUBJECT        = local.web_origin
     VAPID_PUBLIC_KEY     = var.vapid_public_key
   }, var.realtime_sip_uri == "" ? {} : { REALTIME_SIP_URI = var.realtime_sip_uri })
   # Names as the code reads them (R-L12: TWILIO_FROM, WHATSAPP_*, META_*).
@@ -320,7 +320,7 @@ module "mcp_gateway" {
   env = {
     CHALITO_API_URL      = var.api_url
     CHALITO_API_ISSUER   = var.api_url
-    CHALITO_MCP_RESOURCE = "https://mcp.${var.domain}/mcp"
+    CHALITO_MCP_RESOURCE = local.mcp_resource
   }
   secret_env = {
     DATABASE_URL          = "chalito-gateway-database-url"
@@ -400,8 +400,17 @@ module "budget" {
   source          = "../../modules/budget"
   billing_account = var.billing_account
   project_number  = var.project_number
-  amount_usd      = var.monthly_budget_usd
+  amount          = var.monthly_budget
+  currency_code   = var.budget_currency
   alert_email     = var.alert_email
 
   depends_on = [module.project_services]
+}
+
+locals {
+  # Where Chalito's screens live: its own host by default; inside the hub, the hub's origin and
+  # /app/chalito (owner decision 2026-10-05).
+  web_origin   = coalesce(var.web_origin, "https://${var.domain}")
+  app_url      = coalesce(var.app_url, "https://${var.domain}")
+  mcp_resource = coalesce(var.mcp_resource, "https://mcp.${var.domain}/mcp")
 }
