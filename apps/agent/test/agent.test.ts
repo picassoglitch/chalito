@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
+import type { SessionAdapter } from "@chalito/adapters";
 import { loadLiabilityText } from "@chalito/config";
 import {
   MemoryNonceStore,
@@ -28,7 +29,7 @@ import {
 import { CommandAcceptedMeta, CommandRejectedMeta } from "@chalito/protocol";
 import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
-import { AgentCore, type PolicyHolder, type ProviderCommands } from "../src/agent-core.js";
+import { AgentCore, type AppCommands, type PolicyHolder } from "../src/agent-core.js";
 import { ComputerControl } from "../src/computer/control.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
@@ -69,7 +70,9 @@ const harness = async (
     policy?: Partial<Policy>;
     devToggles?: ("allowSudo" | "autoApproveHigh" | "autoApproveCritical")[];
     classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
-    providers?: ProviderCommands;
+    apps?: AppCommands;
+    /** Engine: session adapters for apps beyond the built-in four, by app id. */
+    appAdapters?: Record<string, SessionAdapter>;
     /** Wire computer control (its native layer is never reached in these tests). */
     computer?: boolean;
   } = {},
@@ -148,7 +151,8 @@ const harness = async (
     now: Date.now,
     log: createLogger((l) => logs.push(l)),
     ...(opts.classifyExtras ? { classifyExtras: opts.classifyExtras } : {}),
-    ...(opts.providers ? { providers: opts.providers } : {}),
+    ...(opts.apps ? { apps: opts.apps } : {}),
+    ...(opts.appAdapters ? { appAdapters: opts.appAdapters } : {}),
     ...(computer ? { computer } : {}),
     setTimer: (fn) => {
       timers.push(fn);
@@ -1156,42 +1160,52 @@ describe("command results reach the person's clients (audit: command.accepted / 
   });
 });
 
-describe("provider.* commands (connect your AI)", () => {
-  const recorder = (result: { ok: boolean; reason?: string } = { ok: true }) => {
+describe("app.* commands, and provider.* as their aliases (connect engine)", () => {
+  const recorder = (
+    result: { ok: boolean; reason?: string } = { ok: true },
+    ready: { ok: true } | { ok: false; reason: string } = { ok: true },
+  ) => {
     const calls: unknown[][] = [];
-    const providers: ProviderCommands = {
-      connectKey: async (p, key) => (calls.push(["connectKey", p, key]), result),
-      signin: async (p) => (calls.push(["signin", p]), result),
-      disconnect: async (p) => (calls.push(["disconnect", p]), result),
-      requestInstall: async (p) => (calls.push(["requestInstall", p]), result),
-      report: async () => void calls.push(["report"]),
+    const apps: AppCommands = {
+      connectKey: async (a, key) => (calls.push(["connectKey", a, key]), result),
+      signin: async (a) => (calls.push(["signin", a]), result),
+      disconnect: async (a) => (calls.push(["disconnect", a]), result),
+      requestInstall: async (a) => (calls.push(["requestInstall", a]), result),
+      launch: async (a) => (calls.push(["launch", a]), result),
+      report: async (a) => void calls.push(a === undefined ? ["report"] : ["report", a]),
+      sessionReady: async (a) => (calls.push(["sessionReady", a]), ready),
     };
-    return { providers, calls };
+    return { apps, calls };
   };
 
   it("an API key arrives sealed to this device and is opened only here; it never reaches the audit trail", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     const keyCt = await h.sealed(1, "sk-proj-sealed-key");
     const res = await h.command({ type: "provider.connect", provider: "openai", method: "api_key", keyCt });
     expect(res.ok).toBe(true);
-    expect(r.calls).toEqual([["connectKey", "openai", "sk-proj-sealed-key"]]);
+    expect(r.calls).toEqual([["connectKey", "codex", "sk-proj-sealed-key"]]);
     expect(JSON.stringify([h.store.audits, h.logs])).not.toContain("sk-proj-sealed-key");
-    expect(h.store.audits.some((a) => a.type === "provider.connect")).toBe(true);
+    expect(h.store.audits.some((a) => a.type === "app.connect")).toBe(true);
+
+    const keyCt2 = await h.sealed(2, "lm-key-123");
+    expect((await h.command({ type: "app.connect", appId: "goose", method: "api_key", keyCt: keyCt2 })).ok).toBe(true);
+    expect(r.calls.at(-1)).toEqual(["connectKey", "goose", "lm-key-123"]);
+    expect(JSON.stringify([h.store.audits, h.logs])).not.toContain("lm-key-123");
   });
 
   it("a key sealed for another command can't be replayed into this one", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     const keyCt = await h.sealed(7, "sk-proj-sealed-key");
     const res = await h.command({ type: "provider.connect", provider: "openai", method: "api_key", keyCt });
     expect(res.ok).toBe(false);
     expect(r.calls).toEqual([]);
   });
 
-  it("sign-in, disconnect, install request and status reach the provider manager", async () => {
+  it("provider.* still work: each is the app.* command of that provider's app", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     for (const payload of [
       { type: "provider.connect", provider: "xai", method: "signin" },
       { type: "provider.disconnect", provider: "google" },
@@ -1199,27 +1213,193 @@ describe("provider.* commands (connect your AI)", () => {
       { type: "provider.status" },
     ])
       expect((await h.command(payload)).ok).toBe(true);
-    expect(r.calls).toEqual([["signin", "xai"], ["disconnect", "google"], ["requestInstall", "anthropic"], ["report"]]);
+    expect(r.calls).toEqual([
+      ["signin", "grok"],
+      ["disconnect", "gemini"],
+      ["requestInstall", "claude-code"],
+      ["report"],
+    ]);
   });
 
-  it("a refused sign-in is a closed reason in command.rejected", async () => {
+  it("app.* reach the engine for any recipe id", async () => {
+    const r = recorder();
+    const h = await harness({ apps: r.apps });
+    for (const payload of [
+      { type: "app.connect", appId: "chatgpt", method: "signin" },
+      { type: "app.disconnect", appId: "opencode" },
+      { type: "app.install", appId: "lm-studio" },
+      { type: "app.status", appId: "cursor" },
+      { type: "app.status" },
+      { type: "app.launch", appId: "claude-desktop" },
+    ])
+      expect((await h.command(payload)).ok).toBe(true);
+    expect(r.calls).toEqual([
+      ["signin", "chatgpt"],
+      ["disconnect", "opencode"],
+      ["requestInstall", "lm-studio"],
+      ["report", "cursor"],
+      ["report"],
+      ["launch", "claude-desktop"],
+    ]);
+    expect(h.store.audits.filter((a) => a.type.startsWith("app.")).map((a) => a.type)).toEqual([
+      "app.connect",
+      "app.disconnect",
+      "app.install_requested",
+      "app.launch",
+    ]);
+  });
+
+  it("a refused sign-in or a disabled custom recipe is a closed reason in command.rejected", async () => {
     const r = recorder({ ok: false, reason: "blocked_by_policy" });
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     const res = await h.command({ type: "provider.connect", provider: "anthropic", method: "signin" });
     expect(res).toMatchObject({ ok: false, reason: "blocked_by_policy" });
     const row = h.store.audits.find((a) => a.type === "command.rejected");
     expect(CommandRejectedMeta.parse(row?.meta).reason).toBe("blocked_by_policy");
+
+    const off = recorder({ ok: false, reason: "recipe_disabled" });
+    const h2 = await harness({ apps: off.apps });
+    expect(await h2.command({ type: "app.launch", appId: "my-agent" })).toMatchObject({ reason: "recipe_disabled" });
+    const rows = h2.store.audits.filter((a) => a.type === "command.rejected");
+    expect(CommandRejectedMeta.parse(rows.at(-1)?.meta).reason).toBe("recipe_disabled");
   });
 
-  it("relays can't carry provider commands, and an untrusted signer is refused before the manager", async () => {
+  it("relays can't carry app or provider commands, and an untrusted signer is refused before the engine", async () => {
     const r = recorder();
-    const h = await harness({ providers: r.providers });
+    const h = await harness({ apps: r.apps });
     expect((await h.command({ type: "provider.status" }, { origin: "mcp:claude", relayed: "mcp-gateway" })).ok).toBe(
       false,
     );
+    expect(
+      (
+        await h.command(
+          { type: "app.launch", appId: "chatgpt" },
+          { origin: "call:CA" + "0".repeat(32), relayed: "notifier" },
+        )
+      ).ok,
+    ).toBe(false);
     const stranger = await device("dev_stranger");
     expect((await h.command({ type: "provider.disconnect", provider: "openai" }, { signer: stranger })).ok).toBe(false);
+    expect((await h.command({ type: "app.install", appId: "goose" }, { signer: stranger })).ok).toBe(false);
     expect(r.calls).toEqual([]);
+  });
+
+  it("no command shape enables a custom recipe: the attempt is rejected as a remote enable", async () => {
+    const r = recorder();
+    const h = await harness({ apps: r.apps });
+    for (const type of ["apps.custom.enable", "app.enable", "app.custom", "recipe.enable", "recipe.add"]) {
+      const res = await h.command({ type, appId: "my-agent", enabled: true });
+      expect(res).toMatchObject({ ok: false, reason: "remote_enable_rejected" });
+    }
+    // A tighten can turn one off, never on.
+    const patchOn = await h.sealed(6, { apps: { custom: { "my-agent": { enabled: true, sha256: "a".repeat(64) } } } });
+    expect(await h.command({ type: "policy.tighten", patchCt: patchOn })).toMatchObject({ ok: false });
+    expect(h.core["d"].policy.get().apps).toBeUndefined();
+    expect(r.calls).toEqual([]);
+  });
+});
+
+describe("session.start by app id (connect engine)", () => {
+  it("the built-in four: appId selects their adapter, gated by policy.adapters as before", async () => {
+    const h = await harness({ turns: [[{ say: "hola" }]] });
+    const res = await h.command({
+      type: "session.start",
+      appId: "claude-code",
+      workspaceLabel: "chalito",
+      permissionMode: "default",
+      promptCt: await h.sealed(1, "hola"),
+    });
+    expect(res).toEqual({ ok: true, sid: expect.any(String) });
+    const doc = h.store.sessions.get(res.sid!) as Record<string, unknown>;
+    expect(doc).toMatchObject({ adapter: "claude-code", appId: "claude-code", kind: "agent" });
+
+    // Mismatched adapter and app id, or an adapter that's off: adapter_disabled.
+    const bad = await h.command({
+      type: "session.start",
+      adapter: "codex",
+      appId: "claude-code",
+      workspaceLabel: "chalito",
+      permissionMode: "default",
+      promptCt: await h.sealed(2, "hola"),
+    });
+    expect(bad).toMatchObject({ ok: false, reason: "adapter_disabled" });
+    const off = await harness({ policy: { adapters: { claudeCode: false, codex: true } } });
+    expect(
+      await off.command({
+        type: "session.start",
+        appId: "claude-code",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await off.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "adapter_disabled" });
+  });
+
+  it("any other app runs through the adapter its driver built, while the engine says it's ready", async () => {
+    const goose = fakeClaudeCode([[{ say: "hola desde goose" }]]);
+    const r = { calls: [] as string[] };
+    const apps: AppCommands = {
+      connectKey: async () => ({ ok: true }),
+      signin: async () => ({ ok: true }),
+      disconnect: async () => ({ ok: true }),
+      requestInstall: async () => ({ ok: true }),
+      launch: async () => ({ ok: true }),
+      report: async () => undefined,
+      sessionReady: async (a) => (
+        r.calls.push(a),
+        a === "goose" ? { ok: true } : { ok: false, reason: "recipe_disabled" }
+      ),
+    };
+    const h = await harness({
+      apps,
+      appAdapters: { goose: new ClaudeCodeAdapter({ apiKey: "x", queryFn: goose.queryFn, env: {} }) },
+    });
+    const res = await h.command({
+      type: "session.start",
+      appId: "goose",
+      workspaceLabel: "chalito",
+      permissionMode: "default",
+      promptCt: await h.sealed(1, "hola"),
+    });
+    expect(res.ok).toBe(true);
+    await waitFor(() => goose.run.options !== undefined);
+    expect(h.fake.run.options).toBeUndefined();
+    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "acp", appId: "goose", kind: "agent" });
+
+    // A disabled custom recipe, an unknown app, or one the policy turned off never starts.
+    expect(
+      await h.command({
+        type: "session.start",
+        appId: "my-agent",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await h.sealed(2, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "recipe_disabled" });
+    const offPolicy = await harness({
+      apps,
+      appAdapters: { goose: new ClaudeCodeAdapter({ apiKey: "x", queryFn: goose.queryFn, env: {} }) },
+      policy: { apps: { sessions: { goose: false } } },
+    });
+    expect(
+      await offPolicy.command({
+        type: "session.start",
+        appId: "goose",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await offPolicy.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "adapter_disabled" });
+    const noEngine = await harness();
+    expect(
+      await noEngine.command({
+        type: "session.start",
+        appId: "goose",
+        workspaceLabel: "chalito",
+        permissionMode: "default",
+        promptCt: await noEngine.sealed(1, "x"),
+      }),
+    ).toMatchObject({ ok: false, reason: "unknown_app" });
   });
 });
 

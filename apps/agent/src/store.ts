@@ -4,9 +4,8 @@ import type {
   AgentEvent,
   ApprovalRequest,
   CallLine,
+  AppConnectionDoc,
   DeviceEvent,
-  Provider,
-  ProviderConnectionDoc,
   SessionCard,
 } from "@chalito/protocol";
 
@@ -63,8 +62,11 @@ export interface AgentStore {
    */
   writeSharedCard(sid: string, card: SessionCard): Promise<void>;
 
-  /** chalito.connections: this device's status for one provider (status only, never a secret). */
-  upsertConnection(provider: Provider, doc: ProviderConnectionDoc): Promise<void>;
+  /**
+   * chalito.connections: this device's status for one app (status only, never a secret). The
+   * `provider` column holds the app id (recipe id) since the connect engine.
+   */
+  upsertConnection(appId: string, doc: AppConnectionDoc): Promise<void>;
 }
 
 export interface EndorsementRow {
@@ -97,7 +99,7 @@ export class MemoryStore implements AgentStore {
   /** Sessions (or "device") with MCP card sharing on, and the plaintext cards written for them. */
   sharing = new Set<string>();
   sharedCards = new Map<string, SessionCard>();
-  connections = new Map<Provider, ProviderConnectionDoc>();
+  connections = new Map<string, AppConnectionDoc>();
   #approvalWatchers = new Map<string, (d: unknown) => void>();
   #commandWatcher: ((id: string, doc: Record<string, unknown>) => void) | null = null;
   endorsements: EndorsementRow[] = [];
@@ -181,8 +183,8 @@ export class MemoryStore implements AgentStore {
   async deleteCallLine(id: string) {
     this.callLines.delete(id);
   }
-  async upsertConnection(provider: Provider, doc: ProviderConnectionDoc) {
-    this.connections.set(provider, { ...doc, cli: { ...doc.cli } });
+  async upsertConnection(appId: string, doc: AppConnectionDoc) {
+    this.connections.set(appId, { ...doc, cli: { ...doc.cli } });
   }
 
   // ---- test helpers (the phone / the cloud) ----

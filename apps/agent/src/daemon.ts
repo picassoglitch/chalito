@@ -8,7 +8,15 @@ import { CodexAdapter } from "@chalito/adapters/codex";
 import { AcpAdapter } from "@chalito/adapters/acp";
 import { loadLiabilityText, loadProviders } from "@chalito/config";
 import type { NonceStore, TrustedClientList } from "@chalito/crypto";
-import type { AdapterKind, DeviceEvent, Provider } from "@chalito/protocol";
+import {
+  PROVIDER_APP,
+  isLegacyApp,
+  type AdapterKind,
+  type DeviceEvent,
+  type Provider,
+  type RecipeCatalog,
+  type RecipeKind,
+} from "@chalito/protocol";
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
@@ -24,8 +32,10 @@ import { ipcHandlers } from "./ipc-handlers.js";
 import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
 import { osAuthFor } from "./os-auth.js";
-import { PROVIDER_CLI, spawnProviderProcs, type ProviderProcs } from "./provider-cli.js";
-import { ProviderManager } from "./providers.js";
+import { spawnProviderProcs, type ProviderProcs } from "./provider-cli.js";
+import { AppCatalog, fetchCatalog, type CatalogEntry, type CatalogFetch } from "./apps/catalog.js";
+import { AppManager } from "./apps/manager.js";
+import { buildDrivers, type Driver } from "./drivers/registry.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, redactDeep, type Logger } from "./redact.js";
@@ -160,10 +170,21 @@ export interface DaemonDeps {
   computerDriver?: () => NativeDriver;
   /** Defaults to ~/.chalito/computer.sock (a named pipe on Windows). */
   brokerPath?: string;
+  /** Engine: the catalog built into the agent (tests pass their own). */
+  builtinCatalog?: RecipeCatalog;
+  /** Engine: keys that may sign a served catalog (production: the compiled-in CATALOG_KEYS). */
+  catalogKeys?: Readonly<Record<string, string>>;
+  /** Engine: GET for the served catalog; false turns the fetch off. */
+  catalogFetch?: CatalogFetch | false;
 }
 
 export interface Daemon {
   core: AgentCore;
+  /** Engine: the connect engine (recipes, connect, install, launch). */
+  apps: AppManager;
+  catalog: AppCatalog;
+  /** Engine: the drivers built for each app at the last rebuild (drivers/registry.ts). */
+  drivers(): ReadonlyMap<string, { kind: RecipeKind; driver: Driver }[]>;
   /** Null when this agent runs without the desktop app (no indicator, so no computer control). */
   computer: ComputerControl | null;
   store: AgentStore;
@@ -284,6 +305,9 @@ const servicePlanFiles = (bin: string, home: string): string[] => {
 
 /** ADR 0018: safety net for endorsement pointers missed while offline. */
 export const ENDORSEMENT_SYNC_MS = 15 * 60 * 1000;
+
+/** Engine: how often the agent asks the api for a newer signed recipe catalog. */
+export const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 
 /** Presence: lastSeenAt every 5 min while running (the database skips broadcasts for last_seen-only updates). */
 export const PRESENCE_HEARTBEAT_MS = 5 * 60 * 1000;
@@ -432,28 +456,59 @@ const startDaemon = async (
     });
   };
 
-  // "Connect your AI" (providers.ts): keys, the providers' own sign-ins and installs. It reports
-  // through the store once signed in.
-  const toolOf = { anthropic: "claude", openai: "codex", xai: "grok", google: "gemini" } as const;
+  // Connect engine (apps/): recipes (built in, signed updates, the person's own), keys, the apps'
+  // own sign-ins, installs and launches. It reports through the store once signed in.
+  const toolOf = { "claude-code": "claude", codex: "codex", grok: "grok", gemini: "gemini" } as const;
+  const providerOf = Object.fromEntries(Object.entries(PROVIDER_APP).map(([p, a]) => [a, p])) as Record<
+    string,
+    Provider
+  >;
   const allowSignIn = deps.signInAllowed ?? ((p: Provider) => signInAllowed(p));
   const currentConfig = (): PairedConfig => requirePaired(readConfig(dir, env, { keys: id.sign }));
-  const providers = new ProviderManager({
+  const catalog = new AppCatalog({
+    dir,
+    customEnables: () => policy.get().apps?.custom ?? {},
+    log,
+    ...(deps.builtinCatalog ? { builtin: deps.builtinCatalog } : {}),
+    ...(deps.catalogKeys ? { keys: deps.catalogKeys } : {}),
+  });
+  // The app's own plan sign-in: for the four former providers providers.yaml decides, as before
+  // (D-063; their recipes mirror it); for every other app its recipe's planSignin must be "on".
+  const entrySignin = (e: CatalogEntry) =>
+    isLegacyApp(e.recipe.id) ? allowSignIn(providerOf[e.recipe.id]!) : e.recipe.signin.planSignin === "on";
+  let launchers = new Map<string, () => Promise<boolean>>();
+  let builtDrivers = new Map<string, { kind: RecipeKind; driver: Driver }[]>();
+  const apps = new AppManager({
     dir,
     env,
     secrets,
     procs: deps.providerProcs ?? spawnProviderProcs(),
-    signinAllowed: allowSignIn,
+    entries: () => catalog.entries(),
+    signinAllowed: entrySignin,
     pins: {
-      get: (p) => currentConfig()[toolOf[p]],
-      set: async (p, pin) => writeConfig(dir, { ...currentConfig(), [toolOf[p]]: pin }, id.sign),
+      get: (appId) => {
+        const c = currentConfig();
+        return isLegacyApp(appId) ? c[toolOf[appId]] : c.appPins?.[appId];
+      },
+      set: async (appId, pin) => {
+        const c = currentConfig();
+        writeConfig(
+          dir,
+          isLegacyApp(appId) ? { ...c, [toolOf[appId]]: pin } : { ...c, appPins: { ...c.appPins, [appId]: pin } },
+          id.sign,
+        );
+      },
     },
-    report: async (p, doc) => {
-      if (store) await store.upsertConnection(p, doc);
+    report: async (appId, doc) => {
+      if (store) await store.upsertConnection(appId, doc);
     },
     onChange: () => void rebuildAdapters(),
+    launcher: (appId) => launchers.get(appId),
     now,
     log,
   });
+  /** Legacy alias: what used to be `providers.activeMode(provider)`. */
+  const activeMode = (p: Provider) => apps.activeMode(PROVIDER_APP[p]);
 
   // Run exactly the pinned binaries, never a PATH lookup. Each provider authenticates the way the
   // person connected it: a keychain key, or (where providers.yaml allows it for them) the
@@ -466,13 +521,13 @@ const startDaemon = async (
         ? CLAUDE_MISSING[c.locale]
         : CLAUDE_PIN_FAILED[c.locale](pin.reason);
     const codexPin = c.codex ? await checkClaudePin(c.codex) : null;
-    const codexLogin = providers.activeMode("openai") === "signin";
+    const codexLogin = activeMode("openai") === "signin";
     const openaiKey = c.codex && !codexLogin ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
     if (codexPin && !codexPin.ok)
       log.error("adapter.codex_unavailable", { reason: CODEX_PIN_FAILED[c.locale](codexPin.reason) });
     else if (codexPin && !openaiKey && !codexLogin)
       log.error("adapter.codex_unavailable", { reason: OPENAI_KEY_MISSING[c.locale] });
-    const codexHome = PROVIDER_CLI.openai.profileEnv(dir).CODEX_HOME!;
+    const codexHome = apps.profileEnv("codex").CODEX_HOME ?? join(dir, "codex");
     const codex =
       codexPin?.ok && (openaiKey || codexLogin)
         ? {
@@ -485,8 +540,8 @@ const startDaemon = async (
     const claudePath = claudeProblem ? null : c.claude!.path;
     const apiKey: ClaudeAuth | null = !claudePath
       ? null
-      : providers.activeMode("anthropic") === "signin"
-        ? { configDir: PROVIDER_CLI.anthropic.profileEnv(dir).CLAUDE_CONFIG_DIR! }
+      : activeMode("anthropic") === "signin"
+        ? { configDir: apps.profileEnv("claude-code").CLAUDE_CONFIG_DIR ?? join(dir, "claude") }
         : await secrets.get(SECRET_NAMES.anthropicApiKey);
     // Grok Build / Gemini CLI over ACP: a key unless the person chose the CLI's own sign-in
     // (providers.ts records it); with no key, the sign-in where providers.yaml allows it.
@@ -500,7 +555,7 @@ const startDaemon = async (
         return undefined;
       }
       const key =
-        providers.activeMode(provider) === "signin"
+        activeMode(provider) === "signin"
           ? null
           : await secrets.get(tool === "grok" ? SECRET_NAMES.xaiApiKey : SECRET_NAMES.googleApiKey);
       const signIn = !key && allowSignIn(provider);
@@ -532,7 +587,7 @@ const startDaemon = async (
   store = cloud.store(cfg.owner, id.deviceId);
   const signedInStore = store;
   for (const e of queued.splice(0)) publish(e);
-  void providers.report();
+  void apps.report();
 
   // The agent's own binaries and persistence files are hard-floor targets for the classifier.
   const agentBin = isInterpreter(process.execPath) ? which("chalito", env) : process.execPath;
@@ -558,7 +613,21 @@ const startDaemon = async (
       ...(gemini ? { gemini } : {}),
       log,
     }),
-    providers,
+    apps: {
+      connectKey: (a, k) => apps.connectKey(a, k),
+      signin: (a) => apps.signin(a),
+      disconnect: (a) => apps.disconnect(a),
+      requestInstall: (a) => apps.requestInstall(a),
+      launch: (a) => apps.launch(a),
+      report: (a) => apps.report(a),
+      sessionReady: async (appId) => {
+        const e = apps.entry(appId);
+        if (!e) return { ok: false, reason: "unknown_app" };
+        if (e.custom && !e.enabled) return { ok: false, reason: "recipe_disabled" };
+        const doc = await apps.status(appId);
+        return doc?.connected || doc?.state === "available" ? { ok: true } : { ok: false, reason: "adapter_disabled" };
+      },
+    },
     policy,
     devMode,
     trust: () => trust,
@@ -632,7 +701,43 @@ const startDaemon = async (
     await control.onPolicyChange();
   }
 
-  // A provider was connected, signed out, installed or re-pinned: rebuild what can run. Running
+  // Engine: every usable app's drivers (drivers/registry.ts). Session adapters for apps beyond the
+  // built-in four go to the core by app id; launchers back `app.launch`. Built with only what the
+  // person set up here: the pinned (else detected) CLI, the keychain key or the app's own sign-in.
+  const rebuildDrivers = async (): Promise<Record<string, SessionAdapter>> => {
+    const next = new Map<string, { kind: RecipeKind; driver: Driver }[]>();
+    const appAdapters: Record<string, SessionAdapter> = {};
+    const nextLaunchers = new Map<string, () => Promise<boolean>>();
+    for (const e of catalog.entries()) {
+      if (e.custom && !e.enabled) continue;
+      const appId = e.recipe.id;
+      const mode = apps.activeMode(appId);
+      const apiKey = mode === "api_key" ? await apps.apiKey(appId) : null;
+      const built = await buildDrivers({
+        recipe: e.recipe,
+        custom: e.custom,
+        bin: await apps.findCli(appId),
+        auth: { ...(apiKey ? { apiKey } : {}), signIn: mode === "signin" && apps.signinAllowed(appId) },
+        env: apps.cliEnv(appId),
+        home: join(dir, "apps", appId),
+        dir,
+        platform: process.platform,
+        log,
+      });
+      if (!built.length) continue;
+      next.set(appId, built);
+      // The built-in four keep their own adapters (defaultAdapters).
+      const adapter = built.find((b) => b.driver.adapter)?.driver.adapter;
+      if (adapter && !isLegacyApp(appId)) appAdapters[appId] = adapter;
+      const launch = built.find((b) => b.driver.launch)?.driver.launch;
+      if (launch) nextLaunchers.set(appId, launch);
+    }
+    builtDrivers = next;
+    launchers = nextLaunchers;
+    return appAdapters;
+  };
+
+  // An app was connected, signed out, installed or re-pinned: rebuild what can run. Running
   // sessions keep their adapter; new ones get the new one.
   let rebuilding = Promise.resolve();
   const rebuildAdapters = () =>
@@ -650,6 +755,7 @@ const startDaemon = async (
             ...(r.gemini ? { gemini: r.gemini } : {}),
             log,
           }),
+          await rebuildDrivers(),
         );
         log.info("adapters.rebuilt", {
           claudeCode: !!(r.claudePath && r.apiKey),
@@ -784,6 +890,33 @@ const startDaemon = async (
   }, PRESENCE_HEARTBEAT_MS);
   const endorsementSync = every(syncTrust, ENDORSEMENT_SYNC_MS);
 
+  // Engine: curated recipe updates from the api, used only when a compiled-in key verifies them.
+  const catalogFetch: CatalogFetch | false =
+    deps.catalogFetch ?? ((url) => fetch(url, { headers: { accept: "application/json" } }));
+  const refreshCatalog = () => {
+    if (!catalogFetch) return;
+    void fetchCatalog(catalogFetch, cfg.apiBase)
+      .then(async (raw) => {
+        if (raw === null) return;
+        const r = await catalog.offer(raw);
+        if (r.ok && r.applied) {
+          await apps.report();
+          void rebuildAdapters();
+        }
+      })
+      .catch((err: unknown) =>
+        log.warn("recipes.catalog_refresh_failed", { error: err instanceof Error ? err.message : "error" }),
+      );
+  };
+  refreshCatalog();
+  const catalogRefresh = catalogFetch ? every(refreshCatalog, CATALOG_REFRESH_MS) : { clear: () => undefined };
+  // The registered drivers' adapters and launchers (the built-in four are already resolved above).
+  void rebuildDrivers()
+    .then((appAdapters) => core.setAppAdapters(appAdapters))
+    .catch((err: unknown) =>
+      log.error("drivers.build_failed", { error: err instanceof Error ? err.message : "error" }),
+    );
+
   let resolveDone!: () => void;
   const done = new Promise<void>((r) => (resolveDone = r));
   let stopping = false;
@@ -794,6 +927,7 @@ const startDaemon = async (
     refresh.clear();
     heartbeat.clear();
     endorsementSync.clear();
+    catalogRefresh.clear();
     unwatchEndorsements();
     unwatchCommands();
     policy.close();
@@ -835,7 +969,8 @@ const startDaemon = async (
           store: signedInStore,
           now,
           reportDevMode,
-          providers,
+          apps,
+          catalog,
           computer,
           audit: auditAgent,
         }),
@@ -854,5 +989,16 @@ const startDaemon = async (
     workspaces: policy.get().workspaces.length,
     policyHash: policy.hash,
   });
-  return { core, computer, store: signedInStore, policy, classifyExtras: () => extras, stop, done };
+  return {
+    core,
+    apps,
+    catalog,
+    drivers: () => builtDrivers,
+    computer,
+    store: signedInStore,
+    policy,
+    classifyExtras: () => extras,
+    stop,
+    done,
+  };
 };

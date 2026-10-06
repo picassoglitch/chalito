@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RemoteCodexSandbox, RemotePermissionMode } from "@chalito/protocol";
+import { AppId, RemoteCodexSandbox, RemotePermissionMode } from "@chalito/protocol";
 
 /**
  * ~/.chalito/policy.yaml: the device's ceiling (ADR 0008). Remote surfaces can only
@@ -53,6 +53,26 @@ export const Policy = z.object({
       /** Ceiling on screen/mouse/keyboard actions per session per minute (screenshots count). */
       maxActionsPerMinute: z.number().int().min(1).max(600),
     })
+    .optional(),
+  /**
+   * Connect engine (apps/agent/src/apps). Absent = nothing set (policies written before it keep
+   * their hash and the signed lock).
+   * - `sessions`: an app id set to false can't start sessions here (remote surfaces may only turn
+   *   one off); a curated app without an entry may, once it's connected. The four former providers
+   *   keep `adapters.*`.
+   * - `custom`: the person's own recipes enabled ON THIS COMPUTER, each with the sha256 of its
+   *   file at enable time (an edited file is off until enabled again). Turned on only by
+   *   `chalito apps custom enable` or the desktop panel (OS auth + confirmation); `chalito policy
+   *   edit` and remote surfaces can only turn one off.
+   */
+  apps: z
+    .object({
+      sessions: z.record(AppId, z.boolean()).optional(),
+      custom: z
+        .record(AppId, z.object({ enabled: z.boolean(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict())
+        .optional(),
+    })
+    .strict()
     .optional(),
 });
 export type Policy = z.infer<typeof Policy>;
