@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CosmeticSlot, EfficiencyProfile, EphemeralTtl, RenderQuality } from "@chalito/protocol";
+import { AccessorySlot, EfficiencyProfile, SkinEffect, EphemeralTtl, RenderQuality } from "@chalito/protocol";
 
 const Provider = z.enum(["anthropic", "openai", "xai", "google"]);
 const ModelRef = z.object({ provider: Provider, model: z.string().min(1) });
@@ -87,33 +87,64 @@ export const RenderConfig = z.object({
 });
 export type RenderConfig = z.infer<typeof RenderConfig>;
 
-export const CatalogConfig = z.object({
-  schemaVersion: z.literal(1),
-  cosmetics: z.record(
-    z.string().regex(/^[a-z0-9_]+$/),
-    z
-      .object({
-        name: z.object({ es: z.string().min(1), en: z.string().min(1) }),
-        slot: CosmeticSlot,
-        free: z.boolean(),
-        /** Price in billable tokens, paid from the hub balance (D-030). Required when not free. */
-        priceTokens: z.number().int().positive().optional(),
-        /** Art inside @chalito/roster (cosmetics/<id>.webp). */
-        art: z.string().regex(/^cosmetics\/[a-z0-9_]+\.webp$/),
-        /** On a 2.5D card: width as a fraction of the card, and the item's own pivot (0..1). */
-        card: z.object({
-          width: z.number().positive().max(2),
-          pivot: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]),
-        }),
-        /** On a VRM: offset from the slot's bone, in metres. */
-        vrm: z.object({ offset: z.tuple([z.number(), z.number(), z.number()]) }),
-        provenance: z.string().min(1),
-      })
-      .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens")
-      .refine((c) => !(c.free && c.priceTokens !== undefined), "free cosmetics have no price"),
-  ),
-  drops: z.record(z.string(), z.unknown()),
+const CosmeticName = z.object({ es: z.string().min(1), en: z.string().min(1) });
+/** Price in billable tokens, paid from the hub balance (D-030). Required when not free. */
+const PriceTokens = z.number().int().positive().optional();
+const priced = <T extends { free: boolean; priceTokens?: number }>(s: z.ZodType<T>) =>
+  s
+    .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens")
+    .refine((c) => !(c.free && c.priceTokens !== undefined), "free cosmetics have no price");
+
+/** A drawn item placed on the card (hat, glasses, cape, aura, portal). */
+export const AccessoryItem = z.object({
+  name: CosmeticName,
+  slot: AccessorySlot,
+  free: z.boolean(),
+  priceTokens: PriceTokens,
+  /** Art inside @chalito/roster (cosmetics/<id>.webp). */
+  art: z.string().regex(/^cosmetics\/[a-z0-9_]+\.webp$/),
+  /** On a 2.5D card: width as a fraction of the card, and the item's own pivot (0..1). */
+  card: z.object({
+    width: z.number().positive().max(2),
+    pivot: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]),
+  }),
+  /** On a VRM: offset from the slot's bone, in metres. */
+  vrm: z.object({ offset: z.tuple([z.number(), z.number(), z.number()]) }),
+  provenance: z.string().min(1),
 });
+export type AccessoryItem = z.infer<typeof AccessoryItem>;
+
+/**
+ * A skin: a material effect over the whole companion, drawn by the card renderer's shader
+ * (@chalito/avatar-three `setSkin`). No art, no placement, so it fits every roster character.
+ */
+export const SkinItem = z.object({
+  name: CosmeticName,
+  slot: z.literal("skin"),
+  free: z.boolean(),
+  priceTokens: PriceTokens,
+  skin: SkinEffect,
+});
+export type SkinItem = z.infer<typeof SkinItem>;
+
+export const CosmeticItem = priced(z.discriminatedUnion("slot", [AccessoryItem, SkinItem]));
+export type CosmeticItem = z.infer<typeof CosmeticItem>;
+
+export const isSkinItem = (c: CosmeticItem): c is SkinItem => c.slot === "skin";
+
+export const CatalogConfig = z
+  .object({
+    schemaVersion: z.literal(1),
+    cosmetics: z.record(z.string().regex(/^[a-z0-9_]+$/), CosmeticItem),
+    drops: z.record(z.string(), z.unknown()),
+  })
+  .refine(
+    (c) => {
+      const effects = Object.values(c.cosmetics).flatMap((x) => (x.slot === "skin" ? [x.skin] : []));
+      return new Set(effects).size === effects.length;
+    },
+    { message: "each skin effect is sold once", path: ["cosmetics"] },
+  );
 export type CatalogConfig = z.infer<typeof CatalogConfig>;
 
 /** escalation.yaml: the escalation engine's limits and the notifier's channel settings. */

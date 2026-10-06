@@ -11,6 +11,8 @@ import {
   loadRooms,
 } from "../src/load.js";
 import { isLintedFile, lintCurrency } from "../src/currency.js";
+import { CatalogConfig } from "../src/schemas.js";
+import { SkinEffect } from "@chalito/protocol";
 
 describe("config files", () => {
   it("every config file loads and validates", () => {
@@ -88,5 +90,43 @@ describe("devmode liability text", () => {
     expect(es.text).toContain("Chalito no es responsable");
     expect(en.text).toContain("Chalito is not liable");
     expect(es.phrase).toBe("ACEPTO");
+  });
+});
+
+describe("catalog skins (material effects, no art)", () => {
+  const catalog = loadCatalog();
+  const skins = Object.entries(catalog.cosmetics).filter(([, c]) => c.slot === "skin");
+  const base = { schemaVersion: 1, drops: {} };
+  const parse = (cosmetics: Record<string, unknown>) => CatalogConfig.safeParse({ ...base, cosmetics });
+  const skin = { name: { es: "Dorado", en: "Gold" }, slot: "skin", free: false, priceTokens: 10000, skin: "gold" };
+
+  it("sells every effect the card renderer draws, once, as a paid item", () => {
+    expect(skins.map(([, c]) => (c.slot === "skin" ? c.skin : null)).sort()).toEqual([...SkinEffect.options].sort());
+    for (const [id, c] of skins) {
+      expect(id).toMatch(/^skin_[a-z0-9_]+$/);
+      expect(c.free).toBe(false);
+      expect(c.priceTokens).toBeGreaterThan(0);
+    }
+  });
+
+  it("validates skins: a known effect, no art or placement, priced unless free", () => {
+    expect(parse({ skin_gold: skin }).success).toBe(true);
+    expect(parse({ skin_gold: { ...skin, skin: "lava" } }).success).toBe(false);
+    // Art or placement on a skin is dropped, like any key the schema doesn't know.
+    const withArt = parse({ skin_gold: { ...skin, art: "cosmetics/x.webp", card: { width: 1, pivot: [0, 0] } } });
+    expect(withArt.success && Object.keys(withArt.data.cosmetics.skin_gold!).sort()).toEqual(
+      ["free", "name", "priceTokens", "skin", "slot"].sort(),
+    );
+    expect(parse({ skin_gold: { ...skin, priceTokens: undefined } }).success).toBe(false);
+    expect(parse({ skin_gold: { ...skin, free: true } }).success).toBe(false);
+    // The same effect sold twice under two ids is a mistake.
+    expect(parse({ skin_gold: skin, gold_again: skin }).success).toBe(false);
+  });
+
+  it("accessories still need art and placement, and can't claim the skin slot without an effect", () => {
+    const hat = catalog.cosmetics.viking_hat!;
+    expect(parse({ viking_hat: hat }).success).toBe(true);
+    expect(parse({ viking_hat: { ...hat, art: undefined } }).success).toBe(false);
+    expect(parse({ viking_hat: { ...hat, slot: "skin" } }).success).toBe(false);
   });
 });

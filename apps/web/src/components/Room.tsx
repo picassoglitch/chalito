@@ -20,7 +20,8 @@ import type { RoomEventKind } from "@chalito/protocol";
 import { DEFAULT_COMPANION, rosterEntry } from "@chalito/roster";
 import { Link } from "@/i18n/navigation";
 import { markSeen } from "@/lib/room-seen";
-import type { StoreItem } from "@/lib/store";
+import { isSkin, type StoreItem } from "@/lib/store";
+import type { SceneCosmetic } from "@chalito/scene";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { RoomStage } from "./RoomStage";
 import { GlyphCanvas } from "./Glyph";
@@ -160,10 +161,13 @@ export const Room = ({ roomId }: { roomId: string }) => {
         return {
           companionId: m.companionId,
           avatar: c && rosterEntry(c.avatar) ? c.avatar : DEFAULT_COMPANION,
-          // Equipped cosmetics as the store sells them (slot, art, card placement).
-          cosmetics: (c?.equipped ?? []).flatMap((id) => {
+          // Equipped cosmetics as the store sells them: drawn items (slot, art, placement) and the skin.
+          cosmetics: (c?.equipped ?? []).flatMap((id): SceneCosmetic[] => {
             const item = catalog.find((i) => i.id === id);
-            return item ? [{ slot: item.slot, art: item.art, card: item.card }] : [];
+            if (!item) return [];
+            return [
+              isSkin(item) ? { slot: "skin", skin: item.skin } : { slot: item.slot, art: item.art, card: item.card },
+            ];
           }),
         };
       }),

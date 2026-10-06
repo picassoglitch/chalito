@@ -1,10 +1,13 @@
 import * as THREE from "three";
+import { createSkinMaterial, isSkinId, type SkinId, type SkinMaterial } from "./skin.js";
 
 /**
  * The 2.5D image-card avatar (roster cards, D-059): one upright plane per drawing, cosmetics as
  * planes at the card's anchors, and a soft contact shadow. Drive `root` with CreatureBinding (bob,
  * squash, lean) and swap drawings with `setDrawing` as the emotion changes. Card space is 0..1 of
  * the card's width and height, origin top-left (as in card.json and roster's `placeOnCard`).
+ * `setSkin` puts a material effect (gold, galaxy…) over the drawing; it survives drawing swaps.
+ * Call `tick` from the frame loop so animated skins move.
  */
 export interface CardSpec {
   width: number;
@@ -21,8 +24,15 @@ export interface CardItem {
 export interface CardAvatar {
   root: THREE.Group;
   setDrawing(name: string): void;
+  /** A material effect over the drawing (not the items); null (or an unknown id) is the plain drawing. */
+  setSkin(skin: SkinId | null): void;
+  readonly skin: SkinId | null;
+  /** Animates the skin: `seconds` is any steadily increasing clock (epoch seconds are fine). */
+  tick(seconds: number): void;
   dispose(): void;
 }
+
+const SKIN_PERIOD_S = 3600;
 
 /** Draw order: the body sits at 10, items before (z < 0) or after (z > 0) it, the shadow first. */
 const ORDER = { shadow: 0, body: 10 };
@@ -73,6 +83,10 @@ export const createCardAvatar = (
   body.name = "body";
   body.position.copy(at(0.5, 0.5));
   root.add(body);
+  const plain = body.material as THREE.MeshBasicMaterial;
+  let current: THREE.Texture | null = first;
+  let skin: SkinId | null = null;
+  let skinned: SkinMaterial | null = null;
 
   for (const [i, it] of items.entries()) {
     const p = it.placed;
@@ -89,18 +103,37 @@ export const createCardAvatar = (
 
   return {
     root,
+    get skin() {
+      return skin;
+    },
     setDrawing(name) {
       const map = drawings[name];
       if (!map) return;
       map.colorSpace = THREE.SRGBColorSpace;
-      const mat = body.material as THREE.MeshBasicMaterial;
-      if (mat.map !== map) {
-        mat.map = map;
-        mat.needsUpdate = true;
+      current = map;
+      if (plain.map !== map) {
+        plain.map = map;
+        plain.needsUpdate = true;
       }
+      if (skinned) skinned.uniforms.map.value = map;
+    },
+    setSkin(next) {
+      const want = isSkinId(next) ? next : null;
+      if (want === skin) return;
+      const time = skinned?.uniforms.uTime.value ?? 0;
+      skinned?.dispose();
+      skinned = want ? createSkinMaterial(want, current, spec.height / spec.width) : null;
+      if (skinned) skinned.uniforms.uTime.value = time;
+      skin = want;
+      (body as THREE.Mesh<THREE.BufferGeometry, THREE.Material>).material = skinned ?? plain;
+    },
+    tick(seconds) {
+      // Wrapped: the shader's float32 can't hold epoch seconds (a skin loops once an hour).
+      if (skinned) skinned.uniforms.uTime.value = seconds % SKIN_PERIOD_S;
     },
     dispose() {
       for (const o of owned) o.dispose();
+      skinned?.dispose();
     },
   };
 };

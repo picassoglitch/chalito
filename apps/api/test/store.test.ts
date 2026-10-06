@@ -26,14 +26,14 @@ describe("purchase", () => {
     const { call, store } = storeSetup();
     const res = await call("POST", "/purchase", { cosmeticId: "star_cape", purchaseId: PID });
     expect(res.status).toBe(200);
-    expect(res.json).toMatchObject({ status: "owned", charged: 250_000 });
+    expect(res.json).toMatchObject({ status: "owned", charged: 1_000 });
     expect(hubCalls.map((c) => c.path)).toEqual(["admit", "settle"]);
     expect(hubCalls[0]!.body).toMatchObject({
       external_user_id: "hub-user-1",
       external_job_id: `store:${PID}`,
       class: "job",
       operation: "store.purchase",
-      est_tokens: 250_000,
+      est_tokens: 1_000,
     });
     expect(hubCalls[1]!.body).toEqual({ reservation_id: RID, outcome: "succeeded" });
     expect(store.outbox).toHaveLength(1);
@@ -42,7 +42,7 @@ describe("purchase", () => {
       source_id: `store:${PID}`,
       kind: "store.purchase",
       external_user_id: "hub-user-1",
-      cost_usd_micros: 1_000_000,
+      cost_usd_micros: 4_000,
       reservation_id: RID,
     });
     // The hub bills a store.purchase as ceil(cost / 4): exactly the catalog price.
@@ -165,10 +165,54 @@ describe("equip (server-only: clients have no write on equipped)", () => {
   });
 });
 
+describe("skins (a material effect over the companion, one at a time)", () => {
+  const buy = (call: ReturnType<typeof storeSetup>["call"], id: string, n: number) =>
+    call("POST", "/purchase", { cosmeticId: id, purchaseId: `pur_skin${String(n).padStart(12, "0")}` });
+
+  it("the catalog lists skins with their effect and price, and no art or placement", async () => {
+    const { call } = storeSetup();
+    const items = (await call("GET", "/catalog")).json.items as Record<string, unknown>[];
+    const skins = items.filter((i) => i.slot === "skin");
+    expect(skins.length).toBeGreaterThanOrEqual(7);
+    for (const s of skins) {
+      expect(s).toMatchObject({ free: false, owned: false, skin: expect.any(String) });
+      expect(s.priceTokens).toBeGreaterThan(0);
+      expect(s).not.toHaveProperty("art");
+      expect(s).not.toHaveProperty("card");
+    }
+    for (const i of items.filter((i) => i.slot !== "skin")) expect(i).toHaveProperty("art");
+  });
+
+  it("is bought like any paid item, priced from the catalog", async () => {
+    const { call, store } = storeSetup();
+    const res = await buy(call, "skin_galaxy", 1);
+    expect(res.json).toMatchObject({ status: "owned", charged: catalog.cosmetics.skin_galaxy!.priceTokens });
+    expect(store.outbox[0]!.cost_usd_micros).toBe(catalog.cosmetics.skin_galaxy!.priceTokens! * 4);
+  });
+
+  it("equips only in the skin slot, only once owned, and a second skin replaces the first", async () => {
+    const { call, store } = storeSetup();
+    const equip = (slot: string, cosmeticId: string | null) =>
+      call("POST", "/equip", { companionId: CID, slot, cosmeticId });
+    expect((await equip("skin", "skin_gold")).status).toBe(403);
+    await buy(call, "skin_gold", 1);
+    await buy(call, "skin_neon", 2);
+    expect((await equip("head", "skin_gold")).status).toBe(400);
+    expect((await equip("skin", "viking_hat")).status).toBe(400);
+    expect((await equip("head", "viking_hat")).status).toBe(200);
+    expect((await equip("skin", "skin_gold")).status).toBe(200);
+    expect(store.companions.get(`hub-user-1/${CID}`)).toEqual({ head: "viking_hat", skin: "skin_gold" });
+    expect((await equip("skin", "skin_neon")).status).toBe(200);
+    expect(store.companions.get(`hub-user-1/${CID}`)).toEqual({ head: "viking_hat", skin: "skin_neon" });
+    expect((await equip("skin", null)).status).toBe(200);
+    expect(store.companions.get(`hub-user-1/${CID}`)).toEqual({ head: "viking_hat" });
+  });
+});
+
 describe("R-L9: store odds and ends", () => {
   it("an admit with a balance short of the price is refused (no_tokens), the reservation cancelled", async () => {
     const { call, store } = storeSetup();
-    hubState.remaining = 1000;
+    hubState.remaining = catalog.cosmetics.star_cape!.priceTokens! - 1;
     const res = await call("POST", "/purchase", { cosmeticId: "star_cape", purchaseId: PID });
     expect(res).toMatchObject({ status: 402, json: { error: "no_tokens" } });
     expect(store.outbox).toHaveLength(0);

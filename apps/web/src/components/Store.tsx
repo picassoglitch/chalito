@@ -6,7 +6,16 @@ import { companionName } from "@chalito/ui";
 import { Link } from "@/i18n/navigation";
 import { hubLaunchUrl } from "@/lib/hub";
 import { signInAndReturn } from "@/lib/next-cookie";
-import { newPurchaseId, type CompanionLook, type Slot, type StoreItem } from "@/lib/store";
+import type { CardPreview } from "@chalito/scene";
+import {
+  isSkin,
+  newPurchaseId,
+  type AccessoryItem,
+  type AccessorySlot,
+  type CompanionLook,
+  type SkinEffect,
+  type StoreItem,
+} from "@/lib/store";
 import { useChalito } from "./ChalitoProvider";
 
 const ROSTER = "/roster";
@@ -15,7 +24,7 @@ const asset = (path: string) => `${ROSTER}/${path}`;
 interface Card {
   width: number;
   height: number;
-  anchors: Partial<Record<Slot, CardAnchor>>;
+  anchors: Partial<Record<AccessorySlot, CardAnchor>>;
 }
 
 type Note =
@@ -24,10 +33,116 @@ type Note =
   | { kind: "failed" }
   | { kind: "equip_failed"; reason: string };
 
-/** The companion's card with what it wears, placed by `placeOnCard` (negative z sits behind the body). */
-const Preview = ({ look, items, label }: { look: CompanionLook; items: StoreItem[]; label: string }) => {
+/**
+ * A CSS stand-in for each skin (the tile swatch, and the preview while WebGL loads or is missing):
+ * the real look is the card renderer's shader, drawn live in the preview.
+ */
+const SKIN_SWATCH: Record<SkinEffect, string> = {
+  gold: "linear-gradient(135deg, #6b3d04, #e9a12a 42%, #fff0c0 50%, #e9a12a 58%, #6b3d04)",
+  galaxy:
+    "radial-gradient(circle at 30% 30%, #d14fa0 0, transparent 38%), radial-gradient(circle at 70% 68%, #2c6bd6 0, transparent 42%), #180a3a",
+  neon: "linear-gradient(135deg, #00e5ff, #ff2bd6)",
+  crystal: "linear-gradient(160deg, #e6f7ff, #6fa6d8 50%, #eaf8ff)",
+  holo: "linear-gradient(120deg, #ff9ad5, #ffe48a, #9affc8, #8ad1ff, #d29aff)",
+  shadow: "radial-gradient(circle, #2a1940 55%, #8b3dff)",
+  pixel: "repeating-conic-gradient(#f59e5b 0 25%, #fde3c4 0 50%) 0 0 / 12px 12px",
+};
+
+/** The skin's swatch in the companion's silhouette (its drawing as a mask), or a plain swatch. */
+const SkinSwatch = ({ skin, drawing }: { skin: SkinEffect; drawing: string | null }) => {
+  const mask = drawing
+    ? {
+        maskImage: `url(${drawing})`,
+        WebkitMaskImage: `url(${drawing})`,
+        maskSize: "contain",
+        WebkitMaskSize: "contain",
+        maskRepeat: "no-repeat",
+        WebkitMaskRepeat: "no-repeat",
+        maskPosition: "center",
+        WebkitMaskPosition: "center",
+      }
+    : { borderRadius: "9999px", inset: "20%" };
+  return (
+    <div aria-hidden className="relative aspect-square w-full rounded-lg bg-neutral-50" data-testid="store-skin-swatch">
+      <div className="absolute inset-2" style={{ background: SKIN_SWATCH[skin], ...mask }} />
+    </div>
+  );
+};
+
+/**
+ * The companion's card drawn by the real renderer (@chalito/scene CardPreview, three.js loaded on
+ * demand) with the skin's shader. Mounted the first time a skin is shown and kept, so trying skins
+ * on doesn't make a new WebGL context each time. Reports whether it is drawing.
+ */
+const SkinLayer = ({
+  avatar,
+  skin,
+  onReady,
+}: {
+  avatar: string;
+  skin: SkinEffect | null;
+  onReady: (ready: boolean) => void;
+}) => {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const preview = useRef<CardPreview | null>(null);
+  const want = useRef(skin);
+  want.current = skin;
+  useEffect(() => {
+    let alive = true;
+    let p: CardPreview | null = null;
+    void (async () => {
+      try {
+        const { CardPreview } = await import("@chalito/scene");
+        if (!alive || !canvas.current) return;
+        p = new CardPreview({ canvas: canvas.current, assetBase: `${ROSTER}/`, avatar, drawing: "neutral" });
+        preview.current = p;
+        p.setSkin(want.current);
+        await p.load();
+        if (alive) onReady(true);
+      } catch {
+        // No WebGL: the CSS stand-in stays.
+        if (alive) onReady(false);
+      }
+    })();
+    return () => {
+      alive = false;
+      p?.dispose();
+      preview.current = null;
+      onReady(false);
+    };
+  }, [avatar, onReady]);
+  useEffect(() => preview.current?.setSkin(skin), [skin]);
+  return (
+    <canvas
+      ref={canvas}
+      aria-hidden
+      data-testid="store-skin-canvas"
+      className="absolute inset-0 h-full w-full"
+      style={{ zIndex: 0, visibility: skin ? "visible" : "hidden" }}
+    />
+  );
+};
+
+/**
+ * The companion's card with what it wears, placed by `placeOnCard` (negative z sits behind the body),
+ * and the skin (worn, or being tried on) drawn over it by the card renderer.
+ */
+const Preview = ({
+  look,
+  items,
+  skin,
+  label,
+}: {
+  look: CompanionLook;
+  items: StoreItem[];
+  skin: SkinEffect | null;
+  label: string;
+}) => {
   const [card, setCard] = useState<Card | null>(null);
   const [aspects, setAspects] = useState<Record<string, number>>({});
+  const [skinned, setSkinned] = useState(false);
+  const [gl, setGl] = useState(false);
+  if (skin && !skinned) setSkinned(true);
   const entry = rosterEntry(look.avatar);
   useEffect(() => {
     if (!entry) return;
@@ -41,7 +156,7 @@ const Preview = ({ look, items, label }: { look: CompanionLook; items: StoreItem
     };
   }, [entry]);
   if (!entry) return null;
-  const worn = items.filter((i) => look.equipped[i.slot] === i.id);
+  const worn = items.filter((i): i is AccessoryItem => !isSkin(i) && look.equipped[i.slot] === i.id);
   if (!card) return <div aria-hidden className="mx-auto mt-12 aspect-[3/4] w-48 sm:w-56" />;
   const cardAspect = card.height / card.width;
   return (
@@ -53,14 +168,31 @@ const Preview = ({ look, items, label }: { look: CompanionLook; items: StoreItem
       aria-label={label}
       data-testid="store-preview"
       data-worn={worn.map((i) => i.id).join(" ")}
+      data-skin={skin ?? ""}
     >
       <img
         src={asset(entry.drawings.neutral)}
         alt=""
         className="absolute inset-0 h-full w-full object-contain"
-        style={{ zIndex: 0 }}
+        style={{ zIndex: 0, visibility: skin && gl ? "hidden" : "visible" }}
         decoding="async"
       />
+      {skin && !gl ? (
+        // While the renderer loads (or without WebGL): the skin's colours over the drawing.
+        <div
+          aria-hidden
+          className="absolute inset-0 opacity-60 mix-blend-color"
+          style={{
+            zIndex: 0,
+            background: SKIN_SWATCH[skin],
+            maskImage: `url(${asset(entry.drawings.neutral)})`,
+            WebkitMaskImage: `url(${asset(entry.drawings.neutral)})`,
+            maskSize: "100% 100%",
+            WebkitMaskSize: "100% 100%",
+          }}
+        />
+      ) : null}
+      {skinned ? <SkinLayer avatar={look.avatar} skin={skin} onReady={setGl} /> : null}
       {worn.map((i) => {
         const anchor = card.anchors[i.slot];
         const aspect = aspects[i.id];
@@ -111,6 +243,9 @@ export const Store = () => {
   const [notes, setNotes] = useState<Record<string, Note>>({});
   /** cosmeticId → the purchaseId of the tap in progress (kept until the purchase settles). */
   const pending = useRef<Record<string, string>>({});
+  const [tab, setTab] = useState<"accessories" | "skins">("accessories");
+  /** A skin being tried on in the preview (any skin, bought or not); null shows what's worn. */
+  const [trying, setTrying] = useState<SkinEffect | null>(null);
 
   const load = useCallback(async () => {
     if (!store || !readCompanion) return;
@@ -152,6 +287,7 @@ export const Store = () => {
     const r = await store.equip(look.companionId, item.slot, on ? item.id : null);
     setBusy(null);
     if (!r.ok) return note(item.id, { kind: "equip_failed", reason: r.reason });
+    if (isSkin(item)) setTrying(null);
     setLook((l) => {
       if (!l || l === "error") return l;
       const equipped = { ...l.equipped };
@@ -183,6 +319,12 @@ export const Store = () => {
     );
 
   const tokens = new Intl.NumberFormat(locale);
+  const all = Array.isArray(items) ? items : [];
+  const wornSkin = look && look !== "error" ? all.find((i) => isSkin(i) && look.equipped.skin === i.id) : undefined;
+  const shownSkin = trying ?? (wornSkin && isSkin(wornSkin) ? wornSkin.skin : null);
+  const entry = look && look !== "error" ? rosterEntry(look.avatar) : null;
+  const drawing = entry ? asset(entry.drawings.neutral) : null;
+  const shown = all.filter((i) => (tab === "skins") === isSkin(i));
   return (
     <div className="grid gap-6" data-testid="store">
       <div className="grid gap-1">
@@ -193,7 +335,8 @@ export const Store = () => {
       {look && look !== "error" ? (
         <Preview
           look={look}
-          items={Array.isArray(items) ? items : []}
+          items={all}
+          skin={shownSkin}
           label={t("previewLabel", { name: companionName(look.avatar, locale) })}
         />
       ) : look === null ? (
@@ -216,8 +359,38 @@ export const Store = () => {
       ) : null}
 
       {Array.isArray(items) ? (
-        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {items.map((item) => {
+        <div role="tablist" aria-label={t("tabsLabel")} className="flex gap-2 border-b">
+          {(["accessories", "skins"] as const).map((k) => (
+            <button
+              key={k}
+              role="tab"
+              id={`store-tab-${k}`}
+              aria-selected={tab === k}
+              aria-controls="store-items"
+              data-testid={`store-tab-${k}`}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+                tab === k ? "border-emerald-700 font-medium text-emerald-800" : "border-transparent text-neutral-600"
+              }`}
+              onClick={() => {
+                setTab(k);
+                setTrying(null);
+              }}
+            >
+              {t(`tabs.${k}`)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {Array.isArray(items) && tab === "skins" ? <p className="text-sm text-neutral-600">{t("skinsIntro")}</p> : null}
+
+      {Array.isArray(items) ? (
+        <ul
+          id="store-items"
+          role="tabpanel"
+          aria-labelledby={`store-tab-${tab}`}
+          className="grid grid-cols-2 gap-3 sm:grid-cols-3"
+        >
+          {shown.map((item) => {
             const worn = !!look && look !== "error" && look.equipped[item.slot] === item.id;
             const n = notes[item.id];
             return (
@@ -229,15 +402,19 @@ export const Store = () => {
                 data-worn={worn}
                 className="grid content-start gap-2 rounded-xl border bg-white p-3"
               >
-                <img
-                  src={asset(item.art)}
-                  alt=""
-                  width={160}
-                  height={160}
-                  loading="lazy"
-                  decoding="async"
-                  className="aspect-square w-full rounded-lg bg-neutral-50 object-contain"
-                />
+                {isSkin(item) ? (
+                  <SkinSwatch skin={item.skin} drawing={drawing} />
+                ) : (
+                  <img
+                    src={asset(item.art)}
+                    alt=""
+                    width={160}
+                    height={160}
+                    loading="lazy"
+                    decoding="async"
+                    className="aspect-square w-full rounded-lg bg-neutral-50 object-contain"
+                  />
+                )}
                 <p className="font-medium">{item.name[locale]}</p>
                 <p className="text-xs text-neutral-600">{t(`slot.${item.slot}`)}</p>
                 <p className="text-sm" data-testid="store-price">
@@ -265,6 +442,16 @@ export const Store = () => {
                     onClick={() => void equip(item, !worn)}
                   >
                     {worn ? t("unequip") : t("equip")}
+                  </button>
+                ) : null}
+                {isSkin(item) && look && look !== "error" && !worn ? (
+                  <button
+                    data-testid="store-try"
+                    className="rounded-lg border border-dashed px-3 py-1.5 text-sm"
+                    aria-pressed={trying === item.skin}
+                    onClick={() => setTrying((s) => (s === item.skin ? null : item.skin))}
+                  >
+                    {trying === item.skin ? t("stopTrying") : t("tryOn")}
                   </button>
                 ) : null}
                 {n?.kind === "no_tokens" ? (

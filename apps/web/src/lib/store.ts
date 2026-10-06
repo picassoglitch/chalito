@@ -4,19 +4,37 @@ import type { CardPlacement } from "@chalito/roster";
  * The store (M8, docs/integrations/STORE.md): cosmetics change how a companion looks, never what
  * it can do. Prices are hub tokens, never money. Routes take the person's or this device's bearer.
  */
-export type Slot = "head" | "face" | "body" | "back" | "aura" | "portal_fx";
+export type Slot = "head" | "face" | "body" | "back" | "aura" | "portal_fx" | "skin";
+export type AccessorySlot = Exclude<Slot, "skin">;
+/** The card renderer's material effects (@chalito/avatar-three SKIN_IDS). */
+export type SkinEffect = "gold" | "galaxy" | "neon" | "crystal" | "holo" | "shadow" | "pixel";
+export const SKIN_EFFECTS: readonly SkinEffect[] = ["gold", "galaxy", "neon", "crystal", "holo", "shadow", "pixel"];
 
-export interface StoreItem {
+interface ItemBase {
   id: string;
   name: { es: string; en: string };
-  slot: Slot;
   free: boolean;
   priceTokens?: number;
+  owned: boolean;
+}
+
+/** A drawn item placed on the card. */
+export interface AccessoryItem extends ItemBase {
+  slot: AccessorySlot;
   /** A path inside @chalito/roster (cosmetics/<id>.webp). */
   art: string;
   card: CardPlacement;
-  owned: boolean;
 }
+
+/** A skin: a material effect over the whole companion (no art), one at a time. */
+export interface SkinItem extends ItemBase {
+  slot: "skin";
+  skin: SkinEffect;
+}
+
+export type StoreItem = AccessoryItem | SkinItem;
+
+export const isSkin = (i: StoreItem): i is SkinItem => i.slot === "skin";
 
 export type PurchaseResult =
   | { ok: true; charged: number }
@@ -37,7 +55,7 @@ export interface StoreApi {
 /** One per buy tap, reused on retries: 16–64 of [A-Za-z0-9_-]. */
 export const newPurchaseId = (): string => `pur_${crypto.randomUUID().replaceAll("-", "")}`;
 
-const SLOTS: readonly string[] = ["head", "face", "body", "back", "aura", "portal_fx"];
+const SLOTS: readonly string[] = ["head", "face", "body", "back", "aura", "portal_fx", "skin"];
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
 export const parseCatalog = (body: unknown): StoreItem[] | null => {
@@ -56,23 +74,35 @@ export const parseCatalog = (body: unknown): StoreItem[] | null => {
       !SLOTS.includes(x.slot as string) ||
       typeof x.free !== "boolean" ||
       (!x.free && !(isNum(x.priceTokens) && x.priceTokens > 0)) ||
+      typeof x.owned !== "boolean"
+    )
+      return null;
+    const base = {
+      id: x.id,
+      name: { es: name.es, en: name.en },
+      free: x.free,
+      ...(x.free ? {} : { priceTokens: x.priceTokens as number }),
+      owned: x.owned,
+    };
+    if (x.slot === "skin") {
+      // A newer api may sell effects this build can't draw yet: skip those, keep the rest.
+      if (!SKIN_EFFECTS.includes(x.skin as SkinEffect)) continue;
+      out.push({ ...base, slot: "skin", skin: x.skin as SkinEffect });
+      continue;
+    }
+    if (
       typeof x.art !== "string" ||
       !/^cosmetics\/[a-z0-9_]+\.webp$/.test(x.art) ||
       !isNum(card?.width) ||
       pivot.length !== 2 ||
-      !pivot.every(isNum) ||
-      typeof x.owned !== "boolean"
+      !pivot.every(isNum)
     )
       return null;
     out.push({
-      id: x.id,
-      name: { es: name.es, en: name.en },
-      slot: x.slot as Slot,
-      free: x.free,
-      ...(x.free ? {} : { priceTokens: x.priceTokens as number }),
+      ...base,
+      slot: x.slot as AccessorySlot,
       art: x.art,
       card: { width: card!.width as number, pivot: [pivot[0] as number, pivot[1] as number] },
-      owned: x.owned,
     });
   }
   return out;

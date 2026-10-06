@@ -4,7 +4,7 @@
  * `__showcase.load(job)` then `__showcase.frame(t)` for each frame and reads back a PNG.
  */
 import * as THREE from "three";
-import { AvatarDriver, CreatureBinding, createCardAvatar, type CardItem } from "@chalito/avatar-three";
+import { AvatarDriver, CreatureBinding, createCardAvatar, type CardItem, type SkinId } from "@chalito/avatar-three";
 import { EMOTION_DRAWING } from "@chalito/roster";
 import { RoomScene, type RoomSceneMember, type SceneEvent } from "@chalito/scene";
 import type { Beat } from "./scenes.js";
@@ -14,6 +14,8 @@ export interface PageActor {
   spec: { width: number; height: number; shadow?: { x: number; y: number; rx: number; ry: number; opacity: number } };
   drawings: Record<string, string>;
   items: { url: string; placed: CardItem["placed"] }[];
+  /** A catalog skin's effect, if the actor wears one. */
+  skin?: SkinId;
   beats: Beat[];
 }
 export interface PageJob {
@@ -29,6 +31,7 @@ interface Live {
   driver: AvatarDriver;
   binding: CreatureBinding;
   setDrawing: (d: string) => void;
+  tick: (seconds: number) => void;
   beats: Beat[];
   next: number;
 }
@@ -87,11 +90,13 @@ const showcase = {
       const items: CardItem[] = [];
       for (const it of a.items) items.push({ placed: it.placed, texture: await load(it.url) });
       const card = createCardAvatar(a.spec, drawings, items, 1);
+      card.setSkin(a.skin ?? null);
       scene.add(card.root);
       live.push({
         driver: new AvatarDriver({ seed: job.seed + live.length }),
         binding: new CreatureBinding(card.root, { x: a.x, y: 0, z: 0 }),
         setDrawing: card.setDrawing,
+        tick: card.tick,
         beats: [...a.beats].sort((p, q) => p.at - q.at),
         next: 0,
       });
@@ -115,6 +120,7 @@ const showcase = {
         if (b.gesture) l.driver.playGesture(b.gesture, b.at);
       }
       l.binding.apply(l.driver.frame(t));
+      l.tick(t / 1000);
     }
     renderer!.render(scene!, camera!);
     return renderer!.domElement.toDataURL("image/png");

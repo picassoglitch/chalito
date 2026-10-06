@@ -50,8 +50,8 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
       slot: x.slot,
       free: x.free,
       ...(x.priceTokens !== undefined ? { priceTokens: x.priceTokens } : {}),
-      art: x.art,
-      card: x.card,
+      // A drawn item has art and a placement; a skin names the card renderer's effect.
+      ...(x.slot === "skin" ? { skin: x.skin } : { art: x.art, card: x.card }),
       owned: x.free || owned.has(id),
     }));
     return c.json({ items });

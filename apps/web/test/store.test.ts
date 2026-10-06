@@ -10,7 +10,7 @@ const item = {
   name: { es: "Capa de estrellas", en: "Star cape" },
   slot: "back",
   free: false,
-  priceTokens: 250000,
+  priceTokens: 1000,
   art: "cosmetics/star_cape.webp",
   card: { width: 0.72, pivot: [0.5, 0.12] },
   owned: false,
@@ -40,14 +40,31 @@ describe("store (/v1/store)", () => {
     expect(free[0]).not.toHaveProperty("priceTokens");
   });
 
+  it("parses skins: an effect and no art; effects this build can't draw are skipped", () => {
+    const skin = {
+      id: "skin_gold",
+      name: { es: "Dorado", en: "Gold" },
+      slot: "skin",
+      free: false,
+      priceTokens: 10000,
+      skin: "gold",
+      owned: false,
+    };
+    expect(parseCatalog({ items: [item, skin] })).toEqual([item, skin]);
+    expect(parseCatalog({ items: [item, { ...skin, skin: "lava" }] })).toEqual([item]);
+    expect(parseCatalog({ items: [{ ...skin, priceTokens: undefined }] })).toBeNull();
+    // A drawn item still needs its art and placement.
+    expect(parseCatalog({ items: [{ ...item, art: undefined }] })).toBeNull();
+    // Every price on the catalog parses, the cheapest included (a single clothing item ≈ 200).
+    expect(parseCatalog({ items: [{ ...item, priceTokens: 200 }] })![0]!.priceTokens).toBe(200);
+  });
+
   it("purchase: owned, no_tokens chip (same-site only), retryable failures, the rest failed", async () => {
     const api = (f: typeof fetch) => httpStore("https://api.example", async () => "tok", f);
-    expect(await api(respond(200, { status: "owned", charged: 250000 })).purchase("star_cape", "p".repeat(16))).toEqual(
-      {
-        ok: true,
-        charged: 250000,
-      },
-    );
+    expect(await api(respond(200, { status: "owned", charged: 1000 })).purchase("star_cape", "p".repeat(16))).toEqual({
+      ok: true,
+      charged: 1000,
+    });
     expect(
       await api(respond(402, { error: "no_tokens", chips: [{ href: "/creditos" }] })).purchase("x", "p".repeat(16)),
     ).toEqual({ ok: false, reason: "no_tokens", chipHref: "/creditos" });
@@ -119,10 +136,14 @@ describe("store (/v1/store)", () => {
     });
     expect(
       await readCompanion(
-        db({ companion_id: "chl_x", avatar: "luna", equipped: { head: "viking_hat", tail: "x", face: 3 } }),
+        db({
+          companion_id: "chl_x",
+          avatar: "luna",
+          equipped: { head: "viking_hat", tail: "x", face: 3, skin: "skin_gold" },
+        }),
         "o",
       ),
-    ).toEqual({ companionId: "chl_x", avatar: "luna", equipped: { head: "viking_hat" } });
+    ).toEqual({ companionId: "chl_x", avatar: "luna", equipped: { head: "viking_hat", skin: "skin_gold" } });
     expect(await readCompanion(db(null), "o")).toBeNull();
     expect(await readCompanion(db(null, { message: "rls" }), "o")).toBe("error");
   });

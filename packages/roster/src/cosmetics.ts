@@ -40,7 +40,10 @@ export const placeOnCard = (anchor: CardAnchor, p: CardPlacement, itemAspect: nu
   };
 };
 
-/** VRM humanoid bones each slot attaches to (M7's three-vrm renderer); portal_fx sits on the ground. */
+/**
+ * VRM humanoid bones each slot attaches to (M7's three-vrm renderer); portal_fx sits on the ground
+ * and a skin isn't attached anywhere (it is a material over the whole companion).
+ */
 export const VRM_BONE: Record<CosmeticSlot, "head" | "chest" | "upperChest" | "hips" | null> = {
   head: "head",
   face: "head",
@@ -48,4 +51,5 @@ export const VRM_BONE: Record<CosmeticSlot, "head" | "chest" | "upperChest" | "h
   back: "upperChest",
   aura: "hips",
   portal_fx: null,
+  skin: null,
 };

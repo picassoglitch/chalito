@@ -141,7 +141,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 
 | | What | Why / blocks | Reference |
 |---|---|---|---|
-| [ ] | Confirm the paid cosmetic prices (placeholders, in hub tokens): `star_cape` 250000, `sparkle_aura` 150000, `portal_swirl` 400000 | Paid store items (M8); also needs the hub's `store.purchase` change (§1) | `packages/config/catalog.yaml`, `docs/integrations/STORE.md`, D-030 |
+| [ ] | Confirm the paid cosmetic prices (placeholders, in hub tokens): `star_cape` 1000, `sparkle_aura` 1000, `portal_swirl` 2000, and the seven skins `skin_*` 10000 each (scale: one clothing item ≈ 200, a full outfit ≈ 5,000) | Paid store items (M8); also needs the hub's `store.purchase` change (§1) | `packages/config/catalog.yaml`, `docs/integrations/STORE.md`, D-030 |
 | [ ] | MXN charge amounts for each Solo tier on the hub (`billing.soloMxnAmounts: unset`). Solo checkout shows "Disponible pronto" until set | Solo line (M12/M13) | `packages/config/plans.yaml`, D-031, decision #31 |
 | [ ] | Review the progressive inclusions per tier | Margins | decision #1, D-009, `packages/config/plans.yaml` |
 

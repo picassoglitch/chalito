@@ -961,6 +961,12 @@
     "error": "No pudimos cargar la tienda.",
     "retry": "Reintentar",
     "previewLabel": "{name} con lo que lleva puesto",
+    "tabsLabel": "Secciones de la tienda",
+    "tabs": {
+      "accessories": "Accesorios",
+      "skins": "Skins"
+    },
+    "skinsIntro": "Un efecto sobre todo tu compañero, sea quien sea. Solo uno a la vez.",
     "noCompanion": "Todavía no tienes compañero.",
     "chooseCompanion": "Elige uno",
     "slot": {
@@ -969,7 +975,8 @@
       "body": "Cuerpo",
       "back": "Espalda",
       "aura": "Aura",
-      "portal_fx": "Portal"
+      "portal_fx": "Portal",
+      "skin": "Skin"
     },
     "free": "Gratis",
     "owned": "Ya es tuyo",
@@ -977,6 +984,8 @@
     "buy": "Comprar",
     "equip": "Ponérselo",
     "unequip": "Quitárselo",
+    "tryOn": "Probar",
+    "stopTrying": "Dejar de probar",
     "noTokens": "No te alcanzan los tokens.",
     "whyChip": "¿Por qué?",
     "retryBuy": "No se pudo completar la compra. Reintentar no te cobra dos veces.",
