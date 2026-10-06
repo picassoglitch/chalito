@@ -1101,6 +1101,24 @@
     },
     "ageRefused": "Para crear un personaje con tu foto necesitas tener al menos 13 años.",
     "guardianRequired": "Necesitas el permiso de tu mamá, papá o tutor.",
-    "attestationRequired": "Confirma que la foto es tuya y dinos tu edad."
+    "attestationRequired": "Confirma que la foto es tuya y dinos tu edad.",
+    "kept": {
+      "title": "Tus personajes",
+      "worn": "En uso",
+      "thumbAlt": "Tu personaje del {date}",
+      "created": "Creado el {date}"
+    },
+    "delete": {
+      "action": "Eliminar mi personaje",
+      "confirmTitle": "¿Eliminar este personaje?",
+      "confirmBody": "Es permanente: borramos sus dibujos y no se pueden recuperar. No te devuelve los tokens que costó ni la creación gratis.",
+      "confirmWorn": "Es tu compañero ahora: volverá a verse como el personaje de la lista que tenías.",
+      "confirm": "Sí, eliminar para siempre",
+      "cancel": "Cancelar",
+      "done": "Listo: eliminamos tu personaje y sus dibujos.",
+      "inFlight": "Ese personaje todavía se está dibujando. Espera a que termine para eliminarlo.",
+      "retry": "No se pudo terminar de eliminar. Vuelve a intentarlo.",
+      "error": "No se pudo eliminar. Vuelve a intentarlo."
+    }
   }
 }

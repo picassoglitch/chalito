@@ -5,10 +5,20 @@ import type { Sql } from "postgres";
  * confirms, expires and settles them; the avatar job claims and finishes them (apps/avatar-jobs
  * src/creation.ts) in its own transaction with the usage event.
  */
-export type CreationStatus = "awaiting_upload" | "queued" | "generating" | "succeeded" | "failed" | "expired";
+export type CreationStatus =
+  | "awaiting_upload"
+  | "queued"
+  | "generating"
+  | "succeeded"
+  | "failed"
+  | "expired"
+  /** The owner deleted it (migration 20261005000400): drawings gone, the row kept for billing and audit. */
+  | "deleted";
 export type CreationFailure = "rejected" | "refused" | "provider" | "upload_missing" | "timeout";
 export const ACTIVE: readonly CreationStatus[] = ["awaiting_upload", "queued", "generating"];
-export const TERMINAL: readonly CreationStatus[] = ["succeeded", "failed", "expired"];
+export const TERMINAL: readonly CreationStatus[] = ["succeeded", "failed", "expired", "deleted"];
+/** Statuses that hold (or held) the free creation: a deleted free creation still used it up. */
+export const HOLDS_FREE: readonly CreationStatus[] = [...ACTIVE, "succeeded", "deleted"];
 export const UPLOAD_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export type UploadType = (typeof UPLOAD_TYPES)[number];
 /** The age bands a person can attest to and still create (under 13 can't). */
@@ -49,6 +59,10 @@ export interface CreationRecord {
   createdAt: number;
   /** Onboarding: the companion wears the card as soon as it succeeds (migration 20261005000200). */
   useWhenReady: boolean;
+  /** When the owner deleted it (status "deleted"). */
+  deletedAt: number | null;
+  /** The deletion's drawings are gone from the bucket (false: the storage step must run again). */
+  filesDeleted: boolean;
 }
 
 export interface NewCreation {
@@ -74,13 +88,21 @@ export interface NewCreation {
  */
 export type InsertResult = "inserted" | "duplicate_id" | "busy" | "free_taken";
 
+/** One of the owner's kept characters (GET /v1/avatar/creations). */
+export interface KeptCreation {
+  creationId: string;
+  assetId: string;
+  manifest: CardManifestLike;
+  createdAt: number;
+}
+
 export interface AvatarRepo {
   get(creationId: string): Promise<CreationRecord | null>;
   /** The owner's creation in flight (awaiting_upload, queued or generating), if any. */
   active(owner: string): Promise<CreationRecord | null>;
   /**
    * The first creation is free, once per person: no free creation of this owner in flight or
-   * succeeded, and none of `markers` left by a free success (this account or a deleted one).
+   * succeeded (deleted included: deleting never gives it back), and none of `markers` left by a free success (this account or a deleted one).
    */
   freeAvailable(owner: string, markers: readonly string[]): Promise<boolean>;
   /** The hub account's email Chalito has for the owner (chalito.users.email, from SSO). */
@@ -95,6 +117,15 @@ export interface AvatarRepo {
   markSettled(creationId: string, now: number): Promise<void>;
   /** Terminal paid creations whose reservation hasn't been settled yet. */
   unsettled(owner: string): Promise<CreationRecord[]>;
+  /** The owner's succeeded (not deleted) creations, newest first. */
+  kept(owner: string, limit: number): Promise<KeptCreation[]>;
+  /**
+   * succeeded → deleted (manifest dropped; a companion wearing it goes back to its roster avatar, in
+   * the same transaction). False when it isn't succeeded (any more).
+   */
+  markDeleted(creationId: string, now: number): Promise<boolean>;
+  /** The deleted creation's drawings are gone from the bucket. */
+  markFilesDeleted(creationId: string, now: number): Promise<void>;
   /** Points the owner's companion at a succeeded creation's card (null: back to the roster avatar). */
   setCompanion(owner: string, card: { assetId: string; manifest: CardManifestLike } | null): Promise<boolean>;
   /** The owner's companion's custom card, if it has one. */
@@ -129,6 +160,8 @@ type Row = {
   claimed_at: Date | null;
   created_at: Date;
   use_when_ready: boolean;
+  deleted_at: Date | null;
+  files_deleted_at: Date | null;
 };
 
 const record = (r: Row): CreationRecord => ({
@@ -147,6 +180,8 @@ const record = (r: Row): CreationRecord => ({
   claimedAt: r.claimed_at?.getTime() ?? null,
   createdAt: r.created_at.getTime(),
   useWhenReady: r.use_when_ready,
+  deletedAt: r.deleted_at?.getTime() ?? null,
+  filesDeleted: r.files_deleted_at !== null,
 });
 
 const COLS = [
@@ -165,6 +200,8 @@ const COLS = [
   "claimed_at",
   "created_at",
   "use_when_ready",
+  "deleted_at",
+  "files_deleted_at",
 ];
 
 export class PostgresAvatarRepo implements AvatarRepo {
@@ -187,7 +224,7 @@ export class PostgresAvatarRepo implements AvatarRepo {
     const [r] = await this.sql<{ taken: boolean }[]>`
       select exists (
         select 1 from chalito.avatar_creations
-        where owner = ${owner} and free and status in ('awaiting_upload', 'queued', 'generating', 'succeeded')
+        where owner = ${owner} and free and status in ('awaiting_upload', 'queued', 'generating', 'succeeded', 'deleted')
       ) or exists (
         select 1 from chalito_private.avatar_free_markers where marker = any(${this.sql.array([...markers])}::text[])
       ) as taken`;
@@ -254,8 +291,38 @@ export class PostgresAvatarRepo implements AvatarRepo {
     const rows = await this.sql<Row[]>`
       select ${this.sql(COLS)} from chalito.avatar_creations
       where owner = ${owner} and reservation_id is not null and settled_at is null
-        and status in ('succeeded', 'failed', 'expired')`;
+        and status in ('succeeded', 'failed', 'expired', 'deleted')`;
     return rows.map(record);
+  }
+
+  async kept(owner: string, limit: number) {
+    const rows = await this.sql<
+      { creation_id: string; asset_id: string; manifest: CardManifestLike; created_at: Date }[]
+    >`
+      select creation_id, asset_id, manifest, created_at from chalito.avatar_creations
+      where owner = ${owner} and status = 'succeeded'
+      order by created_at desc
+      limit ${limit}`;
+    return rows.map((r) => ({
+      creationId: r.creation_id,
+      assetId: r.asset_id,
+      manifest: r.manifest,
+      createdAt: r.created_at.getTime(),
+    }));
+  }
+
+  async markDeleted(creationId: string, now: number) {
+    // The migration's triggers drop the manifest and clear a companion that wears it.
+    const rows = await this.sql`
+      update chalito.avatar_creations set status = 'deleted', deleted_at = ${new Date(now)}
+      where creation_id = ${creationId} and status = 'succeeded' returning creation_id`;
+    return rows.length > 0;
+  }
+
+  async markFilesDeleted(creationId: string, now: number) {
+    await this.sql`
+      update chalito.avatar_creations set files_deleted_at = ${new Date(now)}
+      where creation_id = ${creationId} and status = 'deleted' and files_deleted_at is null`;
   }
 
   async setCompanion(owner: string, card: { assetId: string; manifest: CardManifestLike } | null) {
@@ -315,9 +382,7 @@ export class MemoryAvatarRepo implements AvatarRepo {
   }
   async freeAvailable(owner: string, markers: readonly string[]) {
     if (markers.some((m) => this.markers.has(m))) return false;
-    return ![...this.rows.values()].some(
-      (x) => x.owner === owner && x.free && (ACTIVE.includes(x.status) || x.status === "succeeded"),
-    );
+    return ![...this.rows.values()].some((x) => x.owner === owner && x.free && HOLDS_FREE.includes(x.status));
   }
   async ownerEmail(owner: string) {
     return this.emails.get(owner) ?? null;
@@ -349,6 +414,8 @@ export class MemoryAvatarRepo implements AvatarRepo {
       failure: null,
       manifest: null,
       claimedAt: null,
+      deletedAt: null,
+      filesDeleted: false,
     });
     return "inserted";
   }
@@ -371,6 +438,25 @@ export class MemoryAvatarRepo implements AvatarRepo {
     return [...this.rows.values()]
       .filter((x) => x.owner === owner && x.reservationId && !x.settled && TERMINAL.includes(x.status))
       .map((x) => ({ ...x }));
+  }
+  async kept(owner: string, limit: number) {
+    return [...this.rows.values()]
+      .filter((x) => x.owner === owner && x.status === "succeeded" && x.manifest)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+      .map((x) => ({ creationId: x.creationId, assetId: x.assetId, manifest: x.manifest!, createdAt: x.createdAt }));
+  }
+  /** With the migration's triggers: manifest dropped, a companion wearing it back to its roster avatar. */
+  async markDeleted(creationId: string, now: number) {
+    const r = this.rows.get(creationId);
+    if (r?.status !== "succeeded") return false;
+    Object.assign(r, { status: "deleted", manifest: null, deletedAt: now });
+    if (this.companions.get(r.owner)?.assetId === r.assetId) this.companions.set(r.owner, null);
+    return true;
+  }
+  async markFilesDeleted(creationId: string) {
+    const r = this.rows.get(creationId);
+    if (r?.status === "deleted") r.filesDeleted = true;
   }
   async setCompanion(owner: string, card: { assetId: string; manifest: CardManifestLike } | null) {
     if (!this.companions.has(owner)) return false;

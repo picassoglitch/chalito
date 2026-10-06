@@ -98,6 +98,8 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/avatar/creations": sensitive(10, 2, 2 * KB),
   "POST /v1/avatar/creations/:id/uploaded": user(30, 1, 2 * KB),
   "GET /v1/avatar/creations/:id": user(120, 2, 0),
+  "GET /v1/avatar/creations": user(60, 1, 0),
+  "DELETE /v1/avatar/creations/:id": user(20, 0.2, 0),
   "POST /v1/avatar/use": user(30, 0.5, 2 * KB),
   "GET /v1/avatar/companion": user(60, 1, 0),
   "GET /v1/avatar/rooms/:roomId/cards": user(60, 1, 0),

@@ -11,7 +11,15 @@ export type PhotoType = (typeof PHOTO_TYPES)[number];
 /** The server's limit (apps/api src/avatar/routes.ts UPLOAD_MAX_BYTES). */
 export const PHOTO_MAX_BYTES = 10 * 1024 * 1024;
 
-export type CreationStatus = "awaiting_upload" | "queued" | "generating" | "succeeded" | "failed" | "expired";
+export type CreationStatus =
+  | "awaiting_upload"
+  | "queued"
+  | "generating"
+  | "succeeded"
+  | "failed"
+  | "expired"
+  /** The owner deleted it ("Eliminar mi personaje"). */
+  | "deleted";
 export type CreationFailure = "rejected" | "refused" | "provider" | "upload_missing" | "timeout";
 
 export interface CustomCard {
@@ -37,6 +45,19 @@ export interface Quote {
   dailyLeft: number;
   active: Creation | null;
 }
+
+/** One of the person's kept characters (GET /creations), to wear or delete. */
+export interface KeptCharacter {
+  creationId: string;
+  createdAt: number;
+  /** The companion wears it now. */
+  worn: boolean;
+  /** A signed thumbnail, when there is one. */
+  thumb?: string;
+}
+
+/** DELETE /creations/:id: "in_flight" while it's being made; "retry" when the server asks to try again. */
+export type DeleteResult = "ok" | "in_flight" | "retry" | "error";
 
 export type AgeBand = "under_13" | "13_17" | "18_plus";
 
@@ -80,6 +101,13 @@ export interface AvatarApi {
   upload(target: { url: string; headers: Record<string, string> }, photo: Blob): Promise<boolean>;
   uploaded(creationId: string): Promise<Creation | "error">;
   status(creationId: string): Promise<Creation | "error">;
+  /** The person's kept characters, newest first. */
+  kept(): Promise<KeptCharacter[] | "error">;
+  /**
+   * "Eliminar mi personaje": the drawings are deleted for good; a companion wearing it goes back to
+   * its roster avatar. Nothing is refunded and the free creation isn't given back. Idempotent.
+   */
+  remove(creationId: string): Promise<DeleteResult>;
   /** The companion wears this creation (null: back to its roster avatar). */
   use(creationId: string | null): Promise<"ok" | "no_companion" | "error">;
   /** The companion's custom card with fresh signed URLs (GET /companion); null when it wears a roster avatar. */
@@ -100,7 +128,15 @@ export const checkPhoto = (f: { type: string; size: number }): "ok" | "type" | "
   return "ok";
 };
 
-const STATUSES: readonly string[] = ["awaiting_upload", "queued", "generating", "succeeded", "failed", "expired"];
+const STATUSES: readonly string[] = [
+  "awaiting_upload",
+  "queued",
+  "generating",
+  "succeeded",
+  "failed",
+  "expired",
+  "deleted",
+];
 const FAILURES: readonly string[] = ["rejected", "refused", "provider", "upload_missing", "timeout"];
 const FILE = /^[a-z0-9-]+\.webp$/;
 /** Signed URLs come from the bucket host only. */
@@ -161,12 +197,12 @@ export const httpAvatar = (
   token: () => Promise<string | null>,
   fetchImpl: typeof fetch = (...a) => fetch(...a),
 ): AvatarApi => {
-  const call = async (path: string, body?: unknown): Promise<Response | null> => {
+  const call = async (path: string, body?: unknown, method?: "DELETE"): Promise<Response | null> => {
     const bearer = await token();
     if (!base || !bearer) return null;
     try {
       return await fetchImpl(`${base}/v1/avatar${path}`, {
-        method: body === undefined ? "GET" : "POST",
+        method: method ?? (body === undefined ? "GET" : "POST"),
         headers: {
           authorization: `Bearer ${bearer}`,
           ...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -226,6 +262,31 @@ export const httpAvatar = (
     },
     uploaded: async (creationId) => creation(await call(`/creations/${encodeURIComponent(creationId)}/uploaded`, {})),
     status: async (creationId) => creation(await call(`/creations/${encodeURIComponent(creationId)}`)),
+    kept: async () => {
+      const r = await call("/creations");
+      if (!r?.ok) return "error";
+      const list = ((await json(r)) as { creations?: unknown } | null)?.creations;
+      if (!Array.isArray(list)) return "error";
+      const out: KeptCharacter[] = [];
+      for (const e of list as Record<string, unknown>[]) {
+        if (typeof e?.creationId !== "string" || typeof e.createdAt !== "number" || typeof e.worn !== "boolean")
+          continue;
+        out.push({
+          creationId: e.creationId,
+          createdAt: e.createdAt,
+          worn: e.worn,
+          ...(typeof e.thumb === "string" && SIGNED.test(e.thumb) ? { thumb: e.thumb } : {}),
+        });
+      }
+      return out;
+    },
+    remove: async (creationId) => {
+      const r = await call(`/creations/${encodeURIComponent(creationId)}`, undefined, "DELETE");
+      if (r?.ok) return "ok";
+      if (!r || r.status >= 500 || r.status === 429) return "retry";
+      const e = ((await json(r)) as { error?: unknown } | null)?.error;
+      return r.status === 409 && e === "in_flight" ? "in_flight" : "error";
+    },
     use: async (creationId) => {
       const r = await call("/use", { creationId });
       if (r?.ok) return "ok";

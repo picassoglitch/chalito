@@ -5,7 +5,8 @@ import { PostgresAvatarRepo } from "../src/avatar/repo.js";
 
 /**
  * Co-members' custom cards (chalito_private.room_member_cards, migration 20261005000200) as
- * CHALITO_DB_ROLE: only a caller who is in the room right now gets anyone's card.
+ * CHALITO_DB_ROLE: only a caller who is in the room right now gets anyone's card; a deleted card
+ * (migration 20261005000400) is nobody's any more.
  */
 const url = process.env.DATABASE_URL;
 const role = process.env.CHALITO_DB_ROLE;
@@ -82,6 +83,26 @@ if (!url) {
       const fam = await room([me, mom]);
       await admin`update chalito.companions set avatar = 'luna' where owner = ${mom.u}`; // clears asset_id
       expect(await repo.roomCards(me.u, fam)).toEqual([]);
+    });
+
+    it("a deleted card (migration 20261005000400) leaves the room and the companion, and can't be worn again", async () => {
+      const me = await person(false);
+      const mom = await person(true);
+      const fam = await room([me, mom]);
+      const [row] = await admin<{ creation_id: string }[]>`
+        select creation_id from chalito.avatar_creations where asset_id = ${mom.assetId}`;
+      expect(await repo.markDeleted(row!.creation_id, Date.now())).toBe(true);
+      expect(await repo.markDeleted(row!.creation_id, Date.now())).toBe(false);
+      expect(await repo.roomCards(me.u, fam)).toEqual([]);
+      expect(await repo.companionCard(mom.u)).toBeNull();
+      expect(await repo.kept(mom.u, 20)).toEqual([]);
+      const got = await repo.get(row!.creation_id);
+      expect(got).toMatchObject({ status: "deleted", manifest: null, filesDeleted: false });
+      await repo.markFilesDeleted(row!.creation_id, Date.now());
+      expect((await repo.get(row!.creation_id))!.filesDeleted).toBe(true);
+      await expect(repo.setCompanion(mom.u, { assetId: mom.assetId, manifest: MANIFEST as never })).rejects.toThrow(
+        /succeeded creation/,
+      );
     });
 
     it("clients can't call it directly", async () => {

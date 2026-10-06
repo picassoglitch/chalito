@@ -12,7 +12,7 @@ import {
   UPLOAD_WINDOW_MS,
   type AvatarDeps,
 } from "../src/avatar/routes.js";
-import type { AvatarFiles } from "../src/avatar/files.js";
+import { GcsAvatarFiles, type AvatarFiles } from "../src/avatar/files.js";
 import { freeMarkers, markerKey } from "../src/avatar/free-marker.js";
 import { MemoryAvatarRepo, type CardManifestLike } from "../src/avatar/repo.js";
 import { MemoryAudit } from "../src/deps.js";
@@ -71,6 +71,21 @@ class FakeFiles implements AvatarFiles {
     this.deleted.push(object);
     this.objects.delete(object);
   }
+  /** Noncurrent generations by object name (the bucket is versioned). */
+  readonly versions = new Map<string, number>();
+  readonly prefixesDeleted: string[] = [];
+  failPrefix = false;
+  async deletePrefix(prefix: string) {
+    if (this.failPrefix) throw new Error("storage down");
+    this.prefixesDeleted.push(prefix);
+    let n = 0;
+    for (const k of [...this.objects.keys(), ...this.versions.keys()])
+      if (k.startsWith(prefix)) {
+        n += (this.objects.delete(k) ? 1 : 0) + (this.versions.get(k) ?? 0);
+        this.versions.delete(k);
+      }
+    return n;
+  }
 }
 
 const setup = () => {
@@ -96,15 +111,16 @@ const setup = () => {
     quote,
     markerKey: KEY,
   };
+  const audit = new MemoryAudit();
   const app = createApp({
     repo: { getDevice: async (_o: string, id: string) => devices.get(id) ?? null } as unknown as ApiRepo,
     identity,
-    audit: new MemoryAudit(),
+    audit,
     config: { ssoSecret: "s", adminToken: "a", recoveryCooldownMs: 1, skewMs: 60_000 },
     now: () => clock.now,
     avatar,
   });
-  const call = async (method: "GET" | "POST", path: string, body?: unknown, token = "client:dev_phone") => {
+  const call = async (method: "GET" | "POST" | "DELETE", path: string, body?: unknown, token = "client:dev_phone") => {
     const res = await app.request(`/v1/avatar${path}`, {
       method,
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -124,7 +140,7 @@ const setup = () => {
     const r = repo.rows.get(creationId)!;
     files.objects.set(`uploads/${OWNER}/${r.assetId}/original`, { size: 2_000_000, contentType: r.contentType });
   };
-  return { call, start, job, upload, repo, files, clock };
+  return { call, start, job, upload, repo, files, clock, audit };
 };
 
 describe("custom companion: the first one is free", () => {
@@ -567,5 +583,217 @@ describe("custom companion: onboarding (useWhenReady)", () => {
     await start(ID1);
     job(ID1, "succeeded");
     expect(repo.companions.get(OWNER)).toBeNull();
+  });
+});
+
+describe("custom companion: delete my character", () => {
+  /** A finished card with its drawings in the bucket (live objects plus older generations). */
+  const made = async (s: ReturnType<typeof setup>, id: string) => {
+    await s.start(id);
+    s.upload(id);
+    s.job(id, "succeeded");
+    const asset = s.repo.rows.get(id)!.assetId;
+    for (const f of [...Object.values(MANIFEST.emotions.src), ...Object.values(MANIFEST.thumbs), "card.json"]) {
+      s.files.objects.set(`avatars/${OWNER}/${asset}/${f}`, { size: 10, contentType: "image/webp" });
+      s.files.versions.set(`avatars/${OWNER}/${asset}/${f}`, 2);
+    }
+    return asset;
+  };
+  const del = (s: ReturnType<typeof setup>, id: string, token?: string) =>
+    s.call("DELETE", `/creations/${id}`, undefined, token);
+
+  it("deletes the drawings (every version), keeps the row as deleted, and the worn card goes back to the roster", async () => {
+    const s = setup();
+    const asset = await made(s, ID1);
+    // Another owner's card in the same bucket is never touched.
+    s.files.objects.set(`avatars/hub-user-2/${asset}/layer-happy.webp`, { size: 1, contentType: "image/webp" });
+    expect((await s.call("POST", "/use", { creationId: ID1 })).status).toBe(200);
+    expect((await s.call("GET", "/creations")).json.creations).toMatchObject([{ creationId: ID1, worn: true }]);
+
+    const r = await del(s, ID1);
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ ok: true, creationId: ID1, status: "deleted", wasWorn: true });
+    expect(s.files.prefixesDeleted).toEqual([`avatars/${OWNER}/${asset}/`, `uploads/${OWNER}/${asset}/`]);
+    expect([...s.files.objects.keys()]).toEqual([`avatars/hub-user-2/${asset}/layer-happy.webp`]);
+    expect(s.files.versions.size).toBe(0);
+    const row = s.repo.rows.get(ID1)!;
+    expect(row).toMatchObject({
+      status: "deleted",
+      manifest: null,
+      deletedAt: s.clock.now,
+      filesDeleted: true,
+      free: true,
+    });
+    expect(s.repo.companions.get(OWNER)).toBeNull();
+    expect((await s.call("GET", "/companion")).json).toEqual({ assetId: null });
+    expect((await s.call("GET", "/creations")).json).toEqual({ creations: [] });
+    expect((await s.call("GET", `/creations/${ID1}`)).json).toMatchObject({ status: "deleted" });
+    expect((await s.call("GET", `/creations/${ID1}`)).json.card).toBeUndefined();
+    expect((await s.call("POST", "/use", { creationId: ID1 })).json).toEqual({ error: "deleted" });
+  });
+
+  it("a card that isn't worn: the companion keeps what it wears", async () => {
+    const s = setup();
+    await made(s, ID1);
+    await s.call("POST", "/use", { creationId: ID1 });
+    await made(s, ID2); // paid, kept but not worn
+    const worn = s.repo.companions.get(OWNER);
+    expect((await del(s, ID2)).json).toMatchObject({ ok: true, wasWorn: false });
+    expect(s.repo.companions.get(OWNER)).toEqual(worn);
+  });
+
+  it("owner only: someone else's creation is a 404 and nothing is deleted", async () => {
+    const s = setup();
+    await made(s, ID1);
+    const r = await del(s, ID1, "client:dev_phone:hub-user-2");
+    expect(r.status).toBe(404);
+    expect(s.repo.rows.get(ID1)!.status).toBe("succeeded");
+    expect(s.files.prefixesDeleted).toEqual([]);
+    expect((await del(s, "bad id")).status).toBe(400);
+    expect((await del(s, ID1, "agent:dev_agent")).status).toBe(403);
+  });
+
+  it("is idempotent: deleting again answers the same and audits once", async () => {
+    const s = setup();
+    await made(s, ID1);
+    const first = await del(s, ID1);
+    const again = await del(s, ID1);
+    expect(again.status).toBe(200);
+    expect(again.json).toMatchObject({ ok: true, creationId: ID1, status: "deleted" });
+    expect(first.json.ok).toBe(true);
+    expect(s.audit.events.filter((e) => e.action === "avatar.delete")).toEqual([
+      {
+        action: "avatar.delete",
+        owner: OWNER,
+        actor: "d_dev_phone",
+        target: ID1,
+        meta: { free: true, wasWorn: false },
+      },
+    ]);
+    // The bucket step ran once (files_deleted_at recorded it).
+    expect(s.files.prefixesDeleted).toHaveLength(2);
+  });
+
+  it("a failed bucket step: the card is gone from every list already; a retry finishes the files", async () => {
+    const s = setup();
+    const asset = await made(s, ID1);
+    await s.call("POST", "/use", { creationId: ID1 });
+    s.files.failPrefix = true;
+    const r = await del(s, ID1);
+    expect(r.status).toBe(503);
+    expect(r.json).toMatchObject({ error: "retry", status: "deleted" });
+    expect(s.repo.rows.get(ID1)).toMatchObject({ status: "deleted", filesDeleted: false });
+    expect(s.repo.companions.get(OWNER)).toBeNull();
+    s.files.failPrefix = false;
+    expect((await del(s, ID1)).status).toBe(200);
+    expect(s.repo.rows.get(ID1)!.filesDeleted).toBe(true);
+    expect([...s.files.objects.keys()].some((k) => k.includes(asset))).toBe(false);
+  });
+
+  it("refuses a creation in flight (409 in_flight): nothing deleted, it carries on", async () => {
+    const s = setup();
+    await s.start(ID1);
+    for (const status of ["awaiting_upload", "queued", "generating"] as const) {
+      s.repo.rows.get(ID1)!.status = status;
+      const r = await del(s, ID1);
+      expect(r.status).toBe(409);
+      expect(r.json.error).toBe("in_flight");
+    }
+    expect(s.files.prefixesDeleted).toEqual([]);
+    s.job(ID1, "succeeded");
+    expect((await del(s, ID1)).status).toBe(200);
+  });
+
+  it("failed or expired creations have nothing to delete", async () => {
+    const s = setup();
+    await s.start(ID1);
+    s.job(ID1, "failed");
+    expect((await del(s, ID1)).json).toEqual({ error: "not_deletable" });
+    expect(s.repo.rows.get(ID1)!.status).toBe("failed");
+  });
+
+  it("never gives the free creation back: the markers stay and the next one is paid", async () => {
+    const s = setup();
+    await made(s, ID1);
+    const markers = [...s.repo.markers];
+    expect(markers).toHaveLength(2);
+    await del(s, ID1);
+    expect([...s.repo.markers]).toEqual(markers);
+    // Even without markers (a creation from before them), a deleted free creation still counts.
+    s.repo.markers.clear();
+    expect((await s.call("GET", "/quote")).json).toMatchObject({ free: false });
+    expect((await s.start(ID2)).json).toMatchObject({ free: false, priceTokens: quote.priceTokens });
+  });
+
+  it("never refunds: a paid creation's reservation is settled as succeeded, before or after the deletion", async () => {
+    const s = setup();
+    await made(s, ID1);
+    hubCalls.length = 0;
+    await made(s, ID2);
+    expect((await del(s, ID2)).status).toBe(200);
+    expect(hubCalls.map((c) => [c.path, c.body.outcome])).toEqual([
+      ["admit", undefined],
+      ["settle", "succeeded"],
+    ]);
+    // A reservation still open after the deletion (the hub was unreachable) is settled as succeeded too.
+    s.repo.rows.get(ID2)!.settled = false;
+    hubCalls.length = 0;
+    await s.call("GET", "/quote");
+    expect(hubCalls.map((c) => c.body)).toEqual([{ reservation_id: RID, outcome: "succeeded" }]);
+  });
+
+  it("rooms stop handing out a deleted card", async () => {
+    const s = setup();
+    await made(s, ID1);
+    await s.call("POST", "/use", { creationId: ID1 });
+    s.repo.rooms.set("room_fam", [{ companionId: "chl_me", owner: OWNER }]);
+    expect(((await s.call("GET", "/rooms/room_fam/cards")).json.cards as unknown[]).length).toBe(1);
+    await del(s, ID1);
+    expect((await s.call("GET", "/rooms/room_fam/cards")).json).toEqual({ cards: [] });
+  });
+});
+
+describe("GcsAvatarFiles.deletePrefix", () => {
+  /** A versioned bucket: getFiles({ versions: true }) lists every generation of every object. */
+  const bucket = () => {
+    const live = [
+      { name: "avatars/o1/a1/layer-happy.webp", generation: 1 },
+      { name: "avatars/o1/a1/layer-happy.webp", generation: 2 },
+      { name: "avatars/o1/a1/card.json", generation: 7 },
+      { name: "avatars/o1/a10/card.json", generation: 3 }, // another asset whose id shares the prefix
+    ];
+    const calls: { prefix?: string; versions?: boolean }[] = [];
+    const deleted: string[] = [];
+    const storage = {
+      bucket: () => ({
+        getFiles: async (q: { prefix: string; versions?: boolean }) => {
+          calls.push(q);
+          return [
+            live
+              .filter((f) => f.name.startsWith(q.prefix) && (q.versions || f.generation !== 1))
+              .map((f) => ({ ...f, delete: async () => void deleted.push(`${f.name}#${f.generation}`) })),
+          ];
+        },
+      }),
+    };
+    return { files: new GcsAvatarFiles(storage as never, "b"), calls, deleted };
+  };
+
+  it("deletes every generation under the card's folder, and nothing else", async () => {
+    const b = bucket();
+    expect(await b.files.deletePrefix("avatars/o1/a1/")).toBe(3);
+    expect(b.calls).toEqual([{ prefix: "avatars/o1/a1/", versions: true }]);
+    expect(b.deleted.sort()).toEqual([
+      "avatars/o1/a1/card.json#7",
+      "avatars/o1/a1/layer-happy.webp#1",
+      "avatars/o1/a1/layer-happy.webp#2",
+    ]);
+  });
+
+  it("refuses anything but one card's (or upload's) folder", async () => {
+    const b = bucket();
+    for (const p of ["avatars/o1/", "avatars/o1/a1", "avatars/", "", "records/o1/a1/", "avatars/o1/../x/"])
+      await expect(b.files.deletePrefix(p)).rejects.toThrow("unsafe prefix");
+    expect(b.calls).toEqual([]);
   });
 });

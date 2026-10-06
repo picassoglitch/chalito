@@ -5,6 +5,18 @@ export const uploadObject = (owner: string, assetId: string) => `uploads/${owner
 /** avatars/<owner>/<assetId>/<file>: what the job writes. */
 export const cardObject = (owner: string, assetId: string, file: string) => `avatars/${owner}/${assetId}/${file}`;
 
+const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
+/** avatars/<owner>/<assetId>/: one card's folder (trailing slash: never another asset's or owner's). */
+export const cardPrefix = (owner: string, assetId: string) => {
+  if (!SEGMENT.test(owner) || !SEGMENT.test(assetId)) throw new Error("bad card prefix");
+  return `avatars/${owner}/${assetId}/`;
+};
+/** uploads/<owner>/<assetId>/: the photo's folder (normally already empty). */
+export const uploadPrefix = (owner: string, assetId: string) => {
+  if (!SEGMENT.test(owner) || !SEGMENT.test(assetId)) throw new Error("bad upload prefix");
+  return `uploads/${owner}/${assetId}/`;
+};
+
 export interface SignedUpload {
   url: string;
   method: "PUT";
@@ -22,6 +34,11 @@ export interface AvatarFiles {
   stat(object: string): Promise<{ size: number; contentType: string | null } | null>;
   /** Deletes the object and every older version of it (the bucket is versioned). */
   deleteAll(object: string): Promise<void>;
+  /**
+   * Deletes every object under `prefix` (which must end in "/") and every noncurrent version of
+   * each, so nothing is left for the bucket's 30-day undo window. Returns how many generations went.
+   */
+  deletePrefix(prefix: string): Promise<number>;
 }
 
 export class GcsAvatarFiles implements AvatarFiles {
@@ -69,5 +86,19 @@ export class GcsAvatarFiles implements AvatarFiles {
   async deleteAll(object: string) {
     const [files] = await this.storage.bucket(this.bucket).getFiles({ prefix: object, versions: true });
     for (const f of files.filter((f) => f.name === object)) await f.delete({ ignoreNotFound: true });
+  }
+
+  async deletePrefix(prefix: string) {
+    if (!/^(avatars|uploads)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/$/.test(prefix)) throw new Error("unsafe prefix");
+    // versions: true lists every generation; each File carries its generation, so delete() removes
+    // exactly that one (a plain delete would only make the live version noncurrent).
+    const [files] = await this.storage.bucket(this.bucket).getFiles({ prefix, versions: true });
+    let n = 0;
+    for (const f of files) {
+      if (!f.name.startsWith(prefix)) continue;
+      await f.delete({ ignoreNotFound: true });
+      n++;
+    }
+    return n;
   }
 }

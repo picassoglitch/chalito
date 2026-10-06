@@ -69,7 +69,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 
 **api (Chalyb's engine module) also needs:**
 - `ACCOUNT_EXPORT_BUCKET`: the records bucket (CMEK) is the suggested home for `exports/<owner>/`;
-- `AVATAR_BUCKET`: the assets bucket (also turns on `/v1/avatar`, custom companions, with `CHALYB_BASE_URL`); the api signs upload URLs as itself, so its account needs Token Creator on itself (`api_self_sign` in Terraform);
+- `AVATAR_BUCKET`: the assets bucket (also turns on `/v1/avatar`, custom companions, with `CHALYB_BASE_URL`); the api signs upload URLs as itself, so its account needs Token Creator on itself (`api_self_sign` in Terraform); it also deletes a card's every object version when the person deletes their character ("Eliminar mi personaje", `docs/RUNBOOK.md` 6.8), which `roles/storage.objectAdmin` on the bucket (`api_objects`) covers;
 - `RECORDS_BUCKET`;
 - `API_PUBLIC_URL`;
 - `SCHEDULER_SA_EMAIL`;

@@ -11,6 +11,7 @@ import {
   type Attestation,
   type Creation,
   type CreationFailure,
+  type KeptCharacter,
   type PhotoType,
   type Quote,
 } from "@/lib/avatar";
@@ -26,6 +27,9 @@ type Phase =
   | { kind: "working"; creation: Creation }
   | { kind: "done"; creation: Creation; used: boolean }
   | { kind: "failed"; failure: CreationFailure | "expired" | "upload"; charged: false };
+
+/** What happened to the last "Eliminar mi personaje". */
+type DeleteNote = "done" | "inFlight" | "retry" | "error";
 
 type Note =
   | "noTokens"
@@ -61,6 +65,10 @@ export interface OnboardingHooks {
  * In onboarding (`onboarding`), the companion is saved first with the roster avatar picked so far,
  * and the creation is started with useWhenReady: the server puts the card on the companion the
  * moment it succeeds, so the person can carry on with the next steps while it's drawn.
+ *
+ * "Tus personajes" lists the characters the person kept, each with "Eliminar mi personaje" behind an
+ * in-page confirmation (permanent; the drawings go; no tokens or free creation back). Deleting the
+ * one the companion wears puts its roster avatar back everywhere (the card source is refreshed).
  */
 export const CreateCharacter = ({ onboarding }: { onboarding?: OnboardingHooks } = {}) => {
   const t = useTranslations("createCharacter");
@@ -75,14 +83,24 @@ export const CreateCharacter = ({ onboarding }: { onboarding?: OnboardingHooks }
   const [busy, setBusy] = useState(false);
   const [attest, setAttest] = useState<Attestation>({ ownPhoto: false, ageBand: null, guardianConsent: false });
   const pending = useRef<string | null>(null);
+  const [kept, setKept] = useState<KeptCharacter[]>([]);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [deleteNote, setDeleteNote] = useState<DeleteNote | null>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     if (!avatar) return;
-    const q = await avatar.quote();
+    const [q, k] = await Promise.all([avatar.quote(), avatar.kept()]);
+    if (k !== "error") setKept(k);
     if (q === "error") return;
     setQuote(q);
     if (q.active && isActive(q.active.status)) setPhase({ kind: "working", creation: q.active });
   }, [avatar]);
+
+  // The confirmation step takes the focus, so keyboard and screen-reader users land on it.
+  useEffect(() => {
+    if (confirming) confirmRef.current?.focus();
+  }, [confirming]);
   useEffect(() => void load(), [load]);
 
   // The photo preview lives only in this tab (an object URL), never uploaded until "Crear".
@@ -185,10 +203,28 @@ export const CreateCharacter = ({ onboarding }: { onboarding?: OnboardingHooks }
       setPhase({ kind: "done", creation, used: true });
       // Everywhere the companion is drawn picks the new card up.
       void mine.refresh();
+      void load();
     } else setNote({ kind: r === "no_companion" ? "noCompanion" : "useError" });
   };
 
+  const remove = async (creationId: string) => {
+    setBusy(true);
+    setDeleteNote(null);
+    const r = await avatar.remove(creationId);
+    setBusy(false);
+    if (r === "ok") {
+      setConfirming(null);
+      setDeleteNote("done");
+      setKept((k) => k.filter((x) => x.creationId !== creationId));
+      setPhase((p) => (p.kind === "done" && p.creation.creationId === creationId ? { kind: "idle" } : p));
+      // The companion may have worn it: everywhere it's drawn goes back to the roster avatar.
+      void mine.refresh();
+      void load();
+    } else setDeleteNote(r === "in_flight" ? "inFlight" : r);
+  };
+
   const tokens = new Intl.NumberFormat(locale);
+  const dates = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
   const under13 = attest.ageBand === "under_13";
   const card = phase.kind === "done" ? phase.creation.card : undefined;
   return (
@@ -228,6 +264,102 @@ export const CreateCharacter = ({ onboarding }: { onboarding?: OnboardingHooks }
         </figure>
       ) : null}
       <p className="text-sm text-neutral-700">{t("intro")}</p>
+
+      {!onboarding && kept.length > 0 ? (
+        <section aria-labelledby="kept-characters-title" className="grid gap-2" data-testid="kept-characters">
+          <h4 id="kept-characters-title" className="text-sm font-medium">
+            {t("kept.title")}
+          </h4>
+          <ul className="grid gap-2">
+            {kept.map((k) => {
+              const date = dates.format(new Date(k.createdAt));
+              return (
+                <li key={k.creationId} className="grid gap-2 rounded-lg bg-neutral-50 p-2" data-testid="kept-character">
+                  <div className="flex flex-wrap items-center gap-3">
+                    {k.thumb ? (
+                      <img
+                        src={k.thumb}
+                        alt={t("kept.thumbAlt", { date })}
+                        width={48}
+                        height={48}
+                        decoding="async"
+                        className="h-12 w-12 rounded-full bg-emerald-50 object-cover object-top"
+                      />
+                    ) : null}
+                    <span className="text-sm text-neutral-700">{t("kept.created", { date })}</span>
+                    {k.worn ? (
+                      <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-900">
+                        {t("kept.worn")}
+                      </span>
+                    ) : null}
+                    {confirming !== k.creationId ? (
+                      <button
+                        type="button"
+                        className="ml-auto text-sm text-red-800 underline disabled:opacity-50"
+                        disabled={busy}
+                        data-testid="kept-character-delete"
+                        onClick={() => {
+                          setDeleteNote(null);
+                          setConfirming(k.creationId);
+                        }}
+                      >
+                        {t("delete.action")}
+                      </button>
+                    ) : null}
+                  </div>
+                  {confirming === k.creationId ? (
+                    <div
+                      ref={confirmRef}
+                      tabIndex={-1}
+                      role="group"
+                      aria-labelledby={`delete-${k.creationId}-title`}
+                      aria-describedby={`delete-${k.creationId}-body`}
+                      className="grid gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-950"
+                      data-testid="kept-character-confirm"
+                    >
+                      <p id={`delete-${k.creationId}-title`} className="font-medium">
+                        {t("delete.confirmTitle")}
+                      </p>
+                      <p id={`delete-${k.creationId}-body`}>
+                        {t("delete.confirmBody")} {k.worn ? t("delete.confirmWorn") : null}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-lg bg-red-700 px-3 py-1.5 text-white disabled:opacity-50"
+                          disabled={busy}
+                          data-testid="kept-character-confirm-yes"
+                          onClick={() => void remove(k.creationId)}
+                        >
+                          {t("delete.confirm")}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-lg border px-3 py-1.5 disabled:opacity-50"
+                          disabled={busy}
+                          data-testid="kept-character-confirm-no"
+                          onClick={() => setConfirming(null)}
+                        >
+                          {t("delete.cancel")}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+      {deleteNote ? (
+        <p
+          role={deleteNote === "done" ? "status" : "alert"}
+          data-testid="kept-character-note"
+          className={`text-sm ${deleteNote === "done" ? "text-emerald-800" : "text-red-800"}`}
+        >
+          {t(`delete.${deleteNote}`)}
+        </p>
+      ) : null}
 
       {phase.kind === "idle" || phase.kind === "failed" ? (
         <>

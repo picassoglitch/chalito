@@ -364,3 +364,18 @@ Rooms: `apps/api/src/routes/rooms.ts`, mounted at `/v1/rooms`. Members can only 
 3. Desktop: 2.4.
 4. If the release came with a migration, leave the migration in place. It's additive. Roll the code back only.
 5. Note the bad SHA in the incident write-up. Re-release with a fix through the normal deploy (section 1).
+
+### 6.8 A person deletes their custom companion ("Eliminar mi personaje")
+
+`DELETE /v1/avatar/creations/:id` (`apps/api/src/avatar/routes.ts`, migration `20261005000400`), from "Tus personajes" under "Crea tu personaje" (Settings, after an in-page confirmation). Owner only; idempotent.
+1. **Refused while that creation is in flight** (`409 in_flight`: awaiting upload, queued or generating). The person waits for it to finish (a stuck one times out on its own, then there's nothing to delete). Failed or expired creations never kept drawings (`409 not_deletable`).
+2. **The row first:** `succeeded → deleted`, `deleted_at` set, `manifest` dropped (trigger `avatar_creation_status_guard`; `deleted` is never left). In the same transaction a companion wearing it gets `asset_id`/`expression_map` cleared (trigger `avatar_creation_deleted`), so it's drawn from its roster avatar again. From then on no one is handed the card: `GET /companion`, `GET /creations`, `GET /rooms/:roomId/cards` and `POST /use` all skip or refuse it. Signed URLs already handed out stop working once the files are gone; rooms (15-minute URLs) and the desktop pet (5-minute check) refresh and fall back to the roster avatar by themselves.
+3. **Then the bucket:** every object under `avatars/<owner>/<asset_id>/` and `uploads/<owner>/<asset_id>/`, **every generation** (listed with `versions: true`, each generation deleted explicitly), so nothing stays in the bucket's 30-day noncurrent-version window. Then `files_deleted_at` is set. If the bucket step fails the api answers `503 retry` and the person's retry finishes it.
+4. **Nothing is given back.** The row stays for billing and audit (cost, attestation, reservation). A paid creation stays billed (its reservation settles as `succeeded`, even if settled after the deletion). A deleted free creation still holds the free credit (`avatar_creations_one_free` includes `deleted`) and `chalito_private.avatar_free_markers` isn't touched.
+5. **Leftovers** (a deletion whose bucket step never finished, e.g. the person never retried):
+   ```sql
+   select owner, asset_id, deleted_at from chalito.avatar_creations
+   where status = 'deleted' and files_deleted_at is null;
+   ```
+   For each, delete every version under the prefix (`gcloud storage rm --all-versions "gs://$AVATAR_BUCKET/avatars/<owner>/<asset_id>/**"`), then `update chalito.avatar_creations set files_deleted_at = now() where asset_id = '<asset_id>'`.
+6. **Operator-run request** (e.g. a parent writes in, identity checked): the same as above by hand. Mark the row deleted first (`update chalito.avatar_creations set status = 'deleted' where creation_id = '…' and status = 'succeeded'`; the triggers do the rest), then delete the files as in step 5.
