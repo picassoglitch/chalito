@@ -71,7 +71,9 @@ describe("onboarding", () => {
 
     expect(step()).toBe("connect");
     click("Tengo Claude");
-    expect(screen.getByTestId("howto-claude-code").textContent).toMatch(/solo con tu API key/);
+    expect(screen.getByTestId("howto-claude-code").textContent).toMatch(
+      /con tu API key de Anthropic\..*solo para el equipo de Chalito/,
+    );
     click("Tengo ChatGPT");
     expect(screen.getByText(/solo equipo de Chalito/)).toBeTruthy();
     click("Continuar");

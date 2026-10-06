@@ -17,7 +17,7 @@ describe("config files", () => {
     expect(loadPlans().tiers.lite?.priceUsd).toBe(10);
     expect(loadModels().vertex.location).toBe("global");
     expect(loadPrices().llm.google["gemini-3.1-flash-lite"]?.input).toBe(0.25);
-    expect(loadProviders().providers.anthropic.subscriptionLocal).toBe("off");
+    expect(loadProviders().providers.anthropic.subscriptionLocal).toBe("owner_only");
     expect(loadRooms().defaults.ephemeralTtl).toBe("PT24H");
     expect(loadRender().default).toBe("auto");
     expect(loadCatalog().cosmetics.viking_hat?.free).toBe(true);
