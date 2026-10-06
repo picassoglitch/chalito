@@ -13,6 +13,7 @@ export const ModelsConfig = z.object({
     z.object({ companion: ModelRef.optional(), mesa: z.partialRecord(Provider, z.string()).optional() }),
   ),
   voice: z.object({ desktop: ModelRef, call: ModelRef }),
+  images: z.object({ avatar: ModelRef }),
 });
 export type ModelsConfig = z.infer<typeof ModelsConfig>;
 
@@ -40,6 +41,8 @@ export const PricesConfig = z.object({
   }),
   whatsapp: z.object({ utility: z.record(z.string(), usd) }),
   compute: z.object({ cloudRunMicrosPerSecond: z.object({ standard: usd, boost: usd }) }),
+  /** Per generated image (USD), by provider and model. */
+  images: z.record(z.string(), z.record(z.string(), z.object({ perImage: usd }))),
 });
 export type PricesConfig = z.infer<typeof PricesConfig>;
 

@@ -53,9 +53,10 @@ Chalito will send these kinds to `POST /api/engines/chalito/usage`, each with `c
 | `whatsapp.messages` | meta | standard |
 | `sms.segments` | twilio | standard |
 | `compute.seconds` | gcp | standard |
+| **`image.generations`** | google | standard: custom companions from a photo (5 images each; the first one per user is free and sends no event) |
 | **`store.purchase`** | chalito | **already a price**, like `boost.fee`: `ceil(cost_usd_micros / 4)` |
 
-Please confirm the hub accepts the new kinds (the `/usage` route and any `kind` enum), and add `store.purchase` to the "already a price" branch of the billing formula (D-030).
+Please confirm the hub accepts the new kinds (the `/usage` route and any `kind` enum), and add `store.purchase` to the "already a price" branch of the billing formula (D-030). Custom companions are admitted with `operation: avatar.create` (`class: job`) before any image is generated.
 
 ## 6. Solo Chalito plans (decision #31)
 Solo tiers (`plans.yaml`: Lite $10, Starter $20, Standard $30, Plus $100, Heavy $300; bundles ~$8 and ~$40) need **owner-set MXN amounts** in the hub's pricing config before the hub can sell them through Mercado Pago. Until then Chalito shows "Disponible pronto".

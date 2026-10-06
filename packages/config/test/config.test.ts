@@ -49,6 +49,7 @@ describe("config files", () => {
       expect(prices.llm[r.provider as keyof typeof prices.llm]?.[r.model], `${r.provider}/${r.model}`).toBeDefined();
     }
     expect(prices.realtime[models.voice.desktop.model]).toBeDefined();
+    expect(prices.images[models.images.avatar.provider]?.[models.images.avatar.model]?.perImage).toBeGreaterThan(0);
   });
 
   it("coding agents never draw on the managed balance and Claude Code is API-key only", () => {

@@ -16,6 +16,7 @@ import { httpMcp, type McpApi } from "./mcp";
 import { apiPhone, type ChannelSetter } from "./phone";
 import { supabase } from "./supabase";
 import { httpStore, type StoreApi } from "./store";
+import { httpAvatar, type AvatarApi } from "./avatar";
 import { httpUsage, type UsageApi } from "./usage";
 import { httpAccount, type AccountApi } from "./account";
 import { httpBalance, type BalanceApi } from "./balance";
@@ -43,6 +44,8 @@ export interface Platform {
   mesa(token: () => Promise<string | null>): MesaApi;
   /** /v1/store (catalog, purchase, equip) as whoever is signed in (person or device). */
   store(token: () => Promise<string | null>): StoreApi;
+  /** /v1/avatar (custom companions from a photo) as whoever is signed in (person or device). */
+  avatar(token: () => Promise<string | null>): AvatarApi;
   /** /v1/account/* (deletion and export) as whoever is signed in (person or device). */
   account(token: () => Promise<string | null>): AccountApi;
   /** GET /v1/billing/balance (the hub balance in tokens) as whoever is signed in. */
@@ -75,6 +78,7 @@ export const productionPlatform = (): Platform => ({
   usage: (token) => httpUsage(env.orchestratorBase, token),
   mesa: (token) => httpMesa(env.orchestratorBase, token),
   store: (token) => httpStore(env.apiBase, token),
+  avatar: (token) => httpAvatar(env.apiBase, token),
   account: (token) => httpAccount(env.apiBase, token),
   balance: (token) => httpBalance(env.apiBase, token),
   endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),

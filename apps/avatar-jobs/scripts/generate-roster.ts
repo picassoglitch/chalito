@@ -11,15 +11,14 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { EMOTIONS, NEUTRAL, STYLE, emotionPrompt } from "../src/style.js";
 import { CATALOG } from "./catalog.js";
+
+// The style lives in src/style.ts (custom companions use it too); re-exported for build-roster.ts.
+export { EMOTIONS, STYLE };
 
 export const MODEL = "gemini-3.1-flash-image";
 const MAX_CALLS = 1200;
-
-export const STYLE =
-  "Cute, friendly chibi character art for an app companion: soft cel shading, clean thick dark-brown outline, warm pastel palette, " +
-  "full body, centered, facing the viewer, the whole character visible with generous margin. " +
-  "Background: a perfectly flat, uniform, solid pure magenta (#FF00FF) fill, edge to edge. No shadow on the ground, no text, no letters, no border, no frame.";
 
 export const CHARACTERS: Record<string, string> = {
   chalito:
@@ -32,13 +31,6 @@ export const CHARACTERS: Record<string, string> = {
   nube: "Nube, a fluffy white bunny with long floppy ears with pink insides, a pink nose, a round cotton tail, sky-blue eyes",
   // The catalog (catalog.ts) adds the rest; the six above keep their order so their seeds don't change.
   ...Object.fromEntries(CATALOG.map((ch) => [ch.id, ch.prompt])),
-};
-
-export const EMOTIONS: Record<string, string> = {
-  happy: "joyful: a big open smile, eyes curved with delight, arms or paws raised a little in excitement",
-  sad: "sad: teary glossy eyes, a small frown, shoulders and ears drooping",
-  surprised: "surprised: wide round eyes, small open 'o' mouth, hands or paws raised near the face",
-  tired: "tired and sleepy: half-closed heavy eyelids, a small yawn, slightly slumped posture",
 };
 
 /** Cosmetics (pay-to-dress): single objects, front view, on the same magenta for keying. */
@@ -127,7 +119,7 @@ const main = async () => {
     const seed = 1000 + allIds.indexOf(id);
     const neutralPath = join(outDir, `${id}-neutral.png`);
     if (!existsSync(neutralPath)) {
-      const prompt = `${CHARACTERS[id]}. Neutral, calm, gently smiling expression, relaxed standing pose. ${STYLE}`;
+      const prompt = `${CHARACTERS[id]}. ${NEUTRAL} ${STYLE}`;
       const out = await attempt([{ text: prompt }], seed, `${id}-neutral`);
       if (!out) continue;
       const { bytes, mime } = out;
@@ -146,9 +138,7 @@ const main = async () => {
     for (const [emotion, how] of Object.entries(EMOTIONS)) {
       const path = join(outDir, `${id}-${emotion}.png`);
       if (existsSync(path)) continue;
-      const prompt =
-        `This exact same character, with an identical design, colors, outline, proportions and art style, the same framing and size, ` +
-        `on the same flat pure magenta (#FF00FF) background. Change only the expression and pose to look ${how}. No text, no letters.`;
+      const prompt = emotionPrompt(how);
       const out = await attempt(
         [{ text: prompt }, { inlineData: { mimeType: refMime, data: ref } }],
         seed,

@@ -18,12 +18,18 @@ const originOf = (url: string): string | null => {
   }
 };
 
+/** Google Cloud Storage's signed-URL host (the private avatar bucket). */
+const GCS = "https://storage.googleapis.com";
+
 export const buildCsp = (nonce: string, o: CspOrigins, dev: boolean): string => {
   const supabase = originOf(o.supabaseUrl);
   const connect = new Set(["'self'"]);
   for (const u of [supabase, originOf(o.apiBase), originOf(o.orchestratorBase)]) if (u) connect.add(u);
   // Realtime is a websocket on the same host.
   if (supabase) connect.add(supabase.replace(/^http/, "ws"));
+  // Custom companions: the photo is PUT to a signed URL on the avatar bucket, and the finished
+  // drawings are read from signed URLs there (apps/api src/avatar).
+  connect.add(GCS);
   return [
     "default-src 'self'",
     // libsodium (device keys) is WebAssembly: 'wasm-unsafe-eval' allows compiling wasm and nothing
@@ -32,7 +38,7 @@ export const buildCsp = (nonce: string, o: CspOrigins, dev: boolean): string => 
     `style-src 'self' 'nonce-${nonce}'`,
     // React renders `style={…}` as attributes, which a nonce can't cover.
     "style-src-attr 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    `img-src 'self' data: blob: ${GCS}`,
     "font-src 'self'",
     `connect-src ${[...connect].join(" ")}`,
     "media-src 'self' blob:",

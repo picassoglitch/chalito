@@ -69,7 +69,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 
 **api (Chalyb's engine module) also needs:**
 - `ACCOUNT_EXPORT_BUCKET`: the records bucket (CMEK) is the suggested home for `exports/<owner>/`;
-- `AVATAR_BUCKET`: the assets bucket;
+- `AVATAR_BUCKET`: the assets bucket (also turns on `/v1/avatar`, custom companions, with `CHALYB_BASE_URL`); the api signs upload URLs as itself, so its account needs Token Creator on itself (`api_self_sign` in Terraform);
 - `RECORDS_BUCKET`;
 - `API_PUBLIC_URL`;
 - `SCHEDULER_SA_EMAIL`;
@@ -106,7 +106,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 | `BRAIN_KEYS_KMS_KEY` | orchestrator | KMS key resource name (§3); not a secret value |
 | `OWNER_UIDS` | api, notifier, orchestrator | The owner's hub user ids (comped) |
 | `REALTIME_SIP_URI` | notifier (optional) | `sip:<proj>@sip.api.openai.com;transport=tls;secure=true` |
-| `GEMINI_API_KEY` | `avatar-jobs` roster scripts only (local, never deployed) | Google AI Studio (`~/.config/secrets/ai.env` on the owner's machine) |
+| `GEMINI_API_KEY` | `avatar-jobs`: the roster scripts (local) and, deployed as Secret Manager `chalito-gemini-api-key`, custom companions from a photo | Google AI Studio (`~/.config/secrets/ai.env` on the owner's machine); a paid-tier key, so photos aren't used for training |
 | Release secrets (Apple, Azure, Tauri updater) | GitHub Actions only | §10 (M14) |
 
 ## 6. Meta / WhatsApp

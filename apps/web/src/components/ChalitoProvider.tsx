@@ -33,6 +33,7 @@ import type { BalanceApi } from "@/lib/balance";
 import { disablePush, enablePush, type PushDb, type PushResult } from "@/lib/push";
 import { env } from "@/lib/env";
 import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
+import type { AvatarApi } from "@/lib/avatar";
 import type { UsageApi } from "@/lib/usage";
 import type { ApiClient } from "@chalito/client-keys";
 import type { Platform } from "@/lib/platform";
@@ -92,6 +93,8 @@ interface Ctx {
   mesa: MesaCtx | null;
   /** The store (/tienda) and the companion it dresses; null when signed out. */
   store: StoreApi | null;
+  /** Custom companions from a photo (/v1/avatar); null when signed out. */
+  avatar: AvatarApi | null;
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
   /** Account deletion and export (/v1/account/*); null when signed out. Requesting needs `client`. */
   account: AccountApi | null;
@@ -177,6 +180,7 @@ const INITIAL: Ctx = {
   addDevice: null,
   usage: null,
   store: null,
+  avatar: null,
   readCompanion: null,
   rooms: null,
   mesa: null,
@@ -369,6 +373,7 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         mcp: platform.mcp(token),
         readSharing: sharingReader(platform.db),
         store: platform.store(token),
+        avatar: platform.avatar(token),
         account: platform.account(token),
         balance: platform.balance(token),
         readCompanion: () => readCompanion(platform.db, owner),

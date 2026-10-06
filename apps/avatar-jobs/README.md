@@ -1,6 +1,6 @@
 # avatar-jobs
 
-A Cloud Run job (Node) that turns one uploaded image into a 2.5D image card (brief §5 M8, D-060).
+A Cloud Run job (Node) that turns one uploaded image into a 2.5D image card (brief §5 M8, D-060), or a photo into a custom companion (below).
 
 **Paths (one upload per execution: `AVATAR_BUCKET`, `UPLOAD_PATH`):**
 - reads `uploads/<owner>/<assetId>/original`;
@@ -20,6 +20,22 @@ A Cloud Run job (Node) that turns one uploaded image into a 2.5D image card (bri
 
 Tests run with an in-memory bucket. Nothing touches GCS.
 
+## Custom companions (a photo → the roster's five drawings)
+
+With `GEMINI_API_KEY` and `DATABASE_URL` set, an upload is a **creation** started by the api (`/v1/avatar`, `apps/api/src/avatar`), and the job runs `src/creation.ts`:
+
+1. **Claim** the creation in `chalito.avatar_creations` (only one execution generates it; an upload no creation waits for is deleted untouched).
+2. **Validate** the photo (the same checks as above) and **re-encode** it to a 1024 px JPEG, so no EXIF or GPS reaches the model.
+3. **Draw** with the image model in `packages/config/models.yaml` (`images.avatar`): the person as a chibi in the roster's style (`src/style.ts`, shared with `scripts/generate-roster.ts`, on flat magenta), then the four emotions as edits of that drawing, exactly as the roster is made. The prompt asks for a stylized cartoon, never photorealistic, and lets the model decline (`NO_PERSON`).
+4. **Card** with `makeCard(…, { keyBackground: true })`: `swap` mode, five layers, like every roster character.
+5. **Record** the outcome. A paid success queues one `image.generations` usage event (`avatar:<creationId>`) with the real cost, `images × prices.yaml images.<provider>.<model>.perImage`, in the same transaction as the status; the hub adds its margin. A free creation records the cost on the row and bills nothing.
+
+**The photo is deleted in every outcome** (every version: the bucket is versioned). The bucket's `uploads/` lifecycle rule (1 day) is the safety net for a crash.
+
+**Failures are never billed:** a safety block or a refusal (`refused`), provider errors after 3 attempts (`provider`), a rejected file (`rejected`), or a missing upload. A failed free attempt doesn't use up the free credit. The api settles the hub reservation (`cancelled` for failures).
+
+Tests mock the model and the bucket (`test/creation.test.ts`); nothing calls Gemini.
+
 ## Free roster
 
 The free roster is built with the same pipeline:
@@ -30,5 +46,5 @@ GEMINI_API_KEY=… pnpm --filter @chalito/avatar-jobs roster:generate <rawDir> -
 pnpm --filter @chalito/avatar-jobs roster:build <rawDir>                                 # → packages/roster
 ```
 
-- Generation uses Google AI Studio (`gemini-3.1-flash-image`). Every call is logged to `<rawDir>/provenance.jsonl`, and the log is copied into `docs/ASSET_PROVENANCE.md`.
+- Generation uses Google AI Studio (`gemini-3.1-flash-image`). The style prompts live in `src/style.ts`. Every call is logged to `<rawDir>/provenance.jsonl`, and the log is copied into `docs/ASSET_PROVENANCE.md`.
 - Raw generations aren't committed; the built cards are.

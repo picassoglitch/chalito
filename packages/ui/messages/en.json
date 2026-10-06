@@ -1037,5 +1037,50 @@
       "unavailable": "Chalyb didn't answer. Try again in a moment.",
       "error": "We couldn't see your balance."
     }
+  },
+  "createCharacter": {
+    "title": "Create your character",
+    "intro": "Upload a photo of yourself and we'll turn it into your own companion, drawn in Chalito's style with all five faces.",
+    "free": "Free the first time",
+    "price": "{tokens} tokens",
+    "privacy": "Your photo is only a reference for drawing you with AI, and we delete it as soon as your character is ready. Use a photo of just you, facing the camera, in good light.",
+    "choose": "Choose photo",
+    "previewAlt": "The photo you chose",
+    "create": "Create my character",
+    "badType": "Use a PNG, JPEG or WebP photo.",
+    "badSize": "That photo is too big (10 MB max).",
+    "status": {
+      "uploading": "Uploading your photo…",
+      "queued": "In line…",
+      "generating": "Drawing your character… It takes a minute or two.",
+      "succeeded": "Done! Here's your character."
+    },
+    "failure": {
+      "rejected": "That photo won't work. Try another one (PNG, JPEG or WebP, at least 256 px).",
+      "refused": "We couldn't draw that photo. Try a photo of just you, facing the camera.",
+      "provider": "Something went wrong while drawing. Try again.",
+      "upload_missing": "Your photo didn't arrive. Try again.",
+      "timeout": "It took too long. Try again.",
+      "expired": "Your photo didn't arrive in time. Try again.",
+      "upload": "Your photo couldn't be uploaded. Try again."
+    },
+    "notCharged": "You weren't charged.",
+    "noTokens": "You don't have enough tokens.",
+    "whyChip": "Why?",
+    "busy": "You're already creating a character. Wait for it to finish.",
+    "dailyLimit": "You've created several characters today. Come back tomorrow.",
+    "retry": "That didn't go through. Retrying never charges twice.",
+    "use": "Use as my companion",
+    "inUse": "It's your companion now!",
+    "useError": "Couldn't change it. Try again.",
+    "noCompanion": "Choose your companion first.",
+    "again": "Create another",
+    "emotion": {
+      "neutral": "Calm",
+      "happy": "Happy",
+      "sad": "Sad",
+      "surprised": "Surprised",
+      "tired": "Tired"
+    }
   }
 }

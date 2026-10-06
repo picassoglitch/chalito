@@ -4,6 +4,8 @@ import type { Storage } from "@google-cloud/storage";
 export interface BlobStore {
   read(path: string): Promise<{ bytes: Buffer; contentType: string | null } | null>;
   write(path: string, bytes: Buffer, contentType: string): Promise<void>;
+  /** Deletes the object and every older version of it (the bucket is versioned). Missing is fine. */
+  deleteAll(path: string): Promise<void>;
 }
 
 /** Uploads land at uploads/<owner>/<assetId>/original; outputs go to avatars/<owner>/<assetId>/. */
@@ -48,6 +50,12 @@ export class GcsBlobStore implements BlobStore {
         metadata: { cacheControl: "private, max-age=31536000, immutable" },
       });
   }
+
+  async deleteAll(path: string) {
+    // A plain delete only makes the live version noncurrent; each generation is deleted explicitly.
+    const [files] = await this.storage.bucket(this.bucket).getFiles({ prefix: path, versions: true });
+    for (const f of files.filter((f) => f.name === path)) await f.delete({ ignoreNotFound: true });
+  }
 }
 
 export class MemoryBlobStore implements BlobStore {
@@ -57,5 +65,8 @@ export class MemoryBlobStore implements BlobStore {
   }
   async write(path: string, bytes: Buffer, contentType: string) {
     this.objects.set(path, { bytes, contentType });
+  }
+  async deleteAll(path: string) {
+    this.objects.delete(path);
   }
 }

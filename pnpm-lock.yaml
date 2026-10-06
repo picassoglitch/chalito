@@ -205,6 +205,12 @@ importers:
 
   apps/avatar-jobs:
     dependencies:
+      '@chalito/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@chalito/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -217,6 +223,9 @@ importers:
       '@google-cloud/storage':
         specifier: ^8.2.0
         version: 8.2.0
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
       sharp:
         specifier: ^0.35.5
         version: 0.35.5(@types/node@22.20.5)
