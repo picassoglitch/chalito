@@ -1,11 +1,13 @@
 /**
- * Builds packages/roster from the generated source art (generate-roster.ts): each character's
- * five drawings go through the same image → card pipeline uploads use (magenta keyed out), then
- * the PWA/app icons are cut from Chalito's neutral card.
+ * Builds packages/roster from the generated source art (generate-roster.ts): each catalog
+ * character's five drawings go through the same image → card pipeline uploads use (magenta keyed
+ * out), then the PWA/app icons are cut from Chalito's neutral card. Characters (and cosmetics)
+ * whose raw files aren't all in <rawDir> yet are skipped with a warning, so partial builds work;
+ * their existing assets, if any, are left as they are.
  *
  *   pnpm --filter @chalito/avatar-jobs roster:build <rawDir>
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
@@ -17,17 +19,25 @@ const ROSTER = fileURLToPath(new URL("../../../packages/roster/", import.meta.ur
 const main = async () => {
   const raw = process.argv[2];
   if (!raw) throw new Error("usage: build-roster.ts <rawDir>");
+  const skipped: string[] = [];
+  let built = 0;
   for (const id of Object.keys(CHARACTERS)) {
-    const drawings = ["neutral", ...Object.keys(EMOTIONS)].map((emotion) => ({
-      emotion,
-      bytes: readFileSync(join(raw, `${id}-${emotion}.png`)),
-    }));
+    const emotions = ["neutral", ...Object.keys(EMOTIONS)];
+    const missing = emotions.filter((e) => !existsSync(join(raw, `${id}-${e}.png`)));
+    if (missing.length) {
+      skipped.push(id);
+      process.stderr.write(`warning: ${id}: no ${missing.join(", ")} drawing(s) in ${raw}, skipped\n`);
+      continue;
+    }
+    const drawings = emotions.map((emotion) => ({ emotion, bytes: readFileSync(join(raw, `${id}-${emotion}.png`)) }));
     const { files } = await makeCard(drawings, { keyBackground: true });
     const dir = join(ROSTER, "assets", id);
     mkdirSync(dir, { recursive: true });
     for (const f of files) writeFileSync(join(dir, f.name), f.bytes);
     process.stdout.write(`${id}: ${files.length} files\n`);
+    built++;
   }
+  process.stdout.write(`characters: ${built} built, ${skipped.length} skipped\n`);
   // Icons: Chalito's head and shoulders (a full body is too small at icon sizes) on warm cream,
   // which stands out from the teal hoodie. The maskable icon keeps inside the 80 % safe zone.
   const icons = join(ROSTER, "icons");
@@ -55,8 +65,14 @@ const main = async () => {
   // Cosmetics: keyed, cropped to the object, 512 px WebP.
   const cos = join(ROSTER, "cosmetics");
   mkdirSync(cos, { recursive: true });
+  let cosmetics = 0;
   for (const id of Object.keys(COSMETICS)) {
-    const { data, info } = await sharp(readFileSync(join(raw, `cosmetic-${id}.png`)))
+    const src = join(raw, `cosmetic-${id}.png`);
+    if (!existsSync(src)) {
+      process.stderr.write(`warning: cosmetic ${id}: no ${src}, skipped\n`);
+      continue;
+    }
+    const { data, info } = await sharp(readFileSync(src))
       .resize(1024, 1024, { fit: "inside" })
       .ensureAlpha()
       .raw()
@@ -68,8 +84,9 @@ const main = async () => {
       .webp({ quality: 88, alphaQuality: 90 })
       .toBuffer();
     writeFileSync(join(cos, `${id}.webp`), out);
+    cosmetics++;
   }
-  process.stdout.write(`cosmetics: ${Object.keys(COSMETICS).length} files\n`);
+  process.stdout.write(`cosmetics: ${cosmetics} files\n`);
 };
 
 void main().catch((e: unknown) => {

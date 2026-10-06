@@ -38,7 +38,7 @@
     "toInbox": "Go to your inbox",
     "roster": {
       "title": "Pick your companion",
-      "body": "Six characters to start with. You can switch whenever you like."
+      "body": "220 free characters in 11 categories; here are six. You can switch any time."
     },
     "tryon": {
       "title": "Dress it your way",
@@ -202,7 +202,13 @@
       "to": "to"
     },
     "avatar": {
-      "label": "Companion"
+      "label": "Companion",
+      "search": "Search companions",
+      "searchPlaceholder": "Search by name",
+      "categories": "Categories",
+      "all": "All",
+      "selected": "You picked {name}.",
+      "empty": "No one by that name."
     },
     "companionName": {
       "label": "Name",

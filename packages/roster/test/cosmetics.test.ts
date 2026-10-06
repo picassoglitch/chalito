@@ -21,9 +21,9 @@ describe("cosmetics on image cards", () => {
     }
   });
 
-  it("a hat's brim lands on every preset's head anchor, centred, drawn in front", () => {
+  it("a hat's brim lands on every built preset's head anchor, centred, drawn in front", () => {
     const hat = catalog.cosmetics.viking_hat!;
-    for (const id of ROSTER_IDS) {
+    for (const id of ROSTER_IDS.filter((i) => existsSync(`${root}assets/${i}/card.json`))) {
       const c = card(id);
       const a = c.anchors.head!;
       const placed = placeOnCard(a, hat.card, 1, c.height / c.width);

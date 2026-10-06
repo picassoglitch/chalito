@@ -211,6 +211,9 @@ importers:
       '@chalito/redact':
         specifier: workspace:*
         version: link:../../packages/redact
+      '@chalito/roster':
+        specifier: workspace:*
+        version: link:../../packages/roster
       '@google-cloud/storage':
         specifier: ^8.2.0
         version: 8.2.0

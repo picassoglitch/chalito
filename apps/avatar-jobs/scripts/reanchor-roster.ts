@@ -1,14 +1,16 @@
 /**
- * Re-derives each roster card's anchors from its shipped neutral layer (no regeneration, no API
+ * Re-derives each built roster card's anchors from its shipped neutral layer (no regeneration, no API
  * calls): `pnpm --filter @chalito/avatar-jobs exec tsx scripts/reanchor-roster.ts`.
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ROSTER_IDS } from "@chalito/roster";
 import sharp from "sharp";
 import { anchorsFor } from "../src/process.js";
 
 const assets = fileURLToPath(new URL("../../../packages/roster/assets/", import.meta.url));
-for (const id of ["chalito", "bruno", "luna", "tito", "canela", "nube"]) {
+for (const id of ROSTER_IDS) {
+  if (!existsSync(`${assets}${id}/layer-neutral.webp`)) continue; // not built yet
   const { data, info } = await sharp(`${assets}${id}/layer-neutral.webp`)
     .ensureAlpha()
     .raw()

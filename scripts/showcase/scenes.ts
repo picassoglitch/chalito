@@ -1,6 +1,6 @@
 import type { EmotionTag } from "@chalito/protocol";
 import type { EmotionGesture } from "@chalito/avatar";
-import { ROSTER, type RosterId } from "@chalito/roster";
+import { ORIGINAL_IDS, rosterEntry, type RosterId } from "@chalito/roster";
 import type { RoomEventKind } from "@chalito/protocol";
 
 /**
@@ -65,8 +65,8 @@ export const SCENES: Scene[] = [
     anim: { fps: 10, durationMs: 4000 },
     posterAt: 1400,
   },
-  // The free roster, all six, alt text from the roster's own names and blurbs.
-  ...ROSTER.map((r, i): Scene => ({
+  // The six launch companions (seeds unchanged), alt text from the roster's own names and blurbs.
+  ...ORIGINAL_IDS.map((id) => rosterEntry(id)!).map((r, i): Scene => ({
     id: `roster-${r.id}`,
     alt: { es: `${r.name.es}: ${r.blurb.es}`, en: `${r.name.en}: ${r.blurb.en}` },
     w: 300,

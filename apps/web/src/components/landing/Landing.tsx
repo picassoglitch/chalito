@@ -1,6 +1,6 @@
 import { getLocale, getTranslations } from "next-intl/server";
 import { CREDIT_SUFFIX, PRODUCT_NAME } from "@chalito/brand";
-import { ROSTER } from "@chalito/roster";
+import { ORIGINAL_IDS, rosterEntry } from "@chalito/roster";
 import { Link } from "@/i18n/navigation";
 import type { AppLocale } from "@/i18n/routing";
 import { plansForLanding } from "@/lib/plans";
@@ -11,7 +11,11 @@ import { Render } from "./Render";
 
 // Module scope on purpose: an id missing from the manifest fails the build (see lib/showcase).
 const HERO = showcase("hero-chalito");
-const ROSTER_CARDS = ROSTER.map((r) => ({ name: r.name, asset: showcase(`roster-${r.id}`) }));
+// The six launch companions have showcase renders; the rest of the catalog is in the picker.
+const ROSTER_CARDS = ORIGINAL_IDS.map((id) => rosterEntry(id)!).map((r) => ({
+  name: r.name,
+  asset: showcase(`roster-${r.id}`),
+}));
 const TRYON = [showcase("tryon-chalito-viking"), showcase("tryon-luna-crown"), showcase("tryon-bruno-cape")];
 const RECHARGE = showcase("recharge-chalito");
 const ROOM = showcase("room-portal");

@@ -1,8 +1,8 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { getCountries, getCountryCallingCode, parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 import { formatCompanionTitle } from "@chalito/brand";
-import { rosterEntry } from "@chalito/roster";
-import { COMPANIONS, companionName, type CompanionId } from "../companions.js";
+import { CATEGORIES, rosterEntry, searchRoster, type Category } from "@chalito/roster";
+import { companionName, type CompanionId } from "../companions.js";
 import { useRosterAsset } from "../roster-assets.js";
 import { useUiText } from "../text.js";
 import {
@@ -253,40 +253,120 @@ export const PhoneField = ({
   );
 };
 
+/**
+ * The companion picker: 220 free companions in 11 categories (@chalito/roster's catalog). Category
+ * chips scroll sideways on phones, a search finds a name in Spanish or English (it looks in every
+ * category), and the grid's pictures load lazily as they scroll into view. It opens on the chosen
+ * companion's category so the selection is visible.
+ */
 export const CompanionPicker = ({ value, onChange }: { value: CompanionId; onChange: (c: CompanionId) => void }) => {
   const { t, locale } = useUiText();
   const asset = useRosterAsset();
+  const searchId = useId();
+  const [category, setCategory] = useState<Category | null>(() => rosterEntry(value)?.category ?? null);
+  const [query, setQuery] = useState("");
+  const shown = useMemo(() => searchRoster(query, category), [query, category]);
+  const selected = rosterEntry(value);
+  const chip = (active: boolean) =>
+    `shrink-0 rounded-full border px-3 py-1 text-sm whitespace-nowrap ${active ? "border-emerald-700 bg-emerald-700 text-white" : "bg-white"}`;
   return (
-    <div role="radiogroup" aria-label={t("avatar.label")} className="grid grid-cols-3 gap-3">
-      {COMPANIONS.map((c) => (
-        <label
-          key={c}
-          className={`cursor-pointer rounded-xl border p-3 text-center ${value === c ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
+    <div className="grid min-w-0 gap-3" data-testid="companion-picker">
+      <label htmlFor={searchId} className="sr-only">
+        {t("avatar.search")}
+      </label>
+      <input
+        id={searchId}
+        type="search"
+        className="rounded-md border px-3 py-2"
+        placeholder={t("avatar.searchPlaceholder")}
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          // A name search looks in every category.
+          if (e.target.value.trim()) setCategory(null);
+        }}
+      />
+      <div
+        role="group"
+        aria-label={t("avatar.categories")}
+        className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1"
+        data-testid="companion-categories"
+      >
+        <button
+          type="button"
+          aria-pressed={category === null}
+          className={chip(category === null)}
+          onClick={() => setCategory(null)}
         >
-          <input
-            type="radio"
-            name="companion"
-            className="sr-only"
-            value={c}
-            checked={value === c}
-            onChange={() => onChange(c)}
-          />
-          {asset ? (
-            <img
-              src={asset(rosterEntry(c)!.thumbs[128])}
-              alt=""
-              width={64}
-              height={64}
-              loading="lazy"
-              decoding="async"
-              className="mx-auto mb-2 block h-16 w-16 rounded-full bg-emerald-50 object-cover object-top"
-            />
-          ) : (
-            <span aria-hidden className="mx-auto mb-2 block h-12 w-12 rounded-full bg-emerald-100" />
-          )}
-          <span className="text-sm font-medium">{companionName(c, locale)}</span>
-        </label>
-      ))}
+          {t("avatar.all")}
+        </button>
+        {CATEGORIES.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            aria-pressed={category === c.id}
+            data-category={c.id}
+            className={chip(category === c.id)}
+            onClick={() => {
+              setCategory(c.id);
+              setQuery("");
+            }}
+          >
+            {c.label[locale]}
+          </button>
+        ))}
+      </div>
+      {selected ? (
+        <p className="text-sm text-neutral-600" data-testid="companion-selected" aria-live="polite">
+          {t("avatar.selected", { name: companionName(selected.id, locale) })} {selected.blurb[locale]}
+        </p>
+      ) : null}
+      {shown.length ? (
+        <div
+          role="radiogroup"
+          aria-label={t("avatar.label")}
+          className="grid max-h-[28rem] grid-cols-3 gap-2 overflow-y-auto p-1 sm:grid-cols-4"
+        >
+          {shown.map((r) => (
+            <label
+              key={r.id}
+              title={r.blurb[locale]}
+              className={`cursor-pointer rounded-xl border p-2 text-center ${value === r.id ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
+            >
+              <input
+                type="radio"
+                name="companion"
+                className="sr-only"
+                value={r.id}
+                checked={value === r.id}
+                onChange={() => onChange(r.id)}
+              />
+              <span aria-hidden className="mx-auto mb-1 block h-16 w-16 overflow-hidden rounded-full bg-emerald-50">
+                {asset ? (
+                  <img
+                    src={asset(r.thumbs[128])}
+                    alt=""
+                    width={64}
+                    height={64}
+                    loading="lazy"
+                    decoding="async"
+                    // Art still being generated: a missing picture leaves the plain swatch.
+                    onError={(e) => {
+                      e.currentTarget.style.visibility = "hidden";
+                    }}
+                    className="block h-16 w-16 object-cover object-top"
+                  />
+                ) : null}
+              </span>
+              <span className="block truncate text-sm font-medium">{companionName(r.id, locale)}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-neutral-600" data-testid="companion-empty">
+          {t("avatar.empty")}
+        </p>
+      )}
     </div>
   );
 };

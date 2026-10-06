@@ -111,12 +111,19 @@ test("tienda unpaired (the person's session) still works; EN at /en/tienda", asy
   await expect(page.locator("[data-item=viking_hat]").getByTestId("store-price")).toHaveText("Free");
 });
 
-test("onboarding offers the six roster companions with their pictures", async ({ page }) => {
+test("onboarding offers the catalog by category, with pictures and a search", async ({ page }) => {
   await ready(page, "/bienvenida");
   await page.getByRole("button", { name: "Continuar" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Elige a tu compañero");
   const group = page.getByRole("radiogroup");
-  await expect(group.getByRole("radio")).toHaveCount(6);
-  for (const name of ["Chalito", "Bruno", "Luna", "Tito", "Canela", "Nube"]) await expect(group).toContainText(name);
+  // Opens on Chalito's category (Personas): 20 companions, Chalito first.
+  await expect(page.getByRole("button", { name: "Personas" })).toHaveAttribute("aria-pressed", "true");
+  await expect(group.getByRole("radio")).toHaveCount(20);
   await expect(group.locator("img").first()).toHaveAttribute("src", "/roster/assets/chalito/thumb-128.webp");
+  await page.getByRole("button", { name: "Animales" }).click();
+  for (const name of ["Bruno", "Luna", "Tito", "Canela", "Nube"]) await expect(group).toContainText(name);
+  await page.getByRole("button", { name: "Todos" }).click();
+  await expect(group.getByRole("radio")).toHaveCount(220);
+  await page.getByRole("searchbox", { name: "Buscar compañero" }).fill("luna");
+  await expect(page.getByRole("radiogroup")).toContainText("Luna");
 });
