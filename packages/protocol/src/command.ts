@@ -15,6 +15,7 @@ import {
 import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 import { ProviderConnectMethod } from "./provider.js";
+import { TerminalCommands } from "./terminal.js";
 
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
 export const DevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical", "bypassStyle"]);
@@ -54,6 +55,9 @@ const ProviderConnect = z
  * provider's CLI only; they never touch policy. (Computer control is turned on only on the
  * device, `chalito computer enable` or the desktop panel; a remote surface can turn it off
  * through `policy.tighten` and approve or deny a session's `computer_control` approval.)
+ * The terminal.* commands open, feed, resize and close a remote terminal only after the
+ * person turned remote terminal on locally and approved that terminal (terminal.ts); nothing
+ * here can turn remote terminal or the raw shell on.
  */
 export const CommandPayload = z.discriminatedUnion("type", [
   z.object({
@@ -90,6 +94,9 @@ export const CommandPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("provider.install"), provider: Provider }),
   /** Asks the device for a fresh status report (chalito.connections). */
   z.object({ type: z.literal("provider.status") }),
+  // ---- TERMINAL (Connect engine, remote terminal; packages/protocol/src/terminal.ts) ----
+  ...TerminalCommands,
+  // ---- end TERMINAL ----
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;
 

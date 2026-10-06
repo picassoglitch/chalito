@@ -9,8 +9,11 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000;
  * `computer_control`: a session asks to see the screen and drive the mouse and keyboard of the
  * device (apps/agent/src/computer). Only offered once the person enabled computer control
  * locally on that device; always HIGH with a passkey step-up, once per session.
+ * `terminal`: a trusted client asks to open a remote terminal (a recipe's terminal app, or the
+ * raw shell) on the device (terminal.ts). Only once remote terminal is on locally; always HIGH
+ * with a passkey step-up, once per terminal.
  */
-export const ApprovalKind = z.enum(["tool", "decision", "computer_control"]);
+export const ApprovalKind = z.enum(["tool", "decision", "computer_control", "terminal"]);
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 export const ApprovalStatus = z.enum(["pending", "approved", "denied", "expired", "rejected_invalid"]);
 

