@@ -184,6 +184,20 @@ describe("companion picker", () => {
     expect(screen.getByTestId("companion-selected").textContent).toContain("Chalito");
   });
 
+  it("with the person's own character on, no roster companion is chosen and the one underneath can be picked", () => {
+    const picked: string[] = [];
+    renderUi(
+      <RosterAssetsProvider base="/roster">
+        <CompanionPicker value="chalito" onChange={(c) => picked.push(c)} customActive />
+      </RosterAssetsProvider>,
+    );
+    expect(radios().some((r) => r.checked)).toBe(false);
+    expect(screen.queryByTestId("companion-selected")).toBeNull();
+    expect(screen.getByTestId("companion-custom").textContent).toContain("tu propio personaje");
+    fireEvent.click(radios().find((r) => r.value === "chalito")!);
+    expect(picked).toEqual(["chalito"]);
+  });
+
   it("switches category, shows everyone under Todos, and picks", () => {
     const picked: string[] = [];
     picker("chalito", (c) => picked.push(c));

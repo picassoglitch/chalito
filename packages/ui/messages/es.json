@@ -208,7 +208,8 @@
       "categories": "Categorías",
       "all": "Todos",
       "selected": "Elegiste a {name}.",
-      "empty": "No encontramos a nadie con ese nombre."
+      "empty": "No encontramos a nadie con ese nombre.",
+      "custom": "Ahora tu compañero es tu propio personaje. Elige a alguien de la lista para volver a un compañero del catálogo."
     },
     "companionName": {
       "label": "Nombre",
@@ -1081,6 +1082,8 @@
       "sad": "Triste",
       "surprised": "Sorprendido",
       "tired": "Cansado"
-    }
+    },
+    "current": "Tu personaje",
+    "currentNote": "Así te ven en tus salas, en la tienda y en tu escritorio."
   }
 }

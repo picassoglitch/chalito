@@ -4,6 +4,8 @@
  * tokens (never money). The photo goes straight to the bucket through a signed PUT, is only a
  * reference, and is deleted as soon as the character is made.
  */
+import { parseRoomCards, parseSignedCard, type SignedCard } from "@chalito/scene/custom-card";
+
 export const PHOTO_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 export type PhotoType = (typeof PHOTO_TYPES)[number];
 /** The server's limit (apps/api src/avatar/routes.ts UPLOAD_MAX_BYTES). */
@@ -50,6 +52,10 @@ export interface AvatarApi {
   status(creationId: string): Promise<Creation | "error">;
   /** The companion wears this creation (null: back to its roster avatar). */
   use(creationId: string | null): Promise<"ok" | "no_companion" | "error">;
+  /** The companion's custom card with fresh signed URLs (GET /companion); null when it wears a roster avatar. */
+  companion(): Promise<SignedCard | null | "error">;
+  /** A room's members' custom cards by companion id (GET /rooms/:roomId/cards; members only). */
+  roomCards(roomId: string): Promise<Map<string, SignedCard> | "error">;
 }
 
 /** One per "create" tap, reused on retries: 16–64 of [A-Za-z0-9_-]. */
@@ -183,6 +189,18 @@ export const httpAvatar = (
       if (r?.ok) return "ok";
       const e = r ? ((await json(r)) as { error?: unknown } | null)?.error : null;
       return e === "no_companion" ? "no_companion" : "error";
+    },
+    companion: async () => {
+      const r = await call("/companion");
+      if (!r?.ok) return "error";
+      const c = parseSignedCard(await json(r), { now: Date.now(), isUrl: (u) => SIGNED.test(u) });
+      return c === "invalid" ? "error" : c;
+    },
+    roomCards: async (roomId) => {
+      const r = await call(`/rooms/${encodeURIComponent(roomId)}/cards`);
+      if (!r?.ok) return "error";
+      const m = parseRoomCards(await json(r), { now: Date.now(), isUrl: (u) => SIGNED.test(u) });
+      return m === "invalid" ? "error" : m;
     },
   };
 };

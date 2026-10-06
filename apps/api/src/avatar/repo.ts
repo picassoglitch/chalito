@@ -75,6 +75,18 @@ export interface AvatarRepo {
   setCompanion(owner: string, card: { assetId: string; manifest: CardManifestLike } | null): Promise<boolean>;
   /** The owner's companion's custom card, if it has one. */
   companionCard(owner: string): Promise<{ assetId: string; manifest: CardManifestLike } | null>;
+  /**
+   * The custom cards of a room's members (the viewer's own included), only when `viewer` is a
+   * member of that room right now; otherwise none (chalito_private.room_member_cards).
+   */
+  roomCards(viewer: string, roomId: string): Promise<RoomMemberCard[]>;
+}
+
+export interface RoomMemberCard {
+  companionId: string;
+  owner: string;
+  assetId: string;
+  manifest: CardManifestLike;
 }
 
 type Row = {
@@ -229,6 +241,19 @@ export class PostgresAvatarRepo implements AvatarRepo {
       limit 1`;
     return r ? { assetId: r.asset_id, manifest: r.manifest } : null;
   }
+
+  async roomCards(viewer: string, roomId: string) {
+    const rows = await this.sql<
+      { companion_id: string; owner: string; asset_id: string; manifest: CardManifestLike }[]
+    >`
+      select companion_id, owner, asset_id, manifest from chalito_private.room_member_cards(${viewer}, ${roomId})`;
+    return rows.map((r) => ({
+      companionId: r.companion_id,
+      owner: r.owner,
+      assetId: r.asset_id,
+      manifest: r.manifest,
+    }));
+  }
 }
 
 /** The same rules in memory (unit tests, the dev backend): unique ids, one in flight, one free. */
@@ -236,6 +261,8 @@ export class MemoryAvatarRepo implements AvatarRepo {
   readonly rows = new Map<string, CreationRecord>();
   /** owner → the companion's custom card (undefined: the owner has no companion). */
   readonly companions = new Map<string, { assetId: string; manifest: CardManifestLike } | null>();
+  /** roomId → its members (room_members). */
+  readonly rooms = new Map<string, { companionId: string; owner: string }[]>();
 
   async get(creationId: string) {
     const r = this.rows.get(creationId);
@@ -294,5 +321,13 @@ export class MemoryAvatarRepo implements AvatarRepo {
   }
   async companionCard(owner: string) {
     return this.companions.get(owner) ?? null;
+  }
+  async roomCards(viewer: string, roomId: string) {
+    const members = this.rooms.get(roomId) ?? [];
+    if (!members.some((m) => m.owner === viewer)) return [];
+    return members.flatMap((m) => {
+      const c = this.companions.get(m.owner);
+      return c ? [{ companionId: m.companionId, owner: m.owner, ...c }] : [];
+    });
   }
 }

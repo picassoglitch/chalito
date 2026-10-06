@@ -24,6 +24,8 @@ import { isSkin, type StoreItem } from "@/lib/store";
 import type { SceneCosmetic } from "@chalito/scene";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { RoomStage } from "./RoomStage";
+import { useMyCard } from "./useMyCard";
+import { useRoomCards } from "./useRoomCards";
 import { GlyphCanvas } from "./Glyph";
 
 type Report = ReportTarget & { label: string };
@@ -131,6 +133,11 @@ export const Room = ({ roomId }: { roomId: string }) => {
   const [cards, setCards] = useState<Record<string, Card>>({});
   const [catalog, setCatalog] = useState<StoreItem[]>([]);
   const memberKey = snap.members.map((m) => m.companionId).join(",");
+  // Our own companion wears its custom card when it has one (the scene falls back to the roster
+  // avatar if it won't load).
+  const { files: myFiles } = useMyCard();
+  // Co-members' custom cards (signed for members of this room only).
+  const cardOf = useRoomCards(roomId, memberKey);
   useEffect(() => {
     if (!rooms || !me || !readCompanion) return;
     let alive = true;
@@ -158,8 +165,13 @@ export const Room = ({ roomId }: { roomId: string }) => {
     () =>
       snap.members.map((m) => {
         const c = cards[m.companionId];
+        // Everyone as they look: ours from our own card source (fresh after "use"), co-members' from
+        // the room's cards. The scene draws the roster avatar when there's none or it won't load.
+        const files = m.companionId === me ? myFiles : cardOf(m.companionId);
+        const card = files ? { card: files } : {};
         return {
           companionId: m.companionId,
+          ...card,
           avatar: c && rosterEntry(c.avatar) ? c.avatar : DEFAULT_COMPANION,
           // Equipped cosmetics as the store sells them: drawn items (slot, art, placement) and the skin.
           cosmetics: (c?.equipped ?? []).flatMap((id): SceneCosmetic[] => {
@@ -171,7 +183,7 @@ export const Room = ({ roomId }: { roomId: string }) => {
           }),
         };
       }),
-    [snap.members, cards, catalog],
+    [snap.members, cards, catalog, me, myFiles, cardOf],
   );
   const stageEvents = useMemo(
     () =>

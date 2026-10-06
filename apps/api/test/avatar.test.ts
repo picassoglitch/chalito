@@ -6,6 +6,8 @@ import { createApp } from "../src/app.js";
 import {
   DAILY_CREATIONS,
   GENERATION_TIMEOUT_MS,
+  READ_URL_SECONDS,
+  ROOM_READ_URL_SECONDS,
   UPLOAD_MAX_BYTES,
   UPLOAD_WINDOW_MS,
   type AvatarDeps,
@@ -54,7 +56,9 @@ class FakeFiles implements AvatarFiles {
       expiresAt: 0,
     };
   }
-  async signedRead(object: string) {
+  readonly reads: { object: string; ttl: number }[] = [];
+  async signedRead(object: string, ttl: number) {
+    this.reads.push({ object, ttl });
     return `https://storage.googleapis.com/bucket/${object}?X-Goog-Signature=get`;
   }
   async stat(object: string) {
@@ -333,7 +337,7 @@ describe("custom companion: housekeeping", () => {
   });
 
   it("use: only a finished creation; null goes back to the roster avatar", async () => {
-    const { call, start, job, repo } = setup();
+    const { call, start, job, repo, clock } = setup();
     await start(ID1);
     expect((await call("POST", "/use", { creationId: ID1 })).status).toBe(409);
     job(ID1, "succeeded");
@@ -342,6 +346,8 @@ describe("custom companion: housekeeping", () => {
     expect(repo.companions.get(OWNER)).toEqual({ assetId: repo.rows.get(ID1)!.assetId, manifest: MANIFEST });
     const mine = await call("GET", "/companion");
     expect(mine.json.assetId).toBe(repo.rows.get(ID1)!.assetId);
+    // The renderers refresh the signed URLs before this.
+    expect((mine.json.card as { expiresAt: number }).expiresAt).toBe(clock.now + READ_URL_SECONDS * 1000);
     expect((await call("POST", "/use", { creationId: null })).json).toEqual({ ok: true, assetId: null });
     expect((await call("GET", "/companion")).json).toEqual({ assetId: null });
   });
@@ -352,5 +358,60 @@ describe("custom companion: housekeeping", () => {
     await start(ID1);
     job(ID1, "succeeded");
     expect((await call("POST", "/use", { creationId: ID1 })).json).toEqual({ error: "no_companion" });
+  });
+});
+
+describe("custom companion: co-members in a room", () => {
+  const MOM = "hub-user-mom";
+  const STRANGER = "hub-user-stranger";
+  const room = (repo: MemoryAvatarRepo) => {
+    repo.companions.set(MOM, { assetId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", manifest: MANIFEST });
+    repo.companions.set(STRANGER, { assetId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", manifest: MANIFEST });
+    repo.rooms.set("room_fam", [
+      { companionId: "chl_me", owner: OWNER },
+      { companionId: "chl_mom", owner: MOM },
+    ]);
+    repo.rooms.set("room_other", [{ companionId: "chl_stranger", owner: STRANGER }]);
+  };
+
+  it("a member gets the room's custom cards, signed for 15 minutes", async () => {
+    const { call, repo, files, clock } = setup();
+    room(repo);
+    const r = await call("GET", "/rooms/room_fam/cards");
+    expect(r.status).toBe(200);
+    const cards = r.json.cards as {
+      companionId: string;
+      assetId: string;
+      card: { urls: Record<string, string>; expiresAt: number };
+    }[];
+    // Mine has no custom card (roster avatar): only mom's.
+    expect(cards.map((c) => c.companionId)).toEqual(["chl_mom"]);
+    expect(cards[0]!.card.expiresAt).toBe(clock.now + ROOM_READ_URL_SECONDS * 1000);
+    expect(Object.keys(cards[0]!.card.urls)).toContain("layer-happy.webp");
+    expect(files.reads.every((x) => x.ttl === ROOM_READ_URL_SECONDS)).toBe(true);
+    expect(files.reads.every((x) => x.object.startsWith(`avatars/${MOM}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/`))).toBe(
+      true,
+    );
+  });
+
+  it("a non-member gets no URLs: another room, an unknown room, or after leaving", async () => {
+    const { call, repo, files } = setup();
+    room(repo);
+    expect((await call("GET", "/rooms/room_other/cards")).json).toEqual({ cards: [] });
+    expect((await call("GET", "/rooms/room_nope/cards")).json).toEqual({ cards: [] });
+    // The stranger asks for the family room's cards.
+    expect((await call("GET", "/rooms/room_fam/cards", undefined, `client:dev_phone:${STRANGER}`)).json).toEqual({
+      cards: [],
+    });
+    repo.rooms.set("room_fam", [{ companionId: "chl_mom", owner: MOM }]); // I left
+    expect((await call("GET", "/rooms/room_fam/cards")).json).toEqual({ cards: [] });
+    expect(files.reads).toEqual([]);
+    expect((await call("GET", "/rooms/bad%20id/cards")).status).toBe(400);
+  });
+
+  it("needs a signed-in person or client device", async () => {
+    const { call, repo } = setup();
+    room(repo);
+    expect((await call("GET", "/rooms/room_fam/cards", undefined, "agent:dev_agent")).status).toBe(403);
   });
 });

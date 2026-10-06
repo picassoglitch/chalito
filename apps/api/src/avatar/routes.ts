@@ -30,6 +30,9 @@ export const GENERATION_TIMEOUT_MS = 20 * 60_000;
 export const DAILY_CREATIONS = 5;
 /** Signed read URLs for the finished card. */
 export const READ_URL_SECONDS = 60 * 60;
+/** Signed read URLs for a co-member's card: shorter, since they reach other people. */
+export const ROOM_READ_URL_SECONDS = 15 * 60;
+const RoomId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 /** The hub reservation outlives the upload window plus generation. */
 const RESERVATION_TTL_SECONDS = 60 * 60;
 
@@ -51,6 +54,7 @@ const noTokens = () => ({ error: "no_tokens", chips: [{ label: "¿Por qué?", hr
  *   GET  /creations/:id       status; the finished card with signed URLs
  *   POST /use                 the companion wears that card (or, with null, its roster avatar again)
  *   GET  /quote, GET /companion
+ *   GET  /rooms/:roomId/cards  co-members' custom cards (members of that room only, 15-minute URLs)
  *
  * The job bills a paid success (image.generations at the real cost; the hub adds its margin) and
  * deletes the photo in every outcome. The api settles the hub reservation once a creation is
@@ -100,13 +104,14 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     return fresh;
   };
 
-  const cardUrls = async (owner: string, assetId: string, manifest: CardManifestLike) => {
+  /** The card's files as signed reads, and when they stop working (taken before signing: never late). */
+  const cardUrls = async (owner: string, assetId: string, manifest: CardManifestLike, ttl = READ_URL_SECONDS) => {
+    const expiresAt = deps.now() + ttl * 1000;
     const files = new Set([...Object.values(manifest.emotions?.src ?? {}), ...Object.values(manifest.thumbs ?? {})]);
     const urls: Record<string, string> = {};
     for (const f of files)
-      if (/^[a-z0-9-]+\.webp$/.test(f))
-        urls[f] = await av.files.signedRead(cardObject(owner, assetId, f), READ_URL_SECONDS);
-    return { manifest, urls };
+      if (/^[a-z0-9-]+\.webp$/.test(f)) urls[f] = await av.files.signedRead(cardObject(owner, assetId, f), ttl);
+    return { manifest, urls, expiresAt };
   };
 
   const view = async (c: CreationRecord) => ({
@@ -267,6 +272,26 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     const card = await av.repo.companionCard(p.owner);
     if (!card) return c.json({ assetId: null });
     return c.json({ assetId: card.assetId, card: await cardUrls(p.owner, card.assetId, card.manifest) });
+  });
+
+  /**
+   * The custom cards of a room's members, so the room scene draws everyone as they look. Only for a
+   * caller who is a member of that room right now (anyone else gets no cards, whether or not the
+   * room exists); URLs live 15 minutes and are re-asked for before then.
+   */
+  app.get("/rooms/:roomId/cards", auth, limiter, async (c) => {
+    const p = principal(c);
+    const roomId = c.req.param("roomId");
+    if (!RoomId.safeParse(roomId).success) return fail(400, "bad_request");
+    const rows = await av.repo.roomCards(p.owner, roomId);
+    const cards = [];
+    for (const r of rows)
+      cards.push({
+        companionId: r.companionId,
+        assetId: r.assetId,
+        card: await cardUrls(r.owner, r.assetId, r.manifest, ROOM_READ_URL_SECONDS),
+      });
+    return c.json({ cards });
   });
 
   return app;

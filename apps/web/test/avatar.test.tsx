@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import es from "@chalito/ui/messages/es.json";
 import en from "@chalito/ui/messages/en.json";
 import { checkPhoto, httpAvatar, newCreationId, parseCreation, type AvatarApi, type Creation } from "@/lib/avatar";
+import { myCardSource } from "@/lib/my-card";
+import type { CustomCardSource, SignedCard } from "@chalito/scene/custom-card";
 
 const GCS = "https://storage.googleapis.com/b/avatars/o/a";
 const CARD = {
@@ -115,6 +117,55 @@ describe("custom companion client (/v1/avatar)", () => {
     expect((seen[0]!.init.headers as Record<string, string>).authorization).toBeUndefined();
   });
 
+  it("reads the companion's custom card with its expiry; only bucket URLs; null without one", async () => {
+    const ASSET = "0123456789abcdef0123456789abcdef";
+    const manifest = { ...CARD.manifest, width: 600, height: 800, anchors: { head: { x: 0.5, y: 0.1, z: 1 } } };
+    const answer = (status: number, body: unknown) =>
+      httpAvatar("https://api.test", async () => "tok", (async (url: string) => {
+        expect(url).toBe("https://api.test/v1/avatar/companion");
+        return new Response(JSON.stringify(body), { status });
+      }) as unknown as typeof fetch);
+    const card = (await answer(200, {
+      assetId: ASSET,
+      card: { manifest, urls: CARD.urls, expiresAt: 1_800_000_000_000 },
+    }).companion()) as SignedCard;
+    expect(card.assetId).toBe(ASSET);
+    expect(card.expiresAt).toBe(1_800_000_000_000);
+    expect(card.manifest.anchors?.head?.y).toBe(0.1);
+    expect(await answer(200, { assetId: null }).companion()).toBeNull();
+    expect(await answer(503, { error: "x" }).companion()).toBe("error");
+    expect(
+      await answer(200, {
+        assetId: ASSET,
+        card: { manifest, urls: { ...CARD.urls, "layer-happy.webp": "https://evil.example/x" } },
+      }).companion(),
+    ).toBe("error");
+  });
+
+  it("reads a room's co-member cards (members only on the server); bucket URLs only", async () => {
+    const ASSET = "0123456789abcdef0123456789abcdef";
+    const manifest = { ...CARD.manifest, width: 600, height: 800 };
+    const seen: string[] = [];
+    const api = (body: unknown, status = 200) =>
+      httpAvatar("https://api.test", async () => "tok", (async (url: string) => {
+        seen.push(url);
+        return new Response(JSON.stringify(body), { status });
+      }) as unknown as typeof fetch);
+    const cards = await api({
+      cards: [
+        { companionId: "chl_mom", assetId: ASSET, card: { manifest, urls: CARD.urls, expiresAt: 1 } },
+        {
+          companionId: "chl_evil",
+          assetId: ASSET,
+          card: { manifest, urls: { ...CARD.urls, "layer-sad.webp": "https://evil.example/x" } },
+        },
+      ],
+    }).roomCards("room_fam");
+    expect(seen).toEqual(["https://api.test/v1/avatar/rooms/room_fam/cards"]);
+    expect([...(cards as Map<string, SignedCard>).keys()]).toEqual(["chl_mom"]);
+    expect(await api({ error: "x" }, 500).roomCards("room_fam")).toBe("error");
+  });
+
   it("es and en carry the same createCharacter strings", () => {
     const keys = (o: unknown, p = ""): string[] =>
       typeof o === "object" && o ? Object.entries(o).flatMap(([k, v]) => keys(v, `${p}${k}.`)) : [p];
@@ -123,16 +174,23 @@ describe("custom companion client (/v1/avatar)", () => {
 });
 
 // ---- the component ------------------------------------------------------------------------------
-const ctx: { avatar: AvatarApi | null } = { avatar: null };
+const ctx: { avatar: AvatarApi | null; myCard: CustomCardSource | null } = { avatar: null, myCard: null };
 vi.mock("@/components/ChalitoProvider", () => ({ useChalito: () => ctx }));
 vi.mock("@/i18n/navigation", () => ({
   Link: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a>,
 }));
 const { CreateCharacter } = await import("@/components/CreateCharacter");
 
+const MINE: SignedCard = {
+  assetId: "0123456789abcdef0123456789abcdef",
+  manifest: { width: 600, height: 800, emotions: { src: CARD.manifest.emotions.src }, thumbs: CARD.manifest.thumbs },
+  urls: CARD.urls,
+  expiresAt: Date.now() + 3_600_000,
+};
 const fakeApi = (o: { free: boolean; startReason?: "no_tokens" }) => {
   const calls: string[] = [];
   let polls = 0;
+  let wearing = false;
   const api: AvatarApi = {
     quote: async () => ({ free: o.free, priceTokens: 217_750, dailyLeft: 5, active: null }),
     start: async (id) => {
@@ -155,7 +213,9 @@ const fakeApi = (o: { free: boolean; startReason?: "no_tokens" }) => {
         ? { creationId: id, status: "generating", free: o.free, priceTokens: 0 }
         : (parseCreation({ ...DONE, creationId: id }) as Creation);
     },
-    use: async (id) => (calls.push(`use:${id}`), "ok"),
+    use: async (id) => (calls.push(`use:${id}`), (wearing = id !== null), "ok"),
+    companion: async () => (calls.push("companion"), wearing ? MINE : null),
+    roomCards: async () => new Map(),
   };
   return { api, calls };
 };
@@ -202,10 +262,12 @@ describe("Crea tu personaje", () => {
   it("photo → preview → upload → progress → the five drawings → set as companion", async () => {
     const { api, calls } = fakeApi({ free: true });
     ctx.avatar = api;
+    ctx.myCard = myCardSource(api);
     renderIt();
     const input = await screen.findByTestId("create-character-file");
     fireEvent.change(input, { target: { files: [new File(["jpeg"], "me.jpg", { type: "image/jpeg" })] } });
     expect((await screen.findByTestId("create-character-preview")).getAttribute("src")).toBe("blob:preview");
+    expect(screen.queryByTestId("create-character-current")).toBeNull();
     fireEvent.click(screen.getByTestId("create-character-go"));
     expect((await screen.findByTestId("create-character-status")).textContent).toMatch(/fila|Dibujando/);
     await act(async () => {
@@ -215,8 +277,18 @@ describe("Crea tu personaje", () => {
     expect(result.querySelectorAll("img")).toHaveLength(5);
     fireEvent.click(screen.getByTestId("create-character-use"));
     await waitFor(() => expect(screen.getByTestId("create-character-used")).toBeTruthy());
-    const id = calls[0]!.slice("start:".length);
-    expect(calls.filter((c) => !c.startsWith("status"))).toEqual([`start:${id}`, "upload", "uploaded", `use:${id}`]);
+    const id = calls.find((c) => c.startsWith("start:"))!.slice("start:".length);
+    expect(calls.filter((c) => !c.startsWith("status") && c !== "companion")).toEqual([
+      `start:${id}`,
+      "upload",
+      "uploaded",
+      `use:${id}`,
+    ]);
+    // "Use" re-reads the companion: it now wears the new card (what the room, store and pet draw).
+    const current = await screen.findByTestId("create-character-current");
+    expect(current.querySelector("img")!.getAttribute("src")).toBe(CARD.urls["thumb-128.webp"]);
+    ctx.myCard.dispose();
+    ctx.myCard = null;
   });
 
   it("not enough tokens: an inline chip to /creditos, nothing uploaded", async () => {
