@@ -27,6 +27,8 @@ export type CodexSpawn = (
   args: string[],
   env: Record<string, string | undefined>,
   cwd: string,
+  /** `keepLogin`: CODEX_HOME holds the person's own `codex login` (chatgptLogin), so leave auth.json. */
+  opts?: { keepLogin?: boolean },
 ) => CodexTransport;
 
 /** Codex releases this adapter is tested against: `min` inclusive, `below` exclusive. */
@@ -52,6 +54,12 @@ export interface CodexConfig {
    * `openai_chatgpt_plan` model provider. Never Codex's built-in `account/login/start {type:"chatgpt"}`.
    */
   chatgptPlan?: { accessToken: string };
+  /**
+   * The person signed in to their ChatGPT plan themselves, with Codex's own `codex login`, in
+   * Chalito's CODEX_HOME (connect contract, 2026-10-05). Codex then authenticates from that
+   * CODEX_HOME's login; Chalito never reads or relays the token. Needs `chatgptPlanEnabled`.
+   */
+  chatgptLogin?: boolean;
   /** `providers.yaml: openai.subscriptionLocal` resolved for this user (owner_only/approved → true). */
   chatgptPlanEnabled?: boolean;
   model?: string;
@@ -148,8 +156,11 @@ export const codexLaunch = (
   } else if (config.apiKey) {
     env[BYO_KEY_ENV] = config.apiKey;
     for (const o of API_KEY_OVERRIDES) args.push("-c", o);
+  } else if (config.chatgptLogin) {
+    // No provider override: Codex's built-in OpenAI provider with the login stored in CODEX_HOME.
+    if (!config.chatgptPlanEnabled) throw new Error("ChatGPT plan usage is not enabled for this user");
   } else {
-    throw new Error("Codex needs an API key or a ChatGPT plan token");
+    throw new Error("Codex needs an API key, a ChatGPT plan token or a `codex login`");
   }
   return { command: config.codexPath ?? "codex", args, env };
 };
@@ -166,11 +177,11 @@ export const removeStoredCredentials = (codexHome: string) => {
   }
 };
 
-const spawnTransport: CodexSpawn = (command, args, env, cwd) => {
+const spawnTransport: CodexSpawn = (command, args, env, cwd, opts) => {
   // Codex refuses a CODEX_HOME that doesn't exist.
   if (env.CODEX_HOME) {
     mkdirSync(env.CODEX_HOME, { recursive: true, mode: 0o700 });
-    removeStoredCredentials(env.CODEX_HOME);
+    if (!opts?.keepLogin) removeStoredCredentials(env.CODEX_HOME);
   }
   const child = nodeSpawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "inherit"] });
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -308,7 +319,8 @@ export class CodexAdapter implements SessionAdapter {
 
   async start(opts: SessionStartOptions): Promise<SessionHandle> {
     const launch = codexLaunch(this.config);
-    const t = (this.config.spawn ?? spawnTransport)(launch.command, launch.args, launch.env, opts.cwd);
+    const keepLogin = !!this.config.chatgptLogin && !this.config.chatgptPlan && !this.config.apiKey;
+    const t = (this.config.spawn ?? spawnTransport)(launch.command, launch.args, launch.env, opts.cwd, { keepLogin });
 
     let nextId = 0;
     const pending = new Map<Id, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();

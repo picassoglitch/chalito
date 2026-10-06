@@ -19,9 +19,17 @@ export interface QueryLike extends AsyncIterable<SDKMessage> {
 }
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => QueryLike;
 
+/**
+ * How Claude Code authenticates: a BYO Anthropic API key from the OS keychain (D-002), or, for
+ * the Chalito team only (providers.yaml `anthropic.subscriptionLocal: owner_only`), the person's
+ * own `claude auth login` kept in Chalito's own Claude Code profile (`CLAUDE_CONFIG_DIR`).
+ * Chalito never reads that profile's credentials.
+ */
+export type ClaudeAuth = string | { configDir: string };
+
 export interface ClaudeCodeConfig {
-  /** BYO Anthropic API key from the OS keychain (D-002: API key only). */
-  apiKey: string;
+  /** BYO Anthropic API key from the OS keychain (D-002), or a sign-in profile (ClaudeAuth). */
+  apiKey: ClaudeAuth;
   /** The user's own Claude Code install (D-008). */
   claudePath?: string;
   /**
@@ -62,13 +70,16 @@ export const lowerTrustOrigin = (a: Origin, b: Origin): Origin => (ORIGIN_TRUST(
 
 export const claudeEnv = (
   base: Record<string, string | undefined>,
-  apiKey: string,
+  auth: ClaudeAuth,
 ): Record<string, string | undefined> => {
   const env: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(base)) if (v !== undefined && envAllowed(k)) env[k] = v;
   // Marks the session's own processes; the chalito CLI refuses to run under it.
   env.CHALITO_SESSION = "1";
-  env.ANTHROPIC_API_KEY = apiKey;
+  // With a key the CLI never falls back to a login; with a sign-in it uses only Chalito's own
+  // profile, never the person's ~/.claude.
+  if (typeof auth === "string") env.ANTHROPIC_API_KEY = auth;
+  else env.CLAUDE_CONFIG_DIR = auth.configDir;
   return env;
 };
 

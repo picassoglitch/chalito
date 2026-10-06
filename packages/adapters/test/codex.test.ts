@@ -254,12 +254,45 @@ describe("Codex adapter: launch and auth", () => {
     expect(fake.run.received.some((m) => m.method?.startsWith("account/"))).toBe(false);
   });
 
+  it("ChatGPT plan through the person's own `codex login`: no overrides, no token in env, login kept", async () => {
+    const fake = fakeCodex([[{ say: "ok" }]]);
+    const { start, states } = session({
+      chatgptLogin: true,
+      chatgptPlanEnabled: true,
+      spawn: fake.spawn,
+      env: { PATH: "/usr/bin", OPENAI_API_KEY: "other" },
+    });
+    const h = await start();
+    await waitFor(() => states().includes("idle"));
+    h.close();
+    await h.done;
+    expect(fake.run.spawned?.args).toEqual([
+      "app-server",
+      "--listen",
+      "stdio://",
+      ...HARDENING_OVERRIDES.flatMap((o) => ["-c", o]),
+    ]);
+    expect(fake.run.spawned?.env).toEqual({
+      PATH: "/usr/bin",
+      CODEX_HOME: join(homedir(), ".chalito", "codex"),
+      CHALITO_SESSION: "1",
+    });
+    expect(fake.run.spawned?.keepLogin).toBe(true);
+    expect(fake.run.received.some((m) => m.method?.startsWith("account/"))).toBe(false);
+  });
+
+  it("a `codex login` is used only when the plan is enabled for this person", async () => {
+    const fake = fakeCodex([]);
+    await expect(session({ chatgptLogin: true, spawn: fake.spawn, env: {} }).start()).rejects.toThrow(/not enabled/);
+    expect(fake.run.spawned).toBeUndefined();
+  });
+
   it("ChatGPT plan stays off unless the flag is on; no credentials at all is refused", async () => {
     const fake = fakeCodex([]);
     await expect(session({ chatgptPlan: { accessToken: "t" }, spawn: fake.spawn, env: {} }).start()).rejects.toThrow(
       /not enabled/,
     );
-    await expect(session({ spawn: fake.spawn, env: {} }).start()).rejects.toThrow(/API key or a ChatGPT plan/);
+    await expect(session({ spawn: fake.spawn, env: {} }).start()).rejects.toThrow(/API key, a ChatGPT plan/);
     expect(fake.run.spawned).toBeUndefined();
   });
 
