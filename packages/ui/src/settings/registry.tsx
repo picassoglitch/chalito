@@ -30,6 +30,8 @@ export interface SettingContext {
   usageHref?: string;
   /** Sends and checks phone codes (the api in the PWA, a mock in tests). */
   phoneVerifier: PhoneVerifier;
+  /** Shown under the companion picker, e.g. the PWA's "Crea tu personaje" (custom companion from a photo). */
+  companionExtra?: ReactNode;
 }
 
 export interface SettingDef {
@@ -155,6 +157,7 @@ export const SETTINGS: readonly SettingDef[] = [
     render: (ctx) => (
       <Labelled k="avatar">
         <CompanionPicker value={ctx.values.avatar} onChange={(v) => ctx.set("avatar", v)} />
+        {ctx.companionExtra}
       </Labelled>
     ),
   },

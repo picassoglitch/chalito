@@ -29,7 +29,7 @@ Procedures for running Chalito in production. Every command assumes the Chalyb G
 | `chalito-notifier` | Cloud Run | `infra/terraform/envs/dev/main.tf` (`module "notifier"`) | Pub/Sub push, Cloud Tasks, Twilio/Meta webhooks. See `apps/notifier/README.md`. |
 | `chalito-orchestrator` | Cloud Run | `module "orchestrator"` | Mesa and companion turns. See `apps/orchestrator/README.md`. |
 | `chalito-mcp-gateway` | Cloud Run | `module "mcp_gateway"` | Public by design (ADR 0009). See `apps/mcp-gateway/README.md`. |
-| `avatar-jobs` | Cloud Run **job** | not yet in Terraform | One upload per execution (`AVATAR_BUCKET`, `UPLOAD_PATH`). See `apps/avatar-jobs/README.md`. |
+| `avatar-jobs` | Cloud Run **job** | not yet in Terraform | One upload per execution (`AVATAR_BUCKET`, `UPLOAD_PATH`); custom companions also need `GEMINI_API_KEY` and `DATABASE_URL`, and a 600 s timeout. See `apps/avatar-jobs/README.md`. |
 | web | Vercel | Vercel project (`apps/web`) | PWA. |
 | database | hub Supabase | `supabase/migrations/` | Migrations are forward-only. |
 

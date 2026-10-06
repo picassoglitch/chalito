@@ -124,3 +124,10 @@ export const computeCostMicros = (
   seconds: number,
   lane: "standard" | "boost" = "standard",
 ): number => Math.ceil(seconds * prices.compute.cloudRunMicrosPerSecond[lane]);
+
+/** Generated images (custom companions). Unknown models throw, so callers fail closed before spending. */
+export const imageCostMicros = (prices: PricesConfig, provider: string, model: string, images: number): number => {
+  const p = prices.images[provider]?.[model];
+  if (!p) throw new Error(`no image price for ${provider}/${model}`);
+  return micros(Math.max(0, images) * p.perImage);
+};

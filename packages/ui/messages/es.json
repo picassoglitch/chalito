@@ -1022,5 +1022,50 @@
       "unavailable": "Chalyb no respondió. Vuelve a intentarlo en un momento.",
       "error": "No pudimos ver tu saldo."
     }
+  },
+  "createCharacter": {
+    "title": "Crea tu personaje",
+    "intro": "Sube una foto tuya y la convertimos en tu propio compañero, dibujado con el estilo de Chalito y con sus cinco caras.",
+    "free": "Gratis la primera vez",
+    "price": "{tokens} tokens",
+    "privacy": "Tu foto solo se usa como referencia para dibujarte con IA, y la borramos en cuanto tu personaje está listo. Usa una foto tuya, solo tú, de frente y con buena luz.",
+    "choose": "Elegir foto",
+    "previewAlt": "La foto que elegiste",
+    "create": "Crear mi personaje",
+    "badType": "Usa una foto PNG, JPEG o WebP.",
+    "badSize": "La foto pesa demasiado (máximo 10 MB).",
+    "status": {
+      "uploading": "Subiendo tu foto…",
+      "queued": "En la fila…",
+      "generating": "Dibujando a tu personaje… Tarda uno o dos minutos.",
+      "succeeded": "¡Listo! Así quedó tu personaje."
+    },
+    "failure": {
+      "rejected": "Esa foto no nos sirve. Prueba con otra (PNG, JPEG o WebP, de al menos 256 px).",
+      "refused": "No pudimos dibujar esa foto. Prueba con una foto tuya, solo tú, de frente.",
+      "provider": "Algo falló al dibujar. Inténtalo otra vez.",
+      "upload_missing": "Tu foto no llegó. Inténtalo otra vez.",
+      "timeout": "Tardó demasiado. Inténtalo otra vez.",
+      "expired": "Tu foto no llegó a tiempo. Inténtalo otra vez.",
+      "upload": "No se pudo subir tu foto. Inténtalo otra vez."
+    },
+    "notCharged": "No se te cobró nada.",
+    "noTokens": "No te alcanzan los tokens.",
+    "whyChip": "¿Por qué?",
+    "busy": "Ya estás creando un personaje. Espera a que termine.",
+    "dailyLimit": "Ya creaste varios personajes hoy. Vuelve mañana.",
+    "retry": "No se pudo completar. Reintentar no te cobra dos veces.",
+    "use": "Usar como mi compañero",
+    "inUse": "¡Ya es tu compañero!",
+    "useError": "No se pudo cambiar. Vuelve a intentarlo.",
+    "noCompanion": "Primero elige a tu compañero.",
+    "again": "Crear otro",
+    "emotion": {
+      "neutral": "Tranquilo",
+      "happy": "Feliz",
+      "sad": "Triste",
+      "surprised": "Sorprendido",
+      "tired": "Cansado"
+    }
   }
 }

@@ -55,6 +55,7 @@ import { httpStore } from "@/lib/store";
 import { parseUsage, type UsageApi } from "@/lib/usage";
 import { httpAccount } from "@/lib/account";
 import { httpBalance } from "@/lib/balance";
+import type { AvatarApi, Creation } from "@/lib/avatar";
 import { DEV_CATALOG } from "./catalog";
 import { sealRoomEvent, unwrapKeyring, wrapRoomKeyFor } from "@chalito/rooms";
 import { DEV_MARKER, FakeDb } from "./fake-db";
@@ -1306,6 +1307,75 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     });
   }) as typeof fetch;
   const balanceApi = httpBalance("http://dev.invalid", async () => db.session?.access_token ?? null, balanceFetch);
+  // ---- /v1/avatar (apps/api src/avatar/routes.ts), simulated: the first creation is free, the job
+  // "finishes" two polls after the upload, and the card is Chalito's roster drawings.
+  const AVATAR_PRICE = 217_750;
+  const creations = new Map<string, Creation & { polls: number; uploaded: boolean }>();
+  const devCard = () => {
+    const dir = "/roster/assets/chalito/";
+    const emotions = Object.fromEntries(
+      ["neutral", "happy", "sad", "surprised", "tired"].map((e) => [e, `layer-${e}.webp`]),
+    );
+    const thumbs = { "128": "thumb-128.webp", "256": "thumb-256.webp" };
+    const urls = Object.fromEntries(
+      [...Object.values(emotions), ...Object.values(thumbs)].map((f) => [f, `${dir}${f}`]),
+    );
+    return { emotions, thumbs, urls };
+  };
+  const freeLeft = () => ![...creations.values()].some((c) => c.free && c.status !== "failed");
+  const view = (c: Creation & { polls: number; uploaded: boolean }): Creation => {
+    const { polls: _p, uploaded: _u, ...rest } = c;
+    return rest;
+  };
+  const avatarApi: AvatarApi = {
+    quote: async () => {
+      const active = [...creations.values()].find((c) =>
+        ["awaiting_upload", "queued", "generating"].includes(c.status),
+      );
+      return { free: freeLeft(), priceTokens: AVATAR_PRICE, dailyLeft: 5, active: active ? view(active) : null };
+    },
+    start: async (creationId) => {
+      db.clientWrites.push({ table: "api", op: "avatar/creations", row: { creationId } });
+      const prior = creations.get(creationId);
+      if (prior) return { ok: true, creation: view(prior), upload: { url: "dev://upload", headers: {} } };
+      const free = freeLeft();
+      if (!free && balance < AVATAR_PRICE) return { ok: false, reason: "no_tokens", chipHref: "/creditos" };
+      const c = {
+        creationId,
+        status: "awaiting_upload" as const,
+        free,
+        priceTokens: free ? 0 : AVATAR_PRICE,
+        polls: 0,
+        uploaded: false,
+      };
+      creations.set(creationId, c);
+      return { ok: true, creation: view(c), upload: { url: "dev://upload", headers: {} } };
+    },
+    upload: async () => true,
+    uploaded: async (creationId) => {
+      const c = creations.get(creationId);
+      if (!c) return "error";
+      Object.assign(c, { uploaded: true, status: "queued" });
+      return view(c);
+    },
+    status: async (creationId) => {
+      const c = creations.get(creationId);
+      if (!c) return "error";
+      if (c.uploaded && c.status !== "succeeded") {
+        c.polls++;
+        c.status = c.polls >= 2 ? "succeeded" : "generating";
+        if (c.status === "succeeded") {
+          c.card = devCard();
+          if (!c.free) balance -= AVATAR_PRICE;
+        }
+      }
+      return view(c);
+    },
+    use: async (creationId) => {
+      db.clientWrites.push({ table: "api", op: "avatar/use", row: { creationId } });
+      return "ok";
+    },
+  };
   controls.storeState = {
     setBalanceMode: (m) => void (balanceMode = m),
     balance: () => balance,
@@ -1911,6 +1981,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     usage: () => usage,
     mesa: () => mesaApi,
     store: () => store,
+    avatar: () => avatarApi,
     account: () => account,
     balance: () => balanceApi,
     endorseWatch,

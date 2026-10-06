@@ -8,6 +8,7 @@ import { useSettings } from "./useSettings";
 import { PushOptIn } from "./PushOptIn";
 import { AccountDeletion } from "./AccountDeletion";
 import { BrainKeys } from "./BrainKeys";
+import { CreateCharacter } from "./CreateCharacter";
 
 export const Settings = () => {
   const t = useTranslations("settings");
@@ -40,6 +41,7 @@ export const Settings = () => {
         hubPlansUrl={env.hubUrl || "#"}
         usageHref={getPathname({ href: "/uso", locale })}
         phoneVerifier={phoneVerifier}
+        companionExtra={<CreateCharacter />}
       />
       <BrainKeys />
       <AccountDeletion />
