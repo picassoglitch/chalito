@@ -112,7 +112,9 @@ module "storage" {
   records_kms_key_id = module.kms.records_key_id
   labels             = local.labels
   # The PWA uploads custom-companion photos straight to the bucket (signed PUT).
-  upload_cors_origins = ["https://${var.domain}"]
+  # Photo uploads (PUT) and custom-card textures (GET, CORS mode in three.js): the web app runs inside the
+  # Chalyb hub (www.chalyb.com/app/chalito); the desktop webview loads from the Tauri origins.
+  upload_cors_origins = ["https://${var.domain}", "https://www.chalyb.com", "tauri://localhost", "http://tauri.localhost"]
 }
 
 # The api signs upload and download URLs for custom companions (GcsAvatarFiles) as itself, through
