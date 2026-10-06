@@ -49,12 +49,15 @@ const factories = new Map<RecipeKind, DriverFactory>();
 
 /**
  * Registers the factory for a recipe kind (one per kind; a later call replaces it). Returns a
- * function that removes it again (tests).
+ * function that removes it again, restoring the one it replaced (tests).
  */
 export const registerDriver = (kind: RecipeKind, factory: DriverFactory): (() => void) => {
+  const previous = factories.get(kind);
   factories.set(kind, factory);
   return () => {
-    if (factories.get(kind) === factory) factories.delete(kind);
+    if (factories.get(kind) !== factory) return;
+    if (previous) factories.set(kind, previous);
+    else factories.delete(kind);
   };
 };
 
@@ -87,3 +90,6 @@ export const buildDrivers = async (ctx: DriverContext): Promise<{ kind: RecipeKi
   }
   return out;
 };
+
+/** Alias of `driverFactory` (the name the ACP, terminal and screen builders used). */
+export const driverFor = driverFactory;

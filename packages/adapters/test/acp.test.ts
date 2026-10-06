@@ -8,11 +8,23 @@ import {
   AcpAdapter,
   type AcpAdapterConfig,
   type AcpKind,
+  type AcpRecipe,
   GEMINI_POLICY,
   GROK_COMPAT_OFF,
   GROK_REQUIREMENTS,
+  BUILTIN_ACP_RECIPES,
+  OPENCODE_PERMISSION,
+  acpRecipeProblem,
+  askModeOf,
+  classifyMode,
+  profileFor,
+  commandAllowed,
   grokSandboxFor,
+  keyEnvAllowed,
+  modeAllowed,
+  slashCommand,
   toolCallsFor,
+  unsafeLaunchArg,
 } from "../src/acp/index.js";
 import { waitFor } from "./conformance.js";
 
@@ -29,7 +41,7 @@ interface LogEntry {
 
 /** One session against the fake agent, run in a fresh workspace with its own script. */
 const setup = (
-  kind: AcpKind,
+  kind: AcpKind | AcpRecipe,
   script: Record<string, unknown>,
   config: Partial<AcpAdapterConfig> = {},
   gate: (c: ToolCall, signal: AbortSignal) => Promise<boolean> = async () => true,
@@ -77,7 +89,7 @@ const setup = (
       : [];
   const received = (method: string) => log().flatMap((e) => (e.in?.method === method ? [e.in] : []));
   const states = () => events.flatMap((e) => (e.type === "state" ? [e.state] : []));
-  return { ws, home, calls, events, start, log, received, states };
+  return { adapter, ws, home, calls, events, start, log, received, states };
 };
 
 describe("ACP adapter: Grok Build profile", () => {
@@ -103,7 +115,7 @@ describe("ACP adapter: Grok Build profile", () => {
     await waitFor(() => s.states().includes("idle"), 5000);
 
     const [boot] = s.log();
-    expect(boot!.argv).toEqual(["--no-auto-update", "--sandbox", "workspace", "agent", "--no-leader", "stdio"]);
+    expect(boot!.argv).toEqual(["--sandbox", "workspace", "--no-auto-update", "agent", "--no-leader", "stdio"]);
     expect(boot!.env!.XAI_API_KEY).toBe("xai-test-key");
     expect(boot!.env!.GROK_HOME).toBe(s.home);
     expect(boot!.env!.CHALITO_SESSION).toBe("1");
@@ -315,6 +327,7 @@ describe("ACP adapter: Gemini CLI profile", () => {
     const policyDir = join(s.home, "chalito-policy");
     const [boot] = s.log();
     expect(boot!.argv).toEqual(["--acp", "--approval-mode", "default", "--admin-policy", policyDir]);
+    expect(boot!.env!.GEMINI_API_KEY).toBeUndefined();
     expect(readFileSync(join(policyDir, "chalito.toml"), "utf8")).toBe(GEMINI_POLICY);
     expect(boot!.env!.GEMINI_CLI_HOME).toBe(join(s.home, "home"));
     expect(JSON.stringify(boot!.env)).not.toContain("AIza-test");
@@ -362,6 +375,386 @@ describe("ACP adapter: Gemini CLI profile", () => {
     ]);
     h.close();
     await h.done;
+  });
+});
+
+/** A second agent that only exists as a recipe: no preset, the generic policy alone. */
+const RECIPE: AcpRecipe = {
+  id: "fake-agent",
+  name: "Fake Agent",
+  apiKey: { env: "FAKE_AGENT_API_KEY" },
+  driver: { acp: { command: ["fake-agent", "acp", "--log-level", "warn"], authMethods: ["fake-key"] } },
+};
+const recipe = (over: Partial<AcpRecipe["driver"]["acp"] & object> = {}, rest: Partial<AcpRecipe> = {}): AcpRecipe => ({
+  ...RECIPE,
+  ...rest,
+  driver: { acp: { ...RECIPE.driver.acp!, ...over } },
+});
+const MODES = {
+  currentModeId: "auto",
+  availableModes: [
+    { id: "auto", name: "Auto" },
+    { id: "approve", name: "Approve" },
+    { id: "chat", name: "Chat" },
+  ],
+};
+
+describe("ACP adapter: any recipe with driver.acp", () => {
+  it("launches the recipe's command with the key in its apiKey.env, and authenticates with its method", async () => {
+    const s = setup(RECIPE, { requireAuth: true, turns: [[{ say: "hola" }]] }, { apiKey: "fk-1" });
+    expect(s.adapter.kind).toBe("acp");
+    expect(s.adapter.appId).toBe("fake-agent");
+    const h = await s.start();
+    await waitFor(() => s.states().includes("idle"), 5000);
+    const [boot] = s.log();
+    expect(boot!.argv).toEqual(["acp", "--log-level", "warn"]);
+    expect(boot!.env!.FAKE_AGENT_API_KEY).toBe("fk-1");
+    expect(boot!.env!.CHALITO_SESSION).toBe("1");
+    expect(boot!.env!.OPENAI_API_KEY).toBeUndefined();
+    expect(s.received("authenticate").map((m) => m.params)).toEqual([{ methodId: "fake-key" }]);
+    h.close();
+    await h.done;
+  });
+
+  it("sign-in: no authenticate and no key; never an interactive (terminal) auth method", async () => {
+    const signIn = setup(RECIPE, { turns: [[]] }, { signIn: true });
+    const h = await signIn.start();
+    expect(signIn.received("authenticate")).toEqual([]);
+    expect(signIn.log()[0]!.env!.FAKE_AGENT_API_KEY).toBeUndefined();
+    h.close();
+    await h.done;
+
+    const s = setup(
+      recipe({ authMethods: ["login-tui", "fake-key"] }),
+      {
+        authMethods: [
+          { id: "login-tui", name: "Log in", type: "terminal" },
+          { id: "fake-key", name: "Key" },
+        ],
+        turns: [[]],
+      },
+      { apiKey: "fk" },
+    );
+    const h2 = await s.start();
+    expect(s.received("authenticate").map((m) => m.params)).toEqual([{ methodId: "fake-key" }]);
+    h2.close();
+    await h2.done;
+
+    // No auth methods in the recipe: the key only goes in the environment.
+    const envOnly = setup(recipe({ authMethods: [] }), { turns: [[]] }, { apiKey: "fk" });
+    const h3 = await envOnly.start();
+    expect(envOnly.received("authenticate")).toEqual([]);
+    expect(envOnly.log()[0]!.env!.FAKE_AGENT_API_KEY).toBe("fk");
+    h3.close();
+    await h3.done;
+  });
+
+  it("refuses recipes whose command skips approvals or whose key variable isn't a key", () => {
+    const make = (r: AcpRecipe) => () => new AcpAdapter(r, { binPath: FAKE, apiKey: "k" });
+    expect(make(recipe({ command: ["qwen", "--acp", "--yolo"] }))).toThrow(/--yolo/);
+    expect(make(recipe({ command: ["gemini", "--acp", "--approval-mode", "yolo"] }))).toThrow(/approval-mode yolo/);
+    expect(make(recipe({ command: ["x", "--approval-mode=auto_edit"] }))).toThrow(/approval-mode=auto_edit/);
+    expect(make(recipe({ command: ["claude", "--dangerously-skip-permissions"] }))).toThrow(/dangerously/);
+    expect(make(recipe({ command: ["grok", "--always-approve", "agent", "stdio"] }))).toThrow(/always-approve/);
+    expect(make(recipe({ command: [] }))).toThrow(/empty/);
+    expect(make(recipe({}, { apiKey: { env: "LD_PRELOAD" } }))).toThrow(/isn't allowed/);
+    expect(make(recipe({}, { apiKey: { env: "NODE_OPTIONS" } }))).toThrow(/isn't allowed/);
+    expect(make(recipe({}, { apiKey: { env: "CHALITO_API_KEY" } }))).toThrow(/isn't allowed/);
+    expect(make(recipe({}, { id: "Bad Id" }))).toThrow(/invalid recipe id/);
+    expect(make({ ...RECIPE, driver: {} })).toThrow(/no ACP driver/);
+  });
+
+  it("a custom recipe for a known CLI keeps that CLI's hardening (preset by binary name)", async () => {
+    const s = setup(
+      { id: "mi-gemini", name: "Mi Gemini", driver: { acp: { command: ["gemini", "--acp"] } } },
+      { turns: [[]] },
+      { apiKey: "AIza-k" },
+    );
+    const h = await s.start();
+    expect(s.log()[0]!.argv).toEqual(["--acp", "--admin-policy", join(s.home, "chalito-policy")]);
+    expect(s.received("authenticate")[0]!.params).toEqual({
+      methodId: "gemini-api-key",
+      _meta: { "api-key": "AIza-k" },
+    });
+    h.close();
+    await h.done;
+  });
+
+  it("forces the ask mode at start and puts it back when the agent switches to one that skips prompts", async () => {
+    const s = setup(
+      RECIPE,
+      { modes: MODES, turns: [[{ mode: "chat" }, { say: "a" }, { mode: "auto" }, { say: "b" }]] },
+      { apiKey: "k" },
+    );
+    const h = await s.start();
+    await waitFor(() => s.states().includes("idle"), 5000);
+    await waitFor(() => s.received("session/set_mode").length === 2, 5000);
+    // Start: auto → approve. Read-only "chat" may stay; "auto" goes back to approve.
+    expect(s.received("session/set_mode").map((m) => m.params!.modeId)).toEqual(["approve", "approve"]);
+    expect(s.states()).not.toContain("failed");
+    h.close();
+    await h.done;
+  });
+
+  it("stops the session when the ask mode can't be restored", async () => {
+    const s = setup(
+      RECIPE,
+      {
+        modes: { ...MODES, currentModeId: "approve" },
+        setModeFails: true,
+        turns: [[{ mode: "auto" }, { waitCancel: true }]],
+      },
+      { apiKey: "k" },
+    );
+    const h = await s.start();
+    await h.done;
+    expect(s.events).toContainEqual(
+      expect.objectContaining({ type: "error", message: expect.stringMatching(/"auto" mode.*stopped/) }),
+    );
+    expect(s.states()).toContain("failed");
+  });
+
+  it("refuses to start in a mode that skips prompts when the agent offers none that asks", async () => {
+    const s = setup(
+      RECIPE,
+      {
+        modes: {
+          currentModeId: "yolo",
+          availableModes: [
+            { id: "yolo", name: "YOLO" },
+            { id: "build", name: "Build" },
+          ],
+        },
+      },
+      { apiKey: "k" },
+    );
+    await expect(s.start()).rejects.toThrow(/"yolo" mode and offers no mode that asks/);
+    expect(s.received("session/prompt")).toEqual([]);
+
+    // Unknown modes that aren't known to skip prompts stay (every request still reaches the gate).
+    const ok = setup(
+      RECIPE,
+      { modes: { currentModeId: "build", availableModes: [{ id: "build", name: "Build" }] }, turns: [[]] },
+      { apiKey: "k" },
+    );
+    const h = await ok.start();
+    expect(ok.received("session/set_mode")).toEqual([]);
+    h.close();
+    await h.done;
+  });
+
+  it("holds a mode config option on its ask value and switches approval toggles off", async () => {
+    const configOptions = [
+      {
+        id: "mode",
+        name: "Mode",
+        category: "mode",
+        type: "select",
+        currentValue: "yolo",
+        options: [
+          { value: "default", name: "Ask" },
+          { value: "yolo", name: "YOLO" },
+        ],
+      },
+      { id: "auto_approve", name: "Auto approve", type: "boolean", currentValue: true },
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "m1",
+        options: [{ value: "m1", name: "M1" }],
+      },
+    ];
+    const s = setup(
+      RECIPE,
+      {
+        configOptions,
+        turns: [[{ config: [{ ...configOptions[0], currentValue: "yolo" }] }, { say: "ok" }]],
+      },
+      { apiKey: "k" },
+    );
+    const h = await s.start();
+    await waitFor(() => s.states().includes("idle"), 5000);
+    await waitFor(() => s.received("session/set_config_option").length === 3, 5000);
+    expect(s.received("session/set_config_option").map((m) => m.params)).toEqual([
+      { sessionId: "fake-session-1", configId: "mode", value: "default" },
+      { sessionId: "fake-session-1", configId: "auto_approve", type: "boolean", value: false },
+      { sessionId: "fake-session-1", configId: "mode", value: "default" },
+    ]);
+    h.close();
+    await h.done;
+  });
+
+  it("refuses advertised and approval-related slash commands; passes paths and harmless ones", async () => {
+    const s = setup(
+      RECIPE,
+      { commands: ["compact", "help"], turns: [[{ say: "1" }], [{ say: "2" }], [{ say: "3" }]] },
+      { apiKey: "k" },
+    );
+    const h = await s.start();
+    await waitFor(() => s.states().includes("idle"), 5000);
+    const errors = () => s.events.filter((e) => e.type === "error").length;
+    for (const [i, p] of ["/yolo", "/permissions allow all", "/approval-mode auto", "/compact", "/help"].entries()) {
+      h.prompt(p, "client:phone1");
+      await waitFor(() => errors() === i + 1, 5000);
+    }
+    expect(s.received("session/prompt")).toHaveLength(1);
+    h.prompt("/src/a.ts: why does this fail?", "local");
+    await waitFor(() => s.received("session/prompt").length === 2, 5000);
+    await waitFor(() => s.states().filter((x) => x === "idle").length >= 7, 5000);
+    h.prompt("/explain this", "local");
+    await waitFor(() => s.received("session/prompt").length === 3, 5000);
+    h.close();
+    await h.done;
+  });
+
+  it("never answers allow_always: without a one-time allow the request is cancelled", async () => {
+    const s = setup(
+      RECIPE,
+      {
+        permissionOptions: [
+          { optionId: "always", name: "Always", kind: "allow_always" },
+          { optionId: "no", name: "No", kind: "reject_always" },
+        ],
+        turns: [[{ tool: { id: "t1", kind: "execute", rawInput: { command: "ls" } } }]],
+      },
+      { apiKey: "k" },
+    );
+    const h = await s.start();
+    await waitFor(() => s.log().some((e) => e.permission === "t1"), 5000);
+    expect(s.calls).toHaveLength(1);
+    expect(s.log().find((e) => e.permission === "t1")!.outcome).toEqual({ outcome: "cancelled" });
+    h.close();
+    await h.done;
+  });
+});
+
+describe("built-in ACP recipes and presets", () => {
+  it("every built-in recipe passes the generic checks", () => {
+    for (const r of Object.values(BUILTIN_ACP_RECIPES)) expect(acpRecipeProblem(r)).toBeNull();
+  });
+
+  const launchOf = (id: keyof typeof BUILTIN_ACP_RECIPES, config: Partial<AcpAdapterConfig> = { signIn: true }) => {
+    const home = mkdtempSync(join(tmpdir(), "chalito-acp-home-"));
+    return profileFor(BUILTIN_ACP_RECIPES[id]).launch({ binPath: "/bin/x", home, env: {}, ...config }, "default");
+  };
+
+  it("OpenCode asks for every tool; Goose starts in approve; Qwen in default", () => {
+    const oc = launchOf("opencode");
+    expect(oc.args).toEqual(["acp"]);
+    expect(oc.env.OPENCODE_PERMISSION).toBe(OPENCODE_PERMISSION);
+    expect(launchOf("goose").env.GOOSE_MODE).toBe("approve");
+    expect(launchOf("qwen-code").args).toEqual(["--acp", "--approval-mode", "default"]);
+    const q = launchOf("qwen-code", { apiKey: "sk-q" });
+    expect(q.args).toEqual(["--acp", "--approval-mode", "default", "--auth-type", "openai"]);
+    expect(q.env.OPENAI_API_KEY).toBe("sk-q");
+    expect(launchOf("mistral-vibe", { apiKey: "m" }).env.MISTRAL_API_KEY).toBe("m");
+  });
+
+  it("holds each agent's ask mode", () => {
+    const p = (id: keyof typeof BUILTIN_ACP_RECIPES) => profileFor(BUILTIN_ACP_RECIPES[id]);
+    expect(askModeOf(p("opencode"), [{ id: "build" }, { id: "plan" }])).toBe("build");
+    const goose = [{ id: "auto" }, { id: "approve" }, { id: "smart_approve" }, { id: "chat" }];
+    expect(askModeOf(p("goose"), goose)).toBe("approve");
+    expect(modeAllowed(p("goose"), "approve", "smart_approve")).toBe(false);
+    const qwen = ["plan", "default", "auto-edit", "auto", "yolo"].map((id) => ({ id }));
+    expect(askModeOf(p("qwen-code"), qwen)).toBe("default");
+    expect(
+      askModeOf(
+        p("mistral-vibe"),
+        ["ask", "plan", "accept-edits", "auto-approve"].map((id) => ({ id })),
+      ),
+    ).toBe("ask");
+    // Copilot's approval commands never reach it, advertised or not.
+    for (const c of ["allow-all", "permissions", "autopilot", "reset-allowed-tools", "sandbox"])
+      expect(commandAllowed(c, p("copilot-cli").allowedCommands, new Set())).toBe(false);
+  });
+});
+
+describe("ACP adapter: OpenCode-style mode option", () => {
+  it("keeps build (ask mode once every tool asks) and puts it back from an unknown mode", async () => {
+    const mode = (currentValue: string) => ({
+      id: "mode",
+      name: "Mode",
+      category: "mode",
+      type: "select",
+      currentValue,
+      options: [
+        { value: "build", name: "Build" },
+        { value: "plan", name: "Plan" },
+        { value: "custom", name: "Custom" },
+      ],
+    });
+    const s = setup(
+      { ...BUILTIN_ACP_RECIPES.opencode },
+      {
+        configOptions: [mode("build")],
+        turns: [[{ config: [mode("plan")] }, { config: [mode("custom")] }, { say: "ok" }]],
+      },
+      { signIn: true },
+    );
+    const h = await s.start();
+    await waitFor(() => s.states().includes("idle"), 5000);
+    await waitFor(() => s.received("session/set_config_option").length === 1, 5000);
+    expect(s.received("session/set_config_option").map((m) => m.params)).toEqual([
+      { sessionId: "fake-session-1", configId: "mode", value: "build" },
+    ]);
+    expect(s.log()[0]!.env!.OPENCODE_PERMISSION).toBe(OPENCODE_PERMISSION);
+    h.close();
+    await h.done;
+  });
+});
+
+describe("generic ACP policy", () => {
+  const policy = { unsafeModes: [] };
+  it("finds approval-skipping launch flags", () => {
+    expect(unsafeLaunchArg(["acp"])).toBeNull();
+    expect(unsafeLaunchArg(["--sandbox", "workspace", "--no-auto-update"])).toBeNull();
+    expect(unsafeLaunchArg(["--approval-mode", "default"])).toBeNull();
+    for (const bad of [
+      ["-y"],
+      ["--yolo"],
+      ["--full-auto"],
+      ["--allow-all-tools"],
+      ["--sandbox", "off"],
+      ["--no-sandbox"],
+      ["--mode=bypassPermissions"],
+    ])
+      expect(unsafeLaunchArg(bad)).not.toBeNull();
+  });
+  it("classifies modes and picks the one that asks", () => {
+    expect(classifyMode(policy, "yolo")).toBe("unsafe");
+    expect(classifyMode(policy, "x", "Always allow")).toBe("unsafe");
+    expect(classifyMode(policy, "default")).toBe("ask");
+    expect(classifyMode(policy, "plan")).toBe("read_only");
+    expect(classifyMode(policy, "build")).toBe("unknown");
+    expect(askModeOf(policy, [{ id: "plan" }, { id: "default" }])).toBe("default");
+    expect(askModeOf(policy, [{ id: "build" }, { id: "plan" }])).toBe("plan");
+    expect(askModeOf({ unsafeModes: [], safeMode: "careful" }, [{ id: "careful" }, { id: "default" }])).toBe("careful");
+    expect(askModeOf(policy, [{ id: "default", name: "Auto-accept edits" }])).toBeNull();
+    expect(modeAllowed(policy, "default", "plan")).toBe(true);
+    expect(modeAllowed(policy, "default", "build")).toBe(false);
+    expect(modeAllowed(policy, null, "build")).toBe(true);
+    expect(modeAllowed(policy, null, "acceptEdits")).toBe(false);
+  });
+  it("decides which slash commands reach the agent", () => {
+    const adv = new Set(["compact", "always-approve"]);
+    expect(slashCommand("  /always-approve on")).toBe("always-approve");
+    expect(slashCommand("hola /yolo")).toBeNull();
+    expect(commandAllowed("compact", ["compact"], adv)).toBe(true);
+    expect(commandAllowed("compact", [], adv)).toBe(false);
+    expect(commandAllowed("always-approve", ["compact"], adv)).toBe(false);
+    expect(commandAllowed("yolo", [], new Set())).toBe(false);
+    expect(commandAllowed("mcp", [], new Set())).toBe(false);
+    expect(commandAllowed("src", [], new Set())).toBe(true);
+  });
+  it("allows only key-like variables for the API key", () => {
+    expect(keyEnvAllowed("XAI_API_KEY")).toBe(true);
+    expect(keyEnvAllowed("DASHSCOPE_API_KEY")).toBe(true);
+    expect(keyEnvAllowed("GITHUB_TOKEN")).toBe(true);
+    for (const bad of ["PATH", "LD_PRELOAD", "NODE_OPTIONS", "CHALITO_KEY", "lower_key", "GIT_ASKPASS_TOKEN"])
+      expect(keyEnvAllowed(bad)).toBe(false);
   });
 });
 

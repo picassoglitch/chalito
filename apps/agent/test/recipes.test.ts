@@ -269,6 +269,7 @@ describe("custom recipes (~/.chalito/recipes, local-only enable)", () => {
 describe("driver hook (drivers/registry.ts)", () => {
   it("registerDriver(kind, factory): the engine builds a driver per kind the recipe has", async () => {
     const seen: string[] = [];
+    const before = driverFactory("acp");
     const off = registerDriver("acp", (ctx) => {
       seen.push(`${ctx.recipe.id}:${ctx.bin}:${ctx.auth.signIn}`);
       return { launch: async () => true };
@@ -311,6 +312,6 @@ describe("driver hook (drivers/registry.ts)", () => {
       off();
       offWeb();
     }
-    expect(driverFactory("acp")).toBeUndefined();
+    expect(driverFactory("acp")).toBe(before);
   });
 });
