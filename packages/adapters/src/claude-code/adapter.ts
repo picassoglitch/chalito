@@ -61,6 +61,9 @@ export interface ClaudeCodeInitInfo {
   model: string;
 }
 
+/** Longer than the 10-minute approval window: a computer-control call may wait for one. */
+export const MCP_TOOL_TIMEOUT_MS = 11 * 60 * 1000;
+
 /** Cap on the CLAUDE.md text appended to the system prompt; larger files are skipped. */
 const CLAUDE_MD_MAX = 64 * 1024;
 
@@ -183,6 +186,19 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       ...(this.config.claudePath ? { pathToClaudeCodeExecutable: this.config.claudePath } : {}),
       ...(this.config.model ? { model: this.config.model } : {}),
       ...(opts.resume ? { resume: opts.resume } : {}),
+      // Only the agent's own local servers (computer control); strictMcpConfig keeps out every
+      // other source. Their tool calls still go through the PreToolUse gate above.
+      ...(opts.mcpServers && Object.keys(opts.mcpServers).length
+        ? {
+            mcpServers: Object.fromEntries(
+              Object.entries(opts.mcpServers).map(([name, m]) => [
+                name,
+                // A first call may wait for the person's approval (up to 10 minutes).
+                { type: "stdio" as const, command: m.command, args: m.args, env: m.env, timeout: MCP_TOOL_TIMEOUT_MS },
+              ]),
+            ),
+          }
+        : {}),
       ...(claudeMd
         ? {
             systemPrompt: {

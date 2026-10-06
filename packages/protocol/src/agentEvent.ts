@@ -252,5 +252,19 @@ export const DeviceEvent = z.discriminatedUnion("type", [
     clientDeviceId: DeviceId,
     t: EpochMs,
   }),
+  /**
+   * Computer control's state on this device, for display only (remote surfaces can read it,
+   * never turn it on): whether it is enabled locally and how many sessions hold control now.
+   * `by` names what ended control when it was stopped (`hotkey`, `tray`, `panel`, `cli`, `policy`).
+   */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("computer.changed"),
+    deviceId: DeviceId,
+    enabled: z.boolean(),
+    activeSessions: z.number().int().min(0).max(1000),
+    by: z.string().max(32).optional(),
+    t: EpochMs,
+  }),
 ]);
 export type DeviceEvent = z.infer<typeof DeviceEvent>;

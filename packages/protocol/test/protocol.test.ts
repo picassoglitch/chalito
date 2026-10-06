@@ -96,6 +96,27 @@ describe("remote surfaces can never widen the device", () => {
     }
   });
 
+  it("no command variant can enable computer control (it is local-only, like Developer mode)", () => {
+    // Every variant the remote surface has: none is about computer control at all.
+    const types = CommandPayload.options.map((o) => o.shape.type.value as string);
+    expect(types.filter((t) => /computer/i.test(t))).toEqual([]);
+    for (const type of ["computer.enable", "computer.on", "computer.grant", "computer.start", "computer_control"]) {
+      expect(CommandPayload.safeParse({ type }).success).toBe(false);
+      expect(CommandPayload.safeParse({ type, sid: "s1", enabled: true }).success).toBe(false);
+    }
+    // Extra fields on real variants are stripped, never carried to the agent.
+    const start = CommandPayload.parse({
+      type: "session.start",
+      adapter: "claude-code",
+      workspaceLabel: "w",
+      promptCt: { alg: "xchacha20poly1305+sealedbox", nonce: b64(24), ct: b64(10), keys: { d1: b64(80) } },
+      computer: true,
+      computerControl: { enabled: true },
+    });
+    expect(Object.keys(start)).not.toContain("computer");
+    expect(Object.keys(start)).not.toContain("computerControl");
+  });
+
   it("relayed (unsigned) commands may only prompt, each relay from its own origin (review R-L2)", () => {
     const body = (origin: string, payload: unknown, relayedBy = "mcp-gateway") => ({
       relayedBy,

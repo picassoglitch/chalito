@@ -5,7 +5,13 @@ import { SealedEnvelope, signed } from "./crypto.js";
 /** Approvals expire 10 minutes after creation; an unanswered approval is a deny. */
 export const APPROVAL_TTL_MS = 10 * 60 * 1000;
 
-export const ApprovalKind = z.enum(["tool", "decision"]);
+/**
+ * `computer_control`: a session asks to see the screen and drive the mouse and keyboard of the
+ * device (apps/agent/src/computer). Only offered once the person enabled computer control
+ * locally on that device; always HIGH with a passkey step-up, once per session.
+ */
+export const ApprovalKind = z.enum(["tool", "decision", "computer_control"]);
+export type ApprovalKind = z.infer<typeof ApprovalKind>;
 export const ApprovalStatus = z.enum(["pending", "approved", "denied", "expired", "rejected_invalid"]);
 
 /** Bidi/format (Cf) and control (Cc) characters: they can hide or reorder text on screen (R-M10). */

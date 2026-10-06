@@ -51,7 +51,9 @@ const ProviderConnect = z
  * enables Developer mode, enables a toggle, loosens policy, adds a trusted client,
  * enables computer control, or sets a permission mode above `acceptEdits` — those
  * shapes are unrepresentable. The provider.* commands manage credentials and the
- * provider's CLI only; they never touch policy.
+ * provider's CLI only; they never touch policy. (Computer control is turned on only on the
+ * device, `chalito computer enable` or the desktop panel; a remote surface can turn it off
+ * through `policy.tighten` and approve or deny a session's `computer_control` approval.)
  */
 export const CommandPayload = z.discriminatedUnion("type", [
   z.object({

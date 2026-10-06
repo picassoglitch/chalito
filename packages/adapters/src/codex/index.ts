@@ -10,6 +10,7 @@ export {
   codexVersionFromUserAgent,
   DEFAULT_CODEX_VERSIONS,
   HARDENING_OVERRIDES,
+  mcpServerOverrides,
   removeStoredCredentials,
   sandboxModeFor,
   sandboxPolicyFor,
