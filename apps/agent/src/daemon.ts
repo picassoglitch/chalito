@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import type { SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv, type ClaudeAuth } from "@chalito/adapters/claude-code";
 import { CodexAdapter } from "@chalito/adapters/codex";
-import { AcpAdapter } from "@chalito/adapters/acp";
+import { builtinAcpRecipe } from "@chalito/adapters/acp";
 import { loadLiabilityText, loadProviders } from "@chalito/config";
 import type { NonceStore, TrustedClientList } from "@chalito/crypto";
 import type { AdapterKind, DeviceEvent, Provider } from "@chalito/protocol";
@@ -29,6 +29,7 @@ import { ProviderManager } from "./providers.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, redactDeep, type Logger } from "./redact.js";
+import { driverFor } from "./drivers/index.js";
 import { spawnRunner, which } from "./runner.js";
 import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
@@ -240,20 +241,24 @@ export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({
         }),
       }
     : {}),
-  // Over ACP (D-022): every permission request goes through the gate; the key runs with
-  // Chalito's own CLI home, sign-in with the person's own login (never started or read by us).
+  // Over ACP (D-022, D-064): the recipe-driven ACP driver; every permission request goes through
+  // the gate; the key runs with Chalito's own CLI home, sign-in with the person's own login (never
+  // started or read by us).
   ...Object.fromEntries(
     (["grok", "gemini"] as const).flatMap((kind) => {
       const i = kind === "grok" ? grok : gemini;
-      return i
+      const acp = driverFor("acp");
+      return i && acp
         ? [
             [
               kind,
-              new AcpAdapter(kind, {
+              acp({
+                recipe: builtinAcpRecipe(kind),
                 binPath: i.path,
                 ...(i.apiKey ? { apiKey: i.apiKey } : { signIn: i.signIn }),
                 home: i.home,
                 env: i.env,
+                log,
               }),
             ],
           ]

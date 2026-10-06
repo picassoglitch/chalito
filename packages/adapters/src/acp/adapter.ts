@@ -9,12 +9,16 @@ import {
   type PromptResponse,
   type RequestPermissionRequest,
   type RequestPermissionResponse,
+  type SessionConfigOption,
+  type SessionModeState,
   type SessionNotification,
   type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
-import type { Origin } from "@chalito/protocol";
+import type { AdapterKind, Origin } from "@chalito/protocol";
 import type { AdapterEvent, SessionAdapter, SessionHandle, SessionStartOptions, ToolCall } from "../core.js";
-import { ACP_PROFILES, type AcpConfig, type AcpKind, type AcpProfile } from "./profiles.js";
+import { askModeOf, commandAllowed, modeAllowed, slashCommand, unsafeToggle } from "./policy.js";
+import { type AcpConfig, type AcpKind, type AcpProfile, builtinAcpRecipe, profileFor } from "./profiles.js";
+import type { AcpRecipe } from "./recipe.js";
 
 /**
  * Generic ACP client (Agent Client Protocol v1, JSON-RPC 2.0 over ndjson on stdio) on the
@@ -129,19 +133,36 @@ export const toolCallsFor = (
   }
 };
 
-/** The first word of a slash command ("/always-approve on" → "always-approve"), or null. */
-const slashCommand = (text: string) => /^\s*\/([\w:.-]+)/.exec(text)?.[1] ?? null;
+/** A select option's values, flattening groups. */
+const selectValues = (o: SessionConfigOption): { id: string; name: string }[] => {
+  if (o.type !== "select") return [];
+  return o.options.flatMap((x) =>
+    "group" in x ? x.options.map((v) => ({ id: v.value, name: v.name })) : [{ id: x.value, name: x.name }],
+  );
+};
+const isModeOption = (o: SessionConfigOption) => o.type === "select" && (o.category === "mode" || o.id === "mode");
 
+/** How many times a session may be put back in its ask mode before Chalito gives up and stops it. */
+const MAX_MODE_RESTORES = 3;
+
+/**
+ * Any ACP agent, from its recipe (`driver.acp` + `apiKey.env`). `grok` and `gemini` keep their
+ * own `AdapterKind`; every other recipe runs as kind "acp" and is told apart by `appId`.
+ */
 export class AcpAdapter implements SessionAdapter {
-  readonly kind: AcpKind;
+  readonly kind: AdapterKind;
+  /** The recipe id. */
+  readonly appId: string;
   readonly #profile: AcpProfile;
 
   constructor(
-    kind: AcpKind,
+    recipe: AcpRecipe | AcpKind,
     private readonly config: AcpAdapterConfig,
   ) {
-    this.kind = kind;
-    this.#profile = ACP_PROFILES[kind];
+    const r = typeof recipe === "string" ? builtinAcpRecipe(recipe) : recipe;
+    this.#profile = profileFor(r);
+    this.appId = r.id;
+    this.kind = r.id === "grok" || r.id === "gemini" ? r.id : "acp";
   }
 
   async start(opts: SessionStartOptions): Promise<SessionHandle> {
@@ -162,6 +183,10 @@ export class AcpAdapter implements SessionAdapter {
     const queue: { text: string; origin: Origin }[] = [];
     const tools = new Map<string, ToolCallUpdate & { started?: boolean }>();
     const commands = new Set<string>();
+    /** The ask mode the session is held in (session/set_mode), when the agent has modes. */
+    let askMode: string | null = null;
+    const modeNames = new Map<string, string>();
+    let restores = 0;
 
     const flushText = () => {
       if (text) opts.onEvent({ type: "assistant_text", text });
@@ -240,7 +265,11 @@ export class AcpAdapter implements SessionAdapter {
           for (const c of u.availableCommands) commands.add(c.name);
           return;
         case "current_mode_update":
-          if (profile.unsafeModes.includes(u.currentModeId)) void restoreSafeMode(u.currentModeId);
+          if (!modeAllowed(profile, askMode, u.currentModeId, modeNames.get(u.currentModeId)))
+            void restoreSafeMode(u.currentModeId);
+          return;
+        case "config_option_update":
+          void holdConfig(u.configOptions).catch((err: unknown) => stopUnsafe(messageOf(err)));
           return;
         default:
           return;
@@ -255,22 +284,61 @@ export class AcpAdapter implements SessionAdapter {
     };
     const conn = new ClientSideConnection(() => client, ndJsonStream(t.stdin, t.stdout));
 
-    /** The agent switched itself to a mode that skips prompts: switch back, or stop. */
+    /** Ends a session that left (or can't be kept in) a mode where every action asks. */
+    const stopUnsafe = (why: string) => {
+      if (closed) return;
+      opts.onEvent({
+        type: "error",
+        code: "internal",
+        message: `${profile.title}: ${why}, which would skip Chalito's approvals; the session was stopped.`,
+      });
+      opts.onEvent({ type: "state", state: "failed" });
+      handle.close();
+    };
+
+    /** The agent switched itself to a mode that might not ask: switch back, or stop. */
     const restoreSafeMode = async (reported: string) => {
-      if (profile.safeMode) {
-        const ok = await conn.setSessionMode({ sessionId, modeId: profile.safeMode }).then(
+      const target = askMode ?? profile.safeMode;
+      if (target && restores++ < MAX_MODE_RESTORES) {
+        const ok = await conn.setSessionMode({ sessionId, modeId: target }).then(
           () => true,
           () => false,
         );
         if (ok) return;
       }
-      opts.onEvent({
-        type: "error",
-        code: "internal",
-        message: `${profile.title} switched to "${reported}", which skips Chalito's approvals; the session was stopped.`,
-      });
-      opts.onEvent({ type: "state", state: "failed" });
-      handle.close();
+      stopUnsafe(`it switched to the "${reported}" mode`);
+    };
+
+    /** Holds the session in its ask mode at start (session/new, load or resume). */
+    const holdModes = async (modes: SessionModeState | null | undefined) => {
+      if (!modes) return;
+      for (const m of modes.availableModes) modeNames.set(m.id, m.name);
+      askMode = askModeOf(profile, modes.availableModes);
+      const current = modes.currentModeId;
+      if (askMode && current !== askMode) await conn.setSessionMode({ sessionId, modeId: askMode });
+      else if (!modeAllowed(profile, askMode, current, modeNames.get(current)))
+        throw new Error(`it starts in the "${current}" mode and offers no mode that asks`);
+    };
+
+    /**
+     * Same for session config options: a "mode" selector is held on its ask value, and an on/off
+     * option named like "yolo" or "auto-approve" is switched off. Throws when it can't be.
+     */
+    const holdConfig = async (options: SessionConfigOption[] | null | undefined, atStart = false) => {
+      for (const o of options ?? []) {
+        if (isModeOption(o) && o.type === "select") {
+          const values = selectValues(o);
+          const target = askModeOf(profile, values);
+          const name = values.find((v) => v.id === o.currentValue)?.name;
+          const ok = modeAllowed(profile, target, o.currentValue, name);
+          if (ok && !(atStart && target && o.currentValue !== target)) continue;
+          if (!target || restores++ >= MAX_MODE_RESTORES) throw new Error(`its "${o.currentValue}" ${o.name} setting`);
+          await conn.setSessionConfigOption({ sessionId, configId: o.id, value: target });
+        } else if (o.type === "boolean" && o.currentValue && unsafeToggle(o.id, o.name)) {
+          if (restores++ >= MAX_MODE_RESTORES) throw new Error(`its "${o.name}" setting is on`);
+          await conn.setSessionConfigOption({ sessionId, configId: o.id, type: "boolean", value: false });
+        }
+      }
     };
 
     const usageOf = (r: PromptResponse) => {
@@ -298,7 +366,7 @@ export class AcpAdapter implements SessionAdapter {
       interrupted = false;
       turnAbort = new AbortController();
       const cmd = slashCommand(prompt);
-      if (cmd && commands.has(cmd) && !profile.allowedCommands.includes(cmd)) {
+      if (cmd && !commandAllowed(cmd, profile.allowedCommands, commands)) {
         opts.onEvent({
           type: "error",
           code: "internal",
@@ -397,7 +465,7 @@ export class AcpAdapter implements SessionAdapter {
         if (init.protocolVersion !== PROTOCOL_VERSION) {
           throw new Error(`${profile.title} speaks ACP v${init.protocolVersion}; Chalito speaks v${PROTOCOL_VERSION}`);
         }
-        const auth = profile.authenticate(this.config);
+        const auth = profile.authenticate(this.config, init.authMethods ?? []);
         if (auth) {
           try {
             await conn.authenticate(auth);
@@ -407,14 +475,15 @@ export class AcpAdapter implements SessionAdapter {
         }
         const caps = init.agentCapabilities ?? {};
         const base = { cwd: opts.cwd, mcpServers: [] };
+        let state: { modes?: SessionModeState | null; configOptions?: SessionConfigOption[] | null };
         if (opts.resume && caps.sessionCapabilities?.resume) {
-          await conn.resumeSession({ sessionId: opts.resume, ...base });
           sessionId = opts.resume;
+          state = (await conn.resumeSession({ sessionId: opts.resume, ...base })) ?? {};
         } else if (opts.resume && caps.loadSession) {
           sessionId = opts.resume;
           loading = true;
           try {
-            await conn.loadSession({ sessionId: opts.resume, ...base });
+            state = (await conn.loadSession({ sessionId: opts.resume, ...base })) ?? {};
           } finally {
             loading = false;
           }
@@ -427,11 +496,11 @@ export class AcpAdapter implements SessionAdapter {
             throw err;
           });
           sessionId = r.sessionId;
-          const current = r.modes?.currentModeId;
-          if (current && profile.unsafeModes.includes(current) && profile.safeMode) {
-            await conn.setSessionMode({ sessionId, modeId: profile.safeMode });
-          }
+          state = r;
         }
+        // Where the agent has modes, every session runs in the one that asks (D-064).
+        await holdModes(state.modes);
+        await holdConfig(state.configOptions, true);
       };
       await Promise.race([setup(), timeout, closedEarly]);
     } catch (err) {
