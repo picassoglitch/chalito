@@ -81,6 +81,38 @@
       "missing": "falta",
       "openSettings": "Abrir Configuración"
     },
+    "terminal": {
+      "title": "Terminal remota",
+      "intro": "Permite abrir la app de terminal de una IA (aider, opencode…) en esta computadora y usarla desde tu navegador de confianza. Cada terminal pide tu aprobación con passkey.",
+      "active": "Terminales abiertas: {labels}",
+      "hotkey": "Las cierras con Ctrl+Alt+Esc o con «Detener control» en el ícono de Chalito.",
+      "step1": "¿Activar la terminal remota? Una terminal aprobada podría:",
+      "step2": "Confírmalo de nuevo:",
+      "step3": "Escribe «{phrase}» para continuar.",
+      "confirm": "Activar (te pedirá tu contraseña)",
+      "failed": "No se activó: {reason}",
+      "shell": {
+        "title": "Shell completa",
+        "step1": "¿Activar la shell completa remota? Una shell aprobada podría:"
+      }
+    },
+    "screen": {
+      "title": "Pantalla remota",
+      "intro": "Permite ver esta pantalla (o también usar su mouse y teclado) desde tu navegador de confianza. La imagen va directo y cifrada entre ese navegador y esta computadora. Cada sesión pide tu aprobación con passkey.",
+      "off": "Desactivada",
+      "view": "Solo ver",
+      "control": "Ver y controlar",
+      "enableView": "Activar ver",
+      "enableControl": "Activar control",
+      "disable": "Desactivar",
+      "disableControl": "Quitar control",
+      "active": "Sesión abierta: {labels}",
+      "pending": "Esperando tu aprobación: {labels}",
+      "close": "Cerrar",
+      "step1View": "¿Activar ver esta pantalla a distancia? Tu navegador de confianza podría:",
+      "step1Control": "¿Activar el control remoto de esta pantalla? Tu navegador de confianza podría:",
+      "failed": "No se activó: {reason}"
+    },
     "notices": {
       "title": "Avisos de seguridad",
       "missingStepUp": "«{computer}» rechazó un dispositivo nuevo: el dispositivo que lo aprobó no usó su llave de acceso. Vuelve a aprobarlo desde tu teléfono con la llave de acceso.",
@@ -154,7 +186,8 @@
         "signing_in": "Termina de iniciar sesión en el navegador que se abrió.",
         "connected": "Conectado",
         "error": "No se pudo conectar.",
-        "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta. Usa una API key."
+        "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta. Usa una API key.",
+        "available": "Listo. Inicias sesión dentro de la app."
       },
       "mode": {
         "api_key": "con tu API key",
@@ -169,7 +202,11 @@
         "signin_timeout": "El inicio de sesión tardó demasiado. Inténtalo otra vez.",
         "key_invalid": "Esa API key no es válida.",
         "keychain_failed": "No pude guardar la llave en el llavero del sistema.",
-        "status_failed": "No pude revisar el estado."
+        "status_failed": "No pude revisar el estado.",
+        "launch_failed": "No se pudo abrir en esta computadora.",
+        "unsupported_platform": "No está disponible para este sistema operativo.",
+        "install_unavailable": "No hay un instalador oficial que se pueda usar aquí (falta brew o winget).",
+        "recipe_disabled": "Esta receta personalizada está desactivada en esta computadora."
       },
       "failure": {
         "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta.",
@@ -194,6 +231,51 @@
         "openai": "Iniciar sesión con tu plan de ChatGPT: solo equipo de Chalito por ahora.",
         "xai": "Iniciar sesión con Grok no está disponible por ahora.",
         "google": "Iniciar sesión con Google no está disponible por ahora."
+      }
+    },
+    "apps": {
+      "intro": "Todas tus IA en un solo lugar. Cada una inicia sesión con su propia app, su CLI o su sitio oficial; Chalito nunca ve tus contraseñas.",
+      "group": {
+        "agents": "Agentes de código y terminal",
+        "desktop": "Apps de escritorio",
+        "web": "Sitios web de IA",
+        "custom": "Personalizada"
+      },
+      "custom": "Personalizada",
+      "customHint": "Tus propias recetas en ~/.chalito/recipes. Solo se activan aquí, en esta computadora, y solo su id, nombre y estado salen de ella.",
+      "enable": "Activar en esta computadora",
+      "enableYes": "Sí, activar",
+      "disable": "Desactivar",
+      "enableResult": {
+        "os_auth_failed": "No se pudo verificar tu identidad en el sistema. No cambió nada.",
+        "cancelled": "Cancelado. No cambió nada."
+      },
+      "open": "Abrir",
+      "openSignin": "Abrir (inicias sesión ahí)",
+      "installVia": "Voy a instalar el paquete oficial {ref} con {via} en esta computadora.",
+      "installPage": "Voy a abrir la página oficial de descarga de {vendor}; lo instalas tú desde ahí.",
+      "terms": "Términos de {vendor}",
+      "remoteInstall": "Pediste instalar {name} desde otro dispositivo. ¿Lo instalo en esta computadora?",
+      "signinTerminal": "Para iniciar sesión, abre una terminal en esta computadora y ejecuta: {cmd}",
+      "signinOff": "Iniciar sesión con tu plan no está disponible para tu cuenta por ahora. Usa una API key.",
+      "failure": {
+        "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta.",
+        "provider_busy": "Ya hay una instalación o un inicio de sesión en curso.",
+        "recipe_disabled": "Activa primero esta receta en esta computadora.",
+        "app_unavailable": "Eso no está disponible para esta app en esta computadora.",
+        "other": "No se pudo completar. Inténtalo otra vez."
+      },
+      "problem": {
+        "invalid": "{file}: no es una receta válida.",
+        "shadows_curated": "{file}: usa el id de una app curada; cámbialo.",
+        "duplicate_id": "{file}: ese id ya lo usa otra receta.",
+        "too_large": "{file}: el archivo es demasiado grande."
+      },
+      "sessions": {
+        "on": "Sesiones: permitidas en esta computadora.",
+        "off": "Sesiones: apagadas en esta computadora hasta que las permitas aquí.",
+        "allow": "Permitir sesiones aquí",
+        "disallow": "Apagar sesiones"
       }
     }
   },

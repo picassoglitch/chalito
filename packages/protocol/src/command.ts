@@ -15,6 +15,9 @@ import {
 import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 import { ProviderConnectMethod } from "./provider.js";
+import { AppId } from "./recipe.js";
+import { TerminalCommands } from "./terminal.js";
+import { ScreenMode } from "./screen.js";
 
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
 export const DevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical", "bypassStyle"]);
@@ -54,17 +57,61 @@ const ProviderConnect = z
  * provider's CLI only; they never touch policy. (Computer control is turned on only on the
  * device, `chalito computer enable` or the desktop panel; a remote surface can turn it off
  * through `policy.tighten` and approve or deny a session's `computer_control` approval.)
+ * The app.* commands (engine) act on recipes only: none of them enables a custom recipe, which
+ * happens only on the device (`chalito apps custom enable` or the desktop panel).
+ * The terminal.* commands open, feed, resize and close a remote terminal only after the
+ * person turned remote terminal on locally and approved that terminal (terminal.ts); nothing
+ * here can turn remote terminal or the raw shell on.
+ * Remote screen follows the same rule: `screen.open` only asks; it never enables remote view or
+ * control, which are turned on only on the device (`chalito screen enable`).
  */
-export const CommandPayload = z.discriminatedUnion("type", [
-  z.object({
+// ---- ENGINE (connect engine, contract v2): the app.* commands --------------------------------
+/**
+ * `app.connect`: like provider.connect, for any recipe (curated, or a custom one already enabled
+ * on the device). A sign-in is always the app's own, on that computer.
+ */
+const AppConnect = z
+  .object({
+    type: z.literal("app.connect"),
+    appId: AppId,
+    method: ProviderConnectMethod,
+    keyCt: SealedEnvelope.optional(),
+  })
+  .refine((p) => (p.method === "api_key") === (p.keyCt !== undefined), {
+    message: "keyCt is required with api_key and refused with signin",
+  });
+const AppCommands = [
+  AppConnect,
+  /** Deletes the key, or signs out of the profile Chalito uses for this app. */
+  z.object({ type: z.literal("app.disconnect"), appId: AppId }),
+  /** Official source only, and only after the person confirms it on the device itself. */
+  z.object({ type: z.literal("app.install"), appId: AppId }),
+  /** A fresh status report for one app, or all of them. */
+  z.object({ type: z.literal("app.status"), appId: AppId.optional() }),
+  /** Opens a desktop or web app on that computer (its window, or its managed browser profile). */
+  z.object({ type: z.literal("app.launch"), appId: AppId }),
+] as const;
+// ---- end ENGINE ----------------------------------------------------------------------------
+
+/**
+ * `session.start` names what to run by `appId` (a recipe id, engine contract v2) or by the older
+ * `adapter`; with both, they must agree (the agent checks). At least one is required.
+ */
+const SessionStart = z
+  .object({
     type: z.literal("session.start"),
-    adapter: AdapterKind,
+    adapter: AdapterKind.optional(),
+    appId: AppId.optional(),
     /** Label of a workspace the user allowed locally; never a raw path. */
     workspaceLabel: z.string().min(1).max(80),
     promptCt: SealedEnvelope,
     permissionMode: RemotePermissionMode.default("default"),
     codexSandbox: RemoteCodexSandbox.optional(),
-  }),
+  })
+  .refine((p) => p.adapter !== undefined || p.appId !== undefined, { message: "adapter or appId is required" });
+
+export const CommandPayload = z.discriminatedUnion("type", [
+  SessionStart,
   z.object({ type: z.literal("session.prompt"), sid: SessionId, promptCt: SealedEnvelope }),
   z.object({ type: z.literal("session.interrupt"), sid: SessionId }),
   z.object({ type: z.literal("session.resume"), sid: SessionId, promptCt: SealedEnvelope.optional() }),
@@ -90,6 +137,36 @@ export const CommandPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("provider.install"), provider: Provider }),
   /** Asks the device for a fresh status report (chalito.connections). */
   z.object({ type: z.literal("provider.status") }),
+  ...AppCommands,
+  // ---- TERMINAL (Connect engine, remote terminal; packages/protocol/src/terminal.ts) ----
+  ...TerminalCommands,
+  // ---- end TERMINAL ----
+
+  // ---- SCREEN (remote view / control; screen.ts) --------------------------------------------
+  // Refused unless the person enabled remote view (or control) on the device itself. Each
+  // session waits for a `remote_view` / `remote_control` approval (HIGH, passkey) before any
+  // capture; frames and input then go peer-to-peer over WebRTC, never through the cloud.
+  /**
+   * Opens a screen session. `display` is a display index ("0" = primary); `appId` (a recipe id)
+   * launches or focuses that app (or its managed browser profile) before streaming starts.
+   */
+  z.object({
+    type: z.literal("screen.open"),
+    mode: ScreenMode,
+    display: z
+      .string()
+      .regex(/^[0-9]{1,2}$/)
+      .optional(),
+    appId: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9-]{1,40}$/)
+      .optional(),
+  }),
+  /** Ends a screen session (either end may; the agent also ends it on kill switch / disable). */
+  z.object({ type: z.literal("screen.close"), sid: SessionId }),
+  /** The browser's WebRTC answer / ICE candidate, sealed to the device (`ScreenSignal`). */
+  z.object({ type: z.literal("screen.signal"), sid: SessionId, signalCt: SealedEnvelope }),
+  // ---- end SCREEN ---------------------------------------------------------------------------
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;
 

@@ -1,0 +1,74 @@
+v: 1
+id: qwen-code
+name: Qwen Code
+vendor: Alibaba Qwen
+homepage: https://qwenlm.github.io/qwen-code-docs/en/
+termsUrl: https://github.com/QwenLM/qwen-code/blob/main/LICENSE
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect:
+      commands: [qwen]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: "@qwen-code/qwen-code"
+    launch:
+      command: [qwen]
+  windows:
+    detect:
+      commands: [qwen]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: "@qwen-code/qwen-code"
+    launch:
+      command: [qwen]
+  linux:
+    detect:
+      commands: [qwen]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: "@qwen-code/qwen-code"
+    launch:
+      command: [qwen]
+signin:
+  via: cli
+  # Inside its own terminal UI only: the agent never runs it headless.
+  interactive: true
+  command: [qwen]
+  planSignin: "on"
+apiKey:
+  env: OPENAI_API_KEY
+  label: OpenAI-compatible API key (also set OPENAI_BASE_URL and OPENAI_MODEL)
+  docsUrl: https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/
+driver:
+  acp: { command: [qwen, --acp, --approval-mode, default], authMethods: [openai] }
+  terminal: { command: [qwen] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config"
+    - "npm view @qwen-code/qwen-code (version 0.25.0, repo github.com/QwenLM/qwen-code)"
+    - "qwen --help (0.25.0): --acp 'Starts the agent in ACP mode'; --auth-type choices openai, openai-responses, anthropic, qwen-oauth, gemini, vertex-ai"
+    - "qwen auth (0.25.0): 'qwen auth has been removed' -> Interactive: run qwen and use /auth; Qwen OAuth: run qwen interactively and use /auth"
+    - "bundle chunks/acpAgent (0.25.0): ACP buildAuthMethods() returns only [{id: openai, _meta.type: terminal, args: [--auth-type=openai]}]"
+    - "bundle strings (0.25.0): 'Qwen OAuth free tier was discontinued on 2026-04-15. Please select Coding Plan or API Key instead.'"
+    - https://github.com/QwenLM/qwen-code
+  unverified:
+    - field: signin.command
+      note: "There is no non-interactive login command any more ('qwen auth' removed). Sign-in is the /auth slash command inside the TUI, so command is just [qwen]. The 'qwen-oauth' method is DISCONTINUED (free tier ended 2026-04-15); do not use acpMethod qwen-oauth. Remaining options: Alibaba Cloud Coding Plan / Token Plan keys (BAILIAN_CODING_PLAN_API_KEY etc.) or OpenAI-compatible keys."
+    - field: driver.acp.authMethods
+      note: "Only 'openai' is advertised, and it is a terminal-type method (an API key flow), not an OAuth sign-in."
+    - field: apiKey.env
+      note: "OPENAI_API_KEY requires OPENAI_BASE_URL + OPENAI_MODEL too (per 'qwen auth' output); BAILIAN_CODING_PLAN_API_KEY is the Alibaba plan-specific alternative."
+    - field: termsUrl
+      note: "LICENSE URL got HTTP 429 from github during check; repo is Apache-2.0 per common knowledge, not re-read."

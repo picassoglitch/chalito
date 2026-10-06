@@ -1,7 +1,7 @@
 import { resolve, sep } from "node:path";
 import type { PolicyPreset } from "@chalito/protocol";
 import type { z } from "zod";
-import { PERMISSION_RANK, Policy, SANDBOX_RANK } from "./schema.js";
+import { DEFAULT_REMOTE_TERMINAL, PERMISSION_RANK, Policy, SANDBOX_RANK } from "./schema.js";
 
 const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
@@ -21,11 +21,60 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
   subsetOf(next.web.allowDomains, cur.web.allowDomains) &&
   subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
-  computerTighterOrEqual(next.computer, cur.computer);
+  computerTighterOrEqual(next.computer, cur.computer) &&
+  appsTighterOrEqual(next.apps, cur.apps) &&
+  remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
+  screenTighterOrEqual(next.screen, cur.screen);
+
+/**
+ * Engine: an app's sessions can only be turned off (an id without an entry is off, so a `true` is
+ * fine only where it already was `true`; that's `chalito apps sessions enable`), and a custom
+ * recipe can only be disabled or removed, never enabled or re-pointed at another file hash
+ * (that's `chalito apps custom enable`).
+ */
+export const appsTighterOrEqual = (next: Policy["apps"], cur: Policy["apps"]): boolean =>
+  Object.entries(next?.sessions ?? {}).every(([id, on]) => !on || cur?.sessions?.[id] === true) &&
+  Object.entries(next?.custom ?? {}).every(([id, c]) => {
+    const was = cur?.custom?.[id];
+    return !c.enabled || (!!was?.enabled && was.sha256 === c.sha256);
+  });
 
 /** Computer control can only be turned off or slowed down; never on (that's `chalito computer enable`). */
 export const computerTighterOrEqual = (next: Policy["computer"], cur: Policy["computer"]): boolean =>
   !next?.enabled || (!!cur?.enabled && next.maxActionsPerMinute <= cur.maxActionsPerMinute);
+
+/**
+ * Remote terminal and the raw shell can only be turned off or limited further; never on (that's
+ * `chalito terminal enable` / `chalito terminal shell enable`, local only). The raw-shell flag
+ * and the limits can't grow even while remote terminal is off, so nothing staged remotely comes
+ * back when the person turns it on (that path also resets `rawShell` to off).
+ */
+export const remoteTerminalTighterOrEqual = (
+  next: Policy["remoteTerminal"],
+  cur: Policy["remoteTerminal"],
+): boolean => {
+  if (!next) return true;
+  const base = cur ?? DEFAULT_REMOTE_TERMINAL;
+  return (
+    (!next.enabled || !!cur?.enabled) &&
+    (!next.rawShell || !!cur?.rawShell) &&
+    next.maxSessions <= base.maxSessions &&
+    next.maxInputPerMinute <= base.maxInputPerMinute
+  );
+};
+
+/** Remote screen: view/control can only be turned off and the limits lowered; never on (`chalito screen enable`). */
+export const screenTighterOrEqual = (next: Policy["screen"], cur: Policy["screen"]): boolean => {
+  if (!next?.view && !next?.control) return true;
+  if (!cur) return false;
+  return (
+    (!next.view || cur.view) &&
+    (!next.control || cur.control) &&
+    next.maxFps <= cur.maxFps &&
+    next.maxInputsPerMinute <= cur.maxInputsPerMinute &&
+    next.maxSessionMinutes <= cur.maxSessionMinutes
+  );
+};
 
 export type TightenResult = { ok: true; policy: Policy } | { ok: false; reason: "invalid_patch" | "would_loosen" };
 

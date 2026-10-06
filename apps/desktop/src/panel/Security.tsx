@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import { useT } from "../lib/i18n.js";
+import { RemoteTerminal } from "./RemoteTerminal.js";
 import {
   IpcUnavailableError,
   answersComplete,
@@ -12,6 +13,8 @@ import {
   type DevModeState,
   type PendingPairing,
   type PolicyView,
+  type ScreenMode,
+  type ScreenStatus,
 } from "../lib/ipc.js";
 
 type Load<T> =
@@ -223,19 +226,25 @@ const ComputerEnableFlow = ({
   ipc,
   challenge,
   onDone,
+  enable,
+  title,
 }: {
   ipc: AgentIpc;
   challenge: ComputerChallenge;
   onDone: (failure?: string) => void;
+  /** What confirms (default: computer control); remote screen passes its own. */
+  enable?: (answers: { first: boolean; second: boolean; typed: string }) => ReturnType<AgentIpc["enableComputer"]>;
+  title?: string;
 }) => {
   const t = useT();
+  const confirm = enable ?? ((a) => ipc.enableComputer(a));
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [typed, setTyped] = useState("");
   const cancel = <button onClick={() => onDone()}>{t("security.devmode.cancel")}</button>;
   if (step === 1)
     return (
       <div className="card" data-step="1">
-        <p>{t("security.computer.step1")}</p>
+        <p>{title ?? t("security.computer.step1")}</p>
         <ul>
           {challenge.examples.map((e) => (
             <li key={e}>{e}</li>
@@ -266,7 +275,7 @@ const ComputerEnableFlow = ({
         <button
           disabled={typed.trim() !== challenge.phrase}
           onClick={() =>
-            void ipc.enableComputer({ first: true, second: true, typed }).then(
+            void confirm({ first: true, second: true, typed }).then(
               (r) => onDone(r.ok ? undefined : r.reason),
               (e: unknown) => onDone(String(e)),
             )
@@ -366,6 +375,80 @@ const Computer = ({ ipc }: { ipc: AgentIpc }) => {
   );
 };
 
+/**
+ * Remote screen (apps/agent/src/screen): turned on here only, view or view + control, with the
+ * same OS check and confirmations as computer control. Open sessions show with a close button;
+ * the indicator, Ctrl+Alt+Esc and the tray's "Detener control" end them too.
+ */
+const RemoteScreen = ({ ipc }: { ipc: AgentIpc }) => {
+  const t = useT();
+  const fetch = useCallback(() => ipc.screenStatus(), [ipc]);
+  const [s, reload] = useAgent<ScreenStatus>(fetch);
+  const [flow, setFlow] = useState<{ mode: ScreenMode; challenge: ComputerChallenge } | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const labels = (xs: { label: string }[]) => xs.map((x) => x.label).join(", ");
+  const start = (mode: ScreenMode) =>
+    void ipc.screenChallenge(mode).then(
+      (challenge) => setFlow({ mode, challenge }),
+      (e: unknown) => setFailure(String(e)),
+    );
+  const level = s.state === "ok" ? (s.value.control ? "control" : s.value.view ? "view" : "off") : "off";
+  return (
+    <section aria-labelledby="sec-screen" data-section="screen">
+      <h2 id="sec-screen">{t("security.screen.title")}</h2>
+      <p className="muted">{t("security.screen.intro")}</p>
+      {s.state === "unavailable" && <Unavailable />}
+      {s.state === "error" && <p role="alert">{s.error}</p>}
+      {failure && <p role="alert">{t("security.screen.failed", { reason: failure })}</p>}
+      {s.state === "ok" && (
+        <>
+          {s.value.active.map((a) => (
+            <div key={a.sid} className="banner warn" data-screen-session={a.sid}>
+              <p>{t("security.screen.active", { labels: a.label })}</p>
+              <button onClick={() => void ipc.closeScreen(a.sid).finally(reload)}>{t("security.screen.close")}</button>
+            </div>
+          ))}
+          {s.value.pending.length > 0 && (
+            <p className="muted">{t("security.screen.pending", { labels: labels(s.value.pending) })}</p>
+          )}
+          {flow ? (
+            <ComputerEnableFlow
+              ipc={ipc}
+              challenge={flow.challenge}
+              title={t(flow.mode === "control" ? "security.screen.step1Control" : "security.screen.step1View")}
+              enable={(answers) => ipc.enableScreen(flow.mode, answers)}
+              onDone={(why) => {
+                setFlow(null);
+                setFailure(why ?? null);
+                reload();
+              }}
+            />
+          ) : (
+            <div className="row" data-screen={level}>
+              <span>{t(`security.screen.${level}`)}</span>
+              {level === "off" && <button onClick={() => start("view")}>{t("security.screen.enableView")}</button>}
+              {level !== "control" && (
+                <button onClick={() => start("control")}>{t("security.screen.enableControl")}</button>
+              )}
+              {level === "control" && (
+                <button onClick={() => void ipc.disableScreen("control").finally(reload)}>
+                  {t("security.screen.disableControl")}
+                </button>
+              )}
+              {level !== "off" && (
+                <button onClick={() => void ipc.disableScreen("all").finally(reload)}>
+                  {t("security.screen.disable")}
+                </button>
+              )}
+            </div>
+          )}
+          {level !== "off" && <p className="muted">{t("security.computer.hotkey")}</p>}
+        </>
+      )}
+    </section>
+  );
+};
+
 export const Security = ({ ipc }: { ipc: AgentIpc }) => {
   const t = useT();
   return (
@@ -375,6 +458,8 @@ export const Security = ({ ipc }: { ipc: AgentIpc }) => {
       <Policy ipc={ipc} />
       <DevMode ipc={ipc} />
       <Computer ipc={ipc} />
+      <RemoteTerminal ipc={ipc} />
+      <RemoteScreen ipc={ipc} />
     </div>
   );
 };

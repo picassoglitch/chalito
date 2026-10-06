@@ -26,8 +26,10 @@ pub const HOTKEY_LABEL: &str = "Ctrl+Alt+Esc";
 /// What the agent said on the last poll.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct View {
+    /// Computer control or remote terminal is on: the kill hotkey is held while it is.
     pub enabled: bool,
-    /// Labels of the sessions holding control.
+    /// Labels of the sessions holding control, and of open remote terminals (they share the
+    /// indicator and the kill switch; apps/agent/src/terminal).
     pub active: Vec<String>,
 }
 
@@ -42,7 +44,10 @@ pub fn parse_status(v: &Value) -> View {
                 .collect()
         })
         .unwrap_or_default();
-    View { enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(false), active }
+    let on = |x: Option<&Value>| {
+        x.and_then(|x| x.get("enabled")).and_then(Value::as_bool).unwrap_or(false)
+    };
+    View { enabled: on(Some(v)) || on(v.get("terminal")), active }
 }
 
 /// What the poll thread changes after a poll.
@@ -147,6 +152,14 @@ mod tests {
         let v = json!({ "enabled": true, "active": [{ "sid": "s1", "label": "chalito", "since": 1 }], "pending": [] });
         assert_eq!(parse_status(&v), View { enabled: true, active: vec!["chalito".into()] });
         assert_eq!(parse_status(&json!(null)), View::default());
+        // Remote terminal on (computer control off): the hotkey is held, open terminals show.
+        let t = json!({
+            "enabled": false,
+            "active": [{ "sid": "t1", "label": "Terminal · Aider · chalito", "since": 1 }],
+            "pending": [],
+            "terminal": { "enabled": true, "rawShell": false, "pending": [] }
+        });
+        assert_eq!(parse_status(&t), View { enabled: true, active: vec!["Terminal · Aider · chalito".into()] });
     }
 
     #[test]

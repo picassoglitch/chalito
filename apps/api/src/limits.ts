@@ -117,6 +117,9 @@ export const API_ROUTES: RouteTable = {
   // Cloud Scheduler (OIDC)
   "POST /tasks/account-deletions": { capacity: 30, refillPerSec: 0.5, bodyBytes: 4 * KB },
 
+  // Connect engine: the signed recipe catalog (public; agents verify it with a compiled-in key)
+  "GET /v1/recipes/catalog": user(60, 1, 0),
+
   // Desktop updater manifest (signed URLs to the private releases bucket)
   "GET /releases/:channel/latest.json": user(30, 1, 0),
 };

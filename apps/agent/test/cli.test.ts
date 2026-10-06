@@ -304,6 +304,152 @@ describe("chalito CLI", () => {
     });
   });
 
+  describe("terminal", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("enable: OS auth, two confirmations and the phrase; the raw shell separately with four", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["terminal", "status"])).toBe(0);
+      expect(c.out()).toMatch(/Remote terminal: off/);
+      expect(await c.run(["terminal", "shell", "enable"], ["y", "y", "FULL SHELL ON MY COMPUTER", "y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito terminal enable/);
+      expect(await c.run(["terminal", "enable"], ["y", "y", "REMOTE TERMINAL"])).toBe(0);
+      expect(c.runs).toEqual([{ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true }]);
+      expect((await policyOf(c)).remoteTerminal).toEqual({
+        enabled: true,
+        rawShell: false,
+        maxSessions: 3,
+        maxInputPerMinute: 65_536,
+      });
+      // The fourth step is required.
+      expect(await c.run(["terminal", "shell", "enable"], ["y", "y", "FULL SHELL ON MY COMPUTER", "n"])).toBe(1);
+      expect((await policyOf(c)).remoteTerminal?.rawShell).toBe(false);
+      expect(await c.run(["terminal", "shell", "enable"], ["y", "y", "FULL SHELL ON MY COMPUTER", "y"])).toBe(0);
+      expect((await policyOf(c)).remoteTerminal?.rawShell).toBe(true);
+      expect(await c.run(["terminal", "status"])).toBe(0);
+      expect(c.out()).toMatch(/Full shell: on/);
+      expect(await c.run(["terminal", "disable"])).toBe(0);
+      expect((await policyOf(c)).remoteTerminal).toMatchObject({ enabled: false, rawShell: false });
+    });
+
+    it("enable: failed OS auth, a no, or a wrong phrase change nothing", async () => {
+      for (const [o, lines] of [
+        [{ runner: () => 126 }, ["y", "y", "REMOTE TERMINAL"]],
+        [{}, ["n"]],
+        [{}, ["y", "n"]],
+        [{}, ["y", "y", "remote terminal"]],
+      ] as const) {
+        const c = cli({ tty: true, ...o });
+        expect(await c.run(["terminal", "enable"], [...lines])).toBe(1);
+        expect((await policyOf(c)).remoteTerminal).toBeUndefined();
+      }
+    });
+
+    it("refuses inside a session or without a terminal, like every security change", async () => {
+      const inSession = cli({ tty: true, env: { CHALITO_SESSION: "term_1" } });
+      expect(await inSession.run(["terminal", "enable"], ["y", "y", "REMOTE TERMINAL"])).toBe(1);
+      expect((await policyOf(inSession)).remoteTerminal).toBeUndefined();
+      const piped = cli({ tty: false });
+      expect(await piped.run(["terminal", "shell", "enable"], ["y", "y", "FULL SHELL ON MY COMPUTER", "y"])).toBe(1);
+    });
+
+    it("policy edit can't turn it or the raw shell on", async () => {
+      for (const rt of [
+        { enabled: true, rawShell: false, maxSessions: 3, maxInputPerMinute: 65_536 },
+        { enabled: false, rawShell: true, maxSessions: 3, maxInputPerMinute: 65_536 },
+      ]) {
+        const on = policyToYaml({ ...DEFAULT_POLICY, remoteTerminal: rt });
+        const c = cli({ runner: (r) => (writeFileSync(r.args.at(-1)!, on), 0) });
+        expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+        expect(c.err()).toMatch(/chalito terminal enable/);
+        expect((await policyOf(c)).remoteTerminal).toBeUndefined();
+      }
+    });
+  });
+
+  describe("apps sessions (owner decision 2026-10-06)", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("off until enabled here: OS auth, the review and the typed id; disable turns it off", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["apps", "sessions", "list"])).toBe(0);
+      expect(c.out()).toMatch(/\(none\)/);
+      expect(await c.run(["apps", "sessions", "enable", "goose"], ["y", "codex"])).toBe(1);
+      expect((await policyOf(c)).apps?.sessions?.goose).toBeUndefined();
+      expect(await c.run(["apps", "sessions", "enable", "codex"], ["y", "codex"])).toBe(1);
+      expect(await c.run(["apps", "sessions", "enable", "goose"], ["y", "goose"])).toBe(0);
+      expect(c.runs).toContainEqual({ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true });
+      expect((await policyOf(c)).apps?.sessions?.goose).toBe(true);
+      expect(await c.run(["apps", "sessions", "disable", "goose"])).toBe(0);
+      expect((await policyOf(c)).apps?.sessions?.goose).toBe(false);
+    });
+
+    it("policy edit can't allow an app's sessions", async () => {
+      const on = policyToYaml({ ...DEFAULT_POLICY, apps: { sessions: { goose: true } } });
+      const c = cli({ runner: (r) => (writeFileSync(r.args.at(-1)!, on), 0) });
+      expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito apps sessions enable/);
+      expect((await policyOf(c)).apps?.sessions).toBeUndefined();
+    });
+  });
+
+  describe("screen", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("enable view, then control: OS auth, two confirmations and the phrase each time; disable steps down", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["screen", "status"])).toBe(0);
+      expect(c.out()).toMatch(/Remote screen: off/);
+      expect(await c.run(["screen", "enable"], ["y", "y", "VIEW MY SCREEN"])).toBe(0);
+      expect(c.runs).toEqual([{ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true }]);
+      expect((await policyOf(c)).screen).toMatchObject({ view: true, control: false });
+      expect(await c.run(["screen", "enable", "control"], ["y", "y", "CONTROL MY SCREEN"])).toBe(0);
+      expect((await policyOf(c)).screen).toMatchObject({ view: true, control: true });
+      expect(await c.run(["screen", "disable", "control"])).toBe(0);
+      expect((await policyOf(c)).screen).toMatchObject({ view: true, control: false });
+      expect(await c.run(["screen", "disable"])).toBe(0);
+      expect((await policyOf(c)).screen).toMatchObject({ view: false, control: false });
+    });
+
+    it("enable: failed OS auth, a no, or a wrong phrase change nothing", async () => {
+      for (const [o, lines] of [
+        [{ runner: () => 126 }, ["y", "y", "VIEW MY SCREEN"]],
+        [{}, ["n"]],
+        [{}, ["y", "y", "view my screen"]],
+      ] as const) {
+        const c = cli({ tty: true, ...o });
+        expect(await c.run(["screen", "enable"], [...lines])).toBe(1);
+        expect((await policyOf(c)).screen).toBeUndefined();
+      }
+    });
+
+    it("policy edit can't turn it on, or view up to control", async () => {
+      const on = policyToYaml({
+        ...DEFAULT_POLICY,
+        screen: { view: true, control: true, maxFps: 5, maxInputsPerMinute: 600, maxSessionMinutes: 60 },
+      });
+      const c = cli({ runner: (r) => (writeFileSync(r.args.at(-1)!, on), 0) });
+      expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito screen enable/);
+      expect((await policyOf(c)).screen).toBeUndefined();
+    });
+
+    for (const argv of [
+      ["screen", "enable"],
+      ["screen", "disable"],
+    ])
+      it(`${argv.join(" ")}: refused with piped stdin or inside a session`, async () => {
+        for (const o of [{ tty: false }, { env: { CHALITO_SESSION: "1" } }]) {
+          const c = cli(o);
+          expect(await c.run(argv, ["y", "y", "VIEW MY SCREEN"])).toBe(1);
+          expect(c.runs).toHaveLength(0);
+        }
+      });
+  });
+
   describe("policy", () => {
     const editTo = (text: string) => (r: Run) => {
       if (r.cmd !== "/usr/bin/pkexec") writeFileSync(r.args.at(-1)!, text);

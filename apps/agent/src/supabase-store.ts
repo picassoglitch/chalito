@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
-  ProviderConnectionDoc,
+  AppConnectionDoc,
   type AgentEvent,
   type ApprovalRequest,
   type CallLine,
   type DeviceEvent,
-  type Provider,
   type SessionCard,
 } from "@chalito/protocol";
 import type { Logger } from "./redact.js";
@@ -65,6 +64,8 @@ interface Pointer {
 }
 
 const EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Remote-terminal events (sealed output chunks) only need to outlive a reconnect. */
+const TERMINAL_EVENT_TTL_MS = 60 * 60 * 1000;
 const iso = (ms: number) => new Date(ms).toISOString();
 
 export class SupabaseError extends Error {
@@ -357,7 +358,7 @@ export class SupabaseStore implements AgentStore {
         type: e.type,
         urgency: e.urgency,
         doc: e,
-        expires_at: iso(e.t + EVENT_TTL_MS),
+        expires_at: iso(e.t + (e.type.startsWith("terminal.") ? TERMINAL_EVENT_TTL_MS : EVENT_TTL_MS)),
       }),
     );
   }
@@ -539,8 +540,8 @@ export class SupabaseStore implements AgentStore {
    * Update-or-insert, like writeSharedCard: the agent may update only `doc`/`updated_at`, so no
    * PostgREST upsert. The database checks the doc is status only (valid_connection_doc).
    */
-  async upsertConnection(provider: Provider, doc: ProviderConnectionDoc) {
-    const body = JSON.parse(JSON.stringify(ProviderConnectionDoc.parse(doc))) as Record<string, unknown>;
+  async upsertConnection(provider: string, doc: AppConnectionDoc) {
+    const body = JSON.parse(JSON.stringify(AppConnectionDoc.parse(doc))) as Record<string, unknown>;
     const row = () =>
       this.db
         .from("connections")

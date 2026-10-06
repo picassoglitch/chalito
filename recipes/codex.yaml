@@ -1,0 +1,41 @@
+# Codex CLI (OpenAI). Was provider "openai" (#30).
+v: 1
+id: codex
+name: Codex
+vendor: OpenAI
+homepage: https://developers.openai.com/codex
+termsUrl: https://openai.com/policies/terms-of-use/
+kinds: [codex, terminal]
+platforms:
+  mac:
+    detect: { commands: [codex] }
+    install: { via: npm, ref: "@openai/codex" }
+  linux:
+    detect: { commands: [codex] }
+    install: { via: npm, ref: "@openai/codex" }
+  windows:
+    detect: { commands: [codex] }
+    install: { via: npm, ref: "@openai/codex" }
+signin:
+  via: cli
+  # The person's own `codex login`, in Chalito's CODEX_HOME. owner_only until OpenAI approves SIWC (D-003).
+  command: [codex, login]
+  statusCommand: [codex, login, status]
+  logoutCommand: [codex, logout]
+  linkHosts: [auth.openai.com]
+  openLinks: false
+  planSignin: owner_only
+apiKey:
+  env: OPENAI_API_KEY
+  label: OpenAI API key
+  docsUrl: https://platform.openai.com/api-keys
+driver:
+  terminal: { command: [codex] }
+profile:
+  env: { CODEX_HOME: "{chalito}/codex" }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "codex --help, codex login --help (codex-cli 0.160.1), see apps/agent/src/provider-cli.ts history"
+  unverified: []

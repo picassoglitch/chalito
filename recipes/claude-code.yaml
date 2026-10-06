@@ -1,0 +1,45 @@
+# Claude Code (Anthropic). Was provider "anthropic" (#30, apps/agent/src/provider-cli.ts).
+v: 1
+id: claude-code
+name: Claude Code
+vendor: Anthropic
+homepage: https://www.claude.com/product/claude-code
+termsUrl: https://www.anthropic.com/legal/commercial-terms
+kinds: [claude-sdk, terminal]
+platforms:
+  mac:
+    detect: { commands: [claude] }
+    install: { via: npm, ref: "@anthropic-ai/claude-code" }
+  linux:
+    detect: { commands: [claude] }
+    install: { via: npm, ref: "@anthropic-ai/claude-code" }
+  windows:
+    detect: { commands: [claude] }
+    install: { via: npm, ref: "@anthropic-ai/claude-code" }
+signin:
+  via: cli
+  # Anthropic's own flow, in Chalito's own CLAUDE_CONFIG_DIR (profile below). Team only (D-002, D-063).
+  command: [claude, auth, login, --claudeai]
+  statusCommand: [claude, auth, status, --json]
+  statusJson: loggedIn
+  logoutCommand: [claude, auth, logout]
+  linkHosts: [claude.ai, claude.com, console.anthropic.com]
+  openLinks: false
+  planSignin: owner_only
+apiKey:
+  env: ANTHROPIC_API_KEY
+  label: Anthropic API key
+  docsUrl: https://docs.claude.com/en/api/admin-api/apikeys/get-api-key
+driver:
+  terminal: { command: [claude] }
+profile:
+  env: { CLAUDE_CONFIG_DIR: "{chalito}/claude" }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "claude --help / claude auth --help (Claude Code 2.1.291), see apps/agent/src/provider-cli.ts history"
+    - https://code.claude.com/docs/en/setup
+  unverified:
+    - field: apiKey.docsUrl
+      note: "docs page path not re-checked in this pass"

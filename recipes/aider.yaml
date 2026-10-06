@@ -1,0 +1,72 @@
+v: 1
+id: aider
+name: Aider
+vendor: Aider (Paul Gauthier)
+homepage: https://aider.chat/
+termsUrl: https://github.com/Aider-AI/aider/blob/main/LICENSE.txt
+kinds: [terminal]
+platforms:
+  mac:
+    detect:
+      commands: [aider]
+      paths: ["~/.local/bin/aider"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://aider.chat/docs/install.html
+    launch:
+      command: [aider]
+  windows:
+    detect:
+      commands: [aider]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://aider.chat/docs/install.html
+    launch:
+      command: [aider]
+  linux:
+    detect:
+      commands: [aider]
+      paths: ["~/.local/bin/aider"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://aider.chat/docs/install.html
+    launch:
+      command: [aider]
+signin:
+  via: cli
+  # Inside its own terminal UI only: the agent never runs it headless.
+  interactive: true
+  command: [aider]
+  linkHosts: [openrouter.ai]
+  planSignin: "on"
+apiKey:
+  env: OPENAI_API_KEY
+  label: OpenAI API key (aider also reads ANTHROPIC_API_KEY, OPENROUTER_API_KEY, etc.)
+  docsUrl: https://aider.chat/docs/config/api-keys.html
+driver:
+  terminal: { command: [aider] }
+capabilities: [terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - https://aider.chat/docs/install.html
+    - https://aider.chat/docs/config/options.html
+    - https://aider.chat/docs/config/api-keys.html
+    - https://aider.chat/HISTORY.html
+    - "https://formulae.brew.sh/api/formula/aider.json (0.86.2)"
+  unverified:
+    - field: signin
+      note: "Aider has no login subcommand and no ACP mode. With no keys configured, running 'aider' offers an OpenRouter OAuth flow (per release history / docs); this is the closest thing to an official sign-in. Not run."
+    - field: signin.linkHosts
+      note: "openrouter.ai assumed for the OAuth link; not observed."
+    - field: platforms.*.install
+      note: "Official installs are Python-based (aider-install, uv, pipx, curl https://aider.chat/install.sh, PowerShell install.ps1). No npm package. A Homebrew core formula 'aider' (0.86.2) exists but is not mentioned in aider's install docs, so official-url used."
+    - field: platforms.mac.detect.paths
+      note: "~/.local/bin is the uv/pipx default tool bin; not confirmed in aider docs."

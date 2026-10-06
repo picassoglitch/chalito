@@ -1,0 +1,42 @@
+# Gemini CLI (Google). Was provider "google" (#30); ACP profile in packages/adapters/src/acp (D-062).
+v: 1
+id: gemini
+name: Gemini CLI
+vendor: Google
+homepage: https://github.com/google-gemini/gemini-cli
+termsUrl: https://policies.google.com/terms
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect: { commands: [gemini] }
+    install: { via: npm, ref: "@google/gemini-cli" }
+  linux:
+    detect: { commands: [gemini] }
+    install: { via: npm, ref: "@google/gemini-cli" }
+  windows:
+    detect: { commands: [gemini] }
+    install: { via: npm, ref: "@google/gemini-cli" }
+signin:
+  via: acp
+  # No login subcommand: the ACP agent's `authenticate` with "oauth-personal" ("Login with Google")
+  # opens the browser and caches the login like `gemini` → /auth does. No sign-out command.
+  command: [gemini, --acp]
+  acpMethod: oauth-personal
+  linkHosts: [accounts.google.com]
+  openLinks: false
+  planSignin: "on"
+apiKey:
+  env: GEMINI_API_KEY
+  label: Gemini API key
+  docsUrl: https://ai.google.dev/gemini-api/docs/api-key
+driver:
+  # authMethods: API-key methods only (sign-in is signin.acpMethod above).
+  acp: { command: [gemini, --acp, --approval-mode, default], authMethods: [gemini-api-key] }
+  terminal: { command: [gemini] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config (admin policy, key in authenticate _meta)"
+    - "gemini --help (@google/gemini-cli 0.62.0), bundle source for ACP authenticate, DEVIATIONS D-062"
+  unverified: []

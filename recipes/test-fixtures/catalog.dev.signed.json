@@ -1,0 +1,1877 @@
+{
+  "ctx": "chalito.recipe-catalog.v1",
+  "keyId": "dev-test-2026-10",
+  "body": {
+    "v": 1,
+    "issuedAt": 1791271724830,
+    "recipes": [
+      {
+        "v": 1,
+        "id": "aider",
+        "name": "Aider",
+        "vendor": "Aider (Paul Gauthier)",
+        "homepage": "https://aider.chat/",
+        "termsUrl": "https://github.com/Aider-AI/aider/blob/main/LICENSE.txt",
+        "kinds": [
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "aider"
+              ],
+              "paths": [
+                "~/.local/bin/aider"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://aider.chat/docs/install.html"
+            },
+            "launch": {
+              "command": [
+                "aider"
+              ]
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "aider"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://aider.chat/docs/install.html"
+            },
+            "launch": {
+              "command": [
+                "aider"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "aider"
+              ],
+              "paths": [
+                "~/.local/bin/aider"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://aider.chat/docs/install.html"
+            },
+            "launch": {
+              "command": [
+                "aider"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "aider"
+          ],
+          "linkHosts": [
+            "openrouter.ai"
+          ],
+          "interactive": true,
+          "planSignin": "on"
+        },
+        "apiKey": {
+          "env": "OPENAI_API_KEY",
+          "label": "OpenAI API key (aider also reads ANTHROPIC_API_KEY, OPENROUTER_API_KEY, etc.)",
+          "docsUrl": "https://aider.chat/docs/config/api-keys.html"
+        },
+        "driver": {
+          "terminal": {
+            "command": [
+              "aider"
+            ]
+          }
+        },
+        "capabilities": [
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "chatgpt-desktop",
+        "name": "ChatGPT (desktop)",
+        "vendor": "OpenAI",
+        "homepage": "https://chatgpt.com/",
+        "termsUrl": "https://openai.com/policies/terms-of-use/",
+        "kinds": [
+          "desktop-app"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [],
+              "paths": [
+                "/Applications/ChatGPT.app",
+                "/Applications/ChatGPT Classic.app"
+              ],
+              "bundleIds": [
+                "com.openai.codex",
+                "com.openai.chat"
+              ],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "brew",
+              "ref": "chatgpt",
+              "cask": true
+            },
+            "launch": {
+              "app": "ChatGPT"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "winget",
+              "ref": "9PLM9XGG6VKS",
+              "source": "msstore"
+            }
+          }
+        },
+        "signin": {
+          "via": "desktop-app",
+          "url": "https://chatgpt.com/",
+          "planSignin": "on"
+        },
+        "driver": {
+          "desktopApp": {
+            "bundleId": "com.openai.codex",
+            "exe": "ChatGPT.exe"
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "chatgpt",
+        "name": "ChatGPT",
+        "vendor": "OpenAI",
+        "homepage": "https://chatgpt.com/",
+        "termsUrl": "https://openai.com/policies/terms-of-use/",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://chatgpt.com/auth/login",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://chatgpt.com/",
+            "allowedOrigins": [
+              "https://chatgpt.com",
+              "https://auth.openai.com"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "claude-code",
+        "name": "Claude Code",
+        "vendor": "Anthropic",
+        "homepage": "https://www.claude.com/product/claude-code",
+        "termsUrl": "https://www.anthropic.com/legal/commercial-terms",
+        "kinds": [
+          "claude-sdk",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "claude"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@anthropic-ai/claude-code"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "claude"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@anthropic-ai/claude-code"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "claude"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@anthropic-ai/claude-code"
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "claude",
+            "auth",
+            "login",
+            "--claudeai"
+          ],
+          "statusCommand": [
+            "claude",
+            "auth",
+            "status",
+            "--json"
+          ],
+          "statusJson": "loggedIn",
+          "logoutCommand": [
+            "claude",
+            "auth",
+            "logout"
+          ],
+          "linkHosts": [
+            "claude.ai",
+            "claude.com",
+            "console.anthropic.com"
+          ],
+          "openLinks": false,
+          "planSignin": "owner_only"
+        },
+        "apiKey": {
+          "env": "ANTHROPIC_API_KEY",
+          "label": "Anthropic API key",
+          "docsUrl": "https://docs.claude.com/en/api/admin-api/apikeys/get-api-key"
+        },
+        "driver": {
+          "terminal": {
+            "command": [
+              "claude"
+            ]
+          }
+        },
+        "profile": {
+          "env": {
+            "CLAUDE_CONFIG_DIR": "{chalito}/claude"
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "claude-desktop",
+        "name": "Claude (desktop)",
+        "vendor": "Anthropic",
+        "homepage": "https://claude.com/download",
+        "termsUrl": "https://www.anthropic.com/legal/consumer-terms",
+        "kinds": [
+          "desktop-app"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [],
+              "paths": [
+                "/Applications/Claude.app"
+              ],
+              "bundleIds": [
+                "com.anthropic.claudefordesktop"
+              ],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "brew",
+              "ref": "claude",
+              "cask": true
+            },
+            "launch": {
+              "app": "Claude"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [],
+              "paths": [
+                "%LOCALAPPDATA%\\AnthropicClaude\\claude.exe"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "winget",
+              "ref": "Anthropic.Claude"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "claude-desktop"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://code.claude.com/docs/en/desktop-linux"
+            },
+            "launch": {
+              "command": [
+                "claude-desktop"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "desktop-app",
+          "url": "https://claude.ai/",
+          "planSignin": "on"
+        },
+        "driver": {
+          "desktopApp": {
+            "bundleId": "com.anthropic.claudefordesktop",
+            "exe": "claude.exe"
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "claude-web",
+        "name": "Claude",
+        "vendor": "Anthropic",
+        "homepage": "https://claude.ai/",
+        "termsUrl": "https://www.anthropic.com/legal/consumer-terms",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://claude.ai/login",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://claude.ai/",
+            "allowedOrigins": [
+              "https://claude.ai"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "codex",
+        "name": "Codex",
+        "vendor": "OpenAI",
+        "homepage": "https://developers.openai.com/codex",
+        "termsUrl": "https://openai.com/policies/terms-of-use/",
+        "kinds": [
+          "codex",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "codex"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@openai/codex"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "codex"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@openai/codex"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "codex"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@openai/codex"
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "codex",
+            "login"
+          ],
+          "statusCommand": [
+            "codex",
+            "login",
+            "status"
+          ],
+          "logoutCommand": [
+            "codex",
+            "logout"
+          ],
+          "linkHosts": [
+            "auth.openai.com"
+          ],
+          "openLinks": false,
+          "planSignin": "owner_only"
+        },
+        "apiKey": {
+          "env": "OPENAI_API_KEY",
+          "label": "OpenAI API key",
+          "docsUrl": "https://platform.openai.com/api-keys"
+        },
+        "driver": {
+          "terminal": {
+            "command": [
+              "codex"
+            ]
+          }
+        },
+        "profile": {
+          "env": {
+            "CODEX_HOME": "{chalito}/codex"
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "copilot-cli",
+        "name": "GitHub Copilot CLI",
+        "vendor": "GitHub",
+        "homepage": "https://github.com/github/copilot-cli",
+        "termsUrl": "https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "copilot"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@github/copilot"
+            },
+            "launch": {
+              "command": [
+                "copilot"
+              ]
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "copilot"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "winget",
+              "ref": "GitHub.Copilot"
+            },
+            "launch": {
+              "command": [
+                "copilot"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "copilot"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@github/copilot"
+            },
+            "launch": {
+              "command": [
+                "copilot"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "copilot",
+            "login"
+          ],
+          "linkHosts": [
+            "github.com"
+          ],
+          "planSignin": "on"
+        },
+        "apiKey": {
+          "env": "COPILOT_GITHUB_TOKEN",
+          "label": "GitHub fine-grained token with \"Copilot Requests\" permission",
+          "docsUrl": "https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "copilot",
+              "--acp"
+            ],
+            "authMethods": []
+          },
+          "terminal": {
+            "command": [
+              "copilot"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "copilot-web",
+        "name": "Microsoft Copilot",
+        "vendor": "Microsoft",
+        "homepage": "https://copilot.microsoft.com/",
+        "termsUrl": "https://www.microsoft.com/en-us/microsoft-copilot/for-individuals/termsofuse",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://copilot.microsoft.com/",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://copilot.microsoft.com/",
+            "allowedOrigins": [
+              "https://copilot.microsoft.com",
+              "https://login.live.com",
+              "https://login.microsoftonline.com"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "cursor-cli",
+        "name": "Cursor CLI",
+        "vendor": "Anysphere",
+        "homepage": "https://cursor.com/docs/cli/overview",
+        "termsUrl": "https://cursor.com/terms-of-service",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "cursor-agent"
+              ],
+              "paths": [
+                "~/.local/bin/cursor-agent"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://cursor.com/docs/cli/installation"
+            },
+            "launch": {
+              "command": [
+                "cursor-agent"
+              ]
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "cursor-agent"
+              ],
+              "paths": [
+                "%LOCALAPPDATA%\\cursor-agent\\cursor-agent.exe"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://cursor.com/docs/cli/installation"
+            },
+            "launch": {
+              "command": [
+                "cursor-agent"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "cursor-agent"
+              ],
+              "paths": [
+                "~/.local/bin/cursor-agent"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://cursor.com/docs/cli/installation"
+            },
+            "launch": {
+              "command": [
+                "cursor-agent"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "cursor-agent",
+            "login"
+          ],
+          "statusCommand": [
+            "cursor-agent",
+            "status"
+          ],
+          "logoutCommand": [
+            "cursor-agent",
+            "logout"
+          ],
+          "planSignin": "on"
+        },
+        "apiKey": {
+          "env": "CURSOR_API_KEY",
+          "label": "Cursor API key",
+          "docsUrl": "https://cursor.com/docs/cli/reference/authentication"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "cursor-agent",
+              "acp"
+            ],
+            "authMethods": [
+              "cursor_login"
+            ]
+          },
+          "terminal": {
+            "command": [
+              "cursor-agent"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "cursor",
+        "name": "Cursor",
+        "vendor": "Anysphere",
+        "homepage": "https://cursor.com/",
+        "termsUrl": "https://cursor.com/terms-of-service",
+        "kinds": [
+          "desktop-app"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "cursor"
+              ],
+              "paths": [
+                "/Applications/Cursor.app"
+              ],
+              "bundleIds": [
+                "com.todesktop.230313mzl4w4u92"
+              ],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "brew",
+              "ref": "cursor",
+              "cask": true
+            },
+            "launch": {
+              "app": "Cursor"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "cursor"
+              ],
+              "paths": [
+                "%LOCALAPPDATA%\\Programs\\cursor\\Cursor.exe",
+                "%PROGRAMFILES%\\cursor\\Cursor.exe"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "winget",
+              "ref": "Anysphere.Cursor"
+            },
+            "launch": {
+              "command": [
+                "cursor"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "cursor"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://cursor.com/download"
+            },
+            "launch": {
+              "command": [
+                "cursor"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "desktop-app",
+          "url": "https://cursor.com/",
+          "planSignin": "on"
+        },
+        "driver": {
+          "desktopApp": {
+            "bundleId": "com.todesktop.230313mzl4w4u92",
+            "exe": "Cursor.exe"
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "vendor": "DeepSeek",
+        "homepage": "https://chat.deepseek.com/",
+        "termsUrl": "https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://chat.deepseek.com/sign_in",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://chat.deepseek.com/",
+            "allowedOrigins": [
+              "https://chat.deepseek.com"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "gemini-web",
+        "name": "Gemini",
+        "vendor": "Google",
+        "homepage": "https://gemini.google.com/",
+        "termsUrl": "https://policies.google.com/terms",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://gemini.google.com/app",
+            "allowedOrigins": [
+              "https://gemini.google.com",
+              "https://accounts.google.com"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "gemini",
+        "name": "Gemini CLI",
+        "vendor": "Google",
+        "homepage": "https://github.com/google-gemini/gemini-cli",
+        "termsUrl": "https://policies.google.com/terms",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "gemini"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@google/gemini-cli"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "gemini"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@google/gemini-cli"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "gemini"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@google/gemini-cli"
+            }
+          }
+        },
+        "signin": {
+          "via": "acp",
+          "command": [
+            "gemini",
+            "--acp"
+          ],
+          "linkHosts": [
+            "accounts.google.com"
+          ],
+          "openLinks": false,
+          "acpMethod": "oauth-personal",
+          "planSignin": "on"
+        },
+        "apiKey": {
+          "env": "GEMINI_API_KEY",
+          "label": "Gemini API key",
+          "docsUrl": "https://ai.google.dev/gemini-api/docs/api-key"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "gemini",
+              "--acp",
+              "--approval-mode",
+              "default"
+            ],
+            "authMethods": [
+              "gemini-api-key"
+            ]
+          },
+          "terminal": {
+            "command": [
+              "gemini"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "goose",
+        "name": "goose",
+        "vendor": "Agentic AI Foundation (originally Block)",
+        "homepage": "https://goose-docs.ai/",
+        "termsUrl": "https://github.com/aaif-goose/goose/blob/main/LICENSE",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "goose"
+              ],
+              "paths": [
+                "~/.local/bin/goose"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "brew",
+              "ref": "block-goose-cli"
+            },
+            "launch": {
+              "command": [
+                "goose",
+                "session"
+              ]
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "goose"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://goose-docs.ai/docs/getting-started/installation"
+            },
+            "launch": {
+              "command": [
+                "goose",
+                "session"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "goose"
+              ],
+              "paths": [
+                "~/.local/bin/goose"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://goose-docs.ai/docs/getting-started/installation"
+            },
+            "launch": {
+              "command": [
+                "goose",
+                "session"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "goose",
+            "configure"
+          ],
+          "interactive": true,
+          "planSignin": "on"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "goose",
+              "acp"
+            ],
+            "authMethods": []
+          },
+          "terminal": {
+            "command": [
+              "goose",
+              "session"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "grok-web",
+        "name": "Grok",
+        "vendor": "xAI",
+        "homepage": "https://grok.com/",
+        "termsUrl": "https://x.ai/legal/terms-of-service",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://grok.com/sign-in",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://grok.com/",
+            "allowedOrigins": [
+              "https://grok.com",
+              "https://accounts.x.ai"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "grok",
+        "name": "Grok Build",
+        "vendor": "xAI",
+        "homepage": "https://x.ai/grok",
+        "termsUrl": "https://x.ai/legal/terms-of-service",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "grok"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@xai-official/grok"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "grok"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@xai-official/grok"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "grok"
+              ]
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@xai-official/grok"
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "grok",
+            "login"
+          ],
+          "logoutCommand": [
+            "grok",
+            "logout"
+          ],
+          "linkHosts": [
+            "accounts.x.ai",
+            "auth.x.ai"
+          ],
+          "openLinks": true,
+          "planSignin": "on"
+        },
+        "apiKey": {
+          "env": "XAI_API_KEY",
+          "label": "xAI API key",
+          "docsUrl": "https://docs.x.ai/docs/overview"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "grok",
+              "--no-auto-update",
+              "agent",
+              "--no-leader",
+              "stdio"
+            ],
+            "authMethods": [
+              "xai.api_key"
+            ]
+          },
+          "terminal": {
+            "command": [
+              "grok"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "lm-studio",
+        "name": "LM Studio",
+        "vendor": "Element Labs",
+        "homepage": "https://lmstudio.ai/",
+        "termsUrl": "https://lmstudio.ai/app-terms",
+        "kinds": [
+          "desktop-app",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "lms"
+              ],
+              "paths": [
+                "/Applications/LM Studio.app",
+                "~/.lmstudio/bin/lms"
+              ],
+              "bundleIds": [
+                "ai.elementlabs.lmstudio"
+              ],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "brew",
+              "ref": "lm-studio",
+              "cask": true
+            },
+            "launch": {
+              "app": "LM Studio"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "lms"
+              ],
+              "paths": [
+                "%LOCALAPPDATA%\\Programs\\LM Studio\\LM Studio.exe",
+                "%USERPROFILE%\\.lmstudio\\bin\\lms.exe"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "winget",
+              "ref": "ElementLabs.LMStudio"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "lms"
+              ],
+              "paths": [
+                "~/.lmstudio/bin/lms"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://lmstudio.ai/download"
+            }
+          }
+        },
+        "signin": {
+          "via": "desktop-app",
+          "url": "https://lmstudio.ai/",
+          "planSignin": "on"
+        },
+        "driver": {
+          "terminal": {
+            "command": [
+              "lms",
+              "chat"
+            ]
+          },
+          "desktopApp": {
+            "bundleId": "ai.elementlabs.lmstudio",
+            "exe": "LM Studio.exe"
+          }
+        },
+        "capabilities": [
+          "terminal",
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "mistral-le-chat",
+        "name": "Le Chat",
+        "vendor": "Mistral AI",
+        "homepage": "https://chat.mistral.ai/",
+        "termsUrl": "https://mistral.ai/terms",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://chat.mistral.ai/login",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://chat.mistral.ai/chat",
+            "allowedOrigins": [
+              "https://chat.mistral.ai",
+              "https://auth.mistral.ai"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "mistral-vibe",
+        "name": "Mistral Vibe",
+        "vendor": "Mistral AI",
+        "homepage": "https://github.com/mistralai/mistral-vibe",
+        "termsUrl": "https://mistral.ai/terms",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "vibe-acp",
+                "vibe"
+              ],
+              "paths": [
+                "~/.local/bin/vibe-acp"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://github.com/mistralai/mistral-vibe"
+            },
+            "launch": {
+              "command": [
+                "vibe"
+              ]
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "vibe-acp",
+                "vibe"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://github.com/mistralai/mistral-vibe"
+            },
+            "launch": {
+              "command": [
+                "vibe"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "vibe-acp",
+                "vibe"
+              ],
+              "paths": [
+                "~/.local/bin/vibe-acp"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://github.com/mistralai/mistral-vibe"
+            },
+            "launch": {
+              "command": [
+                "vibe"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "vibe"
+          ],
+          "interactive": true,
+          "planSignin": "off"
+        },
+        "apiKey": {
+          "env": "MISTRAL_API_KEY",
+          "label": "Mistral API key",
+          "docsUrl": "https://docs.mistral.ai/getting-started/quickstart/"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "vibe-acp"
+            ],
+            "authMethods": []
+          },
+          "terminal": {
+            "command": [
+              "vibe"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "ollama",
+        "name": "Ollama",
+        "vendor": "Ollama",
+        "homepage": "https://ollama.com/",
+        "termsUrl": "https://ollama.com/terms",
+        "kinds": [
+          "desktop-app",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "ollama"
+              ],
+              "paths": [
+                "/Applications/Ollama.app"
+              ],
+              "bundleIds": [
+                "com.electron.ollama"
+              ],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "brew",
+              "ref": "ollama-app",
+              "cask": true
+            },
+            "launch": {
+              "app": "Ollama"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "ollama"
+              ],
+              "paths": [
+                "%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe",
+                "%LOCALAPPDATA%\\Programs\\Ollama\\ollama app.exe"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "winget",
+              "ref": "Ollama.Ollama"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "ollama"
+              ],
+              "paths": [
+                "/usr/local/bin/ollama"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://ollama.com/download/linux"
+            },
+            "launch": {
+              "command": [
+                "ollama",
+                "serve"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "ollama",
+            "signin"
+          ],
+          "logoutCommand": [
+            "ollama",
+            "signout"
+          ],
+          "linkHosts": [
+            "ollama.com"
+          ],
+          "planSignin": "on"
+        },
+        "driver": {
+          "terminal": {
+            "command": [
+              "ollama"
+            ]
+          },
+          "desktopApp": {
+            "bundleId": "com.electron.ollama",
+            "exe": "ollama app.exe"
+          }
+        },
+        "capabilities": [
+          "terminal",
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "opencode",
+        "name": "OpenCode",
+        "vendor": "Anomaly (formerly SST)",
+        "homepage": "https://opencode.ai/",
+        "termsUrl": "https://opencode.ai/legal/terms-of-service",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "opencode"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "opencode-ai"
+            },
+            "launch": {
+              "command": [
+                "opencode"
+              ]
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "opencode"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "opencode-ai"
+            },
+            "launch": {
+              "command": [
+                "opencode"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "opencode"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "opencode-ai"
+            },
+            "launch": {
+              "command": [
+                "opencode"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "opencode",
+            "auth",
+            "login"
+          ],
+          "logoutCommand": [
+            "opencode",
+            "auth",
+            "logout"
+          ],
+          "planSignin": "on"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "opencode",
+              "acp"
+            ],
+            "authMethods": []
+          },
+          "terminal": {
+            "command": [
+              "opencode"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "perplexity",
+        "name": "Perplexity",
+        "vendor": "Perplexity AI",
+        "homepage": "https://www.perplexity.ai/",
+        "termsUrl": "https://www.perplexity.ai/hub/legal/terms-of-service",
+        "kinds": [
+          "web-app"
+        ],
+        "platforms": {},
+        "signin": {
+          "via": "web",
+          "url": "https://www.perplexity.ai/",
+          "planSignin": "on"
+        },
+        "driver": {
+          "web": {
+            "startUrl": "https://www.perplexity.ai/",
+            "allowedOrigins": [
+              "https://www.perplexity.ai"
+            ]
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "qwen-code",
+        "name": "Qwen Code",
+        "vendor": "Alibaba Qwen",
+        "homepage": "https://qwenlm.github.io/qwen-code-docs/en/",
+        "termsUrl": "https://github.com/QwenLM/qwen-code/blob/main/LICENSE",
+        "kinds": [
+          "acp",
+          "terminal"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "qwen"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@qwen-code/qwen-code"
+            },
+            "launch": {
+              "command": [
+                "qwen"
+              ]
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "qwen"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@qwen-code/qwen-code"
+            },
+            "launch": {
+              "command": [
+                "qwen"
+              ]
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "qwen"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "npm",
+              "ref": "@qwen-code/qwen-code"
+            },
+            "launch": {
+              "command": [
+                "qwen"
+              ]
+            }
+          }
+        },
+        "signin": {
+          "via": "cli",
+          "command": [
+            "qwen"
+          ],
+          "interactive": true,
+          "planSignin": "on"
+        },
+        "apiKey": {
+          "env": "OPENAI_API_KEY",
+          "label": "OpenAI-compatible API key (also set OPENAI_BASE_URL and OPENAI_MODEL)",
+          "docsUrl": "https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/"
+        },
+        "driver": {
+          "acp": {
+            "command": [
+              "qwen",
+              "--acp",
+              "--approval-mode",
+              "default"
+            ],
+            "authMethods": [
+              "openai"
+            ]
+          },
+          "terminal": {
+            "command": [
+              "qwen"
+            ]
+          }
+        },
+        "capabilities": [
+          "sessions",
+          "terminal"
+        ]
+      },
+      {
+        "v": 1,
+        "id": "windsurf",
+        "name": "Devin Desktop (formerly Windsurf)",
+        "vendor": "Cognition",
+        "homepage": "https://devin.ai/desktop",
+        "termsUrl": "https://cognition.com/legal/platform-terms-of-service",
+        "kinds": [
+          "desktop-app"
+        ],
+        "platforms": {
+          "mac": {
+            "detect": {
+              "commands": [
+                "devin-desktop",
+                "windsurf"
+              ],
+              "paths": [
+                "/Applications/Devin.app",
+                "/Applications/Windsurf.app"
+              ],
+              "bundleIds": [
+                "com.exafunction.windsurf"
+              ],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "brew",
+              "ref": "devin-desktop",
+              "cask": true
+            },
+            "launch": {
+              "app": "Devin"
+            }
+          },
+          "windows": {
+            "detect": {
+              "commands": [
+                "devin-desktop",
+                "windsurf"
+              ],
+              "paths": [
+                "%LOCALAPPDATA%\\Programs\\Devin\\Devin.exe",
+                "%LOCALAPPDATA%\\Programs\\Windsurf\\Windsurf.exe"
+              ],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "winget",
+              "ref": "CognitionAI.DevinDesktop"
+            }
+          },
+          "linux": {
+            "detect": {
+              "commands": [
+                "devin-desktop",
+                "windsurf"
+              ],
+              "paths": [],
+              "bundleIds": [],
+              "appUserModelIds": []
+            },
+            "install": {
+              "via": "official-url",
+              "ref": "https://devin.ai/download"
+            }
+          }
+        },
+        "signin": {
+          "via": "desktop-app",
+          "url": "https://devin.ai/desktop",
+          "planSignin": "on"
+        },
+        "driver": {
+          "desktopApp": {
+            "bundleId": "com.exafunction.windsurf",
+            "exe": "Devin.exe"
+          }
+        },
+        "capabilities": [
+          "remote-view",
+          "ai-control"
+        ]
+      }
+    ]
+  },
+  "sig": "LbGEEztxGe2K0Pg9xEIxUU1Ptj8d8F3XQjROlUVkiq47Hs7MS8A34euuLDSzQaA_-J2UWLUQfRb18FGhzNPZCw"
+}

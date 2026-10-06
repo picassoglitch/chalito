@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { SigningKeyPair } from "@chalito/crypto";
-import { DerivedDeviceId, Locale, Uid } from "@chalito/protocol";
+import { AppId, DerivedDeviceId, Locale, Uid } from "@chalito/protocol";
 import { signLocal, verifyLocal } from "./local-sig.js";
 
 /** ~/.chalito: config, policy, trusted clients, Developer-mode state and audit. 0700. */
@@ -92,6 +92,13 @@ export const AgentConfig = z.object({
    */
   grok: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
   gemini: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
+  /**
+   * Connect engine: every other app's CLI (by app id), pinned the same way when the desktop app
+   * installs or connects it (apps/manager.ts). The four former providers keep the fields above.
+   */
+  appPins: z
+    .record(AppId, z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }))
+    .optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfig>;
 export type PairedConfig = AgentConfig & { owner: string; deviceId: string };

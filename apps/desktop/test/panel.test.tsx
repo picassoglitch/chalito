@@ -1,3 +1,4 @@
+import catalogJson from "../../../recipes/catalog.json" with { type: "json" };
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalView, ChalitoClient, NotificationView, Snapshot } from "@chalito/client";
@@ -10,9 +11,11 @@ import { TextProviders } from "../src/lib/i18n.js";
 import {
   unavailableIpc,
   type AgentIpc,
+  type AppView,
   type ComputerStatus,
   type DevModeState,
-  type ProviderView,
+  type TerminalStatus,
+  type ScreenStatus,
 } from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
 import { Panel, type PanelProps, type Tab } from "../src/panel/Panel.js";
@@ -78,6 +81,13 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     active: [{ sid: "s1", label: "chalito", since: 1 }],
     pending: [],
   };
+  let terminal: TerminalStatus = { enabled: false, rawShell: false, active: [], pending: [] };
+  let scr: ScreenStatus = {
+    view: false,
+    control: false,
+    active: [{ sid: "sc1", label: "Remote screen (view)", mode: "view", since: 1 }],
+    pending: [],
+  };
   return {
     calls,
     ping: async () => ({ version: "test" }),
@@ -114,12 +124,29 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
       return dev;
     },
     reportPresence: async () => undefined,
-    providers: async () => [],
-    connectProviderKey: async (...a) => void calls.push(["connectProviderKey", ...a]),
-    signinProvider: async (...a) => void calls.push(["signinProvider", ...a]),
-    disconnectProvider: async (...a) => void calls.push(["disconnectProvider", ...a]),
-    installProvider: async (...a) => void calls.push(["installProvider", ...a]),
-    declineProviderInstall: async (...a) => void calls.push(["declineProviderInstall", ...a]),
+    apps: async () => ({ apps: [], problems: [], catalog: null }),
+    connectAppKey: async (...a) => void calls.push(["connectAppKey", ...a]),
+    signinApp: async (...a) => void calls.push(["signinApp", ...a]),
+    disconnectApp: async (...a) => void calls.push(["disconnectApp", ...a]),
+    installApp: async (...a) => void calls.push(["installApp", ...a]),
+    declineAppInstall: async (...a) => void calls.push(["declineAppInstall", ...a]),
+    launchApp: async (...a) => void calls.push(["launchApp", ...a]),
+    customRecipeChallenge: async (appId) => ({
+      title: `Activar «${appId}»`,
+      warn: "Chalito ejecutará estos comandos.",
+      type: `Escribe «${appId}»`,
+      summary: ["sign-in: miagente login"],
+    }),
+    enableCustomRecipe: async (...a) => (calls.push(["enableCustomRecipe", ...a]), { ok: true as const }),
+    disableCustomRecipe: async (...a) => void calls.push(["disableCustomRecipe", ...a]),
+    appSessionsChallenge: async (appId) => ({
+      title: `Permitir sesiones de «${appId}»`,
+      warn: "Esto ejecuta:",
+      type: `Escribe «${appId}»`,
+      summary: ["acp: goose acp"],
+    }),
+    enableAppSessions: async (...a) => (calls.push(["enableAppSessions", ...a]), { ok: true as const }),
+    disableAppSessions: async (...a) => void calls.push(["disableAppSessions", ...a]),
     computerStatus: async () => computer,
     computerChallenge: async () => ({
       examples: ["Ver todo lo que hay en tu pantalla"],
@@ -146,6 +173,57 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
       wayland: false,
     }),
     openComputerSettings: async (pane) => void calls.push(["openComputerSettings", pane]),
+    terminalStatus: async () => terminal,
+    terminalChallenge: async () => ({
+      terminal: {
+        examples: ["Abrir la app de terminal de una IA"],
+        risk: "Cada terminal pedirá tu aprobación.",
+        phrase: "TERMINAL REMOTA",
+      },
+      rawShell: {
+        examples: ["Abrir una shell completa"],
+        risk: "Es lo mismo que sentarte frente a este teclado.",
+        phrase: "SHELL COMPLETA DE MI EQUIPO",
+        warning: "Último paso: control total de tu usuario.",
+      },
+    }),
+    enableRemoteTerminal: async (answers) => {
+      calls.push(["enableRemoteTerminal", answers]);
+      terminal = { ...terminal, enabled: true };
+      return { ok: true };
+    },
+    enableRawShell: async (answers) => {
+      calls.push(["enableRawShell", answers]);
+      terminal = { ...terminal, rawShell: true };
+      return { ok: true };
+    },
+    disableRemoteTerminal: async () => {
+      calls.push(["disableRemoteTerminal"]);
+      terminal = { ...terminal, enabled: false, rawShell: false };
+    },
+    disableRawShell: async () => {
+      calls.push(["disableRawShell"]);
+      terminal = { ...terminal, rawShell: false };
+    },
+    screenStatus: async () => scr,
+    screenChallenge: async (mode) => ({
+      examples: [mode === "control" ? "Mover el mouse desde lejos" : "Ver esta pantalla en vivo"],
+      risk: "Cada sesión pedirá tu aprobación con passkey.",
+      phrase: mode === "control" ? "CONTROLAR MI PANTALLA" : "VER MI PANTALLA",
+    }),
+    enableScreen: async (mode, answers) => {
+      calls.push(["enableScreen", mode, answers]);
+      scr = { ...scr, view: true, control: mode === "control" };
+      return { ok: true };
+    },
+    disableScreen: async (what) => {
+      calls.push(["disableScreen", what]);
+      scr = { ...scr, control: false, view: what === "control" ? scr.view : false };
+    },
+    closeScreen: async (sid) => {
+      calls.push(["closeScreen", sid]);
+      scr = { ...scr, active: scr.active.filter((a) => a.sid !== sid) };
+    },
     ...over,
   };
 };
@@ -153,7 +231,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(4));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(6));
   });
 
   it("reverse check: shows the phone's fingerprint and sends the local verdict", async () => {
@@ -224,6 +302,81 @@ describe("panel: local-only security screens", () => {
     fireEvent.click(confirm);
     await waitFor(() => expect(container.querySelector('[data-computer="on"]')).not.toBeNull());
     expect(ipc.calls).toContainEqual(["enableComputer", { first: true, second: true, typed: "CONTROLAR MI EQUIPO" }]);
+  });
+
+  it("remote terminal: local enable with the phrase; the raw shell needs a fourth step", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    const section = await waitFor(() => {
+      const el = container.querySelector('[data-section="terminal"]');
+      if (!el?.querySelector('[data-terminal="off"]')) throw new Error("not yet");
+      return el as HTMLElement;
+    });
+    expect(section.querySelector("[data-raw-shell]")).toBeNull();
+    fireEvent.click(section.querySelector('[data-terminal="off"] button')!);
+    await within(section).findByText(/Abrir la app de terminal/);
+    fireEvent.click(within(section).getByText("Continue"));
+    fireEvent.click(within(section).getByText("Continue"));
+    const confirm = within(section).getByText("Turn on (asks for your password)") as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(within(section).getByLabelText("TERMINAL REMOTA"), { target: { value: "TERMINAL REMOTA" } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(section.querySelector('[data-raw-shell="off"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["enableRemoteTerminal", { first: true, second: true, typed: "TERMINAL REMOTA" }]);
+
+    fireEvent.click(section.querySelector('[data-raw-shell="off"] button')!);
+    await within(section).findByText(/Abrir una shell completa/);
+    fireEvent.click(within(section).getByText("Continue"));
+    fireEvent.click(within(section).getByText("Continue"));
+    fireEvent.change(within(section).getByLabelText("SHELL COMPLETA DE MI EQUIPO"), {
+      target: { value: "SHELL COMPLETA DE MI EQUIPO" },
+    });
+    fireEvent.click(within(section).getByText("Continue"));
+    expect(within(section).getByText(/control total/)).toBeTruthy();
+    fireEvent.click(within(section).getByText("Turn on (asks for your password)"));
+    await waitFor(() => expect(section.querySelector('[data-raw-shell="on"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual([
+      "enableRawShell",
+      { first: true, second: true, typed: "SHELL COMPLETA DE MI EQUIPO", final: true },
+    ]);
+    fireEvent.click(section.querySelector('[data-terminal="on"] button')!);
+    await waitFor(() => expect(ipc.calls).toContainEqual(["disableRemoteTerminal"]));
+  });
+
+  it("remote screen: local enable (view, then control) with the phrase; close a session; turn off", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    expect(await screen.findByText("Open session: Remote screen (view)")).toBeTruthy();
+    fireEvent.click(within(container.querySelector('[data-screen-session="sc1"]')!).getByText("Close"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["closeScreen", "sc1"]));
+
+    fireEvent.click(within(container.querySelector('[data-screen="off"]')!).getByText("Turn on viewing"));
+    await screen.findByText(/Ver esta pantalla en vivo/);
+    fireEvent.click(screen.getByText("Continue"));
+    fireEvent.click(screen.getByText("Continue"));
+    const confirm = screen.getByText("Turn on (asks for your password)", {
+      selector: '[data-step="3"] button',
+    }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("VER MI PANTALLA"), { target: { value: "VER MI PANTALLA" } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(container.querySelector('[data-screen="view"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["enableScreen", "view", { first: true, second: true, typed: "VER MI PANTALLA" }]);
+
+    fireEvent.click(within(container.querySelector('[data-screen="view"]')!).getByText("Turn on control"));
+    await screen.findByText(/Mover el mouse desde lejos/);
+    fireEvent.click(screen.getByText("Continue"));
+    fireEvent.click(screen.getByText("Continue"));
+    fireEvent.change(screen.getByLabelText("CONTROLAR MI PANTALLA"), { target: { value: "CONTROLAR MI PANTALLA" } });
+    fireEvent.click(screen.getByText("Turn on (asks for your password)", { selector: '[data-step="3"] button' }));
+    await waitFor(() => expect(container.querySelector('[data-screen="control"]')).not.toBeNull());
+
+    fireEvent.click(within(container.querySelector('[data-screen="control"]')!).getByText("Remove control"));
+    await waitFor(() => expect(container.querySelector('[data-screen="view"]')).not.toBeNull());
+    fireEvent.click(within(container.querySelector('[data-screen="view"]')!).getByText("Turn off"));
+    await waitFor(() => expect(container.querySelector('[data-screen="off"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["disableScreen", "control"]);
+    expect(ipc.calls).toContainEqual(["disableScreen", "all"]);
   });
 
   it("Developer mode: cancelling sends nothing", async () => {
@@ -468,74 +621,182 @@ describe("panel: approvals bound to what the agent signed (R-H1, R-M10)", () => 
   });
 });
 
-describe("panel: IA conectadas", () => {
-  const doc = (state: ProviderView["doc"]["state"], o: Partial<ProviderView["doc"]> = {}): ProviderView["doc"] => ({
+describe("panel: IA conectadas (catalog)", () => {
+  const recipes = catalogJson as unknown as { recipes: AppView["recipe"][] };
+  const recipe = (id: string) => recipes.recipes.find((r) => r.id === id)!;
+  const doc = (
+    state: AppView["doc"]["state"],
+    kind: AppView["doc"]["kind"],
+    o: Partial<AppView["doc"]> = {},
+  ): AppView["doc"] => ({
     mode: null,
     connected: state === "connected",
     state,
     cli: { installed: state !== "not_installed", version: state === "not_installed" ? null : "1.0.0" },
     error: null,
     at: 1,
+    kind,
+    custom: false,
     ...o,
   });
-  const views = (): ProviderView[] => [
-    { provider: "anthropic", doc: doc("needs_auth"), signinAllowed: false, installRequestedUntil: null },
-    {
-      provider: "openai",
-      doc: doc("connected", { mode: "api_key" }),
-      signinAllowed: false,
-      installRequestedUntil: null,
-    },
-    { provider: "xai", doc: doc("needs_auth"), signinAllowed: true, installRequestedUntil: null },
-    { provider: "google", doc: doc("not_installed"), signinAllowed: true, installRequestedUntil: 9e15 },
-  ];
-  const row = (c: HTMLElement, p: string) => c.querySelector(`[data-provider="${p}"]`) as HTMLElement;
+  const app = (id: string, d: AppView["doc"], o: Partial<AppView> = {}): AppView => ({
+    appId: id,
+    recipe: recipe(id),
+    custom: false,
+    enabled: true,
+    doc: d,
+    signinAllowed: false,
+    installRequestedUntil: null,
+    supported: true,
+    install: Object.values(recipe(id).platforms)[0]?.install ?? null,
+    sessions: null,
+    ...o,
+  });
+  const mine = {
+    ...recipe("goose"),
+    id: "mi-agente",
+    name: "Mi agente",
+    vendor: "Yo",
+    kinds: ["terminal" as const],
+  };
+  const views = () => ({
+    apps: [
+      app("claude-code", doc("needs_auth", "claude-sdk")),
+      app("codex", doc("connected", "codex", { mode: "api_key" })),
+      app("grok", doc("needs_auth", "acp"), { signinAllowed: true }),
+      app("gemini", doc("not_installed", "acp"), { signinAllowed: true, installRequestedUntil: 9e15 }),
+      app("chatgpt", doc("available", "web-app")),
+      app("claude-desktop", doc("not_installed", "desktop-app")),
+      app("aider", doc("needs_auth", "terminal"), { signinAllowed: true }),
+      {
+        ...app("goose", doc("error", "terminal", { custom: true, name: "Mi agente", error: "recipe_disabled" })),
+        appId: "mi-agente",
+        recipe: mine,
+        custom: true,
+        enabled: false,
+      },
+    ],
+    problems: [{ file: "roto.yaml", reason: "invalid" as const }],
+    catalog: { source: "builtin" as const, issuedAt: 1 },
+  });
+  const row = (c: HTMLElement, id: string) => c.querySelector(`[data-app="${id}"]`) as HTMLElement;
+  const buttons = (c: HTMLElement, id: string) => [...row(c, id).querySelectorAll("button")].map((b) => b.textContent);
 
-  it("lists the four providers with their state and the actions each allows", async () => {
-    const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ providers: async () => views() }) }, "es");
-    await waitFor(() => expect(container.querySelectorAll("[data-provider]")).toHaveLength(4));
-    const claude = row(container, "anthropic");
-    expect(claude.textContent).toContain("Conectar con API key");
-    const buttons = (p: string) => [...row(container, p).querySelectorAll("button")].map((b) => b.textContent);
-    expect(buttons("anthropic")).toEqual(["Conectar con API key"]);
-    expect(buttons("xai")).toEqual(["Conectar con API key", "Iniciar sesión"]);
-    expect(claude.textContent).toContain("solo equipo de Chalito");
-    expect(row(container, "openai").textContent).toContain("Conectado · con tu API key");
-    expect(row(container, "openai").textContent).toContain("Desconectar");
-    expect(row(container, "xai").textContent).toContain("Iniciar sesión");
-    expect(row(container, "google").textContent).toContain("Instalar");
+  it("groups the curated apps by kind and the person's own recipes under Personalizada", async () => {
+    const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ apps: async () => views() }) }, "es");
+    await waitFor(() => expect(container.querySelectorAll("[data-app]")).toHaveLength(8));
+    const group = (g: string) =>
+      [...container.querySelectorAll(`[data-group="${g}"] [data-app]`)].map((e) => e.getAttribute("data-app"));
+    expect(group("agents")).toEqual(["claude-code", "codex", "grok", "gemini", "aider"]);
+    expect(group("desktop")).toEqual(["claude-desktop"]);
+    expect(group("web")).toEqual(["chatgpt"]);
+    expect(group("custom")).toEqual(["mi-agente"]);
+    expect(container.textContent).toContain("Personalizada");
+    expect(container.textContent).toContain("roto.yaml: no es una receta válida.");
   });
 
-  it("a key goes to the agent over the local IPC; sign-in and disconnect are local actions", async () => {
-    const ipc = fakeIpc({ providers: async () => views() });
+  it("each app offers only what it supports: keys, its own sign-in, opening it, installing it", async () => {
+    const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ apps: async () => views() }) }, "es");
+    await waitFor(() => expect(row(container, "chatgpt")).toBeTruthy());
+    expect(buttons(container, "claude-code")).toEqual(["Conectar con API key"]);
+    expect(buttons(container, "grok")).toEqual(["Conectar con API key", "Iniciar sesión"]);
+    expect(row(container, "codex").textContent).toContain("Conectado · con tu API key");
+    expect(buttons(container, "chatgpt")).toEqual(["Abrir (inicias sesión ahí)"]);
+    expect(buttons(container, "claude-desktop")).toEqual(["Instalar"]);
+    // A sign-in that only works in the app's own terminal UI is a hint, not a button.
+    expect(buttons(container, "aider")).toEqual(["Conectar con API key"]);
+    expect(row(container, "aider").textContent).toContain("ejecuta: aider");
+    // A custom recipe that's off: only turning it on (here) is offered.
+    expect(buttons(container, "mi-agente")).toEqual(["Activar en esta computadora"]);
+  });
+
+  it("a key goes to the agent over the local IPC; sign-in, open and disconnect are local actions", async () => {
+    const ipc = fakeIpc({ apps: async () => views() });
     const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
-    await waitFor(() => expect(row(container, "xai")).toBeTruthy());
-    fireEvent.click(within(row(container, "anthropic")).getByText("Connect with an API key"));
-    fireEvent.change(row(container, "anthropic").querySelector('input[type="password"]')!, {
+    await waitFor(() => expect(row(container, "grok")).toBeTruthy());
+    fireEvent.click(within(row(container, "claude-code")).getByText("Connect with an API key"));
+    fireEvent.change(row(container, "claude-code").querySelector('input[type="password"]')!, {
       target: { value: " sk-ant-x " },
     });
-    fireEvent.click(within(row(container, "anthropic")).getByText("Save"));
-    await waitFor(() => expect(ipc.calls).toContainEqual(["connectProviderKey", "anthropic", "sk-ant-x"]));
+    fireEvent.click(within(row(container, "claude-code")).getByText("Save"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["connectAppKey", "claude-code", "sk-ant-x"]));
 
-    fireEvent.click(within(row(container, "xai")).getByText("Sign in"));
-    await waitFor(() => expect(ipc.calls).toContainEqual(["signinProvider", "xai"]));
+    fireEvent.click(within(row(container, "grok")).getByText("Sign in"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["signinApp", "grok"]));
+    fireEvent.click(within(row(container, "chatgpt")).getByText("Open (sign in there)"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["launchApp", "chatgpt"]));
 
-    fireEvent.click(within(row(container, "openai")).getByText("Disconnect"));
-    expect(ipc.calls.some((c) => c[0] === "disconnectProvider")).toBe(false);
-    fireEvent.click(within(row(container, "openai")).getByText("Yes, disconnect"));
-    await waitFor(() => expect(ipc.calls).toContainEqual(["disconnectProvider", "openai"]));
+    fireEvent.click(within(row(container, "codex")).getByText("Disconnect"));
+    expect(ipc.calls.some((c) => c[0] === "disconnectApp")).toBe(false);
+    fireEvent.click(within(row(container, "codex")).getByText("Yes, disconnect"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["disconnectApp", "codex"]));
   });
 
-  it("installs only after a yes here, also when another device asked for it", async () => {
-    const ipc = fakeIpc({ providers: async () => views() });
+  it("installs only after a yes here, also when another device asked for it, naming the official source", async () => {
+    const ipc = fakeIpc({ apps: async () => views() });
     const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
-    await waitFor(() => expect(row(container, "google")).toBeTruthy());
-    const google = row(container, "google");
-    expect(google.textContent).toContain("from another device");
-    expect(google.textContent).toContain("@google/gemini-cli");
-    expect(ipc.calls.some((c) => c[0] === "installProvider")).toBe(false);
-    fireEvent.click(within(google).getAllByText("Yes, install")[0]!);
-    await waitFor(() => expect(ipc.calls).toContainEqual(["installProvider", "google"]));
+    await waitFor(() => expect(row(container, "gemini")).toBeTruthy());
+    const gemini = row(container, "gemini");
+    expect(gemini.textContent).toContain("from another device");
+    expect(gemini.textContent).toContain("@google/gemini-cli");
+    expect(ipc.calls.some((c) => c[0] === "installApp")).toBe(false);
+    fireEvent.click(within(gemini).getAllByText("Yes, install")[0]!);
+    await waitFor(() => expect(ipc.calls).toContainEqual(["installApp", "gemini"]));
+
+    fireEvent.click(within(row(container, "claude-desktop")).getByText("Install"));
+    expect(row(container, "claude-desktop").querySelector("a")?.getAttribute("href")).toBe(
+      recipe("claude-desktop").termsUrl,
+    );
+  });
+
+  it("a custom recipe is turned on here only after reviewing its commands and typing its id", async () => {
+    const ipc = fakeIpc({ apps: async () => views() });
+    const { container } = renderPanel({ initialTab: "ai", ipc }, "es");
+    await waitFor(() => expect(row(container, "mi-agente")).toBeTruthy());
+    fireEvent.click(within(row(container, "mi-agente")).getByText("Activar en esta computadora"));
+    await waitFor(() => expect(row(container, "mi-agente").textContent).toContain("sign-in: miagente login"));
+    const yes = within(row(container, "mi-agente")).getByText("Sí, activar") as HTMLButtonElement;
+    expect(yes.disabled).toBe(true);
+    fireEvent.change(row(container, "mi-agente").querySelector("input")!, { target: { value: "mi-agente" } });
+    expect(yes.disabled).toBe(false);
+    fireEvent.click(yes);
+    await waitFor(() =>
+      expect(ipc.calls).toContainEqual(["enableCustomRecipe", "mi-agente", { review: true, typed: "mi-agente" }]),
+    );
+  });
+
+  it("an app's sessions are off until allowed here (review + typed id); turning them off is one click", async () => {
+    const ipc = fakeIpc({
+      apps: async () => ({
+        apps: [
+          app("goose", doc("connected", "acp", { mode: "signin" }), { sessions: false }),
+          app("opencode", doc("connected", "acp", { mode: "signin" }), { sessions: true }),
+          // The four former providers (null: policy.adapters decides) and web apps show nothing.
+          app("codex", doc("connected", "codex", { mode: "api_key" })),
+          app("chatgpt", doc("available", "web-app"), { sessions: false }),
+        ],
+        problems: [],
+        catalog: null,
+      }),
+    });
+    const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
+    await waitFor(() => expect(row(container, "goose")).toBeTruthy());
+    expect(row(container, "goose").querySelector('[data-sessions="off"]')).not.toBeNull();
+    expect(row(container, "opencode").querySelector('[data-sessions="on"]')).not.toBeNull();
+    expect(row(container, "codex").querySelector("[data-sessions]")).toBeNull();
+    expect(row(container, "chatgpt").querySelector("[data-sessions]")).toBeNull();
+
+    fireEvent.click(within(row(container, "goose")).getByText("Allow sessions here"));
+    await waitFor(() => expect(row(container, "goose").textContent).toContain("acp: goose acp"));
+    const yes = within(row(container, "goose")).getByText("Yes, turn it on") as HTMLButtonElement;
+    expect(yes.disabled).toBe(true);
+    fireEvent.change(row(container, "goose").querySelector("input")!, { target: { value: "goose" } });
+    fireEvent.click(yes);
+    await waitFor(() =>
+      expect(ipc.calls).toContainEqual(["enableAppSessions", "goose", { review: true, typed: "goose" }]),
+    );
+    fireEvent.click(within(row(container, "opencode")).getByText("Turn sessions off"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["disableAppSessions", "opencode"]));
   });
 
   it("without the local agent it says so", async () => {

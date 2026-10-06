@@ -1,0 +1,63 @@
+v: 1
+id: claude-desktop
+name: Claude (desktop)
+vendor: Anthropic
+homepage: https://claude.com/download
+termsUrl: https://www.anthropic.com/legal/consumer-terms
+kinds: [desktop-app]
+platforms:
+  mac:
+    detect:
+      commands: []
+      paths: ["/Applications/Claude.app"]
+      bundleIds: [com.anthropic.claudefordesktop]
+      appUserModelIds: []
+    install:
+      via: brew
+      ref: claude
+      cask: true
+    launch:
+      app: Claude
+  windows:
+    detect:
+      commands: []
+      paths: ["%LOCALAPPDATA%\\AnthropicClaude\\claude.exe"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: winget
+      ref: Anthropic.Claude
+  linux:
+    detect:
+      commands: [claude-desktop]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://code.claude.com/docs/en/desktop-linux
+    launch:
+      command: [claude-desktop]
+signin:
+  via: desktop-app
+  url: https://claude.ai/
+  planSignin: "on"
+driver:
+  desktopApp: { bundleId: com.anthropic.claudefordesktop, exe: claude.exe }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "https://formulae.brew.sh/api/cask/claude.json (2.19675.1, Claude.app, com.anthropic.claudefordesktop)"
+    - "github.com/microsoft/winget-pkgs manifests/a/Anthropic/Claude (latest 1.44121.2: msix PackageFamilyName Claude_pzs8sxrjxfjjc + user-scope exe installer, Publisher 'Anthropic, PBC')"
+    - https://claude.com/download
+    - "https://code.claude.com/docs/en/desktop-linux (beta; apt package claude-desktop; 'run claude-desktop from a terminal'; Ubuntu 22.04+/Debian 12+)"
+  unverified:
+    - field: platforms.windows.detect.paths
+      note: "%LOCALAPPDATA%\\AnthropicClaude\\claude.exe is the legacy Squirrel exe location; the MSIX install (PFN Claude_pzs8sxrjxfjjc) lives under WindowsApps. AUMID probably Claude_pzs8sxrjxfjjc!Claude but the app id is not documented, so not listed and Windows launch omitted."
+    - field: platforms.windows.install
+      note: "winget Anthropic.Claude latest is 1.44121.2 while the mac cask is 2.19675.1; winget manifest may lag."
+    - field: platforms.linux
+      note: "Linux desktop is beta, Debian/Ubuntu only, installed via Anthropic apt repo (needs sudo; Chalito should just link the docs). Desktop file id not documented; /usr/bin/claude-desktop path not confirmed."
+    - field: driver.desktopApp.exe
+      note: "claude.exe matches the legacy exe; MSIX exe name not checked."

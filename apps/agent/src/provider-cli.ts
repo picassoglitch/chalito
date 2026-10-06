@@ -1,122 +1,14 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
-import type { Provider } from "@chalito/protocol";
 import type { RunResult } from "./runner.js";
-import { SECRET_NAMES } from "./secrets.js";
 
 /**
- * Each provider's official coding-agent CLI, and how Chalito drives it (connect contract,
- * 2026-10-05). Official tools only: the npm package the vendor publishes, the vendor's own login
- * command (the person signs in on their own machine, in their browser), and the vendor's own
- * status/logout commands. Chalito never implements a provider's consumer OAuth, never scrapes a
- * web session, and never reads or copies a token out of a CLI's storage.
- *
- * Claude Code and Codex sign in to Chalito's own profile (CLAUDE_CONFIG_DIR, CODEX_HOME under
- * ~/.chalito), so signing in or out here never touches the person's own setup. Grok Build and
- * Gemini CLI sign in to the person's own login (~/.grok, ~/.gemini), which is what the ACP
- * adapter's sign-in sessions use (packages/adapters/src/acp/profiles.ts).
- *
- * Checked against the CLIs' own --help on 2026-10-06: Claude Code 2.1.291, codex-cli 0.160.1,
- * grok 1.0.46, Gemini CLI 0.62.0 (bundle source for its ACP `authenticate`).
+ * The apps' CLIs and the agent's own child processes (engine contract v2). What each app runs
+ * (its official install, sign-in, status and sign-out commands) comes from its recipe
+ * (recipes/*.yaml, apps/agent/src/apps); this file only runs processes. Official tools only:
+ * Chalito never implements an app's consumer login, never scrapes a web session, and never reads
+ * or copies a token out of an app's storage.
  */
-export interface ProviderCli {
-  bin: "claude" | "codex" | "grok" | "gemini";
-  /** The vendor's own npm package (`npm install -g`). */
-  npmPackage: string;
-  /** Keychain slot for a BYO API key. */
-  secret: string;
-  /** What a key usually looks like; a mismatch is only logged (the CLI's `keys set` only warns too). */
-  keyShape: RegExp;
-  /** Chalito's own profile for this CLI, or {} when the CLI has no documented way to move it. */
-  profileEnv(chalitoDir: string): Record<string, string>;
-  /**
-   * The official sign-in. `args`: a CLI command that opens the browser (or prints a link) and
-   * exits 0 once signed in. `acp`: the CLI's ACP `authenticate` with this method id.
-   */
-  login: { args: string[] } | { acp: { args: string[]; methodId: string } };
-  /**
-   * The official "am I signed in" check, or null when the CLI has none: then the agent trusts
-   * only its own record of a sign-in that finished here.
-   */
-  status: { args: string[]; signedIn(r: RunResult): boolean } | null;
-  /** Sign out of the profile the sign-in used; null: the CLI has no sign-out command. */
-  logout: { args: string[] } | null;
-  /** Hosts whose links the agent may open for the person while a sign-in waits (see `openLinks`). */
-  linkHosts: string[];
-  /** Whether the agent opens those links itself: the CLI prints them without opening a browser. */
-  openLinks: boolean;
-}
-
-export const PROVIDER_CLI: Record<Provider, ProviderCli> = {
-  anthropic: {
-    bin: "claude",
-    npmPackage: "@anthropic-ai/claude-code",
-    secret: SECRET_NAMES.anthropicApiKey,
-    keyShape: /^sk-ant-/,
-    profileEnv: (dir) => ({ CLAUDE_CONFIG_DIR: join(dir, "claude") }),
-    // `claude auth login` (Claude subscription is the default; --claudeai makes it explicit).
-    // Anthropic's own flow; the credentials stay in that profile and Chalito never sees them.
-    login: { args: ["auth", "login", "--claudeai"] },
-    status: {
-      args: ["auth", "status", "--json"],
-      signedIn: (r) => {
-        try {
-          return r.code === 0 && (JSON.parse(r.stdout) as { loggedIn?: unknown }).loggedIn === true;
-        } catch {
-          return false;
-        }
-      },
-    },
-    logout: { args: ["auth", "logout"] },
-    linkHosts: ["claude.ai", "claude.com", "console.anthropic.com"],
-    openLinks: false,
-  },
-  openai: {
-    bin: "codex",
-    npmPackage: "@openai/codex",
-    secret: SECRET_NAMES.openaiApiKey,
-    keyShape: /^sk-/,
-    // The adapter runs Codex with the same CODEX_HOME (daemon.ts).
-    profileEnv: (dir) => ({ CODEX_HOME: join(dir, "codex") }),
-    login: { args: ["login"] },
-    // "Not logged in" exits 1.
-    status: { args: ["login", "status"], signedIn: (r) => r.code === 0 },
-    logout: { args: ["logout"] },
-    linkHosts: ["auth.openai.com"],
-    openLinks: false,
-  },
-  xai: {
-    bin: "grok",
-    npmPackage: "@xai-official/grok",
-    secret: SECRET_NAMES.xaiApiKey,
-    keyShape: /^xai-/,
-    // No documented way to move ~/.grok, so a Grok sign-in is the person's own Grok Build login.
-    profileEnv: () => ({}),
-    // Without a terminal, `grok login` prints an accounts.x.ai link and code and waits.
-    login: { args: ["login"] },
-    status: null,
-    logout: { args: ["logout"] },
-    linkHosts: ["accounts.x.ai", "auth.x.ai"],
-    openLinks: true,
-  },
-  google: {
-    bin: "gemini",
-    npmPackage: "@google/gemini-cli",
-    secret: SECRET_NAMES.googleApiKey,
-    keyShape: /^AIza/,
-    // The person's own ~/.gemini: the ACP adapter's sign-in sessions use the saved Google login.
-    profileEnv: () => ({}),
-    // Gemini CLI has no login subcommand. Its ACP agent's `authenticate` with "oauth-personal"
-    // ("Login with Google") opens the browser and caches the login like `gemini` → /auth does.
-    login: { acp: { args: ["--acp"], methodId: "oauth-personal" } },
-    status: null,
-    // No sign-out command; it's the person's own login, so Chalito only forgets it here.
-    logout: null,
-    linkHosts: ["accounts.google.com"],
-    openLinks: false,
-  },
-};
 
 /** The CLIs and the agent's own child processes. Injected so tests never run a real CLI. */
 export interface ProviderProcs {
@@ -140,6 +32,11 @@ export interface ProviderProcs {
   ): Promise<boolean>;
   /** Opens a link in the person's default browser on this computer. */
   openUrl(url: string): Promise<void>;
+  /**
+   * Starts a GUI app or a launcher command detached from the agent (it keeps running after the
+   * agent stops). True once it started.
+   */
+  launch(cmd: string, args: string[], opts: { env: Record<string, string | undefined> }): Promise<boolean>;
 }
 
 const opener = (platform: NodeJS.Platform, url: string): [string, string[]] =>
@@ -223,6 +120,22 @@ export const spawnProviderProcs = (platform: NodeJS.Platform = process.platform)
         id: 0,
         method: "initialize",
         params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } } },
+      });
+    }),
+
+  launch: (cmd, args, opts) =>
+    new Promise<boolean>((resolve) => {
+      const child = spawn(cmd, args, {
+        env: opts.env,
+        stdio: "ignore",
+        detached: true,
+        shell: platform === "win32" && /\.(cmd|bat)$/i.test(cmd),
+        windowsHide: true,
+      });
+      child.on("error", () => resolve(false));
+      child.on("spawn", () => {
+        child.unref();
+        resolve(true);
       });
     }),
 

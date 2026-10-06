@@ -11,7 +11,7 @@ export interface ApprovalView {
   /** The agent that asked; decisions are signed for it. */
   agentDeviceId: string;
   requestId: string;
-  kind: "tool" | "decision" | "computer_control";
+  kind: "tool" | "decision" | "computer_control" | "terminal";
   /** When `verified`: the value the agent SIGNED; otherwise the row's (unverified) column. */
   risk: "LOW" | "MED" | "HIGH" | "CRITICAL";
   origin: string;

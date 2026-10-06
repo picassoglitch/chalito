@@ -1,0 +1,71 @@
+v: 1
+id: ollama
+name: Ollama
+vendor: Ollama
+homepage: https://ollama.com/
+termsUrl: https://ollama.com/terms
+kinds: [desktop-app, terminal]
+platforms:
+  mac:
+    detect:
+      commands: [ollama]
+      paths: ["/Applications/Ollama.app"]
+      bundleIds: [com.electron.ollama]
+      appUserModelIds: []
+    install:
+      via: brew
+      ref: ollama-app
+      cask: true
+    launch:
+      app: Ollama
+  windows:
+    detect:
+      commands: [ollama]
+      paths: ["%LOCALAPPDATA%\\Programs\\Ollama\\ollama.exe", "%LOCALAPPDATA%\\Programs\\Ollama\\ollama app.exe"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: winget
+      ref: Ollama.Ollama
+  linux:
+    detect:
+      commands: [ollama]
+      paths: ["/usr/local/bin/ollama"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://ollama.com/download/linux
+    launch:
+      command: [ollama, serve]
+signin:
+  via: cli
+  command: [ollama, signin]
+  logoutCommand: [ollama, signout]
+  linkHosts: [ollama.com]
+  planSignin: "on"
+driver:
+  terminal: { command: [ollama] }
+  desktopApp: { bundleId: com.electron.ollama, exe: ollama app.exe }
+capabilities: [terminal, remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "https://formulae.brew.sh/api/cask/ollama-app.json (0.35.1; Ollama.app; binary Contents/Resources/ollama; ids com.electron.ollama, com.ollama.ollama)"
+    - "https://formulae.brew.sh/api/formula/ollama.json (CLI-only formula 0.35.1)"
+    - "github.com/microsoft/winget-pkgs manifests/o/Ollama/Ollama/0.35.1 (inno, user scope, DefaultInstallLocation %LocalAppData%\\Programs\\Ollama, installer from github.com/ollama/ollama releases)"
+    - "https://docs.ollama.com/cli (ollama signin, ollama signout, run, launch, serve)"
+    - https://docs.ollama.com/linux
+  unverified:
+    - field: signin
+      note: "Sign-in is optional (only for ollama.com cloud models / sharing); local use needs none. 'ollama signin' link host and whether it opens a browser or only prints a link not tested. No status command documented (no whoami)."
+    - field: driver.terminal.command
+      note: "Interactive chat requires a model: 'ollama run <model>'. Bare [ollama] given as the generic entry point; behaviour of bare 'ollama' (help vs. menu) in 0.35 not tested."
+    - field: platforms.mac.detect.bundleIds
+      note: "com.electron.ollama taken from brew zap plist names, not Info.plist."
+    - field: platforms.windows.detect.paths
+      note: "Install dir from winget manifest; 'ollama app.exe' tray exe name not re-confirmed."
+    - field: platforms.linux.launch
+      note: "Linux has no desktop app; install script sets up a systemd service, so launch may be unnecessary. linux path /usr/local/bin/ollama not confirmed."
+    - field: platforms.mac.install
+      note: "ollama-app is a Homebrew community cask (Ollama docs point to the ollama.com download). Formula 'ollama' installs the CLI/server only."
