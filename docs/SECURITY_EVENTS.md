@@ -20,6 +20,7 @@ The catalogue of security-relevant events behind the owner-readable audit views.
 | `chalito.audit_connectors` | `audit_trail` filtered to `connectors` |
 | `chalito.audit_store` | `audit_trail` filtered to `store` |
 | `chalito.audit_computer` | `audit_trail` filtered to `computer` |
+| `chalito.audit_terminal` | `audit_trail` filtered to `terminal` |
 | `chalito.audit_approvals` | Every non-pending row of `chalito.approvals`, as `approval.<status>` with sid, kind, risk, origin, step-up, reason and the last signer device. The sealed details and the signature are left out. Plus the `approvals` category of `audit_trail`. |
 
 **Category:** `chalito.audit_category(type)` sets it from the type prefix:
@@ -30,6 +31,7 @@ The catalogue of security-relevant events behind the owner-readable audit views.
 | `approvals` | `approval.*` |
 | `devmode` | `devmode.*`, `policy.*`, `remote_enable.rejected` |
 | `computer` | `computer.*` (migration `20261005000100_chalito_computer_control.sql`) |
+| `terminal` | `terminal.*` (migration `20261006000400_chalito_remote_terminal.sql`) |
 | `connectors` | `mcp.*`, `oauth.*`, `connector.*` |
 | `store` | `store.*` |
 | `channels` | `phone.*`, `channel.*` |
@@ -106,6 +108,14 @@ Written by the agent into `chalito.audit`. `actor` is the device id. Meta is red
 | `computer.granted`, `computer.denied` | computer | `agent` | `apps/agent/src/computer/control.ts` | `{sid, reason, by?}` |
 | `computer.action` | computer | `agent` | `apps/agent/src/computer/control.ts` (every tool call, allowed or refused) | `{sid, tool, ok, reason?}` plus `display, x, y, fromX…toY, button, dx, dy, keys, id, ms, textLength` when given. Never the screenshot, the typed text or window titles. A rate-limit refusal is recorded once a minute per session. |
 | `computer.killed` | computer | `agent` | `apps/agent/src/computer/control.ts` (hotkey, tray, indicator, panel, policy, agent stop) | `{by, sessions}` |
+| `terminal.changed` | terminal | `deviceEvent` | `apps/agent/src/daemon.ts` (remote terminal or the raw shell turned on/off, a terminal opened or closed) | `{deviceId, enabled, rawShell, activeSessions, by?, t}` |
+| `terminal.enabled`, `terminal.disabled`, `terminal.raw_shell_enabled`, `terminal.raw_shell_disabled` | terminal | `agent` | `apps/agent/src/ipc-handlers.ts` (desktop panel) | `{copyVersion, locale, via}` / `{by}`. The CLI's changes show as `policy.changed` + `terminal.changed` |
+| `terminal.requested` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (`terminal.open` passed the local checks; the `terminal` approval is asked) | `{tid, appId, rawShell, origin, cols, rows}` |
+| `terminal.granted`, `terminal.denied` | terminal | `agent` | `apps/agent/src/terminal/control.ts` | `{tid, reason, by?}` |
+| `terminal.opened` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (the program started in the PTY) | `{tid, appId, rawShell, cols, rows, pty}` |
+| `terminal.closed` | terminal | `agent` | `apps/agent/src/terminal/control.ts` | `{tid, appId, reason, exitCode?, durationMs?, inputChars, outputChars, droppedChars}`. Never the typed or printed bytes. |
+| `terminal.refused` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (an open, input or resize refused) | `{reason, appId?, origin?, why?}` or `{tid, reason, what}`; input/resize refusals at most once a minute per terminal |
+| `terminal.killed` | terminal | `agent` | `apps/agent/src/terminal/control.ts` (hotkey, tray, indicator, panel, indicator lost, agent stop) | `{by, sessions}` |
 
 The DeviceEvent schemas are in `packages/protocol/src/agentEvent.ts` (`DeviceEvent`). Local Developer-mode history is also kept on the device, hash-chained (`~/.chalito/audit/devmode.jsonl`, `apps/agent/src/devmode.ts`).
 

@@ -20,6 +20,7 @@
     "@chalito/protocol": "workspace:*",
     "@chalito/redact": "workspace:*",
     "@jitsi/robotjs": "0.6.24",
+    "@lydell/node-pty": "1.1.0",
     "@napi-rs/keyring": "^2.1.0",
     "@supabase/supabase-js": "^2.117.2",
     "libsodium-wrappers-sumo": "0.8.4",

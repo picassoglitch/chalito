@@ -81,6 +81,21 @@
       "missing": "falta",
       "openSettings": "Abrir Configuración"
     },
+    "terminal": {
+      "title": "Terminal remota",
+      "intro": "Permite abrir la app de terminal de una IA (aider, opencode…) en esta computadora y usarla desde tu navegador de confianza. Cada terminal pide tu aprobación con passkey.",
+      "active": "Terminales abiertas: {labels}",
+      "hotkey": "Las cierras con Ctrl+Alt+Esc o con «Detener control» en el ícono de Chalito.",
+      "step1": "¿Activar la terminal remota? Una terminal aprobada podría:",
+      "step2": "Confírmalo de nuevo:",
+      "step3": "Escribe «{phrase}» para continuar.",
+      "confirm": "Activar (te pedirá tu contraseña)",
+      "failed": "No se activó: {reason}",
+      "shell": {
+        "title": "Shell completa",
+        "step1": "¿Activar la shell completa remota? Una shell aprobada podría:"
+      }
+    },
     "notices": {
       "title": "Avisos de seguridad",
       "missingStepUp": "«{computer}» rechazó un dispositivo nuevo: el dispositivo que lo aprobó no usó su llave de acceso. Vuelve a aprobarlo desde tu teléfono con la llave de acceso.",

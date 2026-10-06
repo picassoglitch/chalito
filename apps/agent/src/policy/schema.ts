@@ -74,6 +74,24 @@ export const Policy = z.object({
     })
     .strict()
     .optional(),
+  /**
+   * Remote terminal (apps/agent/src/terminal): a trusted browser sees and types into a recipe's
+   * terminal app in a PTY here. Absent = off (older policies keep their hash). Turned on only by
+   * `chalito terminal enable` or the desktop panel (OS auth + confirmations); `rawShell` (appId
+   * "shell", a full shell) only by `chalito terminal shell enable` or the panel, with its own
+   * stronger confirmation. `chalito policy edit` and remote surfaces can only turn them off or
+   * lower the limits.
+   */
+  remoteTerminal: z
+    .object({
+      enabled: z.boolean(),
+      rawShell: z.boolean(),
+      /** Terminals open (or waiting for approval) at once on this computer. */
+      maxSessions: z.number().int().min(1).max(10),
+      /** Ceiling on typed input per terminal per minute (UTF-16 code units). */
+      maxInputPerMinute: z.number().int().min(256).max(1_048_576),
+    })
+    .optional(),
 });
 export type Policy = z.infer<typeof Policy>;
 
@@ -121,6 +139,14 @@ export const DEFAULT_POLICY: Policy = {
 
 /** What `chalito computer enable` writes when the policy has no `computer` entry yet. */
 export const DEFAULT_COMPUTER = { enabled: false, maxActionsPerMinute: 60 } as const;
+
+/** What `chalito terminal enable` writes when the policy has no `remoteTerminal` entry yet. */
+export const DEFAULT_REMOTE_TERMINAL = {
+  enabled: false,
+  rawShell: false,
+  maxSessions: 3,
+  maxInputPerMinute: 65_536,
+} as const;
 
 export const PERMISSION_RANK = { plan: 0, default: 1, acceptEdits: 2 } as const;
 export const SANDBOX_RANK = { "read-only": 0, "workspace-write": 1 } as const;

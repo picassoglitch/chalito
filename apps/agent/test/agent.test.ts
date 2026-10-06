@@ -26,11 +26,14 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import { CommandAcceptedMeta, CommandRejectedMeta } from "@chalito/protocol";
+import { CommandAcceptedMeta, CommandEnvelope, CommandRejectedMeta } from "@chalito/protocol";
 import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { AgentCore, type AppCommands, type PolicyHolder } from "../src/agent-core.js";
 import { ComputerControl } from "../src/computer/control.js";
+import { TerminalControl } from "../src/terminal/control.js";
+import { rawShellLaunch } from "../src/terminal/driver.js";
+import type { PtyBackend, PtySpawnOptions } from "../src/terminal/pty.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
@@ -75,6 +78,8 @@ const harness = async (
     appAdapters?: Record<string, SessionAdapter>;
     /** Wire computer control (its native layer is never reached in these tests). */
     computer?: boolean;
+    /** Wire remote terminal with an echoing fake PTY (aider is the only recipe). */
+    terminal?: boolean;
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -136,6 +141,53 @@ const harness = async (
         now: Date.now,
       })
     : undefined;
+  const ptys: { file: string; args: string[]; o: PtySpawnOptions; writes: string[] }[] = [];
+  const terminalAudits: { type: string; meta: Record<string, unknown> }[] = [];
+  const fakePty: PtyBackend = {
+    name: "fake",
+    spawn: (file, args, o) => {
+      const rec = { file, args, o, writes: [] as string[] };
+      ptys.push(rec);
+      return {
+        pid: 1,
+        write: (d) => {
+          rec.writes.push(d);
+          o.onData(`echo:${d}`);
+        },
+        resize: () => undefined,
+        kill: () => undefined,
+      };
+    },
+  };
+  const terminal = opts.terminal
+    ? new TerminalControl({
+        deviceId: agent.id,
+        policy: () => policy.remoteTerminal,
+        workspaces: () => policy.workspaces,
+        launch: (appId) => (appId === "aider" ? { appId, name: "Aider", command: ["aider"], rawShell: false } : null),
+        rawShell: () => rawShellLaunch({ SHELL: "/bin/bash" }, "linux"),
+        pty: () => fakePty,
+        resolve: (p) => `/usr/bin/${p}`,
+        env: () => ({ PATH: "/usr/bin" }),
+        requestApproval: (tid, input, onRequested) =>
+          coreRef!.approvals.request({
+            sid: tid,
+            risk: "HIGH",
+            stepUp: true,
+            origin: input.origin,
+            kind: "terminal",
+            details: input.details,
+            onRequested,
+          }),
+        seal: (v, aad) => coreRef!.sealer.seal(v, aad),
+        writeEvent: (e) => store.writeEvent(e),
+        upsertSession: (tid, data) => store.upsertSession(tid, data),
+        audit: (type, meta) => void terminalAudits.push({ type, meta }),
+        publish: () => undefined,
+        now: Date.now,
+      })
+    : undefined;
+  terminal?.heartbeat(true);
   const core = new AgentCore({
     store,
     adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
@@ -154,6 +206,7 @@ const harness = async (
     ...(opts.apps ? { apps: opts.apps } : {}),
     ...(opts.appAdapters ? { appAdapters: opts.appAdapters } : {}),
     ...(computer ? { computer } : {}),
+    ...(terminal ? { terminal } : {}),
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
@@ -272,6 +325,9 @@ const harness = async (
     getPolicy: () => policy,
     computer,
     computerAudits,
+    terminal,
+    ptys,
+    terminalAudits,
   };
 };
 
@@ -1503,3 +1559,133 @@ describe("computer control in sessions", () => {
     expect(on.getPolicy().computer).toEqual({ enabled: false, maxActionsPerMinute: 60 });
   });
 });
+
+describe("remote terminal over signed commands and sealed events", () => {
+  const ON = { remoteTerminal: { enabled: true, rawShell: false, maxSessions: 3, maxInputPerMinute: 65_536 } };
+
+  it("a remote command that tries to turn on remote terminal or the raw shell is rejected and reported", async () => {
+    const h = await harness({ terminal: true });
+    for (const type of ["terminal.enable", "remoteTerminal.on", "rawShell.enable", "shell.on", "terminal.on"])
+      expect(await h.command({ type, enabled: true })).toEqual({ ok: false, reason: "remote_enable_rejected" });
+    // A real terminal.open carrying a switch is refused (the parsed body drops it, so the signature no longer matches).
+    expect(
+      await h.command({ type: "terminal.open", appId: "aider", workspaceLabel: "chalito", rawShell: true }),
+    ).toMatchObject({ ok: false });
+    expect(h.getPolicy().remoteTerminal).toBeUndefined();
+    expect(h.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected")).toHaveLength(5);
+    // And policy.tighten can't turn it on, nor stage the raw shell.
+    for (const patch of [ON, { remoteTerminal: { ...ON.remoteTerminal, enabled: false, rawShell: true } }])
+      expect(
+        await h.command({ type: "policy.tighten", patchCt: await h.sealed(h.store.audits.length + 99, patch) }),
+      ).toMatchObject({ ok: false });
+    expect(h.getPolicy().remoteTerminal).toBeUndefined();
+  });
+
+  it("open → passkey approval → sealed input and output, end to end", async () => {
+    const h = await harness({ terminal: true, policy: ON });
+    const opened = await h.command({
+      type: "terminal.open",
+      appId: "aider",
+      workspaceLabel: "chalito",
+      cols: 90,
+      rows: 20,
+    });
+    expect(opened).toMatchObject({ ok: true, sid: expect.any(String) });
+    const tid = (opened as { sid: string }).sid;
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    const row = h.store.pendingApprovals()[0]!;
+    expect(row).toMatchObject({ kind: "terminal", risk: "HIGH", stepUpRequired: true, sid: tid });
+    const details = await openJson<{
+      details: { toolName: string; input: unknown };
+      request: { body: { kind: string } };
+    }>(row.detailsCt, h.phone.id, h.phone.box, `approval:${row.aid}`);
+    expect(details.request.body.kind).toBe("terminal");
+    expect(details.details).toMatchObject({ toolName: "terminal", input: { appId: "aider", command: "aider" } });
+    // Without the passkey assertion an allow doesn't count: nothing runs.
+    await h.decide(true);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.ptys).toHaveLength(0);
+    await h.decide(true, { stepUp: true });
+    await waitFor(() => h.ptys.length === 1);
+    expect(h.ptys[0]).toMatchObject({ file: "/usr/bin/aider", o: { cols: 90, rows: 20, cwd: WS } });
+    await waitFor(() => h.store.events.some((e) => e.type === "terminal.started"));
+
+    // Input: sealed to this device for this command (AAD command:<cid>).
+    const audits = h.store.audits.length;
+    const typed = await h.command({ type: "terminal.input", tid, dataCt: await h.sealed(2, { data: "ls\r" }) });
+    expect(typed).toEqual({ ok: true, quiet: true });
+    expect(h.ptys[0]!.writes).toEqual(["ls\r"]);
+    // Keystrokes aren't audited one by one.
+    expect(h.store.audits.slice(audits).filter((a) => a.type === "command.accepted")).toHaveLength(0);
+
+    // Output: sealed to the trusted clients, bound to the terminal and the seq.
+    await waitFor(() => h.store.events.some((e) => e.type === "terminal.output"));
+    const out = h.store.events.find((e) => e.type === "terminal.output") as Extract<
+      (typeof h.store.events)[number],
+      { type: "terminal.output" }
+    >;
+    expect(await openJson(out.dataCt, h.phone.id, h.phone.box, `terminal:${tid}:${out.seq}`)).toEqual({
+      data: "echo:ls\r",
+    });
+    await expect(openJson(out.dataCt, h.phone.id, h.phone.box, `terminal:${tid}:${out.seq + 1}`)).rejects.toThrow();
+    expect(JSON.stringify(h.store.events)).not.toContain("ls\\r");
+    expect(JSON.stringify(h.store.audits)).not.toContain("echo:");
+
+    // Unsealed or mis-bound input is refused; unknown terminals before anything is decrypted.
+    expect(await h.command({ type: "terminal.input", tid, dataCt: await h.sealed(99, { data: "x" }) })).toMatchObject({
+      ok: false,
+    });
+    expect(await h.command({ type: "terminal.input", tid: "nope", dataCt: await h.sealed(5, { data: "x" }) })).toEqual({
+      ok: false,
+      reason: "unknown_session",
+    });
+    expect(await h.command({ type: "terminal.resize", tid, cols: 100, rows: 30 })).toEqual({ ok: true, quiet: true });
+    expect(await h.command({ type: "terminal.close", tid })).toEqual({ ok: true, sid: tid });
+    expect(h.store.events.at(-1)).toMatchObject({ type: "terminal.closed", reason: "closed" });
+  });
+
+  it("the raw shell needs its own toggle", async () => {
+    const h = await harness({ terminal: true, policy: ON });
+    expect(await h.command({ type: "terminal.open", appId: "shell", workspaceLabel: "chalito" })).toEqual({
+      ok: false,
+      reason: "raw_shell_disabled",
+    });
+    const shell = await harness({
+      terminal: true,
+      policy: { remoteTerminal: { ...ON.remoteTerminal, rawShell: true } },
+    });
+    expect(await shell.command({ type: "terminal.open", appId: "shell", workspaceLabel: "chalito" })).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("relayed (unsigned) commands can't reach a terminal", () => {
+    // RelayedCommand only carries session.prompt; a terminal command never parses as a relay.
+    expect(
+      CommandEnvelopeParse({
+        relayedBy: "mcp-gateway",
+        payload: {
+          type: "terminal.input",
+          tid: "t1",
+          dataCt: { alg: "xchacha20poly1305+sealedbox", nonce: "A".repeat(32), ct: "AA", keys: { d: "A".repeat(107) } },
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+const CommandEnvelopeParse = (o: { relayedBy: string; payload: unknown }) =>
+  CommandEnvelope.safeParse({
+    relayedBy: o.relayedBy,
+    body: {
+      v: 1,
+      cid: "c1",
+      uid: OWNER,
+      targetDeviceId: "dev_agent",
+      origin: "mcp:claude",
+      nonce: "A".repeat(22),
+      issuedAt: 1,
+      expiresAt: 2,
+      payload: o.payload,
+    },
+  }).success;

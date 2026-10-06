@@ -14,6 +14,7 @@ import {
   type AdapterKind,
   type DeviceEvent,
   type Provider,
+  type Recipe,
   type RecipeCatalog,
   type RecipeKind,
 } from "@chalito/protocol";
@@ -23,6 +24,9 @@ import { checkClaudePin } from "./claude-pin.js";
 import { brokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
+import { TerminalControl } from "./terminal/control.js";
+import { rawShellLaunch, resolveProgram, type TerminalLaunch } from "./terminal/driver.js";
+import { loadPtyBackend, type PtyBackend } from "./terminal/pty.js";
 import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, writeConfig, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
@@ -35,7 +39,7 @@ import { osAuthFor } from "./os-auth.js";
 import { spawnProviderProcs, type ProviderProcs } from "./provider-cli.js";
 import { AppCatalog, fetchCatalog, type CatalogEntry, type CatalogFetch } from "./apps/catalog.js";
 import { AppManager } from "./apps/manager.js";
-import { buildDrivers, type Driver } from "./drivers/registry.js";
+import { buildDrivers, driverFactory, type Driver } from "./drivers/registry.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, redactDeep, type Logger } from "./redact.js";
@@ -177,6 +181,13 @@ export interface DaemonDeps {
   catalogKeys?: Readonly<Record<string, string>>;
   /** Engine: GET for the served catalog; false turns the fetch off. */
   catalogFetch?: CatalogFetch | false;
+  /** Remote terminal's PTY layer (terminal/pty.ts in production; a fake in tests). */
+  ptyBackend?: () => PtyBackend;
+  /**
+   * The recipes remote terminal may open, by app id. Defaults to the engine's catalog (curated,
+   * and custom recipes enabled on this computer); the raw shell is its own local toggle.
+   */
+  terminalRecipes?: (appId: string) => Recipe | null;
 }
 
 export interface Daemon {
@@ -188,6 +199,8 @@ export interface Daemon {
   drivers(): ReadonlyMap<string, { kind: RecipeKind; driver: Driver }[]>;
   /** Null when this agent runs without the desktop app (no indicator, so no computer control). */
   computer: ComputerControl | null;
+  /** Null without the desktop app, like computer control (no indicator, so no remote terminal). */
+  terminal: TerminalControl | null;
   store: AgentStore;
   policy: FilePolicyHolder;
   /** What the classifier treats as the agent's own binaries, protected files and Claude's PATH. */
@@ -402,6 +415,7 @@ const startDaemon = async (
       publish({ v: 1, type: "policy.tampered", deviceId: id.deviceId, fileHash, inForceHash, t: now() }),
     onChange: async (hash) => {
       await computer?.onPolicyChange();
+      await terminal?.onPolicyChange();
       if (!store) return;
       await store.updateDevice({ policyHash: hash });
       await store.publishDeviceEvent({
@@ -416,6 +430,7 @@ const startDaemon = async (
 
   // Late-bound: created once signed in (it reports through the store), only with the desktop app.
   let computer: ComputerControl | null = null;
+  let terminal: TerminalControl | null = null;
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
   const devModeBase = {
@@ -476,6 +491,11 @@ const startDaemon = async (
     ...(deps.builtinCatalog ? { builtin: deps.builtinCatalog } : {}),
     ...(deps.catalogKeys ? { keys: deps.catalogKeys } : {}),
   });
+  /** A recipe this computer may use: curated, or the person's own once enabled here. */
+  const usableRecipe = (appId: string): Recipe | null => {
+    const e = catalog.get(appId);
+    return e && (!e.custom || e.enabled) ? e.recipe : null;
+  };
   // The app's own plan sign-in: for the four former providers providers.yaml decides, as before
   // (D-063; their recipes mirror it); for every other app its recipe's planSignin must be "on".
   const entrySignin = (e: CatalogEntry) =>
@@ -689,6 +709,68 @@ const startDaemon = async (
       locale: () => cfg.locale,
     });
     coreDeps.computer = computer;
+
+    // Remote terminal (terminal/control.ts): also only with the desktop app, which shows the
+    // indicator and holds the kill switch it shares with computer control.
+    // The recipe comes from the engine's catalog on this computer (a custom one only once enabled
+    // here), never from the remote command, which only names it; its driver from the registry.
+    const recipes = deps.terminalRecipes ?? usableRecipe;
+    terminal = new TerminalControl({
+      deviceId: id.deviceId,
+      policy: () => policy.get().remoteTerminal,
+      workspaces: () => policy.get().workspaces,
+      launch: (appId) => {
+        const recipe = recipes(appId);
+        const factory = driverFactory("terminal");
+        if (!recipe || !factory) return null;
+        const built = factory({
+          recipe,
+          custom: catalog.get(recipe.id)?.custom ?? false,
+          bin: null,
+          auth: { signIn: false },
+          env,
+          home: join(dir, "apps", recipe.id),
+          dir,
+          platform: process.platform,
+          log,
+        });
+        return built && !(built instanceof Promise) && built.terminal ? (built.terminal as TerminalLaunch) : null;
+      },
+      rawShell: () => rawShellLaunch(env),
+      pty: deps.ptyBackend ?? (() => loadPtyBackend()),
+      resolve: (program) => resolveProgram(program, env),
+      env: () => env,
+      requestApproval: (tid, input, onRequested) =>
+        core.approvals.request({
+          sid: tid,
+          risk: "HIGH",
+          stepUp: true,
+          origin: input.origin,
+          kind: "terminal",
+          details: input.details,
+          onRequested,
+        }),
+      seal: (value, aad) => core.sealer.seal(value, aad),
+      writeEvent: (e) => signedInStore.writeEvent(e),
+      upsertSession: (tid, data) => signedInStore.upsertSession(tid, data),
+      audit: auditAgent,
+      publish: (st) =>
+        publish({
+          v: 1,
+          type: "terminal.changed",
+          deviceId: id.deviceId,
+          enabled: st.enabled,
+          rawShell: st.rawShell,
+          activeSessions: st.activeSessions,
+          ...(st.by ? { by: st.by } : {}),
+          t: now(),
+        }),
+      now,
+      locale: () => cfg.locale,
+      log: (msg, meta) => log.warn(msg, meta),
+      ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
+    });
+    coreDeps.terminal = terminal;
   }
   const core = new AgentCore(coreDeps);
   if (computer) {
@@ -704,6 +786,9 @@ const startDaemon = async (
     }
     await control.onPolicyChange();
   }
+  await terminal?.onPolicyChange();
+  // The indicator watchdog: open terminals close when the desktop app stops showing it.
+  const terminalWatchdog = terminal ? every(() => void terminal?.tick(), 1000) : null;
 
   // Engine: every usable app's drivers (drivers/registry.ts). Session adapters for apps beyond the
   // built-in four go to the core by app id; launchers back `app.launch`. Built with only what the
@@ -938,6 +1023,8 @@ const startDaemon = async (
     devWatcher?.close();
     const st = computer?.status();
     if (st && (st.active.length || st.pending.length)) await computer?.kill("agent_stop").catch(() => undefined);
+    terminalWatchdog?.clear();
+    await terminal?.kill("agent_stop").catch(() => undefined);
     for (const s of core.sessions.values()) {
       await s.handle.interrupt().catch(() => undefined);
       s.handle.close();
@@ -976,6 +1063,7 @@ const startDaemon = async (
           apps,
           catalog,
           computer,
+          terminal,
           audit: auditAgent,
         }),
         onError: (method, err) =>
@@ -999,6 +1087,7 @@ const startDaemon = async (
     catalog,
     drivers: () => builtDrivers,
     computer,
+    terminal,
     store: signedInStore,
     policy,
     classifyExtras: () => extras,

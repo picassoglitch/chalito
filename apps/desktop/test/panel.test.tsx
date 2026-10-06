@@ -8,7 +8,14 @@ import { DEFAULT_SETTINGS, SETTINGS } from "@chalito/ui";
 import es from "../messages/es.json";
 import en from "../messages/en.json";
 import { TextProviders } from "../src/lib/i18n.js";
-import { unavailableIpc, type AgentIpc, type ComputerStatus, type DevModeState, type AppView } from "../src/lib/ipc.js";
+import {
+  unavailableIpc,
+  type AgentIpc,
+  type AppView,
+  type ComputerStatus,
+  type DevModeState,
+  type TerminalStatus,
+} from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
 import { Panel, type PanelProps, type Tab } from "../src/panel/Panel.js";
 import { SignIn } from "../src/panel/SignIn.js";
@@ -73,6 +80,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     active: [{ sid: "s1", label: "chalito", since: 1 }],
     pending: [],
   };
+  let terminal: TerminalStatus = { enabled: false, rawShell: false, active: [], pending: [] };
   return {
     calls,
     ping: async () => ({ version: "test" }),
@@ -150,6 +158,38 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
       wayland: false,
     }),
     openComputerSettings: async (pane) => void calls.push(["openComputerSettings", pane]),
+    terminalStatus: async () => terminal,
+    terminalChallenge: async () => ({
+      terminal: {
+        examples: ["Abrir la app de terminal de una IA"],
+        risk: "Cada terminal pedirá tu aprobación.",
+        phrase: "TERMINAL REMOTA",
+      },
+      rawShell: {
+        examples: ["Abrir una shell completa"],
+        risk: "Es lo mismo que sentarte frente a este teclado.",
+        phrase: "SHELL COMPLETA DE MI EQUIPO",
+        warning: "Último paso: control total de tu usuario.",
+      },
+    }),
+    enableRemoteTerminal: async (answers) => {
+      calls.push(["enableRemoteTerminal", answers]);
+      terminal = { ...terminal, enabled: true };
+      return { ok: true };
+    },
+    enableRawShell: async (answers) => {
+      calls.push(["enableRawShell", answers]);
+      terminal = { ...terminal, rawShell: true };
+      return { ok: true };
+    },
+    disableRemoteTerminal: async () => {
+      calls.push(["disableRemoteTerminal"]);
+      terminal = { ...terminal, enabled: false, rawShell: false };
+    },
+    disableRawShell: async () => {
+      calls.push(["disableRawShell"]);
+      terminal = { ...terminal, rawShell: false };
+    },
     ...over,
   };
 };
@@ -157,7 +197,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(4));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(5));
   });
 
   it("reverse check: shows the phone's fingerprint and sends the local verdict", async () => {
@@ -228,6 +268,45 @@ describe("panel: local-only security screens", () => {
     fireEvent.click(confirm);
     await waitFor(() => expect(container.querySelector('[data-computer="on"]')).not.toBeNull());
     expect(ipc.calls).toContainEqual(["enableComputer", { first: true, second: true, typed: "CONTROLAR MI EQUIPO" }]);
+  });
+
+  it("remote terminal: local enable with the phrase; the raw shell needs a fourth step", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    const section = await waitFor(() => {
+      const el = container.querySelector('[data-section="terminal"]');
+      if (!el?.querySelector('[data-terminal="off"]')) throw new Error("not yet");
+      return el as HTMLElement;
+    });
+    expect(section.querySelector("[data-raw-shell]")).toBeNull();
+    fireEvent.click(section.querySelector('[data-terminal="off"] button')!);
+    await within(section).findByText(/Abrir la app de terminal/);
+    fireEvent.click(within(section).getByText("Continue"));
+    fireEvent.click(within(section).getByText("Continue"));
+    const confirm = within(section).getByText("Turn on (asks for your password)") as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(within(section).getByLabelText("TERMINAL REMOTA"), { target: { value: "TERMINAL REMOTA" } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(section.querySelector('[data-raw-shell="off"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["enableRemoteTerminal", { first: true, second: true, typed: "TERMINAL REMOTA" }]);
+
+    fireEvent.click(section.querySelector('[data-raw-shell="off"] button')!);
+    await within(section).findByText(/Abrir una shell completa/);
+    fireEvent.click(within(section).getByText("Continue"));
+    fireEvent.click(within(section).getByText("Continue"));
+    fireEvent.change(within(section).getByLabelText("SHELL COMPLETA DE MI EQUIPO"), {
+      target: { value: "SHELL COMPLETA DE MI EQUIPO" },
+    });
+    fireEvent.click(within(section).getByText("Continue"));
+    expect(within(section).getByText(/control total/)).toBeTruthy();
+    fireEvent.click(within(section).getByText("Turn on (asks for your password)"));
+    await waitFor(() => expect(section.querySelector('[data-raw-shell="on"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual([
+      "enableRawShell",
+      { first: true, second: true, typed: "SHELL COMPLETA DE MI EQUIPO", final: true },
+    ]);
+    fireEvent.click(section.querySelector('[data-terminal="on"] button')!);
+    await waitFor(() => expect(ipc.calls).toContainEqual(["disableRemoteTerminal"]));
   });
 
   it("Developer mode: cancelling sends nothing", async () => {

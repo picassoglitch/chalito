@@ -6,10 +6,20 @@ import { COMPUTER_COPY, disableComputer, enableComputer } from "./computer/toggl
 import { DevMode, RISK_COPY, type DevModeDeps, type OsAuth } from "./devmode.js";
 import { IpcError, type IpcHandlers } from "./ipc-server.js";
 import type { FilePolicyHolder } from "./policy-file.js";
+import type { Policy } from "./policy/schema.js";
 import { policyRules } from "./policy-view.js";
 import type { AppCatalog } from "./apps/catalog.js";
 import { CUSTOM_COPY, disableCustomRecipe, enableCustomRecipe, recipeSummary } from "./apps/custom-toggle.js";
 import type { AppManager, AppResult } from "./apps/manager.js";
+import type { TerminalControl } from "./terminal/control.js";
+import {
+  RAW_SHELL_COPY,
+  TERMINAL_COPY,
+  disableRawShell,
+  disableRemoteTerminal,
+  enableRawShell,
+  enableRemoteTerminal,
+} from "./terminal/toggle.js";
 import type { AgentStore } from "./store.js";
 
 /** The agent version the panel's `ping` sees. */
@@ -32,6 +42,14 @@ const ComputerBeat = z.object({ indicatorShown: z.boolean().optional() });
 const ComputerKill = z.object({ via: z.enum(["hotkey", "tray", "panel", "indicator"]) });
 const ComputerEnable = z.object({
   answers: z.object({ first: z.boolean(), second: z.boolean(), typed: z.string().max(200) }),
+});
+const TerminalEnable = z.object({
+  answers: z.object({
+    first: z.boolean(),
+    second: z.boolean(),
+    typed: z.string().max(200),
+    final: z.boolean().optional(),
+  }),
 });
 const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boolean() });
 const ForProvider = z.object({ provider: Provider });
@@ -68,9 +86,24 @@ export interface IpcDeps {
   catalog?: AppCatalog;
   /** Computer control; null when this agent has no broker (it then never attaches the tools). */
   computer: ComputerControl | null;
-  /** Agent audit trail (computer.enabled / computer.disabled). */
+  /** Remote terminal; null without the desktop app, like computer control. */
+  terminal?: TerminalControl | null;
+  /** Agent audit trail (computer.enabled / computer.disabled, terminal.*). */
   audit: (type: string, meta: Record<string, unknown>) => void;
 }
+
+const terminalToggleDeps = (d: IpcDeps, answers: z.infer<typeof TerminalEnable>["answers"]) => ({
+  policy: { get: () => d.policy.get(), set: (p: Policy, via: "local") => d.policy.set(p, via) },
+  osAuth: d.osAuth(),
+  prompter: {
+    first: async () => answers.first,
+    second: async () => answers.second,
+    typed: async () => answers.typed,
+    final: async () => answers.final === true,
+  },
+  locale: d.locale(),
+  emit: (type: string, meta: Record<string, unknown>) => d.audit(type, { ...meta, via: "panel" }),
+});
 
 const appCall = async (d: IpcDeps, run: (m: AppManager) => Promise<AppResult>) => {
   if (!d.apps) throw new IpcError("unavailable");
@@ -149,15 +182,71 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
    */
   computerStatus: async (params) => {
     const { indicatorShown } = parse(ComputerBeat, params ?? {});
-    if (d.computer) return indicatorShown === undefined ? d.computer.status() : d.computer.heartbeat(indicatorShown);
-    return { enabled: d.policy.get().computer?.enabled === true, active: [], pending: [] };
+    const computer = d.computer
+      ? indicatorShown === undefined
+        ? d.computer.status()
+        : d.computer.heartbeat(indicatorShown)
+      : { enabled: d.policy.get().computer?.enabled === true, active: [], pending: [] };
+    // Remote terminals share the indicator, the heartbeat and the kill switch: open ones are
+    // listed as active (so the indicator shows them), and `terminal` says whether it's on (so the
+    // native side holds the hotkey while it is).
+    const terminal = d.terminal
+      ? indicatorShown === undefined
+        ? d.terminal.status()
+        : d.terminal.heartbeat(indicatorShown)
+      : null;
+    if (!terminal) return computer;
+    return {
+      ...computer,
+      active: [...computer.active, ...terminal.active],
+      terminal: { enabled: terminal.enabled, rawShell: terminal.rawShell, pending: terminal.pending },
+    };
   },
 
-  /** The kill switch (global hotkey, tray item, indicator button, panel): ends control now. */
+  /** The kill switch (global hotkey, tray item, indicator button, panel): ends control and closes terminals now. */
   computerKill: async (params) => {
     const { via } = parse(ComputerKill, params);
-    return { stopped: d.computer ? await d.computer.kill(via) : 0 };
+    const computer = d.computer ? await d.computer.kill(via) : 0;
+    const terminals = d.terminal ? await d.terminal.kill(via) : 0;
+    return { stopped: computer + terminals };
   },
+
+  /** The desktop panel's remote-terminal section (the indicator poll goes through computerStatus). */
+  terminalStatus: async () =>
+    d.terminal?.status() ?? {
+      enabled: d.policy.get().remoteTerminal?.enabled === true,
+      rawShell: d.policy.get().remoteTerminal?.rawShell === true && d.policy.get().remoteTerminal?.enabled === true,
+      active: [],
+      pending: [],
+    },
+
+  terminalChallenge: async () => ({ terminal: TERMINAL_COPY[d.locale()], rawShell: RAW_SHELL_COPY[d.locale()] }),
+
+  /** Local-only enable, same rules as the CLI: the agent asks the OS itself and re-checks the answers. */
+  enableRemoteTerminal: async (params) => {
+    const { answers } = parse(TerminalEnable, params);
+    return enableRemoteTerminal(terminalToggleDeps(d, answers));
+  },
+
+  /** The raw shell: its own, stronger confirmation (four answers, a longer phrase). */
+  enableRawShell: async (params) => {
+    const { answers } = parse(TerminalEnable, params);
+    return enableRawShell(terminalToggleDeps(d, answers));
+  },
+
+  disableRemoteTerminal: async () => ({
+    changed: await disableRemoteTerminal(
+      { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
+      "panel",
+    ),
+  }),
+
+  disableRawShell: async () => ({
+    changed: await disableRawShell(
+      { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
+      "panel",
+    ),
+  }),
 
   computerChallenge: async () => COMPUTER_COPY[d.locale()],
 

@@ -128,6 +128,10 @@ Method: official docs (code.claude.com, platform.claude.com, claude.com/docs, an
 - `Options.mcpServers?: Record<string, McpServerConfig>`; a stdio entry is `{ type?: 'stdio', command, args?, env?, timeout? }` where `timeout` is a per-server tool-call limit in ms. `Query.setMcpServers()` exists too (not used). With `strictMcpConfig: true` only these servers load. Source: sdk.d.ts 0.3.289 (`McpStdioServerConfig`, L1334-1343) (checked 2026-10-05)
 - Chalito attaches only its own `chalito_computer` server, with an 11-minute `timeout` so a first call can wait out the 10-minute approval. Its calls still reach the PreToolUse gate as `mcp__chalito_computer__<tool>`.
 
+#### PTY (remote terminal)
+- Bun `Bun.spawn(argv, { cwd, env, terminal: { cols, rows, data(terminal, bytes) } })` returns a subprocess with `.terminal` (`write`, `resize`, `close`, `setRawMode`, …), `.exited`, `.kill(signal)`. POSIX only. Checked by running it on Bun 1.4.2 (the version CI pins), both `bun run` and inside a `bun build --compile` binary (`src/smoke.ts` reports `"pty":"ok"`) (checked 2026-10-06).
+- `@lydell/node-pty` 1.1.0: prebuilt N-API binaries (linux/darwin/win32 × x64/arm64, as optional packages) of Microsoft's node-pty 1.1.0, same API (`spawn(file, args, {name, cols, rows, cwd, env})`, `onData`, `onExit`, `write`, `resize`, `kill(signal)`, `pause`, `resume`). Checked under Node 22 on Linux. Under Bun it fails to write (`this._socket.write is not a function`: its master fd is a `tty.ReadStream`), and `bun build --compile` doesn't embed a dynamic require, so the compiled agent uses Bun's PTY on macOS/Linux. Windows inside the compiled agent (ConPTY through node-pty under Bun, or the addon next to the binary) was not run (UNVERIFIED).
+
 #### Auth
 - Precedence used by the CLI, and therefore by the SDK:
   1. cloud provider (`CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` / `_FOUNDRY`, plus `CLAUDE_CODE_USE_ANTHROPIC_AWS`)

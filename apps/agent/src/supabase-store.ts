@@ -64,6 +64,8 @@ interface Pointer {
 }
 
 const EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Remote-terminal events (sealed output chunks) only need to outlive a reconnect. */
+const TERMINAL_EVENT_TTL_MS = 60 * 60 * 1000;
 const iso = (ms: number) => new Date(ms).toISOString();
 
 export class SupabaseError extends Error {
@@ -356,7 +358,7 @@ export class SupabaseStore implements AgentStore {
         type: e.type,
         urgency: e.urgency,
         doc: e,
-        expires_at: iso(e.t + EVENT_TTL_MS),
+        expires_at: iso(e.t + (e.type.startsWith("terminal.") ? TERMINAL_EVENT_TTL_MS : EVENT_TTL_MS)),
       }),
     );
   }

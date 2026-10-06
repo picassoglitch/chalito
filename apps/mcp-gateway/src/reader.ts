@@ -21,7 +21,7 @@ export interface PendingApproval {
   aid: string;
   sid: string;
   deviceId: string;
-  kind: "tool" | "decision" | "computer_control";
+  kind: "tool" | "decision" | "computer_control" | "terminal";
   risk: "LOW" | "MED" | "HIGH" | "CRITICAL";
   origin: string;
   stepUpRequired: boolean;

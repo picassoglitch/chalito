@@ -90,8 +90,11 @@ export class ApprovalManager {
     risk: RiskTier;
     stepUp: boolean;
     origin: Origin;
-    /** `tool` (default) for one tool call; `computer_control` for a session's computer-control grant. */
-    kind?: Extract<ApprovalKind, "tool" | "computer_control">;
+    /**
+     * `tool` (default) for one tool call; `computer_control` for a session's computer-control
+     * grant; `terminal` for opening a remote terminal (terminal/control.ts).
+     */
+    kind?: Extract<ApprovalKind, "tool" | "computer_control" | "terminal">;
     /** The summary is built here (R-M10: no format/control characters, explicit truncation). */
     details: { toolName: string; input: unknown; reasons: string[] };
     onRequested?: (aid: string, expiresAt: number) => void;

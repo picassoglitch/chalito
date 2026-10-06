@@ -14,6 +14,13 @@ import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/nati
 import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
 import { appsCli } from "./apps/cli.js";
 import {
+  disableRawShell,
+  disableRemoteTerminal,
+  enableRawShell,
+  enableRemoteTerminal,
+  type TerminalPrompter,
+} from "./terminal/toggle.js";
+import {
   ConfigTamperedError,
   chalitoDir,
   ensureChalitoDir,
@@ -76,6 +83,9 @@ export const USAGE = `chalito <command>
   apps custom list|enable <id>|disable <id>
                                        your own recipes (~/.chalito/recipes); enable: local only,
                                        OS auth + review of what it runs
+  terminal enable|disable|status       remote terminal: open an AI's terminal app from a trusted browser
+                                       after a passkey approval (enable: local only, OS auth + confirmations)
+  terminal shell enable|disable        the full shell over remote terminal (stronger confirmation)
   claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   codex pin [path]                     trust this Codex binary (path + sha256); after updates too
   grok pin [path]                      trust this Grok Build binary (path + sha256); after updates too
@@ -131,6 +141,27 @@ const T = {
       "El control del equipo no se activa editando la política. Usa `chalito computer enable`.\n",
     customNotInPolicyEdit:
       "Una receta personalizada no se activa editando la política. Usa `chalito apps custom enable <id>`.\n",
+    terminalTitle: "\n!!  ¿Activar la terminal remota?  !!\nCon esto, una terminal aprobada puede:\n",
+    shellTitle: "\n!!  ¿Activar la SHELL COMPLETA remota?  !!\nCon esto, una shell aprobada puede:\n",
+    shellFinal: "\nConfirmación 4 de 4. ",
+    terminalSecond: (n: number) => `\nConfirmación 2 de ${n}. `,
+    terminalType: (p: string, n: number) => `\nConfirmación 3 de ${n}. Escribe exactamente "${p}": `,
+    terminalOn:
+      "Terminal remota activada. Cada terminal pedirá tu aprobación con passkey; la app de escritorio debe estar abierta.\n",
+    shellOn: "Shell completa remota activada. Apágala con `chalito terminal shell disable` cuando termines.\n",
+    terminalAlready: "La terminal remota ya está activada.\n",
+    shellAlready: "La shell completa remota ya está activada.\n",
+    shellNeedsTerminal: "Primero activa la terminal remota: `chalito terminal enable`.\n",
+    terminalOff: "Terminal remota desactivada (y la shell completa). Las terminales abiertas se cerraron.\n",
+    terminalWasOff: "La terminal remota ya estaba desactivada.\n",
+    shellOff: "Shell completa remota desactivada. Las shells abiertas se cerraron.\n",
+    shellWasOff: "La shell completa remota ya estaba desactivada.\n",
+    terminalStatus: (on: boolean, shell: boolean, n: number) =>
+      on
+        ? `Terminal remota: activada (hasta ${n} a la vez). Shell completa: ${shell ? "activada" : "desactivada"}.\n`
+        : "Terminal remota: desactivada.\n",
+    terminalNotInPolicyEdit:
+      "La terminal remota y la shell completa no se activan editando la política. Usa `chalito terminal enable`.\n",
     needTty:
       "Este comando cambia la seguridad de Chalito: solo funciona en una terminal donde estés escribiendo tú (no con entrada redirigida).\n",
     inSession:
@@ -195,6 +226,27 @@ const T = {
     computerNotInPolicyEdit: "Computer control isn't turned on by editing the policy. Use `chalito computer enable`.\n",
     customNotInPolicyEdit:
       "A custom recipe isn't turned on by editing the policy. Use `chalito apps custom enable <id>`.\n",
+    terminalTitle: "\n!!  Turn on remote terminal?  !!\nWith it, an approved terminal can:\n",
+    shellTitle: "\n!!  Turn on the remote FULL SHELL?  !!\nWith it, an approved shell can:\n",
+    shellFinal: "\nConfirmation 4 of 4. ",
+    terminalSecond: (n: number) => `\nConfirmation 2 of ${n}. `,
+    terminalType: (p: string, n: number) => `\nConfirmation 3 of ${n}. Type exactly "${p}": `,
+    terminalOn:
+      "Remote terminal is on. Every terminal will ask for your passkey approval; the desktop app must be open.\n",
+    shellOn: "The remote full shell is on. Turn it off with `chalito terminal shell disable` when you're done.\n",
+    terminalAlready: "Remote terminal is already on.\n",
+    shellAlready: "The remote full shell is already on.\n",
+    shellNeedsTerminal: "Turn on remote terminal first: `chalito terminal enable`.\n",
+    terminalOff: "Remote terminal is off (and the full shell). Open terminals were closed.\n",
+    terminalWasOff: "Remote terminal was already off.\n",
+    shellOff: "The remote full shell is off. Open shells were closed.\n",
+    shellWasOff: "The remote full shell was already off.\n",
+    terminalStatus: (on: boolean, shell: boolean, n: number) =>
+      on
+        ? `Remote terminal: on (up to ${n} at once). Full shell: ${shell ? "on" : "off"}.\n`
+        : "Remote terminal: off.\n",
+    terminalNotInPolicyEdit:
+      "Remote terminal and the full shell aren't turned on by editing the policy. Use `chalito terminal enable`.\n",
     needTty:
       "This command changes Chalito's security settings, so it only runs in a terminal you're typing in (not with piped input).\n",
     inSession:
@@ -364,7 +416,8 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   const mutating =
     ["pair", "keys", "service", "devmode", "claude", "codex", "grok", "gemini"].includes(cmd) ||
     (cmd === "policy" && sub === "edit") ||
-    (cmd === "computer" && sub !== "status");
+    (cmd === "computer" && sub !== "status") ||
+    (cmd === "terminal" && sub !== "status");
   if (mutating) {
     if (io.env.CHALITO_SESSION !== undefined) {
       io.err(t.inSession);
@@ -455,6 +508,8 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 
       case "apps":
         return await appsCli(io, dir, locale, positional.slice(1));
+      case "terminal":
+        return await terminal(io, dir, locale, sub, arg);
 
       case "keys": {
         if (sub !== "set" || !arg || !(arg in KEY_NAMES)) {
@@ -753,6 +808,77 @@ const computer = async (io: CliIo, dir: string, locale: "es" | "en", sub?: strin
   }
 };
 
+const terminal = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string, arg?: string) => {
+  const t = T[locale];
+  const id = await loadOrCreateIdentity(io.secrets!);
+  const holder = new FilePolicyHolder(dir, id.sign, { anchor: await new AnchorStore(io.secrets!).load() });
+  // The running daemon sees the policy change, reports it and closes terminals on disable.
+  const emit = () => undefined;
+  const shell = sub === "shell";
+  const action = shell ? arg : sub;
+  if (!shell && action === "status") {
+    const rt = holder.get().remoteTerminal;
+    io.out(t.terminalStatus(rt?.enabled === true, rt?.enabled === true && rt.rawShell, rt?.maxSessions ?? 0));
+    return 0;
+  }
+  if (action === "disable") {
+    const changed = shell
+      ? await disableRawShell({ policy: holder, emit }, "cli")
+      : await disableRemoteTerminal({ policy: holder, emit }, "cli");
+    io.out(shell ? (changed ? t.shellOff : t.shellWasOff) : changed ? t.terminalOff : t.terminalWasOff);
+    return 0;
+  }
+  if (action !== "enable") {
+    io.err(USAGE);
+    return 1;
+  }
+  const steps = shell ? 4 : 3;
+  const reader = new LineReader(io.tty);
+  try {
+    const prompter: TerminalPrompter = {
+      first: async (examples) => {
+        io.out(`${shell ? t.shellTitle : t.terminalTitle}${examples.map((e) => `  - ${e}\n`).join("")}`);
+        return isYes(await reader.ask(t.computerContinue));
+      },
+      second: async (risk) => {
+        io.out(`${t.terminalSecond(steps)}${risk}\n`);
+        return isYes(await reader.ask(t.computerSure));
+      },
+      typed: async (phrase) => (await reader.ask(t.terminalType(phrase, steps))) ?? "",
+      final: async (warning) => {
+        io.out(`${t.shellFinal}${warning}\n`);
+        return isYes(await reader.ask(t.computerSure));
+      },
+    };
+    const deps = {
+      policy: holder,
+      osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+      prompter,
+      locale,
+      emit,
+    };
+    const res = shell ? await enableRawShell(deps) : await enableRemoteTerminal(deps);
+    if (!res.ok) {
+      io.err(
+        res.reason === "already_on"
+          ? shell
+            ? t.shellAlready
+            : t.terminalAlready
+          : res.reason === "terminal_off"
+            ? t.shellNeedsTerminal
+            : res.reason === "os_auth_failed"
+              ? t.authFailed
+              : t.cancelled,
+      );
+      return res.reason === "already_on" ? 0 : 1;
+    }
+    io.out(shell ? t.shellOn : t.terminalOn);
+    return 0;
+  } finally {
+    reader.close();
+  }
+};
+
 const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string) => {
   const t = T[locale];
   const id = await loadOrCreateIdentity(io.secrets!);
@@ -805,6 +931,13 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
       !appsTighterOrEqual({ custom: parsed.policy.apps?.custom ?? {} }, { custom: holder.get().apps?.custom ?? {} })
     ) {
       io.err(t.customNotInPolicyEdit);
+      return 1;
+    }
+    // Only `chalito terminal enable` / `chalito terminal shell enable` turn these on.
+    const rtNext = parsed.policy.remoteTerminal;
+    const rtCur = holder.get().remoteTerminal;
+    if ((rtNext?.enabled && !rtCur?.enabled) || (rtNext?.rawShell && !rtCur?.rawShell)) {
+      io.err(t.terminalNotInPolicyEdit);
       return 1;
     }
     if (policyHash(parsed.policy) === holder.hash) {

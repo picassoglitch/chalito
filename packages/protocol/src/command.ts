@@ -16,6 +16,7 @@ import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 import { ProviderConnectMethod } from "./provider.js";
 import { AppId } from "./recipe.js";
+import { TerminalCommands } from "./terminal.js";
 
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
 export const DevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical", "bypassStyle"]);
@@ -57,6 +58,9 @@ const ProviderConnect = z
  * through `policy.tighten` and approve or deny a session's `computer_control` approval.)
  * The app.* commands (engine) act on recipes only: none of them enables a custom recipe, which
  * happens only on the device (`chalito apps custom enable` or the desktop panel).
+ * The terminal.* commands open, feed, resize and close a remote terminal only after the
+ * person turned remote terminal on locally and approved that terminal (terminal.ts); nothing
+ * here can turn remote terminal or the raw shell on.
  */
 // ---- ENGINE (connect engine, contract v2): the app.* commands --------------------------------
 /**
@@ -131,6 +135,9 @@ export const CommandPayload = z.discriminatedUnion("type", [
   /** Asks the device for a fresh status report (chalito.connections). */
   z.object({ type: z.literal("provider.status") }),
   ...AppCommands,
+  // ---- TERMINAL (Connect engine, remote terminal; packages/protocol/src/terminal.ts) ----
+  ...TerminalCommands,
+  // ---- end TERMINAL ----
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;
 
