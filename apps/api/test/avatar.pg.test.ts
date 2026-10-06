@@ -30,7 +30,10 @@ if (!url) {
       .map((h) => "abcdefghijklmnopqrstuvwxyz234567"[parseInt(h, 16) * 2]!)
       .join("")}`;
 
-  /** A user with a companion; with `custom`, wearing a succeeded custom card. */
+  /**
+   * A user with a companion; with `custom`, wearing a succeeded custom card. New creations must carry
+   * the self-attestation (avatar_creations_attested, migration 20261005000300).
+   */
   const person = async (custom: boolean) => {
     const u = `cards-${randomUUID()}`;
     const companion = companionId();
@@ -41,8 +44,10 @@ if (!url) {
     if (custom) {
       await admin`
         insert into chalito.avatar_creations
-          (creation_id, owner, asset_id, status, free, content_type, manifest, upload_deadline)
-        values (${`cr_${hex()}`}, ${u}, ${assetId}, 'succeeded', true, 'image/png', ${admin.json(MANIFEST)}, now())`;
+          (creation_id, owner, asset_id, status, free, content_type, manifest, upload_deadline,
+           attest_own_photo, attest_age_band, attested_at)
+        values (${`cr_${hex()}`}, ${u}, ${assetId}, 'succeeded', true, 'image/png', ${admin.json(MANIFEST)}, now(),
+                true, '18_plus', now())`;
       await admin`update chalito.companions set asset_id = ${assetId} where owner = ${u}`;
     }
     return { u, companion, assetId };

@@ -350,7 +350,7 @@ Rooms: `apps/api/src/routes/rooms.ts`, mounted at `/v1/rooms`. Members can only 
 2. **The owner can cancel** until then: `DELETE /v1/account/deletion`, from any of their sessions.
 3. **When due**, Cloud Scheduler calls `POST /tasks/account-deletions` (OIDC as `SCHEDULER_SA_EMAIL`, hourly):
    - deletes the device Auth users;
-   - deletes the owner's prefixes: `avatars/` and `uploads/` in `AVATAR_BUCKET`, `records/` in `RECORDS_BUCKET`, `exports/`;
+   - deletes the owner's prefixes: `avatars/` and `uploads/` in `AVATAR_BUCKET`, `records/` in `RECORDS_BUCKET`, `exports/`, every object version included (nothing stays in the buckets' 30-day noncurrent-version window);
    - runs `chalito_private.delete_account`: everything cascades from `chalito.users`, plus the legacy credit tables and sent usage. Unsent usage stays until the drainer reports it.
    - Each step is idempotent: a failed owner is retried on the next run.
 4. **Not touched:** the hub account, its balance and payments (Chalyb's). Point the person to Chalyb for those.

@@ -1,4 +1,5 @@
 import type { Storage } from "@google-cloud/storage";
+import { deleteAllVersions } from "../lib/gcs-versions.js";
 
 /** uploads/<owner>/<assetId>/original (apps/avatar-jobs src/storage.ts, the Workflow's filter). */
 export const uploadObject = (owner: string, assetId: string) => `uploads/${owner}/${assetId}/original`;
@@ -90,15 +91,6 @@ export class GcsAvatarFiles implements AvatarFiles {
 
   async deletePrefix(prefix: string) {
     if (!/^(avatars|uploads)\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/$/.test(prefix)) throw new Error("unsafe prefix");
-    // versions: true lists every generation; each File carries its generation, so delete() removes
-    // exactly that one (a plain delete would only make the live version noncurrent).
-    const [files] = await this.storage.bucket(this.bucket).getFiles({ prefix, versions: true });
-    let n = 0;
-    for (const f of files) {
-      if (!f.name.startsWith(prefix)) continue;
-      await f.delete({ ignoreNotFound: true });
-      n++;
-    }
-    return n;
+    return deleteAllVersions(this.storage.bucket(this.bucket), prefix);
   }
 }
