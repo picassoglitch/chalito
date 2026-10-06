@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import pixelmatch from "pixelmatch";
 import sharp from "sharp";
 import { loadCatalog } from "@chalito/config";
-import { placeOnCard, type CardAnchor } from "@chalito/roster";
+import { placeItem, type CardAnchors } from "@chalito/roster";
 import type { SceneCosmetic } from "@chalito/scene";
 import type { PageActor, PageJob } from "./showcase/page.js";
 import { bundle, launchSoftwareGl, serve } from "./showcase/browser.js";
@@ -75,7 +75,7 @@ interface CardJson {
   height: number;
   shadow?: PageActor["spec"]["shadow"];
   emotions: { src: Record<string, string> };
-  anchors: Record<string, CardAnchor>;
+  anchors: CardAnchors;
 }
 
 const jobFor = async (s: Scene): Promise<PageJob> => {
@@ -92,10 +92,9 @@ const jobFor = async (s: Scene): Promise<PageJob> => {
         skin = c.skin;
         continue;
       }
-      const anchor = card.anchors[c.slot];
-      if (!anchor) throw new Error(`${a.roster} has no ${c.slot} anchor`);
       const meta = await sharp(join(ROSTER_DIR, c.art)).metadata();
-      const placed = placeOnCard(anchor, c.card, meta.height! / meta.width!, card.height / card.width);
+      const placed = placeItem(card.anchors, c.slot, c.card, meta.height! / meta.width!, card.height / card.width);
+      if (!placed) throw new Error(`${a.roster} has no ${c.slot} anchor`);
       items.push({ url: `/roster/${c.art}`, placed });
     }
     actors.push({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HubUsageEvent } from "@chalito/protocol";
+import { CosmeticSlot, HubUsageEvent } from "@chalito/protocol";
 import { CID, PID, RID, catalog, hubCalls, hubState, storeSetup } from "./store-harness.js";
 
 describe("catalog", () => {
@@ -162,6 +162,41 @@ describe("equip (server-only: clients have no write on equipped)", () => {
         )
       ).status,
     ).toBe(404);
+  });
+});
+
+describe("neck pieces (one per slot, next to everything else)", () => {
+  it("wears one item in every slot at once, neck included; a second neck piece replaces the first", async () => {
+    const { call, store } = storeSetup();
+    const paid = ["bow_tie", "bow_tie_red", "star_cape", "sparkle_aura", "portal_swirl", "skin_gold"];
+    for (const [n, id] of paid.entries())
+      expect(
+        (await call("POST", "/purchase", { cosmeticId: id, purchaseId: `pur_neck${String(n).padStart(12, "0")}` }))
+          .status,
+      ).toBe(200);
+    const equip = (slot: string, cosmeticId: string | null) =>
+      call("POST", "/equip", { companionId: CID, slot, cosmeticId });
+    const wear = {
+      head: "viking_hat",
+      face: "round_glasses",
+      neck: "bow_tie",
+      back: "star_cape",
+      aura: "sparkle_aura",
+      portal_fx: "portal_swirl",
+      skin: "skin_gold",
+    };
+    for (const [slot, id] of Object.entries(wear)) expect((await equip(slot, id)).status).toBe(200);
+    expect(store.companions.get(`hub-user-1/${CID}`)).toEqual(wear);
+    // Every slot but `body` (nothing is sold for it yet): eight slots, the directory's limit
+    // (migration 20261006000100).
+    expect(CosmeticSlot.options.filter((s) => !(s in wear))).toEqual(["body"]);
+    expect(CosmeticSlot.options).toHaveLength(8);
+    expect((await equip("neck", "bow_tie_red")).status).toBe(200);
+    expect(store.companions.get(`hub-user-1/${CID}`)).toEqual({ ...wear, neck: "bow_tie_red" });
+    // A neck piece only goes on the neck, and only once owned.
+    expect((await equip("head", "bow_tie_red")).status).toBe(400);
+    expect((await equip("neck", "viking_hat")).status).toBe(400);
+    expect((await equip("neck", "pearl_necklace")).status).toBe(403);
   });
 });
 

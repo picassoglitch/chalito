@@ -973,11 +973,19 @@
     "slot": {
       "head": "Cabeza",
       "face": "Cara",
+      "neck": "Cuello",
       "body": "Cuerpo",
       "back": "Espalda",
       "aura": "Aura",
       "portal_fx": "Portal",
       "skin": "Skin"
+    },
+    "groups": {
+      "neck": "Cuello",
+      "head": "Cabeza",
+      "face": "Cara",
+      "back": "Espalda",
+      "effects": "Efectos"
     },
     "free": "Gratis",
     "owned": "Ya es tuyo",

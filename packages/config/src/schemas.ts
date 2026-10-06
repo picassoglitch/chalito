@@ -98,23 +98,51 @@ const priced = <T extends { free: boolean; priceTokens?: number }>(s: z.ZodType<
     .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens")
     .refine((c) => !(c.free && c.priceTokens !== undefined), "free cosmetics have no price");
 
-/** A drawn item placed on the card (hat, glasses, cape, aura, portal). */
-export const AccessoryItem = z.object({
-  name: CosmeticName,
-  slot: AccessorySlot,
-  free: z.boolean(),
-  priceTokens: PriceTokens,
-  /** Art inside @chalito/roster (cosmetics/<id>.webp). */
-  art: z.string().regex(/^cosmetics\/[a-z0-9_]+\.webp$/),
-  /** On a 2.5D card: width as a fraction of the card, and the item's own pivot (0..1). */
-  card: z.object({
-    width: z.number().positive().max(2),
-    pivot: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]),
-  }),
-  /** On a VRM: offset from the slot's bone, in metres. */
-  vrm: z.object({ offset: z.tuple([z.number(), z.number(), z.number()]) }),
-  provenance: z.string().min(1),
+/** The item's own pivot, in its image (0..1): a hat's brim, a bow tie's knot, a cape's collar. */
+const Pivot = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]);
+/**
+ * On a 2.5D card, sized by the card (@chalito/roster CardWidthPlacement): width as a fraction of the
+ * card's width. A back item may hang from the neck (`anchorY: neck`: a cape's collar at the neck's
+ * height, still drawn behind the body).
+ */
+export const CardWidthPlacement = z.strictObject({
+  width: z.number().positive().max(2),
+  pivot: Pivot,
+  anchorY: z.literal("neck").optional(),
 });
+/**
+ * On a 2.5D card, sized by the character's neck (@chalito/roster NeckPlacement): width as a
+ * fraction of the neck anchor's width (card.json anchors.neck.w), so it fits any body.
+ */
+export const NeckPlacement = z.strictObject({
+  neckWidth: z.number().positive().max(4),
+  pivot: Pivot,
+});
+export const CardPlacement = z.union([CardWidthPlacement, NeckPlacement]);
+
+/** A drawn item placed on the card (hat, glasses, bow tie, wings, aura, portal). */
+export const AccessoryItem = z
+  .object({
+    name: CosmeticName,
+    slot: AccessorySlot,
+    free: z.boolean(),
+    priceTokens: PriceTokens,
+    /** Art inside @chalito/roster (cosmetics/<id>.webp). */
+    art: z.string().regex(/^cosmetics\/[a-z0-9_]+\.webp$/),
+    /** On a 2.5D card: neck items by `neckWidth`, every other slot by `width` (see above). */
+    card: CardPlacement,
+    /** On a VRM: offset from the slot's bone, in metres. */
+    vrm: z.object({ offset: z.tuple([z.number(), z.number(), z.number()]) }),
+    provenance: z.string().min(1),
+  })
+  .refine((c) => (c.slot === "neck") === "neckWidth" in c.card, {
+    message: "neck items are sized by neckWidth; other slots by width",
+    path: ["card"],
+  })
+  .refine((c) => !("anchorY" in c.card && c.card.anchorY !== undefined) || c.slot === "back", {
+    message: "only back items hang from the neck (anchorY)",
+    path: ["card", "anchorY"],
+  });
 export type AccessoryItem = z.infer<typeof AccessoryItem>;
 
 /**

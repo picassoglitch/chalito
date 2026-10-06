@@ -22,7 +22,16 @@ const withCompanion = async (page: Page, avatar = "luna") => {
 test("tienda: free items wear straight away; the preview places them on the roster card", async ({ page }) => {
   await withCompanion(page);
   await expect(page.getByRole("heading", { name: "Tienda" })).toBeVisible();
-  await expect(page.getByTestId("store-item")).toHaveCount(6);
+  await expect(page.getByTestId("store-item")).toHaveCount(28);
+  // Accessories grouped by where they go.
+  await expect(page.getByTestId("store-group").locator("h2")).toHaveText([
+    "Cuello",
+    "Cabeza",
+    "Cara",
+    "Espalda",
+    "Efectos",
+  ]);
+  await expect(page.locator("[data-group=neck] [data-testid=store-item]")).toHaveCount(8);
   await expect(item(page, "viking_hat").getByTestId("store-price")).toHaveText("Gratis");
   await expect(item(page, "star_cape").getByTestId("store-price")).toHaveText(/^1[\s,.\u202f]?000 tokens$/);
 
@@ -128,7 +137,7 @@ test("tienda: skins have their own tab, try on live over the companion, and one 
 
   // Accessories still wear alongside the skin.
   await page.getByTestId("store-tab-accessories").click();
-  await expect(page.getByTestId("store-item")).toHaveCount(6);
+  await expect(page.getByTestId("store-item")).toHaveCount(28);
   await item(page, "viking_hat").getByTestId("store-equip").click();
   expect((await rows(page, "companions"))[0]!.equipped).toEqual({ skin: "skin_gold", head: "viking_hat" });
 });
@@ -144,7 +153,7 @@ test("tienda unpaired (the person's session) still works; EN at /en/tienda", asy
   await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
   await page.goto("/en/tienda");
   await expect(page.getByRole("heading", { name: "Store" })).toBeVisible();
-  await expect(page.getByTestId("store-item")).toHaveCount(6);
+  await expect(page.getByTestId("store-item")).toHaveCount(28);
   await expect(page.locator("[data-item=viking_hat]").getByTestId("store-price")).toHaveText("Free");
 });
 

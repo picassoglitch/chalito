@@ -48,6 +48,182 @@ export const DEV_CATALOG = {
     art: "cosmetics/portal_swirl.webp",
     card: { width: 1.0, pivot: [0.5, 0.5] },
   },
+  bow_tie: {
+    name: { es: "Moño de lunares", en: "Polka-dot bow tie" },
+    slot: "neck",
+    free: false,
+    priceTokens: 200,
+    art: "cosmetics/bow_tie.webp",
+    card: { neckWidth: 0.8, pivot: [0.5, 0.5] },
+  },
+  bow_tie_red: {
+    name: { es: "Moño rojo", en: "Red bow tie" },
+    slot: "neck",
+    free: false,
+    priceTokens: 200,
+    art: "cosmetics/bow_tie_red.webp",
+    card: { neckWidth: 0.8, pivot: [0.5, 0.5] },
+  },
+  necktie: {
+    name: { es: "Corbata", en: "Necktie" },
+    slot: "neck",
+    free: false,
+    priceTokens: 200,
+    art: "cosmetics/necktie.webp",
+    card: { neckWidth: 0.6, pivot: [0.5, 0.05] },
+  },
+  bell_collar: {
+    name: { es: "Collar con cascabel", en: "Bell collar" },
+    slot: "neck",
+    free: false,
+    priceTokens: 200,
+    art: "cosmetics/bell_collar.webp",
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+  },
+  pearl_necklace: {
+    name: { es: "Collar de perlas", en: "Pearl necklace" },
+    slot: "neck",
+    free: false,
+    priceTokens: 200,
+    art: "cosmetics/pearl_necklace.webp",
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+  },
+  gold_medal: {
+    name: { es: "Medalla de oro", en: "Gold medal" },
+    slot: "neck",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/gold_medal.webp",
+    card: { neckWidth: 0.7, pivot: [0.5, 0.05] },
+  },
+  marigold_necklace: {
+    name: { es: "Collar de cempasúchil", en: "Marigold necklace" },
+    slot: "neck",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/marigold_necklace.webp",
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+  },
+  flower_lei: {
+    name: { es: "Collar hawaiano", en: "Flower lei" },
+    slot: "neck",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/flower_lei.webp",
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+  },
+  charro_hat: {
+    name: { es: "Sombrero de charro", en: "Charro hat" },
+    slot: "head",
+    free: false,
+    priceTokens: 500,
+    art: "cosmetics/charro_hat.webp",
+    card: { width: 0.66, pivot: [0.5, 0.9] },
+  },
+  crown: {
+    name: { es: "Corona", en: "Crown" },
+    slot: "head",
+    free: false,
+    priceTokens: 500,
+    art: "cosmetics/crown.webp",
+    card: { width: 0.4, pivot: [0.5, 0.95] },
+  },
+  cap: {
+    name: { es: "Gorra", en: "Cap" },
+    slot: "head",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/cap.webp",
+    card: { width: 0.5, pivot: [0.5, 0.9] },
+  },
+  party_hat: {
+    name: { es: "Gorro de fiesta", en: "Party hat" },
+    slot: "head",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/party_hat.webp",
+    card: { width: 0.3, pivot: [0.5, 0.95] },
+  },
+  flower_headband: {
+    name: { es: "Diadema de flores", en: "Flower headband" },
+    slot: "head",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/flower_headband.webp",
+    card: { width: 0.46, pivot: [0.5, 0.62] },
+  },
+  sunglasses: {
+    name: { es: "Lentes de sol", en: "Sunglasses" },
+    slot: "face",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/sunglasses.webp",
+    card: { width: 0.38, pivot: [0.5, 0.5] },
+  },
+  heart_glasses: {
+    name: { es: "Lentes de corazón", en: "Heart glasses" },
+    slot: "face",
+    free: false,
+    priceTokens: 300,
+    art: "cosmetics/heart_glasses.webp",
+    card: { width: 0.38, pivot: [0.5, 0.5] },
+  },
+  mustache: {
+    name: { es: "Bigote", en: "Mustache" },
+    slot: "face",
+    free: false,
+    priceTokens: 200,
+    art: "cosmetics/mustache.webp",
+    card: { width: 0.3, pivot: [0.5, 0] },
+  },
+  angel_wings: {
+    name: { es: "Alas de ángel", en: "Angel wings" },
+    slot: "back",
+    free: false,
+    priceTokens: 1000,
+    art: "cosmetics/angel_wings.webp",
+    card: { width: 1.25, pivot: [0.5, 0.5] },
+  },
+  butterfly_wings: {
+    name: { es: "Alas de mariposa", en: "Butterfly wings" },
+    slot: "back",
+    free: false,
+    priceTokens: 1000,
+    art: "cosmetics/butterfly_wings.webp",
+    card: { width: 1.25, pivot: [0.5, 0.5] },
+  },
+  bat_wings: {
+    name: { es: "Alas de murciélago", en: "Bat wings" },
+    slot: "back",
+    free: false,
+    priceTokens: 1000,
+    art: "cosmetics/bat_wings.webp",
+    card: { width: 1.25, pivot: [0.5, 0.5] },
+  },
+  dragon_wings: {
+    name: { es: "Alas de dragón", en: "Dragon wings" },
+    slot: "back",
+    free: false,
+    priceTokens: 1500,
+    art: "cosmetics/dragon_wings.webp",
+    card: { width: 1.25, pivot: [0.5, 0.5] },
+  },
+  hero_cape: {
+    name: { es: "Capa de héroe", en: "Hero cape" },
+    slot: "back",
+    free: false,
+    priceTokens: 1000,
+    art: "cosmetics/hero_cape.webp",
+    card: { width: 0.85, pivot: [0.5, 0.04], anchorY: "neck" },
+  },
+  jetpack: {
+    name: { es: "Jetpack", en: "Jetpack" },
+    slot: "back",
+    free: false,
+    priceTokens: 2000,
+    art: "cosmetics/jetpack.webp",
+    card: { width: 0.6, pivot: [0.5, 0.4] },
+  },
   skin_gold: {
     name: { es: "Dorado", en: "Gold" },
     slot: "skin",
@@ -104,5 +280,13 @@ export const DEV_CATALOG = {
     slot: string;
     free: boolean;
     priceTokens?: number;
-  } & ({ art: string; card: { width: number; pivot: readonly [number, number] } } | { skin: string })
+  } & (
+    | {
+        art: string;
+        card:
+          | { width: number; pivot: readonly [number, number]; anchorY?: "neck" }
+          | { neckWidth: number; pivot: readonly [number, number] };
+      }
+    | { skin: string }
+  )
 >;

@@ -19,7 +19,7 @@ const ASSETS = fileURLToPath(new URL("../../../packages/roster/assets/", import.
 const PROMPT =
   "This is a cartoon character on a transparent background. Find the spot where a scarf or bow tie " +
   "would be worn: the neck, or, if the character has no neck, the point just under the face where head meets body. " +
-  "Answer only JSON: {\"x\": number, \"y\": number, \"width\": number}, where x and y are that point as fractions " +
+  'Answer only JSON: {"x": number, "y": number, "width": number}, where x and y are that point as fractions ' +
   "of the image width and height (0 = left/top), and width is how wide the neck/upper body is there, as a fraction of the image width.";
 
 interface Neck {
@@ -33,7 +33,12 @@ const detect = async (key: string, png: Buffer, w: number, h: number): Promise<N
     method: "POST",
     headers: { "content-type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: PROMPT }, { inlineData: { mimeType: "image/png", data: png.toString("base64") } }] }],
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: PROMPT }, { inlineData: { mimeType: "image/png", data: png.toString("base64") } }],
+        },
+      ],
       generationConfig: { responseMimeType: "application/json", temperature: 0 },
     }),
   });

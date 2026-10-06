@@ -50,8 +50,10 @@ export const COSMETICS: Record<string, string> = {
   // Neck (anchors.neck, detected per character by detect-wear-anchors.ts).
   bow_tie: "a single cute bow tie, teal with small white polka dots, front view, nothing else",
   bow_tie_red: "a single cute bow tie, glossy cherry red, front view, nothing else",
-  necktie: "a short cute necktie with a small knot, navy blue with thin gold diagonal stripes, front view, nothing else",
-  bell_collar: "a thin red collar band seen straight from the front as a flat gentle smile-shaped curve (not a ring, not seen from above), with a shiny gold jingle bell hanging from the middle, nothing else",
+  necktie:
+    "a short cute necktie with a small knot, navy blue with thin gold diagonal stripes, front view, nothing else",
+  bell_collar:
+    "a thin red collar band seen straight from the front as a flat gentle smile-shaped curve (not a ring, not seen from above), with a shiny gold jingle bell hanging from the middle, nothing else",
   pearl_necklace: "a short necklace of round white pearls seen from the front as a gentle U-shaped curve, nothing else",
   gold_medal:
     "a round shiny gold medal with a star on it hanging from a short red, white and green ribbon loop, front view, nothing else",
@@ -65,8 +67,10 @@ export const COSMETICS: Record<string, string> = {
   crown: "a small cute golden crown with three points and colorful round gems, front view, as worn on a head",
   cap: "a small cute baseball cap, bright blue with a white front panel, front view, the cap alone floating, no head, no face, no person, no logo, no letters",
   party_hat: "a small cone-shaped party hat, pink with yellow polka dots and a fluffy pompom on top, front view",
-  flower_headband: "a thin arched headband decorated with small pink and white flowers, front view, the headband alone floating, no head, no hair, no face, no person",
-  sunglasses: "a pair of cute black sunglasses with rounded rectangular lenses and a small shine, front view, nothing else",
+  flower_headband:
+    "a thin arched headband decorated with small pink and white flowers, front view, the headband alone floating, no head, no hair, no face, no person",
+  sunglasses:
+    "a pair of cute black sunglasses with rounded rectangular lenses and a small shine, front view, nothing else",
   heart_glasses: "a pair of cute heart-shaped glasses with pink tinted lenses, front view, nothing else",
   mustache: "a single big curly dark-brown cartoon mustache, front view, nothing else",
   // Back (drawn behind the character).
