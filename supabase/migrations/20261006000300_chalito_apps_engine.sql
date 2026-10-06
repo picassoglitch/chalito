@@ -59,7 +59,7 @@ as $$
                            'blocked_by_policy', 'available')
      and (d -> 'connected') = to_jsonb(d ->> 'state' = 'connected')
      and jsonb_typeof(d -> 'cli') = 'object'
-     and (d -> 'cli' - array['installed', 'version']) = '{}'::jsonb
+     and ((d -> 'cli') - array['installed', 'version']) = '{}'::jsonb
      and jsonb_typeof(d -> 'cli' -> 'installed') = 'boolean'
      and (jsonb_typeof(d -> 'cli' -> 'version') = 'null'
           or (jsonb_typeof(d -> 'cli' -> 'version') = 'string' and length(d -> 'cli' ->> 'version') <= 64))
