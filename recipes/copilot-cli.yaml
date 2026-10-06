@@ -1,0 +1,73 @@
+v: 1
+id: copilot-cli
+name: GitHub Copilot CLI
+vendor: GitHub
+homepage: https://github.com/github/copilot-cli
+termsUrl: https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect:
+      commands: [copilot]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: "@github/copilot"
+    launch:
+      command: [copilot]
+  windows:
+    detect:
+      commands: [copilot]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: winget
+      ref: GitHub.Copilot
+    launch:
+      command: [copilot]
+  linux:
+    detect:
+      commands: [copilot]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: "@github/copilot"
+    launch:
+      command: [copilot]
+signin:
+  via: cli
+  command: [copilot, login]
+  linkHosts: [github.com]
+  planSignin: "on"
+apiKey:
+  env: COPILOT_GITHUB_TOKEN
+  label: GitHub fine-grained token with "Copilot Requests" permission
+  docsUrl: https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
+driver:
+  acp: { command: [copilot, --acp], authMethods: [copilot-login] }
+  terminal: { command: [copilot] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "npm view @github/copilot (version 1.0.92, repo github.com/github/copilot-cli, GitHub maintainers)"
+    - "copilot --help (1.0.92): commands login, ...; option --acp 'Start as Agent Client Protocol server'"
+    - "copilot login --help (1.0.92): browser web flow on local desktops, device code on headless/SSH/CI; --device-code, --web-flow, --with-token"
+    - "copilot --acp initialize (1.0.92): authMethods [{id: copilot-login, _meta.terminal-auth: {args: [login]}}]"
+    - https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
+    - "https://formulae.brew.sh/api/cask/copilot-cli.json (cask copilot-cli 1.0.92)"
+    - "github.com/microsoft/winget-pkgs manifests/g/GitHub/Copilot (latest v1.0.92)"
+  unverified:
+    - field: signin.statusCommand
+      note: "No CLI status subcommand exists in 1.0.92 help."
+    - field: signin.logoutCommand
+      note: "No 'copilot logout' subcommand in 1.0.92 help; sign-out is only via the in-session /logout slash command (not confirmed in docs)."
+    - field: signin.openLinks
+      note: "Without a TTY behaviour not tested; login defaults to device-code (prints github.com/login/device + code) in headless environments and opens the browser on local desktops."
+    - field: platforms.mac.install
+      note: "Homebrew cask 'copilot-cli' is also official (listed in GitHub docs: brew install --cask copilot-cli); npm chosen for parity. Install script https://gh.io/copilot-install also documented."

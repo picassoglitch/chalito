@@ -1,5 +1,5 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
-import type { DevModeToggle, Provider, ProviderConnectionDoc } from "@chalito/protocol";
+import type { AppConnectionDoc, DevModeToggle, Recipe, RecipeInstall } from "@chalito/protocol";
 
 /**
  * Local-only surfaces, reached through the agent's IPC (ADR 0004: the agent is a user
@@ -60,16 +60,48 @@ export interface DevModeAnswers {
 export type EnableResult =
   { ok: true; state: DevModeState } | { ok: false; reason: "os_auth_failed" | "cancelled" | "unavailable" };
 
-/** One provider as the agent sees it on this computer (apps/agent/src/providers.ts `ProviderView`). */
-export interface ProviderView {
-  provider: Provider;
+/** One app as the agent sees it on this computer (apps/agent/src/apps/manager.ts `AppView`). */
+export interface AppView {
+  appId: string;
+  recipe: Recipe;
+  /** The person's own recipe ("Personalizada"), from ~/.chalito/recipes. */
+  custom: boolean;
+  /** Curated: always. Custom: enabled on this computer and unchanged since. */
+  enabled: boolean;
   /** The same status doc the agent reports to chalito.connections. */
-  doc: ProviderConnectionDoc;
-  /** providers.yaml lets this person use the provider's own plan sign-in. */
+  doc: AppConnectionDoc;
+  /** The recipe (and providers.yaml, for the former providers) allow the app's own sign-in. */
   signinAllowed: boolean;
   /** A remote install (from the phone or the web) waiting for a yes here, until this time. */
   installRequestedUntil: number | null;
+  /** This OS has an entry in the recipe (web apps: always). */
+  supported: boolean;
+  /** The official install for this OS, if any. */
+  install: RecipeInstall | null;
 }
+
+/** A custom recipe file that didn't load (local only). */
+export interface CustomProblem {
+  file: string;
+  reason: "invalid" | "shadows_curated" | "duplicate_id" | "too_large";
+}
+
+export interface AppsView {
+  apps: AppView[];
+  problems: CustomProblem[];
+  catalog: { source: "builtin" | "remote"; issuedAt: number } | null;
+}
+
+/** What the agent shows before enabling a custom recipe: every command it runs. */
+export interface CustomChallenge {
+  title: string;
+  warn: string;
+  type: string;
+  summary: string[];
+}
+
+export type CustomEnableResult =
+  { ok: true } | { ok: false; reason: "unknown_recipe" | "already_on" | "os_auth_failed" | "cancelled" };
 
 /** Computer control as the agent reports it (apps/agent/src/computer/control.ts `status`). */
 export interface ComputerStatus {
@@ -116,17 +148,26 @@ export interface AgentIpc {
   disableDevToggle(toggle: DevModeToggle): Promise<DevModeState>;
   /** Presence goes through the agent: RLS lets only the agent device update its own row. */
   reportPresence(p: { desktopActive: boolean }): Promise<void>;
-  /** "IA conectadas": the four providers' state on this computer. */
-  providers(): Promise<ProviderView[]>;
+  /** "IA conectadas": every app this computer knows (curated and the person's own) and its state. */
+  apps(): Promise<AppsView>;
   /** Saves the key in this computer's keychain (it goes over the local socket only). */
-  connectProviderKey(provider: Provider, key: string): Promise<void>;
-  /** Starts the provider's own sign-in; it opens the browser here. Rejects with `blocked_by_policy`. */
-  signinProvider(provider: Provider): Promise<void>;
-  disconnectProvider(provider: Provider): Promise<void>;
-  /** The person's local yes: installs the official package, then pins it. */
-  installProvider(provider: Provider): Promise<void>;
+  connectAppKey(appId: string, key: string): Promise<void>;
+  /**
+   * Starts the app's own sign-in here (its CLI login opens the browser; a desktop or web app just
+   * opens, and the person signs in there). Rejects with `blocked_by_policy`.
+   */
+  signinApp(appId: string): Promise<void>;
+  disconnectApp(appId: string): Promise<void>;
+  /** The person's local yes: the app's official install (or its official download page). */
+  installApp(appId: string): Promise<void>;
   /** The person's no to a remote install request. */
-  declineProviderInstall(provider: Provider): Promise<void>;
+  declineAppInstall(appId: string): Promise<void>;
+  /** Opens the app on this computer. */
+  launchApp(appId: string): Promise<void>;
+  /** Custom recipes: what enabling one runs, then the local enable (the agent asks the OS itself). */
+  customRecipeChallenge(appId: string): Promise<CustomChallenge>;
+  enableCustomRecipe(appId: string, answers: { review: boolean; typed: string }): Promise<CustomEnableResult>;
+  disableCustomRecipe(appId: string): Promise<void>;
   /**
    * Computer control. Reading the state here doesn't count as the indicator's heartbeat (the
    * native side sends that); enabling asks the OS in the agent and re-checks the answers.
@@ -162,12 +203,16 @@ export const unavailableIpc: AgentIpc = {
   enableDevToggle: unavailable,
   disableDevToggle: unavailable,
   reportPresence: unavailable,
-  providers: unavailable,
-  connectProviderKey: unavailable,
-  signinProvider: unavailable,
-  disconnectProvider: unavailable,
-  installProvider: unavailable,
-  declineProviderInstall: unavailable,
+  apps: unavailable,
+  connectAppKey: unavailable,
+  signinApp: unavailable,
+  disconnectApp: unavailable,
+  installApp: unavailable,
+  declineAppInstall: unavailable,
+  launchApp: unavailable,
+  customRecipeChallenge: unavailable,
+  enableCustomRecipe: unavailable,
+  disableCustomRecipe: unavailable,
   computerStatus: unavailable,
   computerChallenge: unavailable,
   enableComputer: unavailable,
@@ -206,12 +251,16 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     enableDevToggle: (toggle, answers) => call("enableDevToggle", { toggle, answers }),
     disableDevToggle: (toggle) => call("disableDevToggle", { toggle }),
     reportPresence: (p) => call("reportPresence", { desktopActive: p.desktopActive }),
-    providers: () => call("providers"),
-    connectProviderKey: async (provider, key) => void (await call("connectProviderKey", { provider, key })),
-    signinProvider: async (provider) => void (await call("signinProvider", { provider })),
-    disconnectProvider: async (provider) => void (await call("disconnectProvider", { provider })),
-    installProvider: async (provider) => void (await call("installProvider", { provider })),
-    declineProviderInstall: async (provider) => void (await call("declineProviderInstall", { provider })),
+    apps: () => call("apps"),
+    connectAppKey: async (appId, key) => void (await call("connectAppKey", { appId, key })),
+    signinApp: async (appId) => void (await call("signinApp", { appId })),
+    disconnectApp: async (appId) => void (await call("disconnectApp", { appId })),
+    installApp: async (appId) => void (await call("installApp", { appId })),
+    declineAppInstall: async (appId) => void (await call("declineAppInstall", { appId })),
+    launchApp: async (appId) => void (await call("launchApp", { appId })),
+    customRecipeChallenge: (appId) => call("customRecipeChallenge", { appId }),
+    enableCustomRecipe: (appId, answers) => call("enableCustomRecipe", { appId, answers }),
+    disableCustomRecipe: async (appId) => void (await call("disableCustomRecipe", { appId })),
     // No `indicatorShown`: only the native poller's report counts as the indicator's heartbeat.
     computerStatus: () => call("computerStatus"),
     computerChallenge: () => call("computerChallenge"),

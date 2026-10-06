@@ -12,6 +12,7 @@ import { brokerCall } from "./computer/broker.js";
 import { runMcpServer } from "./computer/mcp-server.js";
 import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/native.js";
 import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
+import { appsCli } from "./apps/cli.js";
 import {
   ConfigTamperedError,
   chalitoDir,
@@ -30,7 +31,7 @@ import { loadOrCreateIdentity } from "./identity.js";
 import { osAuthFor, type StatFn } from "./os-auth.js";
 import { runPair } from "./pair.js";
 import { FilePolicyHolder, parsePolicyYaml, policyToYaml } from "./policy-file.js";
-import { isTighterOrEqual, policyHash } from "./policy/index.js";
+import { appsTighterOrEqual, isTighterOrEqual, policyHash } from "./policy/index.js";
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
 import { openSecretStore, passphraseFileProblem } from "./secret-choice.js";
 import { KeyringUnavailableError, SECRET_NAMES, type SecretStore } from "./secrets.js";
@@ -71,6 +72,10 @@ export const USAGE = `chalito <command>
   devmode reset                        archive a broken Developer-mode log and start over (OS auth)
   computer enable|disable|status       computer control: let approved sessions use this screen,
                                        mouse and keyboard (enable: local only, OS auth + confirmations)
+  apps list                            the AI apps this computer knows (curated and your own)
+  apps custom list|enable <id>|disable <id>
+                                       your own recipes (~/.chalito/recipes); enable: local only,
+                                       OS auth + review of what it runs
   claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   codex pin [path]                     trust this Codex binary (path + sha256); after updates too
   grok pin [path]                      trust this Grok Build binary (path + sha256); after updates too
@@ -124,6 +129,8 @@ const T = {
         : "Control del equipo: desactivado.\n",
     computerNotInPolicyEdit:
       "El control del equipo no se activa editando la política. Usa `chalito computer enable`.\n",
+    customNotInPolicyEdit:
+      "Una receta personalizada no se activa editando la política. Usa `chalito apps custom enable <id>`.\n",
     needTty:
       "Este comando cambia la seguridad de Chalito: solo funciona en una terminal donde estés escribiendo tú (no con entrada redirigida).\n",
     inSession:
@@ -186,6 +193,8 @@ const T = {
     computerStatus: (on: boolean, n: number) =>
       on ? `Computer control: on (up to ${n} actions a minute per session).\n` : "Computer control: off.\n",
     computerNotInPolicyEdit: "Computer control isn't turned on by editing the policy. Use `chalito computer enable`.\n",
+    customNotInPolicyEdit:
+      "A custom recipe isn't turned on by editing the policy. Use `chalito apps custom enable <id>`.\n",
     needTty:
       "This command changes Chalito's security settings, so it only runs in a terminal you're typing in (not with piped input).\n",
     inSession:
@@ -443,6 +452,9 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 
       case "computer":
         return await computer(io, dir, locale, sub);
+
+      case "apps":
+        return await appsCli(io, dir, locale, positional.slice(1));
 
       case "keys": {
         if (sub !== "set" || !arg || !(arg in KEY_NAMES)) {
@@ -786,6 +798,13 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
     // Only `chalito computer enable` turns computer control on (its own confirmations).
     if (parsed.policy.computer?.enabled && !holder.get().computer?.enabled) {
       io.err(t.computerNotInPolicyEdit);
+      return 1;
+    }
+    // Only `chalito apps custom enable` turns a custom recipe on (OS auth + review of what it runs).
+    if (
+      !appsTighterOrEqual({ custom: parsed.policy.apps?.custom ?? {} }, { custom: holder.get().apps?.custom ?? {} })
+    ) {
+      io.err(t.customNotInPolicyEdit);
       return 1;
     }
     if (policyHash(parsed.policy) === holder.hash) {

@@ -1,0 +1,27 @@
+v: 1
+id: deepseek
+name: DeepSeek
+vendor: DeepSeek
+homepage: https://chat.deepseek.com/
+termsUrl: https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://chat.deepseek.com/sign_in
+  planSignin: "on"
+driver:
+  web: { startUrl: https://chat.deepseek.com/, allowedOrigins: [https://chat.deepseek.com] }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    [
+      "curl https://chat.deepseek.com/sign_in (202 WAF challenge)",
+      "https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html (200)",
+    ]
+  unverified:
+    - field: signin.url
+      note: "/sign_in returned a WAF challenge to curl; page content not observed."
+    - field: driver.web.allowedOrigins
+      note: "Google login would add https://accounts.google.com; not observed."

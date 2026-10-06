@@ -21,7 +21,20 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
   subsetOf(next.web.allowDomains, cur.web.allowDomains) &&
   subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
-  computerTighterOrEqual(next.computer, cur.computer);
+  computerTighterOrEqual(next.computer, cur.computer) &&
+  appsTighterOrEqual(next.apps, cur.apps);
+
+/**
+ * Engine: an app's sessions can only be turned off (an id without an entry counts as allowed, so
+ * a new `true` is fine only where it wasn't `false`), and a custom recipe can only be disabled or
+ * removed, never enabled or re-pointed at another file hash (that's `chalito apps custom enable`).
+ */
+export const appsTighterOrEqual = (next: Policy["apps"], cur: Policy["apps"]): boolean =>
+  Object.entries(next?.sessions ?? {}).every(([id, on]) => !on || cur?.sessions?.[id] !== false) &&
+  Object.entries(next?.custom ?? {}).every(([id, c]) => {
+    const was = cur?.custom?.[id];
+    return !c.enabled || (!!was?.enabled && was.sha256 === c.sha256);
+  });
 
 /** Computer control can only be turned off or slowed down; never on (that's `chalito computer enable`). */
 export const computerTighterOrEqual = (next: Policy["computer"], cur: Policy["computer"]): boolean =>

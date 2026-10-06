@@ -1,0 +1,25 @@
+v: 1
+id: grok-web
+name: Grok
+vendor: xAI
+homepage: https://grok.com/
+termsUrl: https://x.ai/legal/terms-of-service
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://grok.com/sign-in
+  planSignin: "on"
+driver:
+  web: { startUrl: https://grok.com/, allowedOrigins: [https://grok.com, https://accounts.x.ai] }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    [
+      "curl https://grok.com/sign-in -> 303 https://accounts.x.ai/check-login?redirect=grok-com",
+      "https://x.ai/legal/terms-of-service (200)",
+    ]
+  unverified:
+    - field: driver.web.allowedOrigins
+      note: "Sign in with X / Google / Apple would add x.com, accounts.google.com, appleid.apple.com; not observed."

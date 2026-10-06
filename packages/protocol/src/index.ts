@@ -3,6 +3,7 @@ export * from "./crypto.js";
 export * from "./approval.js";
 export * from "./command.js";
 export * from "./provider.js";
+export * from "./recipe.js";
 export * from "./agentEvent.js";
 export * from "./sessionCard.js";
 export * from "./mesa.js";

@@ -343,16 +343,20 @@ describe("SupabaseStore: writes through the Data API", () => {
       cli: { installed: false, version: null },
       error: null,
       at: T,
+      kind: "codex" as const,
+      custom: false,
     };
-    await store.upsertConnection("openai", doc);
-    await store.upsertConnection("openai", { ...doc, mode: "signin", connected: true, state: "connected" });
+    await store.upsertConnection("codex", doc);
+    await store.upsertConnection("codex", { ...doc, mode: "signin", connected: true, state: "connected" });
     const rows = db.rows("connections");
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ owner: OWNER, device_id: DEV, provider: "openai", doc: { state: "connected" } });
+    expect(rows[0]).toMatchObject({ owner: OWNER, device_id: DEV, provider: "codex", doc: { state: "connected" } });
     const update = db.ops.filter((o) => o.table === "connections" && o.op === "update").at(-1)!;
     expect(Object.keys(update.body as object).sort()).toEqual(["doc", "updated_at"]);
     // Status only: anything else is refused before it reaches the database.
-    await expect(store.upsertConnection("openai", { ...doc, key: "sk-x" } as unknown as typeof doc)).rejects.toThrow();
+    await expect(store.upsertConnection("codex", { ...doc, key: "sk-x" } as unknown as typeof doc)).rejects.toThrow();
+    // A curated app never uploads a name; only a custom recipe's id, name and status leave the computer.
+    await expect(store.upsertConnection("codex", { ...doc, name: "Codex" })).rejects.toThrow();
   });
 
   it("call lines: insert with the line text and expiry; delete by key (errors swallowed)", async () => {

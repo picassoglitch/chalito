@@ -10,7 +10,7 @@ import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
 import { Rooms } from "./Rooms.js";
 import { LocalAgent } from "./LocalAgent.js";
-import { Providers } from "./Providers.js";
+import { Apps } from "./Apps.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { Settings } from "./Settings.js";
@@ -84,7 +84,7 @@ export const Panel = (p: PanelProps) => {
           />
         )}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
-        {tab === "ai" && <Providers ipc={p.ipc} />}
+        {tab === "ai" && <Apps ipc={p.ipc} />}
         {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}
         {tab === "security" && p.client && <SecurityNotices client={p.client} />}
         {tab === "security" && <Security ipc={p.ipc} />}
