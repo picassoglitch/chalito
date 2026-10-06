@@ -220,7 +220,9 @@
         "byo_api_key": "Your API key",
         "byo_subscription_local": "Your plan",
         "byo_mcp_connector": "Connector",
-        "managed": "Chalito energy"
+        "managed": "Chalito energy",
+        "api_key": "Your API key",
+        "signin": "Your sign-in"
       }
     },
     "planCredits": {
@@ -479,7 +481,8 @@
     "anthropic": {
       "name": "Claude",
       "agent": "Claude Code",
-      "howTo": "Claude Code connects only with your Anthropic API key. Anthropic's rules don't let us use your Claude subscription."
+      "howTo": "Claude Code connects with your Anthropic API key. Under Anthropic's rules, signing in with your Claude plan is available only to the Chalito team for now.",
+      "ownerOnly": "Claude sign-in: Chalito team only for now"
     },
     "openai": {
       "name": "ChatGPT",
@@ -495,7 +498,7 @@
     "google": {
       "name": "Gemini",
       "agent": "Gemini",
-      "howTo": "Use your Google AI Studio API key."
+      "howTo": "Gemini CLI works with your Google AI Studio API key or your Google account."
     },
     "iHave": "I have {name}"
   },

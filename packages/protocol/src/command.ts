@@ -5,6 +5,7 @@ import {
   EpochMs,
   Id,
   Origin,
+  Provider,
   RemoteCodexSandbox,
   RemotePermissionMode,
   ReplayNonce,
@@ -13,6 +14,7 @@ import {
 } from "./common.js";
 import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
+import { ProviderConnectMethod } from "./provider.js";
 
 /** Developer-mode toggles. They can be turned ON only locally on the device. */
 export const DevModeToggle = z.enum(["allowSudo", "autoApproveHigh", "autoApproveCritical", "bypassStyle"]);
@@ -28,9 +30,28 @@ export type EnableableDevModeToggle = z.infer<typeof EnableableDevModeToggle>;
 export const PolicyPreset = z.enum(["estricto", "estandar", "relajado"]);
 
 /**
+ * Connect a provider on the device. With `api_key` the key travels only sealed to the device
+ * (`keyCt`, never plaintext on the wire) and lands in its OS keychain. With `signin` the device
+ * runs the provider's own official sign-in (it opens the browser on that computer), if
+ * providers.yaml `subscriptionLocal` allows it for this person.
+ */
+const ProviderConnect = z
+  .object({
+    type: z.literal("provider.connect"),
+    provider: Provider,
+    method: ProviderConnectMethod,
+    keyCt: SealedEnvelope.optional(),
+  })
+  .refine((p) => (p.method === "api_key") === (p.keyCt !== undefined), {
+    message: "keyCt is required with api_key and refused with signin",
+  });
+
+/**
  * Commands a remote surface can send to a device agent. There is no command that
  * enables Developer mode, enables a toggle, loosens policy, adds a trusted client,
- * or sets a permission mode above `acceptEdits` — those shapes are unrepresentable.
+ * enables computer control, or sets a permission mode above `acceptEdits` — those
+ * shapes are unrepresentable. The provider.* commands manage credentials and the
+ * provider's CLI only; they never touch policy.
  */
 export const CommandPayload = z.discriminatedUnion("type", [
   z.object({
@@ -60,6 +81,13 @@ export const CommandPayload = z.discriminatedUnion("type", [
   z.object({ type: z.literal("devmode.off") }),
   z.object({ type: z.literal("devmode.toggleOff"), toggle: DevModeToggle }),
   z.object({ type: z.literal("device.revokeClient"), clientDeviceId: DeviceId }),
+  ProviderConnect,
+  /** Deletes the key, or signs out the CLI profile Chalito uses for this provider. */
+  z.object({ type: z.literal("provider.disconnect"), provider: Provider }),
+  /** Official installer only, and only after the person confirms it on the device itself. */
+  z.object({ type: z.literal("provider.install"), provider: Provider }),
+  /** Asks the device for a fresh status report (chalito.connections). */
+  z.object({ type: z.literal("provider.status") }),
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;
 

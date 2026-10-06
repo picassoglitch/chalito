@@ -405,6 +405,17 @@ describe("Claude Code adapter", () => {
   });
 });
 
+describe("claudeEnv sign-in profile", () => {
+  it("uses only Chalito's own Claude Code profile, never a key or the person's ~/.claude", async () => {
+    const { claudeEnv } = await import("../src/claude-code/index.js");
+    const env = claudeEnv(
+      { PATH: "/bin", CLAUDE_CONFIG_DIR: "/home/aldo/.claude", ANTHROPIC_API_KEY: "old", CLAUDE_CODE_OAUTH_TOKEN: "t" },
+      { configDir: "/home/aldo/.chalito/claude" },
+    );
+    expect(env).toEqual({ PATH: "/bin", CHALITO_SESSION: "1", CLAUDE_CONFIG_DIR: "/home/aldo/.chalito/claude" });
+  });
+});
+
 describe("claudeEnv secrets", () => {
   it("never passes Chalito's own secrets settings to Claude", async () => {
     const { claudeEnv } = await import("../src/claude-code/index.js");

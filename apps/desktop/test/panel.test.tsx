@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalView, ChalitoClient, NotificationView, Snapshot } from "@chalito/client";
 import { lintMessages } from "@chalito/brand";
@@ -7,7 +7,7 @@ import { DEFAULT_SETTINGS, SETTINGS } from "@chalito/ui";
 import es from "../messages/es.json";
 import en from "../messages/en.json";
 import { TextProviders } from "../src/lib/i18n.js";
-import { unavailableIpc, type AgentIpc, type DevModeState } from "../src/lib/ipc.js";
+import { unavailableIpc, type AgentIpc, type DevModeState, type ProviderView } from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
 import { Panel, type PanelProps, type Tab } from "../src/panel/Panel.js";
 import { SignIn } from "../src/panel/SignIn.js";
@@ -103,6 +103,12 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
       return dev;
     },
     reportPresence: async () => undefined,
+    providers: async () => [],
+    connectProviderKey: async (...a) => void calls.push(["connectProviderKey", ...a]),
+    signinProvider: async (...a) => void calls.push(["signinProvider", ...a]),
+    disconnectProvider: async (...a) => void calls.push(["disconnectProvider", ...a]),
+    installProvider: async (...a) => void calls.push(["installProvider", ...a]),
+    declineProviderInstall: async (...a) => void calls.push(["declineProviderInstall", ...a]),
     ...over,
   };
 };
@@ -395,5 +401,81 @@ describe("panel: approvals bound to what the agent signed (R-H1, R-M10)", () => 
     fireEvent(details, new Event("toggle"));
     expect(approve.disabled).toBe(false);
     expect(container.querySelector("pre.full-input")?.textContent).toContain("curl x | sh");
+  });
+});
+
+describe("panel: IA conectadas", () => {
+  const doc = (state: ProviderView["doc"]["state"], o: Partial<ProviderView["doc"]> = {}): ProviderView["doc"] => ({
+    mode: null,
+    connected: state === "connected",
+    state,
+    cli: { installed: state !== "not_installed", version: state === "not_installed" ? null : "1.0.0" },
+    error: null,
+    at: 1,
+    ...o,
+  });
+  const views = (): ProviderView[] => [
+    { provider: "anthropic", doc: doc("needs_auth"), signinAllowed: false, installRequestedUntil: null },
+    {
+      provider: "openai",
+      doc: doc("connected", { mode: "api_key" }),
+      signinAllowed: false,
+      installRequestedUntil: null,
+    },
+    { provider: "xai", doc: doc("needs_auth"), signinAllowed: true, installRequestedUntil: null },
+    { provider: "google", doc: doc("not_installed"), signinAllowed: true, installRequestedUntil: 9e15 },
+  ];
+  const row = (c: HTMLElement, p: string) => c.querySelector(`[data-provider="${p}"]`) as HTMLElement;
+
+  it("lists the four providers with their state and the actions each allows", async () => {
+    const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ providers: async () => views() }) }, "es");
+    await waitFor(() => expect(container.querySelectorAll("[data-provider]")).toHaveLength(4));
+    const claude = row(container, "anthropic");
+    expect(claude.textContent).toContain("Conectar con API key");
+    const buttons = (p: string) => [...row(container, p).querySelectorAll("button")].map((b) => b.textContent);
+    expect(buttons("anthropic")).toEqual(["Conectar con API key"]);
+    expect(buttons("xai")).toEqual(["Conectar con API key", "Iniciar sesión"]);
+    expect(claude.textContent).toContain("solo equipo de Chalito");
+    expect(row(container, "openai").textContent).toContain("Conectado · con tu API key");
+    expect(row(container, "openai").textContent).toContain("Desconectar");
+    expect(row(container, "xai").textContent).toContain("Iniciar sesión");
+    expect(row(container, "google").textContent).toContain("Instalar");
+  });
+
+  it("a key goes to the agent over the local IPC; sign-in and disconnect are local actions", async () => {
+    const ipc = fakeIpc({ providers: async () => views() });
+    const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
+    await waitFor(() => expect(row(container, "xai")).toBeTruthy());
+    fireEvent.click(within(row(container, "anthropic")).getByText("Connect with an API key"));
+    fireEvent.change(row(container, "anthropic").querySelector('input[type="password"]')!, {
+      target: { value: " sk-ant-x " },
+    });
+    fireEvent.click(within(row(container, "anthropic")).getByText("Save"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["connectProviderKey", "anthropic", "sk-ant-x"]));
+
+    fireEvent.click(within(row(container, "xai")).getByText("Sign in"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["signinProvider", "xai"]));
+
+    fireEvent.click(within(row(container, "openai")).getByText("Disconnect"));
+    expect(ipc.calls.some((c) => c[0] === "disconnectProvider")).toBe(false);
+    fireEvent.click(within(row(container, "openai")).getByText("Yes, disconnect"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["disconnectProvider", "openai"]));
+  });
+
+  it("installs only after a yes here, also when another device asked for it", async () => {
+    const ipc = fakeIpc({ providers: async () => views() });
+    const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
+    await waitFor(() => expect(row(container, "google")).toBeTruthy());
+    const google = row(container, "google");
+    expect(google.textContent).toContain("from another device");
+    expect(google.textContent).toContain("@google/gemini-cli");
+    expect(ipc.calls.some((c) => c[0] === "installProvider")).toBe(false);
+    fireEvent.click(within(google).getAllByText("Yes, install")[0]!);
+    await waitFor(() => expect(ipc.calls).toContainEqual(["installProvider", "google"]));
+  });
+
+  it("without the local agent it says so", async () => {
+    renderPanel({ initialTab: "ai" }, "en");
+    expect(await screen.findByText(/local agent isn't answering/)).toBeTruthy();
   });
 });

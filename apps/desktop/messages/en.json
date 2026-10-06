@@ -4,7 +4,8 @@
     "settings": "Settings",
     "security": "Security",
     "voice": "Voice",
-    "rooms": "Rooms"
+    "rooms": "Rooms",
+    "ai": "Connected AI"
   },
   "dnd": "Do not disturb",
   "offline": "Not connected to your account. Pair this computer with “chalito pair”.",
@@ -107,6 +108,69 @@
     },
     "google": {
       "name": "Google"
+    },
+    "connect": {
+      "title": "Connected AI",
+      "agent": {
+        "anthropic": "Claude Code",
+        "openai": "Codex",
+        "xai": "Grok Build",
+        "google": "Gemini CLI"
+      },
+      "package": {
+        "anthropic": "@anthropic-ai/claude-code",
+        "openai": "@openai/codex",
+        "xai": "@xai-official/grok",
+        "google": "@google/gemini-cli"
+      },
+      "state": {
+        "not_installed": "Not installed on this computer.",
+        "installing": "Installing…",
+        "needs_auth": "Installed. Not connected yet.",
+        "signing_in": "Finish signing in in the browser that opened.",
+        "connected": "Connected",
+        "error": "Couldn't connect.",
+        "blocked_by_policy": "Signing in with your plan isn't available for your account. Use an API key."
+      },
+      "mode": {
+        "api_key": "with your API key",
+        "signin": "with your sign-in"
+      },
+      "error": {
+        "install_failed": "The install failed. Check that npm can install global packages.",
+        "install_unconfirmed": "Nobody confirmed the install on this computer in time.",
+        "npm_missing": "Installing it needs npm (Node.js) on this computer.",
+        "pin_failed": "I couldn't pin the installed program. Run “chalito status” in a terminal.",
+        "signin_failed": "Signing in didn't finish. Try again.",
+        "signin_timeout": "Signing in took too long. Try again.",
+        "key_invalid": "That API key isn't valid.",
+        "keychain_failed": "I couldn't save the key in the system keychain.",
+        "status_failed": "I couldn't check the status."
+      },
+      "failure": {
+        "blocked_by_policy": "Signing in with your plan isn't available for your account.",
+        "provider_busy": "An install or sign-in is already running.",
+        "other": "That didn't work. Try again."
+      },
+      "install": "Install",
+      "withKey": "Connect with an API key",
+      "signin": "Sign in",
+      "disconnect": "Disconnect",
+      "confirmInstall": "I'll install the official {pkg} package with npm on this computer. Continue?",
+      "remoteInstall": "You asked to install {pkg} from another device. Install it on this computer?",
+      "confirmDisconnect": "I'll delete the saved key and sign out of the session Chalito uses on this computer. Continue?",
+      "yesInstall": "Yes, install",
+      "yesDisconnect": "Yes, disconnect",
+      "cancel": "Cancel",
+      "keyLabel": "API key",
+      "keyLocal": "It's saved only in this computer's keychain. It never leaves it.",
+      "saveKey": "Save",
+      "signinOff": {
+        "anthropic": "Signing in with your Claude plan: Chalito team only for now.",
+        "openai": "Signing in with your ChatGPT plan: Chalito team only for now.",
+        "xai": "Signing in with Grok isn't available for now.",
+        "google": "Signing in with Google isn't available for now."
+      }
     }
   },
   "settingsError": {

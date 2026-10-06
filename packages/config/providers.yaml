@@ -5,7 +5,11 @@ schemaVersion: 1
 providers:
   anthropic:
     byoApiKey: true
-    subscriptionLocal: off # Agent SDK products may not offer claude.ai login without Anthropic approval (D-002)
+    # Claude sign-in only for the Chalito team: Agent SDK products may not offer claude.ai login
+    # without Anthropic approval (D-002). The person signs in with `claude auth login` in Chalito's
+    # own Claude Code profile; Chalito never sees the token (owner decision 2026-10-05).
+    # The agent treats owner_only as off until it can verify a server-signed team claim (D-063).
+    subscriptionLocal: owner_only
     mcpConnector: claude # Claude custom connectors (all plans; Free = 1)
     managed: true
   openai:
@@ -20,7 +24,7 @@ providers:
     managed: true
   google:
     byoApiKey: true
-    subscriptionLocal: off
+    subscriptionLocal: on # Gemini CLI's own Google sign-in (owner decision 2026-10-05)
     mcpConnector: none
     managed: true
 

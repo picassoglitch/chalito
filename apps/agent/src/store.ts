@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { sanitizeDeviceEvent } from "./redact.js";
-import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent, SessionCard } from "@chalito/protocol";
+import type {
+  AgentEvent,
+  ApprovalRequest,
+  CallLine,
+  DeviceEvent,
+  Provider,
+  ProviderConnectionDoc,
+  SessionCard,
+} from "@chalito/protocol";
 
 /**
  * Everything the agent reads from or writes to the cloud. Supabase in production
@@ -54,6 +62,9 @@ export interface AgentStore {
    * otherwise). Turning sharing off deletes it in the database.
    */
   writeSharedCard(sid: string, card: SessionCard): Promise<void>;
+
+  /** chalito.connections: this device's status for one provider (status only, never a secret). */
+  upsertConnection(provider: Provider, doc: ProviderConnectionDoc): Promise<void>;
 }
 
 export interface EndorsementRow {
@@ -86,6 +97,7 @@ export class MemoryStore implements AgentStore {
   /** Sessions (or "device") with MCP card sharing on, and the plaintext cards written for them. */
   sharing = new Set<string>();
   sharedCards = new Map<string, SessionCard>();
+  connections = new Map<Provider, ProviderConnectionDoc>();
   #approvalWatchers = new Map<string, (d: unknown) => void>();
   #commandWatcher: ((id: string, doc: Record<string, unknown>) => void) | null = null;
   endorsements: EndorsementRow[] = [];
@@ -168,6 +180,9 @@ export class MemoryStore implements AgentStore {
   }
   async deleteCallLine(id: string) {
     this.callLines.delete(id);
+  }
+  async upsertConnection(provider: Provider, doc: ProviderConnectionDoc) {
+    this.connections.set(provider, { ...doc, cli: { ...doc.cli } });
   }
 
   // ---- test helpers (the phone / the cloud) ----

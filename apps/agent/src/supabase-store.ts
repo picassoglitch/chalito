@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { AgentEvent, ApprovalRequest, CallLine, DeviceEvent, SessionCard } from "@chalito/protocol";
+import {
+  ProviderConnectionDoc,
+  type AgentEvent,
+  type ApprovalRequest,
+  type CallLine,
+  type DeviceEvent,
+  type Provider,
+  type SessionCard,
+} from "@chalito/protocol";
 import type { Logger } from "./redact.js";
 import { redactDeep, sanitizeDeviceEvent } from "./redact.js";
 import type { AgentStore, AuditEntry, EndorsementRow } from "./store.js";
@@ -523,6 +531,40 @@ export class SupabaseStore implements AgentStore {
     } catch (err) {
       if (err instanceof SupabaseError && err.code === "23505")
         await update(); // raced another write
+      else throw err;
+    }
+  }
+
+  /**
+   * Update-or-insert, like writeSharedCard: the agent may update only `doc`/`updated_at`, so no
+   * PostgREST upsert. The database checks the doc is status only (valid_connection_doc).
+   */
+  async upsertConnection(provider: Provider, doc: ProviderConnectionDoc) {
+    const body = JSON.parse(JSON.stringify(ProviderConnectionDoc.parse(doc))) as Record<string, unknown>;
+    const row = () =>
+      this.db
+        .from("connections")
+        .select("provider")
+        .eq("owner", this.owner)
+        .eq("device_id", this.deviceId)
+        .eq("provider", provider)
+        .maybeSingle();
+    const update = () =>
+      this.#write("update connection", () =>
+        this.db
+          .from("connections")
+          .update({ doc: body, updated_at: iso(Date.now()) })
+          .eq("owner", this.owner)
+          .eq("device_id", this.deviceId)
+          .eq("provider", provider),
+      );
+    if (await must<{ provider: string } | null>("read connection", row())) return void (await update());
+    try {
+      await this.#write("insert connection", () =>
+        this.db.from("connections").insert({ owner: this.owner, device_id: this.deviceId, provider, doc: body }),
+      );
+    } catch (err) {
+      if (err instanceof SupabaseError && err.code === "23505") await update();
       else throw err;
     }
   }

@@ -3,17 +3,17 @@ import { watch, type FSWatcher } from "node:fs";
 import { basename, delimiter, join } from "node:path";
 import { homedir } from "node:os";
 import type { SessionAdapter } from "@chalito/adapters";
-import { ClaudeCodeAdapter, claudeEnv } from "@chalito/adapters/claude-code";
+import { ClaudeCodeAdapter, claudeEnv, type ClaudeAuth } from "@chalito/adapters/claude-code";
 import { CodexAdapter } from "@chalito/adapters/codex";
 import { AcpAdapter } from "@chalito/adapters/acp";
 import { loadLiabilityText, loadProviders } from "@chalito/config";
 import type { NonceStore, TrustedClientList } from "@chalito/crypto";
-import type { AdapterKind, DeviceEvent } from "@chalito/protocol";
+import type { AdapterKind, DeviceEvent, Provider } from "@chalito/protocol";
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
 import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
-import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, type PairedConfig } from "./config.js";
+import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, writeConfig, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
@@ -21,6 +21,8 @@ import { ipcHandlers } from "./ipc-handlers.js";
 import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
 import { osAuthFor } from "./os-auth.js";
+import { PROVIDER_CLI, spawnProviderProcs, type ProviderProcs } from "./provider-cli.js";
+import { ProviderManager } from "./providers.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, type Logger } from "./redact.js";
@@ -99,9 +101,11 @@ export const ACP_AUTH_MISSING = {
 /**
  * Whether the CLI's own sign-in (the person's plan) may be used for this provider:
  * `providers.yaml: <provider>.subscriptionLocal` is `on` or `approved`. `owner_only` and `off`
- * (and an unreadable providers.yaml) mean API key only.
+ * (and an unreadable providers.yaml) mean API key only. `owner_only` fails closed on the device:
+ * the agent has no server-signed proof yet that this account is on the Chalito team, and anything
+ * it read locally (an env var, a file) the person could set themselves.
  */
-export const signInAllowed = (provider: "xai" | "google", load: typeof loadProviders = loadProviders): boolean => {
+export const signInAllowed = (provider: Provider, load: typeof loadProviders = loadProviders): boolean => {
   try {
     const s = load().providers[provider]?.subscriptionLocal;
     return s === "on" || s === "approved";
@@ -133,7 +137,7 @@ export interface DaemonDeps {
   /** Installs SIGTERM/SIGINT handlers; tests pass a no-op. */
   onSignal?: (sig: NodeJS.Signals, fn: () => void) => void;
   /** Whether a provider's CLI sign-in may be used (signInAllowed in production). */
-  signInAllowed?: (provider: "xai" | "google") => boolean;
+  signInAllowed?: (provider: Provider) => boolean;
   /** Off in tests that don't want fs watchers. */
   watchFiles?: boolean;
   /** One agent per computer (instance-lock.ts); returns the release function. */
@@ -147,6 +151,8 @@ export interface DaemonDeps {
   ipcPath?: string;
   /** The OS check for enabling Developer mode from the panel (os-auth.ts in production). */
   osAuth?: () => OsAuth;
+  /** The providers' CLIs (install, sign-in, status); tests pass a fake. */
+  providerProcs?: ProviderProcs;
 }
 
 export interface Daemon {
@@ -160,12 +166,21 @@ export interface Daemon {
 }
 
 export interface AdapterInput {
-  /** BYO Anthropic key; null when missing. */
-  apiKey: string | null;
+  /** BYO Anthropic key, or Chalito's Claude Code sign-in profile (team only); null when neither. */
+  apiKey: ClaudeAuth | null;
   /** The pinned Claude Code, or null when its pin is missing or failed (Codex may still run). */
   claudePath: string | null;
-  /** The pinned Codex and the BYO OpenAI key; absent unless both are there and the pin checks out. */
-  codex?: { path: string; apiKey: string; home: string; env: Record<string, string | undefined> };
+  /**
+   * The pinned Codex with the BYO OpenAI key or, where providers.yaml allows it for this person,
+   * their own `codex login` in Chalito's CODEX_HOME. Absent unless the pin checks out.
+   */
+  codex?: {
+    path: string;
+    apiKey?: string;
+    chatgptLogin?: true;
+    home: string;
+    env: Record<string, string | undefined>;
+  };
   /** Pinned Grok Build / Gemini CLI with a BYO key, or the CLI's own sign-in where allowed. */
   grok?: AcpInput;
   gemini?: AcpInput;
@@ -196,18 +211,24 @@ export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({
         "claude-code": new ClaudeCodeAdapter({
           apiKey,
           claudePath,
-          // apiKeySource here proves the BYO key (not a claude.ai login) is in use.
+          // apiKeySource here shows which one is in use (ANTHROPIC_API_KEY for a BYO key).
           onInit: (i) => log.info("adapter.init", { ...i }),
         }),
       }
     : {}),
-  // BYO key only, through the adapter's env-key provider: Codex never logs in or stores it
-  // (R-L12), runs with Chalito's own CODEX_HOME and an allowlisted env, and refuses app-server
-  // builds outside DEFAULT_CODEX_VERSIONS. Sign in with ChatGPT stays off: the agent has no SIWC
-  // token lifecycle yet, and providers.yaml keeps it owner_only (D-003).
+  // A BYO key goes through the adapter's env-key provider: Codex never logs in with it or stores
+  // it (R-L12). A ChatGPT plan is the person's own `codex login` in Chalito's CODEX_HOME, offered
+  // only where providers.yaml allows it for them (resolved before this point; D-003, connect
+  // contract). Either way Codex runs with an allowlisted env and refuses app-server builds
+  // outside DEFAULT_CODEX_VERSIONS.
   ...(codex
     ? {
-        codex: new CodexAdapter({ codexPath: codex.path, apiKey: codex.apiKey, codexHome: codex.home, env: codex.env }),
+        codex: new CodexAdapter({
+          codexPath: codex.path,
+          ...(codex.chatgptLogin ? { chatgptLogin: true, chatgptPlanEnabled: true } : { apiKey: codex.apiKey }),
+          codexHome: codex.home,
+          env: codex.env,
+        }),
       }
     : {}),
   // Over ACP (D-022): every permission request goes through the gate; the key runs with
@@ -388,46 +409,96 @@ const startDaemon = async (
     });
   };
 
-  // Fail fast, before touching the cloud: run exactly the pinned binaries, never a PATH lookup.
-  // Claude Code's pin failing is fatal only when there's no usable Codex either.
-  const pin = await checkClaudePin(cfg.claude);
-  const claudeProblem = pin.ok
-    ? null
-    : pin.reason === "not_pinned" || pin.reason === "missing"
-      ? CLAUDE_MISSING[cfg.locale]
-      : CLAUDE_PIN_FAILED[cfg.locale](pin.reason);
-  const codexPin = cfg.codex ? await checkClaudePin(cfg.codex) : null;
-  const openaiKey = cfg.codex ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
-  if (codexPin && !codexPin.ok)
-    log.error("adapter.codex_unavailable", { reason: CODEX_PIN_FAILED[cfg.locale](codexPin.reason) });
-  else if (codexPin && !openaiKey) log.error("adapter.codex_unavailable", { reason: OPENAI_KEY_MISSING[cfg.locale] });
-  const codex =
-    codexPin?.ok && openaiKey
-      ? { path: cfg.codex!.path, apiKey: openaiKey, home: join(dir, "codex"), env: { ...env } }
-      : undefined;
-  const allowSignIn = deps.signInAllowed ?? ((p: "xai" | "google") => signInAllowed(p));
-  const acpTool = async (tool: AcpTool): Promise<AcpInput | undefined> => {
-    const pinned = cfg[tool];
-    if (!pinned) return undefined;
-    const check = await checkClaudePin(pinned);
-    if (!check.ok) {
-      log.error(`adapter.${tool}_unavailable`, { reason: ACP_PIN_FAILED[cfg.locale](tool, check.reason) });
-      return undefined;
-    }
-    const key = await secrets.get(tool === "grok" ? SECRET_NAMES.xaiApiKey : SECRET_NAMES.googleApiKey);
-    const signIn = !key && allowSignIn(tool === "grok" ? "xai" : "google");
-    if (!key && !signIn) {
-      log.error(`adapter.${tool}_unavailable`, { reason: ACP_AUTH_MISSING[cfg.locale](tool) });
-      return undefined;
-    }
-    return { path: pinned.path, ...(key ? { apiKey: key } : {}), signIn, home: join(dir, tool), env: { ...env } };
+  // "Connect your AI" (providers.ts): keys, the providers' own sign-ins and installs. It reports
+  // through the store once signed in.
+  const toolOf = { anthropic: "claude", openai: "codex", xai: "grok", google: "gemini" } as const;
+  const allowSignIn = deps.signInAllowed ?? ((p: Provider) => signInAllowed(p));
+  const currentConfig = (): PairedConfig => requirePaired(readConfig(dir, env, { keys: id.sign }));
+  const providers = new ProviderManager({
+    dir,
+    env,
+    secrets,
+    procs: deps.providerProcs ?? spawnProviderProcs(),
+    signinAllowed: allowSignIn,
+    pins: {
+      get: (p) => currentConfig()[toolOf[p]],
+      set: async (p, pin) => writeConfig(dir, { ...currentConfig(), [toolOf[p]]: pin }, id.sign),
+    },
+    report: async (p, doc) => {
+      if (store) await store.upsertConnection(p, doc);
+    },
+    onChange: () => void rebuildAdapters(),
+    now,
+    log,
+  });
+
+  // Run exactly the pinned binaries, never a PATH lookup. Each provider authenticates the way the
+  // person connected it: a keychain key, or (where providers.yaml allows it for them) the
+  // provider's own sign-in in Chalito's profile for that CLI.
+  const resolveAdapters = async (c: PairedConfig) => {
+    const pin = await checkClaudePin(c.claude);
+    const claudeProblem = pin.ok
+      ? null
+      : pin.reason === "not_pinned" || pin.reason === "missing"
+        ? CLAUDE_MISSING[c.locale]
+        : CLAUDE_PIN_FAILED[c.locale](pin.reason);
+    const codexPin = c.codex ? await checkClaudePin(c.codex) : null;
+    const codexLogin = providers.activeMode("openai") === "signin";
+    const openaiKey = c.codex && !codexLogin ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
+    if (codexPin && !codexPin.ok)
+      log.error("adapter.codex_unavailable", { reason: CODEX_PIN_FAILED[c.locale](codexPin.reason) });
+    else if (codexPin && !openaiKey && !codexLogin)
+      log.error("adapter.codex_unavailable", { reason: OPENAI_KEY_MISSING[c.locale] });
+    const codexHome = PROVIDER_CLI.openai.profileEnv(dir).CODEX_HOME!;
+    const codex =
+      codexPin?.ok && (openaiKey || codexLogin)
+        ? {
+            path: c.codex!.path,
+            ...(codexLogin ? { chatgptLogin: true as const } : { apiKey: openaiKey! }),
+            home: codexHome,
+            env: { ...env },
+          }
+        : undefined;
+    const claudePath = claudeProblem ? null : c.claude!.path;
+    const apiKey: ClaudeAuth | null = !claudePath
+      ? null
+      : providers.activeMode("anthropic") === "signin"
+        ? { configDir: PROVIDER_CLI.anthropic.profileEnv(dir).CLAUDE_CONFIG_DIR! }
+        : await secrets.get(SECRET_NAMES.anthropicApiKey);
+    // Grok Build / Gemini CLI over ACP: a key unless the person chose the CLI's own sign-in
+    // (providers.ts records it); with no key, the sign-in where providers.yaml allows it.
+    const acpTool = async (tool: AcpTool): Promise<AcpInput | undefined> => {
+      const provider = tool === "grok" ? "xai" : "google";
+      const pinned = c[tool];
+      if (!pinned) return undefined;
+      const check = await checkClaudePin(pinned);
+      if (!check.ok) {
+        log.error(`adapter.${tool}_unavailable`, { reason: ACP_PIN_FAILED[c.locale](tool, check.reason) });
+        return undefined;
+      }
+      const key =
+        providers.activeMode(provider) === "signin"
+          ? null
+          : await secrets.get(tool === "grok" ? SECRET_NAMES.xaiApiKey : SECRET_NAMES.googleApiKey);
+      const signIn = !key && allowSignIn(provider);
+      if (!key && !signIn) {
+        log.error(`adapter.${tool}_unavailable`, { reason: ACP_AUTH_MISSING[c.locale](tool) });
+        return undefined;
+      }
+      return { path: pinned.path, ...(key ? { apiKey: key } : {}), signIn, home: join(dir, tool), env: { ...env } };
+    };
+    const grok = await acpTool("grok");
+    const gemini = await acpTool("gemini");
+    return { claudeProblem, claudePath, apiKey, codex, grok, gemini };
   };
-  const grok = await acpTool("grok");
-  const gemini = await acpTool("gemini");
-  if (claudeProblem && !codex && !grok && !gemini) throw new OnboardingError(claudeProblem);
+
+  // Fail fast, before touching the cloud. Claude Code's pin failing is fatal only when no other
+  // coding agent is usable, and only for an agent the desktop app didn't start: the app's panel
+  // is where the person installs and connects a provider, so that agent keeps running without one.
+  const resolved = await resolveAdapters(cfg);
+  const { claudeProblem, claudePath, apiKey, codex, grok, gemini } = resolved;
+  if (claudeProblem && !codex && !grok && !gemini && !deps.ipcSecret) throw new OnboardingError(claudeProblem);
   if (claudeProblem) log.error("adapter.claude_code_unavailable", { reason: claudeProblem });
-  const claudePath = claudeProblem ? null : cfg.claude!.path;
-  const apiKey = claudePath ? await secrets.get(SECRET_NAMES.anthropicApiKey) : null;
   if (claudePath && !apiKey)
     log.error("adapter.claude_code_unavailable", { reason: ANTHROPIC_KEY_MISSING[cfg.locale] });
 
@@ -438,21 +509,21 @@ const startDaemon = async (
   store = cloud.store(cfg.owner, id.deviceId);
   const signedInStore = store;
   for (const e of queued.splice(0)) publish(e);
+  void providers.report();
 
   // The agent's own binaries and persistence files are hard-floor targets for the classifier.
   const agentBin = isInterpreter(process.execPath) ? which("chalito", env) : process.execPath;
-  const extras = {
+  const extrasFor = (c: PairedConfig, claude: string | null) => ({
     agentBinaries: [...new Set([process.execPath, agentBin].filter((p): p is string => !!p && !isInterpreter(p)))],
     protectedPaths: [
       ...(agentBin ? servicePlanFiles(agentBin, deps.home ?? homedir()) : []),
-      ...(claudePath ? [claudePath] : []),
-      ...(cfg.codex ? [cfg.codex.path] : []),
-      ...(cfg.grok ? [cfg.grok.path] : []),
-      ...(cfg.gemini ? [cfg.gemini.path] : []),
+      ...(claude ? [claude] : []),
+      ...[c.codex, c.grok, c.gemini].flatMap((p) => (p ? [p.path] : [])),
       ...(agentBin ? [agentBin] : []),
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
-  };
+  });
+  let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {
     classifyExtras: () => extras,
     store: signedInStore,
@@ -464,6 +535,7 @@ const startDaemon = async (
       ...(gemini ? { gemini } : {}),
       log,
     }),
+    providers,
     policy,
     devMode,
     trust: () => trust,
@@ -478,6 +550,36 @@ const startDaemon = async (
     ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
   };
   const core = new AgentCore(coreDeps);
+
+  // A provider was connected, signed out, installed or re-pinned: rebuild what can run. Running
+  // sessions keep their adapter; new ones get the new one.
+  let rebuilding = Promise.resolve();
+  const rebuildAdapters = () =>
+    (rebuilding = rebuilding.then(async () => {
+      try {
+        const c = currentConfig();
+        const r = await resolveAdapters(c);
+        extras = extrasFor(c, r.claudePath);
+        core.setAdapters(
+          (deps.adapters ?? defaultAdapters)({
+            apiKey: r.apiKey,
+            claudePath: r.claudePath,
+            ...(r.codex ? { codex: r.codex } : {}),
+            ...(r.grok ? { grok: r.grok } : {}),
+            ...(r.gemini ? { gemini: r.gemini } : {}),
+            log,
+          }),
+        );
+        log.info("adapters.rebuilt", {
+          claudeCode: !!(r.claudePath && r.apiKey),
+          codex: !!r.codex,
+          grok: !!r.grok,
+          gemini: !!r.gemini,
+        });
+      } catch (err) {
+        log.error("adapters.rebuild_failed", { error: err instanceof Error ? err.message : "error" });
+      }
+    }));
 
   // ADR 0018: clients endorsed by a client this agent trusts (at start, on pointer, every 15 min).
   let syncing = false;
@@ -649,6 +751,7 @@ const startDaemon = async (
           store: signedInStore,
           now,
           reportDevMode,
+          providers,
         }),
         onError: (method, err) =>
           log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),

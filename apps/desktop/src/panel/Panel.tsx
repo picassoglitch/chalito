@@ -10,13 +10,14 @@ import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
 import { Rooms } from "./Rooms.js";
 import { LocalAgent } from "./LocalAgent.js";
+import { Providers } from "./Providers.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { Settings } from "./Settings.js";
 import { Updates } from "./Updates.js";
 import { Voice } from "./Voice.js";
 
-const TABS = ["inbox", "rooms", "settings", "security", "voice"] as const;
+const TABS = ["inbox", "rooms", "settings", "ai", "security", "voice"] as const;
 export type Tab = (typeof TABS)[number];
 
 export interface PanelProps {
@@ -83,6 +84,7 @@ export const Panel = (p: PanelProps) => {
           />
         )}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
+        {tab === "ai" && <Providers ipc={p.ipc} />}
         {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}
         {tab === "security" && p.client && <SecurityNotices client={p.client} />}
         {tab === "security" && <Security ipc={p.ipc} />}

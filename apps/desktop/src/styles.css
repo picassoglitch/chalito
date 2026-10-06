@@ -112,3 +112,19 @@ body.pet {
   width: 100%;
   text-align: left;
 }
+
+/* IA conectadas (panel/Providers.tsx) */
+.providers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.providers > li + li {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.providers h3 {
+  margin: 0 0 4px;
+}

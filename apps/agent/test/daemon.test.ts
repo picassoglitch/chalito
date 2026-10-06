@@ -24,7 +24,9 @@ import {
 } from "../src/daemon.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { AlreadyRunningError, acquireInstanceLock, lockPath } from "../src/instance-lock.js";
+import type { Provider } from "@chalito/protocol";
 import { ipcCall } from "./ipc-server.test.js";
+import { fakeProviderProcs } from "./fake-provider-procs.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { DeviceRevokedError } from "../src/device-auth.js";
@@ -52,7 +54,8 @@ const setup = async (
     xaiKey?: boolean;
     gemini?: boolean;
     googleKey?: boolean;
-    signIn?: ("xai" | "google")[];
+    /** Providers whose plan sign-in providers.yaml allows (DaemonDeps.signInAllowed). */
+    signIn?: Provider[];
   } = {},
 ) => {
   const home = mkdtempSync(join(tmpdir(), "chalito-daemon-"));
@@ -129,9 +132,11 @@ const setup = async (
   const refreshers: (() => void)[] = [];
   const refreshEvery: number[] = [];
   const adapterInputs: AdapterInput[] = [];
+  const procs = fakeProviderProcs();
   const deps: DaemonDeps = {
     home,
     env: { PATH: `${evilBin}:${bin}` },
+    providerProcs: procs.procs,
     secrets,
     fetch,
     cloud: (_cfg, mint) => ((mintRef.mint = mint), cloud),
@@ -160,6 +165,7 @@ const setup = async (
     codex: codexPin.path,
     grok: grokPin.path,
     gemini: geminiPin.path,
+    procs,
     closed: () => closed,
   };
 };
@@ -630,6 +636,100 @@ describe("chalito run (daemon)", () => {
           throw new Error("no providers.yaml");
         }),
       ).toBe(false);
+    });
+  });
+
+  describe("connect your AI", () => {
+    const SECRET = "d".repeat(64);
+    const signedIn = (dir: string, providers: Record<string, unknown>) =>
+      writeFileSync(join(dir, "providers.json"), JSON.stringify(providers));
+
+    it("reports every provider's status to chalito.connections at start", async () => {
+      const s = await setup({ codex: true, openaiKey: true });
+      const d = await runDaemon(s.deps);
+      await vi.waitFor(() => expect(s.store.connections.size).toBe(4));
+      expect(s.store.connections.get("anthropic")).toMatchObject({ cli: { installed: true } });
+      await d.stop();
+    });
+
+    it("a Codex signed in with `codex login` runs on that login, only where providers.yaml allows it", async () => {
+      const team = await setup({ codex: true, signIn: ["openai"] });
+      signedIn(team.dir, { openai: { mode: "signin", signedIn: true } });
+      const d1 = await runDaemon(team.deps);
+      expect(team.adapterInputs[0]!.codex).toEqual({
+        path: team.codex,
+        chatgptLogin: true,
+        home: join(team.dir, "codex"),
+        env: expect.any(Object),
+      });
+      await d1.stop();
+
+      const other = await setup({ codex: true });
+      signedIn(other.dir, { openai: { mode: "signin", signedIn: true } });
+      const d2 = await runDaemon(other.deps);
+      expect(other.adapterInputs[0]!.codex).toBeUndefined();
+      await d2.stop();
+    });
+
+    it("an allowed Claude sign-in runs Claude Code on Chalito's own profile, not a key", async () => {
+      const s = await setup({ signIn: ["anthropic"] });
+      signedIn(s.dir, { anthropic: { mode: "signin", signedIn: true } });
+      const d = await runDaemon(s.deps);
+      expect(s.adapterInputs[0]!.apiKey).toEqual({ configDir: join(s.dir, "claude") });
+      await d.stop();
+    });
+
+    it("defaultAdapters runs a signed-in Codex without a key and with the plan flag", () => {
+      const a = defaultAdapters({
+        apiKey: { configDir: "/h/.chalito/claude" },
+        claudePath: "/opt/claude",
+        codex: { path: "/opt/codex", chatgptLogin: true, home: "/h/.chalito/codex", env: {} },
+        log: createLogger(() => undefined),
+      });
+      const codex = (a.codex as unknown as { config: Record<string, unknown> }).config;
+      expect(codex).toMatchObject({ chatgptLogin: true, chatgptPlanEnabled: true });
+      expect(codex.apiKey).toBeUndefined();
+      const claude = (a["claude-code"] as unknown as { config: Record<string, unknown> }).config;
+      expect(claude.apiKey).toEqual({ configDir: "/h/.chalito/claude" });
+    });
+
+    it("started by the desktop app, the agent runs with nothing set up so the panel can connect a provider", async () => {
+      const s = await setup({ claude: "missing", signIn: ["xai", "google"] });
+      const sock = join(s.home, "ipc.sock");
+      // Like `chalito keys set`, connecting pins the `claude` PATH finds then.
+      const env = { PATH: join(s.home, "bin") };
+      const d = await runDaemon({ ...s.deps, env, ipcSecret: SECRET, ipcPath: sock });
+      expect(s.adapterInputs[0]).toMatchObject({ claudePath: null, apiKey: null });
+      const call = (method: string, params?: unknown) =>
+        ipcCall(sock, { id: 1, token: SECRET, method, params }) as Promise<{
+          ok: boolean;
+          result?: unknown;
+          error?: string;
+        }>;
+      const view = (await call("providers")).result as { provider: string; signinAllowed: boolean }[];
+      expect(view.map((v) => [v.provider, v.signinAllowed])).toEqual([
+        ["anthropic", false],
+        ["openai", false],
+        ["xai", true],
+        ["google", true],
+      ]);
+
+      // A key from the panel: stored, the CLI pinned, and the adapters rebuilt with it.
+      expect(await call("connectProviderKey", { provider: "anthropic", key: "sk-ant-from-panel" })).toMatchObject({
+        ok: true,
+      });
+      await vi.waitFor(() => expect(s.adapterInputs.length).toBe(2));
+      expect(await s.secrets.get(SECRET_NAMES.anthropicApiKey)).toBe("sk-ant-from-panel");
+      expect(s.adapterInputs[1]).toMatchObject({ claudePath: s.claude, apiKey: "sk-ant-from-panel" });
+      expect(await call("signinProvider", { provider: "anthropic" })).toMatchObject({
+        ok: false,
+        error: "blocked_by_policy",
+      });
+      expect(await call("connectProviderKey", { provider: "mistral", key: "x" })).toMatchObject({
+        ok: false,
+        error: "bad_params",
+      });
+      await d.stop();
     });
   });
 

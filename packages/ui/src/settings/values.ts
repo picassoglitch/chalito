@@ -5,8 +5,12 @@ import { DEFAULT_COMPANION } from "../companions.js";
 export const RENDER_QUALITIES = ["auto", "bajo", "medio", "alto"] as const;
 export type RenderQuality = (typeof RENDER_QUALITIES)[number];
 
-/** chalito.connections doc.mode (valid_connection_doc in the settings migration). */
-export type ConnectionMode = "byo_api_key" | "byo_subscription_local" | "byo_mcp_connector" | "managed";
+/**
+ * chalito.connections doc.mode (valid_connection_doc). `api_key` / `signin` come from the
+ * agent's provider status (ProviderConnectionDoc); the others from rows written before it.
+ */
+export type ConnectionMode =
+  "byo_api_key" | "byo_subscription_local" | "byo_mcp_connector" | "managed" | "api_key" | "signin";
 
 export interface ConnectionStatus {
   /** Provider id from providers.yaml (anthropic, openai, xai, google). */

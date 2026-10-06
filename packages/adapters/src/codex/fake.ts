@@ -14,7 +14,13 @@ export type FakeCodexStep =
   | { ask: { id: string; question: string; header?: string; options: string[] }[] };
 
 export interface FakeCodexRun {
-  spawned?: { command: string; args: string[]; env: Record<string, string | undefined>; cwd: string };
+  spawned?: {
+    command: string;
+    args: string[];
+    env: Record<string, string | undefined>;
+    cwd: string;
+    keepLogin?: boolean;
+  };
   /** `approvalPolicy` of every thread/start|resume and turn/start. */
   policies: unknown[];
   /** Every message the client sent, in order. */
@@ -57,8 +63,8 @@ export const fakeCodex = (
   } = {},
 ): { spawn: CodexSpawn; run: FakeCodexRun } => {
   const userAgent = options.userAgent ?? "chalito/0.162.0 (Ubuntu 24.4.0; x86_64) xterm-256color (chalito; 0.0.0)";
-  const spawn: CodexSpawn = (command, args, env, cwd) => {
-    run.spawned = { command, args, env, cwd };
+  const spawn: CodexSpawn = (command, args, env, cwd, opts) => {
+    run.spawned = { command, args, env, cwd, ...(opts?.keepLogin ? { keepLogin: true } : {}) };
     // Every hardening override must be on the command line as `-c <override>`.
     for (const o of HARDENING_OVERRIDES) {
       const i = args.indexOf(o);
