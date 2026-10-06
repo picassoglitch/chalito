@@ -33,7 +33,14 @@ billingUnit:
 # The token allowance comes from the hub's own balance.
 hubTiers:
   free: # Chalyb Gratis
-    access: none # BYO keys + free_min only
+    # Owner decision 2026-10-06: Gratis gets every feature (Energía chat metered from the hub
+    # balance, companion + store, desktop agent / own keys, Salas/Mesas) with 1 computer and
+    # 1 room of 4. Lite's inclusions, capped below. WhatsApp stays off for Gratis (not in the
+    # owner's list; Lite's 100/month would be a paid channel for free).
+    access: lite
+    limits:
+      devices: 1
+      whatsapp: 0
   pro:
     access: standard
   vip:

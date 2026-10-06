@@ -21,13 +21,15 @@ const ent = (over: Partial<z.input<typeof EntitlementInputs>> = {}, p: PlansConf
   computeEntitlements({ ...base, ...over }, p);
 
 describe("entitlements", () => {
-  it("hub tiers map through plans.yaml: free → none, pro → standard, vip → plus", () => {
+  it("hub tiers map through plans.yaml: free → lite (capped), pro → standard, vip → plus", () => {
     expect(ent({ hubTier: "free", hubBalanceRemaining: 1_000 })).toMatchObject({
-      source: "none",
-      accessTier: null,
-      managedAllowance: { status: "free_min" },
-      efficiencyCurrent: "free_min",
+      source: "hub_tier",
+      accessTier: "lite",
+      managedAllowance: { status: "enabled", remainingBillable: 1_000 },
+      maxProfile: "low",
+      limits: { devices: 1, rooms: 1, membersPerRoom: 4, whatsapp: 0, voiceMinutes: 0, calls: 0, sms: 0 },
     });
+    expect(ent({ hubTier: "free", hubBalanceRemaining: 0 }).managedAllowance.status).toBe("free_min");
     expect(ent({ hubTier: "pro", hubBalanceRemaining: 1_000 })).toMatchObject({
       source: "hub_tier",
       accessTier: "standard",
@@ -72,7 +74,7 @@ describe("entitlements", () => {
   it("hub unlimited (admins) keeps managed brains on at any balance", () => {
     expect(ent({ hubTier: "pro", hubBalanceRemaining: 0, hubUnlimited: true }).managedAllowance.status).toBe("enabled");
     expect(ent({ hubTier: "free", hubBalanceRemaining: 0, hubUnlimited: true }).managedAllowance.status).toBe(
-      "free_min",
+      "enabled",
     );
   });
 

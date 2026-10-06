@@ -15,6 +15,7 @@ import { isLintedFile, lintCurrency } from "../src/currency.js";
 describe("config files", () => {
   it("every config file loads and validates", () => {
     expect(loadPlans().tiers.lite?.priceUsd).toBe(10);
+    expect(loadPlans().hubTiers.free).toEqual({ access: "lite", limits: { devices: 1, whatsapp: 0 } });
     expect(loadModels().vertex.location).toBe("global");
     expect(loadPrices().llm.google["gemini-3.1-flash-lite"]?.input).toBe(0.25);
     expect(loadProviders().providers.anthropic.subscriptionLocal).toBe("owner_only");
