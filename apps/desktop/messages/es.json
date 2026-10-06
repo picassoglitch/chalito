@@ -4,7 +4,8 @@
     "settings": "Ajustes",
     "security": "Seguridad",
     "voice": "Voz",
-    "rooms": "Salas"
+    "rooms": "Salas",
+    "ai": "IA conectadas"
   },
   "dnd": "No molestar",
   "offline": "Sin conexión a tu cuenta. Empareja esta computadora con «chalito pair».",
@@ -107,6 +108,69 @@
     },
     "google": {
       "name": "Google"
+    },
+    "connect": {
+      "title": "IA conectadas",
+      "agent": {
+        "anthropic": "Claude Code",
+        "openai": "Codex",
+        "xai": "Grok Build",
+        "google": "Gemini CLI"
+      },
+      "package": {
+        "anthropic": "@anthropic-ai/claude-code",
+        "openai": "@openai/codex",
+        "xai": "@xai-official/grok",
+        "google": "@google/gemini-cli"
+      },
+      "state": {
+        "not_installed": "No está instalado en esta computadora.",
+        "installing": "Instalando…",
+        "needs_auth": "Instalado. Falta conectarlo.",
+        "signing_in": "Termina de iniciar sesión en el navegador que se abrió.",
+        "connected": "Conectado",
+        "error": "No se pudo conectar.",
+        "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta. Usa una API key."
+      },
+      "mode": {
+        "api_key": "con tu API key",
+        "signin": "con tu sesión"
+      },
+      "error": {
+        "install_failed": "La instalación falló. Revisa que npm pueda instalar paquetes globales.",
+        "install_unconfirmed": "Nadie confirmó la instalación en esta computadora a tiempo.",
+        "npm_missing": "Para instalarlo hace falta npm (Node.js) en esta computadora.",
+        "pin_failed": "No pude fijar el programa instalado. Ejecuta «chalito status» en una terminal.",
+        "signin_failed": "No se completó el inicio de sesión. Inténtalo otra vez.",
+        "signin_timeout": "El inicio de sesión tardó demasiado. Inténtalo otra vez.",
+        "key_invalid": "Esa API key no es válida.",
+        "keychain_failed": "No pude guardar la llave en el llavero del sistema.",
+        "status_failed": "No pude revisar el estado."
+      },
+      "failure": {
+        "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta.",
+        "provider_busy": "Ya hay una instalación o un inicio de sesión en curso.",
+        "other": "No se pudo completar. Inténtalo otra vez."
+      },
+      "install": "Instalar",
+      "withKey": "Conectar con API key",
+      "signin": "Iniciar sesión",
+      "disconnect": "Desconectar",
+      "confirmInstall": "Voy a instalar el paquete oficial {pkg} con npm en esta computadora. ¿Continuar?",
+      "remoteInstall": "Pediste instalar {pkg} desde otro dispositivo. ¿Lo instalo en esta computadora?",
+      "confirmDisconnect": "Voy a borrar la llave guardada y cerrar la sesión que Chalito usa en esta computadora. ¿Continuar?",
+      "yesInstall": "Sí, instalar",
+      "yesDisconnect": "Sí, desconectar",
+      "cancel": "Cancelar",
+      "keyLabel": "API key",
+      "keyLocal": "Se guarda solo en el llavero de esta computadora. Nunca sale de aquí.",
+      "saveKey": "Guardar",
+      "signinOff": {
+        "anthropic": "Iniciar sesión con tu plan de Claude: solo equipo de Chalito por ahora.",
+        "openai": "Iniciar sesión con tu plan de ChatGPT: solo equipo de Chalito por ahora.",
+        "xai": "Iniciar sesión con Grok no está disponible por ahora.",
+        "google": "Iniciar sesión con Google no está disponible por ahora."
+      }
     }
   },
   "settingsError": {

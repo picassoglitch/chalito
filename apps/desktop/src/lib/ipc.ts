@@ -1,5 +1,5 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
-import type { DevModeToggle } from "@chalito/protocol";
+import type { DevModeToggle, Provider, ProviderConnectionDoc } from "@chalito/protocol";
 
 /**
  * Local-only surfaces, reached through the agent's IPC (ADR 0004: the agent is a user
@@ -60,6 +60,17 @@ export interface DevModeAnswers {
 export type EnableResult =
   { ok: true; state: DevModeState } | { ok: false; reason: "os_auth_failed" | "cancelled" | "unavailable" };
 
+/** One provider as the agent sees it on this computer (apps/agent/src/providers.ts `ProviderView`). */
+export interface ProviderView {
+  provider: Provider;
+  /** The same status doc the agent reports to chalito.connections. */
+  doc: ProviderConnectionDoc;
+  /** providers.yaml lets this person use the provider's own plan sign-in. */
+  signinAllowed: boolean;
+  /** A remote install (from the phone or the web) waiting for a yes here, until this time. */
+  installRequestedUntil: number | null;
+}
+
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
@@ -74,6 +85,17 @@ export interface AgentIpc {
   disableDevToggle(toggle: DevModeToggle): Promise<DevModeState>;
   /** Presence goes through the agent: RLS lets only the agent device update its own row. */
   reportPresence(p: { desktopActive: boolean }): Promise<void>;
+  /** "IA conectadas": the four providers' state on this computer. */
+  providers(): Promise<ProviderView[]>;
+  /** Saves the key in this computer's keychain (it goes over the local socket only). */
+  connectProviderKey(provider: Provider, key: string): Promise<void>;
+  /** Starts the provider's own sign-in; it opens the browser here. Rejects with `blocked_by_policy`. */
+  signinProvider(provider: Provider): Promise<void>;
+  disconnectProvider(provider: Provider): Promise<void>;
+  /** The person's local yes: installs the official package, then pins it. */
+  installProvider(provider: Provider): Promise<void>;
+  /** The person's no to a remote install request. */
+  declineProviderInstall(provider: Provider): Promise<void>;
 }
 
 export class IpcUnavailableError extends Error {
@@ -96,6 +118,12 @@ export const unavailableIpc: AgentIpc = {
   enableDevToggle: unavailable,
   disableDevToggle: unavailable,
   reportPresence: unavailable,
+  providers: unavailable,
+  connectProviderKey: unavailable,
+  signinProvider: unavailable,
+  disconnectProvider: unavailable,
+  installProvider: unavailable,
+  declineProviderInstall: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -127,6 +155,12 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     enableDevToggle: (toggle, answers) => call("enableDevToggle", { toggle, answers }),
     disableDevToggle: (toggle) => call("disableDevToggle", { toggle }),
     reportPresence: (p) => call("reportPresence", { desktopActive: p.desktopActive }),
+    providers: () => call("providers"),
+    connectProviderKey: async (provider, key) => void (await call("connectProviderKey", { provider, key })),
+    signinProvider: async (provider) => void (await call("signinProvider", { provider })),
+    disconnectProvider: async (provider) => void (await call("disconnectProvider", { provider })),
+    installProvider: async (provider) => void (await call("installProvider", { provider })),
+    declineProviderInstall: async (provider) => void (await call("declineProviderInstall", { provider })),
   };
 };
 
