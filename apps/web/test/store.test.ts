@@ -40,6 +40,26 @@ describe("store (/v1/store)", () => {
     expect(free[0]).not.toHaveProperty("priceTokens");
   });
 
+  it("parses neck pieces (sized by the neck) and capes that hang from the neck", () => {
+    const bow = {
+      ...item,
+      id: "bow_tie",
+      slot: "neck",
+      art: "cosmetics/bow_tie.webp",
+      card: { neckWidth: 0.8, pivot: [0.5, 0.5] },
+    };
+    expect(parseCatalog({ items: [bow] })).toEqual([bow]);
+    // A neck piece needs its neck width; the card width alone isn't enough (and vice versa).
+    expect(parseCatalog({ items: [{ ...bow, card: { width: 0.3, pivot: [0.5, 0.5] } }] })).toBeNull();
+    expect(parseCatalog({ items: [{ ...item, card: { neckWidth: 0.8, pivot: [0.5, 0.5] } }] })).toBeNull();
+    const cape = { ...item, id: "hero_cape", card: { width: 0.85, pivot: [0.5, 0.04], anchorY: "neck" } };
+    expect(parseCatalog({ items: [cape] })).toEqual([cape]);
+    expect(parseCatalog({ items: [{ ...cape, card: { ...cape.card, anchorY: "feet" } }] })).toBeNull();
+    // The real catalog parses whole.
+    const all = Object.entries(DEV_CATALOG).map(([id, x]) => ({ id, ...x, owned: false }));
+    expect(parseCatalog({ items: all })).toHaveLength(all.length);
+  });
+
   it("parses skins: an effect and no art; effects this build can't draw are skipped", () => {
     const skin = {
       id: "skin_gold",

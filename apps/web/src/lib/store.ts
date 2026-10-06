@@ -4,7 +4,7 @@ import type { CardPlacement } from "@chalito/roster";
  * The store (M8, docs/integrations/STORE.md): cosmetics change how a companion looks, never what
  * it can do. Prices are hub tokens, never money. Routes take the person's or this device's bearer.
  */
-export type Slot = "head" | "face" | "body" | "back" | "aura" | "portal_fx" | "skin";
+export type Slot = "head" | "face" | "neck" | "body" | "back" | "aura" | "portal_fx" | "skin";
 export type AccessorySlot = Exclude<Slot, "skin">;
 /** The card renderer's material effects (@chalito/avatar-three SKIN_IDS). */
 export type SkinEffect = "gold" | "galaxy" | "neon" | "crystal" | "holo" | "shadow" | "pixel";
@@ -55,7 +55,7 @@ export interface StoreApi {
 /** One per buy tap, reused on retries: 16–64 of [A-Za-z0-9_-]. */
 export const newPurchaseId = (): string => `pur_${crypto.randomUUID().replaceAll("-", "")}`;
 
-const SLOTS: readonly string[] = ["head", "face", "body", "back", "aura", "portal_fx", "skin"];
+const SLOTS: readonly string[] = ["head", "face", "neck", "body", "back", "aura", "portal_fx", "skin"];
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
 export const parseCatalog = (body: unknown): StoreItem[] | null => {
@@ -64,7 +64,7 @@ export const parseCatalog = (body: unknown): StoreItem[] | null => {
   const out: StoreItem[] = [];
   for (const x of items as Record<string, unknown>[]) {
     const name = x?.name as { es?: unknown; en?: unknown } | undefined;
-    const card = x?.card as { width?: unknown; pivot?: unknown } | undefined;
+    const card = x?.card as { width?: unknown; neckWidth?: unknown; pivot?: unknown; anchorY?: unknown } | undefined;
     const pivot = Array.isArray(card?.pivot) ? (card.pivot as unknown[]) : [];
     if (
       typeof x?.id !== "string" ||
@@ -90,19 +90,30 @@ export const parseCatalog = (body: unknown): StoreItem[] | null => {
       out.push({ ...base, slot: "skin", skin: x.skin as SkinEffect });
       continue;
     }
+    // Neck items are sized by the neck (`neckWidth`), the rest by the card (`width`); a back item may
+    // hang from the neck (`anchorY: "neck"`).
+    const neck = x.slot === "neck";
     if (
       typeof x.art !== "string" ||
       !/^cosmetics\/[a-z0-9_]+\.webp$/.test(x.art) ||
-      !isNum(card?.width) ||
+      !(neck ? isNum(card?.neckWidth) && card.neckWidth > 0 : isNum(card?.width) && card.width > 0) ||
+      (card?.anchorY !== undefined && card.anchorY !== "neck") ||
       pivot.length !== 2 ||
       !pivot.every(isNum)
     )
       return null;
+    const at: [number, number] = [pivot[0] as number, pivot[1] as number];
     out.push({
       ...base,
       slot: x.slot as AccessorySlot,
       art: x.art,
-      card: { width: card!.width as number, pivot: [pivot[0] as number, pivot[1] as number] },
+      card: neck
+        ? { neckWidth: card!.neckWidth as number, pivot: at }
+        : {
+            width: card!.width as number,
+            pivot: at,
+            ...(card!.anchorY === "neck" ? { anchorY: "neck" as const } : {}),
+          },
     });
   }
   return out;

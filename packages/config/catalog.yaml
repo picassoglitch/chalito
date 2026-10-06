@@ -59,6 +59,211 @@ cosmetics:
     card: { width: 1.0, pivot: [0.5, 0.5] }
     vrm: { offset: [0, 0.01, 0] }
     provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Wearables that fit any body (owner-approved 2026-10-06, prices included). No shirts or suits:
+  # an overlay can't follow 220 shapes.
+  # Neck: placed on each character's neck (card.json anchors.neck, detected per character by
+  # detect-wear-anchors.ts; derived from the face and body anchors when missing), sized by its width.
+  bow_tie:
+    name: { es: Moño de lunares, en: Polka-dot bow tie }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/bow_tie.webp
+    card: { neckWidth: 0.8, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, -0.02, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  bow_tie_red:
+    name: { es: Moño rojo, en: Red bow tie }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/bow_tie_red.webp
+    card: { neckWidth: 0.8, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, -0.02, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  necktie:
+    name: { es: Corbata, en: Necktie }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/necktie.webp
+    card: { neckWidth: 0.6, pivot: [0.5, 0.05] }
+    vrm: { offset: [0, -0.03, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  bell_collar:
+    name: { es: Collar con cascabel, en: Bell collar }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/bell_collar.webp
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  pearl_necklace:
+    name: { es: Collar de perlas, en: Pearl necklace }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/pearl_necklace.webp
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  gold_medal:
+    name: { es: Medalla de oro, en: Gold medal }
+    slot: neck
+    free: false
+    priceTokens: 300
+    art: cosmetics/gold_medal.webp
+    card: { neckWidth: 0.7, pivot: [0.5, 0.05] }
+    vrm: { offset: [0, -0.04, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  marigold_necklace:
+    name: { es: Collar de cempasúchil, en: Marigold necklace }
+    slot: neck
+    free: false
+    priceTokens: 300
+    art: cosmetics/marigold_necklace.webp
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  flower_lei:
+    name: { es: Collar hawaiano, en: Flower lei }
+    slot: neck
+    free: false
+    priceTokens: 300
+    art: cosmetics/flower_lei.webp
+    card: { neckWidth: 1.3, pivot: [0.5, 0.15] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Head.
+  charro_hat:
+    name: { es: Sombrero de charro, en: Charro hat }
+    slot: head
+    free: false
+    priceTokens: 500
+    art: cosmetics/charro_hat.webp
+    card: { width: 0.66, pivot: [0.5, 0.9] }
+    vrm: { offset: [0, 0.14, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  crown:
+    name: { es: Corona, en: Crown }
+    slot: head
+    free: false
+    priceTokens: 500
+    art: cosmetics/crown.webp
+    card: { width: 0.4, pivot: [0.5, 0.95] }
+    vrm: { offset: [0, 0.13, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  cap:
+    name: { es: Gorra, en: Cap }
+    slot: head
+    free: false
+    priceTokens: 300
+    art: cosmetics/cap.webp
+    card: { width: 0.5, pivot: [0.5, 0.9] }
+    vrm: { offset: [0, 0.12, 0.01] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  party_hat:
+    name: { es: Gorro de fiesta, en: Party hat }
+    slot: head
+    free: false
+    priceTokens: 300
+    art: cosmetics/party_hat.webp
+    card: { width: 0.3, pivot: [0.5, 0.95] }
+    vrm: { offset: [0, 0.16, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  flower_headband:
+    name: { es: Diadema de flores, en: Flower headband }
+    slot: head
+    free: false
+    priceTokens: 300
+    art: cosmetics/flower_headband.webp
+    card: { width: 0.46, pivot: [0.5, 0.62] }
+    vrm: { offset: [0, 0.12, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Face.
+  sunglasses:
+    name: { es: Lentes de sol, en: Sunglasses }
+    slot: face
+    free: false
+    priceTokens: 300
+    art: cosmetics/sunglasses.webp
+    card: { width: 0.38, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.03, 0.09] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  heart_glasses:
+    name: { es: Lentes de corazón, en: Heart glasses }
+    slot: face
+    free: false
+    priceTokens: 300
+    art: cosmetics/heart_glasses.webp
+    card: { width: 0.38, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.03, 0.09] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  mustache:
+    name: { es: Bigote, en: Mustache }
+    slot: face
+    free: false
+    priceTokens: 200
+    art: cosmetics/mustache.webp
+    card: { width: 0.3, pivot: [0.5, 0.0] }
+    vrm: { offset: [0, -0.02, 0.1] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Back: drawn behind the character. The hero cape hangs from the neck (anchorY: neck).
+  angel_wings:
+    name: { es: Alas de ángel, en: Angel wings }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/angel_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  butterfly_wings:
+    name: { es: Alas de mariposa, en: Butterfly wings }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/butterfly_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  bat_wings:
+    name: { es: Alas de murciélago, en: Bat wings }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/bat_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  dragon_wings:
+    name: { es: Alas de dragón, en: Dragon wings }
+    slot: back
+    free: false
+    priceTokens: 1500
+    art: cosmetics/dragon_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  hero_cape:
+    name: { es: Capa de héroe, en: Hero cape }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/hero_cape.webp
+    card: { width: 0.85, pivot: [0.5, 0.04], anchorY: neck }
+    vrm: { offset: [0, -0.05, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  jetpack:
+    name: { es: Jetpack, en: Jetpack }
+    slot: back
+    free: false
+    priceTokens: 2000
+    art: cosmetics/jetpack.webp
+    card: { width: 0.6, pivot: [0.5, 0.4] }
+    vrm: { offset: [0, 0, -0.1] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
   # Skins: a material effect over the whole companion (gold, galaxy…), drawn by the card renderer's
   # shader (@chalito/avatar-three setSkin), so one skin fits every roster character with no new art.
   # One skin at a time (the `skin` slot). Skins are the top cosmetic tier, priced above a full outfit

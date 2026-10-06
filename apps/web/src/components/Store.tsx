@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
-import { placeOnCard, rosterEntry, type CardAnchor } from "@chalito/roster";
+import { placeItem, rosterEntry, type CardAnchors } from "@chalito/roster";
 import { companionName } from "@chalito/ui";
 import { Link } from "@/i18n/navigation";
 import { hubLaunchUrl } from "@/lib/hub";
@@ -26,8 +26,21 @@ const asset = (path: string) => `${ROSTER}/${path}`;
 interface Card {
   width: number;
   height: number;
-  anchors: Partial<Record<AccessorySlot, CardAnchor>>;
+  anchors: CardAnchors;
 }
+
+/** The accessories tab, grouped by where an item goes (Spanish first: Cuello, Cabeza, Cara, Espalda, Efectos). */
+const ACCESSORY_GROUPS: readonly {
+  key: "neck" | "head" | "face" | "back" | "effects";
+  slots: readonly AccessorySlot[];
+}[] = [
+  { key: "neck", slots: ["neck"] },
+  { key: "head", slots: ["head"] },
+  { key: "face", slots: ["face"] },
+  { key: "back", slots: ["back"] },
+  // Nothing is sold for `body` yet; should something be, it shows with the effects rather than vanish.
+  { key: "effects", slots: ["aura", "portal_fx", "body"] },
+];
 
 type Note =
   | { kind: "no_tokens"; chipHref: string }
@@ -127,7 +140,7 @@ const SkinLayer = ({
 };
 
 /**
- * The companion's card with what it wears, placed by `placeOnCard` (negative z sits behind the body),
+ * The companion's card with what it wears, placed by `placeItem` (negative z sits behind the body),
  * and the skin (worn, or being tried on) drawn over it by the card renderer. The person's own
  * custom character, when the companion wears one, with its own anchors; else the roster card.
  */
@@ -173,7 +186,7 @@ const Preview = ({
   return (
     // Headroom above the card: hats and auras reach past its top edge.
     <figure
-      className="relative mx-auto mt-12 w-48 sm:w-56"
+      className="relative isolate mx-auto mt-12 w-48 sm:w-56"
       style={{ aspectRatio: `${card.width} / ${card.height}` }}
       role="img"
       aria-label={label}
@@ -207,9 +220,9 @@ const Preview = ({
       ) : null}
       {skinned ? <SkinLayer avatar={mine.files ?? look.avatar} skin={skin} onReady={setGl} /> : null}
       {worn.map((i) => {
-        const anchor = card.anchors[i.slot];
+        // Neck items land on the card's neck (detected, or derived from face and body).
         const aspect = aspects[i.id];
-        const p = anchor && aspect ? placeOnCard(anchor, i.card, aspect, cardAspect) : null;
+        const p = aspect ? placeItem(card.anchors, i.slot, i.card, aspect, cardAspect) : null;
         return (
           <img
             key={i.id}
@@ -339,6 +352,113 @@ export const Store = () => {
   const entry = look && look !== "error" ? rosterEntry(look.avatar) : null;
   const drawing = mine.drawing ?? (entry ? asset(entry.drawings.neutral) : null);
   const shown = all.filter((i) => (tab === "skins") === isSkin(i));
+  // Accessories by where they go (neck, head, face, back, effects); skins in one list.
+  const groups =
+    tab === "skins"
+      ? [{ key: "skins" as const, items: shown }]
+      : ACCESSORY_GROUPS.map((g) => ({
+          key: g.key,
+          items: shown.filter((i) => (g.slots as readonly string[]).includes(i.slot)),
+        })).filter((g) => g.items.length > 0);
+  const renderItem = (item: StoreItem) => {
+    const worn = !!look && look !== "error" && look.equipped[item.slot] === item.id;
+    const n = notes[item.id];
+    return (
+      <li
+        key={item.id}
+        data-testid="store-item"
+        data-item={item.id}
+        data-owned={item.owned}
+        data-worn={worn}
+        className="grid content-start gap-2 rounded-xl border bg-white p-3"
+      >
+        {isSkin(item) ? (
+          <SkinSwatch skin={item.skin} drawing={drawing} />
+        ) : (
+          <img
+            src={asset(item.art)}
+            alt=""
+            width={160}
+            height={160}
+            loading="lazy"
+            decoding="async"
+            className="aspect-square w-full rounded-lg bg-neutral-50 object-contain"
+          />
+        )}
+        <p className="font-medium">{item.name[locale]}</p>
+        <p className="text-xs text-neutral-600">{t(`slot.${item.slot}`)}</p>
+        <p className="text-sm" data-testid="store-price">
+          {item.free ? t("free") : item.owned ? t("owned") : t("price", { tokens: tokens.format(item.priceTokens!) })}
+        </p>
+        {!item.owned ? (
+          <button
+            data-testid="store-buy"
+            className="rounded-lg bg-emerald-700 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+            disabled={busy !== null}
+            onClick={() => void buy(item)}
+          >
+            {t("buy")}
+          </button>
+        ) : look && look !== "error" ? (
+          <button
+            data-testid={worn ? "store-unequip" : "store-equip"}
+            className="rounded-lg border px-3 py-1.5 text-sm disabled:opacity-50"
+            disabled={busy !== null}
+            aria-pressed={worn}
+            onClick={() => void equip(item, !worn)}
+          >
+            {worn ? t("unequip") : t("equip")}
+          </button>
+        ) : null}
+        {isSkin(item) && look && look !== "error" && !worn ? (
+          <button
+            data-testid="store-try"
+            className="rounded-lg border border-dashed px-3 py-1.5 text-sm"
+            aria-pressed={trying === item.skin}
+            onClick={() => setTrying((s) => (s === item.skin ? null : item.skin))}
+          >
+            {trying === item.skin ? t("stopTrying") : t("tryOn")}
+          </button>
+        ) : null}
+        {n?.kind === "no_tokens" ? (
+          <p role="status" data-testid="store-no-tokens" className="text-sm">
+            {t("noTokens")}{" "}
+            {n.chipHref === "/creditos" ? (
+              <Link href="/creditos" className="inline-block rounded-full border px-2 py-0.5 text-xs text-emerald-800">
+                {t("whyChip")}
+              </Link>
+            ) : (
+              <a href={n.chipHref} className="inline-block rounded-full border px-2 py-0.5 text-xs text-emerald-800">
+                {t("whyChip")}
+              </a>
+            )}
+          </p>
+        ) : null}
+        {n?.kind === "retry" ? (
+          <p role="alert" data-testid="store-retry" className="grid gap-1 text-sm text-red-800">
+            {t("retryBuy")}
+            <button
+              className="w-fit rounded border border-red-800 px-2 py-0.5"
+              disabled={busy !== null}
+              onClick={() => void buy(item, true)}
+            >
+              {t("retry")}
+            </button>
+          </p>
+        ) : null}
+        {n?.kind === "failed" ? (
+          <p role="alert" className="text-sm text-red-800">
+            {t("failed")}
+          </p>
+        ) : null}
+        {n?.kind === "equip_failed" ? (
+          <p role="alert" data-testid="store-equip-error" className="text-sm text-red-800">
+            {t(`equipError.${n.reason}`)}
+          </p>
+        ) : null}
+      </li>
+    );
+  };
   return (
     <div className="grid gap-6" data-testid="store">
       <div className="grid gap-1">
@@ -399,122 +519,24 @@ export const Store = () => {
       {Array.isArray(items) && tab === "skins" ? <p className="text-sm text-neutral-600">{t("skinsIntro")}</p> : null}
 
       {Array.isArray(items) ? (
-        <ul
-          id="store-items"
-          role="tabpanel"
-          aria-labelledby={`store-tab-${tab}`}
-          className="grid grid-cols-2 gap-3 sm:grid-cols-3"
-        >
-          {shown.map((item) => {
-            const worn = !!look && look !== "error" && look.equipped[item.slot] === item.id;
-            const n = notes[item.id];
-            return (
-              <li
-                key={item.id}
-                data-testid="store-item"
-                data-item={item.id}
-                data-owned={item.owned}
-                data-worn={worn}
-                className="grid content-start gap-2 rounded-xl border bg-white p-3"
-              >
-                {isSkin(item) ? (
-                  <SkinSwatch skin={item.skin} drawing={drawing} />
-                ) : (
-                  <img
-                    src={asset(item.art)}
-                    alt=""
-                    width={160}
-                    height={160}
-                    loading="lazy"
-                    decoding="async"
-                    className="aspect-square w-full rounded-lg bg-neutral-50 object-contain"
-                  />
-                )}
-                <p className="font-medium">{item.name[locale]}</p>
-                <p className="text-xs text-neutral-600">{t(`slot.${item.slot}`)}</p>
-                <p className="text-sm" data-testid="store-price">
-                  {item.free
-                    ? t("free")
-                    : item.owned
-                      ? t("owned")
-                      : t("price", { tokens: tokens.format(item.priceTokens!) })}
-                </p>
-                {!item.owned ? (
-                  <button
-                    data-testid="store-buy"
-                    className="rounded-lg bg-emerald-700 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-                    disabled={busy !== null}
-                    onClick={() => void buy(item)}
-                  >
-                    {t("buy")}
-                  </button>
-                ) : look && look !== "error" ? (
-                  <button
-                    data-testid={worn ? "store-unequip" : "store-equip"}
-                    className="rounded-lg border px-3 py-1.5 text-sm disabled:opacity-50"
-                    disabled={busy !== null}
-                    aria-pressed={worn}
-                    onClick={() => void equip(item, !worn)}
-                  >
-                    {worn ? t("unequip") : t("equip")}
-                  </button>
-                ) : null}
-                {isSkin(item) && look && look !== "error" && !worn ? (
-                  <button
-                    data-testid="store-try"
-                    className="rounded-lg border border-dashed px-3 py-1.5 text-sm"
-                    aria-pressed={trying === item.skin}
-                    onClick={() => setTrying((s) => (s === item.skin ? null : item.skin))}
-                  >
-                    {trying === item.skin ? t("stopTrying") : t("tryOn")}
-                  </button>
-                ) : null}
-                {n?.kind === "no_tokens" ? (
-                  <p role="status" data-testid="store-no-tokens" className="text-sm">
-                    {t("noTokens")}{" "}
-                    {n.chipHref === "/creditos" ? (
-                      <Link
-                        href="/creditos"
-                        className="inline-block rounded-full border px-2 py-0.5 text-xs text-emerald-800"
-                      >
-                        {t("whyChip")}
-                      </Link>
-                    ) : (
-                      <a
-                        href={n.chipHref}
-                        className="inline-block rounded-full border px-2 py-0.5 text-xs text-emerald-800"
-                      >
-                        {t("whyChip")}
-                      </a>
-                    )}
-                  </p>
-                ) : null}
-                {n?.kind === "retry" ? (
-                  <p role="alert" data-testid="store-retry" className="grid gap-1 text-sm text-red-800">
-                    {t("retryBuy")}
-                    <button
-                      className="w-fit rounded border border-red-800 px-2 py-0.5"
-                      disabled={busy !== null}
-                      onClick={() => void buy(item, true)}
-                    >
-                      {t("retry")}
-                    </button>
-                  </p>
-                ) : null}
-                {n?.kind === "failed" ? (
-                  <p role="alert" className="text-sm text-red-800">
-                    {t("failed")}
-                  </p>
-                ) : null}
-                {n?.kind === "equip_failed" ? (
-                  <p role="alert" data-testid="store-equip-error" className="text-sm text-red-800">
-                    {t(`equipError.${n.reason}`)}
-                  </p>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+        <div id="store-items" role="tabpanel" aria-labelledby={`store-tab-${tab}`} className="grid gap-6">
+          {groups.map((g) => (
+            <section
+              key={g.key}
+              data-testid="store-group"
+              data-group={g.key}
+              aria-labelledby={g.key === "skins" ? undefined : `store-group-${g.key}`}
+              className="grid gap-2"
+            >
+              {g.key === "skins" ? null : (
+                <h2 id={`store-group-${g.key}`} className="text-lg font-semibold">
+                  {t(`groups.${g.key}`)}
+                </h2>
+              )}
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">{g.items.map(renderItem)}</ul>
+            </section>
+          ))}
+        </div>
       ) : null}
       <p className="text-xs text-neutral-500">{t("lookOnly")}</p>
     </div>

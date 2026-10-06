@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import type { CardItem, CardSpec } from "@chalito/avatar-three";
-import { placeOnCard } from "@chalito/roster";
-import type { AccessorySlot } from "@chalito/protocol";
+import { anchorFor, placeOnCard, type CardAnchors } from "@chalito/roster";
 import { isSkinId } from "@chalito/avatar-three";
 import { isSceneSkin, type SceneCosmetic } from "./room-scene.js";
 import type { ActorAssets } from "./world.js";
@@ -13,7 +12,7 @@ interface CardJson {
   layers: { src: string }[];
   emotions?: { src: Record<string, string> };
   shadow?: CardSpec["shadow"];
-  anchors?: Partial<Record<AccessorySlot, { x: number; y: number; z: number }>>;
+  anchors?: CardAnchors;
 }
 
 export interface CardLoaders {
@@ -80,7 +79,7 @@ const loadDrawings = async (
   return Object.fromEntries(entries.map(([k], i) => [k, textures[i]!]));
 };
 
-/** Places the cosmetics (art from the asset base) on the card by its anchors. */
+/** Places the cosmetics (art from the asset base) on the card by its anchors (roster `placeItem`). */
 const finish = async (
   base: string,
   card: CardJson,
@@ -96,7 +95,9 @@ const finish = async (
       if (isSkinId(c.skin)) skin = c.skin;
       continue;
     }
-    const anchor = card.anchors?.[c.slot];
+    // A neck item lands on the card's neck (detected, or derived from face and body); a cape that
+    // hangs from the neck at the neck's height, behind the body.
+    const anchor = anchorFor(card.anchors, c.slot, c.card);
     if (!anchor || !/^cosmetics\/[a-z0-9_]+\.webp$/.test(c.art)) continue;
     const texture = await loadTexture(base + c.art);
     const img = texture.image as { width?: number; height?: number } | undefined;

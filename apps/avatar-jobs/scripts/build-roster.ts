@@ -30,10 +30,21 @@ const main = async () => {
       continue;
     }
     const drawings = emotions.map((emotion) => ({ emotion, bytes: readFileSync(join(raw, `${id}-${emotion}.png`)) }));
-    const { files } = await makeCard(drawings, { keyBackground: true });
+    const { files, manifest } = await makeCard(drawings, { keyBackground: true });
     const dir = join(ROSTER, "assets", id);
     mkdirSync(dir, { recursive: true });
-    for (const f of files) writeFileSync(join(dir, f.name), f.bytes);
+    // The neck is detected per character (detect-wear-anchors.ts), not derived: keep a detected one
+    // from the previous build, else leave it missing for that script to fill.
+    const prev = join(dir, "card.json");
+    const detected = existsSync(prev)
+      ? (JSON.parse(readFileSync(prev, "utf8")) as { anchors?: { neck?: unknown } }).anchors?.neck
+      : undefined;
+    const { neck: _derived, ...anchors } = manifest.anchors;
+    const card = { ...manifest, anchors: { ...anchors, ...(detected ? { neck: detected } : {}) } };
+    for (const f of files) {
+      const bytes = f.name === "card.json" ? Buffer.from(JSON.stringify(card, null, 2)) : f.bytes;
+      writeFileSync(join(dir, f.name), bytes);
+    }
     process.stdout.write(`${id}: ${files.length} files\n`);
     built++;
   }

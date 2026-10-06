@@ -973,11 +973,19 @@
     "slot": {
       "head": "Head",
       "face": "Face",
+      "neck": "Neck",
       "body": "Body",
       "back": "Back",
       "aura": "Aura",
       "portal_fx": "Portal",
       "skin": "Skin"
+    },
+    "groups": {
+      "neck": "Neck",
+      "head": "Head",
+      "face": "Face",
+      "back": "Back",
+      "effects": "Effects"
     },
     "free": "Free",
     "owned": "Yours",

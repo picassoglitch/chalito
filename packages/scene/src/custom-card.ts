@@ -48,7 +48,7 @@ export interface SignedManifest {
   height: number;
   emotions: { src: Record<string, string> };
   thumbs: Record<string, string>;
-  anchors?: Partial<Record<string, { x: number; y: number; z: number }>>;
+  anchors?: Partial<Record<string, { x: number; y: number; z: number; w?: number }>>;
   [k: string]: unknown;
 }
 
