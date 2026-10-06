@@ -2,7 +2,7 @@
 -- (HIGH + step-up only); screen.* in its own audit category, every earlier category kept.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(11);
+select plan(10);
 
 insert into chalito.tenants (id) values ('rs-user');
 insert into chalito.users (id, tenant_id) values ('rs-user', 'rs-user');
