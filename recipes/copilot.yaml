@@ -1,0 +1,29 @@
+v: 1
+id: copilot
+name: Microsoft Copilot
+vendor: Microsoft
+homepage: https://copilot.microsoft.com/
+termsUrl: https://www.microsoft.com/en-us/microsoft-copilot/for-individuals/termsofuse
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://copilot.microsoft.com/
+  planSignin: "on"
+driver:
+  web:
+    {
+      startUrl: https://copilot.microsoft.com/,
+      allowedOrigins: [https://copilot.microsoft.com, https://login.live.com, https://login.microsoftonline.com],
+    }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    [
+      "curl https://copilot.microsoft.com/ (200; page references https://login.live.com and https://login.microsoftonline.com)",
+      "https://www.microsoft.com/en-us/microsoft-copilot/for-individuals/termsofuse (200)",
+    ]
+  unverified:
+    - field: signin.url
+      note: "Sign-in is a button on copilot.microsoft.com that goes to login.live.com (MSA) or login.microsoftonline.com (Entra); no direct login URL confirmed."

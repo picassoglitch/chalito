@@ -1,0 +1,64 @@
+v: 1
+id: cursor
+name: Cursor
+vendor: Anysphere
+homepage: https://cursor.com/
+termsUrl: https://cursor.com/terms-of-service
+kinds: [desktop-app]
+platforms:
+  mac:
+    detect:
+      commands: [cursor]
+      paths: ["/Applications/Cursor.app"]
+      bundleIds: [com.todesktop.230313mzl4w4u92]
+      appUserModelIds: []
+    install:
+      via: brew
+      ref: cursor
+      cask: true
+    launch:
+      app: Cursor
+  windows:
+    detect:
+      commands: [cursor]
+      paths: ["%LOCALAPPDATA%\\Programs\\cursor\\Cursor.exe", "%PROGRAMFILES%\\cursor\\Cursor.exe"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: winget
+      ref: Anysphere.Cursor
+    launch:
+      command: [cursor]
+  linux:
+    detect:
+      commands: [cursor]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://cursor.com/download
+    launch:
+      command: [cursor]
+signin:
+  via: desktop-app
+  url: https://cursor.com/
+  planSignin: "on"
+driver:
+  desktopApp: { bundleId: com.todesktop.230313mzl4w4u92, exe: Cursor.exe }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "https://formulae.brew.sh/api/cask/cursor.json (3.23.23; Cursor.app; binary 'cursor' from Contents/Resources/app/bin/code; ids com.todesktop.230313mzl4w4u92)"
+    - "github.com/microsoft/winget-pkgs manifests/a/Anysphere/Cursor (latest 3.19.7, inno, user + machine scope)"
+    - "https://cursor.com/download (page lists Linux AppImage and .deb)"
+  unverified:
+    - field: platforms.windows.detect.paths
+      note: "Default inno install dirs not stated in manifest; paths are the usual user/system locations."
+    - field: platforms.mac.detect.bundleIds
+      note: "Taken from brew zap paths, not Info.plist."
+    - field: platforms.linux.detect
+      note: "AppImage has no fixed path; .deb install path and desktop file id not checked. 'cursor' shell command assumed present for .deb."
+    - field: platforms.windows.install
+      note: "winget Anysphere.Cursor latest manifest 3.19.7 vs cask 3.23.23 (winget lags)."

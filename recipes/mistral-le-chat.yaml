@@ -1,0 +1,28 @@
+v: 1
+id: mistral-le-chat
+name: Le Chat
+vendor: Mistral AI
+homepage: https://chat.mistral.ai/
+termsUrl: https://mistral.ai/terms
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://chat.mistral.ai/login
+  planSignin: "on"
+driver:
+  web: { startUrl: https://chat.mistral.ai/chat, allowedOrigins: [https://chat.mistral.ai, https://auth.mistral.ai] }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    [
+      "curl chat.mistral.ai (403 Cloudflare)",
+      "curl https://console.mistral.ai/ -> 302 https://auth.mistral.ai/self-service/login/browser",
+      "https://mistral.ai/terms (200)",
+    ]
+  unverified:
+    - field: signin.url
+      note: "chat.mistral.ai/login not observed (403 to curl)."
+    - field: driver.web.allowedOrigins
+      note: "auth.mistral.ai inferred from the Mistral console redirect (same account system); not observed for Le Chat itself. Google/Microsoft/Apple SSO would add their origins."

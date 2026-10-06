@@ -1,0 +1,69 @@
+v: 1
+id: goose
+name: goose
+vendor: Agentic AI Foundation (originally Block)
+homepage: https://goose-docs.ai/
+termsUrl: https://github.com/aaif-goose/goose/blob/main/LICENSE
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect:
+      commands: [goose]
+      paths: ["~/.local/bin/goose"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: brew
+      ref: block-goose-cli
+    launch:
+      command: [goose, session]
+  windows:
+    detect:
+      commands: [goose]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://goose-docs.ai/docs/getting-started/installation
+    launch:
+      command: [goose, session]
+  linux:
+    detect:
+      commands: [goose]
+      paths: ["~/.local/bin/goose"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://goose-docs.ai/docs/getting-started/installation
+    launch:
+      command: [goose, session]
+signin:
+  via: cli
+  # Inside its own terminal UI only: the agent never runs it headless.
+  interactive: true
+  command: [goose, configure]
+  planSignin: "on"
+driver:
+  acp: { command: [goose, acp], authMethods: [] }
+  terminal: { command: [goose, session] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - https://goose-docs.ai/docs/getting-started/installation
+    - https://goose-docs.ai/docs/guides/goose-cli-commands
+    - https://goose-docs.ai/docs/gdk/acp/
+    - "https://formulae.brew.sh/api/formula/block-goose-cli.json (formula block-goose-cli 1.53.0, homepage goose-docs.ai)"
+  unverified:
+    - field: signin
+      note: "goose has no vendor account; 'goose configure' is the official interactive provider/key setup (per CLI commands docs), not an OAuth sign-in. Some providers it configures may open a browser; not tested."
+    - field: driver.acp.authMethods
+      note: "goose binary not run (not on npm); ACP initialize authMethods not probed. 'goose acp' confirmed from docs only."
+    - field: platforms.mac.detect.paths
+      note: "~/.local/bin is the download_cli.sh default per common usage; script not inspected. Brew installs to the Homebrew prefix (found via PATH)."
+    - field: platforms.windows
+      note: "Windows CLI install is via download_cli.ps1 (PowerShell) or Git Bash script; install location not documented."
+    - field: vendor
+      note: "Docs footer says Copyright 2026 AAIF (Agentic AI Foundation); repo moved to github.com/aaif-goose/goose. Brew formula name still block-goose-cli. A desktop app also exists (brew cask block-goose, /Applications/Goose.app) but is not modelled here."

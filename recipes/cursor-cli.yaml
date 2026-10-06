@@ -1,0 +1,73 @@
+v: 1
+id: cursor-cli
+name: Cursor CLI
+vendor: Anysphere
+homepage: https://cursor.com/docs/cli/overview
+termsUrl: https://cursor.com/terms-of-service
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect:
+      commands: [cursor-agent]
+      paths: ["~/.local/bin/cursor-agent"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://cursor.com/docs/cli/installation
+    launch:
+      command: [cursor-agent]
+  windows:
+    detect:
+      commands: [cursor-agent]
+      paths: ["%LOCALAPPDATA%\\cursor-agent\\cursor-agent.exe"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://cursor.com/docs/cli/installation
+    launch:
+      command: [cursor-agent]
+  linux:
+    detect:
+      commands: [cursor-agent]
+      paths: ["~/.local/bin/cursor-agent"]
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: official-url
+      ref: https://cursor.com/docs/cli/installation
+    launch:
+      command: [cursor-agent]
+signin:
+  via: cli
+  command: [cursor-agent, login]
+  statusCommand: [cursor-agent, status]
+  logoutCommand: [cursor-agent, logout]
+  planSignin: "on"
+apiKey:
+  env: CURSOR_API_KEY
+  label: Cursor API key
+  docsUrl: https://cursor.com/docs/cli/reference/authentication
+driver:
+  acp: { command: [cursor-agent, acp], authMethods: [cursor_login] }
+  terminal: { command: [cursor-agent] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - https://cursor.com/docs/cli/installation
+    - https://cursor.com/docs/cli/reference/authentication
+    - https://cursor.com/docs/cli/reference/parameters
+    - https://cursor.com/docs/cli/acp
+    - "https://cursor.com/install (downloaded, not run; version 2026.10.01-e373342): symlinks ~/.local/bin/agent (primary) and ~/.local/bin/cursor-agent (legacy)"
+    - "https://cursor.com/install?win32=true (downloaded, not run): installs to %LOCALAPPDATA%\\cursor-agent, copies cursor-agent.exe to agent.exe"
+  unverified:
+    - field: signin.statusCommand
+      note: "'agent status' / 'whoami' documented as auth status; exit code when signed out not documented or tested."
+    - field: signin.openLinks
+      note: "Docs: login opens the default browser; NO_OPEN_BROWSER=1 makes it print the URL instead. Behaviour without a TTY not tested. Link hosts not observed (likely cursor.com)."
+    - field: launch.command
+      note: "Docs now name the binary 'agent'; the installer still creates 'cursor-agent' as a legacy alias. cursor-agent used as argv[0] because 'agent' is a generic name likely to collide with other tools. Binary itself not run (not on npm)."
+    - field: driver.acp
+      note: "'agent acp' and methodId cursor_login from cursor.com/docs/cli/acp; docs flag acp as advanced/hidden. Not probed."

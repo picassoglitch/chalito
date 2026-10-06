@@ -1,0 +1,23 @@
+v: 1
+id: chatgpt
+name: ChatGPT
+vendor: OpenAI
+homepage: https://chatgpt.com/
+termsUrl: https://openai.com/policies/terms-of-use/
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://chatgpt.com/auth/login
+  planSignin: "on"
+driver:
+  web: { startUrl: https://chatgpt.com/, allowedOrigins: [https://chatgpt.com, https://auth.openai.com] }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources: ["curl chatgpt.com/auth/login and auth.openai.com/log-in (both 403 Cloudflare to curl)"]
+  unverified:
+    - field: driver.web.allowedOrigins
+      note: "Cloudflare blocked curl, so the login redirect chain was not observed. auth.openai.com is the known ChatGPT auth origin. Social sign-in adds accounts.google.com, login.live.com / login.microsoftonline.com, appleid.apple.com if allowed."
+    - field: termsUrl
+      note: "openai.com returned 403 to curl; URL is the long-standing terms page."

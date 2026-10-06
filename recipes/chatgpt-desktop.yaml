@@ -1,0 +1,54 @@
+v: 1
+id: chatgpt-desktop
+name: ChatGPT (desktop)
+vendor: OpenAI
+homepage: https://chatgpt.com/
+termsUrl: https://openai.com/policies/terms-of-use/
+kinds: [desktop-app]
+platforms:
+  mac:
+    detect:
+      commands: []
+      paths: ["/Applications/ChatGPT.app", "/Applications/ChatGPT Classic.app"]
+      bundleIds: [com.openai.codex, com.openai.chat]
+      appUserModelIds: []
+    install:
+      via: brew
+      ref: chatgpt
+      cask: true
+    launch:
+      app: ChatGPT
+  windows:
+    detect:
+      commands: []
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: winget
+      ref: 9PLM9XGG6VKS
+      source: msstore
+signin:
+  via: desktop-app
+  url: https://chatgpt.com/
+  planSignin: "on"
+driver:
+  desktopApp: { bundleId: com.openai.codex, exe: ChatGPT.exe }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "https://formulae.brew.sh/api/cask/chatgpt.json (26.930.61225, 'OpenAI's official ChatGPT desktop app', ChatGPT.app, download persistent.oaistatic.com/codex-app-prod/..., zap ids com.openai.codex)"
+    - "https://formulae.brew.sh/api/cask/chatgpt-classic.json ('OpenAI's previous ChatGPT desktop app', 'ChatGPT Classic.app', ids com.openai.chat)"
+    - https://learn.chatgpt.com/docs/windows/windows-app
+    - "https://learn.chatgpt.com/docs/enterprise/windows-deployment (Store product 9PLM9XGG6VKS; winget install --id 9PLM9XGG6VKS -s msstore; Package Family Name OpenAI.Codex)"
+    - "https://apps.microsoft.com/detail/9nt1r1c2hh7j now titled 'ChatGPT Classic'"
+  unverified:
+    - field: platforms.mac.detect.bundleIds
+      note: "The current ChatGPT app is the former Codex app re-branded (brew cask artifacts reference com.openai.codex); the bundle id was inferred from brew zap paths, not read from Info.plist. com.openai.chat is the old app, now 'ChatGPT Classic'. The user-supplied com.openai.chat is therefore only the Classic app."
+    - field: platforms.windows.install
+      note: "Store id 9PLM9XGG6VKS via `winget install --id 9PLM9XGG6VKS -s msstore` (documented); not run. The old Store id 9NT1R1C2HH7J is now 'ChatGPT Classic'."
+    - field: platforms.windows.detect
+      note: "MSIX app; docs give Package Family Name 'OpenAI.Codex' (publisher-hash suffix not shown), AUMID not documented. Left empty; launch omitted for Windows."
+    - field: driver.desktopApp.exe
+      note: "Executable name of the new Windows MSIX not documented; ChatGPT.exe is a guess."

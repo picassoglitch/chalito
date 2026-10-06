@@ -16,7 +16,8 @@
     "format:check": "prettier --check .",
     "render-showcase": "tsx scripts/render-showcase.ts",
     "check-showcase": "tsx scripts/render-showcase.ts --check",
-    "scene-perf": "tsx scripts/scene-perf.ts"
+    "scene-perf": "tsx scripts/scene-perf.ts",
+    "recipes": "pnpm --filter @chalito/agent exec tsx scripts/recipes.ts"
   },
   "devDependencies": {
     "@chalito/avatar": "workspace:*",

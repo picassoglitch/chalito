@@ -1,0 +1,65 @@
+v: 1
+id: opencode
+name: OpenCode
+vendor: Anomaly (formerly SST)
+homepage: https://opencode.ai/
+termsUrl: https://opencode.ai/legal/terms-of-service
+kinds: [acp, terminal]
+platforms:
+  mac:
+    detect:
+      commands: [opencode]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: opencode-ai
+    launch:
+      command: [opencode]
+  windows:
+    detect:
+      commands: [opencode]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: opencode-ai
+    launch:
+      command: [opencode]
+  linux:
+    detect:
+      commands: [opencode]
+      paths: []
+      bundleIds: []
+      appUserModelIds: []
+    install:
+      via: npm
+      ref: opencode-ai
+    launch:
+      command: [opencode]
+signin:
+  via: cli
+  command: [opencode, auth, login]
+  logoutCommand: [opencode, auth, logout]
+  planSignin: "on"
+driver:
+  acp: { command: [opencode, acp], authMethods: [opencode-login] }
+  terminal: { command: [opencode] }
+capabilities: [sessions, terminal]
+verification:
+  checked: "2026-10-06"
+  sources:
+    - "npm view opencode-ai (version 1.18.34, maintainer thdxr)"
+    - "opencode --help (1.18.34): commands acp, providers [alias auth] with login/logout/list"
+    - "opencode acp initialize response (1.18.34): authMethods [{id: opencode-login, description: 'Run `opencode auth login` in the terminal'}]"
+    - https://opencode.ai/docs/providers/
+    - "https://formulae.brew.sh/api/formula/opencode.json (2.0.20, source github.com/anomalyco/opencode)"
+  unverified:
+    - field: signin.statusCommand
+      note: "Only 'opencode auth list' exists (lists credentials); no documented exit-code status check, so omitted."
+    - field: signin.command
+      note: "'opencode auth login [url]' is an interactive provider picker (many providers, some OAuth, some API key); not run."
+    - field: platforms.*.install
+      note: "npm 'opencode-ai' latest is 1.18.34 while Homebrew core formula 'opencode' is 2.0.20 (built from github.com/anomalyco/opencode). npm may be lagging a major version or the 2.x line ships elsewhere; worth re-checking which channel is current. The npm package has no repository field; publisher thdxr (Dax Raad, opencode maintainer)."

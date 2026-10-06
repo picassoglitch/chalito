@@ -1,0 +1,30 @@
+v: 1
+id: gemini-web
+name: Gemini
+vendor: Google
+homepage: https://gemini.google.com/
+termsUrl: https://policies.google.com/terms
+kinds: [web-app]
+platforms: {}
+signin:
+  via: web
+  url: https://accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app
+  planSignin: "on"
+driver:
+  web:
+    {
+      startUrl: https://gemini.google.com/app,
+      allowedOrigins: [https://gemini.google.com, https://accounts.google.com],
+    }
+capabilities: [remote-view, ai-control]
+verification:
+  checked: "2026-10-06"
+  sources:
+    [
+      "curl https://gemini.google.com/app (200)",
+      "curl accounts.google.com/ServiceLogin?continue=https://gemini.google.com/app -> 302 accounts.google.com/v3/signin/identifier",
+      "https://policies.google.com/terms (200)",
+    ]
+  unverified:
+    - field: termsUrl
+      note: "Google-wide terms used; Gemini Apps also has a Gemini Apps Privacy Hub / additional terms not checked."
