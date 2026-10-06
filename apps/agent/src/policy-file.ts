@@ -52,7 +52,7 @@ export interface FilePolicyOptions {
 export const DENY_ALL_POLICY: Policy = {
   ...DEFAULT_POLICY,
   workspaces: [],
-  adapters: { claudeCode: false, codex: false },
+  adapters: { claudeCode: false, codex: false, grok: false, gemini: false },
   origins: { local: false, client: false, mcp: false, call: false },
 };
 

@@ -67,8 +67,10 @@ export const USAGE = `chalito <command>
   devmode reset                        archive a broken Developer-mode log and start over (OS auth)
   claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   codex pin [path]                     trust this Codex binary (path + sha256); after updates too
+  grok pin [path]                      trust this Grok Build binary (path + sha256); after updates too
+  gemini pin [path]                    trust this Gemini CLI binary (path + sha256); after updates too
   policy show|path|edit                show, locate or edit ~/.chalito/policy.yaml
-  keys set anthropic|openai|xai        save a BYO API key in the OS keychain
+  keys set anthropic|openai|xai|google save a BYO API key in the OS keychain
   service install|uninstall [--bin p] [--passphrase-file f]
                                        register the agent as a per-user OS service; on Linux,
                                        --passphrase-file loads the secrets passphrase as a systemd
@@ -86,7 +88,15 @@ const KEY_NAMES = {
   anthropic: SECRET_NAMES.anthropicApiKey,
   openai: SECRET_NAMES.openaiApiKey,
   xai: SECRET_NAMES.xaiApiKey,
+  google: SECRET_NAMES.googleApiKey,
 } as const;
+
+/** Coding-agent CLIs run over ACP; pinned like `claude` and `codex`. */
+const ACP_TOOLS = {
+  grok: { title: "Grok Build", install: "https://docs.x.ai/build/overview" },
+  gemini: { title: "Gemini CLI", install: "https://github.com/google-gemini/gemini-cli" },
+} as const;
+type PinnedTool = "claude" | "codex" | keyof typeof ACP_TOOLS;
 
 const T = {
   es: {
@@ -109,6 +119,12 @@ const T = {
     codexPinNeedsPair: "Primero empareja esta computadora (`chalito pair`); luego `chalito codex pin`.\n",
     codexNotFound:
       "No encontré `codex`. Instálalo (https://developers.openai.com/codex/cli) o pasa su ruta: chalito codex pin <ruta>\n",
+    acpPinned: (tool: keyof typeof ACP_TOOLS, p: string, h: string) =>
+      `${ACP_TOOLS[tool].title} fijado: ${p}\n  sha256 ${h}\n`,
+    acpPinNeedsPair: (tool: keyof typeof ACP_TOOLS) =>
+      `Primero empareja esta computadora (\`chalito pair\`); luego \`chalito ${tool} pin\`.\n`,
+    acpNotFound: (tool: keyof typeof ACP_TOOLS) =>
+      `No encontré \`${tool}\`. Instálalo (${ACP_TOOLS[tool].install}) o pasa su ruta: chalito ${tool} pin <ruta>\n`,
     passphrase: "Frase de contraseña del archivo de secretos: ",
     enabled: (t: string) => `Activado: ${t}. Verás "Modo desarrollador ACTIVO" en todas tus apps.\n`,
     authFailed: "La autenticación del sistema falló. No cambió nada.\n",
@@ -152,6 +168,12 @@ const T = {
     codexPinNeedsPair: "Pair this computer first (`chalito pair`), then run `chalito codex pin`.\n",
     codexNotFound:
       "`codex` wasn't found. Install it (https://developers.openai.com/codex/cli) or pass its path: chalito codex pin <path>\n",
+    acpPinned: (tool: keyof typeof ACP_TOOLS, p: string, h: string) =>
+      `${ACP_TOOLS[tool].title} pinned: ${p}\n  sha256 ${h}\n`,
+    acpPinNeedsPair: (tool: keyof typeof ACP_TOOLS) =>
+      `Pair this computer first (\`chalito pair\`), then run \`chalito ${tool} pin\`.\n`,
+    acpNotFound: (tool: keyof typeof ACP_TOOLS) =>
+      `\`${tool}\` wasn't found. Install it (${ACP_TOOLS[tool].install}) or pass its path: chalito ${tool} pin <path>\n`,
     passphrase: "Secrets file passphrase: ",
     enabled: (t: string) => `On: ${t}. Every app will show "Developer mode ACTIVE".\n`,
     authFailed: "OS authentication failed. Nothing changed.\n",
@@ -181,6 +203,7 @@ const KEY_SHAPE: Record<keyof typeof KEY_NAMES, RegExp> = {
   anthropic: /^sk-ant-/,
   openai: /^sk-/,
   xai: /^xai-/,
+  google: /^AIza/,
 };
 
 export interface ParsedArgs {
@@ -277,7 +300,8 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   // at a real terminal, and never runs from inside an agent session (CHALITO_SESSION is set
   // by the adapters). Neither check alone is enough: `script -qc` supplies a pty.
   const mutating =
-    ["pair", "keys", "service", "devmode", "claude", "codex"].includes(cmd) || (cmd === "policy" && sub === "edit");
+    ["pair", "keys", "service", "devmode", "claude", "codex", "grok", "gemini"].includes(cmd) ||
+    (cmd === "policy" && sub === "edit");
   if (mutating) {
     if (io.env.CHALITO_SESSION !== undefined) {
       io.err(t.inSession);
@@ -378,24 +402,26 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
         await secrets.set(KEY_NAMES[provider], value);
         io.out(t.keySaved(provider));
         // Setup time: pin the coding agent now if this computer is paired and nothing is pinned yet.
-        const tool = provider === "anthropic" ? "claude" : provider === "openai" ? "codex" : null;
-        if (tool && cfg && isPaired(cfg) && !cfg[tool]) {
+        const tool = ({ anthropic: "claude", openai: "codex", xai: "grok", google: "gemini" } as const)[provider];
+        if (cfg && isPaired(cfg) && !cfg[tool]) {
           const found = which(tool, io.env, io.platform);
           if (found) await toolPin(io, dir, locale, tool, found);
-          else io.err(tool === "claude" ? t.claudeNotFound : t.codexNotFound);
+          else io.err(notFound(t, tool));
         }
         return 0;
       }
 
       case "claude":
-      case "codex": {
+      case "codex":
+      case "grok":
+      case "gemini": {
         if (sub !== "pin") {
           io.err(USAGE);
           return 1;
         }
         const found = arg ?? which(cmd, io.env, io.platform);
         if (!found) {
-          io.err(cmd === "claude" ? t.claudeNotFound : t.codexNotFound);
+          io.err(notFound(t, cmd));
           return 1;
         }
         return await toolPin(io, dir, locale, cmd, found);
@@ -414,16 +440,20 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   }
 };
 
+const notFound = (t: (typeof T)[keyof typeof T], tool: PinnedTool) =>
+  tool === "claude" ? t.claudeNotFound : tool === "codex" ? t.codexNotFound : t.acpNotFound(tool);
+
 /** Resolves and hashes `found`, then rewrites the signed config with the pin. */
 const toolPin = async (
   io: CliIo,
   dir: string,
   locale: "es" | "en",
-  tool: "claude" | "codex",
+  tool: PinnedTool,
   found: string,
 ): Promise<number> => {
   const t = T[locale];
-  const needsPair = tool === "claude" ? t.pinNeedsPair : t.codexPinNeedsPair;
+  const needsPair =
+    tool === "claude" ? t.pinNeedsPair : tool === "codex" ? t.codexPinNeedsPair : t.acpPinNeedsPair(tool);
   const id = await loadOrCreateIdentity(io.secrets!);
   let cfg: AgentConfig;
   try {
@@ -438,7 +468,13 @@ const toolPin = async (
   }
   const pin = await pinClaude(found);
   writeConfig(dir, { ...cfg, [tool]: pin }, id.sign);
-  io.out((tool === "claude" ? t.pinned : t.codexPinned)(pin.path, pin.sha256));
+  io.out(
+    tool === "claude"
+      ? t.pinned(pin.path, pin.sha256)
+      : tool === "codex"
+        ? t.codexPinned(pin.path, pin.sha256)
+        : t.acpPinned(tool, pin.path, pin.sha256),
+  );
   return 0;
 };
 
@@ -513,6 +549,13 @@ const status = async (io: CliIo, secrets: SecretStore, dir: string, cfg: AgentCo
       ? `${cfg.codex.path} (pinned, sha256 ${cfg.codex.sha256.slice(0, 12)}…)`
       : "not pinned — `chalito codex pin` (optional)",
   );
+  for (const [tool, { title }] of Object.entries(ACP_TOOLS) as [keyof typeof ACP_TOOLS, { title: string }][]) {
+    const p = cfg?.[tool];
+    row(
+      title,
+      p ? `${p.path} (pinned, sha256 ${p.sha256.slice(0, 12)}…)` : `not pinned — \`chalito ${tool} pin\` (optional)`,
+    );
+  }
   let svc = "unknown";
   try {
     const f = servicePlan(io.platform, "chalito-agent", { home: io.home }).files[0]!.path;
