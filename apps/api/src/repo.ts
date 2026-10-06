@@ -115,10 +115,16 @@ export interface ApiRepo {
       /** The claimer's passkey binding, passed on to the agent for its reverse check. */
       claimerWebauthnBinding?: unknown;
       claimedAt: number;
+      /**
+       * The plan's computer cap for the owner's tier (users.tier). Checked in the same transaction,
+       * under the owner's row lock, against the owner's active agents. Omitted = no cap.
+       */
+      agentLimitFor?: (tier: string | null) => number;
     },
     build: (code: PairingCodeDoc) => Promise<DeviceDoc>,
   ): Promise<
-    { ok: true; agentDeviceId: string } | { ok: false; reason: "not_found" | "already_claimed" | "device_exists" }
+    | { ok: true; agentDeviceId: string }
+    | { ok: false; reason: "not_found" | "already_claimed" | "device_exists" | "device_limit"; limit?: number }
   >;
 
   // ---- endorsement handoff (/v1/endorse) ----
