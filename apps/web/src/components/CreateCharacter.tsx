@@ -3,9 +3,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import {
+  attestationOk,
   checkPhoto,
   isActive,
   newCreationId,
+  type AgeBand,
+  type Attestation,
   type Creation,
   type CreationFailure,
   type PhotoType,
@@ -23,15 +26,42 @@ type Phase =
   | { kind: "done"; creation: Creation; used: boolean }
   | { kind: "failed"; failure: CreationFailure | "expired" | "upload"; charged: false };
 
-type Note = "noTokens" | "busy" | "dailyLimit" | "retry" | "badType" | "badSize" | "useError" | "noCompanion";
+type Note =
+  | "noTokens"
+  | "busy"
+  | "dailyLimit"
+  | "retry"
+  | "badType"
+  | "badSize"
+  | "useError"
+  | "noCompanion"
+  | "ageRefused"
+  | "guardianRequired"
+  | "attestationRequired";
+
+const AGE_BANDS: readonly AgeBand[] = ["18_plus", "13_17", "under_13"];
+
+export interface OnboardingHooks {
+  /** Creates (or saves) the companion with the roster avatar picked so far; false if that failed. */
+  ensureCompanion: () => Promise<boolean>;
+  /** A creation started: onboarding keeps its avatar choice from now on. */
+  onStarted?: () => void;
+}
 
 /**
  * "Crea tu personaje": a photo of the person becomes their own companion in the Chalito style, with
  * the same five drawings as every roster character (/v1/avatar). Shown under the companion picker.
  * The first one is free; later ones show their price in tokens. A tap makes one creationId and
  * reuses it on retry, so a retry never charges twice. Failures are never charged.
+ *
+ * Before any upload the person confirms the photo is of themselves and their age (13+, and at
+ * 13–17 a parent's or guardian's permission); under 13 can't create. The api checks it again.
+ *
+ * In onboarding (`onboarding`), the companion is saved first with the roster avatar picked so far,
+ * and the creation is started with useWhenReady: the server puts the card on the companion the
+ * moment it succeeds, so the person can carry on with the next steps while it's drawn.
  */
-export const CreateCharacter = () => {
+export const CreateCharacter = ({ onboarding }: { onboarding?: OnboardingHooks } = {}) => {
   const t = useTranslations("createCharacter");
   const locale = useLocale();
   const { avatar } = useChalito();
@@ -41,6 +71,7 @@ export const CreateCharacter = () => {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [note, setNote] = useState<{ kind: Note; chipHref?: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attest, setAttest] = useState<Attestation>({ ownPhoto: false, ageBand: null, guardianConsent: false });
   const pending = useRef<string | null>(null);
 
   const load = useCallback(async () => {
@@ -71,8 +102,14 @@ export const CreateCharacter = () => {
       if (!alive) return;
       if (c !== "error" && !isActive(c.status)) {
         pending.current = null;
-        if (c.status === "succeeded") setPhase({ kind: "done", creation: c, used: false });
-        else setPhase({ kind: "failed", failure: c.failure ?? "expired", charged: false });
+        if (c.status === "succeeded") {
+          setPhase({ kind: "done", creation: c, used: false });
+          // Onboarding asked the server to put it on already; saying so again is harmless.
+          if (onboarding)
+            void avatar
+              .use(c.creationId)
+              .then((r) => r === "ok" && setPhase({ kind: "done", creation: c, used: true }));
+        } else setPhase({ kind: "failed", failure: c.failure ?? "expired", charged: false });
         void load();
         return;
       }
@@ -84,7 +121,7 @@ export const CreateCharacter = () => {
       alive = false;
       clearTimeout(timer);
     };
-  }, [avatar, working, load]);
+  }, [avatar, working, load, onboarding]);
 
   if (!avatar || !quote) return null;
 
@@ -100,20 +137,30 @@ export const CreateCharacter = () => {
   };
 
   const create = async () => {
-    if (!photo) return;
+    if (!photo || !attestationOk(attest)) return;
     setBusy(true);
     setNote(null);
+    if (onboarding && !(await onboarding.ensureCompanion())) {
+      setBusy(false);
+      return setNote({ kind: "retry" });
+    }
     pending.current ??= newCreationId();
-    const r = await avatar.start(pending.current, photo.type as PhotoType);
+    const r = await avatar.start(pending.current, photo.type as PhotoType, attest, {
+      useWhenReady: onboarding !== undefined,
+    });
     if (!r.ok) {
       setBusy(false);
       if (r.reason === "retry") return setNote({ kind: "retry" });
       pending.current = null;
+      if (r.reason === "age_refused") return setNote({ kind: "ageRefused" });
+      if (r.reason === "guardian_required") return setNote({ kind: "guardianRequired" });
+      if (r.reason === "attestation_required") return setNote({ kind: "attestationRequired" });
       if (r.reason === "no_tokens") return setNote({ kind: "noTokens", chipHref: r.chipHref });
       if (r.reason === "busy") return setNote({ kind: "busy" });
       if (r.reason === "daily_limit") return setNote({ kind: "dailyLimit" });
       return setNote({ kind: "retry" });
     }
+    onboarding?.onStarted?.();
     setPhase({ kind: "uploading" });
     const sent = await avatar.upload(r.upload, photo);
     if (!sent) {
@@ -137,6 +184,7 @@ export const CreateCharacter = () => {
   };
 
   const tokens = new Intl.NumberFormat(locale);
+  const under13 = attest.ageBand === "under_13";
   const card = phase.kind === "done" ? phase.creation.card : undefined;
   return (
     <section
@@ -146,14 +194,16 @@ export const CreateCharacter = () => {
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h3 id="create-character-title" className="font-semibold">
-          {t("title")}
+          {onboarding && quote.free ? t("onboardingTitle") : t("title")}
         </h3>
-        <span
-          data-testid="create-character-price"
-          className="rounded-full bg-emerald-50 px-2 py-0.5 text-sm text-emerald-900"
-        >
-          {quote.free ? t("free") : t("price", { tokens: tokens.format(quote.priceTokens) })}
-        </span>
+        {onboarding && quote.free ? null : (
+          <span
+            data-testid="create-character-price"
+            className="rounded-full bg-emerald-50 px-2 py-0.5 text-sm text-emerald-900"
+          >
+            {quote.free ? t("free") : t("price", { tokens: tokens.format(quote.priceTokens) })}
+          </span>
+        )}
       </div>
       <p className="text-sm text-neutral-700">{t("intro")}</p>
 
@@ -169,6 +219,48 @@ export const CreateCharacter = () => {
               {t(`failure.${phase.failure}`)} {t("notCharged")}
             </p>
           ) : null}
+          <fieldset className="grid gap-2 rounded-lg bg-neutral-50 p-3 text-sm" data-testid="create-character-consent">
+            <legend className="font-medium">{t("consent.title")}</legend>
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={attest.ownPhoto}
+                data-testid="create-character-own-photo"
+                onChange={(e) => setAttest({ ...attest, ownPhoto: e.currentTarget.checked })}
+              />
+              <span>{t("consent.ownPhoto")}</span>
+            </label>
+            <p className="font-medium">{t("consent.age")}</p>
+            {AGE_BANDS.map((b) => (
+              <label key={b} className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  name="create-character-age"
+                  value={b}
+                  checked={attest.ageBand === b}
+                  data-testid={`create-character-age-${b}`}
+                  onChange={() => setAttest({ ...attest, ageBand: b, guardianConsent: false })}
+                />
+                <span>{t(`consent.band.${b}`)}</span>
+              </label>
+            ))}
+            {attest.ageBand === "13_17" ? (
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={attest.guardianConsent}
+                  data-testid="create-character-guardian"
+                  onChange={(e) => setAttest({ ...attest, guardianConsent: e.currentTarget.checked })}
+                />
+                <span>{t("consent.guardian")}</span>
+              </label>
+            ) : null}
+            {under13 ? (
+              <p role="alert" className="text-amber-900" data-testid="create-character-under13">
+                {t("consent.under13")}
+              </p>
+            ) : null}
+          </fieldset>
           <label className="w-fit cursor-pointer rounded-lg border px-3 py-1.5 text-sm">
             {t("choose")}
             <input
@@ -189,7 +281,7 @@ export const CreateCharacter = () => {
           ) : null}
           <button
             className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white disabled:opacity-50"
-            disabled={!photo || busy}
+            disabled={!photo || busy || !attestationOk(attest)}
             data-testid="create-character-go"
             onClick={() => void create()}
           >
@@ -206,6 +298,11 @@ export const CreateCharacter = () => {
             : t(
                 `status.${phase.creation.status === "queued" || phase.creation.status === "awaiting_upload" ? "queued" : "generating"}`,
               )}
+        </p>
+      ) : null}
+      {onboarding && phase.kind === "working" ? (
+        <p className="text-sm text-neutral-700" data-testid="create-character-carry-on">
+          {t("onboardingWorking")}
         </p>
       ) : null}
 

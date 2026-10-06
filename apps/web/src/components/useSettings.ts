@@ -81,9 +81,28 @@ export const useSettings = () => {
     await store.markOnboarded();
   };
 
+  /**
+   * Saves the companion now (creating it if needed) with the values so far, skipping the debounce:
+   * onboarding needs it to exist before a photo creation can be put on it. False if it failed or
+   * there's no server (settings on this device only).
+   */
+  const saveCompanionNow = async (): Promise<boolean> => {
+    const cur = latest.current;
+    if (!store || !cur) return false;
+    if (companionTimer.current) clearTimeout(companionTimer.current);
+    try {
+      await store.saveCompanion(cur);
+      return true;
+    } catch {
+      setError("failed");
+      return false;
+    }
+  };
+
   return {
     values,
     set,
+    saveCompanionNow,
     error,
     onboarded,
     finishOnboarding,

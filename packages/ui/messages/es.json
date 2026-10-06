@@ -100,7 +100,7 @@
     },
     "companion": {
       "title": "Elige a tu compañero",
-      "body": "Puedes cambiarlo cuando quieras. Pronto podrás subir tu propia imagen o modelo."
+      "body": "Puedes cambiarlo cuando quieras. También puedes crear uno con tu foto."
     },
     "name": {
       "title": "Ponle nombre",
@@ -1043,7 +1043,7 @@
     "intro": "Sube una foto tuya y la convertimos en tu propio compañero, dibujado con el estilo de Chalito y con sus cinco caras.",
     "free": "Gratis la primera vez",
     "price": "{tokens} tokens",
-    "privacy": "Tu foto solo se usa como referencia para dibujarte con IA, y la borramos en cuanto tu personaje está listo. Usa una foto tuya, solo tú, de frente y con buena luz.",
+    "privacy": "Tu foto se envía a Google (Gemini) solo para dibujarte, y la borramos en cuanto termina, salga bien o no. Usa una foto tuya, solo tú, de frente y con buena luz.",
     "choose": "Elegir foto",
     "previewAlt": "La foto que elegiste",
     "create": "Crear mi personaje",
@@ -1081,6 +1081,23 @@
       "sad": "Triste",
       "surprised": "Sorprendido",
       "tired": "Cansado"
-    }
+    },
+    "onboardingTitle": "Crea tu personaje con tu foto (gratis la primera vez)",
+    "onboardingWorking": "Puedes seguir con los siguientes pasos: tu personaje se pondrá solo en cuanto esté listo.",
+    "consent": {
+      "title": "Antes de empezar",
+      "ownPhoto": "La foto es mía: soy yo quien aparece en ella.",
+      "age": "¿Cuántos años tienes?",
+      "band": {
+        "18_plus": "18 años o más",
+        "13_17": "Entre 13 y 17 años",
+        "under_13": "Menos de 13 años"
+      },
+      "guardian": "Tengo permiso de mi mamá, papá o tutor",
+      "under13": "Para crear un personaje con tu foto necesitas tener al menos 13 años. Puedes elegir cualquier compañero de la lista."
+    },
+    "ageRefused": "Para crear un personaje con tu foto necesitas tener al menos 13 años.",
+    "guardianRequired": "Necesitas el permiso de tu mamá, papá o tutor.",
+    "attestationRequired": "Confirma que la foto es tuya y dinos tu edad."
   }
 }

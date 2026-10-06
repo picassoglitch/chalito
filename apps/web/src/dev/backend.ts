@@ -1310,7 +1310,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
   // ---- /v1/avatar (apps/api src/avatar/routes.ts), simulated: the first creation is free, the job
   // "finishes" two polls after the upload, and the card is Chalito's roster drawings.
   const AVATAR_PRICE = 217_750;
-  const creations = new Map<string, Creation & { polls: number; uploaded: boolean }>();
+  const creations = new Map<string, Creation & { polls: number; uploaded: boolean; useWhenReady?: boolean }>();
   const devCard = () => {
     const dir = "/roster/assets/chalito/";
     const emotions = Object.fromEntries(
@@ -1323,8 +1323,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     return { emotions, thumbs, urls };
   };
   const freeLeft = () => ![...creations.values()].some((c) => c.free && c.status !== "failed");
-  const view = (c: Creation & { polls: number; uploaded: boolean }): Creation => {
-    const { polls: _p, uploaded: _u, ...rest } = c;
+  const view = (c: Creation & { polls: number; uploaded: boolean; useWhenReady?: boolean }): Creation => {
+    const { polls: _p, uploaded: _u, useWhenReady: _w, ...rest } = c;
     return rest;
   };
   const avatarApi: AvatarApi = {
@@ -1334,8 +1334,13 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       );
       return { free: freeLeft(), priceTokens: AVATAR_PRICE, dailyLeft: 5, active: active ? view(active) : null };
     },
-    start: async (creationId) => {
-      db.clientWrites.push({ table: "api", op: "avatar/creations", row: { creationId } });
+    start: async (creationId, _type, attestation, opts = {}) => {
+      // The api's self-attestation rules (apps/api src/avatar/routes.ts).
+      if (!attestation.ownPhoto || !attestation.ageBand) return { ok: false, reason: "attestation_required" };
+      if (attestation.ageBand === "under_13") return { ok: false, reason: "age_refused" };
+      if (attestation.ageBand === "13_17" && !attestation.guardianConsent)
+        return { ok: false, reason: "guardian_required" };
+      db.clientWrites.push({ table: "api", op: "avatar/creations", row: { creationId, ...opts } });
       const prior = creations.get(creationId);
       if (prior) return { ok: true, creation: view(prior), upload: { url: "dev://upload", headers: {} } };
       const free = freeLeft();
@@ -1347,6 +1352,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
         priceTokens: free ? 0 : AVATAR_PRICE,
         polls: 0,
         uploaded: false,
+        useWhenReady: opts.useWhenReady === true,
       };
       creations.set(creationId, c);
       return { ok: true, creation: view(c), upload: { url: "dev://upload", headers: {} } };
@@ -1367,6 +1373,8 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
         if (c.status === "succeeded") {
           c.card = devCard();
           if (!c.free) balance -= AVATAR_PRICE;
+          // The migration's trigger: an onboarding creation is worn as soon as it succeeds.
+          if (c.useWhenReady) db.clientWrites.push({ table: "api", op: "avatar/use", row: { creationId } });
         }
       }
       return view(c);

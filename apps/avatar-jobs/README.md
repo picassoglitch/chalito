@@ -32,6 +32,10 @@ With `GEMINI_API_KEY` and `DATABASE_URL` set, an upload is a **creation** starte
 
 **The photo is deleted in every outcome** (every version: the bucket is versioned). The bucket's `uploads/` lifecycle rule (1 day) is the safety net for a crash.
 
+**Consent and the free creation** are the api's (`apps/api/src/avatar/routes.ts`, migration `20261005000200`): a creation is started only with the person's self-attestation (own photo; 18+, or 13–17 with a parent's or guardian's permission), recorded on the row. The free creation is once per person: a free success leaves keyed-hash markers (`chalito_private.avatar_free_markers`, written by a trigger on the success) that account deletion keeps. A creation started in onboarding (`use_when_ready`) is put on the companion by the same trigger.
+
+**`GEMINI_API_KEY` must be a paid-tier key** (billing-enabled AI Studio project), so photos aren't used for training: `docs/OPS.md` §5, `docs/RUNBOOK.md` 1.3.
+
 **Failures are never billed:** a safety block or a refusal (`refused`), provider errors after 3 attempts (`provider`), a rejected file (`rejected`), or a missing upload. A failed free attempt doesn't use up the free credit. The api settles the hub reservation (`cancelled` for failures).
 
 Tests mock the model and the bucket (`test/creation.test.ts`); nothing calls Gemini.

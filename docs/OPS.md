@@ -73,7 +73,8 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 - `RECORDS_BUCKET`;
 - `API_PUBLIC_URL`;
 - `SCHEDULER_SA_EMAIL`;
-- `TRUSTED_PROXIES`: 0 behind Cloud Run's front end, 1 behind an external load balancer.
+- `TRUSTED_PROXIES`: 0 behind Cloud Run's front end, 1 behind an external load balancer;
+- `AVATAR_FREE_MARKER_KEY` (secret, recommended, ≥ 32 random characters, e.g. `openssl rand -hex 32`): keys the free-custom-companion markers (migration `20261005000200`, `apps/api/src/avatar/free-marker.ts`). Without it the api derives a key from `CHALITO_SSO_SECRET`. **Set it once and don't rotate it:** a new key forgets who already used their free creation (each person could get one more).
 
 **Cloud Scheduler:** schedule `POST <api>/tasks/account-deletions` hourly, with OIDC as `SCHEDULER_SA_EMAIL`.
 
@@ -106,7 +107,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 | `BRAIN_KEYS_KMS_KEY` | orchestrator | KMS key resource name (§3); not a secret value |
 | `OWNER_UIDS` | api, notifier, orchestrator | The owner's hub user ids (comped) |
 | `REALTIME_SIP_URI` | notifier (optional) | `sip:<proj>@sip.api.openai.com;transport=tls;secure=true` |
-| `GEMINI_API_KEY` | `avatar-jobs`: the roster scripts (local) and, deployed as Secret Manager `chalito-gemini-api-key`, custom companions from a photo | Google AI Studio (`~/.config/secrets/ai.env` on the owner's machine); a paid-tier key, so photos aren't used for training |
+| `GEMINI_API_KEY` | `avatar-jobs`: the roster scripts (local) and, deployed as Secret Manager `chalito-gemini-api-key`, custom companions from a photo | Google AI Studio (`~/.config/secrets/ai.env` on the owner's machine). **Must be a key from a paid-tier AI Studio project (Cloud Billing enabled on it).** Under the Gemini API terms, content sent through unpaid (free-tier) keys may be used to improve Google's products; paid-tier content isn't. User photos go through this key, and the privacy text promises they aren't used for training, so a free-tier key here breaks that promise. Check in AI Studio → API keys that the key's project shows a paid tier before deploying, and again after any key rotation. |
 | Release secrets (Apple, Azure, Tauri updater) | GitHub Actions only | §10 (M14) |
 
 ## 6. Meta / WhatsApp

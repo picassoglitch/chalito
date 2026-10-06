@@ -61,6 +61,7 @@ A checklist **for counsel**: what Chalito says, collects and promises, and where
 | 5.1 | **Avatar upload terms**: the uploader owns the rights or has a licence; no third-party characters, trademarks or NSFW | needs lawyer | Uploads are validated and re-encoded by `apps/avatar-jobs` (no metadata kept), stored privately under the owner's prefix, and visible only to room co-members (THREAT_MODEL "IP infringement"). The upload UI is **not yet built**. |
 | 5.2 | **Takedown** (DMCA-style notice and counter-notice; MX equivalents) | needs lawyer | A report button is **not yet built** (`docs/RUNBOOK.md` 6.5). Operator removal: delete `avatars/<owner>/<asset>/` in the bucket. |
 | 5.3 | Room content: end-to-end encrypted, so Chalito can't moderate content, only metadata | needs lawyer | Say so in the ToS and privacy notice. |
+| 5.4 | **Custom companion from a photo** ("Crea tu personaje"): photo sent to Google (Gemini API, paid tier, not used for training) only to draw; photo deleted right after (success or failure; storage safety net 1 day); the drawing kept as the companion until deleted with the account; self-attested age gate (13+, guardian permission at 13–17, no birth date); the free-creation marker (keyed hash of hub id and email) kept after account deletion; the paid price basis (provider cost of 5 images + hub margin, in tokens, failures never charged) | draft | Proposed privacy and terms additions, ES (primary) and EN: `packages/config/legal/drafts/custom-companion.{es,en}.md`, marked "DRAFT — PENDIENTE REVISIÓN LEGAL" and **not loaded by the app**. Enforcement: `apps/api/src/avatar/routes.ts` (attestation required and recorded, migration `20261005000200`), `apps/web/src/components/CreateCharacter.tsx`. **Counsel:** (a) Chalyb's hub privacy notice says the hub isn't directed to under-18s, which conflicts with allowing 13–17; (b) whether self-attestation is enough for minors; (c) whether a face photo is biometric/sensitive data needing express written consent; (d) Google's paid-tier abuse-monitoring retention vs. "deleted immediately"; (e) the basis and any time limit for keeping the marker after deletion; (f) there is no "delete my character" button yet, only account deletion. |
 
 ## 6. Money (hub)
 
@@ -89,4 +90,5 @@ A checklist **for counsel**: what Chalito says, collects and promises, and where
 - [ ] 3.4 automated-call disclosure confirmed
 - [ ] 4.1–4.3 provider approvals (WhatsApp template, Twilio/10DLC, OpenAI SIWC)
 - [ ] 5.1–5.2 upload terms and a takedown channel
+- [ ] 5.4 custom-companion texts reviewed and merged into `privacy.*.md` / `terms.*.md` (and the hub's minors clause reconciled)
 - [ ] 7.2–7.3 AI asset rights confirmed
