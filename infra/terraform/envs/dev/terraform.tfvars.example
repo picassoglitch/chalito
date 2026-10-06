@@ -35,3 +35,8 @@ vapid_public_key = "" # npx web-push generate-vapid-keys (public half; GO_LIVE 5
 
 # --- Optional: OpenAI Realtime SIP for calls (GO_LIVE 5.2) ---
 realtime_sip_uri = "" # sip:<proj>@sip.api.openai.com;transport=tls;secure=true
+
+# --- Optional: Chalito inside the hub (screens at https://www.chalyb.com/app/chalito) ---
+web_origin   = "" # https://www.chalyb.com
+app_url      = "" # https://www.chalyb.com/app/chalito
+mcp_resource = "" # the mcp-gateway's URL + /mcp when it has no mcp.<domain> host

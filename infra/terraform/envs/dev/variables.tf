@@ -84,3 +84,21 @@ variable "realtime_sip_uri" {
   type        = string
   default     = ""
 }
+
+variable "web_origin" {
+  description = "Origin of Chalito's screens (CORS, Web Push subject). Empty: https://<domain>. Inside the hub: https://www.chalyb.com."
+  type        = string
+  default     = ""
+}
+
+variable "app_url" {
+  description = "Base URL for links to Chalito's screens (notifications). Empty: https://<domain>. Inside the hub: https://www.chalyb.com/app/chalito."
+  type        = string
+  default     = ""
+}
+
+variable "mcp_resource" {
+  description = "The MCP gateway's resource URL. Empty: https://mcp.<domain>/mcp."
+  type        = string
+  default     = ""
+}
