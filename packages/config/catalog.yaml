@@ -1,6 +1,7 @@
 # Cosmetics (pay-to-dress, never pay-to-win: nothing here can change what a companion can do).
 # Prices only here, in billable hub tokens, paid from the hub balance (D-030). The paid prices are
-# placeholders for the owner to confirm (decision #16). Art lives in @chalito/roster (cosmetics/),
+# placeholders for the owner to confirm (decision #16), on the owner's scale: a single clothing item
+# ≈ 200 tokens, a full outfit ≈ 5,000 tokens. Art lives in @chalito/roster (cosmetics/),
 # generated with Google AI Studio and logged in docs/ASSET_PROVENANCE.md.
 #
 # card: placement on a 2.5D image card (width as a fraction of the card; pivot is the point of the
@@ -35,7 +36,7 @@ cosmetics:
     name: { es: Capa de estrellas, en: Star cape }
     slot: back
     free: false
-    priceTokens: 250000
+    priceTokens: 1000 # placeholder, owner to confirm
     art: cosmetics/star_cape.webp
     card: { width: 0.72, pivot: [0.5, 0.12] }
     vrm: { offset: [0, -0.05, -0.08] }
@@ -44,7 +45,7 @@ cosmetics:
     name: { es: Aura brillante, en: Sparkle aura }
     slot: aura
     free: false
-    priceTokens: 150000
+    priceTokens: 1000 # placeholder, owner to confirm
     art: cosmetics/sparkle_aura.webp
     card: { width: 1.1, pivot: [0.5, 0.5] }
     vrm: { offset: [0, 0, 0] }
@@ -53,9 +54,55 @@ cosmetics:
     name: { es: Portal giratorio, en: Swirl portal }
     slot: portal_fx
     free: false
-    priceTokens: 400000
+    priceTokens: 2000 # placeholder, owner to confirm
     art: cosmetics/portal_swirl.webp
     card: { width: 1.0, pivot: [0.5, 0.5] }
     vrm: { offset: [0, 0.01, 0] }
     provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Skins: a material effect over the whole companion (gold, galaxy…), drawn by the card renderer's
+  # shader (@chalito/avatar-three setSkin), so one skin fits every roster character with no new art.
+  # One skin at a time (the `skin` slot). Skins are the top cosmetic tier, priced above a full outfit
+  # (≈ 5,000). Every priceTokens below is a placeholder, owner to confirm.
+  skin_gold:
+    name: { es: Dorado, en: Gold }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: gold
+  skin_galaxy:
+    name: { es: Galaxia, en: Galaxy }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: galaxy
+  skin_neon:
+    name: { es: Neón, en: Neon }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: neon
+  skin_crystal:
+    name: { es: Cristal, en: Crystal }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: crystal
+  skin_holo:
+    name: { es: Holográfico, en: Holographic }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: holo
+  skin_shadow:
+    name: { es: Sombra, en: Shadow }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: shadow
+  skin_pixel:
+    name: { es: Píxel, en: Pixel }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: pixel
 drops: {}

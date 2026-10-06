@@ -1,8 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type * as THREE from "three";
+import * as THREE from "three";
 import { describe, expect, it } from "vitest";
-import { RoomScene, RoomWorld, RENDER_DEFAULTS, choreograph, type SceneEvent } from "../src/index.js";
+import { RoomScene, RoomWorld, RENDER_DEFAULTS, choreograph, loadCardAssets, type SceneEvent } from "../src/index.js";
 import { CARD, fakeCanvas, fakeRenderer, fakeTexture, sceneOpts } from "./fakes.js";
 
 const A = "chl_aaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -151,6 +151,52 @@ describe("RoomScene", () => {
     await scene.ready();
     expect(urls).toContain("/roster/cosmetics/flower_crown.webp");
     expect(urls).toContain("/roster/assets/luna/h.webp");
+  });
+
+  it("a skin travels with the member: loaded from the catalog entry, drawn over the card, animated", async () => {
+    const assets = await loadCardAssets(
+      "/roster/",
+      "luna",
+      [
+        { slot: "skin", skin: "galaxy" },
+        { slot: "head", art: "cosmetics/flower_crown.webp", card: { width: 0.44, pivot: [0.5, 0.62] } },
+      ],
+      { fetchJson: async () => CARD, loadTexture: async (u) => fakeTexture(u) },
+    );
+    expect(assets.skin).toBe("galaxy");
+    expect(assets.items).toHaveLength(1); // the skin is no item: nothing to load or place
+    const bad = await loadCardAssets("/roster/", "luna", [{ slot: "skin", skin: "lava" as never }], {
+      fetchJson: async () => CARD,
+      loadTexture: async (u) => fakeTexture(u),
+    });
+    expect(bad.skin).toBeNull();
+
+    const w = new RoomWorld(RENDER_DEFAULTS.levels.medio);
+    w.addActor(B, assets);
+    const body = w.scene.getObjectByName(`actor:${B}`)!.getObjectByName("body") as THREE.Mesh;
+    const mat = body.material as THREE.ShaderMaterial;
+    expect(mat).toBeInstanceOf(THREE.ShaderMaterial);
+    w.update(choreograph("room_fam1", members, [enterB], T0 + 3000), T0 + 3000);
+    expect(mat.uniforms.uTime!.value).toBeCloseTo(((T0 + 3000) / 1000) % 3600, 3);
+    // Emotion swaps keep it.
+    w.update(choreograph("room_fam1", members, [enterB], T0 + 9000), T0 + 9000);
+    expect(body.material).toBe(mat);
+  });
+
+  it("changing only the skin reloads the member's card", async () => {
+    const loads: string[] = [];
+    const scene = new RoomScene(sceneOpts({ fetchJson: async (u) => (loads.push(u), CARD) }));
+    const luna = (skin: "gold" | "neon") => [
+      { companionId: B, avatar: "luna", cosmetics: [{ slot: "skin" as const, skin }] },
+    ];
+    scene.setMembers(luna("gold"));
+    await scene.ready();
+    scene.setMembers(luna("gold"));
+    await scene.ready();
+    expect(loads).toHaveLength(1);
+    scene.setMembers(luna("neon"));
+    await scene.ready();
+    expect(loads).toHaveLength(2);
   });
 
   it("the speech bubble shows over the speaker only", () => {

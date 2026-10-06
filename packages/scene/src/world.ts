@@ -6,6 +6,7 @@ import {
   type CardAvatar,
   type CardItem,
   type CardSpec,
+  type SkinId,
 } from "@chalito/avatar-three";
 import { EMOTION_DRAWING } from "@chalito/roster";
 import type { EmotionTag } from "@chalito/protocol";
@@ -18,6 +19,8 @@ export interface ActorAssets {
   spec: CardSpec;
   drawings: Record<string, THREE.Texture>;
   items: CardItem[];
+  /** The skin worn over the card, if any. */
+  skin?: SkinId | null;
 }
 
 interface Actor {
@@ -113,6 +116,7 @@ export class RoomWorld {
   addActor(id: string, assets: ActorAssets): void {
     this.removeActor(id);
     const card = createCardAvatar(assets.spec, assets.drawings, assets.items, CARD_HEIGHT);
+    card.setSkin(assets.skin ?? null);
     const holder = new THREE.Group();
     holder.name = `actor:${id}`;
     holder.visible = false;
@@ -191,6 +195,7 @@ export class RoomWorld {
     // The bubble stays readable when the card flips.
     a.bubble.scale.x = s.facing;
 
+    a.card.tick(t / 1000);
     a.origin ??= t;
     const local = (at: number) => Math.max(0, at - a.origin!);
     if (a.emotion !== s.emotion) {

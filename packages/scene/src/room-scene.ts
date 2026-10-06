@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { FrameLoop, browserHost, type LoopHost } from "@chalito/avatar-three";
 import type { CardPlacement } from "@chalito/roster";
-import type { CosmeticSlot } from "@chalito/protocol";
+import type { AccessorySlot, SkinEffect } from "@chalito/protocol";
 import { choreograph, type SceneEvent, type SceneMember, type SceneState } from "./choreography.js";
 import {
   RENDER_DEFAULTS,
@@ -14,13 +14,27 @@ import {
 import { loadCardAssets } from "./card-assets.js";
 import { RoomWorld } from "./world.js";
 
-/** A cosmetic a member wears (from the store catalog): its art path in @chalito/roster and placement. */
-export interface SceneCosmetic {
-  slot: CosmeticSlot;
+/** A drawn item a member wears (from the store catalog): its art path in @chalito/roster and placement. */
+export interface SceneAccessory {
+  slot: AccessorySlot;
   /** "cosmetics/<id>.webp" */
   art: string;
   card: CardPlacement;
 }
+
+/** A skin a member wears: a material effect over the card (no art). */
+export interface SceneSkin {
+  slot: "skin";
+  skin: SkinEffect;
+}
+
+/** What a member wears, as the store catalog describes it. */
+export type SceneCosmetic = SceneAccessory | SceneSkin;
+
+export const isSceneSkin = (c: SceneCosmetic): c is SceneSkin => c.slot === "skin";
+
+/** A stable key for what's worn (a change reloads the card). */
+export const cosmeticKey = (c: SceneCosmetic): string => `${c.slot}:${isSceneSkin(c) ? c.skin : c.art}`;
 
 export interface RoomSceneMember extends SceneMember {
   cosmetics?: readonly SceneCosmetic[];
@@ -261,7 +275,7 @@ export class RoomScene {
   }
 
   #load(m: RoomSceneMember): Promise<void> {
-    const key = `${m.avatar}|${(m.cosmetics ?? []).map((c) => c.art).join(",")}`;
+    const key = `${m.avatar}|${(m.cosmetics ?? []).map(cosmeticKey).join(",")}`;
     if (this.#loadedKey.get(m.companionId) === key) return this.#loading.get(m.companionId) ?? Promise.resolve();
     this.#loadedKey.set(m.companionId, key);
     const p = loadCardAssets(this.#opts.assetBase, m.avatar, m.cosmetics ?? [], {

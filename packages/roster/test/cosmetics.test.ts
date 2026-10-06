@@ -6,6 +6,10 @@ import { ROSTER_IDS, VRM_BONE, placeOnCard, type CardAnchor } from "../src/index
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const catalog = loadCatalog();
+/** The drawn items (skins are a shader effect: no art, no placement). */
+const accessories = Object.entries(catalog.cosmetics).flatMap(([id, c]) =>
+  c.slot === "skin" ? [] : [[id, c] as const],
+);
 const card = (id: string) =>
   JSON.parse(readFileSync(`${root}assets/${id}/card.json`, "utf8")) as {
     width: number;
@@ -15,14 +19,14 @@ const card = (id: string) =>
 
 describe("cosmetics on image cards", () => {
   it("every catalog item has its art in the roster package", () => {
-    for (const [id, c] of Object.entries(catalog.cosmetics)) {
+    for (const [id, c] of accessories) {
       expect(c.art).toBe(`cosmetics/${id}.webp`);
       expect(existsSync(`${root}${c.art}`)).toBe(true);
     }
   });
 
   it("a hat's brim lands on every preset's head anchor, centred, drawn in front", () => {
-    const hat = catalog.cosmetics.viking_hat!;
+    const hat = accessories.find(([id]) => id === "viking_hat")![1];
     for (const id of ROSTER_IDS) {
       const c = card(id);
       const a = c.anchors.head!;
@@ -39,7 +43,7 @@ describe("cosmetics on image cards", () => {
 
   it("back, aura and portal items go behind the body; face items in front", () => {
     const c = card("bruno");
-    for (const [, item] of Object.entries(catalog.cosmetics)) {
+    for (const [, item] of accessories) {
       const z = placeOnCard(c.anchors[item.slot]!, item.card, 1, c.height / c.width).z;
       if (["back", "aura", "portal_fx"].includes(item.slot)) expect(z).toBeLessThan(0);
       else expect(z).toBeGreaterThanOrEqual(0);
@@ -52,6 +56,7 @@ describe("cosmetics on VRMs (M7's renderer)", () => {
     expect(VRM_BONE.head).toBe("head");
     expect(VRM_BONE.face).toBe("head");
     expect(VRM_BONE.portal_fx).toBeNull();
+    expect(VRM_BONE.skin).toBeNull();
     for (const item of Object.values(catalog.cosmetics)) expect(item.slot in VRM_BONE).toBe(true);
   });
 });

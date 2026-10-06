@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import type { CardItem, CardSpec } from "@chalito/avatar-three";
 import { placeOnCard } from "@chalito/roster";
-import type { CosmeticSlot } from "@chalito/protocol";
-import type { SceneCosmetic } from "./room-scene.js";
+import type { AccessorySlot } from "@chalito/protocol";
+import { isSkinId } from "@chalito/avatar-three";
+import { isSceneSkin, type SceneCosmetic } from "./room-scene.js";
 import type { ActorAssets } from "./world.js";
 
 interface CardJson {
@@ -11,7 +12,7 @@ interface CardJson {
   layers: { src: string }[];
   emotions?: { src: Record<string, string> };
   shadow?: CardSpec["shadow"];
-  anchors?: Partial<Record<CosmeticSlot, { x: number; y: number; z: number }>>;
+  anchors?: Partial<Record<AccessorySlot, { x: number; y: number; z: number }>>;
 }
 
 export interface CardLoaders {
@@ -41,7 +42,13 @@ export const loadCardAssets = async (
   const textures = await Promise.all(entries.map(([, src]) => loadTexture(dir + src)));
   const drawings: Record<string, THREE.Texture> = Object.fromEntries(entries.map(([k], i) => [k, textures[i]!]));
   const items: CardItem[] = [];
+  let skin: ActorAssets["skin"] = null;
   for (const c of cosmetics) {
+    if (isSceneSkin(c)) {
+      // One skin per card (the slot holds one); an unknown effect draws the plain card.
+      if (isSkinId(c.skin)) skin = c.skin;
+      continue;
+    }
     const anchor = card.anchors?.[c.slot];
     if (!anchor || !/^cosmetics\/[a-z0-9_]+\.webp$/.test(c.art)) continue;
     const texture = await loadTexture(base + c.art);
@@ -49,5 +56,5 @@ export const loadCardAssets = async (
     const aspect = img?.width && img.height ? img.height / img.width : 1;
     items.push({ placed: placeOnCard(anchor, c.card, aspect, card.height / card.width), texture });
   }
-  return { spec: { width: card.width, height: card.height, shadow: card.shadow }, drawings, items };
+  return { spec: { width: card.width, height: card.height, shadow: card.shadow }, drawings, items, skin };
 };

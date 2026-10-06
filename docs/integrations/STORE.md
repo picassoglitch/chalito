@@ -8,7 +8,7 @@ The store page is `apps/web/src/app/[locale]/tienda/page.tsx` (`/tienda`, `/en/t
 
 | Route | Body | Answer |
 |---|---|---|
-| `GET /v1/store/catalog` | none | `{ items: [{ id, name: {es, en}, slot, free, priceTokens?, art, card: {width, pivot}, owned }] }` |
+| `GET /v1/store/catalog` | none | `{ items: [{ id, name: {es, en}, slot, free, priceTokens?, art, card: {width, pivot}, owned }] }`; a skin has `slot: "skin"` and `skin: <effect>` instead of `art` and `card` |
 | `POST /v1/store/purchase` | `{ cosmeticId, purchaseId }` | `200 { status: "owned", cosmeticId, charged, replay? }` |
 | `POST /v1/store/equip` | `{ companionId, slot, cosmeticId \| null }` | `200 { ok: true, slot, cosmeticId }` |
 
@@ -28,6 +28,8 @@ The store page is `apps/web/src/app/[locale]/tienda/page.tsx` (`/tienda`, `/en/t
 - `assets/<roster id>/card.json` plus the layers for companions;
 - `placeOnCard(card.anchors[slot], item.card, itemAspect, cardAspect)` for where an item goes (negative `z` is behind the body);
 - `VRM_BONE` maps slots to M7's VRM renderer.
+
+**Skins:** `slot: "skin"` items are a material effect over the whole companion (`gold`, `galaxy`, `neon`, `crystal`, `holo`, `shadow`, `pixel`), drawn by the card renderer's shader (`@chalito/avatar-three` `card.setSkin(effect)`, animated by `card.tick(seconds)`), so one skin fits every roster character with no new art. One slot, so one skin at a time; equipping another replaces it. The equipped skin's id travels like any equipped id (`companions.equipped.skin`, `companion_directory.equipped`), and room peers and the desktop pet map it to its effect through the catalog. The web store previews skins with `@chalito/scene` `CardPreview` (the same renderer) and a CSS swatch per tile. Clients skip effects they don't know (an older build against a newer catalog).
 
 **Cosmetics never change what a companion can do.** A property test drives these routes and asserts entitlements, the model profile and safety are unchanged (`apps/api/test/pay-to-win.test.ts`).
 

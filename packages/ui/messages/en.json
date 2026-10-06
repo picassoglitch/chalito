@@ -955,6 +955,12 @@
     "error": "We couldn't load the store.",
     "retry": "Try again",
     "previewLabel": "{name} wearing their items",
+    "tabsLabel": "Store sections",
+    "tabs": {
+      "accessories": "Accessories",
+      "skins": "Skins"
+    },
+    "skinsIntro": "An effect over your whole companion, whoever it is. One at a time.",
     "noCompanion": "You don't have a companion yet.",
     "chooseCompanion": "Choose one",
     "slot": {
@@ -963,7 +969,8 @@
       "body": "Body",
       "back": "Back",
       "aura": "Aura",
-      "portal_fx": "Portal"
+      "portal_fx": "Portal",
+      "skin": "Skin"
     },
     "free": "Free",
     "owned": "Yours",
@@ -971,6 +978,8 @@
     "buy": "Buy",
     "equip": "Wear",
     "unequip": "Take off",
+    "tryOn": "Try on",
+    "stopTrying": "Stop trying",
     "noTokens": "You don't have enough tokens.",
     "whyChip": "Why?",
     "retryBuy": "The purchase didn't go through. Retrying never charges twice.",
