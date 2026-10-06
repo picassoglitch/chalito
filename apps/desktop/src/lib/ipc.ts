@@ -102,6 +102,38 @@ export interface ComputerPermissions {
   wayland: boolean;
 }
 
+/** Remote terminal as the agent reports it (apps/agent/src/terminal/control.ts `status`). */
+export interface TerminalStatus {
+  enabled: boolean;
+  rawShell: boolean;
+  active: { sid: string; label: string; since: number }[];
+  pending: { sid: string; label: string }[];
+}
+
+/** What the agent asks before turning remote terminal / the raw shell on (terminal/toggle.ts). */
+export interface TerminalCopy {
+  examples: string[];
+  risk: string;
+  phrase: string;
+  /** The raw shell's fourth step. */
+  warning?: string;
+}
+
+export interface TerminalChallenge {
+  terminal: TerminalCopy;
+  rawShell: TerminalCopy;
+}
+
+export interface TerminalAnswers {
+  first: boolean;
+  second: boolean;
+  typed: string;
+  final?: boolean;
+}
+
+export type TerminalEnableResult =
+  { ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" | "already_on" | "terminal_off" | "unavailable" };
+
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
@@ -140,6 +172,16 @@ export interface AgentIpc {
   /** Native, not the agent: macOS Screen Recording / Accessibility, Wayland on Linux. */
   computerPermissions(): Promise<ComputerPermissions>;
   openComputerSettings(pane: "screenRecording" | "accessibility"): Promise<void>;
+  /**
+   * Remote terminal. Enabling asks the OS in the agent and re-checks the answers; the raw shell
+   * has its own, stronger confirmation. Open terminals stop with the computer-control kill switch.
+   */
+  terminalStatus(): Promise<TerminalStatus>;
+  terminalChallenge(): Promise<TerminalChallenge>;
+  enableRemoteTerminal(answers: TerminalAnswers): Promise<TerminalEnableResult>;
+  enableRawShell(answers: TerminalAnswers): Promise<TerminalEnableResult>;
+  disableRemoteTerminal(): Promise<void>;
+  disableRawShell(): Promise<void>;
 }
 
 export class IpcUnavailableError extends Error {
@@ -175,6 +217,12 @@ export const unavailableIpc: AgentIpc = {
   stopComputer: unavailable,
   computerPermissions: unavailable,
   openComputerSettings: unavailable,
+  terminalStatus: unavailable,
+  terminalChallenge: unavailable,
+  enableRemoteTerminal: unavailable,
+  enableRawShell: unavailable,
+  disableRemoteTerminal: unavailable,
+  disableRawShell: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -220,6 +268,12 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     stopComputer: () => invoke("computer_stop", {}),
     computerPermissions: () => invoke("computer_permissions", {}),
     openComputerSettings: (pane) => invoke("computer_open_settings", { pane }),
+    terminalStatus: () => call("terminalStatus"),
+    terminalChallenge: () => call("terminalChallenge"),
+    enableRemoteTerminal: (answers) => call("enableRemoteTerminal", { answers }),
+    enableRawShell: (answers) => call("enableRawShell", { answers }),
+    disableRemoteTerminal: async () => void (await call("disableRemoteTerminal")),
+    disableRawShell: async () => void (await call("disableRawShell")),
   };
 };
 

@@ -81,6 +81,21 @@
       "missing": "missing",
       "openSettings": "Open Settings"
     },
+    "terminal": {
+      "title": "Remote terminal",
+      "intro": "Lets you open an AI's terminal app (aider, opencode…) on this computer and use it from your trusted browser. Every terminal asks for your passkey approval.",
+      "active": "Open terminals: {labels}",
+      "hotkey": "Close them with Ctrl+Alt+Esc or “Stop control” in Chalito's tray icon.",
+      "step1": "Turn on remote terminal? An approved terminal could:",
+      "step2": "Confirm again:",
+      "step3": "Type “{phrase}” to continue.",
+      "confirm": "Turn on (asks for your password)",
+      "failed": "Not turned on: {reason}",
+      "shell": {
+        "title": "Full shell",
+        "step1": "Turn on the remote full shell? An approved shell could:"
+      }
+    },
     "notices": {
       "title": "Security notices",
       "missingStepUp": "“{computer}” refused a new device: the device that approved it didn't use its passkey. Approve it again from your phone with your passkey.",
