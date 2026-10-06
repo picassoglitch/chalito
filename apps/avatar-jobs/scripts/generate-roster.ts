@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { CATALOG } from "./catalog.js";
 
 export const MODEL = "gemini-3.1-flash-image";
-const MAX_CALLS = 40;
+const MAX_CALLS = 1200;
 
 export const STYLE =
   "Cute, friendly chibi character art for an app companion: soft cel shading, clean thick dark-brown outline, warm pastel palette, " +
