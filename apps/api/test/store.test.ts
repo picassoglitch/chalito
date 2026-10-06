@@ -188,7 +188,7 @@ describe("neck pieces (one per slot, next to everything else)", () => {
     for (const [slot, id] of Object.entries(wear)) expect((await equip(slot, id)).status).toBe(200);
     expect(store.companions.get(`hub-user-1/${CID}`)).toEqual(wear);
     // Every slot but `body` (nothing is sold for it yet): eight slots, the directory's limit
-    // (migration 20261006000100).
+    // (migration 20261006080000).
     expect(CosmeticSlot.options.filter((s) => !(s in wear))).toEqual(["body"]);
     expect(CosmeticSlot.options).toHaveLength(8);
     expect((await equip("neck", "bow_tie_red")).status).toBe(200);
