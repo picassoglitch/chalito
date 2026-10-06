@@ -98,8 +98,12 @@ const priced = <T extends { free: boolean; priceTokens?: number }>(s: z.ZodType<
     .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens")
     .refine((c) => !(c.free && c.priceTokens !== undefined), "free cosmetics have no price");
 
-/** The item's own pivot, in its image (0..1): a hat's brim, a bow tie's knot, a cape's collar. */
-const Pivot = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]);
+/**
+ * The item's own pivot, in its image (0..1): a hat's brim, a bow tie's knot, a cape's collar. The
+ * vertical pivot may leave the image (-1..2) to hang an item off its anchor, e.g. a mustache a little
+ * below the face anchor, which sits at eye level.
+ */
+const Pivot = z.tuple([z.number().min(0).max(1), z.number().min(-1).max(2)]);
 /**
  * On a 2.5D card, sized by the card (@chalito/roster CardWidthPlacement): width as a fraction of the
  * card's width. A back item may hang from the neck (`anchorY: neck`: a cape's collar at the neck's
