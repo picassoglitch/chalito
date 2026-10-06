@@ -46,14 +46,14 @@ export interface ApiRepo {
     c: { targetDeviceId: string; id: string; env: unknown; fromDeviceId: string; expiresAt: number },
   ): Promise<boolean>;
   /**
-   * Atomic: only while the account has no active (unrevoked) client, creates the first
-   * client and stores the recovery hash.
+   * Atomic: only while the account has no active (unrevoked) device of any role, creates the
+   * first client and stores the recovery hash. An active agent alone gives `agent_exists`.
    */
   enrollFirstClient(
     owner: string,
     doc: DeviceDoc,
     recovery: StoredRecovery,
-  ): Promise<"ok" | "client_exists" | "device_exists">;
+  ): Promise<"ok" | "client_exists" | "agent_exists" | "device_exists">;
   saveEndorsement(owner: string, newDeviceId: string, endorsement: unknown, at: number): Promise<void>;
 
   // ---- recovery ----

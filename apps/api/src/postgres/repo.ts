@@ -154,9 +154,11 @@ export class PostgresRepo implements ApiRepo {
     return this.sql.begin(async (tx) => {
       // Serialises enrolments per account: concurrent callers queue on the user row.
       await lockUser(tx, owner);
-      const [active] = await tx`
-        select 1 from chalito.devices where owner = ${owner} and role = 'client' and revoked = false limit 1`;
-      if (active) return "client_exists" as const;
+      // Any active device blocks it: a paired desktop means the account goes through recovery instead.
+      const [active] = await tx<{ role: string }[]>`
+        select role from chalito.devices where owner = ${owner} and revoked = false
+        order by (role = 'client') desc limit 1`;
+      if (active) return active.role === "client" ? ("client_exists" as const) : ("agent_exists" as const);
       if (await deviceIdTaken(tx, doc.deviceId)) return "device_exists" as const;
       await insertDevice(tx, owner, doc, this.#authUser("device", doc.deviceId), false);
       await upsertRecovery(tx, owner, recovery);
