@@ -10,7 +10,24 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000;
  * device (apps/agent/src/computer). Only offered once the person enabled computer control
  * locally on that device; always HIGH with a passkey step-up, once per session.
  */
-export const ApprovalKind = z.enum(["tool", "decision", "computer_control"]);
+/**
+ * Engine contract (2026-10-06): every remote session kind gets its own per-session approval,
+ * always HIGH with a passkey step-up, only once the person enabled it locally:
+ * - `terminal`: a remote terminal session (remote-terminal).
+ * - `remote_view`: a trusted browser sees this device's screen (screen.ts, view mode).
+ * - `remote_control`: a trusted browser sees it and sends mouse/keyboard input (control mode).
+ * - `app_control`: an AI session launches and drives one app or AI website (computer MCP
+ *   `launch_app` / `open_web_app`); it also grants that session computer control.
+ */
+export const ApprovalKind = z.enum([
+  "tool",
+  "decision",
+  "computer_control",
+  "terminal",
+  "remote_view",
+  "remote_control",
+  "app_control",
+]);
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 export const ApprovalStatus = z.enum(["pending", "approved", "denied", "expired", "rejected_invalid"]);
 

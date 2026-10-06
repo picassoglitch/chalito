@@ -14,6 +14,7 @@ import {
 import { ResolutionReason } from "./approval.js";
 import { DevModeToggle } from "./command.js";
 import { SealedEnvelope } from "./crypto.js";
+import { ScreenEndReason, ScreenMode, ScreenState } from "./screen.js";
 
 export const SessionState = z.enum([
   "starting",
@@ -114,6 +115,21 @@ export const AgentEvent = z.discriminatedUnion("type", [
     tokCached: z.number().int().nonnegative().default(0),
   }),
   z.object({ ...base, type: z.literal("card.updated"), cardVersion: z.number().int().nonnegative() }),
+  // ---- SCREEN (screen.ts): a screen session's own stream ------------------------------------
+  /** Where the screen session is; metadata only. `reason` once it ended. */
+  z.object({
+    ...base,
+    type: z.literal("screen.state"),
+    state: ScreenState,
+    mode: ScreenMode,
+    reason: ScreenEndReason.optional(),
+  }),
+  /**
+   * The agent's WebRTC signaling: `ct` opens (for the requesting client only) to a
+   * `SignedScreenSignal` the browser verifies against the agent's signing key.
+   */
+  z.object({ ...base, type: z.literal("screen.signal"), ct: SealedEnvelope }),
+  // ---- end SCREEN ---------------------------------------------------------------------------
   z.object({
     ...base,
     type: z.literal("error"),
@@ -162,6 +178,25 @@ export const CommandRejectReason = z.enum([
   "provider_busy",
   /** provider.*: the key couldn't be stored, the CLI is missing, or its sign-in/install failed. */
   "provider_failed",
+  // ---- SCREEN (screen.ts) ----
+  /** Remote view (or control, for a control session) isn't turned on on that computer. */
+  "screen_disabled",
+  /** screen.open must come from a person's trusted browser (`client:`). */
+  "screen_needs_client",
+  /** The Chalito desktop app isn't open there (it shows the indicator and holds the kill switch). */
+  "no_desktop",
+  /** That computer can't capture its screen (Linux Wayland, missing native layer). */
+  "screen_unsupported",
+  "screen_unavailable",
+  /** Too many screen sessions at once on that computer. */
+  "screen_busy",
+  "rate_limited",
+  "bad_display",
+  "unknown_app",
+  "bad_signal",
+  "not_ready",
+  "duplicate_answer",
+  // ---- end SCREEN ----
   "internal",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
@@ -262,6 +297,20 @@ export const DeviceEvent = z.discriminatedUnion("type", [
     type: z.literal("computer.changed"),
     deviceId: DeviceId,
     enabled: z.boolean(),
+    activeSessions: z.number().int().min(0).max(1000),
+    by: z.string().max(32).optional(),
+    t: EpochMs,
+  }),
+  /**
+   * Remote screen's state on this device, for display only: what the person enabled locally
+   * (view, control) and how many screen sessions are live. `by` names what ended them.
+   */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("screen.changed"),
+    deviceId: DeviceId,
+    view: z.boolean(),
+    control: z.boolean(),
     activeSessions: z.number().int().min(0).max(1000),
     by: z.string().max(32).optional(),
     t: EpochMs,

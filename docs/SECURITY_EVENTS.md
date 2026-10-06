@@ -29,7 +29,7 @@ The catalogue of security-relevant events behind the owner-readable audit views.
 | `devices` | `device.*`, `pairing.*`, `recovery.*`, `webauthn.*`, `trust.*`, `command.rejected` |
 | `approvals` | `approval.*` |
 | `devmode` | `devmode.*`, `policy.*`, `remote_enable.rejected` |
-| `computer` | `computer.*` (migration `20261005000100_chalito_computer_control.sql`) |
+| `computer` | `computer.*` (migration `20261005000100_chalito_computer_control.sql`), `screen.*` (migration `20261006000600_chalito_remote_screen.sql`) |
 | `connectors` | `mcp.*`, `oauth.*`, `connector.*` |
 | `store` | `store.*` |
 | `channels` | `phone.*`, `channel.*` |
@@ -106,6 +106,16 @@ Written by the agent into `chalito.audit`. `actor` is the device id. Meta is red
 | `computer.granted`, `computer.denied` | computer | `agent` | `apps/agent/src/computer/control.ts` | `{sid, reason, by?}` |
 | `computer.action` | computer | `agent` | `apps/agent/src/computer/control.ts` (every tool call, allowed or refused) | `{sid, tool, ok, reason?}` plus `display, x, y, fromX…toY, button, dx, dy, keys, id, ms, textLength` when given. Never the screenshot, the typed text or window titles. A rate-limit refusal is recorded once a minute per session. |
 | `computer.killed` | computer | `agent` | `apps/agent/src/computer/control.ts` (hotkey, tray, indicator, panel, policy, agent stop) | `{by, sessions}` |
+| `computer.app_requested` | computer | `agent` | `apps/agent/src/computer/control.ts` (`launch_app` / `open_web_app` asks the `app_control` approval for one app) | `{sid, adapter, appId, firstTool}` |
+| `computer.app_granted`, `computer.app_denied` | computer | `agent` | `apps/agent/src/computer/control.ts` | `{sid, appId, reason, by?}`. `computer.action` rows for the app tools carry `appId` and `urlOrigin` (never the path or query) |
+| `screen.changed` | computer | `deviceEvent` | `apps/agent/src/daemon.ts` (remote view/control turned on/off, a screen session started or ended) | `{deviceId, view, control, activeSessions, by?, t}` |
+| `screen.enabled`, `screen.disabled` | computer | `agent` | `apps/agent/src/ipc-handlers.ts` (desktop panel) | `{mode, copyVersion, locale, via}` / `{what, by}`. The CLI's changes show as `policy.changed` + `screen.changed` |
+| `screen.requested` | computer | `agent` | `apps/agent/src/screen/manager.ts` (`screen.open` from a trusted browser) | `{sid, mode, by, display, appId?}` |
+| `screen.granted`, `screen.denied` | computer | `agent` | `apps/agent/src/screen/manager.ts` (`remote_view` / `remote_control` approval) | `{sid, mode, reason, by?}` |
+| `screen.live` | computer | `agent` | `apps/agent/src/screen/manager.ts` (the browser's data channel opened) | `{sid, mode}` |
+| `screen.ended` | computer | `agent` | `apps/agent/src/screen/manager.ts` | `{sid, mode, reason, by?, durationMs, frames, inputs: {click, key, text, …: counts}, dropped}`. Never pixels, keys or typed text |
+| `screen.killed` | computer | `agent` | `apps/agent/src/screen/manager.ts` (hotkey, tray, indicator, panel) | `{by, sessions}` |
+| `screen.rate_limited`, `screen.channel_refused`, `screen.app_focus` | computer | `agent` | `apps/agent/src/screen/manager.ts` | `{sid}` (once a minute) / `{sid}` (a browser-opened data channel was closed) / `{sid, appId, ok, reason?}` |
 
 The DeviceEvent schemas are in `packages/protocol/src/agentEvent.ts` (`DeviceEvent`). Local Developer-mode history is also kept on the device, hash-chained (`~/.chalito/audit/devmode.jsonl`, `apps/agent/src/devmode.ts`).
 

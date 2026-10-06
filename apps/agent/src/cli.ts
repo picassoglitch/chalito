@@ -12,6 +12,7 @@ import { brokerCall } from "./computer/broker.js";
 import { runMcpServer } from "./computer/mcp-server.js";
 import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/native.js";
 import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
+import { disableScreen, enableScreen, screenLevel, type ScreenPrompter } from "./screen/toggle.js";
 import {
   ConfigTamperedError,
   chalitoDir,
@@ -71,6 +72,8 @@ export const USAGE = `chalito <command>
   devmode reset                        archive a broken Developer-mode log and start over (OS auth)
   computer enable|disable|status       computer control: let approved sessions use this screen,
                                        mouse and keyboard (enable: local only, OS auth + confirmations)
+  screen enable [view|control]         remote screen: let your trusted browser see (or also control)
+  screen disable [control]|status      this screen, approved per session (enable: local only)
   claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   codex pin [path]                     trust this Codex binary (path + sha256); after updates too
   grok pin [path]                      trust this Grok Build binary (path + sha256); after updates too
@@ -124,6 +127,25 @@ const T = {
         : "Control del equipo: desactivado.\n",
     computerNotInPolicyEdit:
       "El control del equipo no se activa editando la política. Usa `chalito computer enable`.\n",
+    screenTitle: (control: boolean) =>
+      control
+        ? "\n!!  ¿Activar el control remoto de esta pantalla?  !!\nCon esto, tu navegador de confianza podrá, con aprobación por sesión:\n"
+        : "\n!!  ¿Activar ver esta pantalla a distancia?  !!\nCon esto, tu navegador de confianza podrá, con aprobación por sesión:\n",
+    screenOn: (control: boolean) =>
+      control
+        ? "Pantalla remota activada (ver y controlar). Cada sesión pedirá tu aprobación con passkey; la app de escritorio debe estar abierta.\n"
+        : "Pantalla remota activada (solo ver). Cada sesión pedirá tu aprobación con passkey; la app de escritorio debe estar abierta.\n",
+    screenAlready: "La pantalla remota ya está activada así.\n",
+    screenOff: "Pantalla remota desactivada. Las sesiones abiertas terminaron.\n",
+    screenControlOff: "Control remoto desactivado (ver sigue activo). Las sesiones con control terminaron.\n",
+    screenWasOff: "No había nada que desactivar.\n",
+    screenStatus: (level: "off" | "view" | "control") =>
+      level === "off"
+        ? "Pantalla remota: desactivada.\n"
+        : level === "view"
+          ? "Pantalla remota: solo ver.\n"
+          : "Pantalla remota: ver y controlar.\n",
+    screenNotInPolicyEdit: "La pantalla remota no se activa editando la política. Usa `chalito screen enable`.\n",
     needTty:
       "Este comando cambia la seguridad de Chalito: solo funciona en una terminal donde estés escribiendo tú (no con entrada redirigida).\n",
     inSession:
@@ -186,6 +208,25 @@ const T = {
     computerStatus: (on: boolean, n: number) =>
       on ? `Computer control: on (up to ${n} actions a minute per session).\n` : "Computer control: off.\n",
     computerNotInPolicyEdit: "Computer control isn't turned on by editing the policy. Use `chalito computer enable`.\n",
+    screenTitle: (control: boolean) =>
+      control
+        ? "\n!!  Turn on remote control of this screen?  !!\nWith it, your trusted browser can, approved per session:\n"
+        : "\n!!  Turn on viewing this screen remotely?  !!\nWith it, your trusted browser can, approved per session:\n",
+    screenOn: (control: boolean) =>
+      control
+        ? "Remote screen is on (view and control). Every session will ask for your passkey approval; the desktop app must be open.\n"
+        : "Remote screen is on (view only). Every session will ask for your passkey approval; the desktop app must be open.\n",
+    screenAlready: "Remote screen is already on like that.\n",
+    screenOff: "Remote screen is off. Open sessions ended.\n",
+    screenControlOff: "Remote control is off (viewing stays on). Sessions with control ended.\n",
+    screenWasOff: "Nothing to turn off.\n",
+    screenStatus: (level: "off" | "view" | "control") =>
+      level === "off"
+        ? "Remote screen: off.\n"
+        : level === "view"
+          ? "Remote screen: view only.\n"
+          : "Remote screen: view and control.\n",
+    screenNotInPolicyEdit: "Remote screen isn't turned on by editing the policy. Use `chalito screen enable`.\n",
     needTty:
       "This command changes Chalito's security settings, so it only runs in a terminal you're typing in (not with piped input).\n",
     inSession:
@@ -355,7 +396,8 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   const mutating =
     ["pair", "keys", "service", "devmode", "claude", "codex", "grok", "gemini"].includes(cmd) ||
     (cmd === "policy" && sub === "edit") ||
-    (cmd === "computer" && sub !== "status");
+    (cmd === "computer" && sub !== "status") ||
+    (cmd === "screen" && sub !== "status");
   if (mutating) {
     if (io.env.CHALITO_SESSION !== undefined) {
       io.err(t.inSession);
@@ -443,6 +485,9 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 
       case "computer":
         return await computer(io, dir, locale, sub);
+
+      case "screen":
+        return await screen(io, dir, locale, sub, arg);
 
       case "keys": {
         if (sub !== "set" || !arg || !(arg in KEY_NAMES)) {
@@ -741,6 +786,69 @@ const computer = async (io: CliIo, dir: string, locale: "es" | "en", sub?: strin
   }
 };
 
+const screen = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string, arg?: string) => {
+  const t = T[locale];
+  const id = await loadOrCreateIdentity(io.secrets!);
+  const holder = new FilePolicyHolder(dir, id.sign, { anchor: await new AnchorStore(io.secrets!).load() });
+  // The running daemon sees the policy change, reports it and ends the sessions it no longer allows.
+  const emit = () => undefined;
+  if (sub === "status") {
+    io.out(t.screenStatus(screenLevel(holder.get().screen)));
+    return 0;
+  }
+  if (sub === "disable") {
+    if (arg !== undefined && arg !== "control") {
+      io.err(USAGE);
+      return 1;
+    }
+    const what = arg === "control" ? "control" : "all";
+    const changed = await disableScreen({ policy: holder, emit }, what, "cli");
+    io.out(changed ? (what === "control" ? t.screenControlOff : t.screenOff) : t.screenWasOff);
+    return 0;
+  }
+  if (sub !== "enable" || (arg !== undefined && arg !== "view" && arg !== "control")) {
+    io.err(USAGE);
+    return 1;
+  }
+  const mode = arg === "control" ? "control" : "view";
+  const reader = new LineReader(io.tty);
+  try {
+    const prompter: ScreenPrompter = {
+      first: async (examples) => {
+        io.out(`${t.screenTitle(mode === "control")}${examples.map((e) => `  - ${e}\n`).join("")}`);
+        return isYes(await reader.ask(t.computerContinue));
+      },
+      second: async (risk) => {
+        io.out(`${t.computerSecond}${risk}\n`);
+        return isYes(await reader.ask(t.computerSure));
+      },
+      typed: async (phrase) => (await reader.ask(t.computerType(phrase))) ?? "",
+    };
+    const res = await enableScreen(
+      {
+        policy: holder,
+        osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+        prompter,
+        locale,
+        emit,
+      },
+      mode,
+    );
+    if (!res.ok) {
+      io.err(
+        res.reason === "already_on" ? t.screenAlready : res.reason === "os_auth_failed" ? t.authFailed : t.cancelled,
+      );
+      return res.reason === "already_on" ? 0 : 1;
+    }
+    io.out(t.screenOn(mode === "control"));
+    if (io.platform === "darwin") io.out(`${MAC_PERMISSION_HINT}\n`);
+    if (isWayland(io.env, io.platform)) io.err(`${WAYLAND_MESSAGE}\n`);
+    return 0;
+  } finally {
+    reader.close();
+  }
+};
+
 const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string) => {
   const t = T[locale];
   const id = await loadOrCreateIdentity(io.secrets!);
@@ -786,6 +894,12 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
     // Only `chalito computer enable` turns computer control on (its own confirmations).
     if (parsed.policy.computer?.enabled && !holder.get().computer?.enabled) {
       io.err(t.computerNotInPolicyEdit);
+      return 1;
+    }
+    // Likewise only `chalito screen enable` turns remote screen on, or view up to control.
+    const levels = { off: 0, view: 1, control: 2 } as const;
+    if (levels[screenLevel(parsed.policy.screen)] > levels[screenLevel(holder.get().screen)]) {
+      io.err(t.screenNotInPolicyEdit);
       return 1;
     }
     if (policyHash(parsed.policy) === holder.hash) {

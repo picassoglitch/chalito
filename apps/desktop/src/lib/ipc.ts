@@ -102,6 +102,16 @@ export interface ComputerPermissions {
   wayland: boolean;
 }
 
+/** Remote screen as the agent reports it (apps/agent/src/screen/manager.ts `status`). */
+export interface ScreenStatus {
+  view: boolean;
+  control: boolean;
+  active: { sid: string; label: string; mode: "view" | "control"; since: number }[];
+  pending: { sid: string; label: string; mode: "view" | "control" }[];
+}
+
+export type ScreenMode = "view" | "control";
+
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
@@ -140,6 +150,13 @@ export interface AgentIpc {
   /** Native, not the agent: macOS Screen Recording / Accessibility, Wayland on Linux. */
   computerPermissions(): Promise<ComputerPermissions>;
   openComputerSettings(pane: "screenRecording" | "accessibility"): Promise<void>;
+  /** Remote screen: enabling asks the OS in the agent and re-checks the answers, like computer control. */
+  screenStatus(): Promise<ScreenStatus>;
+  screenChallenge(mode: ScreenMode): Promise<ComputerChallenge>;
+  enableScreen(mode: ScreenMode, answers: ComputerAnswers): Promise<ComputerEnableResult>;
+  /** `control` drops back to view only; `all` turns remote screen off. */
+  disableScreen(what: "control" | "all"): Promise<void>;
+  closeScreen(sid: string): Promise<void>;
 }
 
 export class IpcUnavailableError extends Error {
@@ -175,6 +192,11 @@ export const unavailableIpc: AgentIpc = {
   stopComputer: unavailable,
   computerPermissions: unavailable,
   openComputerSettings: unavailable,
+  screenStatus: unavailable,
+  screenChallenge: unavailable,
+  enableScreen: unavailable,
+  disableScreen: unavailable,
+  closeScreen: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -220,6 +242,11 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     stopComputer: () => invoke("computer_stop", {}),
     computerPermissions: () => invoke("computer_permissions", {}),
     openComputerSettings: (pane) => invoke("computer_open_settings", { pane }),
+    screenStatus: () => call("screenStatus"),
+    screenChallenge: (mode) => call("screenChallenge", { mode }),
+    enableScreen: (mode, answers) => call("enableScreen", { mode, answers }),
+    disableScreen: async (what) => void (await call("disableScreen", { what })),
+    closeScreen: async (sid) => void (await call("closeScreen", { sid })),
   };
 };
 

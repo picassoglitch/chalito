@@ -28,6 +28,7 @@ import {
   type RiskTier,
   type SealedEnvelope,
   type SessionState,
+  ScreenSignal,
   approvalSummary,
 } from "@chalito/protocol";
 import { ApprovalManager } from "./approvals.js";
@@ -37,6 +38,7 @@ import { publicReason } from "./command-result.js";
 import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
 import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
+import type { ScreenManager } from "./screen/manager.js";
 import {
   PERMISSION_RANK,
   SANDBOX_RANK,
@@ -95,6 +97,8 @@ export interface AgentCoreDeps {
   classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
   /** Computer control (computer/control.ts); absent = never attached. */
   computer?: ComputerControl;
+  /** Remote screen (screen/manager.ts); absent = `screen.*` commands are refused. */
+  screen?: ScreenManager;
 }
 
 interface Session {
@@ -121,7 +125,7 @@ const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 
 const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
 
 const REMOTE_ENABLE_ATTEMPT =
-  /devmode\.(on|enable|toggleOn)|computer|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
+  /devmode\.(on|enable|toggleOn)|computer|screen\.(enable|on|grant|allow)|remote_?(view|control)|app_?control|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access/i;
 
 /**
  * The device agent's brain (ADR 0008): verifies commands against the local trusted list,
@@ -363,6 +367,7 @@ export class AgentCore {
         await this.d.saveTrust();
         for (const s of this.sessions.values())
           if (s.startedBy === `client:${p.clientDeviceId}`) await s.handle.interrupt();
+        await this.d.screen?.endForClient(p.clientDeviceId);
         this.#audit("trust.client_removed", { clientDeviceId: p.clientDeviceId, by: origin });
         return { ok: true };
       }
@@ -395,6 +400,30 @@ export class AgentCore {
         if (!this.d.providers) return this.#reject(cid, "provider_failed");
         await this.d.providers.report();
         return { ok: true };
+
+      // ---- SCREEN (screen/manager.ts): asks only; enabling is local (`chalito screen enable`).
+      case "screen.open": {
+        if (!this.d.screen) return this.#reject(cid, "screen_disabled");
+        const r = await this.d.screen.open({
+          origin,
+          mode: p.mode,
+          ...(p.display !== undefined ? { display: p.display } : {}),
+          ...(p.appId ? { appId: p.appId } : {}),
+        });
+        return r.ok ? { ok: true, sid: r.sid } : this.#reject(cid, r.reason);
+      }
+      case "screen.close": {
+        if (!this.d.screen) return this.#reject(cid, "unknown_session");
+        const r = await this.d.screen.close(p.sid, origin);
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "unknown_session");
+      }
+      case "screen.signal": {
+        if (!this.d.screen) return this.#reject(cid, "unknown_session");
+        const signal = ScreenSignal.safeParse(await open<unknown>(p.signalCt));
+        if (!signal.success) return this.#reject(cid, "bad_signal");
+        const r = await this.d.screen.signal(p.sid, origin, signal.data);
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "bad_signal");
+      }
     }
   }
 
@@ -562,7 +591,7 @@ export class AgentCore {
       risk: RiskTier;
       stepUp: boolean;
       origin: Origin;
-      kind?: "tool" | "computer_control";
+      kind?: "tool" | "computer_control" | "app_control";
       details: { toolName: string; input: unknown; reasons: string[] };
     },
   ): Promise<ComputerApprovalOutcome> {
@@ -622,13 +651,23 @@ export class AgentCore {
    */
   async requestComputerApproval(
     sid: string,
-    input: { origin: Origin; details: { toolName: string; input: unknown; reasons: string[] } },
+    input: {
+      origin: Origin;
+      kind?: "computer_control" | "app_control";
+      details: { toolName: string; input: unknown; reasons: string[] };
+    },
   ): Promise<ComputerApprovalOutcome> {
     const s = this.sessions.get(sid);
     if (!s) return { allow: false, reason: "policy_block" };
     const origin = s.turnOriginFloor ? lowerTrust(input.origin, s.turnOriginFloor) : input.origin;
     if (!isSignedOrigin(origin)) return { allow: false, reason: "policy_block" };
-    return this.#approve(s, { risk: "HIGH", stepUp: true, origin, kind: "computer_control", details: input.details });
+    return this.#approve(s, {
+      risk: "HIGH",
+      stepUp: true,
+      origin,
+      kind: input.kind ?? "computer_control",
+      details: input.details,
+    });
   }
 
   #classifyContext(policy: Policy, s: Session): ClassifyContext {

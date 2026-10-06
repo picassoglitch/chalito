@@ -1,10 +1,12 @@
 import { z } from "zod";
-import { DevModeToggle, EnableableDevModeToggle, Provider } from "@chalito/protocol";
+import { DevModeToggle, EnableableDevModeToggle, Provider, ScreenMode, SessionId } from "@chalito/protocol";
 import type { LiabilityText } from "@chalito/config";
 import type { ComputerControl } from "./computer/control.js";
 import { COMPUTER_COPY, disableComputer, enableComputer } from "./computer/toggle.js";
 import { DevMode, RISK_COPY, type DevModeDeps, type OsAuth } from "./devmode.js";
 import { IpcError, type IpcHandlers } from "./ipc-server.js";
+import type { ScreenManager } from "./screen/manager.js";
+import { SCREEN_COPY, disableScreen, enableScreen } from "./screen/toggle.js";
 import type { FilePolicyHolder } from "./policy-file.js";
 import { policyRules } from "./policy-view.js";
 import type { ProviderManager, ProviderResult } from "./providers.js";
@@ -31,6 +33,13 @@ const ComputerKill = z.object({ via: z.enum(["hotkey", "tray", "panel", "indicat
 const ComputerEnable = z.object({
   answers: z.object({ first: z.boolean(), second: z.boolean(), typed: z.string().max(200) }),
 });
+const ScreenEnable = z.object({
+  mode: ScreenMode,
+  answers: z.object({ first: z.boolean(), second: z.boolean(), typed: z.string().max(200) }),
+});
+const ScreenChallenge = z.object({ mode: ScreenMode });
+const ScreenDisable = z.object({ what: z.enum(["control", "all"]) });
+const ScreenClose = z.object({ sid: SessionId });
 const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boolean() });
 const ForProvider = z.object({ provider: Provider });
 const ProviderKey = z.object({ provider: Provider, key: z.string().min(1).max(512) });
@@ -58,6 +67,8 @@ export interface IpcDeps {
   providers?: ProviderManager;
   /** Computer control; null when this agent has no broker (it then never attaches the tools). */
   computer: ComputerControl | null;
+  /** Remote screen; null without the desktop app. */
+  screen?: ScreenManager | null;
   /** Agent audit trail (computer.enabled / computer.disabled). */
   audit: (type: string, meta: Record<string, unknown>) => void;
 }
@@ -139,14 +150,71 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
    */
   computerStatus: async (params) => {
     const { indicatorShown } = parse(ComputerBeat, params ?? {});
-    if (d.computer) return indicatorShown === undefined ? d.computer.status() : d.computer.heartbeat(indicatorShown);
-    return { enabled: d.policy.get().computer?.enabled === true, active: [], pending: [] };
+    if (!d.computer) return { enabled: d.policy.get().computer?.enabled === true, active: [], pending: [] };
+    if (indicatorShown === undefined) return d.computer.status();
+    // The native poller's view covers everything the indicator and the kill switch guard:
+    // computer control AND remote screen (screen/manager.ts streams only while it's shown).
+    const c = d.computer.heartbeat(indicatorShown);
+    const sc = d.screen?.status();
+    if (!sc) return c;
+    return {
+      enabled: c.enabled || sc.view,
+      active: [...c.active, ...sc.active.map(({ sid, label, since }) => ({ sid, label, since }))],
+      pending: [...c.pending, ...sc.pending.map(({ sid, label }) => ({ sid, label }))],
+    };
   },
 
-  /** The kill switch (global hotkey, tray item, indicator button, panel): ends control now. */
+  /** The kill switch (global hotkey, tray item, indicator button, panel): ends control and remote screen now. */
   computerKill: async (params) => {
     const { via } = parse(ComputerKill, params);
-    return { stopped: d.computer ? await d.computer.kill(via) : 0 };
+    const computer = d.computer ? await d.computer.kill(via) : 0;
+    const screen = d.screen ? await d.screen.kill(via) : 0;
+    return { stopped: computer + screen };
+  },
+
+  // Remote screen: local-only enable with the CLI's rules (screen/toggle.ts), status, close.
+  screenStatus: async () => {
+    if (d.screen) return d.screen.status();
+    const s = d.policy.get().screen;
+    return { view: !!(s?.view || s?.control), control: !!s?.control, active: [], pending: [] };
+  },
+  screenChallenge: async (params) => {
+    const { mode } = parse(ScreenChallenge, params);
+    return SCREEN_COPY[d.locale()][mode];
+  },
+  enableScreen: async (params) => {
+    const { mode, answers } = parse(ScreenEnable, params);
+    return enableScreen(
+      {
+        policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) },
+        osAuth: d.osAuth(),
+        prompter: {
+          first: async () => answers.first,
+          second: async () => answers.second,
+          typed: async () => answers.typed,
+        },
+        locale: d.locale(),
+        emit: (type, meta) => d.audit(type, { ...meta, via: "panel" }),
+      },
+      mode,
+    );
+  },
+  disableScreen: async (params) => {
+    const { what } = parse(ScreenDisable, params ?? {});
+    return {
+      changed: await disableScreen(
+        { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
+        what,
+        "panel",
+      ),
+    };
+  },
+  closeScreen: async (params) => {
+    const { sid } = parse(ScreenClose, params);
+    if (!d.screen) throw new IpcError("unknown_session");
+    const r = await d.screen.close(sid, "local");
+    if (!r.ok) throw new IpcError(r.reason ?? "unknown_session");
+    return { ok: true };
   },
 
   computerChallenge: async () => COMPUTER_COPY[d.locale()],

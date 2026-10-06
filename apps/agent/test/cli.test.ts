@@ -304,6 +304,61 @@ describe("chalito CLI", () => {
     });
   });
 
+  describe("screen", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("enable view, then control: OS auth, two confirmations and the phrase each time; disable steps down", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["screen", "status"])).toBe(0);
+      expect(c.out()).toMatch(/Remote screen: off/);
+      expect(await c.run(["screen", "enable"], ["y", "y", "VIEW MY SCREEN"])).toBe(0);
+      expect(c.runs).toEqual([{ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true }]);
+      expect((await policyOf(c)).screen).toMatchObject({ view: true, control: false });
+      expect(await c.run(["screen", "enable", "control"], ["y", "y", "CONTROL MY SCREEN"])).toBe(0);
+      expect((await policyOf(c)).screen).toMatchObject({ view: true, control: true });
+      expect(await c.run(["screen", "disable", "control"])).toBe(0);
+      expect((await policyOf(c)).screen).toMatchObject({ view: true, control: false });
+      expect(await c.run(["screen", "disable"])).toBe(0);
+      expect((await policyOf(c)).screen).toMatchObject({ view: false, control: false });
+    });
+
+    it("enable: failed OS auth, a no, or a wrong phrase change nothing", async () => {
+      for (const [o, lines] of [
+        [{ runner: () => 126 }, ["y", "y", "VIEW MY SCREEN"]],
+        [{}, ["n"]],
+        [{}, ["y", "y", "view my screen"]],
+      ] as const) {
+        const c = cli({ tty: true, ...o });
+        expect(await c.run(["screen", "enable"], [...lines])).toBe(1);
+        expect((await policyOf(c)).screen).toBeUndefined();
+      }
+    });
+
+    it("policy edit can't turn it on, or view up to control", async () => {
+      const on = policyToYaml({
+        ...DEFAULT_POLICY,
+        screen: { view: true, control: true, maxFps: 5, maxInputsPerMinute: 600, maxSessionMinutes: 60 },
+      });
+      const c = cli({ runner: (r) => (writeFileSync(r.args.at(-1)!, on), 0) });
+      expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito screen enable/);
+      expect((await policyOf(c)).screen).toBeUndefined();
+    });
+
+    for (const argv of [
+      ["screen", "enable"],
+      ["screen", "disable"],
+    ])
+      it(`${argv.join(" ")}: refused with piped stdin or inside a session`, async () => {
+        for (const o of [{ tty: false }, { env: { CHALITO_SESSION: "1" } }]) {
+          const c = cli(o);
+          expect(await c.run(argv, ["y", "y", "VIEW MY SCREEN"])).toBe(1);
+          expect(c.runs).toHaveLength(0);
+        }
+      });
+  });
+
   describe("policy", () => {
     const editTo = (text: string) => (r: Run) => {
       if (r.cmd !== "/usr/bin/pkexec") writeFileSync(r.args.at(-1)!, text);

@@ -13,6 +13,7 @@ import {
   type ComputerStatus,
   type DevModeState,
   type ProviderView,
+  type ScreenStatus,
 } from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
 import { Panel, type PanelProps, type Tab } from "../src/panel/Panel.js";
@@ -76,6 +77,12 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
   let computer: ComputerStatus = {
     enabled: false,
     active: [{ sid: "s1", label: "chalito", since: 1 }],
+    pending: [],
+  };
+  let scr: ScreenStatus = {
+    view: false,
+    control: false,
+    active: [{ sid: "sc1", label: "Remote screen (view)", mode: "view", since: 1 }],
     pending: [],
   };
   return {
@@ -146,6 +153,25 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
       wayland: false,
     }),
     openComputerSettings: async (pane) => void calls.push(["openComputerSettings", pane]),
+    screenStatus: async () => scr,
+    screenChallenge: async (mode) => ({
+      examples: [mode === "control" ? "Mover el mouse desde lejos" : "Ver esta pantalla en vivo"],
+      risk: "Cada sesión pedirá tu aprobación con passkey.",
+      phrase: mode === "control" ? "CONTROLAR MI PANTALLA" : "VER MI PANTALLA",
+    }),
+    enableScreen: async (mode, answers) => {
+      calls.push(["enableScreen", mode, answers]);
+      scr = { ...scr, view: true, control: mode === "control" };
+      return { ok: true };
+    },
+    disableScreen: async (what) => {
+      calls.push(["disableScreen", what]);
+      scr = { ...scr, control: false, view: what === "control" ? scr.view : false };
+    },
+    closeScreen: async (sid) => {
+      calls.push(["closeScreen", sid]);
+      scr = { ...scr, active: scr.active.filter((a) => a.sid !== sid) };
+    },
     ...over,
   };
 };
@@ -153,7 +179,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(4));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(5));
   });
 
   it("reverse check: shows the phone's fingerprint and sends the local verdict", async () => {
@@ -224,6 +250,42 @@ describe("panel: local-only security screens", () => {
     fireEvent.click(confirm);
     await waitFor(() => expect(container.querySelector('[data-computer="on"]')).not.toBeNull());
     expect(ipc.calls).toContainEqual(["enableComputer", { first: true, second: true, typed: "CONTROLAR MI EQUIPO" }]);
+  });
+
+  it("remote screen: local enable (view, then control) with the phrase; close a session; turn off", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    expect(await screen.findByText("Open session: Remote screen (view)")).toBeTruthy();
+    fireEvent.click(within(container.querySelector('[data-screen-session="sc1"]')!).getByText("Close"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["closeScreen", "sc1"]));
+
+    fireEvent.click(within(container.querySelector('[data-screen="off"]')!).getByText("Turn on viewing"));
+    await screen.findByText(/Ver esta pantalla en vivo/);
+    fireEvent.click(screen.getByText("Continue"));
+    fireEvent.click(screen.getByText("Continue"));
+    const confirm = screen.getByText("Turn on (asks for your password)", {
+      selector: '[data-step="3"] button',
+    }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("VER MI PANTALLA"), { target: { value: "VER MI PANTALLA" } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(container.querySelector('[data-screen="view"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["enableScreen", "view", { first: true, second: true, typed: "VER MI PANTALLA" }]);
+
+    fireEvent.click(within(container.querySelector('[data-screen="view"]')!).getByText("Turn on control"));
+    await screen.findByText(/Mover el mouse desde lejos/);
+    fireEvent.click(screen.getByText("Continue"));
+    fireEvent.click(screen.getByText("Continue"));
+    fireEvent.change(screen.getByLabelText("CONTROLAR MI PANTALLA"), { target: { value: "CONTROLAR MI PANTALLA" } });
+    fireEvent.click(screen.getByText("Turn on (asks for your password)", { selector: '[data-step="3"] button' }));
+    await waitFor(() => expect(container.querySelector('[data-screen="control"]')).not.toBeNull());
+
+    fireEvent.click(within(container.querySelector('[data-screen="control"]')!).getByText("Remove control"));
+    await waitFor(() => expect(container.querySelector('[data-screen="view"]')).not.toBeNull());
+    fireEvent.click(within(container.querySelector('[data-screen="view"]')!).getByText("Turn off"));
+    await waitFor(() => expect(container.querySelector('[data-screen="off"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["disableScreen", "control"]);
+    expect(ipc.calls).toContainEqual(["disableScreen", "all"]);
   });
 
   it("Developer mode: cancelling sends nothing", async () => {

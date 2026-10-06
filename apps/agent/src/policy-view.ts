@@ -28,6 +28,12 @@ const T = {
       n === null
         ? "Control del equipo (pantalla, mouse y teclado): apagado"
         : `Control del equipo: encendido, con aprobación por sesión, hasta ${n} acciones por minuto`,
+    screen: (m: "off" | "view" | "control") =>
+      m === "off"
+        ? "Pantalla remota: apagada"
+        : m === "view"
+          ? "Pantalla remota: solo ver, con aprobación por sesión"
+          : "Pantalla remota: ver y controlar, con aprobación por sesión",
   },
   en: {
     workspace: (l: string, p: string) => `Folder “${l}”: ${p}`,
@@ -50,6 +56,12 @@ const T = {
       n === null
         ? "Computer control (screen, mouse and keyboard): off"
         : `Computer control: on, approved per session, up to ${n} actions a minute`,
+    screen: (m: "off" | "view" | "control") =>
+      m === "off"
+        ? "Remote screen: off"
+        : m === "view"
+          ? "Remote screen: view only, approved per session"
+          : "Remote screen: view and control, approved per session",
   },
 } as const;
 
@@ -84,5 +96,10 @@ export const policyRules = (p: Policy, locale: "es" | "en"): PolicyRule[] => {
     p.computer?.enabled
       ? { id: "computer", summary: t.computer(p.computer.maxActionsPerMinute), effect: "ask" }
       : { id: "computer", summary: t.computer(null), effect: "deny" },
+    p.screen?.control
+      ? { id: "screen", summary: t.screen("control"), effect: "ask" }
+      : p.screen?.view
+        ? { id: "screen", summary: t.screen("view"), effect: "ask" }
+        : { id: "screen", summary: t.screen("off"), effect: "deny" },
   ];
 };

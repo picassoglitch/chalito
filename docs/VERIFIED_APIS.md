@@ -1226,3 +1226,9 @@ Read read-only on 2026-10-03 from `picassoglitch/chalyb` at `origin/claude/landi
   - A new engine = one `engines` map entry in Chalyb's `infra/terraform/terraform.tfvars`: SA, 3 secrets, public scale-to-zero Cloud Run, bucket access, domain mapping `<slug>.chalyb.com`.
   - Workers need `cpu_idle = false`. Scheduled jobs default to paused.
 - **Hub pricing (MXN, before 16% IVA):** Pro $749/mo, $7,490/yr; VIP $2,499/mo; packs 100k $149, 500k $599, 2M $1,999. The trial and its rules live in `PRICING.trial`; Chalito follows them (D-026).
+
+## Remote screen (ADR 0021)
+- `werift` 0.24.4: `RTCPeerConnection({iceServers})`, `createDataChannel(label, {ordered, maxRetransmits})`, `createOffer` / `setLocalDescription` / `setRemoteDescription({type: "answer", sdp})`, `addIceCandidate`, `iceGatheringStateChange`, `connectionStateChange`, `onDataChannel`; channel `send`, `bufferedAmount`, `stateChanged`, `onMessage`. Source: the package's `lib/webrtc/src/*.d.ts` (checked 2026-10-06). A werift↔werift loopback (host candidates, a 60 KB message on an unordered channel) ran on the build host. Browser interop (Chrome, Safari, Firefox answering a werift offer) is UNVERIFIED.
+- `jpeg-js` 0.4.4 `encode({width, height, data: RGBA}, quality)`. Source: its `index.d.ts` (checked 2026-10-06).
+- Chrome/Edge/Chromium flags `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--app=<url>`: long-standing Chromium switches; not re-run on each OS here (UNVERIFIED). Branded Chrome ignores `--load-extension` since 137, so no extension-based origin lock is used.
+- `open -a` / `open -b` (macOS), `explorer.exe shell:AppsFolder\<AUMID>` (Windows): documented OS launch paths; the curated recipes' bundle ids and AUMIDs are the ENGINE builder's to verify.

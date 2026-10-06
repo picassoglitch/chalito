@@ -4,6 +4,9 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
   APPROVAL_TTL_MS,
+  ApprovalKind,
+  ScreenInput,
+  ScreenSignal,
   CallLine,
   CommandEnvelope,
   CommandPayload,
@@ -127,6 +130,59 @@ describe("remote surfaces can never widen the device", () => {
       const parsed = CommandPayload.parse({ ...payload, computer: { enabled: true }, enabled: true });
       expect(Object.keys(parsed).filter((k) => /computer|enabled/i.test(k))).toEqual([]);
     }
+  });
+
+  it("no command variant can enable remote screen, remote control or app control (engine invariant)", () => {
+    const types = CommandPayload.options.map((o) => o.shape.type.value as string);
+    // The only screen commands ask, close or carry sealed signaling.
+    expect(types.filter((t) => /screen|remote|app_?control|terminal|shell/i.test(t))).toEqual([
+      "screen.open",
+      "screen.close",
+      "screen.signal",
+    ]);
+    for (const type of [
+      "screen.enable",
+      "screen.on",
+      "screen.grant",
+      "remote_view.enable",
+      "remote_control.enable",
+      "app_control.enable",
+      "computer.enable",
+      "terminal.enable",
+      "rawShell.enable",
+    ]) {
+      expect(CommandPayload.safeParse({ type, mode: "control", enabled: true }).success).toBe(false);
+    }
+    // Extra fields never reach the agent: screen.open can't carry an enable, a policy or a grant.
+    const open = CommandPayload.parse({
+      type: "screen.open",
+      mode: "control",
+      enabled: true,
+      screen: { view: true, control: true },
+      grant: true,
+      approved: true,
+    });
+    expect(Object.keys(open).sort()).toEqual(["mode", "type"]);
+    expect(CommandPayload.safeParse({ type: "screen.open", mode: "admin" }).success).toBe(false);
+    expect(CommandPayload.safeParse({ type: "screen.open", mode: "view", appId: "../x" }).success).toBe(false);
+    // Signaling travels sealed only: a plaintext SDP field is stripped.
+    const keyCt = { alg: "xchacha20poly1305+sealedbox", nonce: b64(24), ct: b64(10), keys: { d1: b64(80) } };
+    const sig = CommandPayload.parse({ type: "screen.signal", sid: "s1", signalCt: keyCt, sdp: "v=0" });
+    expect(Object.keys(sig).sort()).toEqual(["sid", "signalCt", "type"]);
+    expect(CommandPayload.safeParse({ type: "screen.signal", sid: "s1", sdp: "v=0" }).success).toBe(false);
+    // Every new remote session kind has its own approval kind.
+    for (const k of ["terminal", "remote_view", "remote_control", "app_control", "computer_control"])
+      expect(ApprovalKind.safeParse(k).success).toBe(true);
+  });
+
+  it("screen input and signaling are closed, bounded shapes", () => {
+    expect(ScreenInput.safeParse({ t: "click", button: "left", x: 0.5, y: 0.5 }).success).toBe(true);
+    expect(ScreenInput.safeParse({ t: "click", button: "left", x: 2, y: 0.5 }).success).toBe(false);
+    expect(ScreenInput.safeParse({ t: "text", text: "a".repeat(201) }).success).toBe(false);
+    expect(ScreenInput.safeParse({ t: "exec", cmd: "sh" }).success).toBe(false);
+    expect(ScreenInput.safeParse({ t: "move", x: 0, y: 0, extra: 1 }).success).toBe(false);
+    expect(ScreenSignal.safeParse({ kind: "offer", sdp: "x".repeat(17 * 1024) }).success).toBe(false);
+    expect(ScreenSignal.safeParse({ kind: "ice", candidate: "candidate:1" }).success).toBe(true);
   });
 
   it("relayed (unsigned) commands may only prompt, each relay from its own origin (review R-L2)", () => {

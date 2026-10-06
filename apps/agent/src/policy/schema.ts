@@ -54,6 +54,25 @@ export const Policy = z.object({
       maxActionsPerMinute: z.number().int().min(1).max(600),
     })
     .optional(),
+  /**
+   * Remote screen (apps/agent/src/screen): a trusted browser sees (`view`) or also drives
+   * (`control`) this screen over WebRTC. Absent = off (older policies keep their hash). Turned
+   * on only by `chalito screen enable` or the desktop panel (OS auth + confirmations); remote
+   * surfaces and `chalito policy edit` can only turn it off or lower the limits. `control`
+   * implies `view`.
+   */
+  screen: z
+    .object({
+      view: z.boolean(),
+      control: z.boolean(),
+      /** Frames per second ceiling for the stream. */
+      maxFps: z.number().int().min(1).max(15),
+      /** Ceiling on clicks, keys and text messages per session per minute (pointer moves are coalesced). */
+      maxInputsPerMinute: z.number().int().min(1).max(1200),
+      /** A screen session ends after this long, approved again to continue. */
+      maxSessionMinutes: z.number().int().min(1).max(240),
+    })
+    .optional(),
 });
 export type Policy = z.infer<typeof Policy>;
 
@@ -98,6 +117,15 @@ export const DEFAULT_POLICY: Policy = {
   web: { allowDomains: [] },
   mcp: { readOnlyTools: [] },
 };
+
+/** What `chalito screen enable` writes when the policy has no `screen` entry yet. */
+export const DEFAULT_SCREEN = {
+  view: false,
+  control: false,
+  maxFps: 5,
+  maxInputsPerMinute: 600,
+  maxSessionMinutes: 60,
+} as const;
 
 /** What `chalito computer enable` writes when the policy has no `computer` entry yet. */
 export const DEFAULT_COMPUTER = { enabled: false, maxActionsPerMinute: 60 } as const;
