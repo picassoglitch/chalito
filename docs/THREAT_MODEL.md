@@ -138,6 +138,19 @@ Mitigations:
 | Leaking what was on screen or typed | Audit rows (`computer.*`) carry metadata only: tool, coordinates, key combo, text length. Never the image, the typed text or window titles. Screenshots go only to the session's model. |
 | Session token reuse | The MCP server gets one random token per session in its environment, never the desktop IPC secret. Same-user processes could read it (`/proc/<pid>/environ`, `ps` for Codex's `-c` args). It only allows what that session's grant allows, still behind the indicator, the rate limit and the audit. Same-user malware is out of scope, as for Developer mode. |
 
+### 4.8b Remote terminal (a recipe's terminal app, or the raw shell, in a PTY)
+`apps/agent/src/terminal`. A trusted browser opens a recipe's terminal app (aider, opencode, any CLI AI) in a PTY on the device and sees and types into it. The command line comes from the recipe on the device (signed catalog or the person's own local recipe); the remote command only names the recipe (`appId`) and an allowed workspace label. PTY: Bun's built-in PTY in the compiled agent, `@lydell/node-pty` under Node and on Windows (`terminal/pty.ts`).
+
+| Threat | Mitigation |
+|---|---|
+| Remote enable (cloud/phone/MCP/call/room) | No command can express it (`terminal.*` only open/input/resize/close; pinned by a protocol test). `policy.tighten` can only turn it off or lower the limits, and can't stage `rawShell` or bigger limits while it's off (`remoteTerminalTighterOrEqual`). Remote attempts are rejected and audited as `remote_enable.rejected`. |
+| Enabled by a session or a shell write | It lives in the signed, keychain-anchored policy. Only `chalito terminal enable` or the desktop panel turn it on (OS auth, two confirmations, typed phrase); both refuse inside a session (`CHALITO_SESSION`, which every terminal's program also gets) or without a TTY; `chalito policy edit` refuses. |
+| Full shell access | The raw shell (`appId: "shell"`) is a separate switch with a stronger confirmation (OS auth, four steps, a longer phrase); turning remote terminal on (again) always leaves it off; turning it off closes open shells. It is equivalent to sitting at the keyboard as that user (including running `chalito` after unsetting `CHALITO_SESSION`; OS-auth prompts still appear on the device's own screen). |
+| A terminal opens without the person knowing | Each terminal needs a `terminal` approval (HIGH, passkey step-up) from a trusted device, showing the app, folder and command. Only signed `client:*` origins can open, type or resize. Nothing runs before the desktop app's heartbeat says the indicator is on screen; input is refused without it, and open terminals close after 10 s without it. |
+| Runaway or hijacked terminal | Kill switch shared with computer control (Ctrl+Alt+Esc, tray "Detener control", indicator button, panel): every terminal is hung up (SIGHUP, then SIGKILL after 2 s). Limits: `remoteTerminal.maxSessions` (default 3), 6 opens a minute, `maxInputPerMinute` characters per terminal (default 65 536), 600 input/resize commands a minute. |
+| Leaking terminal contents | Input is sealed to the device (AAD `command:<cid>`); output is sealed to the trusted clients per chunk (AAD `terminal:<tid>:<seq>`, so the relay can't reorder, replay or move chunks). Output events expire after 1 hour. The audit has ids, sizes, counts and reasons only. The terminal's program never inherits `CHALITO_*`/`SUPABASE_*` variables. |
+| Relay overload / flooding | Output is coalesced (≤ 16 KiB per event, every 40 ms), bounded by a device-wide 15 events/s budget and 4 writes in flight; the device holds at most 1 MiB unsent (oldest dropped, the count reported as `dropped`); node-pty is paused above 256 KiB. |
+
 ### 4.9 Rooms
 | Threat | Mitigation |
 |---|---|
@@ -213,5 +226,6 @@ Listed per milestone in `docs/PLAN.md`. The most important:
 - pay-to-win property (M8/M12)
 - updater rejects unsigned manifests (M14)
 - computer control: no command enables it, remote tighten can't, approval per session, kill switch, metadata-only audit (`apps/agent/test/computer.test.ts`, `packages/protocol/test/protocol.test.ts`)
+- remote terminal: no command enables it or the raw shell, remote tighten can't, approval per terminal, sealed I/O round-trip, kill switch, raw shell as a separate gate (`apps/agent/test/terminal.test.ts`, `apps/agent/test/agent.test.ts`, `packages/protocol/test/protocol.test.ts`)
 
 Several are already enforced at the schema level in `packages/protocol` (tests in `packages/protocol/test`).
