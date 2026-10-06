@@ -156,6 +156,12 @@ export const CommandRejectReason = z.enum([
   "step_up_failed",
   /** Accepted, but the coding agent failed to start (version, login, binary). */
   "start_failed",
+  /** provider.connect signin: providers.yaml `subscriptionLocal` doesn't allow it for this person. */
+  "blocked_by_policy",
+  /** provider.*: an install or sign-in for that provider is already running on the device. */
+  "provider_busy",
+  /** provider.*: the key couldn't be stored, the CLI is missing, or its sign-in/install failed. */
+  "provider_failed",
   "internal",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
