@@ -28,7 +28,7 @@ import {
 import { CommandAcceptedMeta, CommandRejectedMeta } from "@chalito/protocol";
 import type { CommandPayload, DecisionBody, SealedEnvelope } from "@chalito/protocol";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
-import { AgentCore, type PolicyHolder } from "../src/agent-core.js";
+import { AgentCore, type PolicyHolder, type ProviderCommands } from "../src/agent-core.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
@@ -68,6 +68,7 @@ const harness = async (
     policy?: Partial<Policy>;
     devToggles?: ("allowSudo" | "autoApproveHigh" | "autoApproveCritical")[];
     classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
+    providers?: ProviderCommands;
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -128,6 +129,7 @@ const harness = async (
     now: Date.now,
     log: createLogger((l) => logs.push(l)),
     ...(opts.classifyExtras ? { classifyExtras: opts.classifyExtras } : {}),
+    ...(opts.providers ? { providers: opts.providers } : {}),
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
@@ -1127,5 +1129,72 @@ describe("command results reach the person's clients (audit: command.accepted / 
     expect(publicReason("step_up_required")).toBe("step_up_required");
     expect(publicReason("/etc/passwd")).toBe("internal");
     expect(publicReason(undefined)).toBe("internal");
+  });
+});
+
+describe("provider.* commands (connect your AI)", () => {
+  const recorder = (result: { ok: boolean; reason?: string } = { ok: true }) => {
+    const calls: unknown[][] = [];
+    const providers: ProviderCommands = {
+      connectKey: async (p, key) => (calls.push(["connectKey", p, key]), result),
+      signin: async (p) => (calls.push(["signin", p]), result),
+      disconnect: async (p) => (calls.push(["disconnect", p]), result),
+      requestInstall: async (p) => (calls.push(["requestInstall", p]), result),
+      report: async () => void calls.push(["report"]),
+    };
+    return { providers, calls };
+  };
+
+  it("an API key arrives sealed to this device and is opened only here; it never reaches the audit trail", async () => {
+    const r = recorder();
+    const h = await harness({ providers: r.providers });
+    const keyCt = await h.sealed(1, "sk-proj-sealed-key");
+    const res = await h.command({ type: "provider.connect", provider: "openai", method: "api_key", keyCt });
+    expect(res.ok).toBe(true);
+    expect(r.calls).toEqual([["connectKey", "openai", "sk-proj-sealed-key"]]);
+    expect(JSON.stringify([h.store.audits, h.logs])).not.toContain("sk-proj-sealed-key");
+    expect(h.store.audits.some((a) => a.type === "provider.connect")).toBe(true);
+  });
+
+  it("a key sealed for another command can't be replayed into this one", async () => {
+    const r = recorder();
+    const h = await harness({ providers: r.providers });
+    const keyCt = await h.sealed(7, "sk-proj-sealed-key");
+    const res = await h.command({ type: "provider.connect", provider: "openai", method: "api_key", keyCt });
+    expect(res.ok).toBe(false);
+    expect(r.calls).toEqual([]);
+  });
+
+  it("sign-in, disconnect, install request and status reach the provider manager", async () => {
+    const r = recorder();
+    const h = await harness({ providers: r.providers });
+    for (const payload of [
+      { type: "provider.connect", provider: "xai", method: "signin" },
+      { type: "provider.disconnect", provider: "google" },
+      { type: "provider.install", provider: "anthropic" },
+      { type: "provider.status" },
+    ])
+      expect((await h.command(payload)).ok).toBe(true);
+    expect(r.calls).toEqual([["signin", "xai"], ["disconnect", "google"], ["requestInstall", "anthropic"], ["report"]]);
+  });
+
+  it("a refused sign-in is a closed reason in command.rejected", async () => {
+    const r = recorder({ ok: false, reason: "blocked_by_policy" });
+    const h = await harness({ providers: r.providers });
+    const res = await h.command({ type: "provider.connect", provider: "anthropic", method: "signin" });
+    expect(res).toMatchObject({ ok: false, reason: "blocked_by_policy" });
+    const row = h.store.audits.find((a) => a.type === "command.rejected");
+    expect(CommandRejectedMeta.parse(row?.meta).reason).toBe("blocked_by_policy");
+  });
+
+  it("relays can't carry provider commands, and an untrusted signer is refused before the manager", async () => {
+    const r = recorder();
+    const h = await harness({ providers: r.providers });
+    expect((await h.command({ type: "provider.status" }, { origin: "mcp:claude", relayed: "mcp-gateway" })).ok).toBe(
+      false,
+    );
+    const stranger = await device("dev_stranger");
+    expect((await h.command({ type: "provider.disconnect", provider: "openai" }, { signer: stranger })).ok).toBe(false);
+    expect(r.calls).toEqual([]);
   });
 });

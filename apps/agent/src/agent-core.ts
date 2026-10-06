@@ -23,6 +23,7 @@ import {
   type CommandBody,
   type CommandPayload,
   type Origin,
+  type Provider,
   type RemotePermissionMode,
   type SealedEnvelope,
   type SessionState,
@@ -62,9 +63,19 @@ export interface PolicyHolder {
   set(p: Policy, via: "local" | "remote_tighten" | "preset_accepted"): Promise<void>;
 }
 
+/** "Connect your AI" (providers.ts); absent in setups that don't manage providers. */
+export interface ProviderCommands {
+  connectKey(p: Provider, key: unknown): Promise<{ ok: boolean; reason?: string }>;
+  signin(p: Provider): Promise<{ ok: boolean; reason?: string }>;
+  disconnect(p: Provider): Promise<{ ok: boolean; reason?: string }>;
+  requestInstall(p: Provider): Promise<{ ok: boolean; reason?: string }>;
+  report(): Promise<void>;
+}
+
 export interface AgentCoreDeps {
   store: AgentStore;
   adapters: Partial<Record<AdapterKind, SessionAdapter>>;
+  providers?: ProviderCommands;
   policy: PolicyHolder;
   devMode: DevMode;
   trust: () => TrustedClientList;
@@ -347,7 +358,41 @@ export class AgentCore {
         this.#audit("trust.client_removed", { clientDeviceId: p.clientDeviceId, by: origin });
         return { ok: true };
       }
+      // Credentials and the provider's CLI only: none of these touches policy, trust or
+      // Developer mode. An install still waits for a yes on this computer, and a sign-in
+      // happens in this computer's browser.
+      case "provider.connect": {
+        const providers = this.d.providers;
+        if (!providers) return this.#reject(cid, "provider_failed");
+        const r =
+          p.method === "api_key"
+            ? await providers.connectKey(p.provider, await open<string>(p.keyCt!))
+            : await providers.signin(p.provider);
+        this.#audit("provider.connect", { provider: p.provider, method: p.method, by: origin, ok: r.ok });
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "provider_failed");
+      }
+      case "provider.disconnect": {
+        if (!this.d.providers) return this.#reject(cid, "provider_failed");
+        const r = await this.d.providers.disconnect(p.provider);
+        this.#audit("provider.disconnect", { provider: p.provider, by: origin, ok: r.ok });
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "provider_failed");
+      }
+      case "provider.install": {
+        if (!this.d.providers) return this.#reject(cid, "provider_failed");
+        const r = await this.d.providers.requestInstall(p.provider);
+        this.#audit("provider.install_requested", { provider: p.provider, by: origin, ok: r.ok });
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "provider_failed");
+      }
+      case "provider.status":
+        if (!this.d.providers) return this.#reject(cid, "provider_failed");
+        await this.d.providers.report();
+        return { ok: true };
     }
+  }
+
+  /** The daemon rebuilds the adapters when a provider is connected, signed out or installed. */
+  setAdapters(adapters: Partial<Record<AdapterKind, SessionAdapter>>): void {
+    this.d.adapters = adapters;
   }
 
   /** Local acceptance of a cloud-proposed preset (desktop app or CLI). */

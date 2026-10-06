@@ -1,10 +1,11 @@
 import { z } from "zod";
-import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
+import { DevModeToggle, EnableableDevModeToggle, Provider } from "@chalito/protocol";
 import type { LiabilityText } from "@chalito/config";
 import { DevMode, RISK_COPY, type DevModeDeps, type OsAuth } from "./devmode.js";
 import { IpcError, type IpcHandlers } from "./ipc-server.js";
 import type { FilePolicyHolder } from "./policy-file.js";
 import { policyRules } from "./policy-view.js";
+import type { ProviderManager, ProviderResult } from "./providers.js";
 import type { AgentStore } from "./store.js";
 
 /** The agent version the panel's `ping` sees. */
@@ -23,6 +24,8 @@ const Enable = z.object({
 });
 const Presence = z.object({ desktopActive: z.boolean() });
 const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boolean() });
+const ForProvider = z.object({ provider: Provider });
+const ProviderKey = z.object({ provider: Provider, key: z.string().min(1).max(512) });
 
 const parse = <T>(schema: z.ZodType<T>, params: unknown): T => {
   const r = schema.safeParse(params);
@@ -43,7 +46,16 @@ export interface IpcDeps {
   now: () => number;
   /** Reports the Developer-mode state to the account (device row + DeviceEvent), as the daemon does. */
   reportDevMode: () => Promise<void>;
+  /** "Connect your AI" (providers.ts); absent in setups that don't manage providers. */
+  providers?: ProviderManager;
 }
+
+const providerCall = async (d: IpcDeps, run: (m: ProviderManager) => Promise<ProviderResult>) => {
+  if (!d.providers) throw new IpcError("unavailable");
+  const r = await run(d.providers);
+  if (!r.ok) throw new IpcError(r.reason);
+  return { ok: true };
+};
 
 /**
  * What the desktop panel asks of this agent (apps/desktop/src/lib/ipc.ts `AgentIpc`).
@@ -111,5 +123,35 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   reportPresence: async (params) => {
     const { desktopActive } = parse(Presence, params);
     await d.store.updateDevice({ presence: { desktopActive }, lastSeenAt: d.now() });
+  },
+
+  // "IA conectadas": the same actions as the provider.* commands, from this computer. Here the
+  // key arrives in plaintext over the local socket (never the network), and `installProvider` is
+  // the person's local yes (the panel asks before calling it).
+  providers: async () => {
+    if (!d.providers) throw new IpcError("unavailable");
+    return d.providers.view();
+  },
+  connectProviderKey: async (params) => {
+    const { provider, key } = parse(ProviderKey, params);
+    return providerCall(d, (m) => m.connectKey(provider, key));
+  },
+  signinProvider: async (params) => {
+    const { provider } = parse(ForProvider, params);
+    return providerCall(d, (m) => m.signin(provider));
+  },
+  disconnectProvider: async (params) => {
+    const { provider } = parse(ForProvider, params);
+    return providerCall(d, (m) => m.disconnect(provider));
+  },
+  installProvider: async (params) => {
+    const { provider } = parse(ForProvider, params);
+    return providerCall(d, (m) => m.install(provider));
+  },
+  declineProviderInstall: async (params) => {
+    const { provider } = parse(ForProvider, params);
+    if (!d.providers) throw new IpcError("unavailable");
+    await d.providers.declineInstall(provider);
+    return { ok: true };
   },
 });

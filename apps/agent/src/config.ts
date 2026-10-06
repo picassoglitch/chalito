@@ -86,7 +86,10 @@ export const AgentConfig = z.object({
   claude: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
   /** The user's Codex binary, pinned by `chalito codex pin`, the same way as `claude`. */
   codex: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
-  /** Grok Build (`grok`) and Gemini CLI (`gemini`), run over ACP; pinned the same way. */
+  /**
+   * Grok Build (`grok`) and Gemini CLI (`gemini`), run over ACP; pinned the same way (also when
+   * the desktop app installs or connects them, providers.ts).
+   */
   grok: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
   gemini: z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
 });
