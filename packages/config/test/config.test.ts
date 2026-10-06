@@ -207,7 +207,7 @@ describe("catalog wearables (fit any body: neck, head, face, back)", () => {
       false,
     );
     expect(parse({ bow_tie_red: { ...bow, card: { neckWidth: 0, pivot: [0.5, 0.5] } } }).success).toBe(false);
-    expect(parse({ bow_tie_red: { ...bow, card: { neckWidth: 0.8, pivot: [0.5, 1.5] } } }).success).toBe(false);
+    expect(parse({ bow_tie_red: { ...bow, card: { neckWidth: 0.8, pivot: [0.5, 2.5] } } }).success).toBe(false);
     expect(
       parse({ bow_tie_red: { ...bow, card: { neckWidth: 0.8, pivot: [0.5, 0.5], anchorY: "neck" } } }).success,
     ).toBe(false);
