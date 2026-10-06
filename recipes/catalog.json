@@ -374,7 +374,7 @@
     },
     {
       "v": 1,
-      "id": "claude",
+      "id": "claude-web",
       "name": "Claude",
       "vendor": "Anthropic",
       "homepage": "https://claude.ai/",
@@ -582,9 +582,7 @@
             "copilot",
             "--acp"
           ],
-          "authMethods": [
-            "copilot-login"
-          ]
+          "authMethods": []
         },
         "terminal": {
           "command": [
@@ -599,7 +597,7 @@
     },
     {
       "v": 1,
-      "id": "copilot",
+      "id": "copilot-web",
       "name": "Microsoft Copilot",
       "vendor": "Microsoft",
       "homepage": "https://copilot.microsoft.com/",
@@ -964,10 +962,11 @@
         "acp": {
           "command": [
             "gemini",
-            "--acp"
+            "--acp",
+            "--approval-mode",
+            "default"
           ],
           "authMethods": [
-            "oauth-personal",
             "gemini-api-key"
           ]
         },
@@ -1190,7 +1189,9 @@
         "acp": {
           "command": [
             "grok",
+            "--no-auto-update",
             "agent",
+            "--no-leader",
             "stdio"
           ],
           "authMethods": [
@@ -1328,6 +1329,114 @@
       "capabilities": [
         "remote-view",
         "ai-control"
+      ]
+    },
+    {
+      "v": 1,
+      "id": "mistral-vibe",
+      "name": "Mistral Vibe",
+      "vendor": "Mistral AI",
+      "homepage": "https://github.com/mistralai/mistral-vibe",
+      "termsUrl": "https://mistral.ai/terms",
+      "kinds": [
+        "acp",
+        "terminal"
+      ],
+      "platforms": {
+        "mac": {
+          "detect": {
+            "commands": [
+              "vibe-acp",
+              "vibe"
+            ],
+            "paths": [
+              "~/.local/bin/vibe-acp"
+            ],
+            "bundleIds": [],
+            "appUserModelIds": []
+          },
+          "install": {
+            "via": "official-url",
+            "ref": "https://github.com/mistralai/mistral-vibe"
+          },
+          "launch": {
+            "command": [
+              "vibe"
+            ]
+          }
+        },
+        "windows": {
+          "detect": {
+            "commands": [
+              "vibe-acp",
+              "vibe"
+            ],
+            "paths": [],
+            "bundleIds": [],
+            "appUserModelIds": []
+          },
+          "install": {
+            "via": "official-url",
+            "ref": "https://github.com/mistralai/mistral-vibe"
+          },
+          "launch": {
+            "command": [
+              "vibe"
+            ]
+          }
+        },
+        "linux": {
+          "detect": {
+            "commands": [
+              "vibe-acp",
+              "vibe"
+            ],
+            "paths": [
+              "~/.local/bin/vibe-acp"
+            ],
+            "bundleIds": [],
+            "appUserModelIds": []
+          },
+          "install": {
+            "via": "official-url",
+            "ref": "https://github.com/mistralai/mistral-vibe"
+          },
+          "launch": {
+            "command": [
+              "vibe"
+            ]
+          }
+        }
+      },
+      "signin": {
+        "via": "cli",
+        "command": [
+          "vibe"
+        ],
+        "interactive": true,
+        "planSignin": "off"
+      },
+      "apiKey": {
+        "env": "MISTRAL_API_KEY",
+        "label": "Mistral API key",
+        "docsUrl": "https://docs.mistral.ai/getting-started/quickstart/"
+      },
+      "driver": {
+        "acp": {
+          "command": [
+            "vibe-acp"
+          ],
+          "authMethods": []
+        },
+        "terminal": {
+          "command": [
+            "vibe"
+          ]
+        }
+      },
+      "capabilities": [
+        "sessions",
+        "terminal"
       ]
     },
     {
@@ -1526,9 +1635,7 @@
             "opencode",
             "acp"
           ],
-          "authMethods": [
-            "opencode-login"
-          ]
+          "authMethods": []
         },
         "terminal": {
           "command": [
@@ -1657,7 +1764,9 @@
         "acp": {
           "command": [
             "qwen",
-            "--acp"
+            "--acp",
+            "--approval-mode",
+            "default"
           ],
           "authMethods": [
             "openai"

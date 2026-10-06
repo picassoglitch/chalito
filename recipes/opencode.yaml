@@ -45,12 +45,14 @@ signin:
   logoutCommand: [opencode, auth, logout]
   planSignin: "on"
 driver:
-  acp: { command: [opencode, acp], authMethods: [opencode-login] }
+  # No API-key authenticate method; the ACP preset sets OPENCODE_PERMISSION={"*":"ask"} so every tool asks.
+  acp: { command: [opencode, acp], authMethods: [] }
   terminal: { command: [opencode] }
 capabilities: [sessions, terminal]
 verification:
   checked: "2026-10-06"
   sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config (OPENCODE_PERMISSION ask)"
     - "npm view opencode-ai (version 1.18.34, maintainer thdxr)"
     - "opencode --help (1.18.34): commands acp, providers [alias auth] with login/logout/list"
     - "opencode acp initialize response (1.18.34): authMethods [{id: opencode-login, description: 'Run `opencode auth login` in the terminal'}]"

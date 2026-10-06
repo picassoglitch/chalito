@@ -1255,10 +1255,10 @@ Notable findings:
 | `chatgpt` | ChatGPT | web-app | web | `driver.web.allowedOrigins`; `termsUrl` |
 | `claude-code` | Claude Code | claude-sdk, terminal | cli | `apiKey.docsUrl` |
 | `claude-desktop` | Claude (desktop) | desktop-app | desktop-app | `platforms.windows.detect.paths`; `platforms.windows.install`; `platforms.linux`; `driver.desktopApp.exe` |
-| `claude` | Claude | web-app | web | `driver.web.allowedOrigins` |
+| `claude-web` | Claude | web-app | web | `driver.web.allowedOrigins` |
 | `codex` | Codex | codex, terminal | cli | none |
 | `copilot-cli` | GitHub Copilot CLI | acp, terminal | cli | `signin.statusCommand`; `signin.logoutCommand`; `signin.openLinks`; `platforms.mac.install` |
-| `copilot` | Microsoft Copilot | web-app | web | `signin.url` |
+| `copilot-web` | Microsoft Copilot | web-app | web | `signin.url` |
 | `cursor-cli` | Cursor CLI | acp, terminal | cli | `signin.statusCommand`; `signin.openLinks`; `launch.command`; `driver.acp` |
 | `cursor` | Cursor | desktop-app | desktop-app | `platforms.windows.detect.paths`; `platforms.mac.detect.bundleIds`; `platforms.linux.detect`; `platforms.windows.install` |
 | `deepseek` | DeepSeek | web-app | web | `signin.url`; `driver.web.allowedOrigins` |

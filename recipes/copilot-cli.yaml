@@ -49,12 +49,14 @@ apiKey:
   label: GitHub fine-grained token with "Copilot Requests" permission
   docsUrl: https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli
 driver:
-  acp: { command: [copilot, --acp], authMethods: [copilot-login] }
+  # The key goes in COPILOT_GITHUB_TOKEN; copilot-login is its sign-in, never sent with a key.
+  acp: { command: [copilot, --acp], authMethods: [] }
   terminal: { command: [copilot] }
 capabilities: [sessions, terminal]
 verification:
   checked: "2026-10-06"
   sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config"
     - "npm view @github/copilot (version 1.0.92, repo github.com/github/copilot-cli, GitHub maintainers)"
     - "copilot --help (1.0.92): commands login, ...; option --acp 'Start as Agent Client Protocol server'"
     - "copilot login --help (1.0.92): browser web flow on local desktops, device code on headless/SSH/CI; --device-code, --web-flow, --with-token"

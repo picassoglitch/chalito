@@ -29,12 +29,13 @@ apiKey:
   label: xAI API key
   docsUrl: https://docs.x.ai/docs/overview
 driver:
-  acp: { command: [grok, agent, stdio], authMethods: [xai.api_key] }
+  acp: { command: [grok, --no-auto-update, agent, --no-leader, stdio], authMethods: [xai.api_key] }
   terminal: { command: [grok] }
 capabilities: [sessions, terminal]
 verification:
   checked: "2026-10-06"
   sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config (sandbox flag added per mode)"
     - "grok --help, grok login --help (@xai-official/grok 1.0.46), DEVIATIONS D-062"
   unverified:
     - field: homepage

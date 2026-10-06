@@ -50,12 +50,13 @@ apiKey:
   label: OpenAI-compatible API key (also set OPENAI_BASE_URL and OPENAI_MODEL)
   docsUrl: https://qwenlm.github.io/qwen-code-docs/en/users/configuration/auth/
 driver:
-  acp: { command: [qwen, --acp], authMethods: [openai] }
+  acp: { command: [qwen, --acp, --approval-mode, default], authMethods: [openai] }
   terminal: { command: [qwen] }
 capabilities: [sessions, terminal]
 verification:
   checked: "2026-10-06"
   sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config"
     - "npm view @qwen-code/qwen-code (version 0.25.0, repo github.com/QwenLM/qwen-code)"
     - "qwen --help (0.25.0): --acp 'Starts the agent in ACP mode'; --auth-type choices openai, openai-responses, anthropic, qwen-oauth, gemini, vertex-ai"
     - "qwen auth (0.25.0): 'qwen auth has been removed' -> Interactive: run qwen and use /auth; Qwen OAuth: run qwen interactively and use /auth"

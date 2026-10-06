@@ -46,12 +46,14 @@ signin:
   command: [goose, configure]
   planSignin: "on"
 driver:
+  # The ACP preset starts it with GOOSE_MODE=approve (every tool asks) and holds that mode.
   acp: { command: [goose, acp], authMethods: [] }
   terminal: { command: [goose, session] }
 capabilities: [sessions, terminal]
 verification:
   checked: "2026-10-06"
   sources:
+    - "packages/adapters/src/acp/recipe.ts BUILTIN_ACP_RECIPES + profiles.ts presets (D-065): driver.acp mirrors the ACP driver's config (GOOSE_MODE=approve)"
     - https://goose-docs.ai/docs/getting-started/installation
     - https://goose-docs.ai/docs/guides/goose-cli-commands
     - https://goose-docs.ai/docs/gdk/acp/
