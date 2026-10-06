@@ -154,7 +154,8 @@
         "signing_in": "Finish signing in in the browser that opened.",
         "connected": "Connected",
         "error": "Couldn't connect.",
-        "blocked_by_policy": "Signing in with your plan isn't available for your account. Use an API key."
+        "blocked_by_policy": "Signing in with your plan isn't available for your account. Use an API key.",
+        "available": "Ready. You sign in inside the app."
       },
       "mode": {
         "api_key": "with your API key",
@@ -169,7 +170,11 @@
         "signin_timeout": "Signing in took too long. Try again.",
         "key_invalid": "That API key isn't valid.",
         "keychain_failed": "I couldn't save the key in the system keychain.",
-        "status_failed": "I couldn't check the status."
+        "status_failed": "I couldn't check the status.",
+        "launch_failed": "It couldn't be opened on this computer.",
+        "unsupported_platform": "It isn't available for this operating system.",
+        "install_unavailable": "There's no official installer that can run here (brew or winget is missing).",
+        "recipe_disabled": "This custom recipe is off on this computer."
       },
       "failure": {
         "blocked_by_policy": "Signing in with your plan isn't available for your account.",
@@ -194,6 +199,45 @@
         "openai": "Signing in with your ChatGPT plan: Chalito team only for now.",
         "xai": "Signing in with Grok isn't available for now.",
         "google": "Signing in with Google isn't available for now."
+      }
+    },
+    "apps": {
+      "intro": "All your AIs in one place. Each one signs in with its own app, its CLI or its official website; Chalito never sees your passwords.",
+      "group": {
+        "agents": "Coding and terminal agents",
+        "desktop": "Desktop apps",
+        "web": "AI websites",
+        "custom": "Custom"
+      },
+      "custom": "Custom",
+      "customHint": "Your own recipes in ~/.chalito/recipes. They're turned on only here, on this computer, and only their id, name and status leave it.",
+      "enable": "Turn on for this computer",
+      "enableYes": "Yes, turn it on",
+      "disable": "Turn off",
+      "enableResult": {
+        "os_auth_failed": "Couldn't verify your identity with the system. Nothing changed.",
+        "cancelled": "Cancelled. Nothing changed."
+      },
+      "open": "Open",
+      "openSignin": "Open (sign in there)",
+      "installVia": "I'll install the official package {ref} with {via} on this computer.",
+      "installPage": "I'll open {vendor}'s official download page; you install it from there.",
+      "terms": "{vendor}'s terms",
+      "remoteInstall": "You asked to install {name} from another device. Install it on this computer?",
+      "signinTerminal": "To sign in, open a terminal on this computer and run: {cmd}",
+      "signinOff": "Signing in with your plan isn't available for your account yet. Use an API key.",
+      "failure": {
+        "blocked_by_policy": "Signing in with your plan isn't available for your account.",
+        "provider_busy": "An install or a sign-in is already running.",
+        "recipe_disabled": "Turn this recipe on for this computer first.",
+        "app_unavailable": "That isn't available for this app on this computer.",
+        "other": "That didn't work. Try again."
+      },
+      "problem": {
+        "invalid": "{file}: not a valid recipe.",
+        "shadows_curated": "{file}: uses a curated app's id; change it.",
+        "duplicate_id": "{file}: another recipe already uses that id.",
+        "too_large": "{file}: the file is too large."
       }
     }
   },

@@ -1,3 +1,4 @@
+import catalogJson from "../../../recipes/catalog.json" with { type: "json" };
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalView, ChalitoClient, NotificationView, Snapshot } from "@chalito/client";
@@ -7,13 +8,7 @@ import { DEFAULT_SETTINGS, SETTINGS } from "@chalito/ui";
 import es from "../messages/es.json";
 import en from "../messages/en.json";
 import { TextProviders } from "../src/lib/i18n.js";
-import {
-  unavailableIpc,
-  type AgentIpc,
-  type ComputerStatus,
-  type DevModeState,
-  type ProviderView,
-} from "../src/lib/ipc.js";
+import { unavailableIpc, type AgentIpc, type ComputerStatus, type DevModeState, type AppView } from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
 import { Panel, type PanelProps, type Tab } from "../src/panel/Panel.js";
 import { SignIn } from "../src/panel/SignIn.js";
@@ -114,12 +109,21 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
       return dev;
     },
     reportPresence: async () => undefined,
-    providers: async () => [],
-    connectProviderKey: async (...a) => void calls.push(["connectProviderKey", ...a]),
-    signinProvider: async (...a) => void calls.push(["signinProvider", ...a]),
-    disconnectProvider: async (...a) => void calls.push(["disconnectProvider", ...a]),
-    installProvider: async (...a) => void calls.push(["installProvider", ...a]),
-    declineProviderInstall: async (...a) => void calls.push(["declineProviderInstall", ...a]),
+    apps: async () => ({ apps: [], problems: [], catalog: null }),
+    connectAppKey: async (...a) => void calls.push(["connectAppKey", ...a]),
+    signinApp: async (...a) => void calls.push(["signinApp", ...a]),
+    disconnectApp: async (...a) => void calls.push(["disconnectApp", ...a]),
+    installApp: async (...a) => void calls.push(["installApp", ...a]),
+    declineAppInstall: async (...a) => void calls.push(["declineAppInstall", ...a]),
+    launchApp: async (...a) => void calls.push(["launchApp", ...a]),
+    customRecipeChallenge: async (appId) => ({
+      title: `Activar «${appId}»`,
+      warn: "Chalito ejecutará estos comandos.",
+      type: `Escribe «${appId}»`,
+      summary: ["sign-in: miagente login"],
+    }),
+    enableCustomRecipe: async (...a) => (calls.push(["enableCustomRecipe", ...a]), { ok: true as const }),
+    disableCustomRecipe: async (...a) => void calls.push(["disableCustomRecipe", ...a]),
     computerStatus: async () => computer,
     computerChallenge: async () => ({
       examples: ["Ver todo lo que hay en tu pantalla"],
@@ -468,74 +472,147 @@ describe("panel: approvals bound to what the agent signed (R-H1, R-M10)", () => 
   });
 });
 
-describe("panel: IA conectadas", () => {
-  const doc = (state: ProviderView["doc"]["state"], o: Partial<ProviderView["doc"]> = {}): ProviderView["doc"] => ({
+describe("panel: IA conectadas (catalog)", () => {
+  const recipes = catalogJson as unknown as { recipes: AppView["recipe"][] };
+  const recipe = (id: string) => recipes.recipes.find((r) => r.id === id)!;
+  const doc = (
+    state: AppView["doc"]["state"],
+    kind: AppView["doc"]["kind"],
+    o: Partial<AppView["doc"]> = {},
+  ): AppView["doc"] => ({
     mode: null,
     connected: state === "connected",
     state,
     cli: { installed: state !== "not_installed", version: state === "not_installed" ? null : "1.0.0" },
     error: null,
     at: 1,
+    kind,
+    custom: false,
     ...o,
   });
-  const views = (): ProviderView[] => [
-    { provider: "anthropic", doc: doc("needs_auth"), signinAllowed: false, installRequestedUntil: null },
-    {
-      provider: "openai",
-      doc: doc("connected", { mode: "api_key" }),
-      signinAllowed: false,
-      installRequestedUntil: null,
-    },
-    { provider: "xai", doc: doc("needs_auth"), signinAllowed: true, installRequestedUntil: null },
-    { provider: "google", doc: doc("not_installed"), signinAllowed: true, installRequestedUntil: 9e15 },
-  ];
-  const row = (c: HTMLElement, p: string) => c.querySelector(`[data-provider="${p}"]`) as HTMLElement;
+  const app = (id: string, d: AppView["doc"], o: Partial<AppView> = {}): AppView => ({
+    appId: id,
+    recipe: recipe(id),
+    custom: false,
+    enabled: true,
+    doc: d,
+    signinAllowed: false,
+    installRequestedUntil: null,
+    supported: true,
+    install: Object.values(recipe(id).platforms)[0]?.install ?? null,
+    ...o,
+  });
+  const mine = {
+    ...recipe("goose"),
+    id: "mi-agente",
+    name: "Mi agente",
+    vendor: "Yo",
+    kinds: ["terminal" as const],
+  };
+  const views = () => ({
+    apps: [
+      app("claude-code", doc("needs_auth", "claude-sdk")),
+      app("codex", doc("connected", "codex", { mode: "api_key" })),
+      app("grok", doc("needs_auth", "acp"), { signinAllowed: true }),
+      app("gemini", doc("not_installed", "acp"), { signinAllowed: true, installRequestedUntil: 9e15 }),
+      app("chatgpt", doc("available", "web-app")),
+      app("claude-desktop", doc("not_installed", "desktop-app")),
+      app("aider", doc("needs_auth", "terminal"), { signinAllowed: true }),
+      {
+        ...app("goose", doc("error", "terminal", { custom: true, name: "Mi agente", error: "recipe_disabled" })),
+        appId: "mi-agente",
+        recipe: mine,
+        custom: true,
+        enabled: false,
+      },
+    ],
+    problems: [{ file: "roto.yaml", reason: "invalid" as const }],
+    catalog: { source: "builtin" as const, issuedAt: 1 },
+  });
+  const row = (c: HTMLElement, id: string) => c.querySelector(`[data-app="${id}"]`) as HTMLElement;
+  const buttons = (c: HTMLElement, id: string) => [...row(c, id).querySelectorAll("button")].map((b) => b.textContent);
 
-  it("lists the four providers with their state and the actions each allows", async () => {
-    const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ providers: async () => views() }) }, "es");
-    await waitFor(() => expect(container.querySelectorAll("[data-provider]")).toHaveLength(4));
-    const claude = row(container, "anthropic");
-    expect(claude.textContent).toContain("Conectar con API key");
-    const buttons = (p: string) => [...row(container, p).querySelectorAll("button")].map((b) => b.textContent);
-    expect(buttons("anthropic")).toEqual(["Conectar con API key"]);
-    expect(buttons("xai")).toEqual(["Conectar con API key", "Iniciar sesión"]);
-    expect(claude.textContent).toContain("solo equipo de Chalito");
-    expect(row(container, "openai").textContent).toContain("Conectado · con tu API key");
-    expect(row(container, "openai").textContent).toContain("Desconectar");
-    expect(row(container, "xai").textContent).toContain("Iniciar sesión");
-    expect(row(container, "google").textContent).toContain("Instalar");
+  it("groups the curated apps by kind and the person's own recipes under Personalizada", async () => {
+    const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ apps: async () => views() }) }, "es");
+    await waitFor(() => expect(container.querySelectorAll("[data-app]")).toHaveLength(8));
+    const group = (g: string) =>
+      [...container.querySelectorAll(`[data-group="${g}"] [data-app]`)].map((e) => e.getAttribute("data-app"));
+    expect(group("agents")).toEqual(["claude-code", "codex", "grok", "gemini", "aider"]);
+    expect(group("desktop")).toEqual(["claude-desktop"]);
+    expect(group("web")).toEqual(["chatgpt"]);
+    expect(group("custom")).toEqual(["mi-agente"]);
+    expect(container.textContent).toContain("Personalizada");
+    expect(container.textContent).toContain("roto.yaml: no es una receta válida.");
   });
 
-  it("a key goes to the agent over the local IPC; sign-in and disconnect are local actions", async () => {
-    const ipc = fakeIpc({ providers: async () => views() });
+  it("each app offers only what it supports: keys, its own sign-in, opening it, installing it", async () => {
+    const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ apps: async () => views() }) }, "es");
+    await waitFor(() => expect(row(container, "chatgpt")).toBeTruthy());
+    expect(buttons(container, "claude-code")).toEqual(["Conectar con API key"]);
+    expect(buttons(container, "grok")).toEqual(["Conectar con API key", "Iniciar sesión"]);
+    expect(row(container, "codex").textContent).toContain("Conectado · con tu API key");
+    expect(buttons(container, "chatgpt")).toEqual(["Abrir (inicias sesión ahí)"]);
+    expect(buttons(container, "claude-desktop")).toEqual(["Instalar"]);
+    // A sign-in that only works in the app's own terminal UI is a hint, not a button.
+    expect(buttons(container, "aider")).toEqual(["Conectar con API key"]);
+    expect(row(container, "aider").textContent).toContain("ejecuta: aider");
+    // A custom recipe that's off: only turning it on (here) is offered.
+    expect(buttons(container, "mi-agente")).toEqual(["Activar en esta computadora"]);
+  });
+
+  it("a key goes to the agent over the local IPC; sign-in, open and disconnect are local actions", async () => {
+    const ipc = fakeIpc({ apps: async () => views() });
     const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
-    await waitFor(() => expect(row(container, "xai")).toBeTruthy());
-    fireEvent.click(within(row(container, "anthropic")).getByText("Connect with an API key"));
-    fireEvent.change(row(container, "anthropic").querySelector('input[type="password"]')!, {
+    await waitFor(() => expect(row(container, "grok")).toBeTruthy());
+    fireEvent.click(within(row(container, "claude-code")).getByText("Connect with an API key"));
+    fireEvent.change(row(container, "claude-code").querySelector('input[type="password"]')!, {
       target: { value: " sk-ant-x " },
     });
-    fireEvent.click(within(row(container, "anthropic")).getByText("Save"));
-    await waitFor(() => expect(ipc.calls).toContainEqual(["connectProviderKey", "anthropic", "sk-ant-x"]));
+    fireEvent.click(within(row(container, "claude-code")).getByText("Save"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["connectAppKey", "claude-code", "sk-ant-x"]));
 
-    fireEvent.click(within(row(container, "xai")).getByText("Sign in"));
-    await waitFor(() => expect(ipc.calls).toContainEqual(["signinProvider", "xai"]));
+    fireEvent.click(within(row(container, "grok")).getByText("Sign in"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["signinApp", "grok"]));
+    fireEvent.click(within(row(container, "chatgpt")).getByText("Open (sign in there)"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["launchApp", "chatgpt"]));
 
-    fireEvent.click(within(row(container, "openai")).getByText("Disconnect"));
-    expect(ipc.calls.some((c) => c[0] === "disconnectProvider")).toBe(false);
-    fireEvent.click(within(row(container, "openai")).getByText("Yes, disconnect"));
-    await waitFor(() => expect(ipc.calls).toContainEqual(["disconnectProvider", "openai"]));
+    fireEvent.click(within(row(container, "codex")).getByText("Disconnect"));
+    expect(ipc.calls.some((c) => c[0] === "disconnectApp")).toBe(false);
+    fireEvent.click(within(row(container, "codex")).getByText("Yes, disconnect"));
+    await waitFor(() => expect(ipc.calls).toContainEqual(["disconnectApp", "codex"]));
   });
 
-  it("installs only after a yes here, also when another device asked for it", async () => {
-    const ipc = fakeIpc({ providers: async () => views() });
+  it("installs only after a yes here, also when another device asked for it, naming the official source", async () => {
+    const ipc = fakeIpc({ apps: async () => views() });
     const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
-    await waitFor(() => expect(row(container, "google")).toBeTruthy());
-    const google = row(container, "google");
-    expect(google.textContent).toContain("from another device");
-    expect(google.textContent).toContain("@google/gemini-cli");
-    expect(ipc.calls.some((c) => c[0] === "installProvider")).toBe(false);
-    fireEvent.click(within(google).getAllByText("Yes, install")[0]!);
-    await waitFor(() => expect(ipc.calls).toContainEqual(["installProvider", "google"]));
+    await waitFor(() => expect(row(container, "gemini")).toBeTruthy());
+    const gemini = row(container, "gemini");
+    expect(gemini.textContent).toContain("from another device");
+    expect(gemini.textContent).toContain("@google/gemini-cli");
+    expect(ipc.calls.some((c) => c[0] === "installApp")).toBe(false);
+    fireEvent.click(within(gemini).getAllByText("Yes, install")[0]!);
+    await waitFor(() => expect(ipc.calls).toContainEqual(["installApp", "gemini"]));
+
+    fireEvent.click(within(row(container, "claude-desktop")).getByText("Install"));
+    expect(row(container, "claude-desktop").querySelector("a")?.getAttribute("href")).toBe(
+      recipe("claude-desktop").termsUrl,
+    );
+  });
+
+  it("a custom recipe is turned on here only after reviewing its commands and typing its id", async () => {
+    const ipc = fakeIpc({ apps: async () => views() });
+    const { container } = renderPanel({ initialTab: "ai", ipc }, "es");
+    await waitFor(() => expect(row(container, "mi-agente")).toBeTruthy());
+    fireEvent.click(within(row(container, "mi-agente")).getByText("Activar en esta computadora"));
+    await waitFor(() => expect(row(container, "mi-agente").textContent).toContain("sign-in: miagente login"));
+    const yes = within(row(container, "mi-agente")).getByText("Sí, activar") as HTMLButtonElement;
+    expect(yes.disabled).toBe(true);
+    fireEvent.change(row(container, "mi-agente").querySelector("input")!, { target: { value: "mi-agente" } });
+    expect(yes.disabled).toBe(false);
+    fireEvent.click(yes);
+    await waitFor(() =>
+      expect(ipc.calls).toContainEqual(["enableCustomRecipe", "mi-agente", { review: true, typed: "mi-agente" }]),
+    );
   });
 
   it("without the local agent it says so", async () => {
