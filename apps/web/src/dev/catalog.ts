@@ -78,7 +78,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 200,
     art: "cosmetics/bell_collar.webp",
-    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] },
   },
   pearl_necklace: {
     name: { es: "Collar de perlas", en: "Pearl necklace" },
@@ -86,7 +86,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 200,
     art: "cosmetics/pearl_necklace.webp",
-    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] },
   },
   gold_medal: {
     name: { es: "Medalla de oro", en: "Gold medal" },
@@ -102,7 +102,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 300,
     art: "cosmetics/marigold_necklace.webp",
-    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] },
   },
   flower_lei: {
     name: { es: "Collar hawaiano", en: "Flower lei" },
@@ -110,7 +110,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 300,
     art: "cosmetics/flower_lei.webp",
-    card: { neckWidth: 1.3, pivot: [0.5, 0.15] },
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] },
   },
   charro_hat: {
     name: { es: "Sombrero de charro", en: "Charro hat" },
@@ -142,7 +142,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 300,
     art: "cosmetics/party_hat.webp",
-    card: { width: 0.3, pivot: [0.5, 0.95] },
+    card: { width: 0.34, pivot: [0.5, 0.95] },
   },
   flower_headband: {
     name: { es: "Diadema de flores", en: "Flower headband" },
@@ -174,7 +174,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 200,
     art: "cosmetics/mustache.webp",
-    card: { width: 0.3, pivot: [0.5, 0] },
+    card: { width: 0.3, pivot: [0.5, -0.9] },
   },
   angel_wings: {
     name: { es: "Alas de ángel", en: "Angel wings" },
@@ -222,7 +222,7 @@ export const DEV_CATALOG = {
     free: false,
     priceTokens: 2000,
     art: "cosmetics/jetpack.webp",
-    card: { width: 0.6, pivot: [0.5, 0.4] },
+    card: { width: 0.85, pivot: [0.5, 0.4] },
   },
   skin_gold: {
     name: { es: "Dorado", en: "Gold" },
