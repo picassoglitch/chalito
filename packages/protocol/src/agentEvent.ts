@@ -162,6 +162,13 @@ export const CommandRejectReason = z.enum([
   "provider_busy",
   /** provider.*: the key couldn't be stored, the CLI is missing, or its sign-in/install failed. */
   "provider_failed",
+  // ENGINE (app.*; provider_busy / provider_failed / blocked_by_policy above apply to app.* too)
+  /** app.* / session.start: no recipe with that id on this computer. */
+  "unknown_app",
+  /** A custom recipe that isn't enabled on this computer (or was edited since it was enabled). */
+  "recipe_disabled",
+  /** app.launch / app.install: nothing to do for that app on this computer's OS. */
+  "app_unavailable",
   "internal",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;

@@ -123,6 +123,13 @@ describe("remote surfaces can never widen the device", () => {
       { type: "provider.disconnect", provider: "google" },
       { type: "provider.install", provider: "anthropic" },
       { type: "provider.status" },
+      // Engine: app.* neither.
+      { type: "app.connect", appId: "goose", method: "api_key", keyCt },
+      { type: "app.connect", appId: "chatgpt", method: "signin" },
+      { type: "app.disconnect", appId: "goose" },
+      { type: "app.install", appId: "lm-studio" },
+      { type: "app.status" },
+      { type: "app.launch", appId: "cursor" },
     ]) {
       const parsed = CommandPayload.parse({ ...payload, computer: { enabled: true }, enabled: true });
       expect(Object.keys(parsed).filter((k) => /computer|enabled/i.test(k))).toEqual([]);
