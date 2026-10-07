@@ -4,7 +4,7 @@ import { HubTenantCreate, HubTenantStatus, SsoExchangeRequest } from "@chalito/p
 import type { Deps } from "../deps.js";
 import { fail } from "../lib/errors.js";
 import { tenantApiToken, verifySsoToken } from "../hub/sso.js";
-import { dropLapsedSkins } from "../store/routes.js";
+import { dropLapsedSkins } from "../store/included.js";
 
 const bearerOk = (header: string | undefined, token: string) => {
   const given = Buffer.from(header?.startsWith("Bearer ") ? header.slice(7) : "");

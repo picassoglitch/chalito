@@ -1,13 +1,16 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { CatalogConfig, CosmeticItem } from "@chalito/config";
+import type { CatalogConfig } from "@chalito/config";
 import { HubUnavailable, type HubClient } from "@chalito/billing";
 import { CosmeticSlot, type HubUsageEvent } from "@chalito/protocol";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
+import { dropLapsedSkins, includedFor } from "./included.js";
 import type { StoreRepo } from "./repo.js";
+
+export { dropLapsedSkins } from "./included.js";
 
 export interface StoreDeps {
   repo: StoreRepo;
@@ -21,22 +24,6 @@ export const MICROS_PER_TOKEN = 4;
 /** Own keys only: `__proto__`, `constructor` and friends match the id pattern but aren't items (R-L9). */
 const itemOf = (catalog: CatalogConfig, id: string) =>
   Object.hasOwn(catalog.cosmetics, id) ? catalog.cosmetics[id] : undefined;
-
-/** True when the owner's hub tier wears this item at no cost (catalog `includedIn`). */
-const includedFor = (item: CosmeticItem, tier: string | null) =>
-  !!tier && item.slot === "skin" && (item.includedIn as readonly string[] | undefined)?.includes(tier) === true;
-
-/**
- * Plan-included skins the owner's tier no longer covers (a VIP who downgraded) come off their
- * companions, unless they bought the skin. Run where the tier is written (SSO) and when the store
- * is read, so the equipped map never keeps a perk the plan stopped paying for.
- */
-export const dropLapsedSkins = async (store: StoreDeps, owner: string, tier: string | null) => {
-  const lapsed = Object.entries(store.catalog.cosmetics)
-    .filter(([, x]) => x.slot === "skin" && (x.includedIn?.length ?? 0) > 0 && !includedFor(x, tier))
-    .map(([id]) => id);
-  return lapsed.length ? store.repo.dropUnownedSkins(owner, lapsed) : 0;
-};
 
 const PurchaseId = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
 const CosmeticId = z.string().regex(/^[a-z0-9_]{1,64}$/);
