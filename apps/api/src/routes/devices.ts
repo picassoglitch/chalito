@@ -40,7 +40,7 @@ const sameBundle = (a: readonly string[] | undefined, b: readonly string[]) =>
 export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFromEnv()) => {
   const app = new Hono<AuthEnv>();
 
-  /** First trusted client (the phone). Only while the account has no active client. */
+  /** First trusted client (the phone). Only while the account has no active device (client or agent). */
   app.post("/first", requireAuth(deps, ["user"]), async (c) => {
     const p = principal(c);
     const body = EnrollFirstClientRequest.safeParse(await c.req.json().catch(() => null));
@@ -67,6 +67,8 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
     });
     if (enrolled === "client_exists")
       fail(409, "client_exists", "Add new phones with an endorsement from a trusted one.");
+    if (enrolled === "agent_exists")
+      fail(409, "agent_exists", "A paired computer exists: use your recovery code to add this device.");
     if (enrolled === "device_exists") fail(409, "device_exists");
     await deps.audit.record({
       action: "device.enrolled",
