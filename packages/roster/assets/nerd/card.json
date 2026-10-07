@@ -1,0 +1,72 @@
+{
+  "v": 1,
+  "kind": "card",
+  "width": 587,
+  "height": 956,
+  "layers": [
+    {
+      "id": "body",
+      "src": "layer-neutral.webp",
+      "z": 0
+    }
+  ],
+  "emotions": {
+    "mode": "swap",
+    "src": {
+      "neutral": "layer-neutral.webp",
+      "happy": "layer-happy.webp",
+      "sad": "layer-sad.webp",
+      "surprised": "layer-surprised.webp",
+      "tired": "layer-tired.webp"
+    }
+  },
+  "shadow": {
+    "x": 0.5,
+    "y": 0.97,
+    "rx": 0.32,
+    "ry": 0.035,
+    "opacity": 0.25
+  },
+  "anchors": {
+    "head": {
+      "x": 0.5059,
+      "y": 0.1179,
+      "z": 1
+    },
+    "face": {
+      "x": 0.5046,
+      "y": 0.32,
+      "z": 2
+    },
+    "body": {
+      "x": 0.4673,
+      "y": 0.62,
+      "z": 1
+    },
+    "back": {
+      "x": 0.4673,
+      "y": 0.55,
+      "z": -1
+    },
+    "aura": {
+      "x": 0.5,
+      "y": 0.5,
+      "z": -2
+    },
+    "portal_fx": {
+      "x": 0.5,
+      "y": 0.98,
+      "z": -3
+    },
+    "neck": {
+      "x": 0.503,
+      "y": 0.465,
+      "z": 2,
+      "w": 0.12
+    }
+  },
+  "thumbs": {
+    "128": "thumb-128.webp",
+    "256": "thumb-256.webp"
+  }
+}

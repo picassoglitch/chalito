@@ -17,6 +17,7 @@ import {
   OutboundTemplateVars,
   PlansConfig,
   RemotePermissionMode,
+  resolveInclusions,
   RoomEventBody,
   SessionCard,
 } from "../src/index.js";
@@ -53,6 +54,21 @@ describe("plans.yaml", () => {
     expect(tok("heavy")).toBe(75_000_000);
     expect(cfg.billing.provider).toBe("chalyb_hub");
     expect(readFileSync(plansPath, "utf8")).not.toMatch(/provider:\s*stripe/i);
+  });
+
+  it("hub tier caps only lower the ladder tier's inclusions", () => {
+    const cfg = PlansConfig.parse(loadPlans());
+    expect(resolveInclusions(cfg, "free")).toMatchObject({ devices: 1, rooms: 1, membersPerRoom: 4, whatsapp: 0 });
+    expect(resolveInclusions(cfg, "lite")).toMatchObject({ devices: 2, whatsapp: 100 });
+    expect(resolveInclusions(cfg, "pro")).toMatchObject({ devices: 5, rooms: 5 });
+    expect(resolveInclusions(cfg, "bundle_40")).toEqual(resolveInclusions(cfg, "standard"));
+    expect(resolveInclusions(cfg, "nope")).toBeNull();
+    const raised = loadPlans();
+    raised.hubTiers.free.limits = { devices: 3 };
+    expect(PlansConfig.safeParse(raised).success).toBe(false);
+    const noTier = loadPlans();
+    noTier.hubTiers.free = { access: "none", limits: { devices: 1 } };
+    expect(PlansConfig.safeParse(noTier).success).toBe(false);
   });
 
   it("rejects a ladder that gets cheaper features on a pricier tier", () => {

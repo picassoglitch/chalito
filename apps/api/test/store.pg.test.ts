@@ -92,6 +92,20 @@ if (!url) {
       expect([...(await repo.owned(u))]).toEqual(["viking_hat"]);
     });
 
+    it("dropUnownedSkins takes off a lapsed included skin but keeps a bought one", async () => {
+      const u = await user();
+      expect(await repo.equip(u, CID, "skin", "skin_galaxy")).toBe(true);
+      expect(await repo.equip(u, CID, "head", "viking_hat")).toBe(true);
+      expect(await repo.dropUnownedSkins(u, ["skin_galaxy", "skin_holo"])).toBe(1);
+      const [c] = await admin`select equipped from chalito.companions where owner = ${u}`;
+      expect(c!.equipped).toEqual({ head: "viking_hat" });
+      expect(await commit(u, pid(), "skin_holo")).toBe("committed");
+      expect(await repo.equip(u, CID, "skin", "skin_holo")).toBe(true);
+      expect(await repo.dropUnownedSkins(u, ["skin_galaxy", "skin_holo"])).toBe(0);
+      const [d] = await admin`select equipped from chalito.companions where owner = ${u}`;
+      expect(d!.equipped).toEqual({ head: "viking_hat", skin: "skin_holo" });
+    });
+
     it("clients can read their purchases but never write them", async () => {
       const [r_ins] = await admin<{ ins: boolean }[]>`
         select has_table_privilege('authenticated', 'chalito.purchases', 'insert') as ins`;

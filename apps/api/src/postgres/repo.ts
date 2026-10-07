@@ -154,9 +154,11 @@ export class PostgresRepo implements ApiRepo {
     return this.sql.begin(async (tx) => {
       // Serialises enrolments per account: concurrent callers queue on the user row.
       await lockUser(tx, owner);
-      const [active] = await tx`
-        select 1 from chalito.devices where owner = ${owner} and role = 'client' and revoked = false limit 1`;
-      if (active) return "client_exists" as const;
+      // Any active device blocks it: a paired desktop means the account goes through recovery instead.
+      const [active] = await tx<{ role: string }[]>`
+        select role from chalito.devices where owner = ${owner} and revoked = false
+        order by (role = 'client') desc limit 1`;
+      if (active) return active.role === "client" ? ("client_exists" as const) : ("agent_exists" as const);
       if (await deviceIdTaken(tx, doc.deviceId)) return "device_exists" as const;
       await insertDevice(tx, owner, doc, this.#authUser("device", doc.deviceId), false);
       await upsertRecovery(tx, owner, recovery);
@@ -341,6 +343,7 @@ export class PostgresRepo implements ApiRepo {
       claimerPubBox: string;
       claimerWebauthnBinding?: unknown;
       claimedAt: number;
+      agentLimitFor?: (tier: string | null) => number;
     },
     build: (code: PairingCodeDoc) => Promise<DeviceDoc>,
   ) {
@@ -351,6 +354,16 @@ export class PostgresRepo implements ApiRepo {
       // `build` may throw: the transaction rolls back and the error propagates.
       const agent = await build(toPairingCode(row));
       if (await deviceIdTaken(tx, agent.deviceId)) return { ok: false as const, reason: "device_exists" as const };
+      if (claim.agentLimitFor) {
+        // The owner's row lock serialises concurrent claims, so two can't both take the last slot.
+        const [u] = await tx<{ tier: string | null }[]>`
+          select tier from chalito.users where id = ${claim.owner} for update`;
+        const limit = claim.agentLimitFor(u?.tier ?? null);
+        const [active] = await tx<{ n: number }[]>`
+          select count(*)::int as n from chalito.devices
+          where owner = ${claim.owner} and role = 'agent' and revoked = false`;
+        if ((active?.n ?? 0) >= limit) return { ok: false as const, reason: "device_limit" as const, limit };
+      }
       await insertDevice(tx, claim.owner, agent, this.#authUser("device", agent.deviceId), false);
       await tx`
         update chalito.pairing_codes set claimed = true, owner = ${claim.owner},

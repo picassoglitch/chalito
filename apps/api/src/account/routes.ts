@@ -116,6 +116,10 @@ export const accountRoutes = (deps: Deps, account: AccountDeps, wa: WebAuthnConf
  * Runs the deletions that are due: device Auth users, the owner's storage prefixes, then the
  * database (chalito_private.delete_account). Each step is idempotent, so a failed run is retried
  * whole by the next one.
+ *
+ * Kept on purpose: chalito_private.avatar_free_markers (migration 20261005000200). Keyed hashes of
+ * the hub user id and email of people who used their free custom companion, with no owner link;
+ * they only stop a re-created account from getting a second free creation (docs/RUNBOOK.md 6.6).
  */
 export const runDueDeletions = async (deps: Deps, account: AccountDeps) => {
   const done: string[] = [];

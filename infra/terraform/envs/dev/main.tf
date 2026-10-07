@@ -22,7 +22,7 @@ locals {
     "chalito-orchestrator" = "Chalito orchestrator: router, Mesa moderator, usage metering"
     "chalito-notifier"     = "Chalito notifier: escalation, push, WhatsApp, Twilio"
     "chalito-mcp-gateway"  = "Chalito MCP gateway: reduced scopes, read-only data, no signing keys"
-    "chalito-avatar-jobs"  = "Chalito avatar jobs: upload validation and conversion, no secrets"
+    "chalito-avatar-jobs"  = "Chalito avatar jobs: upload validation, conversion and custom companions (Gemini key, database)"
     "chalito-pubsub-push"  = "Identity Pub/Sub uses to push to Chalito services"
     "chalito-avatar-trig"  = "Chalito avatar trigger: Eventarc + the Workflow that starts avatar-jobs"
   }
@@ -111,6 +111,20 @@ module "storage" {
   location           = var.region
   records_kms_key_id = module.kms.records_key_id
   labels             = local.labels
+  # The PWA uploads custom-companion photos straight to the bucket (signed PUT).
+  # Photo uploads (PUT) and custom-card textures (GET, CORS mode in three.js): the web app runs inside the
+  # Chalyb hub (www.chalyb.com/app/chalito); the desktop webview loads from the Tauri origins.
+  upload_cors_origins = ["https://${var.domain}", "https://www.chalyb.com", "tauri://localhost", "http://tauri.localhost"]
+}
+
+# The api signs upload and download URLs for custom companions (GcsAvatarFiles) as itself, through
+# IAM signBlob: it needs Token Creator on its own account (no key file anywhere).
+resource "google_service_account_iam_member" "api_self_sign" {
+  for_each = toset(local.api_list)
+
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${each.value}"
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:${each.value}"
 }
 
 # The api (Chalyb's engine module) writes account exports and records to the records bucket and
@@ -155,6 +169,8 @@ module "secrets" {
     "chalito-voice-ref-secret"      = [local.notifier]
     # Same value as the Vault secret chalito_notify_poke_secret in nexo-ai (migration 003050).
     "chalito-notify-poke-secret" = [local.notifier]
+    # Google AI Studio key for custom companions (apps/avatar-jobs src/creation.ts): the job only.
+    "chalito-gemini-api-key" = [local.avatar_sa]
   }
 
   depends_on = [module.service_accounts]
@@ -244,7 +260,8 @@ locals {
   # access is granted here; creating them here too would collide with the hub's apply. They exist
   # once Chalyb's apply has run with the chalito entry (GO_LIVE 1.10), which api_service_account marks.
   hub_secret_readers = var.api_service_account == "" ? {} : merge(
-    { "chalito-database-url" = [local.orchestrator, local.notifier] },
+    # The avatar job records creations and their usage events (apps/avatar-jobs src/creations.ts).
+    { "chalito-database-url" = [local.orchestrator, local.notifier, local.avatar_sa] },
     var.hub_admin_token_secret == "" ? {} : { (var.hub_admin_token_secret) = [local.orchestrator, local.notifier] },
   )
   hub_secret_bindings = merge([

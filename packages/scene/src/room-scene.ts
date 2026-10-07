@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { FrameLoop, browserHost, type LoopHost } from "@chalito/avatar-three";
 import type { CardPlacement } from "@chalito/roster";
-import type { CosmeticSlot } from "@chalito/protocol";
+import type { AccessorySlot, SkinEffect } from "@chalito/protocol";
 import { choreograph, type SceneEvent, type SceneMember, type SceneState } from "./choreography.js";
 import {
   RENDER_DEFAULTS,
@@ -12,18 +12,39 @@ import {
   type RenderSettings,
 } from "./quality.js";
 import { loadCardAssets } from "./card-assets.js";
+import type { CardFiles } from "./custom-card.js";
 import { RoomWorld } from "./world.js";
 
-/** A cosmetic a member wears (from the store catalog): its art path in @chalito/roster and placement. */
-export interface SceneCosmetic {
-  slot: CosmeticSlot;
+/** A drawn item a member wears (from the store catalog): its art path in @chalito/roster and placement. */
+export interface SceneAccessory {
+  slot: AccessorySlot;
   /** "cosmetics/<id>.webp" */
   art: string;
   card: CardPlacement;
 }
 
+/** A skin a member wears: a material effect over the card (no art). */
+export interface SceneSkin {
+  slot: "skin";
+  skin: SkinEffect;
+}
+
+/** What a member wears, as the store catalog describes it. */
+export type SceneCosmetic = SceneAccessory | SceneSkin;
+
+export const isSceneSkin = (c: SceneCosmetic): c is SceneSkin => c.slot === "skin";
+
+/** A stable key for what's worn (a change reloads the card). */
+export const cosmeticKey = (c: SceneCosmetic): string => `${c.slot}:${isSceneSkin(c) ? c.skin : c.art}`;
+
 export interface RoomSceneMember extends SceneMember {
   cosmetics?: readonly SceneCosmetic[];
+  /**
+   * The member's own card files (the viewer's custom companion), drawn instead of the roster
+   * `avatar`; when they fail to load, `avatar` is drawn. Hosts set it only for the viewer's own
+   * companion: co-members are drawn from their roster avatar (companion_directory).
+   */
+  card?: CardFiles;
 }
 
 /** The bits of WebGLRenderer the scene uses (injectable for tests). */
@@ -261,13 +282,15 @@ export class RoomScene {
   }
 
   #load(m: RoomSceneMember): Promise<void> {
-    const key = `${m.avatar}|${(m.cosmetics ?? []).map((c) => c.art).join(",")}`;
+    const cosmetics = m.cosmetics ?? [];
+    const key = `${m.card ? m.card.key : m.avatar}|${cosmetics.map(cosmeticKey).join(",")}`;
     if (this.#loadedKey.get(m.companionId) === key) return this.#loading.get(m.companionId) ?? Promise.resolve();
     this.#loadedKey.set(m.companionId, key);
-    const p = loadCardAssets(this.#opts.assetBase, m.avatar, m.cosmetics ?? [], {
-      fetchJson: this.#opts.fetchJson,
-      loadTexture: this.#opts.loadTexture,
-    }).then(
+    const loaders = { fetchJson: this.#opts.fetchJson, loadTexture: this.#opts.loadTexture };
+    const roster = () => loadCardAssets(this.#opts.assetBase, m.avatar, cosmetics, loaders);
+    // A custom card that won't load (expired, gone, blocked) falls back to the roster avatar.
+    const load = m.card ? loadCardAssets(this.#opts.assetBase, m.card, cosmetics, loaders).catch(roster) : roster();
+    const p = load.then(
       (assets) => {
         if (!this.#disposed && this.#loadedKey.get(m.companionId) === key) this.#world.addActor(m.companionId, assets);
       },

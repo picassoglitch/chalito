@@ -11,9 +11,13 @@
     "roster:build": "tsx scripts/build-roster.ts"
   },
   "dependencies": {
+    "@chalito/billing": "workspace:*",
+    "@chalito/config": "workspace:*",
     "@chalito/protocol": "workspace:*",
     "@chalito/redact": "workspace:*",
+    "@chalito/roster": "workspace:*",
     "@google-cloud/storage": "^8.2.0",
+    "postgres": "^3.4.9",
     "sharp": "^0.35.5",
     "tsx": "^4.23.15",
     "zod": "^4.6.5"

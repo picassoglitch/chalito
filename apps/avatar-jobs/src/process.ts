@@ -12,7 +12,7 @@ export const LIMITS = {
   thumbs: [128, 256] as const,
 };
 
-export type Slot = "head" | "face" | "body" | "back" | "aura" | "portal_fx";
+export type Slot = "head" | "face" | "neck" | "body" | "back" | "aura" | "portal_fx";
 
 /** A point on the card, normalised to [0, 1] from the top-left of the card image. */
 export interface Anchor {
@@ -20,6 +20,8 @@ export interface Anchor {
   y: number;
   /** Relative depth: back items render behind the body. */
   z: number;
+  /** The neck anchor only: neck width as a fraction of the card's width (neck pieces are sized by it). */
+  w?: number;
 }
 
 /** The 2.5D image "card" avatar: textured layers on a plane, plus anchors for cosmetics. */
@@ -158,7 +160,7 @@ const skullTop = (px: { data: Buffer; width: number; height: number }) => {
 
 /**
  * Cosmetic anchors from the silhouette: head where a hat's brim sits (just below the top of the
- * skull), face a little below, feet at the bottom.
+ * skull), face a little below, neck under the face, feet at the bottom.
  */
 export const anchorsFor = (px: { data: Buffer; width: number; height: number }): Record<Slot, Anchor> => {
   const h = px.height;
@@ -167,9 +169,15 @@ export const anchorsFor = (px: { data: Buffer; width: number; height: number }):
   const topBand = centreX(px, 0, Math.round(h * 0.2));
   const faceBand = centreX(px, Math.round(h * 0.2), Math.round(h * 0.45));
   const bodyBand = centreX(px, Math.round(h * 0.45), Math.round(h * 0.8));
+  const headY = skullTop(px) + h * 0.03;
+  // Short, squat figures (a candle, a donut) start low in the card: the face is never above the head.
+  const faceY = Math.max(h * 0.32, headY + h * 0.06);
   return {
-    head: pt(topBand, skullTop(px) + h * 0.03, 1),
-    face: pt(faceBand, h * 0.32, 2),
+    head: pt(topBand, headY, 1),
+    face: pt(faceBand, faceY, 2),
+    // Halfway from face to body with a typical width: the same fallback @chalito/roster's
+    // neckAnchor derives (the roster's cards get a detected neck from detect-wear-anchors.ts).
+    neck: { ...pt(faceBand, (faceY + h * 0.62) / 2, 2), w: 0.3 },
     body: pt(bodyBand, h * 0.62, 1),
     back: pt(bodyBand, h * 0.55, -1),
     aura: pt(w / 2, h * 0.5, -2),

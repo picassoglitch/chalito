@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { deriveDeviceId, generateSigningKeyPair, toB64url } from "@chalito/crypto";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import type { DeviceDoc } from "@chalito/protocol";
-import { MemoryAccountFiles } from "../src/account/files.js";
+import { GcsAccountFiles, MemoryAccountFiles } from "../src/account/files.js";
 import { DELETION_GRACE_MS, accountRoutes, accountTaskRoutes, type AccountDeps } from "../src/account/routes.js";
 import type { AccountStore, DeletionStatus } from "../src/account/store.js";
 import { MemoryAudit, type Deps } from "../src/deps.js";
@@ -199,5 +199,66 @@ describe("account deletion (ARCO)", () => {
     expect(s.store.deleted).toEqual([s.o]);
     expect([...s.files.objects.keys()]).toEqual(["avatars/hub-user-2/asset_9/card.json"]);
     expect(s.audit.events.at(-1)).toMatchObject({ action: "account.deleted", owner: s.o, meta: { files: 2 } });
+  });
+});
+
+describe("GcsAccountFiles.deleteOwner (versioned buckets)", () => {
+  /** Buckets with versioning: getFiles({ versions: true }) lists noncurrent generations too. */
+  const storage = () => {
+    const objects: Record<string, { name: string; generation: number; live: boolean }[]> = {
+      assets: [
+        { name: "avatars/u1/a1/layer-happy.webp", generation: 1, live: false },
+        { name: "avatars/u1/a1/layer-happy.webp", generation: 2, live: true },
+        { name: "avatars/u1/a2/card.json", generation: 3, live: false }, // only a noncurrent version left
+        { name: "uploads/u1/a3/original", generation: 4, live: false },
+        { name: "avatars/u10/a1/card.json", generation: 5, live: true }, // another owner
+      ],
+      records: [{ name: "records/u1/r.json", generation: 6, live: true }],
+      exports: [{ name: "exports/u1/e.json", generation: 7, live: false }],
+    };
+    const calls: { bucket: string; prefix: string; versions?: boolean }[] = [];
+    const deleted: string[] = [];
+    const fake = {
+      bucket: (b: string) => ({
+        getFiles: async (q: { prefix: string; versions?: boolean }) => {
+          calls.push({ bucket: b, ...q });
+          return [
+            objects[b]!.filter((f) => f.name.startsWith(q.prefix) && (q.versions || f.live)).map((f) => ({
+              ...f,
+              delete: async () => void deleted.push(`${b}:${f.name}#${f.generation}`),
+            })),
+          ];
+        },
+      }),
+    };
+    const files = new GcsAccountFiles(fake as never, {
+      exportBucket: "exports",
+      prefixes: [
+        { bucket: "assets", prefix: (o) => `avatars/${o}/` },
+        { bucket: "assets", prefix: (o) => `uploads/${o}/` },
+        { bucket: "records", prefix: (o) => `records/${o}/` },
+      ],
+    });
+    return { files, calls, deleted };
+  };
+
+  it("deletes every generation under the owner's prefixes, noncurrent ones included, and no one else's", async () => {
+    const s = storage();
+    expect(await s.files.deleteOwner("u1")).toBe(6);
+    expect(s.calls.every((c) => c.versions === true)).toBe(true);
+    expect(s.calls.map((c) => `${c.bucket}:${c.prefix}`)).toEqual([
+      "assets:avatars/u1/",
+      "assets:uploads/u1/",
+      "records:records/u1/",
+      "exports:exports/u1/",
+    ]);
+    expect(s.deleted.sort()).toEqual([
+      "assets:avatars/u1/a1/layer-happy.webp#1",
+      "assets:avatars/u1/a1/layer-happy.webp#2",
+      "assets:avatars/u1/a2/card.json#3",
+      "assets:uploads/u1/a3/original#4",
+      "exports:exports/u1/e.json#7",
+      "records:records/u1/r.json#6",
+    ]);
   });
 });

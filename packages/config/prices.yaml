@@ -37,3 +37,12 @@ whatsapp:
 compute:
   # Cloud Run us-central1, hub contract rates (micros per second).
   cloudRunMicrosPerSecond: { standard: 88, boost: 208 }
+
+# Per generated image, by provider and model (output image, input tokens of the prompt and the
+# reference photo included). Used for custom companions (apps/avatar-jobs: one photo → 5 drawings).
+# ⚠ CONFIRM against the current Gemini API pricing page before go-live: 0.067 is the published
+# gemini-3.1-flash-image rate for a 1K (1024²) output image ($60 / 1M output image tokens × 1,120
+# tokens), not re-verified here (docs/VERIFIED_APIS.md has no entry for it yet).
+images:
+  google:
+    gemini-3.1-flash-image: { perImage: 0.067 }

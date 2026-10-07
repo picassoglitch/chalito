@@ -12,6 +12,7 @@ import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { buildDeviceDoc } from "../lib/devices.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
+import { deviceLimitFor } from "../rooms/limits.js";
 
 /** Phone-first pairing (ADR 0006). The cloud relays and records; humans confirm fingerprints. */
 export const pairingRoutes = (deps: Deps) => {
@@ -102,6 +103,7 @@ export const pairingRoutes = (deps: Deps) => {
         claimerPubBox: claimer.pubBox,
         claimerWebauthnBinding,
         claimedAt: deps.now(),
+        agentLimitFor: deviceLimitFor,
       },
       async (code) => {
         if (code.expiresAt <= deps.now()) fail(410, "expired");
@@ -124,6 +126,8 @@ export const pairingRoutes = (deps: Deps) => {
         return agentDoc;
       },
     );
+    if (!res.ok && res.reason === "device_limit")
+      return fail(403, "device_limit", `Your plan allows ${res.limit ?? 0} computer(s). Remove one or upgrade.`);
     if (!res.ok) return fail(res.reason === "not_found" ? 404 : 409, res.reason);
     const agentId = res.agentDeviceId;
     await deps.audit.record({ action: "pairing.claimed", owner: p.owner, actor: p.uid, target: agentId });

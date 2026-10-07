@@ -72,6 +72,8 @@ export class PetLook {
 
   constructor(assets: ActorAssets, level: LevelSettings) {
     this.card = createCardAvatar(assets.spec, assets.drawings, assets.items, 1);
+    // The equipped skin (store), drawn over the card whatever the emotion drawing.
+    this.card.setSkin(assets.skin ?? null);
     this.root.add(this.card.root);
     this.#binding = new CreatureBinding(this.card.root);
     this.#level = level;
@@ -95,6 +97,7 @@ export class PetLook {
   }
 
   apply(frame: AvatarFrame, now: number): void {
+    this.card.tick(now / 1000);
     if (this.#level.impostors) {
       // The impostor only breathes: a small bob, no squash, lean or turn.
       this.card.root.position.set(0, Math.sin((now / 1000) * 2.2) * 0.012, 0);

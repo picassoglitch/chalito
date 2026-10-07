@@ -25,7 +25,7 @@ describe("monthly caps", () => {
     expect(monthlyLimit(plans, { ...at, hubTier: "PRO" }, "voice")).toBe(120);
     expect(monthlyLimit(plans, { ...at, hubTier: "vip" }, "sms")).toBe(30);
     expect(monthlyLimit(plans, { ...at, hubTier: "pro" }, "sms")).toBe(0);
-    expect(monthlyLimit(plans, { ...at, hubTier: "free" }, "whatsapp")).toBe(0);
+    expect(monthlyLimit(plans, { ...at, hubTier: "free" }, "whatsapp")).toBe(0); // hub cap under Lite's 100
     expect(monthlyLimit(plans, { ...at, hubTier: "gold" }, "whatsapp")).toBe(0);
     expect(monthlyLimit(plans, { ...at, hubTier: null, comped: true }, "call")).toBe(300);
     expect([hubTierOf("Pro"), hubTierOf("nope"), hubTierOf(null)]).toEqual(["pro", null, null]);

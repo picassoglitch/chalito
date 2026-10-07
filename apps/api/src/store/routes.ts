@@ -7,7 +7,10 @@ import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
+import { dropLapsedSkins, includedFor } from "./included.js";
 import type { StoreRepo } from "./repo.js";
+
+export { dropLapsedSkins } from "./included.js";
 
 export interface StoreDeps {
   repo: StoreRepo;
@@ -43,16 +46,21 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
   const limiter = rateLimit({ capacity: 20, refillPerSec: 0.5, now: deps.now });
 
   app.get("/catalog", auth, async (c) => {
-    const owned = await store.repo.owned(principal(c).owner);
+    const owner = principal(c).owner;
+    const [owned, tier] = await Promise.all([store.repo.owned(owner), store.repo.tier(owner)]);
+    await dropLapsedSkins(store, owner, tier);
     const items = Object.entries(store.catalog.cosmetics).map(([id, x]) => ({
       id,
       name: x.name,
       slot: x.slot,
       free: x.free,
       ...(x.priceTokens !== undefined ? { priceTokens: x.priceTokens } : {}),
-      art: x.art,
-      card: x.card,
-      owned: x.free || owned.has(id),
+      // A drawn item has art and a placement; a skin names the card renderer's effect.
+      ...(x.slot === "skin" ? { skin: x.skin } : { art: x.art, card: x.card }),
+      ...(x.slot === "skin" && x.includedIn ? { includedIn: x.includedIn } : {}),
+      // Included by the plan: worn at no cost while on that tier (not an inventory row).
+      ...(includedFor(x, tier) ? { includedInPlan: true } : {}),
+      owned: x.free || owned.has(id) || includedFor(x, tier),
     }));
     return c.json({ items });
   });
@@ -69,6 +77,9 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
       await store.repo.grantFree(p.owner, cosmeticId);
       return c.json({ status: "owned", cosmeticId, charged: 0 });
     }
+    // Included in the owner's plan: nothing to buy while on it (never charged, nothing written).
+    if (includedFor(item, await store.repo.tier(p.owner)))
+      return c.json({ status: "owned", cosmeticId, charged: 0, includedInPlan: true });
     const price = item.priceTokens!;
 
     // A retry of a purchase that went through: answer it again, never charge again.
@@ -148,7 +159,8 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
       if (!item) return fail(404, "unknown_cosmetic");
       if (item.slot !== slot) return fail(400, "wrong_slot");
       if (item.free) await store.repo.grantFree(p.owner, cosmeticId);
-      else if (!(await store.repo.owned(p.owner)).has(cosmeticId)) return fail(403, "not_owned");
+      else if (!(await store.repo.owned(p.owner)).has(cosmeticId) && !includedFor(item, await store.repo.tier(p.owner)))
+        return fail(403, "not_owned");
     }
     if (!(await store.repo.equip(p.owner, companionId, slot, cosmeticId))) return fail(404, "unknown_companion");
     return c.json({ ok: true, slot, cosmeticId });

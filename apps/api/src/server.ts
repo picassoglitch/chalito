@@ -14,7 +14,14 @@ import { PostgresAccountStore } from "./account/store.js";
 import { googleOidcVerifier } from "./lib/oidc.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
-import { HubClient, HubStreamUsage, PostgresVoiceSessions, compedFrom, parseReserveBasis } from "@chalito/billing";
+import {
+  HubClient,
+  HubStreamUsage,
+  PostgresVoiceSessions,
+  avatarQuote,
+  compedFrom,
+  parseReserveBasis,
+} from "@chalito/billing";
 import { loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
@@ -27,6 +34,10 @@ import type { ApiRepo, IdentityIssuer } from "./repo.js";
 import { SupabaseIssuer, chalitoAuthUserId } from "./supabase/identity.js";
 import { PostgresStoreRepo } from "./store/repo.js";
 import type { StoreDeps } from "./store/routes.js";
+import type { AvatarDeps } from "./avatar/routes.js";
+import { GcsAvatarFiles } from "./avatar/files.js";
+import { PostgresAvatarRepo } from "./avatar/repo.js";
+import { markerKey } from "./avatar/free-marker.js";
 import { pgVoiceCap } from "./voice/caps.js";
 import type { VoiceDeps } from "./voice/routes.js";
 
@@ -54,6 +65,7 @@ const backend = (): {
   phone?: PhoneDeps;
   voice?: VoiceDeps;
   store?: StoreDeps;
+  avatar?: AvatarDeps;
   rateBuckets: PostgresBuckets;
   serverAudit: PostgresAuditSink;
   account?: AccountDeps;
@@ -100,6 +112,20 @@ const backend = (): {
             hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
           },
           billing: { hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }) },
+        }
+      : {}),
+    // Custom companions from a photo: paid ones are admitted and billed through the hub; the photo
+    // goes straight to the avatar bucket (signed PUT) and the avatar job turns it into a card.
+    ...(process.env.CHALYB_BASE_URL && process.env.AVATAR_BUCKET
+      ? {
+          avatar: {
+            repo: new PostgresAvatarRepo(sql),
+            files: new GcsAvatarFiles(new Storage(), env("AVATAR_BUCKET")),
+            hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
+            quote: avatarQuote(loadPrices(), loadModels().images.avatar, reserveBasis),
+            // Free creation once per person: keyed hashes kept past account deletion (free-marker.ts).
+            markerKey: markerKey(process.env.AVATAR_FREE_MARKER_KEY, env("CHALITO_SSO_SECRET")),
+          },
         }
       : {}),
     // Phone verification (Twilio Verify + Geo Permissions) when configured.

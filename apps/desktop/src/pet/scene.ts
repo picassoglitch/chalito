@@ -7,7 +7,8 @@ import { changedEnough, ndcToCanvas, toScreenHitBox, type Rect } from "../lib/hi
 import type { PetContext } from "../lib/pet-context.js";
 import type { DesktopShell } from "../lib/shell.js";
 import { loadSettings } from "../lib/settings-local.js";
-import { cosmeticsKey, watchCosmetics } from "./cosmetics.js";
+import { PET_COSMETICS_REFRESH_MS, cosmeticsKey, watchCosmetics } from "./cosmetics.js";
+import type { CustomCardSource } from "@chalito/scene/custom-card";
 import { PetLook, QualityResolver } from "./look.js";
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
@@ -37,12 +38,15 @@ const projectBounds = (obj: THREE.Object3D, camera: THREE.Camera) => {
  * render-quality slider (render.yaml) applies here as in the room view: bajo is the flat card
  * impostor at 30 FPS without contact shadow; medio and alto run the driver's bob, squash and
  * gestures; auto settles from the renderer and a short probe. The equipped cosmetics (from
- * `cosmetics`, once the panel is signed in) are placed on the card as in a room.
+ * `cosmetics`, once the panel is signed in) are placed on the card as in a room. When the companion
+ * wears the person's own custom character (`myCard`), that card is drawn instead of the roster one
+ * (its anchors place the cosmetics); if it won't load, the roster card is.
  */
 export const startPet = (
   canvas: HTMLCanvasElement,
   sh: DesktopShell,
   cosmetics: () => Promise<SceneCosmetic[] | null> = async () => null,
+  myCard: Pick<CustomCardSource, "subscribe" | "files" | "refresh"> | null = null,
 ) => {
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0);
@@ -94,10 +98,12 @@ export const startPet = (
   const applySettings = () => {
     const s = loadSettings();
     applyLevel(quality.set(s.renderQuality));
-    const want = `${s.avatar}|${cosmeticsKey(wearing)}`;
+    const custom = myCard?.files() ?? null;
+    const want = `${custom?.key ?? s.avatar}|${cosmeticsKey(wearing)}`;
     if (want === shown) return;
     shown = want;
-    loadCardAssets(ROSTER_BASE, s.avatar, wearing).then(
+    const roster = () => loadCardAssets(ROSTER_BASE, s.avatar, wearing);
+    (custom ? loadCardAssets(ROSTER_BASE, custom, wearing).catch(roster) : roster()).then(
       (assets) => {
         if (want !== shown) return;
         const next = new PetLook(assets, levelOf(quality.level));
@@ -116,7 +122,12 @@ export const startPet = (
   const onStorage = () => {
     applySettings();
     void wear.refresh();
+    // The panel changed something (maybe the companion): ask whether it wears a custom card.
+    void myCard?.refresh();
   };
+  const offCard = myCard?.subscribe(applySettings);
+  // A custom card made or dropped elsewhere (the PWA) shows up within this; its URLs refresh themselves.
+  const cardTimer = myCard ? setInterval(() => void myCard.refresh(), PET_COSMETICS_REFRESH_MS) : null;
   const wear = watchCosmetics(cosmetics, (c) => {
     wearing = c;
     applySettings();
@@ -182,6 +193,8 @@ export const startPet = (
   return () => {
     loop?.stop();
     wear.stop();
+    offCard?.();
+    if (cardTimer) clearInterval(cardTimer);
     window.removeEventListener("resize", resize);
     window.removeEventListener("storage", onStorage);
     look?.dispose();

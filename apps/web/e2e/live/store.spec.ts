@@ -22,9 +22,18 @@ const withCompanion = async (page: Page, avatar = "luna") => {
 test("tienda: free items wear straight away; the preview places them on the roster card", async ({ page }) => {
   await withCompanion(page);
   await expect(page.getByRole("heading", { name: "Tienda" })).toBeVisible();
-  await expect(page.getByTestId("store-item")).toHaveCount(6);
+  await expect(page.getByTestId("store-item")).toHaveCount(28);
+  // Accessories grouped by where they go.
+  await expect(page.getByTestId("store-group").locator("h2")).toHaveText([
+    "Cuello",
+    "Cabeza",
+    "Cara",
+    "Espalda",
+    "Efectos",
+  ]);
+  await expect(page.locator("[data-group=neck] [data-testid=store-item]")).toHaveCount(8);
   await expect(item(page, "viking_hat").getByTestId("store-price")).toHaveText("Gratis");
-  await expect(item(page, "star_cape").getByTestId("store-price")).toHaveText(/^250[\s,.\u202f]?000 tokens$/);
+  await expect(item(page, "star_cape").getByTestId("store-price")).toHaveText(/^1[\s,.\u202f]?000 tokens$/);
 
   // The roster's art is served (copied from @chalito/roster at build).
   const card = await page.request.get("/roster/assets/luna/card.json");
@@ -53,6 +62,8 @@ test("tienda: buying spends tokens once, a retry reuses the purchase id, no toke
   page,
 }) => {
   await withCompanion(page);
+  // Enough for the cape (1,000), then not enough for the aura (1,000).
+  await storeState(page, "setBalance", 1_500);
   // The hub is down on the first try: the retry must reuse the same purchaseId.
   await storeState(page, "failNextPurchase", "hub_unavailable");
   await item(page, "star_cape").getByTestId("store-buy").click();
@@ -63,7 +74,7 @@ test("tienda: buying spends tokens once, a retry reuses the purchase id, no toke
   expect(tries).toHaveLength(2);
   expect(tries[0]!.row.purchaseId).toBe(tries[1]!.row.purchaseId);
   expect(tries[0]!.row.purchaseId).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
-  expect(await storeState(page, "balance")).toBe(50_000);
+  expect(await storeState(page, "balance")).toBe(500);
   expect(Object.keys(await storeState<Record<string, unknown>>(page, "purchases"))).toHaveLength(1);
 
   // Not enough left: an inline chip to /creditos, never a modal.
@@ -93,7 +104,42 @@ test("tienda: a network drop mid-purchase is retried with the same id and charge
   await storeState(page, "setBalance", 500_000);
   await item(page, "portal_swirl").getByRole("button", { name: "Reintentar" }).click();
   await expect(item(page, "portal_swirl")).toHaveAttribute("data-owned", "true");
-  expect(await storeState(page, "balance")).toBe(100_000);
+  expect(await storeState(page, "balance")).toBe(498_000);
+});
+
+test("tienda: skins have their own tab, try on live over the companion, and one is worn at a time", async ({
+  page,
+}) => {
+  await withCompanion(page);
+  await page.getByTestId("store-tab-skins").click();
+  await expect(page.getByTestId("store-tab-skins")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("store-item")).toHaveCount(7);
+  await expect(item(page, "skin_galaxy").getByTestId("store-price")).toHaveText(/^10[\s,.\u202f]?000 tokens$/);
+
+  // Trying on needs no purchase: the preview draws it (WebGL, or the CSS stand-in without it).
+  await item(page, "skin_galaxy").getByTestId("store-try").click();
+  await expect(page.getByTestId("store-preview")).toHaveAttribute("data-skin", "galaxy");
+  await item(page, "skin_galaxy").getByTestId("store-try").click();
+  await expect(page.getByTestId("store-preview")).toHaveAttribute("data-skin", "");
+
+  for (const id of ["skin_galaxy", "skin_gold"]) {
+    await item(page, id).getByTestId("store-buy").click();
+    await expect(item(page, id)).toHaveAttribute("data-owned", "true");
+  }
+  await item(page, "skin_galaxy").getByTestId("store-equip").click();
+  await expect(page.getByTestId("store-preview")).toHaveAttribute("data-skin", "galaxy");
+  // A second skin replaces the first: one slot.
+  await item(page, "skin_gold").getByTestId("store-equip").click();
+  await expect(item(page, "skin_gold")).toHaveAttribute("data-worn", "true");
+  await expect(item(page, "skin_galaxy")).toHaveAttribute("data-worn", "false");
+  await expect(page.getByTestId("store-preview")).toHaveAttribute("data-skin", "gold");
+  expect((await rows(page, "companions"))[0]!.equipped).toEqual({ skin: "skin_gold" });
+
+  // Accessories still wear alongside the skin.
+  await page.getByTestId("store-tab-accessories").click();
+  await expect(page.getByTestId("store-item")).toHaveCount(28);
+  await item(page, "viking_hat").getByTestId("store-equip").click();
+  expect((await rows(page, "companions"))[0]!.equipped).toEqual({ skin: "skin_gold", head: "viking_hat" });
 });
 
 test("tienda without a companion: items can be bought but not worn; it points to choosing one", async ({ page }) => {
@@ -107,16 +153,23 @@ test("tienda unpaired (the person's session) still works; EN at /en/tienda", asy
   await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
   await page.goto("/en/tienda");
   await expect(page.getByRole("heading", { name: "Store" })).toBeVisible();
-  await expect(page.getByTestId("store-item")).toHaveCount(6);
+  await expect(page.getByTestId("store-item")).toHaveCount(28);
   await expect(page.locator("[data-item=viking_hat]").getByTestId("store-price")).toHaveText("Free");
 });
 
-test("onboarding offers the six roster companions with their pictures", async ({ page }) => {
+test("onboarding offers the catalog by category, with pictures and a search", async ({ page }) => {
   await ready(page, "/bienvenida");
   await page.getByRole("button", { name: "Continuar" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Elige a tu compañero");
   const group = page.getByRole("radiogroup");
-  await expect(group.getByRole("radio")).toHaveCount(6);
-  for (const name of ["Chalito", "Bruno", "Luna", "Tito", "Canela", "Nube"]) await expect(group).toContainText(name);
+  // Opens on Chalito's category (Personas): 20 companions, Chalito first.
+  await expect(page.getByRole("button", { name: "Personas" })).toHaveAttribute("aria-pressed", "true");
+  await expect(group.getByRole("radio")).toHaveCount(20);
   await expect(group.locator("img").first()).toHaveAttribute("src", "/roster/assets/chalito/thumb-128.webp");
+  await page.getByRole("button", { name: "Animales" }).click();
+  for (const name of ["Bruno", "Luna", "Tito", "Canela", "Nube"]) await expect(group).toContainText(name);
+  await page.getByRole("button", { name: "Todos" }).click();
+  await expect(group.getByRole("radio")).toHaveCount(220);
+  await page.getByRole("searchbox", { name: "Buscar compañero" }).fill("luna");
+  await expect(page.getByRole("radiogroup")).toContainText("Luna");
 });

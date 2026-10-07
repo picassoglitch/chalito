@@ -33,6 +33,9 @@ import type { BalanceApi } from "@/lib/balance";
 import { disablePush, enablePush, type PushDb, type PushResult } from "@/lib/push";
 import { env } from "@/lib/env";
 import { readCompanion, type CompanionLook, type StoreApi } from "@/lib/store";
+import type { AvatarApi } from "@/lib/avatar";
+import { myCardSource } from "@/lib/my-card";
+import type { CustomCardSource } from "@chalito/scene/custom-card";
 import type { UsageApi } from "@/lib/usage";
 import type { ApiClient } from "@chalito/client-keys";
 import type { Platform } from "@/lib/platform";
@@ -92,6 +95,10 @@ interface Ctx {
   mesa: MesaCtx | null;
   /** The store (/tienda) and the companion it dresses; null when signed out. */
   store: StoreApi | null;
+  /** Custom companions from a photo (/v1/avatar); null when signed out. */
+  avatar: AvatarApi | null;
+  /** The companion's custom card (signed URLs kept fresh); null when signed out. See useMyCard. */
+  myCard: CustomCardSource | null;
   readCompanion: (() => Promise<CompanionLook | null | "error">) | null;
   /** Account deletion and export (/v1/account/*); null when signed out. Requesting needs `client`. */
   account: AccountApi | null;
@@ -177,6 +184,8 @@ const INITIAL: Ctx = {
   addDevice: null,
   usage: null,
   store: null,
+  avatar: null,
+  myCard: null,
   readCompanion: null,
   rooms: null,
   mesa: null,
@@ -315,6 +324,8 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
   const deviceMode = useRef(false);
   const clientRef = useRef<ChalitoClient | null>(null);
   const keysRef = useRef<DeviceKeys | null>(null);
+  /** The companion card source handed out last (replaced, and stopped, when the account changes). */
+  const myCardRef = useRef<CustomCardSource | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -324,6 +335,7 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
     return () => {
       alive = false;
       void clientRef.current?.close();
+      myCardRef.current?.dispose();
     };
   }, []);
 
@@ -363,12 +375,18 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         null;
       const phone = platform.phone(token);
       const settings = new SettingsStore(platform.db as unknown as SettingsDb, owner, phone.channels);
+      const avatar = platform.avatar(token);
+      // Fetched lazily (first useMyCard), so pages that don't draw the companion don't ask.
+      myCardRef.current?.dispose();
+      const myCard = (myCardRef.current = myCardSource(avatar));
       const base = {
         phoneVerifier: withProposal(phone.verifier, settings),
         settings,
         mcp: platform.mcp(token),
         readSharing: sharingReader(platform.db),
         store: platform.store(token),
+        avatar,
+        myCard,
         account: platform.account(token),
         balance: platform.balance(token),
         readCompanion: () => readCompanion(platform.db, owner),

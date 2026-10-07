@@ -3,7 +3,7 @@
 -- only by the owner's active devices and room co-members (R-L4).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(14);
+select plan(16);
 grant usage on schema extensions to chalito_server;
 
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language plpgsql as $$
@@ -54,6 +54,11 @@ select results_eq(
   'unequip, avatar change and rename propagate');
 select throws_ok($$update chalito.companion_directory set equipped = '{"Not An Id"}'
   where companion_id = 'chl_aaaaaaaaaaaaaaaaaaaaaaaaaa'$$, '23514', null, 'equipped holds catalog-shaped ids only');
+select lives_ok($$update chalito.companion_directory set equipped = '{a,b,c,d,e,f,g,h}'
+  where companion_id = 'chl_aaaaaaaaaaaaaaaaaaaaaaaaaa'$$, 'eight slots fit (head, face, neck, body, back, aura, portal, skin)');
+select throws_ok($$update chalito.companion_directory set equipped = '{a,b,c,d,e,f,g,h,i}'
+  where companion_id = 'chl_aaaaaaaaaaaaaaaaaaaaaaaaaa'$$, '23514', null, 'nine don''t');
+update chalito.companion_directory set equipped = '{star_cape}' where companion_id = 'chl_aaaaaaaaaaaaaaaaaaaaaaaaaa';
 
 -- ================================================================ who reads it (R-L4 + rooms)
 insert into chalito.rooms (room_id, type, name, owner_uid, owner_companion_id)

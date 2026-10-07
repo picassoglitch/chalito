@@ -18,8 +18,8 @@ import { fileURLToPath } from "node:url";
 import pixelmatch from "pixelmatch";
 import sharp from "sharp";
 import { loadCatalog } from "@chalito/config";
-import { placeOnCard, type CardAnchor, type CardPlacement } from "@chalito/roster";
-import type { CosmeticSlot } from "@chalito/protocol";
+import { placeItem, type CardAnchors } from "@chalito/roster";
+import type { SceneCosmetic } from "@chalito/scene";
 import type { PageActor, PageJob } from "./showcase/page.js";
 import { bundle, launchSoftwareGl, serve } from "./showcase/browser.js";
 import { SCENES, type Scene } from "./showcase/scenes.js";
@@ -75,7 +75,7 @@ interface CardJson {
   height: number;
   shadow?: PageActor["spec"]["shadow"];
   emotions: { src: Record<string, string> };
-  anchors: Record<string, CardAnchor>;
+  anchors: CardAnchors;
 }
 
 const jobFor = async (s: Scene): Promise<PageJob> => {
@@ -84,18 +84,17 @@ const jobFor = async (s: Scene): Promise<PageJob> => {
   for (const a of s.actors) {
     const card = JSON.parse(readFileSync(join(ROSTER_DIR, "assets", a.roster, "card.json"), "utf8")) as CardJson;
     const items: PageActor["items"] = [];
+    let skin: PageActor["skin"];
     for (const id of a.cosmetics ?? []) {
-      const c = (
-        catalog.cosmetics as Record<
-          string,
-          { slot: string; art: string; card: { width: number; pivot: [number, number] } }
-        >
-      )[id];
+      const c = Object.hasOwn(catalog.cosmetics, id) ? catalog.cosmetics[id] : undefined;
       if (!c) throw new Error(`unknown cosmetic ${id}`);
-      const anchor = card.anchors[c.slot];
-      if (!anchor) throw new Error(`${a.roster} has no ${c.slot} anchor`);
+      if (c.slot === "skin") {
+        skin = c.skin;
+        continue;
+      }
       const meta = await sharp(join(ROSTER_DIR, c.art)).metadata();
-      const placed = placeOnCard(anchor, c.card, meta.height! / meta.width!, card.height / card.width);
+      const placed = placeItem(card.anchors, c.slot, c.card, meta.height! / meta.width!, card.height / card.width);
+      if (!placed) throw new Error(`${a.roster} has no ${c.slot} anchor`);
       items.push({ url: `/roster/${c.art}`, placed });
     }
     actors.push({
@@ -105,13 +104,17 @@ const jobFor = async (s: Scene): Promise<PageJob> => {
         Object.entries(card.emotions.src).map(([k, f]) => [k, `/roster/assets/${a.roster}/${f}`]),
       ),
       items,
+      ...(skin ? { skin } : {}),
       beats: a.beats ?? [],
     });
   }
   if (!s.room) return { w: s.w, h: s.h, seed: s.seed, actors };
   // Room scenes: RoomScene loads the cards itself; it needs ids, avatars and catalog placements.
   const id = (i: number) => `chl_showcase${String.fromCharCode(97 + i).repeat(18)}`;
-  const cosmetics = catalog.cosmetics as Record<string, { slot: CosmeticSlot; art: string; card: CardPlacement }>;
+  const worn = (id: string): SceneCosmetic => {
+    const c = catalog.cosmetics[id]!;
+    return c.slot === "skin" ? { slot: "skin", skin: c.skin } : { slot: c.slot, art: c.art, card: c.card };
+  };
   return {
     w: s.w,
     h: s.h,
@@ -123,11 +126,7 @@ const jobFor = async (s: Scene): Promise<PageJob> => {
       members: s.actors.map((a, i) => ({
         companionId: id(i),
         avatar: a.roster,
-        cosmetics: (a.cosmetics ?? []).map((c) => ({
-          slot: cosmetics[c]!.slot,
-          art: cosmetics[c]!.art,
-          card: cosmetics[c]!.card,
-        })),
+        cosmetics: (a.cosmetics ?? []).map(worn),
       })),
       events: s.room.events.map((e) => ({
         eid: e.eid,

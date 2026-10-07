@@ -18,6 +18,8 @@ export type CommitResult = "committed" | "duplicate_purchase" | "already_owned";
  */
 export interface StoreRepo {
   owned(owner: string): Promise<Set<string>>;
+  /** The owner's hub tier (chalito.users.tier, from the last SSO launch), lowercase; null if unknown. */
+  tier(owner: string): Promise<string | null>;
   findPurchase(purchaseId: string): Promise<PurchaseRecord | null>;
   /**
    * One transaction: the purchase row, the inventory row and the store.purchase usage event in
@@ -27,6 +29,8 @@ export interface StoreRepo {
   grantFree(owner: string, cosmeticId: string): Promise<void>;
   /** false when the companion doesn't exist. `cosmeticId: null` takes the slot off. */
   equip(owner: string, companionId: string, slot: CosmeticSlot, cosmeticId: string | null): Promise<boolean>;
+  /** Takes the skin off every companion of the owner wearing one of `skinIds` that isn't in their inventory. */
+  dropUnownedSkins(owner: string, skinIds: readonly string[]): Promise<number>;
 }
 
 export class PostgresStoreRepo implements StoreRepo {
@@ -36,6 +40,11 @@ export class PostgresStoreRepo implements StoreRepo {
     const rows = await this.sql<{ cosmetic_id: string }[]>`
       select cosmetic_id from chalito.inventory where owner = ${owner}`;
     return new Set(rows.map((r) => r.cosmetic_id));
+  }
+
+  async tier(owner: string) {
+    const [r] = await this.sql<{ tier: string | null }[]>`select tier from chalito.users where id = ${owner}`;
+    return r?.tier ? r.tier.toLowerCase() : null;
   }
 
   async findPurchase(purchaseId: string) {
@@ -91,6 +100,16 @@ export class PostgresStoreRepo implements StoreRepo {
             where owner = ${owner} and companion_id = ${companionId} returning companion_id`;
     return rows.length > 0;
   }
+
+  async dropUnownedSkins(owner: string, skinIds: readonly string[]) {
+    const rows = await this.sql`
+      update chalito.companions c set equipped = c.equipped - 'skin'
+      where c.owner = ${owner} and c.equipped ->> 'skin' = any(${skinIds as string[]})
+        and not exists (
+          select 1 from chalito.inventory i where i.owner = c.owner and i.cosmetic_id = c.equipped ->> 'skin')
+      returning c.companion_id`;
+    return rows.length;
+  }
 }
 
 export class MemoryStoreRepo implements StoreRepo {
@@ -98,9 +117,13 @@ export class MemoryStoreRepo implements StoreRepo {
   readonly purchases = new Map<string, PurchaseRecord & { reservationId: string }>();
   readonly outbox: HubUsageEvent[] = [];
   readonly companions = new Map<string, Partial<Record<CosmeticSlot, string>>>();
+  readonly tiers = new Map<string, string>();
 
   async owned(owner: string) {
     return new Set(this.inventory.get(owner) ?? []);
+  }
+  async tier(owner: string) {
+    return this.tiers.get(owner) ?? null;
   }
   async findPurchase(purchaseId: string) {
     const p = this.purchases.get(purchaseId);
@@ -128,5 +151,15 @@ export class MemoryStoreRepo implements StoreRepo {
     if (cosmeticId === null) delete eq[slot];
     else eq[slot] = cosmeticId;
     return true;
+  }
+  async dropUnownedSkins(owner: string, skinIds: readonly string[]) {
+    let n = 0;
+    for (const [key, eq] of this.companions) {
+      if (!key.startsWith(`${owner}/`) || !eq.skin || !skinIds.includes(eq.skin)) continue;
+      if (this.inventory.get(owner)?.has(eq.skin)) continue;
+      delete eq.skin;
+      n++;
+    }
+    return n;
   }
 }

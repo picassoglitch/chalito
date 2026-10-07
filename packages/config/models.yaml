@@ -35,3 +35,7 @@ profiles:
 voice:
   desktop: { provider: openai, model: gpt-realtime-2.1-mini }
   call: { provider: openai, model: gpt-realtime-2.1-mini }
+
+# Image generation: custom companions from a photo (apps/avatar-jobs), in the roster's art style.
+images:
+  avatar: { provider: google, model: gemini-3.1-flash-image }

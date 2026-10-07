@@ -46,14 +46,14 @@ export interface ApiRepo {
     c: { targetDeviceId: string; id: string; env: unknown; fromDeviceId: string; expiresAt: number },
   ): Promise<boolean>;
   /**
-   * Atomic: only while the account has no active (unrevoked) client, creates the first
-   * client and stores the recovery hash.
+   * Atomic: only while the account has no active (unrevoked) device of any role, creates the
+   * first client and stores the recovery hash. An active agent alone gives `agent_exists`.
    */
   enrollFirstClient(
     owner: string,
     doc: DeviceDoc,
     recovery: StoredRecovery,
-  ): Promise<"ok" | "client_exists" | "device_exists">;
+  ): Promise<"ok" | "client_exists" | "agent_exists" | "device_exists">;
   saveEndorsement(owner: string, newDeviceId: string, endorsement: unknown, at: number): Promise<void>;
 
   // ---- recovery ----
@@ -115,10 +115,16 @@ export interface ApiRepo {
       /** The claimer's passkey binding, passed on to the agent for its reverse check. */
       claimerWebauthnBinding?: unknown;
       claimedAt: number;
+      /**
+       * The plan's computer cap for the owner's tier (users.tier). Checked in the same transaction,
+       * under the owner's row lock, against the owner's active agents. Omitted = no cap.
+       */
+      agentLimitFor?: (tier: string | null) => number;
     },
     build: (code: PairingCodeDoc) => Promise<DeviceDoc>,
   ): Promise<
-    { ok: true; agentDeviceId: string } | { ok: false; reason: "not_found" | "already_claimed" | "device_exists" }
+    | { ok: true; agentDeviceId: string }
+    | { ok: false; reason: "not_found" | "already_claimed" | "device_exists" | "device_limit"; limit?: number }
   >;
 
   // ---- endorsement handoff (/v1/endorse) ----

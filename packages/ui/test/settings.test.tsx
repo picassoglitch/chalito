@@ -3,10 +3,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import es from "../messages/es.json" with { type: "json" };
 import en from "../messages/en.json" with { type: "json" };
 import {
+  CompanionPicker,
   DEFAULT_SETTINGS,
+  RosterAssetsProvider,
   SETTINGS,
   SHELLS,
   SettingsPanel,
+  type CompanionId,
   type SettingKey,
   type SettingsValues,
 } from "../src/index.js";
@@ -153,6 +156,74 @@ describe("companion name", () => {
     renderUi(<Panel shell="web" />);
     expect(screen.getByTestId("companion-title").textContent).toBe("Chalito");
     expect(screen.queryByTestId("credit-line")).toBeNull();
+  });
+});
+
+describe("companion picker", () => {
+  const picker = (
+    value: CompanionId = "chalito",
+    onChange: (c: string) => void = () => undefined,
+    locale: "es" | "en" = "es",
+  ) =>
+    renderUi(
+      <RosterAssetsProvider base="/roster">
+        <CompanionPicker value={value} onChange={onChange} />
+      </RosterAssetsProvider>,
+      locale,
+    );
+  const radios = () => screen.getAllByRole("radio") as HTMLInputElement[];
+
+  it("opens on the chosen companion's category, with lazy thumbnails", () => {
+    picker();
+    expect(screen.getByRole("button", { name: "Personas" }).getAttribute("aria-pressed")).toBe("true");
+    expect(radios()).toHaveLength(20);
+    expect(radios().find((r) => r.checked)?.value).toBe("chalito");
+    const img = screen.getByRole("radiogroup").querySelector("img")!;
+    expect(img.getAttribute("src")).toBe("/roster/assets/chalito/thumb-128.webp");
+    expect(img.getAttribute("loading")).toBe("lazy");
+    expect(screen.getByTestId("companion-selected").textContent).toContain("Chalito");
+  });
+
+  it("with the person's own character on, no roster companion is chosen and the one underneath can be picked", () => {
+    const picked: string[] = [];
+    renderUi(
+      <RosterAssetsProvider base="/roster">
+        <CompanionPicker value="chalito" onChange={(c) => picked.push(c)} customActive />
+      </RosterAssetsProvider>,
+    );
+    expect(radios().some((r) => r.checked)).toBe(false);
+    expect(screen.queryByTestId("companion-selected")).toBeNull();
+    expect(screen.getByTestId("companion-custom").textContent).toContain("tu propio personaje");
+    fireEvent.click(radios().find((r) => r.value === "chalito")!);
+    expect(picked).toEqual(["chalito"]);
+  });
+
+  it("switches category, shows everyone under Todos, and picks", () => {
+    const picked: string[] = [];
+    picker("chalito", (c) => picked.push(c));
+    fireEvent.click(screen.getByRole("button", { name: "Animales" }));
+    expect(radios().map((r) => r.value)).toContain("bruno");
+    fireEvent.click(screen.getByRole("button", { name: "Todos" }));
+    expect(radios()).toHaveLength(220);
+    fireEvent.click(radios().find((r) => r.value === "luna")!);
+    expect(picked).toEqual(["luna"]);
+  });
+
+  it("searches every category by name, accents ignored, with an empty state", () => {
+    picker();
+    const search = screen.getByRole("searchbox", { name: "Buscar compañero" });
+    fireEvent.change(search, { target: { value: "bambu" } });
+    expect(radios().map((r) => r.value)).toEqual(["bambu"]);
+    expect(screen.getByRole("button", { name: "Todos" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.change(search, { target: { value: "zzzz" } });
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.getByTestId("companion-empty").textContent).toBe("No encontramos a nadie con ese nombre.");
+  });
+
+  it("labels categories in English", () => {
+    picker("bruno", undefined, "en");
+    expect(screen.getByRole("button", { name: "Animals" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Vehicles & space" })).toBeTruthy();
   });
 });
 

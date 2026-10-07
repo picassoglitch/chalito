@@ -15,6 +15,10 @@ import { loadStored, type DesktopEnv, type Stored } from "./session.js";
 export type RoomWindowDeps = Omit<RoomControllerDeps, "roomId"> & {
   /** The store catalog's cosmetic placements (for co-members' equipped items in the scene). */
   catalog?: () => Promise<CosmeticCatalog>;
+  /** GET /v1/avatar/companion as this device: the companion's custom card with signed URLs. */
+  companionCard?: () => Promise<unknown>;
+  /** GET /v1/avatar/rooms/:roomId/cards: co-members' custom cards (members of that room only). */
+  roomCards?: (roomId: string) => Promise<unknown>;
 };
 
 export interface RoomWindowIo {
@@ -48,7 +52,13 @@ export const roomWindowDeps = async (io: RoomWindowIo): Promise<RoomWindowDeps |
     keyring: (rows) => unwrapKeyring(rows, keys.box),
     deviceId: keys.deviceId,
     companionId,
-    ...(io.getJson ? { catalog: catalogLoader(() => io.getJson!(token, "/v1/store/catalog")) } : {}),
+    ...(io.getJson
+      ? {
+          catalog: catalogLoader(() => io.getJson!(token, "/v1/store/catalog")),
+          companionCard: () => io.getJson!(token, "/v1/avatar/companion"),
+          roomCards: (roomId: string) => io.getJson!(token, `/v1/avatar/rooms/${encodeURIComponent(roomId)}/cards`),
+        }
+      : {}),
   };
 };
 

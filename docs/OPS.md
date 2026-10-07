@@ -69,11 +69,12 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 
 **api (Chalyb's engine module) also needs:**
 - `ACCOUNT_EXPORT_BUCKET`: the records bucket (CMEK) is the suggested home for `exports/<owner>/`;
-- `AVATAR_BUCKET`: the assets bucket;
+- `AVATAR_BUCKET`: the assets bucket (also turns on `/v1/avatar`, custom companions, with `CHALYB_BASE_URL`); the api signs upload URLs as itself, so its account needs Token Creator on itself (`api_self_sign` in Terraform); it also deletes a card's every object version when the person deletes their character ("Eliminar mi personaje", `docs/RUNBOOK.md` 6.8), which `roles/storage.objectAdmin` on the bucket (`api_objects`) covers;
 - `RECORDS_BUCKET`;
 - `API_PUBLIC_URL`;
 - `SCHEDULER_SA_EMAIL`;
-- `TRUSTED_PROXIES`: 0 behind Cloud Run's front end, 1 behind an external load balancer.
+- `TRUSTED_PROXIES`: 0 behind Cloud Run's front end, 1 behind an external load balancer;
+- `AVATAR_FREE_MARKER_KEY` (secret, recommended, ≥ 32 random characters, e.g. `openssl rand -hex 32`): keys the free-custom-companion markers (migration `20261005000200`, `apps/api/src/avatar/free-marker.ts`). Without it the api derives a key from `CHALITO_SSO_SECRET`. **Set it once and don't rotate it:** a new key forgets who already used their free creation (each person could get one more).
 
 **Cloud Scheduler:** schedule `POST <api>/tasks/account-deletions` hourly, with OIDC as `SCHEDULER_SA_EMAIL`.
 
@@ -106,7 +107,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 | `BRAIN_KEYS_KMS_KEY` | orchestrator | KMS key resource name (§3); not a secret value |
 | `OWNER_UIDS` | api, notifier, orchestrator | The owner's hub user ids (comped) |
 | `REALTIME_SIP_URI` | notifier (optional) | `sip:<proj>@sip.api.openai.com;transport=tls;secure=true` |
-| `GEMINI_API_KEY` | `avatar-jobs` roster scripts only (local, never deployed) | Google AI Studio (`~/.config/secrets/ai.env` on the owner's machine) |
+| `GEMINI_API_KEY` | `avatar-jobs`: the roster scripts (local) and, deployed as Secret Manager `chalito-gemini-api-key`, custom companions from a photo | Google AI Studio (`~/.config/secrets/ai.env` on the owner's machine). **Must be a key from a paid-tier AI Studio project (Cloud Billing enabled on it).** Under the Gemini API terms, content sent through unpaid (free-tier) keys may be used to improve Google's products; paid-tier content isn't. User photos go through this key, and the privacy text promises they aren't used for training, so a free-tier key here breaks that promise. Check in AI Studio → API keys that the key's project shows a paid tier before deploying, and again after any key rotation. |
 | Release secrets (Apple, Azure, Tauri updater) | GitHub Actions only | §10 (M14) |
 
 ## 6. Meta / WhatsApp
@@ -143,7 +144,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 
 | | What | Why / blocks | Reference |
 |---|---|---|---|
-| [ ] | Confirm the paid cosmetic prices (placeholders, in hub tokens): `star_cape` 250000, `sparkle_aura` 150000, `portal_swirl` 400000 | Paid store items (M8); also needs the hub's `store.purchase` change (§1) | `packages/config/catalog.yaml`, `docs/integrations/STORE.md`, D-030 |
+| [ ] | Confirm the paid cosmetic prices (placeholders, in hub tokens): `star_cape` 1000, `sparkle_aura` 1000, `portal_swirl` 2000, and the seven skins `skin_*` 10000 each (scale: one clothing item ≈ 200, a full outfit ≈ 5,000) | Paid store items (M8); also needs the hub's `store.purchase` change (§1) | `packages/config/catalog.yaml`, `docs/integrations/STORE.md`, D-030 |
 | [ ] | MXN charge amounts for each Solo tier on the hub (`billing.soloMxnAmounts: unset`). Solo checkout shows "Disponible pronto" until set | Solo line (M12/M13) | `packages/config/plans.yaml`, D-031, decision #31 |
 | [ ] | Review the progressive inclusions per tier | Margins | decision #1, D-009, `packages/config/plans.yaml` |
 

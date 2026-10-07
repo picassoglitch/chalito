@@ -1,10 +1,10 @@
 import { loadPlans, loadRooms } from "@chalito/config";
-import { HubTierId, TierId, type Inclusions } from "@chalito/protocol";
+import { resolveInclusions } from "@chalito/protocol";
 
 /**
  * Room limits from the plan's inclusions (brief §5 M11, plans.yaml). A user's `tier` is either a
- * hub tier (free/pro/vip, mapped to a ladder tier by `hubTiers`) or a Solo tier; bundles take
- * their mirrored tier's inclusions. Anything unknown or unset fails closed (0).
+ * hub tier (free/pro/vip, mapped to a ladder tier by `hubTiers`, with its `limits` caps) or a Solo
+ * tier; bundles take their mirrored tier's inclusions. Anything unknown or unset fails closed (0).
  */
 export interface RoomLimits {
   rooms: number;
@@ -14,29 +14,18 @@ export interface RoomLimits {
 const plans = loadPlans();
 export const roomsConfig = loadRooms();
 
-const inclusionsFor = (tier: string | null | undefined): Inclusions | null => {
-  if (!tier) return null;
-  let id: string | null = tier;
-  const hub = HubTierId.safeParse(tier);
-  if (hub.success) {
-    const access = plans.hubTiers[hub.data]?.access;
-    id = !access || access === "none" ? null : access;
-  }
-  const parsed = TierId.safeParse(id);
-  if (!parsed.success) return null;
-  const def = plans.tiers[parsed.data];
-  if (!def) return null;
-  if (def.inclusions !== "mirror_matching_tier") return def.inclusions;
-  const mirrored = def.mirrors ? plans.tiers[def.mirrors] : undefined;
-  return mirrored && mirrored.inclusions !== "mirror_matching_tier" ? mirrored.inclusions : null;
-};
-
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 export const roomLimitsFor = (tier: string | null | undefined): RoomLimits => {
-  const inc = inclusionsFor(tier);
+  const inc = resolveInclusions(plans, tier);
   return { rooms: num(inc?.rooms), membersPerRoom: num(inc?.membersPerRoom) };
 };
+
+/**
+ * How many computers (agent devices) the plan allows. Phones and browsers are clients and don't
+ * count: they're how a person reaches their computers, and Gratis needs one of each to work.
+ */
+export const deviceLimitFor = (tier: string | null | undefined): number => num(resolveInclusions(plans, tier)?.devices);
 
 /** rooms.yaml `invites.ttl` (ISO 8601 PnD / PTnH) in ms. */
 export const inviteTtlMs = (): number => {

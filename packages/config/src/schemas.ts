@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CosmeticSlot, EfficiencyProfile, EphemeralTtl, RenderQuality } from "@chalito/protocol";
+import { AccessorySlot, EfficiencyProfile, SkinEffect, EphemeralTtl, RenderQuality } from "@chalito/protocol";
 
 const Provider = z.enum(["anthropic", "openai", "xai", "google"]);
 const ModelRef = z.object({ provider: Provider, model: z.string().min(1) });
@@ -13,6 +13,7 @@ export const ModelsConfig = z.object({
     z.object({ companion: ModelRef.optional(), mesa: z.partialRecord(Provider, z.string()).optional() }),
   ),
   voice: z.object({ desktop: ModelRef, call: ModelRef }),
+  images: z.object({ avatar: ModelRef }),
 });
 export type ModelsConfig = z.infer<typeof ModelsConfig>;
 
@@ -40,6 +41,8 @@ export const PricesConfig = z.object({
   }),
   whatsapp: z.object({ utility: z.record(z.string(), usd) }),
   compute: z.object({ cloudRunMicrosPerSecond: z.object({ standard: usd, boost: usd }) }),
+  /** Per generated image (USD), by provider and model. */
+  images: z.record(z.string(), z.record(z.string(), z.object({ perImage: usd }))),
 });
 export type PricesConfig = z.infer<typeof PricesConfig>;
 
@@ -87,33 +90,109 @@ export const RenderConfig = z.object({
 });
 export type RenderConfig = z.infer<typeof RenderConfig>;
 
-export const CatalogConfig = z.object({
-  schemaVersion: z.literal(1),
-  cosmetics: z.record(
-    z.string().regex(/^[a-z0-9_]+$/),
-    z
-      .object({
-        name: z.object({ es: z.string().min(1), en: z.string().min(1) }),
-        slot: CosmeticSlot,
-        free: z.boolean(),
-        /** Price in billable tokens, paid from the hub balance (D-030). Required when not free. */
-        priceTokens: z.number().int().positive().optional(),
-        /** Art inside @chalito/roster (cosmetics/<id>.webp). */
-        art: z.string().regex(/^cosmetics\/[a-z0-9_]+\.webp$/),
-        /** On a 2.5D card: width as a fraction of the card, and the item's own pivot (0..1). */
-        card: z.object({
-          width: z.number().positive().max(2),
-          pivot: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)]),
-        }),
-        /** On a VRM: offset from the slot's bone, in metres. */
-        vrm: z.object({ offset: z.tuple([z.number(), z.number(), z.number()]) }),
-        provenance: z.string().min(1),
-      })
-      .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens")
-      .refine((c) => !(c.free && c.priceTokens !== undefined), "free cosmetics have no price"),
-  ),
-  drops: z.record(z.string(), z.unknown()),
+const CosmeticName = z.object({ es: z.string().min(1), en: z.string().min(1) });
+/** Price in billable tokens, paid from the hub balance (D-030). Required when not free. */
+const PriceTokens = z.number().int().positive().optional();
+const priced = <T extends { free: boolean; priceTokens?: number }>(s: z.ZodType<T>) =>
+  s
+    .refine((c) => c.free || c.priceTokens !== undefined, "paid cosmetics need priceTokens")
+    .refine((c) => !(c.free && c.priceTokens !== undefined), "free cosmetics have no price");
+
+/**
+ * The item's own pivot, in its image (0..1): a hat's brim, a bow tie's knot, a cape's collar. The
+ * vertical pivot may leave the image (-1..2) to hang an item off its anchor, e.g. a mustache a little
+ * below the face anchor, which sits at eye level.
+ */
+const Pivot = z.tuple([z.number().min(0).max(1), z.number().min(-1).max(2)]);
+/**
+ * On a 2.5D card, sized by the card (@chalito/roster CardWidthPlacement): width as a fraction of the
+ * card's width. A back item may hang from the neck (`anchorY: neck`: a cape's collar at the neck's
+ * height, still drawn behind the body).
+ */
+export const CardWidthPlacement = z.strictObject({
+  width: z.number().positive().max(2),
+  pivot: Pivot,
+  anchorY: z.literal("neck").optional(),
 });
+/**
+ * On a 2.5D card, sized by the character's neck (@chalito/roster NeckPlacement): width as a
+ * fraction of the neck anchor's width (card.json anchors.neck.w), so it fits any body.
+ */
+export const NeckPlacement = z.strictObject({
+  neckWidth: z.number().positive().max(4),
+  pivot: Pivot,
+});
+export const CardPlacement = z.union([CardWidthPlacement, NeckPlacement]);
+
+/** A drawn item placed on the card (hat, glasses, bow tie, wings, aura, portal). */
+export const AccessoryItem = z
+  .object({
+    name: CosmeticName,
+    slot: AccessorySlot,
+    free: z.boolean(),
+    priceTokens: PriceTokens,
+    /** Art inside @chalito/roster (cosmetics/<id>.webp). */
+    art: z.string().regex(/^cosmetics\/[a-z0-9_]+\.webp$/),
+    /** On a 2.5D card: neck items by `neckWidth`, every other slot by `width` (see above). */
+    card: CardPlacement,
+    /** On a VRM: offset from the slot's bone, in metres. */
+    vrm: z.object({ offset: z.tuple([z.number(), z.number(), z.number()]) }),
+    provenance: z.string().min(1),
+  })
+  .refine((c) => (c.slot === "neck") === "neckWidth" in c.card, {
+    message: "neck items are sized by neckWidth; other slots by width",
+    path: ["card"],
+  })
+  .refine((c) => !("anchorY" in c.card && c.card.anchorY !== undefined) || c.slot === "back", {
+    message: "only back items hang from the neck (anchorY)",
+    path: ["card", "anchorY"],
+  });
+export type AccessoryItem = z.infer<typeof AccessoryItem>;
+
+/**
+ * A skin: a material effect over the whole companion, drawn by the card renderer's shader
+ * (@chalito/avatar-three `setSkin`). No art, no placement, so it fits every roster character.
+ */
+export const SkinItem = z
+  .object({
+    name: CosmeticName,
+    slot: z.literal("skin"),
+    free: z.boolean(),
+    priceTokens: PriceTokens,
+    skin: SkinEffect,
+    /**
+     * Hub tiers that wear this skin at no token cost while they're on that tier (owner decision
+     * 2026-10-06: VIP gets Galaxia and Holográfico). Everyone else still buys it at priceTokens.
+     */
+    includedIn: z
+      .array(z.enum(["free", "pro", "vip"]))
+      .min(1)
+      .optional(),
+  })
+  .refine((c) => !c.includedIn || !c.free, {
+    message: "only paid skins can be included in a plan",
+    path: ["includedIn"],
+  });
+export type SkinItem = z.infer<typeof SkinItem>;
+
+export const CosmeticItem = priced(z.discriminatedUnion("slot", [AccessoryItem, SkinItem]));
+export type CosmeticItem = z.infer<typeof CosmeticItem>;
+
+export const isSkinItem = (c: CosmeticItem): c is SkinItem => c.slot === "skin";
+
+export const CatalogConfig = z
+  .object({
+    schemaVersion: z.literal(1),
+    cosmetics: z.record(z.string().regex(/^[a-z0-9_]+$/), CosmeticItem),
+    drops: z.record(z.string(), z.unknown()),
+  })
+  .refine(
+    (c) => {
+      const effects = Object.values(c.cosmetics).flatMap((x) => (x.slot === "skin" ? [x.skin] : []));
+      return new Set(effects).size === effects.length;
+    },
+    { message: "each skin effect is sold once", path: ["cosmetics"] },
+  );
 export type CatalogConfig = z.infer<typeof CatalogConfig>;
 
 /** escalation.yaml: the escalation engine's limits and the notifier's channel settings. */
