@@ -59,6 +59,7 @@ Each is written with `deps.audit.record({ action, owner, actor, target?, meta? }
 | `pairing.code_created` | devices | `apps/api/src/routes/pairing.ts` | agent device id | code id | — (**owner null: BigQuery-only**) |
 | `pairing.claimed` | devices | `apps/api/src/routes/pairing.ts` | uid | agent device id | — |
 | `recovery.started` | devices | `apps/api/src/routes/recovery.ts` | uid | — | `{cooldownUntil}` |
+| `recovery.retried` | devices | `apps/api/src/routes/recovery.ts` (`/start` again during the cool-down: no new alert) | uid | — | `{cooldownUntil}` |
 | `recovery.failed` | devices | `apps/api/src/routes/recovery.ts` | uid | — | — |
 | `recovery.completed` | devices | `apps/api/src/routes/recovery.ts` | uid | new device id | — |
 | `webauthn.registered` | devices | `apps/api/src/routes/webauthn.ts` | uid | device id | `{credentialId}` |

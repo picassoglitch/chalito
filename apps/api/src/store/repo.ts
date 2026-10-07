@@ -29,6 +29,8 @@ export interface StoreRepo {
   grantFree(owner: string, cosmeticId: string): Promise<void>;
   /** false when the companion doesn't exist. `cosmeticId: null` takes the slot off. */
   equip(owner: string, companionId: string, slot: CosmeticSlot, cosmeticId: string | null): Promise<boolean>;
+  /** Takes the skin off every companion of the owner wearing one of `skinIds` that isn't in their inventory. */
+  dropUnownedSkins(owner: string, skinIds: readonly string[]): Promise<number>;
 }
 
 export class PostgresStoreRepo implements StoreRepo {
@@ -98,6 +100,16 @@ export class PostgresStoreRepo implements StoreRepo {
             where owner = ${owner} and companion_id = ${companionId} returning companion_id`;
     return rows.length > 0;
   }
+
+  async dropUnownedSkins(owner: string, skinIds: readonly string[]) {
+    const rows = await this.sql`
+      update chalito.companions c set equipped = c.equipped - 'skin'
+      where c.owner = ${owner} and c.equipped ->> 'skin' = any(${skinIds as string[]})
+        and not exists (
+          select 1 from chalito.inventory i where i.owner = c.owner and i.cosmetic_id = c.equipped ->> 'skin')
+      returning c.companion_id`;
+    return rows.length;
+  }
 }
 
 export class MemoryStoreRepo implements StoreRepo {
@@ -139,5 +151,15 @@ export class MemoryStoreRepo implements StoreRepo {
     if (cosmeticId === null) delete eq[slot];
     else eq[slot] = cosmeticId;
     return true;
+  }
+  async dropUnownedSkins(owner: string, skinIds: readonly string[]) {
+    let n = 0;
+    for (const [key, eq] of this.companions) {
+      if (!key.startsWith(`${owner}/`) || !eq.skin || !skinIds.includes(eq.skin)) continue;
+      if (this.inventory.get(owner)?.has(eq.skin)) continue;
+      delete eq.skin;
+      n++;
+    }
+    return n;
   }
 }

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CosmeticSlot, HubUsageEvent } from "@chalito/protocol";
 import { CatalogConfig } from "@chalito/config";
 import { CID, PID, RID, catalog, hubCalls, hubState, storeSetup } from "./store-harness.js";
+import { dropLapsedSkins } from "../src/store/routes.js";
 
 describe("catalog", () => {
   it("lists every cosmetic with its slot and price in tokens, and what the user owns", async () => {
@@ -276,6 +277,34 @@ describe("VIP-included skins (Galaxia, Holográfico)", () => {
       expect(res.json).toMatchObject({ status: "owned", charged: catalog.cosmetics.skin_galaxy!.priceTokens });
       expect((await equip(call, "skin_galaxy")).status).toBe(200);
     }
+  });
+
+  it("a VIP who downgrades loses the included skin they were wearing; a skin they bought stays on", async () => {
+    const { call, store } = storeSetup();
+    store.tiers.set("hub-user-1", "vip");
+    expect((await equip(call, "skin_galaxy")).status).toBe(200);
+    store.tiers.set("hub-user-1", "pro");
+    const items = (await call("GET", "/catalog")).json.items as Record<string, unknown>[];
+    expect(items.find((i) => i.id === "skin_galaxy")).toMatchObject({ owned: false });
+    expect(store.companions.get(`hub-user-1/${CID}`)?.skin).toBeUndefined();
+
+    // Bought before (or after) the plan: theirs to keep wearing on any tier.
+    await call("POST", "/purchase", { cosmeticId: "skin_holo", purchaseId: "pur_vip000000000003" });
+    expect((await equip(call, "skin_holo")).status).toBe(200);
+    store.tiers.set("hub-user-1", "free");
+    await call("GET", "/catalog");
+    expect(store.companions.get(`hub-user-1/${CID}`)?.skin).toBe("skin_holo");
+  });
+
+  it("dropLapsedSkins leaves a VIP's included skin alone and only touches that owner", async () => {
+    const { store } = storeSetup();
+    store.companions.set("hub-user-1/c1", { skin: "skin_galaxy" });
+    store.companions.set("hub-user-2/c2", { skin: "skin_galaxy" });
+    const deps = { repo: store, catalog, hub: { admit: vi.fn(), settle: vi.fn() } };
+    expect(await dropLapsedSkins(deps, "hub-user-1", "vip")).toBe(0);
+    expect(await dropLapsedSkins(deps, "hub-user-1", null)).toBe(1);
+    expect(store.companions.get("hub-user-1/c1")?.skin).toBeUndefined();
+    expect(store.companions.get("hub-user-2/c2")?.skin).toBe("skin_galaxy");
   });
 
   it("only paid skins can be included in a plan", () => {

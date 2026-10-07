@@ -4,6 +4,7 @@ import { HubTenantCreate, HubTenantStatus, SsoExchangeRequest } from "@chalito/p
 import type { Deps } from "../deps.js";
 import { fail } from "../lib/errors.js";
 import { tenantApiToken, verifySsoToken } from "../hub/sso.js";
+import { dropLapsedSkins } from "../store/routes.js";
 
 const bearerOk = (header: string | undefined, token: string) => {
   const given = Buffer.from(header?.startsWith("Bearer ") ? header.slice(7) : "");
@@ -65,6 +66,11 @@ export const hubRoutes = (deps: Deps) => {
       tier: payload.tier,
       lastSsoAt: deps.now(),
     });
+    // The tier may have just changed: a skin only the old plan included comes off. Never blocks sign-in.
+    if (deps.store)
+      await dropLapsedSkins(deps.store, payload.user_id, payload.tier.toLowerCase()).catch((err: unknown) =>
+        console.error("[sso] lapsed skins", err instanceof Error ? err.message : "error"),
+      );
     const customToken = await deps.identity.mintUser(payload.user_id, payload.tier);
     await deps.audit.record({ action: "sso.exchange", owner: payload.user_id, actor: "hub" });
     return c.json({ customToken, owner: payload.user_id });

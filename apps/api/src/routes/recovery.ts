@@ -31,6 +31,17 @@ export const recoveryRoutes = (deps: Deps) => {
       await deps.audit.record({ action: "recovery.failed", owner: p.owner, actor: p.uid });
       return fail(401, "bad_code");
     }
+    // Already waiting out the cool-down: same end time, and no new alert to every device (a retry
+    // from the recovery screen is not a new event). Still audited, as a retry.
+    if (rec.cooldownUntil !== null && deps.now() < rec.cooldownUntil) {
+      await deps.audit.record({
+        action: "recovery.retried",
+        owner: p.owner,
+        actor: p.uid,
+        meta: { cooldownUntil: rec.cooldownUntil },
+      });
+      return c.json({ cooldownUntil: rec.cooldownUntil });
+    }
     const cooldownUntil = rec.cooldownUntil ?? deps.now() + deps.config.recoveryCooldownMs;
     await deps.repo.startRecovery(p.owner, cooldownUntil, deps.now());
     // Alert every device of the account (metadata only; escalation picks it up in M6).
