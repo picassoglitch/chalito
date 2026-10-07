@@ -11,13 +11,13 @@ grant usage on schema extensions to chalito_server;
 insert into chalito.tenants (id) values ('del-a'), ('del-b');
 insert into chalito.users (id, tenant_id) values ('del-a', 'del-a'), ('del-b', 'del-b');
 insert into chalito.companions (owner, companion_id, name, avatar) values
-  ('del-a', 'chl_delaaaaaaaaaaaaaaaaaaaaaa', 'A', 'luna'),
-  ('del-b', 'chl_delbbbbbbbbbbbbbbbbbbbbbb', 'B', 'tito');
+  ('del-a', 'chl_delaaaaaaaaaaaaaaaaaaaaaaa', 'A', 'luna'),
+  ('del-b', 'chl_delbbbbbbbbbbbbbbbbbbbbbbb', 'B', 'tito');
 insert into chalito.rooms (room_id, type, name, owner_uid, owner_companion_id)
-values ('room_del_test_0001', 'family', 'Casa', 'del-b', 'chl_delbbbbbbbbbbbbbbbbbbbbbb');
+values ('room_del_test_0001', 'family', 'Casa', 'del-b', 'chl_delbbbbbbbbbbbbbbbbbbbbbbb');
 insert into chalito.room_members (room_id, companion_id, uid, role) values
-  ('room_del_test_0001', 'chl_delbbbbbbbbbbbbbbbbbbbbbb', 'del-b', 'owner'),
-  ('room_del_test_0001', 'chl_delaaaaaaaaaaaaaaaaaaaaaa', 'del-a', 'member');
+  ('room_del_test_0001', 'chl_delbbbbbbbbbbbbbbbbbbbbbbb', 'del-b', 'owner'),
+  ('room_del_test_0001', 'chl_delaaaaaaaaaaaaaaaaaaaaaaa', 'del-a', 'member');
 
 set local role chalito_server;
 -- A's free creation succeeds (leaving its markers) and is worn.
