@@ -114,6 +114,8 @@ export const HubUsageKind = z.enum([
   "compute.seconds",
   "storage.gb_month",
   "store.purchase",
+  /** Generated images (a custom companion: one photo → five drawings). Billed standard (cost × margin). */
+  "image.generations",
 ]);
 
 export const HubUsageEvent = z

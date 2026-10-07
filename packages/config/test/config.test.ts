@@ -11,6 +11,8 @@ import {
   loadRooms,
 } from "../src/load.js";
 import { isLintedFile, lintCurrency } from "../src/currency.js";
+import { CatalogConfig } from "../src/schemas.js";
+import { SkinEffect } from "@chalito/protocol";
 
 describe("config files", () => {
   it("every config file loads and validates", () => {
@@ -47,6 +49,7 @@ describe("config files", () => {
       expect(prices.llm[r.provider as keyof typeof prices.llm]?.[r.model], `${r.provider}/${r.model}`).toBeDefined();
     }
     expect(prices.realtime[models.voice.desktop.model]).toBeDefined();
+    expect(prices.images[models.images.avatar.provider]?.[models.images.avatar.model]?.perImage).toBeGreaterThan(0);
   });
 
   it("coding agents never draw on the managed balance and Claude Code is API-key only", () => {
@@ -88,5 +91,129 @@ describe("devmode liability text", () => {
     expect(es.text).toContain("Chalito no es responsable");
     expect(en.text).toContain("Chalito is not liable");
     expect(es.phrase).toBe("ACEPTO");
+  });
+});
+
+describe("catalog skins (material effects, no art)", () => {
+  const catalog = loadCatalog();
+  const skins = Object.entries(catalog.cosmetics).filter(([, c]) => c.slot === "skin");
+  const base = { schemaVersion: 1, drops: {} };
+  const parse = (cosmetics: Record<string, unknown>) => CatalogConfig.safeParse({ ...base, cosmetics });
+  const skin = { name: { es: "Dorado", en: "Gold" }, slot: "skin", free: false, priceTokens: 10000, skin: "gold" };
+
+  it("sells every effect the card renderer draws, once, as a paid item", () => {
+    expect(skins.map(([, c]) => (c.slot === "skin" ? c.skin : null)).sort()).toEqual([...SkinEffect.options].sort());
+    for (const [id, c] of skins) {
+      expect(id).toMatch(/^skin_[a-z0-9_]+$/);
+      expect(c.free).toBe(false);
+      expect(c.priceTokens).toBeGreaterThan(0);
+    }
+  });
+
+  it("validates skins: a known effect, no art or placement, priced unless free", () => {
+    expect(parse({ skin_gold: skin }).success).toBe(true);
+    expect(parse({ skin_gold: { ...skin, skin: "lava" } }).success).toBe(false);
+    // Art or placement on a skin is dropped, like any key the schema doesn't know.
+    const withArt = parse({ skin_gold: { ...skin, art: "cosmetics/x.webp", card: { width: 1, pivot: [0, 0] } } });
+    expect(withArt.success && Object.keys(withArt.data.cosmetics.skin_gold!).sort()).toEqual(
+      ["free", "name", "priceTokens", "skin", "slot"].sort(),
+    );
+    expect(parse({ skin_gold: { ...skin, priceTokens: undefined } }).success).toBe(false);
+    expect(parse({ skin_gold: { ...skin, free: true } }).success).toBe(false);
+    // The same effect sold twice under two ids is a mistake.
+    expect(parse({ skin_gold: skin, gold_again: skin }).success).toBe(false);
+  });
+
+  it("accessories still need art and placement, and can't claim the skin slot without an effect", () => {
+    const hat = catalog.cosmetics.viking_hat!;
+    expect(parse({ viking_hat: hat }).success).toBe(true);
+    expect(parse({ viking_hat: { ...hat, art: undefined } }).success).toBe(false);
+    expect(parse({ viking_hat: { ...hat, slot: "skin" } }).success).toBe(false);
+  });
+});
+
+describe("catalog wearables (fit any body: neck, head, face, back)", () => {
+  const catalog = loadCatalog();
+  const base = { schemaVersion: 1, drops: {} };
+  const parse = (cosmetics: Record<string, unknown>) => CatalogConfig.safeParse({ ...base, cosmetics });
+  const bow = {
+    name: { es: "Moño rojo", en: "Red bow tie" },
+    slot: "neck",
+    free: false,
+    priceTokens: 200,
+    art: "cosmetics/bow_tie_red.webp",
+    card: { neckWidth: 0.8, pivot: [0.5, 0.5] },
+    vrm: { offset: [0, 0, 0.07] },
+    provenance: "docs/ASSET_PROVENANCE.md#cosmetics",
+  };
+
+  it("sells the 22 owner-approved pieces, all paid, at the approved prices", () => {
+    const prices: Record<string, [string, number]> = {
+      bow_tie: ["neck", 200],
+      bow_tie_red: ["neck", 200],
+      necktie: ["neck", 200],
+      bell_collar: ["neck", 200],
+      pearl_necklace: ["neck", 200],
+      gold_medal: ["neck", 300],
+      marigold_necklace: ["neck", 300],
+      flower_lei: ["neck", 300],
+      charro_hat: ["head", 500],
+      crown: ["head", 500],
+      cap: ["head", 300],
+      party_hat: ["head", 300],
+      flower_headband: ["head", 300],
+      sunglasses: ["face", 300],
+      heart_glasses: ["face", 300],
+      mustache: ["face", 200],
+      angel_wings: ["back", 1000],
+      butterfly_wings: ["back", 1000],
+      bat_wings: ["back", 1000],
+      dragon_wings: ["back", 1500],
+      hero_cape: ["back", 1000],
+      jetpack: ["back", 2000],
+    };
+    for (const [id, [slot, price]] of Object.entries(prices)) {
+      const c = catalog.cosmetics[id]!;
+      expect(c, id).toBeDefined();
+      expect([c.slot, c.free, c.priceTokens]).toEqual([slot, false, price]);
+      expect(c.name.es.length && c.name.en.length).toBeGreaterThan(0);
+    }
+    expect(catalog.cosmetics.marigold_necklace!.name).toEqual({ es: "Collar de cempasúchil", en: "Marigold necklace" });
+  });
+
+  it("neck items are sized by the neck; every other slot by the card", () => {
+    for (const c of Object.values(catalog.cosmetics)) {
+      if (c.slot === "skin") continue;
+      expect("neckWidth" in c.card).toBe(c.slot === "neck");
+    }
+    expect(catalog.cosmetics.bow_tie!.slot !== "skin" && catalog.cosmetics.bow_tie!.card).toEqual({
+      neckWidth: 0.8,
+      pivot: [0.5, 0.5],
+    });
+    expect(catalog.cosmetics.hero_cape!.slot !== "skin" && catalog.cosmetics.hero_cape!.card).toEqual({
+      width: 0.85,
+      pivot: [0.5, 0.04],
+      anchorY: "neck",
+    });
+  });
+
+  it("validates neck placement: neckWidth on the neck only, never both widths, anchorY on back items only", () => {
+    expect(parse({ bow_tie_red: bow }).success).toBe(true);
+    // A neck item sized by the card, or a hat sized by the neck: refused.
+    expect(parse({ bow_tie_red: { ...bow, card: { width: 0.3, pivot: [0.5, 0.5] } } }).success).toBe(false);
+    expect(parse({ bow_tie_red: { ...bow, slot: "head" } }).success).toBe(false);
+    // Both widths at once is ambiguous; unknown keys are refused.
+    expect(parse({ bow_tie_red: { ...bow, card: { neckWidth: 0.8, width: 0.3, pivot: [0.5, 0.5] } } }).success).toBe(
+      false,
+    );
+    expect(parse({ bow_tie_red: { ...bow, card: { neckWidth: 0, pivot: [0.5, 0.5] } } }).success).toBe(false);
+    expect(parse({ bow_tie_red: { ...bow, card: { neckWidth: 0.8, pivot: [0.5, 2.5] } } }).success).toBe(false);
+    expect(
+      parse({ bow_tie_red: { ...bow, card: { neckWidth: 0.8, pivot: [0.5, 0.5], anchorY: "neck" } } }).success,
+    ).toBe(false);
+    const cape = { ...bow, slot: "back", card: { width: 0.85, pivot: [0.5, 0.04], anchorY: "neck" } };
+    expect(parse({ hero_cape: cape }).success).toBe(true);
+    expect(parse({ hero_cape: { ...cape, card: { ...cape.card, anchorY: "head" } } }).success).toBe(false);
+    expect(parse({ hero_cape: { ...cape, slot: "head" } }).success).toBe(false);
   });
 });

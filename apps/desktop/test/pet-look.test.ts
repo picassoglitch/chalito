@@ -44,6 +44,22 @@ describe("pet render quality (render.yaml, same slider as the room)", () => {
     expect(settled).toBe("alto");
   });
 
+  it("wears the equipped skin through emotion changes, animated by the pet's frames, at every level", () => {
+    const look = new PetLook({ ...assets, skin: "galaxy" }, RENDER_DEFAULTS.levels.bajo);
+    expect(look.card.skin).toBe("galaxy");
+    const body = look.card.root.getObjectByName("body") as THREE.Mesh;
+    const mat = body.material as THREE.ShaderMaterial;
+    look.setEmotion("happy");
+    expect(body.material).toBe(mat);
+    expect(mat.uniforms.map!.value).toBe(assets.drawings.happy);
+    look.apply(frame, 2500);
+    expect(mat.uniforms.uTime!.value).toBe(2.5);
+    look.setLevel(RENDER_DEFAULTS.levels.alto);
+    look.apply(frame, 3000);
+    expect(mat.uniforms.uTime!.value).toBe(3);
+    expect(new PetLook(assets, RENDER_DEFAULTS.levels.alto).card.skin).toBeNull();
+  });
+
   it("bajo is the flat impostor without contact shadow; alto runs the rig with the shadow", () => {
     const look = new PetLook(assets, RENDER_DEFAULTS.levels.bajo);
     const shadow = look.card.root.getObjectByName("shadow")!;

@@ -15,7 +15,7 @@ Commands assume `PROJECT` = Chalyb's GCP project, `REGION=us-central1`, and a sh
 
 | # | Step | Where | Verify | Rollback |
 |---|---|---|---|---|
-| 0.1 | Confirm the paid cosmetic prices (hub tokens): `star_cape` 250000, `sparkle_aura` 150000, `portal_swirl` 400000 | edit `packages/config/catalog.yaml`, PR | `pnpm test` (catalog and pay-to-win tests) | revert the PR |
+| 0.1 | Confirm the paid cosmetic prices (hub tokens): `star_cape` 1000, `sparkle_aura` 1000, `portal_swirl` 2000, and the seven skins `skin_*` 10000 each (scale: one clothing item ≈ 200, a full outfit ≈ 5,000) | edit `packages/config/catalog.yaml`, PR | `pnpm test` (catalog and pay-to-win tests) | revert the PR |
 | 0.2 | Set the MXN amount for each Solo tier on the hub (D-031). Until then, Solo checkout shows "Disponible pronto" | hub pricing config (Chalyb) | Solo tiers show prices on the hub | unset them; Chalito falls back to "Disponible pronto" |
 | 0.3 | Review the progressive inclusions per tier (decision #1, D-009) | `packages/config/plans.yaml` | `pnpm test` (plans schema) | revert |
 | 0.4 | Domain: keep `chalito.chalyb.com` (decision #22), or pick another | ADR 0015 | written in `docs/PLAN.md` decisions | — |

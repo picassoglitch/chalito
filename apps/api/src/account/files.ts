@@ -1,10 +1,11 @@
 import type { Storage } from "@google-cloud/storage";
+import { deleteAllVersions } from "../lib/gcs-versions.js";
 
 /** Where an owner's files live: the export, avatar uploads and cards, records. */
 export interface AccountFiles {
   putExport(owner: string, id: string, bytes: Buffer): Promise<string>;
   getExport(path: string): Promise<Buffer | null>;
-  /** Deletes every object under the owner's prefixes; returns how many. */
+  /** Deletes every object under the owner's prefixes, noncurrent versions included; returns how many generations. */
   deleteOwner(owner: string): Promise<number>;
 }
 
@@ -54,11 +55,8 @@ export class GcsAccountFiles implements AccountFiles {
     for (const { bucket, prefix } of all) {
       const p = prefix(check(owner));
       if (!p.endsWith(`${owner}/`)) throw new Error(`unsafe prefix ${p}`);
-      const [files] = await this.storage.bucket(bucket).getFiles({ prefix: p });
-      for (const f of files) {
-        await f.delete({ ignoreNotFound: true });
-        n++;
-      }
+      // Every version too: erasure leaves nothing in the buckets' 30-day noncurrent-version window.
+      n += await deleteAllVersions(this.storage.bucket(bucket), p);
     }
     return n;
   }

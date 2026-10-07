@@ -2,6 +2,11 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { errorMessage, installConsoleRedaction } from "@chalito/redact";
 import { Storage } from "@google-cloud/storage";
+import postgres from "postgres";
+import { loadModels, loadPrices } from "@chalito/config";
+import { processCreation } from "./creation.js";
+import { PostgresCreationStore } from "./creations.js";
+import { geminiImageModel } from "./gemini.js";
 import { UploadRejected, makeCard, validateImage, type CardManifest } from "./process.js";
 import { GcsBlobStore, UPLOAD, outputPrefix, type BlobStore } from "./storage.js";
 
@@ -37,7 +42,11 @@ export const processUpload = async (store: BlobStore, path: string): Promise<Job
   }
 };
 
-/** Cloud Run job entry: AVATAR_BUCKET and UPLOAD_PATH (one upload per execution). */
+/**
+ * Cloud Run job entry: AVATAR_BUCKET and UPLOAD_PATH (one upload per execution, set by the
+ * Workflow on the bucket's finalize event). With GEMINI_API_KEY (and DATABASE_URL) an upload is a
+ * custom companion creation (src/creation.ts); without it, the plain image card (processUpload).
+ */
 /** Run as the entry point, also through a symlink (the container's /app/entry.ts). */
 const isEntry = () => {
   try {
@@ -46,6 +55,40 @@ const isEntry = () => {
     return false;
   }
 };
+
+const runCreation = async (store: GcsBlobStore, path: string) => {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is required with GEMINI_API_KEY");
+  // DATABASE_ROLE: `chalito_server` when the login only holds it with SET (as in apps/api).
+  const sql = postgres(url, {
+    max: 2,
+    onnotice: () => {},
+    ...(process.env.DATABASE_ROLE ? { connection: { role: process.env.DATABASE_ROLE } } : {}),
+  });
+  try {
+    const modelRef = loadModels().images.avatar;
+    const r = await processCreation(
+      {
+        store,
+        creations: new PostgresCreationStore(sql),
+        model: geminiImageModel({ apiKey: process.env.GEMINI_API_KEY!, model: modelRef.model }),
+        modelRef,
+        prices: loadPrices(),
+        now: Date.now,
+        log: (msg, meta) => process.stderr.write(`${JSON.stringify({ msg, ...meta })}\n`),
+      },
+      path,
+    );
+    return {
+      status: r.status,
+      ...(r.status === "failed" ? { failure: r.failure } : {}),
+      images: "images" in r ? r.images : 0,
+    };
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+};
+
 if (isEntry()) {
   installConsoleRedaction();
   const bucket = process.env.AVATAR_BUCKET;
@@ -54,8 +97,12 @@ if (isEntry()) {
     process.stderr.write("AVATAR_BUCKET and UPLOAD_PATH are required\n");
     process.exit(2);
   }
-  processUpload(new GcsBlobStore(new Storage(), bucket), path).then(
-    (r) => process.stdout.write(`${JSON.stringify({ status: r.status, prefix: r.prefix })}\n`),
+  const store = new GcsBlobStore(new Storage(), bucket);
+  const run = process.env.GEMINI_API_KEY
+    ? runCreation(store, path)
+    : processUpload(store, path).then((r) => ({ status: r.status, prefix: r.prefix }));
+  run.then(
+    (r) => process.stdout.write(`${JSON.stringify(r)}\n`),
     (e: unknown) => {
       process.stderr.write(`${errorMessage(e)}\n`);
       process.exit(1);

@@ -5,6 +5,10 @@
 #     → Workflow: only uploads/<owner>/<asset>/original passes; it runs the job with UPLOAD_PATH set
 #     → Cloud Run job (as chalito-avatar-jobs): validates, re-encodes, writes avatars/<owner>/<asset>/
 #
+# Custom companions (apps/avatar-jobs src/creation.ts): with GEMINI_API_KEY and DATABASE_URL the job
+# claims the creation the api started, draws the five drawings with Gemini, records the outcome and
+# the usage event, and deletes the photo (the uploads/ lifecycle rule in modules/storage is the net).
+#
 # The job's own outputs (avatars/…) also fire the trigger; the Workflow ignores them. Code only:
 # `terraform apply` needs the owner's go (docs/OPS.md §3).
 
@@ -23,9 +27,10 @@ resource "google_cloud_run_v2_job" "avatar_jobs" {
 
   template {
     template {
+      # Five image calls (each up to 3 attempts) plus the card: minutes, not seconds.
       service_account = local.avatar_sa
       max_retries     = 1
-      timeout         = "120s"
+      timeout         = "600s"
 
       containers {
         # Replaced by the deploy (docker/service.Dockerfile, APP=avatar-jobs ENTRY=src/job.ts).
@@ -42,6 +47,31 @@ resource "google_cloud_run_v2_job" "avatar_jobs" {
           name  = "AVATAR_BUCKET"
           value = module.storage.bucket_names["assets"]
         }
+
+        env {
+          name = "GEMINI_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = "chalito-gemini-api-key"
+              version = "latest"
+            }
+          }
+        }
+
+        # Chalyb's engine module creates this secret once the engine entry exists (api_service_account
+        # set); hub_secret_read (main.tf) grants the job access. Without it the job can't take creations.
+        dynamic "env" {
+          for_each = var.api_service_account == "" ? [] : [1]
+          content {
+            name = "DATABASE_URL"
+            value_source {
+              secret_key_ref {
+                secret  = "chalito-database-url"
+                version = "latest"
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -50,10 +80,10 @@ resource "google_cloud_run_v2_job" "avatar_jobs" {
     ignore_changes = [template[0].template[0].containers[0].image, client, client_version]
   }
 
-  depends_on = [module.project_services, module.service_accounts]
+  depends_on = [module.project_services, module.service_accounts, module.secrets, google_secret_manager_secret_iam_member.hub_secret_read]
 }
 
-# The job reads uploads and writes cards in the assets bucket, nothing else.
+# The job reads (and deletes) uploads and writes cards in the assets bucket, nothing else.
 resource "google_storage_bucket_iam_member" "avatar_jobs_assets" {
   bucket = module.storage.bucket_names["assets"]
   role   = "roles/storage.objectUser"

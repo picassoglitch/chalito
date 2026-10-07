@@ -81,13 +81,17 @@ describe("processUpload (Cloud Run job, bucket mocked)", () => {
       store.objects.get("avatars/hub-user-1/asset_0001/card.json")!.bytes.toString(),
     ) as CardManifest;
     expect(card).toMatchObject({ v: 1, kind: "card", emotions: { mode: "overlay" } });
-    for (const slot of ["head", "face", "body", "back", "aura", "portal_fx"] as const) {
+    for (const slot of ["head", "face", "neck", "body", "back", "aura", "portal_fx"] as const) {
       const a = card.anchors[slot];
       expect(a.x).toBeGreaterThanOrEqual(0);
       expect(a.x).toBeLessThanOrEqual(1);
       expect(a.y).toBeGreaterThanOrEqual(0);
       expect(a.y).toBeLessThanOrEqual(1);
     }
+    // An upload gets a neck too (derived: under the face, above the body, a typical width), drawn in front.
+    expect(card.anchors.neck).toMatchObject({ z: 2, w: 0.3 });
+    expect(card.anchors.neck.y).toBeGreaterThan(card.anchors.face.y);
+    expect(card.anchors.neck.y).toBeLessThan(card.anchors.body.y);
     for (const k of keys.filter((k) => k.endsWith(".webp"))) {
       const bytes = store.objects.get(k)!.bytes;
       const meta = await sharp(bytes).metadata();

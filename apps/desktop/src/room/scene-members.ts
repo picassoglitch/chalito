@@ -1,6 +1,8 @@
 import type { RoomMemberView } from "@chalito/rooms";
 import type { CardPlacement } from "@chalito/roster";
 import type { RoomSceneMember, SceneCosmetic } from "@chalito/scene";
+import type { CardFiles } from "@chalito/scene/custom-card";
+import { SkinEffect } from "@chalito/protocol";
 import { COMPANIONS, DEFAULT_COMPANION } from "@chalito/ui";
 
 type Rows = PromiseLike<{ data: Record<string, unknown>[] | null; error: unknown }>;
@@ -23,9 +25,14 @@ export const catalogLoader = (fetchItems: () => Promise<unknown>) => {
         const items = (body as { items?: unknown } | null)?.items;
         const out = new Map<string, SceneCosmetic>();
         for (const it of Array.isArray(items) ? items : []) {
-          const x = it as { id?: unknown; slot?: unknown; art?: unknown; card?: CardPlacement };
-          if (typeof x.id === "string" && typeof x.slot === "string" && typeof x.art === "string" && x.card)
-            out.set(x.id, { slot: x.slot as SceneCosmetic["slot"], art: x.art, card: x.card });
+          const x = it as { id?: unknown; slot?: unknown; art?: unknown; card?: CardPlacement; skin?: unknown };
+          if (typeof x.id !== "string") continue;
+          // A skin: a material effect the card renderer draws (one this build doesn't know is dropped).
+          if (x.slot === "skin") {
+            const skin = SkinEffect.safeParse(x.skin);
+            if (skin.success) out.set(x.id, { slot: "skin", skin: skin.data });
+          } else if (typeof x.slot === "string" && typeof x.art === "string" && x.card)
+            out.set(x.id, { slot: x.slot as Exclude<SceneCosmetic["slot"], "skin">, art: x.art, card: x.card });
         }
         return out;
       },
@@ -40,12 +47,15 @@ export const catalogLoader = (fetchItems: () => Promise<unknown>) => {
  * Room members as the scene draws them, from companion_directory (what co-members may see of each
  * other; server-written, kept in step by a trigger on companions): the roster card (an unknown or
  * missing one is the default companion) and the equipped cosmetics, placed from the catalog. Ids
- * the catalog doesn't know are dropped.
+ * the catalog doesn't know are dropped. A member wearing a custom character gets its files from
+ * `cardOf` (this device's own card, co-members' from the room's signed cards); the scene falls back
+ * to the roster card if it won't load.
  */
 export const sceneMembersFor = async (
   db: unknown,
   members: readonly RoomMemberView[],
   catalog: () => Promise<CosmeticCatalog> = async () => new Map(),
+  cardOf: (m: RoomMemberView) => CardFiles | null = () => null,
 ): Promise<RoomSceneMember[]> => {
   const d = db as Db;
   const items = await catalog();
@@ -61,9 +71,11 @@ export const sceneMembersFor = async (
       const c = typeof id === "string" ? items.get(id) : undefined;
       return c ? [c] : [];
     });
+    const files = cardOf(m);
     out.push({
       companionId: m.companionId,
       avatar: card(row?.avatar_thumb),
+      ...(files ? { card: files } : {}),
       presence: "online",
       ...(cosmetics.length ? { cosmetics } : {}),
     });

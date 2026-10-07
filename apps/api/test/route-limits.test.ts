@@ -6,7 +6,7 @@ import type { Deps } from "../src/deps.js";
 import { API_ROUTES } from "../src/limits.js";
 
 /** Every optional router mounted; the dependencies are inert (only the guard is under test). */
-const OPTIONAL = { phone: true, voice: true, store: true, billing: true, releases: true, account: true };
+const OPTIONAL = { phone: true, voice: true, store: true, billing: true, releases: true, account: true, avatar: true };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an inert stand-in for every dependency
 const inert: any = new Proxy(() => inert, { get: (_t, p) => (p === "then" ? undefined : inert), apply: () => inert });
 const app = () =>
@@ -24,6 +24,7 @@ const app = () =>
     billing: inert,
     releases: inert,
     account: inert,
+    avatar: inert,
   } as unknown as Deps);
 
 describe("api route limits (M15)", () => {
@@ -46,6 +47,7 @@ describe("api route limits (M15)", () => {
 
   it("guessable and costly routes use the shared (Postgres) buckets", () => {
     for (const r of [
+      "POST /v1/avatar/creations",
       "POST /v1/pairing/resolve",
       "POST /v1/pairing/claim",
       "POST /v1/endorse/resolve",

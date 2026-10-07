@@ -1,4 +1,4 @@
-import type { SceneCosmetic } from "@chalito/scene";
+import { cosmeticKey, type SceneCosmetic } from "@chalito/scene";
 import type { RoomWindowDeps } from "../lib/room-window.js";
 import { sceneMembersFor } from "../room/scene-members.js";
 
@@ -6,7 +6,7 @@ import { sceneMembersFor } from "../room/scene-members.js";
 export const PET_COSMETICS_REFRESH_MS = 5 * 60 * 1000;
 
 /**
- * What the person's own companion wears, placed from the store catalog: the same directory row
+ * What the person's own companion wears (drawn items and the skin), placed from the store catalog: the same directory row
  * and placement co-members see in a room (scene-members.ts).
  */
 export const ownCosmetics = async (
@@ -20,7 +20,7 @@ export const ownCosmetics = async (
   return me?.cosmetics ? [...me.cosmetics] : [];
 };
 
-export const cosmeticsKey = (c: readonly SceneCosmetic[]): string => c.map((x) => `${x.slot}:${x.art}`).join(",");
+export const cosmeticsKey = (c: readonly SceneCosmetic[]): string => c.map(cosmeticKey).join(",");
 
 /**
  * Reads the cosmetics now and every `everyMs`, and reports them only when they changed. `null`

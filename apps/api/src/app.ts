@@ -18,6 +18,7 @@ import { webauthnRoutes } from "./routes/webauthn.js";
 import { oauthRoutes } from "./routes/oauth.js";
 import { storeRoutes } from "./store/routes.js";
 import { billingRoutes } from "./billing/routes.js";
+import { avatarRoutes } from "./avatar/routes.js";
 import { roomsRoutes } from "./routes/rooms.js";
 import { recipesRoutes } from "./routes/recipes.js";
 
@@ -70,6 +71,7 @@ export const createApp = (deps: Deps) => {
   if (deps.voice) app.route("/v1/voice", voiceRoutes(deps, deps.voice));
   if (deps.store) app.route("/v1/store", storeRoutes(deps, deps.store));
   if (deps.billing) app.route("/v1/billing", billingRoutes(deps, deps.billing));
+  if (deps.avatar) app.route("/v1/avatar", avatarRoutes(deps, deps.avatar));
   app.route("/v1/rooms", roomsRoutes(deps));
   app.route("/v1/recipes", recipesRoutes(deps));
   if (deps.releases) app.route("/releases", releasesRoutes(deps, deps.releases));

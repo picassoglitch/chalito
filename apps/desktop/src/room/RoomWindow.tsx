@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { RoomController, myRooms, type RoomSummary } from "@chalito/rooms";
 import { useT } from "../lib/i18n.js";
 import type { RoomWindowDeps } from "../lib/room-window.js";
@@ -6,6 +6,10 @@ import { roomSeen } from "../lib/room-seen.js";
 import type { DesktopShell } from "../lib/shell.js";
 import { RoomBody } from "./RoomBody.js";
 import { sceneMembersFor } from "./scene-members.js";
+import { companionCardSource, roomCardsSource } from "../lib/custom-card.js";
+
+const noSub = () => () => undefined;
+const none = () => undefined;
 
 export interface RoomWindowProps {
   /** Null until the panel has signed in and enrolled this device. */
@@ -65,6 +69,21 @@ export const RoomWindow = ({
     () => (deps && roomId ? controllerFor(deps, roomId) : null),
     [deps, roomId, controllerFor],
   );
+  // This companion's own custom card (signed URLs kept fresh) for the stage, while a room is open.
+  const myCard = useMemo(
+    () => (deps?.companionCard && controller && stage ? companionCardSource(async () => deps) : null),
+    [deps, controller, stage],
+  );
+  useEffect(() => () => myCard?.dispose(), [myCard]);
+  useSyncExternalStore(myCard?.subscribe ?? noSub, myCard?.getSnapshot ?? none, none);
+  // Co-members' custom cards in the open room.
+  const roomCards = useMemo(
+    () => (deps?.roomCards && roomId && controller && stage ? roomCardsSource(deps.roomCards, roomId) : null),
+    [deps, roomId, controller, stage],
+  );
+  useEffect(() => () => roomCards?.dispose(), [roomCards]);
+  const membersSeen = useRef<string | null>(null);
+  useSyncExternalStore(roomCards?.subscribe ?? noSub, roomCards?.getSnapshot ?? none, none);
   useEffect(() => {
     if (!controller) return;
     void controller.start();
@@ -89,7 +108,18 @@ export const RoomWindow = ({
         <RoomPane
           controller={controller}
           me={deps!.companionId}
-          resolveMembers={(m) => sceneMembersFor(deps!.db, m, deps!.catalog)}
+          resolveMembers={(m) => {
+            // Someone joined or left: ask again whether they wear a custom character (only then:
+            // a refresh re-renders, which resolves the members again).
+            const key = m.map((x) => x.companionId).join(",");
+            if (key !== membersSeen.current) {
+              if (membersSeen.current !== null) void roomCards?.refresh();
+              membersSeen.current = key;
+            }
+            return sceneMembersFor(deps!.db, m, deps!.catalog, (x) =>
+              x.me ? (myCard?.files() ?? null) : (roomCards?.files(x.companionId) ?? null),
+            );
+          }}
           stage={stage}
         />
       </div>

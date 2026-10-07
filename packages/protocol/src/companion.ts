@@ -1,8 +1,21 @@
 import { z } from "zod";
 import { CompanionId, Emotion, Id } from "./common.js";
 
-export const CosmeticSlot = z.enum(["head", "face", "body", "back", "aura", "portal_fx"]);
+/**
+ * Where a cosmetic goes. Accessory slots hold a drawn item placed on the card; `skin` holds a
+ * material effect over the whole companion (no art: a shader, so it fits any character). One item
+ * per slot, so at most one skin at a time. `neck` items (bow ties, collars, necklaces) sit on each
+ * character's detected neck point (card.json anchors.neck).
+ */
+export const CosmeticSlot = z.enum(["head", "face", "neck", "body", "back", "aura", "portal_fx", "skin"]);
 export type CosmeticSlot = z.infer<typeof CosmeticSlot>;
+/** The slots that hold a drawn item (everything but `skin`). */
+export const AccessorySlot = CosmeticSlot.exclude(["skin"]);
+export type AccessorySlot = z.infer<typeof AccessorySlot>;
+
+/** The material effects a skin applies (the card renderer's shader variants, @chalito/avatar-three). */
+export const SkinEffect = z.enum(["gold", "galaxy", "neon", "crystal", "holo", "shadow", "pixel"]);
+export type SkinEffect = z.infer<typeof SkinEffect>;
 
 export const RenderQuality = z.enum(["auto", "bajo", "medio", "alto"]);
 

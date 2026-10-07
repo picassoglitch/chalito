@@ -1,6 +1,7 @@
 # Cosmetics (pay-to-dress, never pay-to-win: nothing here can change what a companion can do).
 # Prices only here, in billable hub tokens, paid from the hub balance (D-030). The paid prices are
-# placeholders for the owner to confirm (decision #16). Art lives in @chalito/roster (cosmetics/),
+# placeholders for the owner to confirm (decision #16), on the owner's scale: a single clothing item
+# ≈ 200 tokens, a full outfit ≈ 5,000 tokens. Art lives in @chalito/roster (cosmetics/),
 # generated with Google AI Studio and logged in docs/ASSET_PROVENANCE.md.
 #
 # card: placement on a 2.5D image card (width as a fraction of the card; pivot is the point of the
@@ -35,7 +36,7 @@ cosmetics:
     name: { es: Capa de estrellas, en: Star cape }
     slot: back
     free: false
-    priceTokens: 250000
+    priceTokens: 1000 # placeholder, owner to confirm
     art: cosmetics/star_cape.webp
     card: { width: 0.72, pivot: [0.5, 0.12] }
     vrm: { offset: [0, -0.05, -0.08] }
@@ -44,7 +45,7 @@ cosmetics:
     name: { es: Aura brillante, en: Sparkle aura }
     slot: aura
     free: false
-    priceTokens: 150000
+    priceTokens: 1000 # placeholder, owner to confirm
     art: cosmetics/sparkle_aura.webp
     card: { width: 1.1, pivot: [0.5, 0.5] }
     vrm: { offset: [0, 0, 0] }
@@ -53,9 +54,262 @@ cosmetics:
     name: { es: Portal giratorio, en: Swirl portal }
     slot: portal_fx
     free: false
-    priceTokens: 400000
+    priceTokens: 2000 # placeholder, owner to confirm
     art: cosmetics/portal_swirl.webp
     card: { width: 1.0, pivot: [0.5, 0.5] }
     vrm: { offset: [0, 0.01, 0] }
     provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Wearables that fit any body (owner-approved 2026-10-06, prices included). No shirts or suits:
+  # an overlay can't follow 220 shapes.
+  # Neck: placed on each character's neck (card.json anchors.neck, detected per character by
+  # detect-wear-anchors.ts; derived from the face and body anchors when missing), sized by its width.
+  bow_tie:
+    name: { es: Moño de lunares, en: Polka-dot bow tie }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/bow_tie.webp
+    card: { neckWidth: 0.8, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, -0.02, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  bow_tie_red:
+    name: { es: Moño rojo, en: Red bow tie }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/bow_tie_red.webp
+    card: { neckWidth: 0.8, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, -0.02, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  necktie:
+    name: { es: Corbata, en: Necktie }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/necktie.webp
+    card: { neckWidth: 0.6, pivot: [0.5, 0.05] }
+    vrm: { offset: [0, -0.03, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  bell_collar:
+    name: { es: Collar con cascabel, en: Bell collar }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/bell_collar.webp
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  pearl_necklace:
+    name: { es: Collar de perlas, en: Pearl necklace }
+    slot: neck
+    free: false
+    priceTokens: 200
+    art: cosmetics/pearl_necklace.webp
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  gold_medal:
+    name: { es: Medalla de oro, en: Gold medal }
+    slot: neck
+    free: false
+    priceTokens: 300
+    art: cosmetics/gold_medal.webp
+    card: { neckWidth: 0.7, pivot: [0.5, 0.05] }
+    vrm: { offset: [0, -0.04, 0.07] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  marigold_necklace:
+    name: { es: Collar de cempasúchil, en: Marigold necklace }
+    slot: neck
+    free: false
+    priceTokens: 300
+    art: cosmetics/marigold_necklace.webp
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  flower_lei:
+    name: { es: Collar hawaiano, en: Flower lei }
+    slot: neck
+    free: false
+    priceTokens: 300
+    art: cosmetics/flower_lei.webp
+    card: { neckWidth: 1.0, pivot: [0.5, 0.1] }
+    vrm: { offset: [0, -0.01, 0.06] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Head.
+  charro_hat:
+    name: { es: Sombrero de charro, en: Charro hat }
+    slot: head
+    free: false
+    priceTokens: 500
+    art: cosmetics/charro_hat.webp
+    card: { width: 0.66, pivot: [0.5, 0.9] }
+    vrm: { offset: [0, 0.14, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  crown:
+    name: { es: Corona, en: Crown }
+    slot: head
+    free: false
+    priceTokens: 500
+    art: cosmetics/crown.webp
+    card: { width: 0.4, pivot: [0.5, 0.95] }
+    vrm: { offset: [0, 0.13, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  cap:
+    name: { es: Gorra, en: Cap }
+    slot: head
+    free: false
+    priceTokens: 300
+    art: cosmetics/cap.webp
+    card: { width: 0.5, pivot: [0.5, 0.9] }
+    vrm: { offset: [0, 0.12, 0.01] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  party_hat:
+    name: { es: Gorro de fiesta, en: Party hat }
+    slot: head
+    free: false
+    priceTokens: 300
+    art: cosmetics/party_hat.webp
+    card: { width: 0.34, pivot: [0.5, 0.95] }
+    vrm: { offset: [0, 0.16, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  flower_headband:
+    name: { es: Diadema de flores, en: Flower headband }
+    slot: head
+    free: false
+    priceTokens: 300
+    art: cosmetics/flower_headband.webp
+    card: { width: 0.46, pivot: [0.5, 0.62] }
+    vrm: { offset: [0, 0.12, 0] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Face.
+  sunglasses:
+    name: { es: Lentes de sol, en: Sunglasses }
+    slot: face
+    free: false
+    priceTokens: 300
+    art: cosmetics/sunglasses.webp
+    card: { width: 0.38, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.03, 0.09] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  heart_glasses:
+    name: { es: Lentes de corazón, en: Heart glasses }
+    slot: face
+    free: false
+    priceTokens: 300
+    art: cosmetics/heart_glasses.webp
+    card: { width: 0.38, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.03, 0.09] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  mustache:
+    name: { es: Bigote, en: Mustache }
+    slot: face
+    free: false
+    priceTokens: 200
+    art: cosmetics/mustache.webp
+    card: { width: 0.3, pivot: [0.5, -0.9] }
+    vrm: { offset: [0, -0.02, 0.1] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Back: drawn behind the character. The hero cape hangs from the neck (anchorY: neck).
+  angel_wings:
+    name: { es: Alas de ángel, en: Angel wings }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/angel_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  butterfly_wings:
+    name: { es: Alas de mariposa, en: Butterfly wings }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/butterfly_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  bat_wings:
+    name: { es: Alas de murciélago, en: Bat wings }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/bat_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  dragon_wings:
+    name: { es: Alas de dragón, en: Dragon wings }
+    slot: back
+    free: false
+    priceTokens: 1500
+    art: cosmetics/dragon_wings.webp
+    card: { width: 1.25, pivot: [0.5, 0.5] }
+    vrm: { offset: [0, 0.02, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  hero_cape:
+    name: { es: Capa de héroe, en: Hero cape }
+    slot: back
+    free: false
+    priceTokens: 1000
+    art: cosmetics/hero_cape.webp
+    card: { width: 0.85, pivot: [0.5, 0.04], anchorY: neck }
+    vrm: { offset: [0, -0.05, -0.08] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  jetpack:
+    name: { es: Jetpack, en: Jetpack }
+    slot: back
+    free: false
+    priceTokens: 2000
+    art: cosmetics/jetpack.webp
+    card: { width: 0.85, pivot: [0.5, 0.4] }
+    vrm: { offset: [0, 0, -0.1] }
+    provenance: docs/ASSET_PROVENANCE.md#cosmetics
+  # Skins: a material effect over the whole companion (gold, galaxy…), drawn by the card renderer's
+  # shader (@chalito/avatar-three setSkin), so one skin fits every roster character with no new art.
+  # One skin at a time (the `skin` slot). Skins are the top cosmetic tier, priced above a full outfit
+  # (≈ 5,000). Every priceTokens below is a placeholder, owner to confirm.
+  skin_gold:
+    name: { es: Dorado, en: Gold }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: gold
+  skin_galaxy:
+    name: { es: Galaxia, en: Galaxy }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: galaxy
+    includedIn: [vip] # owner decision 2026-10-06: included for VIP; others buy it
+  skin_neon:
+    name: { es: Neón, en: Neon }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: neon
+  skin_crystal:
+    name: { es: Cristal, en: Crystal }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: crystal
+  skin_holo:
+    name: { es: Holográfico, en: Holographic }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: holo
+    includedIn: [vip] # owner decision 2026-10-06: included for VIP; others buy it
+  skin_shadow:
+    name: { es: Sombra, en: Shadow }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: shadow
+  skin_pixel:
+    name: { es: Píxel, en: Pixel }
+    slot: skin
+    free: false
+    priceTokens: 10000 # placeholder, owner to confirm
+    skin: pixel
 drops: {}

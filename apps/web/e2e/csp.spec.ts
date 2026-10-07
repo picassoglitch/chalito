@@ -12,7 +12,7 @@ test("pages send a strict, per-request CSP and every script carries its nonce", 
     "base-uri 'none'",
     "frame-ancestors 'none'",
     "'strict-dynamic'",
-    "connect-src 'self' http://127.0.0.1:54399 http://127.0.0.1:8799 ws://127.0.0.1:54399",
+    "connect-src 'self' http://127.0.0.1:54399 http://127.0.0.1:8799 ws://127.0.0.1:54399 https://storage.googleapis.com",
   ])
     expect(csp).toContain(d);
   expect(csp).not.toContain("'unsafe-eval'");

@@ -2,7 +2,7 @@
  * Browser side of scripts/scene-perf.ts: RoomScene at a fixed quality on a 640×400 canvas, all
  * six roster companions in a lively room (portal entries and conversations), on its own loop.
  */
-import { ROSTER_IDS } from "@chalito/roster";
+import { ORIGINAL_IDS } from "@chalito/roster";
 import { RoomScene, type QualityLevel, type SceneEvent } from "@chalito/scene";
 
 const run = async (quality: QualityLevel, ms: number) => {
@@ -11,8 +11,8 @@ const run = async (quality: QualityLevel, ms: number) => {
   canvas.style.height = "400px";
   const t0 = Date.now();
   const scene = new RoomScene({ canvas, roomId: "room_perf", assetBase: "/roster/", quality });
-  const ids = ROSTER_IDS.map((r, i) => `chl_perf${String.fromCharCode(97 + i).repeat(22)}`);
-  scene.setMembers(ROSTER_IDS.map((avatar, i) => ({ companionId: ids[i]!, avatar })));
+  const ids = ORIGINAL_IDS.map((r, i) => `chl_perf${String.fromCharCode(97 + i).repeat(22)}`);
+  scene.setMembers(ORIGINAL_IDS.map((avatar, i) => ({ companionId: ids[i]!, avatar })));
   const events: SceneEvent[] = [];
   ids.forEach((id, i) => events.push({ eid: `in${i}`, fromCompanionId: id, to: [], kind: "enter", t: t0 + i * 300 }));
   for (let k = 0; k < 12; k++)

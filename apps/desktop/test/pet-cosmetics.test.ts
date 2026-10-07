@@ -38,6 +38,26 @@ describe("the pet wears what the companion has equipped", () => {
     expect(await ownCosmetics({ db: directory({}) as never, companionId: "chl_me", catalog })).toEqual([]);
   });
 
+  it("a skin travels the same way: the catalog names its effect, the directory row its id", async () => {
+    const catalog = catalogLoader(async () => ({
+      items: [
+        { id: "flower_crown", ...crown },
+        { id: "skin_galaxy", name: { es: "Galaxia", en: "Galaxy" }, slot: "skin", skin: "galaxy" },
+        // An effect this build can't draw (a newer catalog): dropped, never drawn wrong.
+        { id: "skin_lava", slot: "skin", skin: "lava" },
+      ],
+    }));
+    const db = directory({ chl_me: ["flower_crown", "skin_galaxy", "skin_lava"] });
+    expect(await ownCosmetics({ db: db as never, companionId: "chl_me", catalog })).toEqual([
+      crown,
+      { slot: "skin", skin: "galaxy" },
+    ]);
+    // Changing only the skin redraws the pet.
+    expect(cosmeticsKey([crown, { slot: "skin", skin: "gold" }])).not.toBe(
+      cosmeticsKey([crown, { slot: "skin", skin: "neon" }]),
+    );
+  });
+
   it("redraws only when what it wears changes; not signed in or a failed read keeps it as is", async () => {
     const answers: (SceneCosmetic[] | null | Error)[] = [
       [crown],
