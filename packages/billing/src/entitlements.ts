@@ -7,6 +7,7 @@ import {
   type Inclusions,
   type PlansConfig,
   type TierId,
+  resolveInclusions,
 } from "@chalito/protocol";
 
 const RANK: Record<EfficiencyProfile, number> = { free_min: 0, low: 1, standard: 2, max: 3 };
@@ -66,7 +67,8 @@ export const computeEntitlements = (raw: z.input<typeof EntitlementInputs>, plan
   }
 
   const accessTier = tier ? accessTierOf(plans, tier) : null;
-  const inc = tier ? inclusionsOf(plans, tier) : null;
+  // A hub tier's own caps (plans.yaml hubTiers.<id>.limits) apply on top of its ladder tier.
+  const inc = !tier ? null : source === "hub_tier" ? resolveInclusions(plans, i.hubTier) : inclusionsOf(plans, tier);
   const tierRow = tier ? plans.tiers[tier] : undefined;
 
   // Managed brains: only with a set allowance and a positive hub balance (comped: never refused).

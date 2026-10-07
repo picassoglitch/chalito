@@ -58,6 +58,26 @@ export const HubTierId = z.enum(["free", "pro", "vip"]);
 // Values as the hub sends them (lowercase effective tier; "free" is Chalyb Gratis).
 export type HubTierId = z.infer<typeof HubTierId>;
 
+/** Numeric inclusions a hub tier may lower below its ladder tier's (e.g. Gratis: 1 device). */
+export const LimitKey = z.enum([
+  "devices",
+  "concurrentSessions",
+  "voiceMinutes",
+  "calls",
+  "whatsapp",
+  "sms",
+  "rooms",
+  "membersPerRoom",
+  "mesaBrains",
+]);
+export type LimitKey = z.infer<typeof LimitKey>;
+
+const HubTier = z.object({
+  access: z.union([LadderTierId, z.literal("none")]),
+  /** Caps on top of the ladder tier's inclusions. Only lowers: a cap above the tier's value is invalid. */
+  limits: z.partialRecord(LimitKey, z.number().int().nonnegative()).optional(),
+});
+
 const PROFILE_RANK = { low: 0, standard: 1, max: 2 } as const;
 
 export const PlansConfig = z
@@ -66,7 +86,7 @@ export const PlansConfig = z
     currency: z.literal("USD"),
     interval: z.literal("month"),
     billingUnit: z.object({ source: z.literal("chalyb_hub"), usdPerMillionBillable: z.number().positive() }),
-    hubTiers: z.record(HubTierId, z.object({ access: z.union([LadderTierId, z.literal("none")]) })),
+    hubTiers: z.record(HubTierId, HubTier),
     tiers: z.record(TierId, Tier),
     trial: z.object({
       source: z.literal("chalyb_hub"),
@@ -89,8 +109,23 @@ export const PlansConfig = z
       if (!cfg.tiers[id]) ctx.addIssue({ code: "custom", message: `missing tier ${id}`, path: ["tiers", id] });
     }
     for (const id of HubTierId.options) {
-      if (!cfg.hubTiers[id])
+      const hub = cfg.hubTiers[id];
+      if (!hub) {
         ctx.addIssue({ code: "custom", message: `missing hub tier ${id}`, path: ["hubTiers", id] });
+        continue;
+      }
+      if (!hub.limits) continue;
+      const base = hub.access === "none" ? undefined : cfg.tiers[hub.access]?.inclusions;
+      for (const [k, v] of Object.entries(hub.limits)) {
+        const path = ["hubTiers", id, "limits", k];
+        if (!base || base === MIRROR) {
+          ctx.addIssue({ code: "custom", message: "limits need a ladder tier with set inclusions", path });
+          continue;
+        }
+        const b = base[k as LimitKey];
+        if (typeof b === "number" && (v as number) > b)
+          ctx.addIssue({ code: "custom", message: `${k} cap ${v} is above the tier's ${b}`, path });
+      }
     }
     for (const [id, t] of Object.entries(cfg.tiers)) {
       const path = ["tiers", id];
@@ -140,3 +175,36 @@ export type PlansConfig = z.infer<typeof PlansConfig>;
 
 /** True only when the owner has filled in a concrete number. */
 export const isSet = (v: z.infer<typeof InclusionValue>): v is number => typeof v === "number";
+
+/**
+ * The inclusions that apply to a tier id: a hub tier (free/pro/vip) maps to its ladder tier with
+ * its `limits` caps applied; a bundle takes its mirrored tier's. null = no access or unset (fail closed).
+ */
+export const resolveInclusions = (cfg: PlansConfig, tier: string | null | undefined): Inclusions | null => {
+  if (!tier) return null;
+  let id: string = tier;
+  let caps: Partial<Record<LimitKey, number>> | undefined;
+  const hub = HubTierId.safeParse(tier);
+  if (hub.success) {
+    const h = cfg.hubTiers[hub.data];
+    if (!h || h.access === "none") return null;
+    id = h.access;
+    caps = h.limits;
+  }
+  const parsed = TierId.safeParse(id);
+  if (!parsed.success) return null;
+  const def = cfg.tiers[parsed.data];
+  if (!def) return null;
+  let inc: Inclusions | null = def.inclusions !== MIRROR ? def.inclusions : null;
+  if (!inc) {
+    const mirrored = def.mirrors ? cfg.tiers[def.mirrors] : undefined;
+    inc = mirrored && mirrored.inclusions !== MIRROR ? mirrored.inclusions : null;
+  }
+  if (!inc || !caps) return inc;
+  const out: Inclusions = { ...inc };
+  for (const [k, v] of Object.entries(caps) as [LimitKey, number][]) {
+    const cur = out[k];
+    out[k] = typeof cur === "number" ? Math.min(cur, v) : v;
+  }
+  return out;
+};

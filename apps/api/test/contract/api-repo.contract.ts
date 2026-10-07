@@ -421,6 +421,42 @@ export const runApiRepoContract = (
         expect((await repo.findPairingCodeByShortHash(code.shortCodeHash))?.claimed).toBe(false);
       });
 
+      it("agentLimitFor: a claim past the plan's computer cap is device_limit and writes nothing", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const first = await pairingCode();
+        const second = await pairingCode();
+        await repo.createPairingCode(first);
+        await repo.createPairingCode(second);
+        let seenTier: string | null | undefined;
+        const claim = {
+          owner: o,
+          claimedByDeviceId: "dev_phone",
+          claimerPubSign: "ps",
+          claimerPubBox: "pb",
+          claimedAt: 1,
+          agentLimitFor: (tier: string | null) => ((seenTier = tier), 1),
+        };
+        expect(await repo.claimPairingCode(first.codeId, claim, () => agentFor(first, o, "dev_phone"))).toEqual({
+          ok: true,
+          agentDeviceId: first.agentDeviceId,
+        });
+        expect(seenTier).toBe("pro");
+        expect(await repo.claimPairingCode(second.codeId, claim, () => agentFor(second, o, "dev_phone"))).toEqual({
+          ok: false,
+          reason: "device_limit",
+          limit: 1,
+        });
+        expect(await repo.getDevice(o, second.agentDeviceId)).toBeNull();
+        expect((await repo.findPairingCodeByShortHash(second.shortCodeHash))?.claimed).toBe(false);
+        // A revoked computer frees its slot.
+        await repo.revokeDevice(o, first.agentDeviceId, 2, null);
+        expect(await repo.claimPairingCode(second.codeId, claim, () => agentFor(second, o, "dev_phone"))).toEqual({
+          ok: true,
+          agentDeviceId: second.agentDeviceId,
+        });
+      });
+
       it("releasePairingWatches hands each claimed code's watcher to its agent at most once", async () => {
         const repo = await makeRepo();
         const o = await seededOwner(repo);
