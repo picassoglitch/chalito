@@ -21,13 +21,16 @@ describe("service plans", () => {
       uid: 501,
     });
     expect(p.files[0]!.path).toBe("/Users/a/Library/LaunchAgents/com.chalito.agent.plist");
-    expect(p.files[0]!.content).toContain("<key>KeepAlive</key><true/>");
+    // Restarted after a crash, not after a clean stop (a revoked device stops with 0).
+    expect(p.files[0]!.content).toContain("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>");
     expect(p.install[0]).toEqual(["launchctl", "bootstrap", "gui/501", p.files[0]!.path]);
   });
   it("Linux: a systemd --user unit", () => {
     const p = servicePlan("linux", "/home/a/.local/bin/chalito-agent", { home: "/home/a" });
     expect(p.files[0]!.path).toBe("/home/a/.config/systemd/user/chalito-agent.service");
     expect(p.files[0]!.content).toContain('ExecStart="/home/a/.local/bin/chalito-agent" run');
+    // 75 (another agent runs) and 78 (needs setup / revoked) never restart in a loop.
+    expect(p.files[0]!.content).toContain("RestartPreventExitStatus=75 78");
     expect(p.install.at(-1)).toEqual(["systemctl", "--user", "enable", "--now", "chalito-agent.service"]);
   });
   it("Windows: a per-user logon Scheduled Task, never a Windows Service", () => {

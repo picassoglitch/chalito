@@ -10,6 +10,7 @@ import { AnchorStore } from "../src/anchor.js";
 import { chalitoDir, readConfig, writeConfig } from "../src/config.js";
 import { OnboardingError, type Daemon } from "../src/daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "../src/instance-lock.js";
+import { DeviceRevokedError } from "../src/device-auth.js";
 import { DevModeStore } from "../src/devmode.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { FilePolicyHolder, policyToYaml } from "../src/policy-file.js";
@@ -133,6 +134,8 @@ describe("chalito CLI", () => {
     expect(errs.join("")).toMatch(/already running.*pid 1234/);
     expect(await main(["run"], io(new OnboardingError("Pin Claude Code first.")))).toBe(EXIT_NEEDS_SETUP);
     expect(errs.join("")).toContain("Pin Claude Code first.");
+    // A computer removed from the account doesn't crash-loop (exit 1) into the same refusal.
+    expect(await main(["run"], io(new DeviceRevokedError()))).toBe(EXIT_NEEDS_SETUP);
     expect([EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP]).toEqual([75, 78]);
   });
 
