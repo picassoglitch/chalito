@@ -284,15 +284,21 @@ export class TerminalControl {
       killTimer: null,
     };
     this.#terms.set(tid, t);
-    await this.d.upsertSession(tid, {
-      deviceId: this.d.deviceId,
-      kind: "terminal",
-      appId: t.appId,
-      label: t.label,
-      cwdLabel: t.workspaceLabel,
-      state: "waiting_approval",
-      updatedAt: now,
-    });
+    try {
+      await this.d.upsertSession(tid, {
+        deviceId: this.d.deviceId,
+        kind: "terminal",
+        appId: t.appId,
+        label: t.label,
+        cwdLabel: t.workspaceLabel,
+        state: "waiting_approval",
+        updatedAt: now,
+      });
+    } catch {
+      // No session row: don't leave a pending terminal holding the maxSessions slot.
+      await this.#finish(t, "failed", undefined, true);
+      return this.#refuse("terminal_unavailable", { appId: input.appId, why: "session_write_failed" });
+    }
     this.d.audit("terminal.requested", { tid, appId: t.appId, rawShell: shell, origin, cols: t.cols, rows: t.rows });
     this.#publish();
     void this.#start(t, launch.command, program).catch((err: unknown) => {

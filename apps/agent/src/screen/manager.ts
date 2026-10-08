@@ -286,15 +286,21 @@ export class ScreenManager {
       chain: Promise.resolve(),
     };
     this.#sessions.set(sid, s);
-    await this.d.upsertSession(sid, {
-      deviceId: this.d.deviceId,
-      kind: "screen",
-      mode: s.mode,
-      label: s.label,
-      ...(s.appId ? { appId: s.appId } : {}),
-      state: "waiting_approval",
-      updatedAt: now,
-    });
+    try {
+      await this.d.upsertSession(sid, {
+        deviceId: this.d.deviceId,
+        kind: "screen",
+        mode: s.mode,
+        label: s.label,
+        ...(s.appId ? { appId: s.appId } : {}),
+        state: "waiting_approval",
+        updatedAt: now,
+      });
+    } catch {
+      // No session row: don't leave a pending session holding one of the SCREEN_MAX_SESSIONS slots.
+      await this.#end(s, "connect_failed");
+      return { ok: false, reason: "screen_unavailable" };
+    }
     await this.#state(s, "waiting_approval");
     this.d.audit("screen.requested", {
       sid,
@@ -504,6 +510,9 @@ export class ScreenManager {
     this.d.audit("screen.live", { sid: s.sid, mode: s.mode });
     await this.#state(s, "live");
     await this.d.upsertSession(s.sid, { state: "live", updatedAt: this.d.now() }).catch(() => undefined);
+    // Ended (kill switch, close, policy) while those writes were in flight: #end already ran and
+    // had no loop to clear, so starting one now would tick for the life of the process.
+    if ((s.state as ScreenState) !== "live") return;
     const fps = Math.min(15, Math.max(1, this.d.policy()?.maxFps ?? 5));
     s.loop = (this.d.every ?? defaultEvery)(() => void this.frame(s.sid), Math.round(1000 / fps));
   }
