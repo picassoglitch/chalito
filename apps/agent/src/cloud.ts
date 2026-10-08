@@ -11,7 +11,7 @@ import { SupabaseLinkCloud, type LinkCloud } from "./links/cloud.js";
 
 export type FetchFn = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string },
+  init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal },
 ) => Promise<{
   ok: boolean;
   status: number;
@@ -29,12 +29,16 @@ export class ApiRequestError extends Error {
   }
 }
 
+export const API_TIMEOUT_MS = 30_000;
+
 /** POST JSON to the control plane; non-2xx becomes an ApiRequestError with the API's error code. */
 export const postJson = async (fetchFn: FetchFn, url: string, body: unknown): Promise<unknown> => {
   const res = await fetchFn(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    // A stalled control plane must not hold the token refresh (and everything waiting on it) for minutes.
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
   const json = await res.json().catch(() => null);
   if (!res.ok) {
