@@ -236,6 +236,30 @@ export const runApiRepoContract = (
         expect(count(results, "device_exists")).toBe(RACERS - 1);
         expect(await repo.getRecovery(o)).toEqual(recovery(100 + results.indexOf("ok")));
       });
+
+      it(`one recovery code completes once: ${RACERS} concurrent completions of different devices`, async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        await repo.enrollFirstClient(o, await device(o), recovery(1));
+        const ds = await Promise.all(
+          Array.from({ length: RACERS }, () => device(o, "client", { enrolledVia: "recovery" })),
+        );
+        const results = await Promise.all(
+          ds.map((d, i) => repo.completeRecovery(o, d, recovery(200 + i), recovery(1).hash)),
+        );
+        expect(count(results, "ok")).toBe(1);
+        expect(count(results, "code_changed")).toBe(RACERS - 1);
+        const won = results.indexOf("ok");
+        expect(await repo.getRecovery(o)).toEqual(recovery(200 + won));
+        for (const [i, d] of ds.entries()) expect(await repo.getDevice(o, d.deviceId)).toEqual(i === won ? d : null);
+      });
+
+      it("enrollFirstClient answers no_user for an owner without a user record", async () => {
+        const repo = await makeRepo();
+        const o = owner();
+        expect(await repo.enrollFirstClient(o, await device(o), recovery(1))).toBe("no_user");
+        expect(await repo.getRecovery(o)).toBeNull();
+      });
     });
 
     describe("notifications", () => {

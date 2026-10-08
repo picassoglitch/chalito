@@ -4,7 +4,13 @@ import { deriveDeviceId, generateSigningKeyPair, toB64url } from "@chalito/crypt
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import type { DeviceDoc } from "@chalito/protocol";
 import { GcsAccountFiles, MemoryAccountFiles } from "../src/account/files.js";
-import { DELETION_GRACE_MS, accountRoutes, accountTaskRoutes, type AccountDeps } from "../src/account/routes.js";
+import {
+  DELETION_GRACE_MS,
+  accountRoutes,
+  accountTaskRoutes,
+  runDueDeletions,
+  type AccountDeps,
+} from "../src/account/routes.js";
 import type { AccountStore, DeletionStatus } from "../src/account/store.js";
 import { MemoryAudit, type Deps } from "../src/deps.js";
 import type { ApiRepo, StoredWebAuthnCredential, WebAuthnChallenge } from "../src/repo.js";
@@ -260,5 +266,39 @@ describe("GcsAccountFiles.deleteOwner (versioned buckets)", () => {
       "exports:exports/u1/e.json#7",
       "records:records/u1/r.json#6",
     ]);
+  });
+});
+
+describe("runDueDeletions (audit 2026-10-08)", () => {
+  it("a cancel that lands after the due list was read wins: nothing of that owner is deleted", async () => {
+    const store = new MemoryAccountStore(() => ["dev_1"]);
+    store.rows.set("u_a", { status: "scheduled", requestedAt: 0, dueAt: NOW - 1, exportPath: "x" });
+    store.rows.set("u_b", { status: "scheduled", requestedAt: 0, dueAt: NOW - 1, exportPath: "y" });
+    const deletedDevices: string[] = [];
+    const deps = {
+      identity: { deleteDevice: async (id: string) => void deletedDevices.push(id) },
+      audit: new MemoryAudit(),
+      now: () => NOW,
+    } as unknown as Deps;
+    const files = new MemoryAccountFiles();
+    // u_b cancels while u_a's files are being deleted.
+    const account: AccountDeps = {
+      store,
+      files: {
+        ...files,
+        putExport: files.putExport.bind(files),
+        getExport: files.getExport.bind(files),
+        deleteOwner: async (o: string) => {
+          if (o === "u_a") await store.cancel("u_b");
+          return 0;
+        },
+      },
+      scheduler: SCHED,
+      verifyOidc: async () => true,
+    };
+    expect(await runDueDeletions(deps, account)).toEqual({ deleted: 1, failed: 0 });
+    expect(store.deleted).toEqual(["u_a"]);
+    expect(store.rows.get("u_b")?.status).toBe("cancelled");
+    expect(deletedDevices).toEqual(["dev_1"]);
   });
 });

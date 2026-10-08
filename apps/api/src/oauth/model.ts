@@ -74,7 +74,8 @@ export interface McpStore {
   putClient(c: OAuthClient): Promise<void>;
   putRequest(r: AuthorizationRequest): Promise<void>;
   getRequest(requestId: string, now: number): Promise<AuthorizationRequest | null>;
-  deleteRequest(requestId: string): Promise<void>;
+  /** Deletes the request; false if it was already gone (single use: one approval or denial wins). */
+  deleteRequest(requestId: string): Promise<boolean>;
 
   createGrant(g: Grant): Promise<void>;
   listGrants(owner: string): Promise<Grant[]>;
@@ -102,14 +103,14 @@ export interface McpStore {
   insertMesaTurn(owner: string, mid: string, tid: string, doc: Record<string, unknown>): Promise<void>;
   /** The device that runs a session (for prompt_session). */
   sessionDevice(owner: string, sid: string): Promise<string | null>;
-  /** Inserts a relayed command for one agent (server write). */
+  /** Inserts a relayed command for one agent (server write). "exists": that command id is taken. */
   insertCommand(
     owner: string,
     targetDeviceId: string,
     id: string,
     env: unknown,
     expiresAt: number,
-  ): Promise<"ok" | "no_device">;
+  ): Promise<"ok" | "no_device" | "exists">;
   setSharing(
     owner: string,
     scope: "session" | "device",

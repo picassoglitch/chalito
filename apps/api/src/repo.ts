@@ -53,14 +53,23 @@ export interface ApiRepo {
     owner: string,
     doc: DeviceDoc,
     recovery: StoredRecovery,
-  ): Promise<"ok" | "client_exists" | "agent_exists" | "device_exists">;
+  ): Promise<"ok" | "client_exists" | "agent_exists" | "device_exists" | "no_user">;
   saveEndorsement(owner: string, newDeviceId: string, endorsement: unknown, at: number): Promise<void>;
 
   // ---- recovery ----
   getRecovery(owner: string): Promise<StoredRecovery | null>;
   startRecovery(owner: string, cooldownUntil: number, startedAt: number): Promise<void>;
-  /** Atomic: creates the recovered client (fails if the id exists) and replaces the recovery hash. */
-  completeRecovery(owner: string, doc: DeviceDoc, next: StoredRecovery): Promise<"ok" | "device_exists">;
+  /**
+   * Atomic: creates the recovered client (fails if the id exists) and replaces the recovery hash.
+   * With `expectHash`, only while the stored code is still that one (`code_changed` otherwise), so
+   * one recovery code completes one recovery even when two requests race with it.
+   */
+  completeRecovery(
+    owner: string,
+    doc: DeviceDoc,
+    next: StoredRecovery,
+    expectHash?: string,
+  ): Promise<"ok" | "device_exists" | "code_changed">;
 
   // ---- notifications ----
   createNotification(owner: string, nid: string, doc: Record<string, unknown>): Promise<void>;

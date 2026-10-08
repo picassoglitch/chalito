@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HubClient, avatarQuote } from "@chalito/billing";
 import { loadModels, loadPrices } from "@chalito/config";
 import type { DeviceDoc } from "@chalito/protocol";
@@ -795,5 +795,37 @@ describe("GcsAvatarFiles.deletePrefix", () => {
     for (const p of ["avatars/o1/", "avatars/o1/a1", "avatars/", "", "records/o1/a1/", "avatars/o1/../x/"])
       await expect(b.files.deletePrefix(p)).rejects.toThrow("unsafe prefix");
     expect(b.calls).toEqual([]);
+  });
+});
+
+describe("audit 2026-10-08: hub cancel and insert failures", () => {
+  const paidSetup = async () => {
+    const s = setup();
+    await s.start(ID1);
+    s.job(ID1, "succeeded");
+    hubCalls.length = 0;
+    return s;
+  };
+
+  it("a short balance answers 402 even when the cancel fails on the network", async () => {
+    const { start, repo } = await paidSetup();
+    hubState.remaining = quote.priceTokens - 1;
+    hubState.settleDown = true;
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await start(ID2)).status).toBe(402);
+    expect(repo.rows.has(ID2)).toBe(false);
+    err.mockRestore();
+  });
+
+  it("a failed insert releases the paid reservation before the error", async () => {
+    const { start, repo } = await paidSetup();
+    hubCalls.length = 0;
+    const spy = vi.spyOn(repo, "insert").mockRejectedValueOnce(new Error("db down"));
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await start(ID2)).status).toBe(500);
+    expect(hubCalls.map((c) => c.path)).toEqual(["admit", "settle"]);
+    expect(hubCalls[1]!.body).toEqual({ reservation_id: RID, outcome: "cancelled" });
+    spy.mockRestore();
+    err.mockRestore();
   });
 });

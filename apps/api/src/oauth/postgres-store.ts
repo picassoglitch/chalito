@@ -82,7 +82,9 @@ export class PostgresMcpStore implements McpStore {
       : null;
   }
   async deleteRequest(id: string) {
-    await this.sql`delete from chalito_private.oauth_requests where request_id = ${id}`;
+    const rows = await this
+      .sql`delete from chalito_private.oauth_requests where request_id = ${id} returning request_id`;
+    return rows.length > 0;
   }
 
   async createGrant(g: Grant) {
@@ -251,9 +253,11 @@ export class PostgresMcpStore implements McpStore {
     const [d] = await this.sql`select 1 from chalito.devices where owner = ${owner} and device_id = ${target}
                                and role = 'agent' and not revoked`;
     if (!d) return "no_device" as const;
-    await this.sql`insert into chalito.commands (owner, target_device_id, id, env, from_device_id, expires_at)
-                   values (${owner}, ${target}, ${id}, ${this.sql.json(env as never)}, 'mcp-gateway', ${ts(expiresAt)})`;
-    return "ok" as const;
+    const rows = await this
+      .sql`insert into chalito.commands (owner, target_device_id, id, env, from_device_id, expires_at)
+                   values (${owner}, ${target}, ${id}, ${this.sql.json(env as never)}, 'mcp-gateway', ${ts(expiresAt)})
+                   on conflict (owner, target_device_id, id) do nothing returning id`;
+    return rows.length ? ("ok" as const) : ("exists" as const);
   }
   async setSharing(owner: string, scope: "session" | "device", target: string, enabled: boolean, ackAt: number | null) {
     await this.sql`
