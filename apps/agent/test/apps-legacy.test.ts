@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AppConnectionDoc, PROVIDER_APP, type Provider } from "@chalito/protocol";
 import type { ClaudePin } from "../src/claude-pin.js";
-import { officialLink, parseVersion } from "../src/provider-cli.js";
+import { officialLink, parseVersion, viaShell } from "../src/provider-cli.js";
 import { signInAllowed } from "../src/daemon.js";
 import { BUILTIN_CATALOG, type CatalogEntry } from "../src/apps/catalog.js";
 import { AppManager, INSTALL_CONFIRM_MS } from "../src/apps/manager.js";
@@ -358,5 +358,23 @@ describe("AppManager on the former providers (provider.* aliases)", () => {
     expect(await s.m.install("google")).toEqual({ ok: false, reason: "provider_busy" });
     release(true);
     await s.m.signingIn;
+  });
+});
+
+describe("Windows .cmd launchers (cmd.exe joins the command line)", () => {
+  it("quotes paths and args with spaces; refuses anything cmd.exe would interpret", () => {
+    expect(viaShell("linux", "/usr/bin/npm", ["i", "a&b"])).toEqual({
+      cmd: "/usr/bin/npm",
+      args: ["i", "a&b"],
+      shell: false,
+    });
+    expect(viaShell("win32", "C:\\x\\codex.exe", ["a b"])).toMatchObject({ shell: false, args: ["a b"] });
+    expect(viaShell("win32", "C:\\Program Files\\nodejs\\npm.cmd", ["install", "-g", "@openai/codex@1.2.3"])).toEqual({
+      cmd: '"C:\\Program Files\\nodejs\\npm.cmd"',
+      args: ["install", "-g", "@openai/codex@1.2.3"],
+      shell: true,
+    });
+    for (const bad of ["x & calc", "a|b", "%PATH%", 'a"b', "a>b", "a^b", "a\nb"])
+      expect(() => viaShell("win32", "C:\\n\\npm.cmd", ["install", bad])).toThrow();
   });
 });
