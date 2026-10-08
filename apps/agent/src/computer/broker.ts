@@ -60,6 +60,9 @@ export const startBroker = async (opts: {
       } catch {
         return void sock.destroy();
       }
+      // `null`, a number or an array parse fine: reading a field off them must not throw here.
+      if (!req || typeof req !== "object" || Array.isArray(req))
+        return answer(sock, { ok: false, error: "bad_request", message: "bad request" });
       if (typeof req.token !== "string" || typeof req.tool !== "string")
         return answer(sock, { ok: false, error: "bad_request", message: "bad request" });
       opts.call(req.token, req.tool, req.args).then(
