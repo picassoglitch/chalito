@@ -1076,7 +1076,8 @@ const startDaemon = async (
 
   // Engine: curated recipe updates from the api, used only when a compiled-in key verifies them.
   const catalogFetch: CatalogFetch | false =
-    deps.catalogFetch ?? ((url) => fetch(url, { headers: { accept: "application/json" } }));
+    deps.catalogFetch ??
+    ((url) => fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30_000) }));
   const refreshCatalog = () => {
     if (!catalogFetch) return;
     void fetchCatalog(catalogFetch, cfg.apiBase)
