@@ -870,7 +870,17 @@ const startDaemon = async (
   }
   await terminal?.onPolicyChange();
   // The indicator watchdog: open terminals close when the desktop app stops showing it.
-  const terminalWatchdog = terminal ? every(() => void terminal?.tick(), 1000) : null;
+  const terminalWatchdog = terminal
+    ? every(
+        () =>
+          void terminal
+            ?.tick()
+            .catch((err: unknown) =>
+              log.warn("terminal.tick_failed", { error: err instanceof Error ? err.message : "error" }),
+            ),
+        1000,
+      )
+    : null;
 
   // Engine: every usable app's drivers (drivers/registry.ts). Session adapters for apps beyond the
   // built-in four go to the core by app id; launchers back `app.launch`. Built with only what the
@@ -1013,9 +1023,12 @@ const startDaemon = async (
   syncTrust();
 
   const unwatchCommands = signedInStore.watchCommands((cid, doc) => {
-    void core.handleCommand(cid, doc).then((r) => {
-      if (!r.ok) log.warn("command.not_applied", { cid, reason: r.reason });
-    });
+    void core.handleCommand(cid, doc).then(
+      (r) => {
+        if (!r.ok) log.warn("command.not_applied", { cid, reason: r.reason });
+      },
+      (err: unknown) => log.error("command.failed", { cid, error: err instanceof Error ? err.message : "error" }),
+    );
   });
   await signedInStore.updateDevice({ policyHash: policy.hash, devMode: devMode.state, lastSeenAt: now() });
   if (watchFiles) policy.watch();

@@ -153,7 +153,12 @@ export const supabaseCloud = (
     token = t;
     await client.realtime.setAuth(t);
   };
-  tokens.onToken?.((t) => void apply(t));
+  tokens.onToken?.(
+    (t) =>
+      void apply(t).catch((err: unknown) =>
+        opts.log?.warn("cloud.realtime_auth_failed", { error: err instanceof Error ? err.message : "error" }),
+      ),
+  );
   return {
     refreshIntervalMs: tokens.refreshIntervalMs,
     refresh: async () => apply(await tokens.getToken()),
