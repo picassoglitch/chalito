@@ -153,7 +153,7 @@ export class PostgresRepo implements ApiRepo {
   async enrollFirstClient(owner: string, doc: DeviceDoc, recovery: StoredRecovery) {
     return this.sql.begin(async (tx) => {
       // Serialises enrolments per account: concurrent callers queue on the user row.
-      await lockUser(tx, owner);
+      if (!(await lockUser(tx, owner))) return "no_user" as const;
       // Any active device blocks it: a paired desktop means the account goes through recovery instead.
       const [active] = await tx<{ role: string }[]>`
         select role from chalito.devices where owner = ${owner} and revoked = false
@@ -275,10 +275,16 @@ export class PostgresRepo implements ApiRepo {
       where owner = ${owner}`;
   }
 
-  async completeRecovery(owner: string, doc: DeviceDoc, next: StoredRecovery) {
+  async completeRecovery(owner: string, doc: DeviceDoc, next: StoredRecovery, expectHash?: string) {
     return this.sql.begin(async (tx) => {
-      await lockUser(tx, owner);
+      if (!(await lockUser(tx, owner))) return "code_changed" as const;
       if (await deviceIdTaken(tx, doc.deviceId)) return "device_exists" as const;
+      if (expectHash !== undefined) {
+        // Under the user lock: a concurrent completion with the same code has replaced it by now.
+        const [cur] = await tx<{ hash: string | null }[]>`
+          select code_hash ->> 'hash' as hash from chalito_private.private_recovery where owner = ${owner}`;
+        if (cur?.hash !== expectHash) return "code_changed" as const;
+      }
       await insertDevice(tx, owner, doc, this.#authUser("device", doc.deviceId), false);
       await upsertRecovery(tx, owner, next);
       return "ok" as const;
@@ -442,10 +448,13 @@ const ts = (msValue: number) => new Date(msValue);
 const tsOrNull = (v: unknown) => (typeof v === "number" ? new Date(v) : null);
 const ms = (d: Date | null) => (d ? d.getTime() : null);
 
-/** Locks the account's user row for the transaction. Throws if the user doesn't exist. */
+/**
+ * Locks the account's user row for the transaction. False when there is none (a hub user who never
+ * launched Chalito, so no SSO exchange made the row): the caller answers that, never a 500.
+ */
 const lockUser = async (tx: TransactionSql, owner: string) => {
   const [u] = await tx`select id from chalito.users where id = ${owner} for update`;
-  if (!u) throw new Error(`unknown user ${owner}`);
+  return !!u;
 };
 
 const deviceIdTaken = async (tx: Q, deviceId: string) =>

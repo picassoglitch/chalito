@@ -70,6 +70,8 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
     if (enrolled === "agent_exists")
       fail(409, "agent_exists", "A paired computer exists: use your recovery code to add this device.");
     if (enrolled === "device_exists") fail(409, "device_exists");
+    // No Chalito user record yet: the hub's launch (SSO exchange) creates it.
+    if (enrolled === "no_user") fail(403, "not_provisioned", "Open Chalito from Chalyb first.");
     await deps.audit.record({
       action: "device.enrolled",
       owner: p.owner,
