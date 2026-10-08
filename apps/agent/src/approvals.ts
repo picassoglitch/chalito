@@ -245,7 +245,11 @@ export class ApprovalManager {
             reason: d.allow ? "signed_allow" : "signed_deny",
             byDeviceId: check.signerDeviceId,
           });
-        })();
+        })().catch(() => {
+          // Verifying threw (e.g. the nonce file couldn't be written): no allow, keep waiting
+          // (the timeout denies), and don't let the rejection take the agent down.
+          audit({ type: "approval.decision_error", aid });
+        });
       });
       this.#pending.add(finish);
       // Revoked while the request was being written: end this wait too.
