@@ -16,6 +16,7 @@ import { ComputerError, type ToolOutput } from "./control.js";
  *   ← {"ok": true, "result": {"text": "...", "image"?: {...}}}  |  {"ok": false, "error": "<code>", "message": "..."}
  */
 
+export const BROKER_REQUEST_TIMEOUT_MS = 10_000;
 export const BROKER_MAX_REQUEST = 64 * 1024;
 /** Replies carry screenshots (a downscaled PNG, base64). */
 export const BROKER_MAX_REPLY = 32 * 1024 * 1024;
@@ -36,6 +37,7 @@ export const startBroker = async (opts: {
   path: string;
   call: (token: string, tool: string, args: unknown) => Promise<ToolOutput>;
   platform?: NodeJS.Platform;
+  requestTimeoutMs?: number;
 }): Promise<Broker> => {
   const unix = (opts.platform ?? process.platform) !== "win32";
   if (unix) rmSync(opts.path, { force: true });
@@ -47,6 +49,9 @@ export const startBroker = async (opts: {
     let handled = false;
     sock.setEncoding("utf8");
     sock.on("error", () => undefined);
+    // A client that connects and never sends its line doesn't keep a socket open forever. Only the
+    // wait for the request counts: a slow action (a screenshot) runs after it with the timer off.
+    sock.setTimeout(opts.requestTimeoutMs ?? BROKER_REQUEST_TIMEOUT_MS, () => sock.destroy());
     sock.on("data", (chunk: string) => {
       if (handled) return;
       buf += chunk;
@@ -54,6 +59,7 @@ export const startBroker = async (opts: {
       const nl = buf.indexOf("\n");
       if (nl < 0) return;
       handled = true;
+      sock.setTimeout(0);
       let req: { token?: unknown; tool?: unknown; args?: unknown };
       try {
         req = JSON.parse(buf.slice(0, nl)) as typeof req;

@@ -273,6 +273,22 @@ describe("computer MCP server (stdio)", () => {
 });
 
 describe("computer broker socket", () => {
+  it("drops a connection that never sends its request line", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "chalito-cb-")), "computer.sock");
+    const broker = await startBroker({ path, call: async () => ({ text: "ok" }), requestTimeoutMs: 50 });
+    try {
+      const closed = await new Promise<boolean>((resolve) => {
+        const sock = connect(path);
+        sock.on("error", () => undefined);
+        sock.on("close", () => resolve(true));
+        setTimeout(() => resolve(false), 2000);
+      });
+      expect(closed).toBe(true);
+    } finally {
+      await broker.close();
+    }
+  });
+
   it("answers bad_request to a line that parses to null or a non-object, and keeps serving", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "chalito-cb-")), "computer.sock");
     const broker = await startBroker({ path, call: async () => ({ text: "ok" }) });
