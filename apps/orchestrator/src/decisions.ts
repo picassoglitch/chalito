@@ -68,7 +68,14 @@ export const processDecisions = async (
   filter: { owner?: string; aid?: string } = {},
 ): Promise<ProcessResult> => {
   const out: ProcessResult = { resolved: [], invalid: 0 };
-  for (const p of await d.store.pendingDecisions(filter)) {
+  const pending = await d.store.pendingDecisions(filter);
+  // A full scan: forget rejections for approvals that are no longer pending (they can't come back),
+  // so the set doesn't grow for the life of the instance.
+  if (!filter.owner && !filter.aid) {
+    const live = new Set(pending.map((p) => `${p.owner}/${p.aid}`));
+    for (const key of d.rejected) if (!live.has(key.split("/", 2).join("/"))) d.rejected.delete(key);
+  }
+  for (const p of pending) {
     for (const answer of p.answers) {
       // Per attempt: a rejected row is audited once and never blocks the signer's next attempt.
       const key = `${p.owner}/${p.aid}/${answer.signer}/${answer.id}`;
