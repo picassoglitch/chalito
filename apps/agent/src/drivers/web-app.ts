@@ -150,7 +150,8 @@ export class WebAppDriver implements AppLaunchDriver {
     const dir = browserProfileDir(this.ctx.home, recipe.id);
     this.mkdir(resolve(this.ctx.home, ".chalito", "browsers"));
     this.mkdir(dir);
-    const r = await this.launcher.spawnDetached(browser.path, browserArgs(dir, url));
+    // The parsed form, as checked: URL parsing drops tabs/newlines the raw string may still carry.
+    const r = await this.launcher.spawnDetached(browser.path, browserArgs(dir, new URL(url).href));
     return r.ok ? { ok: true, detail: browser.name } : { ok: false, reason: "launch_failed" };
   }
 }
