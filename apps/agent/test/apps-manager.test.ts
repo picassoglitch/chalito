@@ -219,6 +219,23 @@ describe("AppManager: official installs only", () => {
     );
   });
 
+  it("an installer that fails to spawn leaves the app usable again (not stuck installing)", async () => {
+    const mac = setup({
+      platform: "darwin",
+      tools: ["brew"],
+      answer: (c) => {
+        if (c.args[0] === "install") throw new Error("spawn EACCES");
+        return {};
+      },
+    });
+    expect(await mac.m.install("chatgpt-desktop")).toEqual({ ok: true });
+    await expect(mac.m.installing).resolves.toBeUndefined();
+    expect(mac.last("chatgpt-desktop")).toMatchObject({ error: "install_failed" });
+    // Not provider_busy: the next try runs.
+    expect(await mac.m.install("chatgpt-desktop")).toEqual({ ok: true });
+    await mac.m.installing;
+  });
+
   it("an official-url install only opens the vendor's page; a missing tool is an error code", async () => {
     const s = setup({ platform: "linux" });
     expect(await s.m.install("aider")).toEqual({ ok: true });

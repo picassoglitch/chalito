@@ -46,14 +46,39 @@ const opener = (platform: NodeJS.Platform, url: string): [string, string[]] =>
       ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
       : ["xdg-open", [url]];
 
+/**
+ * Windows `.cmd`/`.bat` launchers (npm, the CLIs' shims) only run through cmd.exe, and Node then
+ * joins the command and its args into one unquoted command line. So: quote what has spaces (a
+ * path under "Program Files"), and refuse anything cmd.exe would interpret (`&`, `|`, `%VAR%`…)
+ * rather than run it. Everything else spawns without a shell, unchanged.
+ */
+const CMD_META = /[&|<>^%"\r\n]/;
+export const viaShell = (
+  platform: NodeJS.Platform,
+  cmd: string,
+  args: string[],
+): { cmd: string; args: string[]; shell: boolean } => {
+  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(cmd)) return { cmd, args, shell: false };
+  for (const a of [cmd, ...args])
+    if (CMD_META.test(a)) throw new Error("argument not allowed for a Windows .cmd launcher");
+  const q = (a: string) => (/[\s()]/.test(a) || a === "" ? `"${a}"` : a);
+  return { cmd: q(cmd), args: args.map(q), shell: true };
+};
+
 export const spawnProviderProcs = (platform: NodeJS.Platform = process.platform): ProviderProcs => ({
   run: (cmd, args, opts) =>
     new Promise((resolve) => {
       // npm and the CLIs' launchers are .cmd files on Windows, which need a shell.
-      const child = spawn(cmd, args, {
+      let sh: ReturnType<typeof viaShell>;
+      try {
+        sh = viaShell(platform, cmd, args);
+      } catch (err) {
+        return resolve({ code: 127, stdout: "", stderr: (err as Error).message });
+      }
+      const child = spawn(sh.cmd, sh.args, {
         env: opts.env,
         stdio: ["ignore", "pipe", "pipe"],
-        shell: platform === "win32" && /\.(cmd|bat)$/i.test(cmd),
+        shell: sh.shell,
         windowsHide: true,
       });
       let stdout = "";
@@ -84,10 +109,16 @@ export const spawnProviderProcs = (platform: NodeJS.Platform = process.platform)
 
   acpAuthenticate: (cmd, args, opts) =>
     new Promise((resolve) => {
-      const child = spawn(cmd, args, {
+      let sh: ReturnType<typeof viaShell>;
+      try {
+        sh = viaShell(platform, cmd, args);
+      } catch {
+        return resolve(false);
+      }
+      const child = spawn(sh.cmd, sh.args, {
         env: opts.env,
         stdio: ["pipe", "pipe", "ignore"],
-        shell: platform === "win32" && /\.(cmd|bat)$/i.test(cmd),
+        shell: sh.shell,
         windowsHide: true,
       });
       let settled = false;
@@ -125,11 +156,17 @@ export const spawnProviderProcs = (platform: NodeJS.Platform = process.platform)
 
   launch: (cmd, args, opts) =>
     new Promise<boolean>((resolve) => {
-      const child = spawn(cmd, args, {
+      let sh: ReturnType<typeof viaShell>;
+      try {
+        sh = viaShell(platform, cmd, args);
+      } catch {
+        return resolve(false);
+      }
+      const child = spawn(sh.cmd, sh.args, {
         env: opts.env,
         stdio: "ignore",
         detached: true,
-        shell: platform === "win32" && /\.(cmd|bat)$/i.test(cmd),
+        shell: sh.shell,
         windowsHide: true,
       });
       child.on("error", () => resolve(false));
