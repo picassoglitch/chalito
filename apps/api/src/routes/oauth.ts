@@ -305,6 +305,9 @@ export const oauthRoutes = (
 
     const client = await store().getClient(r.clientId);
     if (!client) return fail(404, "client_gone");
+    // Single use: of two concurrent approvals (or an approval racing a denial), only one proceeds,
+    // so a request never yields two grants and two codes.
+    if (!(await store().deleteRequest(r.requestId))) return fail(404, "not_found");
     const cid = `con_${newSecret(12)}`;
     await store().createGrant({
       owner: p.owner,
@@ -331,7 +334,6 @@ export const oauthRoutes = (
       scopes: [...new Set(granted)] as McpScope[],
       expiresAt: deps.now() + cfg.codeTtlMs,
     });
-    await store().deleteRequest(r.requestId);
     await deps.audit.record({
       action: "mcp.grant_created",
       owner: p.owner,
@@ -349,7 +351,7 @@ export const oauthRoutes = (
   app.post("/oauth/requests/:id/deny", requireAuth(deps, ["user", "client"]), async (c) => {
     const r = await store().getRequest(c.req.param("id"), deps.now());
     if (!r) return fail(404, "not_found");
-    await store().deleteRequest(r.requestId);
+    if (!(await store().deleteRequest(r.requestId))) return fail(404, "not_found");
     const u = new URL(r.redirectUri);
     u.searchParams.set("error", "access_denied");
     if (r.state) u.searchParams.set("state", r.state);
@@ -621,8 +623,10 @@ export const oauthRoutes = (
     });
     if (!body.success) return fail(400, "bad_request");
     const env = RelayedCommand.parse({ relayedBy: "mcp-gateway", body: body.data });
-    if ((await store().insertCommand(t.owner, device, b.data.cid, env, body.data.expiresAt)) === "no_device")
-      return fail(404, "no_device");
+    const inserted = await store().insertCommand(t.owner, device, b.data.cid, env, body.data.expiresAt);
+    if (inserted === "no_device") return fail(404, "no_device");
+    // A reused command id (a gateway retry) was a primary-key violation, i.e. a 500, before.
+    if (inserted === "exists") return fail(409, "duplicate_command");
     await deps.audit.record({
       action: "mcp.prompt",
       owner: t.owner,

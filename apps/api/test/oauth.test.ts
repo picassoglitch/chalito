@@ -385,3 +385,41 @@ describe("helpers", () => {
     expect(redirectMatches(["https://claude.ai/a"], "https://claude.ai/b")).toBe(false);
   });
 });
+
+describe("single use under races (audit 2026-10-08)", () => {
+  const gw = (access: string) => ({ authorization: `Bearer ${GATEWAY_TOKEN}`, "x-chalito-access-token": access });
+
+  it("a consent request read by two approvals at once yields one grant: the second is 404", async () => {
+    const h = await oauthHarness();
+    // Every read returns what the first one saw, as two concurrent approvals would.
+    const seen = new Map<string, Awaited<ReturnType<typeof h.mcp.getRequest>>>();
+    const real = h.mcp.getRequest.bind(h.mcp);
+    h.mcp.getRequest = async (id, now) => {
+      if (!seen.has(id)) seen.set(id, await real(id, now));
+      return seen.get(id)!;
+    };
+    const a = await h.authorize({ scopes: ["mcp:read"] });
+    expect(a.ok?.status).toBe(200);
+    const again = await h.call(`/oauth/requests/${a.requestId}/approve`, {
+      json: { scopes: ["mcp:read"], assertion: await h.assertion() },
+      headers: h.phoneAuth,
+    });
+    expect(again.status).toBe(404);
+    expect(h.mcp.grants.size).toBe(1);
+  });
+
+  it("a gateway retry with the same command id is 409, not a 500", async () => {
+    const h = await oauthHarness();
+    h.mcp.sessions.set(`${h.o}/s_1`, "dev_agent");
+    h.mcp.devices.add(`${h.o}/dev_agent`);
+    const t = await h.connect(["mcp:read", "session:prompt"], CHATGPT_CLIENT);
+    const box = await generateBoxKeyPair();
+    const cid = "cmd_dupdupdup1234";
+    const promptCt = await sealJson("hi", { dev_agent: box.publicKey }, `command:${cid}`);
+    const send = () =>
+      h.call("/v1/gateway/prompts", { json: { cid, sid: "s_1", promptCt }, headers: gw(t.access_token) });
+    expect((await send()).status).toBe(201);
+    expect(await send()).toMatchObject({ status: 409, json: { error: "duplicate_command" } });
+    expect(h.mcp.commands).toHaveLength(1);
+  });
+});
