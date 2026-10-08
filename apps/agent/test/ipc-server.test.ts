@@ -36,6 +36,14 @@ const server = async (handlers = {}) => {
 };
 
 describe("agent IPC server (local socket, per-launch secret)", () => {
+  it("a line that parses to null, a number or an array closes the connection, not the agent", async () => {
+    const { s, path } = await server({ ping: async () => ({ version: "1" }) });
+    for (const line of ["null\n", "7\n", "[]\n"]) expect(await ipcCall(path, line)).toBeNull();
+    // Still serving.
+    expect(await ipcCall(path, { id: 1, token: SECRET, method: "ping" })).toMatchObject({ ok: true });
+    await s.close();
+  });
+
   it("answers the methods it has, with the secret; the socket is 0600", async () => {
     const { s, path } = await server({ ping: async () => ({ version: "1" }), nothing: async () => undefined });
     expect(statSync(path).mode & 0o777).toBe(0o600);

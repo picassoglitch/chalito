@@ -70,6 +70,8 @@ export const startIpcServer = async (opts: {
     } catch {
       return void sock.destroy();
     }
+    // `null` or a bare number parses fine; reading `.id` off it would reject unhandled.
+    if (!req || typeof req !== "object" || Array.isArray(req)) return void sock.destroy();
     const id = typeof req.id === "number" ? req.id : null;
     if (!tokenOk(req.token, want)) {
       answer(sock, { id, ok: false, error: "unauthorized" });
