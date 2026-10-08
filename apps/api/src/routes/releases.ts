@@ -19,14 +19,29 @@ export const releasesRoutes = (deps: Deps, store: ReleaseStore) => {
     const channel = Channel.safeParse(c.req.param("channel"));
     if (!channel.success) return fail(404, "not_found");
     const ch = channel.data;
-    const raw = await store.manifest(ch);
+    let raw: unknown;
+    try {
+      raw = await store.manifest(ch);
+    } catch (err) {
+      // The bucket or the signer (IAM signBlob) can't answer right now: the updater retries later.
+      console.error("[api] releases: manifest unavailable", ch, err instanceof Error ? err.message : "error");
+      return fail(503, "release_unavailable");
+    }
     if (raw === null) return fail(404, "no_release");
     const m = ReleaseManifest.safeParse(raw);
     if (!m.success) {
       console.error("[api] releases: malformed manifest", ch);
       return fail(503, "release_unavailable");
     }
-    const sign = (p: string) => (isChannelObject(ch, p) ? store.signedUrl(p, SIGNED_URL_TTL_SEC) : null);
+    const sign = async (p: string) => {
+      if (!isChannelObject(ch, p)) return null;
+      try {
+        return await store.signedUrl(p, SIGNED_URL_TTL_SEC);
+      } catch (err) {
+        console.error("[api] releases: signing failed", err instanceof Error ? err.message : "error");
+        return fail(503, "release_unavailable");
+      }
+    };
     const platforms: ReleaseManifest["platforms"] = {};
     for (const [k, v] of Object.entries(m.data.platforms)) {
       const url = await sign(v.url);

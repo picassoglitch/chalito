@@ -136,3 +136,29 @@ describe("GET /releases/:channel/latest.json", () => {
     expect((await withStore.request("/releases/stable/latest.json")).status).toBe(200);
   });
 });
+
+describe("GET /releases/:channel/latest.json when GCS or the signer fails", () => {
+  it("answers 503 release_unavailable, never a 500", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const deps = { now: Date.now } as unknown as Deps;
+    const down: ReleaseStore = {
+      manifest: async () => {
+        throw new Error("releases manifest: HTTP 500");
+      },
+      signedUrl: async (o) => o,
+    };
+    const res = await new Hono().route("/releases", releasesRoutes(deps, down)).request("/releases/stable/latest.json");
+    expect([res.status, ((await res.json()) as { error: string }).error]).toEqual([503, "release_unavailable"]);
+    const noSigner: ReleaseStore = {
+      manifest: async () => MANIFEST,
+      signedUrl: async () => {
+        throw new Error("signBlob 403");
+      },
+    };
+    const res2 = await new Hono()
+      .route("/releases", releasesRoutes(deps, noSigner))
+      .request("/releases/stable/latest.json");
+    expect(res2.status).toBe(503);
+    spy.mockRestore();
+  });
+});
