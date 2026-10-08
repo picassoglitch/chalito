@@ -31,7 +31,7 @@ export class GatewayApi {
       body: JSON.stringify(body),
     });
     const text = await res.text();
-    let json: Record<string, unknown> | null = null;
+    let json: Record<string, unknown> | null;
     try {
       json = text ? (JSON.parse(text) as Record<string, unknown>) : null;
     } catch {
