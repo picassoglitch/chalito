@@ -31,7 +31,14 @@ export class GatewayApi {
       body: JSON.stringify(body),
     });
     const text = await res.text();
-    const json = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+    let json: Record<string, unknown> | null = null;
+    try {
+      json = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+    } catch {
+      // A front end's HTML error page (502/503): still a GatewayApiError with a code, not a SyntaxError.
+      if (!res.ok) throw new GatewayApiError(res.status, `upstream_${res.status}`);
+      throw new GatewayApiError(res.status, "bad_response");
+    }
     if (!res.ok) throw new GatewayApiError(res.status, String(json?.error ?? "error"));
     return json as T | null;
   }
