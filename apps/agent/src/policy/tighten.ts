@@ -1,6 +1,8 @@
-import { resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve, sep } from "node:path";
 import type { PolicyPreset } from "@chalito/protocol";
 import type { z } from "zod";
+import { defaultRealpath } from "./classify.js";
 import { DEFAULT_REMOTE_TERMINAL, PERMISSION_RANK, Policy, SANDBOX_RANK } from "./schema.js";
 
 const within = (child: string, parent: string) =>
@@ -9,22 +11,42 @@ const subsetOf = (a: string[], b: string[]) => a.every((x) => b.includes(x));
 const flagsOnlyOff = <T extends Record<string, boolean | undefined>>(next: T, cur: T) =>
   Object.keys(next).every((k) => !next[k] || cur[k]);
 
+/**
+ * A workspace path as the classifier sees it: `~` expanded and symlinks resolved. Comparing raw
+ * strings let a remote patch add `<ws>/link` (a symlink to `/`) as a "narrower" workspace.
+ */
+const realWorkspace = (p: string, home: string, real: (p: string) => string) =>
+  real(resolve(p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p));
+
 /** True when `next` grants nothing that `cur` doesn't: the only kind of change a remote surface may make. */
-export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
-  next.workspaces.every((w) => cur.workspaces.some((c) => within(resolve(w.path), resolve(c.path)))) &&
-  flagsOnlyOff(next.adapters, cur.adapters) &&
-  PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
-  SANDBOX_RANK[next.remote.maxCodexSandbox] <= SANDBOX_RANK[cur.remote.maxCodexSandbox] &&
-  flagsOnlyOff(next.origins, cur.origins) &&
-  flagsOnlyOff(next.egress, cur.egress) &&
-  next.approvals.ttlSeconds <= cur.approvals.ttlSeconds &&
-  subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
-  subsetOf(next.web.allowDomains, cur.web.allowDomains) &&
-  subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
-  computerTighterOrEqual(next.computer, cur.computer) &&
-  appsTighterOrEqual(next.apps, cur.apps) &&
-  remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
-  screenTighterOrEqual(next.screen, cur.screen);
+export const isTighterOrEqual = (
+  next: Policy,
+  cur: Policy,
+  fs: { home?: string; realpath?: (p: string) => string } = {},
+): boolean => {
+  const home = fs.home ?? homedir();
+  const real = fs.realpath ?? defaultRealpath;
+  const curWs = cur.workspaces.map((c) => realWorkspace(c.path, home, real));
+  return (
+    next.workspaces.every((w) => {
+      const r = realWorkspace(w.path, home, real);
+      return curWs.some((c) => within(r, c));
+    }) &&
+    flagsOnlyOff(next.adapters, cur.adapters) &&
+    PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
+    SANDBOX_RANK[next.remote.maxCodexSandbox] <= SANDBOX_RANK[cur.remote.maxCodexSandbox] &&
+    flagsOnlyOff(next.origins, cur.origins) &&
+    flagsOnlyOff(next.egress, cur.egress) &&
+    next.approvals.ttlSeconds <= cur.approvals.ttlSeconds &&
+    subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
+    subsetOf(next.web.allowDomains, cur.web.allowDomains) &&
+    subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
+    computerTighterOrEqual(next.computer, cur.computer) &&
+    appsTighterOrEqual(next.apps, cur.apps) &&
+    remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
+    screenTighterOrEqual(next.screen, cur.screen)
+  );
+};
 
 /**
  * Engine: an app's sessions can only be turned off (an id without an entry is off, so a `true` is

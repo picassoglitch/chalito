@@ -9,7 +9,7 @@ import { SupabaseStore, pairingTopic, type SupaClient } from "./supabase-store.j
 
 export type FetchFn = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string },
+  init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal },
 ) => Promise<{
   ok: boolean;
   status: number;
@@ -27,12 +27,16 @@ export class ApiRequestError extends Error {
   }
 }
 
+export const API_TIMEOUT_MS = 30_000;
+
 /** POST JSON to the control plane; non-2xx becomes an ApiRequestError with the API's error code. */
 export const postJson = async (fetchFn: FetchFn, url: string, body: unknown): Promise<unknown> => {
   const res = await fetchFn(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    // A stalled control plane must not hold the token refresh (and everything waiting on it) for minutes.
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
   const json = await res.json().catch(() => null);
   if (!res.ok) {
@@ -153,7 +157,12 @@ export const supabaseCloud = (
     token = t;
     await client.realtime.setAuth(t);
   };
-  tokens.onToken?.((t) => void apply(t));
+  tokens.onToken?.(
+    (t) =>
+      void apply(t).catch((err: unknown) =>
+        opts.log?.warn("cloud.realtime_auth_failed", { error: err instanceof Error ? err.message : "error" }),
+      ),
+  );
   return {
     refreshIntervalMs: tokens.refreshIntervalMs,
     refresh: async () => apply(await tokens.getToken()),

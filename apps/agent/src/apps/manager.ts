@@ -532,7 +532,9 @@ export class AppManager {
     live.blocked = false;
     live.error = null;
     await this.report(appId);
-    this.signingIn = this.#runSignin(e, cmd).finally(() => (this.signingIn = null));
+    this.signingIn = this.#runSignin(e, cmd)
+      .catch((err: unknown) => this.#crashed(appId, "signin_failed", err))
+      .finally(() => (this.signingIn = null));
     return { ok: true };
   }
 
@@ -718,8 +720,22 @@ export class AppManager {
     live.busy = "installing";
     live.error = null;
     await this.report(appId);
-    this.installing = this.#runInstall(u.e, installer, spec.via).finally(() => (this.installing = null));
+    this.installing = this.#runInstall(u.e, installer, spec.via)
+      .catch((err: unknown) => this.#crashed(appId, "install_failed", err))
+      .finally(() => (this.installing = null));
     return { ok: true };
+  }
+
+  /**
+   * A background install/sign-in threw (a spawn that failed synchronously, a config write): the app
+   * must not stay "busy" until the agent restarts, and the rejection must not go unhandled.
+   */
+  async #crashed(appId: string, error: "install_failed" | "signin_failed", err: unknown): Promise<void> {
+    const live = this.#liveOf(appId);
+    live.busy = null;
+    live.error = error;
+    this.d.log.warn(`app.${error}`, { appId, error: err instanceof Error ? err.message : "error" });
+    await this.report(appId).catch(() => undefined);
   }
 
   /** The running install (tests wait on it). */
@@ -728,10 +744,12 @@ export class AppManager {
   async #runInstall(e: CatalogEntry, installer: { cmd: string; args: string[] }, via: string): Promise<void> {
     const appId = e.recipe.id;
     const live = this.#liveOf(appId);
-    const r = await this.d.procs.run(installer.cmd, installer.args, {
-      env: this.d.env,
-      timeoutMs: INSTALL_TIMEOUT_MS,
-    });
+    const r = await this.d.procs
+      .run(installer.cmd, installer.args, {
+        env: this.d.env,
+        timeoutMs: INSTALL_TIMEOUT_MS,
+      })
+      .catch(() => ({ code: -1 }));
     live.busy = null;
     this.#npmBin = null;
     if (r.code !== 0) {

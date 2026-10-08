@@ -9,6 +9,7 @@ import type { SessionAdapter } from "@chalito/adapters";
 import { loadLiabilityText } from "@chalito/config";
 import {
   MemoryNonceStore,
+  type NonceStore,
   TrustedClientList,
   generateBoxKeyPair,
   canonicalize,
@@ -86,6 +87,7 @@ const harness = async (
     terminal?: boolean;
     /** Wire remote screen (fake capture and fake WebRTC peer). */
     screen?: boolean;
+    nonces?: NonceStore;
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -239,7 +241,7 @@ const harness = async (
     devMode,
     trust: () => trust,
     saveTrust: async () => undefined,
-    nonces: new MemoryNonceStore(),
+    nonces: opts.nonces ?? new MemoryNonceStore(),
     owner: OWNER,
     self: { deviceId: agent.id, pubBox: agent.pubBox, box: agent.box, sign: agent.sign },
     home: HOME,
@@ -436,6 +438,27 @@ describe("signed approvals end to end (fake Claude Code)", () => {
 
     await h.decide(true);
     await waitFor(() => h.fake.run.ran.length === 2);
+  });
+
+  it("a decision whose check throws (nonce file unwritable) grants nothing and doesn't crash the agent", async () => {
+    const inner = new MemoryNonceStore();
+    let broken = false;
+    const nonces: NonceStore = {
+      claim: async (nonce, exp, now) => {
+        if (broken) throw new Error("EACCES");
+        return inner.claim(nonce, exp, now);
+      },
+    };
+    const h = await harness({ turns: editTurn, nonces });
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    broken = true;
+    await h.decide(true);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.fake.run.ran).toHaveLength(0);
+    broken = false;
+    await h.decide(true);
+    await waitFor(() => h.fake.run.ran.length === 1);
   });
 
   it("HIGH needs step-up; an allow without it is rejected", async () => {

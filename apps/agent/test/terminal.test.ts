@@ -176,6 +176,21 @@ const running = async (h: ReturnType<typeof setup>, appId = "aider") => {
 // ---- the gate ---------------------------------------------------------------------------
 
 describe("remote terminal: who may open one", () => {
+  it("an open whose session row can't be written is refused and doesn't hold the only slot", async () => {
+    const h = setup({ policy: { ...ON, maxSessions: 1 } });
+    h.c.heartbeat(true);
+    const write = h.deps.upsertSession;
+    h.deps.upsertSession = async () => {
+      throw new Error("network");
+    };
+    const input = { appId: "aider", workspaceLabel: "chalito", cols: 80, rows: 24 };
+    expect(await h.c.open(input, PHONE)).toEqual({ ok: false, reason: "terminal_unavailable" });
+    expect(h.c.status().pending).toEqual([]);
+    expect(h.asked).toHaveLength(0);
+    h.deps.upsertSession = write;
+    expect(await h.c.open(input, PHONE)).toMatchObject({ ok: true });
+  });
+
   it("is off by default: nothing opens, nothing runs", async () => {
     const h = setup({ policy: undefined });
     h.c.heartbeat(true);

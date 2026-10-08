@@ -33,6 +33,7 @@ import {
 } from "./config.js";
 import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
+import { DeviceRevokedError } from "./device-auth.js";
 import { readIpcSecret } from "./ipc-server.js";
 import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
@@ -152,6 +153,7 @@ const T = {
     terminalTitle: "\n!!  ¿Activar la terminal remota?  !!\nCon esto, una terminal aprobada puede:\n",
     shellTitle: "\n!!  ¿Activar la SHELL COMPLETA remota?  !!\nCon esto, una shell aprobada puede:\n",
     shellFinal: "\nConfirmación 4 de 4. ",
+    deviceRevoked: "Esta computadora se quitó de tu cuenta de Chalito. Emparéjala de nuevo: `chalito pair`.\n",
     terminalSecond: (n: number) => `\nConfirmación 2 de ${n}. `,
     terminalType: (p: string, n: number) => `\nConfirmación 3 de ${n}. Escribe exactamente "${p}": `,
     terminalOn:
@@ -258,6 +260,7 @@ const T = {
     terminalTitle: "\n!!  Turn on remote terminal?  !!\nWith it, an approved terminal can:\n",
     shellTitle: "\n!!  Turn on the remote FULL SHELL?  !!\nWith it, an approved shell can:\n",
     shellFinal: "\nConfirmation 4 of 4. ",
+    deviceRevoked: "This computer was removed from your Chalito account. Pair it again: `chalito pair`.\n",
     terminalSecond: (n: number) => `\nConfirmation 2 of ${n}. `,
     terminalType: (p: string, n: number) => `\nConfirmation 3 of ${n}. Type exactly "${p}": `,
     terminalOn:
@@ -510,6 +513,11 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           }
           if (err instanceof OnboardingError) {
             io.err(`${err.message}\n`);
+            return EXIT_NEEDS_SETUP;
+          }
+          // Removed from the account: only pairing again helps, so don't restart into the same refusal.
+          if (err instanceof DeviceRevokedError) {
+            io.err(t.deviceRevoked);
             return EXIT_NEEDS_SETUP;
           }
           throw err;

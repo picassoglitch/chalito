@@ -289,6 +289,25 @@ describe("policy changes", () => {
     expect(DEFAULT_POLICY.adapters).toEqual({ claudeCode: true, codex: true, grok: true, gemini: true });
   });
 
+  it("a remote tighten can't add a workspace that is a symlink out of the current ones", () => {
+    const ws = mkdtempSync(join(tmpdir(), "chalito-ws-"));
+    mkdirSync(join(ws, "sub"));
+    symlinkSync("/", join(ws, "root"));
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    expect(
+      applyRemoteTighten(cur, {
+        workspaces: [
+          { label: "ws", path: ws },
+          { label: "root", path: join(ws, "root") },
+        ],
+      }),
+    ).toEqual({ ok: false, reason: "would_loosen" });
+    // A real subdirectory is still a narrower workspace.
+    expect(applyRemoteTighten(cur, { workspaces: [{ label: "sub", path: join(ws, "sub") }] })).toMatchObject({
+      ok: true,
+    });
+  });
+
   it("remote tightening applies; remote loosening is rejected", () => {
     expect(applyRemoteTighten(policy, { origins: { mcp: false } })).toMatchObject({ ok: true });
     expect(applyRemoteTighten(policy, { remote: { maxPermissionMode: "default" } })).toMatchObject({ ok: true });

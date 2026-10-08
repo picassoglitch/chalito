@@ -1,3 +1,4 @@
+import { connect } from "node:net";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -272,6 +273,44 @@ describe("computer MCP server (stdio)", () => {
 });
 
 describe("computer broker socket", () => {
+  it("drops a connection that never sends its request line", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "chalito-cb-")), "computer.sock");
+    const broker = await startBroker({ path, call: async () => ({ text: "ok" }), requestTimeoutMs: 50 });
+    try {
+      const closed = await new Promise<boolean>((resolve) => {
+        const sock = connect(path);
+        sock.on("error", () => undefined);
+        sock.on("close", () => resolve(true));
+        setTimeout(() => resolve(false), 2000);
+      });
+      expect(closed).toBe(true);
+    } finally {
+      await broker.close();
+    }
+  });
+
+  it("answers bad_request to a line that parses to null or a non-object, and keeps serving", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "chalito-cb-")), "computer.sock");
+    const broker = await startBroker({ path, call: async () => ({ text: "ok" }) });
+    const raw = (line: string) =>
+      new Promise<string>((resolve, reject) => {
+        const sock = connect(path);
+        let buf = "";
+        sock.setEncoding("utf8");
+        sock.on("connect", () => sock.write(line));
+        sock.on("data", (c: string) => void (buf += c));
+        sock.on("close", () => resolve(buf));
+        sock.on("error", reject);
+      });
+    try {
+      for (const line of ["null\n", "42\n", "[]\n"])
+        expect(JSON.parse(await raw(line))).toMatchObject({ ok: false, error: "bad_request" });
+      expect(await brokerCall(path, "t", "screenshot", {})).toMatchObject({ ok: true });
+    } finally {
+      await broker.close();
+    }
+  });
+
   it("carries one call per connection, with the session token; unknown tokens are refused", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "chalito-cb-")), "computer.sock");
     const seen: unknown[] = [];
