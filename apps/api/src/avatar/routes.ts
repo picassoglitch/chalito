@@ -110,6 +110,16 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
     }
   };
 
+  /** Releases a reservation nothing was written for. Never decides the answer (the hold expires on the hub). */
+  const cancel = async (reservationId: string) => {
+    try {
+      const r = await av.hub.settle({ reservation_id: reservationId, outcome: "cancelled" });
+      if (!r.ok && !r.closed) console.error("[avatar] cancel failed", r.httpStatus);
+    } catch (err) {
+      console.error("[avatar] cancel failed", errorMessage(err));
+    }
+  };
+
   /** Moves a stale creation on (expired upload, stuck job), deletes a leftover photo, settles. */
   const reconcile = async (c: CreationRecord): Promise<CreationRecord> => {
     const now = deps.now();
@@ -231,35 +241,46 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
       }
       // An admit is not a balance check: a balance short of the price is no_tokens too.
       if (!admit.balance.unlimited && admit.balance.remaining < av.quote.priceTokens) {
-        await av.hub.settle({ reservation_id: admit.reservation_id, outcome: "cancelled" });
+        await cancel(admit.reservation_id);
         return c.json(noTokens(), 402);
       }
       reservationId = admit.reservation_id;
     }
 
     const now = deps.now();
-    const result = await av.repo.insert({
-      creationId,
-      owner: p.owner,
-      assetId: newAssetId(),
-      free,
-      reservationId,
-      estTokens: free ? null : av.quote.estTokens,
-      contentType,
-      uploadDeadline: now + UPLOAD_WINDOW_MS,
-      createdAt: now,
-      attestation: { ownPhoto: true, ageBand, guardianConsent: ageBand === "13_17", at: now },
-      useWhenReady,
-      freeMarkers: free ? markers : null,
-    });
+    let result: Awaited<ReturnType<AvatarRepo["insert"]>>;
+    try {
+      result = await av.repo.insert({
+        creationId,
+        owner: p.owner,
+        assetId: newAssetId(),
+        free,
+        reservationId,
+        estTokens: free ? null : av.quote.estTokens,
+        contentType,
+        uploadDeadline: now + UPLOAD_WINDOW_MS,
+        createdAt: now,
+        attestation: { ownPhoto: true, ageBand, guardianConsent: ageBand === "13_17", at: now },
+        useWhenReady,
+        freeMarkers: free ? markers : null,
+      });
+    } catch (err) {
+      // No row, so nothing would ever settle it: release the hold, then fail.
+      if (reservationId) await cancel(reservationId);
+      throw err;
+    }
     if (result === "duplicate_id") {
       // A concurrent retry with the same id won: same external_job_id, so the same reservation. Keep it.
       const won = await av.repo.get(creationId);
-      if (!won || won.owner !== p.owner) return fail(409, "creation_id_conflict");
+      if (!won || won.owner !== p.owner) {
+        // Someone else's id: that row never carries this owner's reservation.
+        if (reservationId) await cancel(reservationId);
+        return fail(409, "creation_id_conflict");
+      }
       return c.json({ ...(await view(won)), replay: true });
     }
     if (result !== "inserted") {
-      if (reservationId) await av.hub.settle({ reservation_id: reservationId, outcome: "cancelled" });
+      if (reservationId) await cancel(reservationId);
       return c.json({ error: "busy" }, 409);
     }
     const created = (await av.repo.get(creationId))!;

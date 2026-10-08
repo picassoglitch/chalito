@@ -12,7 +12,11 @@ import { MemoryStoreRepo } from "../src/store/repo.js";
 
 export const RID = "44444444-4444-4444-8444-444444444444";
 export const hubCalls: { path: string; body: Record<string, unknown> }[] = [];
-export const hubState: { mode: "ok" | "no_tokens" | "down"; remaining: number } = { mode: "ok", remaining: 5_000_000 };
+export const hubState: { mode: "ok" | "no_tokens" | "down"; remaining: number; settleDown: boolean } = {
+  mode: "ok",
+  remaining: 5_000_000,
+  settleDown: false,
+};
 const server = setupServer(
   http.post("https://www.chalyb.com/api/engines/chalito/usage/admit", async ({ request }) => {
     hubCalls.push({ path: "admit", body: (await request.json()) as Record<string, unknown> });
@@ -41,6 +45,8 @@ const server = setupServer(
   }),
   http.post("https://www.chalyb.com/api/engines/chalito/usage/settle", async ({ request }) => {
     hubCalls.push({ path: "settle", body: (await request.json()) as Record<string, unknown> });
+    // A network failure (fetch rejects), not an HTTP status.
+    if (hubState.settleDown) return HttpResponse.error();
     return HttpResponse.json({ ok: true });
   }),
 );
@@ -50,6 +56,7 @@ beforeEach(() => {
   hubCalls.length = 0;
   hubState.mode = "ok";
   hubState.remaining = 5_000_000;
+  hubState.settleDown = false;
 });
 
 export const CID = "chl_aaaaaaaaaaaaaaaaaaaaaaaaaa";
