@@ -50,6 +50,7 @@ import { buildDrivers, driverFactory, type Driver } from "./drivers/registry.js"
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, redactDeep, type Logger } from "./redact.js";
+import { SESSION_KINDS, deviceSetup, setupReporter } from "./setup-report.js";
 import { acpDriver } from "./drivers/index.js";
 import { spawnRunner, which } from "./runner.js";
 import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
@@ -477,6 +478,10 @@ const startDaemon = async (
       await screen?.onPolicyChange();
       await lan?.onPolicyChange();
       if (!store) return;
+      // Before the hash: the hash change fans out, and the pull it triggers sees the new setup too.
+      await reportSetup().catch((err: unknown) =>
+        log.warn("setup.report_failed", { error: err instanceof Error ? err.message : "error" }),
+      );
       await store.updateDevice({ policyHash: hash });
       await store.publishDeviceEvent({
         v: 1,
@@ -547,6 +552,17 @@ const startDaemon = async (
   >;
   const allowSignIn = deps.signInAllowed ?? ((p: Provider) => signInAllowed(p));
   const currentConfig = (): PairedConfig => requirePaired(readConfig(dir, env, { keys: id.sign }));
+  // First Run D: what the checklist reads (pinned app ids, folder count and labels; never paths).
+  const reportSetup = setupReporter(
+    () =>
+      deviceSetup(currentConfig(), policy.get(), (appId) => {
+        const r = catalog.get(appId)?.recipe;
+        return !!r && r.kinds.some((k) => SESSION_KINDS.has(k));
+      }),
+    async (setup) => {
+      if (store) await store.updateDevice({ presence: { setup } });
+    },
+  );
   const catalog = new AppCatalog({
     dir,
     customEnables: () => policy.get().apps?.custom ?? {},
@@ -583,6 +599,9 @@ const startDaemon = async (
           dir,
           isLegacyApp(appId) ? { ...c, [toolOf[appId]]: pin } : { ...c, appPins: { ...c.appPins, [appId]: pin } },
           id.sign,
+        );
+        void reportSetup().catch((err: unknown) =>
+          log.warn("setup.report_failed", { error: err instanceof Error ? err.message : "error" }),
         );
       },
     },
@@ -1123,6 +1142,9 @@ const startDaemon = async (
     });
   });
   await signedInStore.updateDevice({ policyHash: policy.hash, devMode: devMode.state, lastSeenAt: now() });
+  await reportSetup().catch((err: unknown) =>
+    log.warn("setup.report_failed", { error: err instanceof Error ? err.message : "error" }),
+  );
   if (watchFiles) policy.watch();
 
   // devmode.json is written by `chalito devmode …` in another process.
@@ -1163,6 +1185,10 @@ const startDaemon = async (
       .catch((err: unknown) =>
         log.warn("presence.heartbeat_failed", { error: err instanceof Error ? err.message : "error" }),
       );
+    // Pins made by `chalito <tool> pin` in another process show up here.
+    void reportSetup().catch((err: unknown) =>
+      log.warn("setup.report_failed", { error: err instanceof Error ? err.message : "error" }),
+    );
   }, PRESENCE_HEARTBEAT_MS);
   const endorsementSync = every(syncTrust, ENDORSEMENT_SYNC_MS);
 

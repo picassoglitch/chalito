@@ -1,4 +1,12 @@
 export { APP_HOME, safeNextPath } from "./safe-next.js";
+export {
+  SETUP_STEPS,
+  setupChecklist,
+  type SetupComputer,
+  type SetupInput,
+  type SetupState,
+  type SetupStep,
+} from "./setup.js";
 export { UiTextProvider, useUiText, type Translate } from "./text.js";
 export { COMPANIONS, DEFAULT_COMPANION, companionName, type CompanionId } from "./companions.js";
 export { RosterAssetsProvider, useRosterAsset } from "./roster-assets.js";

@@ -1,6 +1,7 @@
 import { canonicalize, fromB64url, sha256, utf8, verifyEnvelope } from "@chalito/crypto";
 import {
   AgentEvent,
+  DeviceSetup,
   LiveBroadcast,
   SealedApprovalPayload,
   type SealedEnvelope,
@@ -169,6 +170,11 @@ export interface DeviceView {
    * 0018's `trust.endorsement_refused`). Unvalidated cloud data: parse before use.
    */
   lastEvent: unknown;
+  /**
+   * First Run D: what the computer reported about its own setup (pinned app ids, folder count and
+   * labels; never paths), or null when it hasn't (a phone, or an older agent). Agent-written: parsed.
+   */
+  setup: DeviceSetup | null;
   rev: number;
 }
 
@@ -204,6 +210,10 @@ const TABLES: readonly Table[] = ["devices", "sessions", "approvals", "notificat
 type Row = Record<string, unknown>;
 const ms = (v: unknown): number => (typeof v === "string" ? Date.parse(v) : typeof v === "number" ? v : 0);
 const num = (v: unknown): number => (typeof v === "number" ? v : Number(v ?? 0));
+const setupOf = (presence: unknown): DeviceSetup | null => {
+  const p = DeviceSetup.safeParse((presence as { setup?: unknown } | null)?.setup);
+  return p.success ? p.data : null;
+};
 
 export interface LiveStoreOptions {
   /** A device counts as online if seen within this window. */
@@ -624,6 +634,7 @@ export class LiveStore {
       devMode: { on: dm.on === true, toggles: dm.toggles ?? [], since: dm.since ?? null },
       policyHash: (r.policy_hash as string | null) ?? null,
       lastEvent: r.last_event ?? null,
+      setup: setupOf(r.presence),
       rev: num(r.rev),
     };
   }

@@ -264,6 +264,23 @@ describe("LiveStore", () => {
     expect(snap.status).toBe("revoked");
   });
 
+  it("devices: the setup a computer reported (First Run D), parsed; anything else is null", async () => {
+    const { agent, me, db, live } = await setup();
+    const setup1 = { adapters: ["claude-code"], workspaces: 1, labels: ["web"] };
+    db.seed("devices", { owner: OWNER, device_id: agent.deviceId, role: "agent", presence: { setup: setup1 } });
+    db.seed("devices", {
+      owner: OWNER,
+      device_id: me.deviceId,
+      role: "client",
+      presence: { setup: { adapters: [], workspaces: 1, labels: ["/home/me/secret"] } },
+    });
+    live.start();
+    await tick(30);
+    const snap = live.getSnapshot();
+    expect(snap.devices.find((d) => d.deviceId === agent.deviceId)!.setup).toEqual(setup1);
+    expect(snap.devices.find((d) => d.deviceId === me.deviceId)!.setup).toBeNull();
+  });
+
   it("notifications are listed newest first", async () => {
     const { db, live } = await setup();
     for (const [nid, t] of [

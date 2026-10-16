@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { isLiveOnlyEvent } from "@chalito/protocol";
+import { DevicePresence, isLiveOnlyEvent } from "@chalito/protocol";
 import { sanitizeDeviceEvent } from "./redact.js";
 import type {
   AgentEvent,
@@ -42,12 +42,15 @@ export interface AgentStore {
   watchCommands(onCommand: (id: string, doc: Record<string, unknown>) => void): () => void;
   deleteCommand(id: string): Promise<void>;
 
-  /** `presence` is the desktop's {desktopActive}, reported through the panel's IPC. */
+  /**
+   * `presence` is merged into what this process reported before: the desktop's {desktopActive}
+   * (the panel's IPC) and the setup the checklist reads (setup-report.ts). Never paths.
+   */
   updateDevice(fields: {
     policyHash?: string;
     devMode?: unknown;
     lastSeenAt?: number;
-    presence?: { desktopActive: boolean };
+    presence?: DevicePresence;
   }): Promise<void>;
   /** Also appended to the durable audit collection. */
   publishDeviceEvent(e: DeviceEvent): Promise<void>;
@@ -176,7 +179,13 @@ export class MemoryStore implements AgentStore {
     this.commands.delete(id);
   }
   async updateDevice(fields: Record<string, unknown>) {
-    Object.assign(this.device, fields);
+    const { presence, ...rest } = fields as { presence?: DevicePresence };
+    Object.assign(this.device, rest);
+    if (presence !== undefined)
+      this.device.presence = DevicePresence.parse({
+        ...(this.device.presence as DevicePresence | undefined),
+        ...presence,
+      });
   }
   async publishDeviceEvent(raw: DeviceEvent) {
     const e = sanitizeDeviceEvent(raw);

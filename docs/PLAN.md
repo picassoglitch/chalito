@@ -408,6 +408,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 - **Files likely touched:**
   - hub: `Home.tsx`, `Onboarding.tsx`, a new `SetupChecklist`, `Devices.tsx`, the New Session empty state, `ConnectProviders.tsx`, and `src/lib/chalito/messages/{es,en}.json`;
   - chalito: the agent presence payload (pinned adapters and workspace count; no paths), and the desktop panel checklist.
+  - **As built:** `devices.presence.setup` = pinned app ids, folder count and folder *labels* (the labels already travel in session rows; the first task needs one). Strict schema `DeviceSetup` (`packages/protocol/src/presence.ts`) refuses anything path-like. A presence-only update doesn't fan out, so the hub re-reads every 15 s while the checklist is open. The checklist logic is one pure file shared by the hub and the panel (`packages/ui/src/setup.ts`, copied byte-for-byte to the hub).
 - **AC:**
   - The checklist (Cuenta, Este navegador, Computadora, Una IA, Carpeta, Primera tarea) reads only real state and can't be marked done by hand.
   - It shows on Inicio and in the panel until all green.

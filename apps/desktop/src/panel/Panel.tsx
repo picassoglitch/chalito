@@ -15,6 +15,7 @@ import { LocalAgent } from "./LocalAgent.js";
 import { Apps } from "./Apps.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
+import { SetupChecklist } from "./SetupChecklist.js";
 import { Settings } from "./Settings.js";
 import { ThisComputer } from "./ThisComputer.js";
 import { Updates } from "./Updates.js";
@@ -46,6 +47,8 @@ export interface PanelProps {
   thisComputer?: ThisComputerApi;
   /** The system browser (tauri-plugin-opener), for the pairing approval page. */
   openUrl?: (url: string) => Promise<void>;
+  /** The hub's New Session with the ready-made first task (First Run D). */
+  firstTaskUrl?: string;
   /** Salas: the rooms list and join; null while signed out. */
   rooms?: RoomsSource | null;
   initialTab?: Tab;
@@ -71,6 +74,14 @@ export const Panel = (p: PanelProps) => {
       {p.localAgent && p.openUrl && (
         <ConnectComputer ipc={p.ipc} openUrl={p.openUrl} agentStatus={() => p.localAgent!.status()} />
       )}
+      <SetupChecklist
+        client={p.client}
+        ipc={p.ipc}
+        {...(p.localAgent ? { agentStatus: () => p.localAgent!.status() } : {})}
+        openTab={setTab}
+        {...(p.firstTaskUrl ? { firstTaskUrl: p.firstTaskUrl } : {})}
+        {...(p.openUrl ? { openUrl: p.openUrl } : {})}
+      />
       <main role="tabpanel">
         {tab === "inbox" &&
           (p.client ? (

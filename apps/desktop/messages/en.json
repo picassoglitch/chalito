@@ -454,5 +454,31 @@
         "ai_config": "That's an AI tool's own settings (like ~/.claude or ~/.cursor), or contains them: whatever is saved there can change what your AIs do. Choose a project folder."
       }
     }
+  },
+  "setup": {
+    "title": "Get Chalito working",
+    "progress": "{done} of {total} done",
+    "step": {
+      "account": "Your account",
+      "browser": "This app, approved",
+      "computer": "This computer, connected",
+      "ai": "An AI ready",
+      "folder": "A folder chosen",
+      "firstTask": "Your first task"
+    },
+    "hint": {
+      "account": "Sign in with your Chalyb account in the Inbox.",
+      "browser": "Sign in with your Chalyb account in the Inbox to approve this app.",
+      "computer": "Tap “Connect this computer” above and approve it in your browser.",
+      "ai": "In “Connected AI”, tap “Use” next to an AI you already have installed.",
+      "folder": "In Settings → This computer, add a project folder.",
+      "firstTask": "Ask your AI to summarize your project. It only reads; it changes nothing."
+    },
+    "action": {
+      "signIn": "Go to the Inbox",
+      "ai": "Go to Connected AI",
+      "folder": "Choose a folder",
+      "firstTask": "Try the first task"
+    }
   }
 }
