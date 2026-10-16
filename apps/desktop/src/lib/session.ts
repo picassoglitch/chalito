@@ -33,14 +33,18 @@ export interface DesktopEnv {
   ssoStartUrl: string;
 }
 
+/** Chalito lives inside the hub (ADR 0015 update); release.yml sets the same value. */
+export const DEFAULT_SSO_START_URL = "https://www.chalyb.com/app/chalito/auth/desktop";
+
 /** Public build-time configuration; null when this build has no account wiring. */
 export const readEnv = (e: Record<string, string | undefined> = import.meta.env): DesktopEnv | null => {
   const env = {
     supabaseUrl: e.VITE_SUPABASE_URL ?? "",
     supabaseKey: e.VITE_SUPABASE_PUBLISHABLE_KEY ?? "",
     apiBase: (e.VITE_CHALITO_API_BASE ?? "").replace(/\/+$/, ""),
-    // The web's desktop bridge (/auth/desktop → hub launch → hand-off to chalito://auth/sso).
-    ssoStartUrl: e.VITE_SSO_START_URL || "https://chalito.chalyb.com/auth/desktop",
+    // The hub's desktop sign-in page (sign in on the hub → hand-off to chalito://auth/sso). It's
+    // opened in the system browser, never fetched by the webview, so the CSP doesn't list it.
+    ssoStartUrl: e.VITE_SSO_START_URL || DEFAULT_SSO_START_URL,
   };
   return Object.values(env).every(Boolean) ? env : null;
 };

@@ -62,6 +62,9 @@ switch (cmd) {
       apiBase: arg("api"),
       updaterPubkey: readFileSync(arg("pubkey-file"), "utf8"),
       updaterKey: arg("updater-key") as "release" | "test",
+      csp: (
+        JSON.parse(readFileSync(join(tauriDir, "tauri.conf.json"), "utf8")) as { app: { security: { csp: string } } }
+      ).app.security.csp,
     });
     writeFileSync(join(tauriDir, "tauri.release.conf.json"), `${JSON.stringify(plan.overlay, null, 2)}\n`);
     gh(process.env.GITHUB_OUTPUT, { signed: String(plan.signed), label: plan.label });

@@ -107,4 +107,33 @@ describe("release workflow", () => {
     expect(step).toMatch(/integrity mismatch/);
     expect(code.slice(smoke, sidecar)).toContain("arch -x86_64");
   });
+
+  // ADR 0028 §A: one api address, written once in release.yml; the app's CSP and the updater
+  // endpoint must agree with it, or an installed build can't reach the api or find updates.
+  it("CHALITO_API_BASE is set once and the desktop CSP allows exactly that api", async () => {
+    const bases = [...yml.matchAll(/^\s*CHALITO_API_BASE:\s*(\S+)\s*$/gm)].map((m) => m[1]!);
+    expect(bases).toEqual(["https://api.chalito.chalyb.com"]);
+    const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+      app: { security: { csp: string } };
+    };
+    const { checkCsp } = await import("../scripts/release/plan.js");
+    expect(() => checkCsp(conf.app.security.csp, bases[0]!)).not.toThrow();
+    // The plan gets the same value, and derives the updater endpoint from it.
+    expect(code).toMatch(/release plan [^\n]*\n?[^\n]*--api "\$CHALITO_API_BASE"/);
+    // …and the build runs with the overlay the plan checked (it carries the updater endpoint).
+    expect(code).toMatch(/pnpm tauri build --config src-tauri\/tauri\.release\.conf\.json/);
+  });
+
+  it("CHALITO_SSO_START_URL is set once, is the hub's desktop sign-in page, and the app defaults to it", async () => {
+    const urls = [...yml.matchAll(/^\s*CHALITO_SSO_START_URL:\s*(\S+)\s*$/gm)].map((m) => m[1]!);
+    expect(urls).toEqual(["https://www.chalyb.com/app/chalito/auth/desktop"]);
+    expect(code).toContain('echo "VITE_SSO_START_URL=$CHALITO_SSO_START_URL"');
+    const { DEFAULT_SSO_START_URL } = await import("../src/lib/session.js");
+    expect(DEFAULT_SSO_START_URL).toBe(urls[0]);
+    // Opened in the system browser (SsoFlow → openUrl), never fetched: the CSP doesn't need it.
+    const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+      app: { security: { csp: string } };
+    };
+    expect(conf.app.security.csp).not.toContain("www.chalyb.com");
+  });
 });
