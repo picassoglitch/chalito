@@ -19,6 +19,15 @@ export interface McpServerIo {
   write: (line: string) => void;
   call: (tool: string, args: unknown) => Promise<BrokerReply>;
   version?: string;
+  /** Which server this is (default: computer control). The links server (links/tools.ts) uses it too. */
+  server?: McpServerInfo;
+}
+
+export interface McpServerInfo {
+  name: string;
+  title: string;
+  instructions: string;
+  tools: () => unknown[];
 }
 
 const INSTRUCTIONS =
@@ -26,7 +35,18 @@ const INSTRUCTIONS =
   "to approve computer control for this session on their phone; wait for it. Take a screenshot first; " +
   "coordinates are in that screenshot's pixels. The person can stop control at any time.";
 
-export const handleMcpMessage = async (msg: Json, io: Pick<McpServerIo, "call" | "version">): Promise<Json | null> => {
+const COMPUTER_INFO: McpServerInfo = {
+  name: COMPUTER_SERVER,
+  title: "Chalito computer control",
+  instructions: INSTRUCTIONS,
+  tools: mcpTools,
+};
+
+export const handleMcpMessage = async (
+  msg: Json,
+  io: Pick<McpServerIo, "call" | "version" | "server">,
+): Promise<Json | null> => {
+  const info = io.server ?? COMPUTER_INFO;
   const id = msg.id as string | number | undefined;
   const method = typeof msg.method === "string" ? msg.method : "";
   // Notifications (no id) get no reply.
@@ -43,14 +63,14 @@ export const handleMcpMessage = async (msg: Json, io: Pick<McpServerIo, "call" |
       return ok({
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: COMPUTER_SERVER, title: "Chalito computer control", version: io.version ?? "0.0.0" },
-        instructions: INSTRUCTIONS,
+        serverInfo: { name: info.name, title: info.title, version: io.version ?? "0.0.0" },
+        instructions: info.instructions,
       });
     }
     case "ping":
       return ok({});
     case "tools/list":
-      return ok({ tools: mcpTools() });
+      return ok({ tools: info.tools() });
     case "tools/call": {
       const name = typeof params.name === "string" ? params.name : "";
       const reply = await io.call(name, params.arguments ?? {});

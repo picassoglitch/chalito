@@ -2,7 +2,14 @@ import { generateBoxKeyPair, toB64url, type BoxKeyPair } from "@chalito/crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { GatewayApi } from "../src/api-client.js";
 import { createGateway } from "../src/app.js";
-import type { AgentSummary, GatewayReader, McpScope, PendingApproval, SessionMeta } from "../src/reader.js";
+import type {
+  AgentSummary,
+  GatewayReader,
+  LinkTaskView,
+  McpScope,
+  PendingApproval,
+  SessionMeta,
+} from "../src/reader.js";
 import type { LinkAuthorizer } from "@chalito/protocol";
 import { A2A_RESOURCE, GATEWAY_TOKEN, ISSUER, RESOURCE, oauthHarness } from "../../api/test/oauth-harness.js";
 
@@ -23,6 +30,8 @@ export const gatewayHarness = async (opts: { a2a?: boolean; linkAuthorizer?: Lin
     /** list_agents rows, and the agent devices' box keys (b64url). */
     agentList: [] as AgentSummary[],
     agentBoxes: {} as Record<string, string>,
+    /** `link_handoff` approvals by `${deviceId}/${sid}` (what the agent wrote for an outside task). */
+    linkApprovals: new Map<string, NonNullable<LinkTaskView["approval"]>>(),
   };
   const sharingOn = (owner: string, sid: string, device: string) =>
     !!h.mcp.sharing.get(`${owner}/session/${sid}`)?.enabled ||
@@ -51,6 +60,14 @@ export const gatewayHarness = async (opts: { a2a?: boolean; linkAuthorizer?: Lin
     sessionAgent: async (owner, sid) => (owner === h.o ? (data.agents.get(sid) ?? null) : null),
     agents: async (owner) => (owner === h.o ? data.agentList : []),
     agentBoxKey: async (owner, deviceId) => (owner === h.o ? (data.agentBoxes[deviceId] ?? null) : null),
+    linkTask: async (owner, deviceId, sid) => {
+      if (owner !== h.o) return { approval: null, session: null };
+      const sess = data.sessions.get(sid);
+      return {
+        approval: data.linkApprovals.get(`${deviceId}/${sid}`) ?? null,
+        session: sess && sess.deviceId === deviceId ? { state: sess.state } : null,
+      };
+    },
     // The api's exposure store, as the database would show it to the gateway.
     exposure: async (id) => {
       const e = await h.a2a.getExposure(id);

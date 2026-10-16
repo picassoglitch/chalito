@@ -18,7 +18,9 @@ import {
   type StoreItem,
 } from "@/lib/store";
 import { useChalito } from "./ChalitoProvider";
-import { useMyCard, type MyCard } from "./useMyCard";
+import type { MyCard } from "./useMyCard";
+import { useOwnLook } from "./useOwnLook";
+import type { OwnLook } from "@/lib/own-look";
 
 const ROSTER = "/roster";
 const asset = (path: string) => `${ROSTER}/${path}`;
@@ -147,12 +149,15 @@ const SkinLayer = ({
 const Preview = ({
   look,
   mine,
+  shownAs,
   items,
   skin,
   label,
 }: {
   look: CompanionLook;
   mine: MyCard;
+  /** Pending until it's known whether the companion wears a custom card: nothing is drawn yet. */
+  shownAs: OwnLook;
   items: StoreItem[];
   skin: SkinEffect | null;
   label: string;
@@ -163,11 +168,14 @@ const Preview = ({
   const [gl, setGl] = useState(false);
   if (skin && !skinned) setSkinned(true);
   const entry = rosterEntry(look.avatar);
-  const custom = mine.card;
-  const card: Card | null = custom
-    ? { width: custom.manifest.width, height: custom.manifest.height, anchors: custom.manifest.anchors ?? {} }
-    : rosterCard;
-  const drawing = mine.drawing ?? (entry ? asset(entry.drawings.neutral) : null);
+  const custom = shownAs === "custom" ? mine.card : null;
+  const card: Card | null =
+    shownAs === "pending"
+      ? null
+      : custom
+        ? { width: custom.manifest.width, height: custom.manifest.height, anchors: custom.manifest.anchors ?? {} }
+        : rosterCard;
+  const drawing = custom ? mine.drawing : entry ? asset(entry.drawings.neutral) : null;
   useEffect(() => {
     if (!entry) return;
     let alive = true;
@@ -218,7 +226,7 @@ const Preview = ({
           }}
         />
       ) : null}
-      {skinned ? <SkinLayer avatar={mine.files ?? look.avatar} skin={skin} onReady={setGl} /> : null}
+      {skinned ? <SkinLayer avatar={(custom ? mine.files : null) ?? look.avatar} skin={skin} onReady={setGl} /> : null}
       {worn.map((i) => {
         // Neck items land on the card's neck (detected, or derived from face and body).
         const aspect = aspects[i.id];
@@ -263,7 +271,8 @@ export const Store = () => {
   const t = useTranslations("store");
   const locale = useLocale() as "es" | "en";
   const { status, store, readCompanion } = useChalito();
-  const mine = useMyCard();
+  // Never the roster art first and the custom card after: the stand-in until that's known.
+  const { mine, look: ownShown } = useOwnLook();
   const [items, setItems] = useState<StoreItem[] | "error" | null>(null);
   const [look, setLook] = useState<CompanionLook | null | "error" | undefined>(undefined);
   const [busy, setBusy] = useState<string | null>(null);
@@ -350,7 +359,8 @@ export const Store = () => {
   const wornSkin = look && look !== "error" ? all.find((i) => isSkin(i) && look.equipped.skin === i.id) : undefined;
   const shownSkin = trying ?? (wornSkin && isSkin(wornSkin) ? wornSkin.skin : null);
   const entry = look && look !== "error" ? rosterEntry(look.avatar) : null;
-  const drawing = mine.drawing ?? (entry ? asset(entry.drawings.neutral) : null);
+  const drawing =
+    ownShown === "custom" ? mine.drawing : ownShown === "roster" && entry ? asset(entry.drawings.neutral) : null;
   const shown = all.filter((i) => (tab === "skins") === isSkin(i));
   // Accessories by where they go (neck, head, face, back, effects); skins in one list.
   const groups =
@@ -470,6 +480,7 @@ export const Store = () => {
         <Preview
           look={look}
           mine={mine}
+          shownAs={ownShown}
           items={all}
           skin={shownSkin}
           label={t("previewLabel", { name: companionName(look.avatar, locale) })}

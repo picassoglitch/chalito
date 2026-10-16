@@ -35,6 +35,7 @@ import {
   isLegacyApp,
 } from "@chalito/protocol";
 import { SESSIONS_DEFAULTS, type SessionsConfig } from "@chalito/config";
+import { outsideTaskSid } from "@chalito/crypto";
 import { ApprovalManager, type ApprovalOutcome } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
@@ -44,10 +45,14 @@ import { COMPUTER_TOOL_PREFIX, ToolArgs, isToolName } from "./computer/tools.js"
 import type { DevMode } from "./devmode.js";
 import { DeltaThrottle } from "./live/deltas.js";
 import type { LinkHost, LinkManager } from "./links/manager.js";
+import { partsAsData } from "./links/frame.js";
+import type { LinkTools } from "./links/tool-server.js";
+import { LINKS_TOOL_PREFIX, LinkToolArgs, isLinkToolName } from "./links/tools.js";
 import type { ScreenManager } from "./screen/manager.js";
 import {
   PERMISSION_RANK,
   SANDBOX_RANK,
+  DEVMODE_OFF,
   applyRemoteTighten,
   classifyToolCall,
   decide,
@@ -143,6 +148,8 @@ export interface AgentCoreDeps {
   registry?: SessionRegistry;
   /** Agent-to-agent links (links/manager.ts, ADR 0022 §3); absent = `link.*` commands are refused. */
   links?: LinkManager;
+  /** The session link tools (links/tool-server.ts, M16 F); absent = never attached. */
+  linkTools?: LinkTools;
 }
 
 interface Session {
@@ -207,8 +214,28 @@ const REMOTE_ENABLE_ATTEMPT =
 /** Adapters built on ACP (packages/adapters/src/acp): their tool calls are named from the agent's report. */
 const ACP_KINDS: ReadonlySet<AdapterKind> = new Set<AdapterKind>(["acp", "grok", "gemini"]);
 
+/** Outside hand-off tasks (M16 F): a link's default rate when only the cloud names it, and pending-tap caps. */
+const OUTSIDE_RATE_PER_HOUR = 10;
+const OUTSIDE_PENDING_PER_ORIGIN = 3;
+const OUTSIDE_PENDING_PER_LINK = 5;
+
+interface OutsideTask {
+  sid: string;
+  origin: Origin;
+  key: string;
+  appId: string | undefined;
+  adapter: AdapterKind | undefined;
+  prompt: string;
+  workspace: { label: string; path: string };
+  permissionMode: RemotePermissionMode;
+}
+
 export class AgentCore {
   readonly sessions = new Map<string, Session>();
+  /** Outside tasks waiting for the owner's tap, by their session id (M16 F). */
+  readonly #outside = new Map<string, { origin: Origin; key: string; abort: AbortController }>();
+  /** Outside deliveries in the last hour, per local link id (or `cloud:<id>`). */
+  readonly #outsideRate = new Map<string, number[]>();
   /** Sessions without a process that a prompt or `session.resume` reopens (M16 A). */
   readonly #dormant = new Map<string, Dormant>();
   readonly approvals: ApprovalManager;
@@ -371,6 +398,9 @@ export class AgentCore {
         const target = await this.#sessionTarget(p.adapter, p.appId);
         if (!target.ok) return this.#reject(cid, target.reason);
         const prompt = await open<string>(p.promptCt);
+        // A hand-off task from outside (MCP create_task, A2A SendMessage, M16 F).
+        if (origin.startsWith("mcp:") || origin.startsWith("a2a:"))
+          return this.#outsideStart(cid, origin, p, ws, target, prompt);
         if (!(await this.#makeRoom())) return this.#reject(cid, "session_limit");
         try {
           const sid = await this.startSession({
@@ -477,7 +507,10 @@ export class AgentCore {
         this.d.trust().remove(p.clientDeviceId);
         await this.d.saveTrust();
         // ADR 0020 revoke-all (a bundle step-up) also revokes every link on this device.
-        if (body?.stepUp?.bundle) await this.d.links?.revokeAll("revoke_all");
+        if (body?.stepUp?.bundle) {
+          await this.d.links?.revokeAll("revoke_all");
+          this.#cancelOutside();
+        }
         for (const s of this.sessions.values())
           if (s.startedBy === `client:${p.clientDeviceId}`) await s.handle.interrupt();
         await this.d.screen?.endForClient(p.clientDeviceId);
@@ -597,6 +630,7 @@ export class AgentCore {
       case "link.revokeAll":
         if (!this.d.links) return this.#reject(cid, "links_disabled");
         await this.d.links.revokeAll(origin);
+        this.#cancelOutside();
         return { ok: true };
       case "link.list":
         if (!this.d.links) return this.#reject(cid, "links_disabled");
@@ -704,7 +738,7 @@ export class AgentCore {
               kind: "link_handoff",
               details: input.details,
             })
-          : await this.approvals.request({
+          : await this.#requestApproval({
               sid,
               risk: "MED",
               stepUp: false,
@@ -876,6 +910,37 @@ export class AgentCore {
             origin: input.origin,
           })
         : null;
+      // Link tools: only for a session that is the sender on an active link, for adapters that put
+      // the server's calls through the gate (the chat-api bridge does too).
+      const linkServer =
+        adapter.localMcp || adapter.kind === "chat-api"
+          ? (this.d.linkTools?.attach(sid, resume?.startedBy ?? input.origin) ?? null)
+          : null;
+      const mcpServers = {
+        ...(computer
+          ? {
+              [computer.name]: {
+                command: computer.command,
+                args: computer.args,
+                env: computer.env,
+                // ACP names a call after this server only for a real tool with valid arguments.
+                isTool: (tool: string, input: Record<string, unknown>) =>
+                  isToolName(tool) && ToolArgs[tool].safeParse(input).success,
+              },
+            }
+          : {}),
+        ...(linkServer
+          ? {
+              [linkServer.name]: {
+                command: linkServer.command,
+                args: linkServer.args,
+                env: linkServer.env,
+                isTool: (tool: string, input: Record<string, unknown>) =>
+                  isLinkToolName(tool) && LinkToolArgs[tool].safeParse(input).success,
+              },
+            }
+          : {}),
+      };
       session.handle = await adapter.start({
         sid,
         cwd: session.cwd,
@@ -883,20 +948,7 @@ export class AgentCore {
         origin: input.origin,
         permissionMode: input.permissionMode,
         ...(resume?.providerSessionId ? { resume: resume.providerSessionId } : {}),
-        ...(computer
-          ? {
-              mcpServers: {
-                [computer.name]: {
-                  command: computer.command,
-                  args: computer.args,
-                  env: computer.env,
-                  // ACP names a call after this server only for a real tool with valid arguments.
-                  isTool: (tool: string, input: Record<string, unknown>) =>
-                    isToolName(tool) && ToolArgs[tool].safeParse(input).success,
-                },
-              },
-            }
-          : {}),
+        ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
         gate: this.#gate(session),
         askUser: async (q) => {
           const first = q.questions[0]?.question ?? null;
@@ -927,6 +979,7 @@ export class AgentCore {
     } catch (err) {
       // Nothing runs: forget the live session (a resumable one goes back to waiting).
       this.d.computer?.end(sid);
+      this.d.linkTools?.end(sid);
       if (this.sessions.get(sid) === session) this.sessions.delete(sid);
       if (resume) this.#dormant.set(sid, { record: this.#record(session, false), card });
       this.#persist();
@@ -938,6 +991,169 @@ export class AgentCore {
       () => this.#retire(session),
     );
     return sid;
+  }
+
+  /**
+   * An outside hand-off task (MCP create_task, A2A SendMessage; ADR 0022 §4, M16 F). Fail closed:
+   * - Its session id is made here (`outsideTaskSid`: owner, origin, cid), never taken from the
+   *   cloud, and never one a link names or a live, dormant or pending session has.
+   * - The owner's `link_handoff` tap is needed unless a locally held link for this receiver (app
+   *   and workspace) is set to automatic. The cloud's `linkConfirm` can add the tap, never remove it.
+   * - The link's `ratePerHour` applies here (a default for a cloud-only link), and pending taps
+   *   are capped per origin and per link.
+   * - After the tap: revoke-all (which cancels pending taps), the link's revocation and cloud row,
+   *   policy, exposure and the app are checked again before anything starts.
+   */
+  async #outsideStart(
+    cid: string,
+    origin: Origin,
+    p: Extract<CommandPayload, { type: "session.start" }>,
+    ws: { label: string; path: string },
+    target: { ok: true; adapter: AdapterKind; appId?: string; appAdapter?: SessionAdapter },
+    prompt: string,
+  ): Promise<CommandResult> {
+    const sid = await outsideTaskSid(this.d.owner, origin, cid);
+    if (this.sessions.has(sid) || this.#dormant.has(sid) || this.#outside.has(sid) || this.d.links?.namesSession(sid))
+      return this.#reject(cid, "invalid");
+    const appId = target.appId ?? p.appId;
+    const local = this.d.links?.outsideLink(appId, ws.label);
+    const confirm = p.linkConfirm !== undefined || !local || local.confirm;
+    const key = local ? local.id : `cloud:${p.linkConfirm?.linkId ?? origin}`;
+    const now = this.d.now();
+    const recent = (this.#outsideRate.get(key) ?? []).filter((t) => t > now - 60 * 60_000);
+    if (recent.length >= (local?.ratePerHour ?? OUTSIDE_RATE_PER_HOUR)) {
+      this.#audit("link.task.refused", { cid, origin, reason: "rate_limited" });
+      return this.#reject(cid, "rate_limited");
+    }
+    if (confirm) {
+      const pending = [...this.#outside.values()];
+      if (
+        pending.filter((x) => x.origin === origin).length >= OUTSIDE_PENDING_PER_ORIGIN ||
+        pending.filter((x) => x.key === key).length >= OUTSIDE_PENDING_PER_LINK
+      ) {
+        this.#audit("link.task.refused", { cid, origin, reason: "too_many_pending" });
+        return this.#reject(cid, "rate_limited");
+      }
+    }
+    this.#outsideRate.set(key, [...recent, now]);
+    const task = {
+      sid,
+      origin,
+      key,
+      appId,
+      adapter: p.adapter,
+      prompt,
+      workspace: ws,
+      permissionMode: p.permissionMode,
+    };
+    if (!confirm) {
+      const refused = await this.d.links!.linkRefusal(local!.id);
+      if (refused) {
+        this.#audit("link.task.refused", { cid, origin, linkId: local!.id, reason: refused });
+        return this.#reject(cid, "link_refused");
+      }
+      return this.#startOutside(cid, task, local!.id);
+    }
+    const abort = new AbortController();
+    this.#outside.set(sid, { origin, key, abort });
+    void this.#confirmOutside(cid, task, local?.id, p.linkConfirm?.linkId, abort.signal)
+      .catch((err: unknown) =>
+        this.d.log.error("link.task_confirm_failed", { cid, error: err instanceof Error ? err.message : "error" }),
+      )
+      .finally(() => this.#outside.delete(sid));
+    return { ok: true, quiet: true };
+  }
+
+  async #confirmOutside(
+    cid: string,
+    t: OutsideTask,
+    localLinkId: string | undefined,
+    cloudLinkId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const linkId = localLinkId ?? cloudLinkId ?? null;
+    this.#audit("link.task.confirm_requested", { cid, sid: t.sid, linkId, origin: t.origin });
+    const outcome = await this.#requestApproval({
+      sid: t.sid,
+      risk: "MED",
+      stepUp: false,
+      origin: t.origin,
+      kind: "link_handoff",
+      signal,
+      details: {
+        toolName: "link.handoff",
+        input: {
+          ...(linkId ? { linkId } : {}),
+          from: t.origin,
+          to: t.appId ?? t.adapter ?? null,
+          workspace: t.workspace.label,
+          request: partsAsData([{ text: t.prompt }]),
+        },
+        reasons: [`Task from ${t.origin}${linkId ? ` over link ${linkId}` : ""}`],
+      },
+    });
+    const refuse = async (reason: string) => {
+      this.#audit("link.task.declined", { cid, sid: t.sid, linkId, reason });
+      await this.#publishResult(cid, { ok: false, reason: "link_refused" });
+    };
+    if (!outcome.allow) return refuse(signal.aborted ? "revoked_all" : outcome.reason);
+    // Revoked (here, by revoke-all, or the cloud row) while the phone was asked: still refused.
+    if (signal.aborted) return refuse("revoked_all");
+    if (localLinkId) {
+      const refused = await this.d.links!.linkRefusal(localLinkId);
+      if (refused) return refuse(refused);
+    }
+    await this.#publishResult(cid, await this.#startOutside(cid, t, linkId));
+  }
+
+  /** The checks again (policy may have changed meanwhile), then the session. */
+  async #startOutside(cid: string, t: OutsideTask, linkId: string | null): Promise<CommandResult> {
+    const policy = this.d.policy.get();
+    const ws = policy.workspaces.find((w) => w.label === t.workspace.label);
+    const target = await this.#sessionTarget(t.adapter, t.appId);
+    const r: CommandResult = !ws
+      ? this.#reject(cid, "unknown_workspace")
+      : !originAllowed(policy.origins, t.origin)
+        ? this.#reject(cid, "origin_disabled")
+        : !exposedFor(policy, t.origin, t.appId, t.workspace.label)
+          ? this.#reject(cid, "not_exposed")
+          : PERMISSION_RANK[t.permissionMode] > PERMISSION_RANK[policy.remote.maxPermissionMode]
+            ? this.#reject(cid, "permission_mode_above_ceiling")
+            : !target.ok
+              ? this.#reject(cid, target.reason)
+              : !(await this.#makeRoom())
+                ? this.#reject(cid, "session_limit")
+                : await this.startSession({
+                    sid: t.sid,
+                    adapter: target.adapter,
+                    ...(target.appId ? { appId: target.appId } : {}),
+                    ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
+                    workspace: ws,
+                    prompt: t.prompt,
+                    origin: t.origin,
+                    permissionMode: t.permissionMode,
+                  }).then(
+                    (sid): CommandResult => ({ ok: true, sid }),
+                    (err: unknown) => {
+                      this.d.log.error("session.start_failed", {
+                        cid,
+                        error: err instanceof Error ? err.message : "error",
+                      });
+                      return this.#reject(cid, "start_failed");
+                    },
+                  );
+    this.#audit(r.ok ? "link.task.delivered" : "link.task.refused", {
+      cid,
+      sid: t.sid,
+      linkId,
+      ...(r.ok ? {} : { reason: r.reason }),
+    });
+    return r;
+  }
+
+  /** Revoke-all: every pending outside task's tap is cancelled (a no). */
+  #cancelOutside(): void {
+    for (const x of this.#outside.values()) x.abort.abort();
   }
 
   // ---- session lifecycle (M16 A, ADR 0022 §1) -------------------------------------------------
@@ -1115,6 +1331,7 @@ export class AgentCore {
     s.draft?.throttle.discard();
     s.draft = undefined;
     this.d.computer?.end(s.sid);
+    this.d.linkTools?.end(s.sid);
     if (this.sessions.get(s.sid) === s) this.sessions.delete(s.sid);
     this.#dormant.set(s.sid, { record: this.#record(s, false), card: s.card });
     try {
@@ -1209,21 +1426,44 @@ export class AgentCore {
         }
         return r;
       }
+      // Link tools (M16 F): refused unless this session has them; never Developer-mode auto-approve.
+      const linkTool = call.toolName.startsWith(LINKS_TOOL_PREFIX);
+      if (linkTool && !this.d.linkTools?.attached(s.sid)) {
+        s.card.blocker(`Enlace bloqueado (link_tools_not_attached)`);
+        await this.#publishCard(s);
+        return { allow: false, reason: "link_tools_not_attached" };
+      }
+      const allowed = (): { allow: true } => {
+        if (linkTool) this.d.linkTools?.admit(s.sid, call.toolName, call.input);
+        return { allow: true };
+      };
       const policy = this.d.policy.get();
       const classification = classifyToolCall(call.toolName, call.input, this.#classifyContext(policy, s));
       const decision = decide({
         classification,
         origin: call.origin,
         originAllowed: originAllowed(policy.origins, call.origin),
-        devMode: this.d.devMode.state,
+        devMode: linkTool ? DEVMODE_OFF : this.d.devMode.state,
         permissionMode: s.permissionMode,
       });
       // R-M10: the same sanitised, explicitly-truncated summary the approval shows.
       const summary = approvalSummary(call.toolName, call.input).summary;
+      // An ACP agent's link call is named from its own report, as for computer control: asked
+      // about every time (HIGH, step-up), even link_list, never allowed as a read.
+      if (linkTool && ACP_KINDS.has(s.adapter) && decision.action !== "deny") {
+        const outcome = await this.#approve(s, {
+          risk: "HIGH",
+          stepUp: true,
+          origin: call.origin,
+          details: { toolName: call.toolName, input: call.input, reasons: ["link tool reported by an ACP agent"] },
+        });
+        await this.#publishCard(s);
+        return outcome.allow ? allowed() : { allow: false, reason: outcome.reason };
+      }
       if (decision.action === "allow") {
         s.card.action(summary);
         if (classification.workspaceEdit) s.card.fileTouched(String(call.input.file_path ?? ""));
-        return { allow: true };
+        return allowed();
       }
       if (decision.action === "deny") {
         s.card.blocker(`${call.toolName} bloqueado (${decision.reason})`);
@@ -1238,7 +1478,7 @@ export class AgentCore {
       });
       if (outcome.allow) s.card.action(summary);
       await this.#publishCard(s);
-      return outcome.allow ? { allow: true } : { allow: false, reason: outcome.reason };
+      return outcome.allow ? allowed() : { allow: false, reason: outcome.reason };
     };
   }
 
