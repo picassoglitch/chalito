@@ -106,6 +106,17 @@ export const AI_CONFIG_DIRS = [
   "AppData/Roaming/Claude",
   "AppData/Roaming/Cursor",
   "AppData/Local/github-copilot",
+  ".continue",
+  ".codeium",
+  ".windsurf",
+  ".config/Windsurf",
+  "Library/Application Support/Windsurf",
+  "AppData/Roaming/Windsurf",
+  ".config/opencode",
+  ".vscode/extensions",
+  ".config/Code/User",
+  "Library/Application Support/Code/User",
+  "AppData/Roaming/Code/User",
 ];
 /** Names in the home folder that start with these are AI tool config too (`~/.aider.conf.yml`, …). */
 export const AI_CONFIG_PREFIXES = [".aider"];

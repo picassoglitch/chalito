@@ -828,3 +828,87 @@ describe("classifier parity: globs, case and redirected AppData", () => {
     ).not.toContain("startup file or PATH directory");
   });
 });
+
+describe("follow-up 2: NFC-safe globs, more AI tools, in-workspace files that run code", () => {
+  const ws = "/home/ana/code/app";
+  const ctx = (o: Partial<Parameters<typeof classifyToolCall>[2]> = {}) => ({
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    ...o,
+  });
+  const write = (file_path: string, c = ctx()) => classifyToolCall("Write", { file_path, content: "x" }, c);
+
+  it("a `*` glob in the home folder can't match its dot-folders, even when NFC changes the path's length", () => {
+    // macOS: the home folder comes back decomposed (NFD), the command spells it composed (NFC).
+    const home = "/Users/josé";
+    const c = ctx({
+      platform: "darwin",
+      home,
+      cwd: `${home}/code/app`,
+      policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: `${home}/code/app` }] },
+    });
+    const r = classifyToolCall("Bash", { command: "cp notes.txt /Users/josé/*" }, c);
+    // ~/.chalito is a dot-folder: `*` can't reach it (before the fix, slicing the unfolded path
+    // misaligned by one and made this the hard floor). ~/Library/Keychains is not a dot-folder, so
+    // "credentials path" is right here.
+    expect(r.hardFloor).toBe(false);
+    expect(r.reasons).not.toContain("may touch ~/.chalito or the agent's own files");
+    // A prefix that does name a dot-folder still reaches it.
+    expect(classifyToolCall("Bash", { command: "cp x /Users/josé/.cl*" }, c).tier).toBe("CRITICAL");
+  });
+
+  it("Continue, Codeium/Windsurf, opencode and editor extensions are AI config", () => {
+    for (const f of [
+      ".continue/config.json",
+      ".codeium/windsurf/mcp_config.json",
+      ".windsurf/x",
+      ".config/opencode/opencode.json",
+      ".vscode/extensions/evil/package.json",
+      ".config/Code/User/mcp.json",
+      ".config/Windsurf/User/settings.json",
+    ])
+      expect(write(`/home/ana/${f}`).reasons, f).toContain("startup file or PATH directory");
+    expect(write("/home/ana/Library/Application Support/Windsurf/x", ctx({ platform: "darwin" })).tier).toBe(
+      "CRITICAL",
+    );
+    expect(write("/net/r/Code/User/tasks.json", ctx({ env: { APPDATA: "/net/r" } })).reasons).toContain(
+      "startup file or PATH directory",
+    );
+    expect(
+      workspaceProblem("/home/ana/.continue", {
+        home: "/home/ana",
+        chalitoDir: "/home/ana/.chalito",
+        platform: "linux",
+      }),
+    ).toBe("ai_config");
+    expect(
+      workspaceProblem("/home/ana/.vscode", { home: "/home/ana", chalitoDir: "/home/ana/.chalito", platform: "linux" }),
+    ).toBe("ai_config");
+  });
+
+  it("inside a workspace, files that make code run later need approval (HIGH), not MED", () => {
+    for (const f of [
+      ".git/hooks/pre-commit",
+      ".git/hooks/sub/x",
+      ".claude/settings.json",
+      ".claude/settings.local.json",
+      ".claude/settings.team.json",
+      ".envrc",
+      "sub/.envrc",
+      ".vscode/tasks.json",
+      ".vscode/launch.json",
+      ".devcontainer/devcontainer.json",
+      ".devcontainer/scripts/post-create.sh",
+      ".devcontainer.json",
+    ]) {
+      const c = write(`${ws}/${f}`);
+      expect(c.tier, f).toBe("HIGH");
+      expect(c.reasons, f).toContain("config/CI/.env");
+    }
+    // Ordinary source edits stay as before.
+    for (const f of ["src/index.ts", "README.md", ".vscode/settings.json", "docs/envrc.md", "lib/devcontainer.ts"])
+      expect(write(`${ws}/${f}`).tier, f).toBe("MED");
+  });
+});

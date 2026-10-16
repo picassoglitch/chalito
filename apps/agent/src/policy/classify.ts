@@ -186,10 +186,15 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
         parts.includes(".circleci") ||
         parts.includes(".buildkite") ||
         ["Jenkinsfile", ".gitlab-ci.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml"].includes(base) ||
-        // Files that can make code run later: git hooks, agent settings with hooks.
+        // Files that can make code run later (HIGH even inside a workspace): git hooks, agent
+        // settings with hooks, direnv, editor tasks/launch configs, dev containers.
         abs.includes(`${sep}.git${sep}hooks${sep}`) ||
         abs.includes(`${sep}.git${sep}config`) ||
-        (parts.includes(".claude") && /^settings(\.local)?\.json$/.test(base)) ||
+        (parts.includes(".claude") && /^settings.*\.json$/.test(base)) ||
+        base === ".envrc" ||
+        (parts[parts.length - 2] === ".vscode" && ["tasks.json", "launch.json"].includes(base)) ||
+        parts.includes(".devcontainer") ||
+        base === ".devcontainer.json" ||
         parts.includes(".husky")
       );
     },
@@ -219,7 +224,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       const reaches = (target: string) => {
         if (within(abs.endsWith(sep) ? abs.slice(0, -1) || sep : abs, target)) return true;
         if (!k(target).startsWith(k(abs))) return false;
-        return !(dotSafe && target.slice(abs.length).startsWith("."));
+        // Slice the folded path: NFC can change the length on macOS.
+        return !(dotSafe && k(target).slice(k(abs).length).startsWith("."));
       };
       if (floor.some(reaches)) return "hard_floor";
       if ([...sensitiveDirs, ...sensitiveFiles, ...systemSecrets].some(reaches)) return "credentials";
