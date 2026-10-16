@@ -174,7 +174,7 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 - In App Store Connect, under Users and Access → Integrations → Team keys, create an API key with Developer access. Set `APPLE_API_ISSUER` (issuer id), `APPLE_API_KEY` (key id), and `APPLE_API_PRIVATE_KEY` (the content of the AuthKey .p8).
 - The certificate alone is refused: the build won't sign without notarization.
 
-**4. Windows (Azure Artifact Signing).**
+**4. Windows (Azure Artifact Signing). Owner, 2026-10-16: not used for now; Windows ships unsigned (ADR 0014 update). Kept here in case that changes.**
 - Create an Azure Artifact Signing (formerly Trusted Signing) account, complete its identity validation, and create a certificate profile (public trust).
 - Create an app registration with the "Artifact Signing Certificate Profile Signer" role on the profile.
 - Set the secrets `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`, and the repository variables `ARTIFACT_SIGNING_ENDPOINT` (e.g. `https://wus2.codesigning.azure.net`), `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`.
