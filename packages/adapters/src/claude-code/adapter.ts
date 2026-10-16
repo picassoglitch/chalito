@@ -105,6 +105,7 @@ const userMessage = (text: string): SDKUserMessage => ({
 
 export class ClaudeCodeAdapter implements SessionAdapter {
   readonly kind = "claude-code" as const;
+  readonly localMcp = true;
 
   constructor(private readonly config: ClaudeCodeConfig) {}
 
@@ -115,7 +116,9 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     // may fold a queued message into the running turn); it is raised only at a confirmed turn
     // boundary (`result`, or interrupt()), to the least trusted of the prompts queued since.
     let origin: Origin = opts.origin;
-    let turnActive = true;
+    // A resume without a prompt reopens the session and waits for the next one (no turn).
+    const firstTurn = opts.prompt !== "" || !opts.resume;
+    let turnActive = firstTurn;
     let pendingOrigins: Origin[] = [];
     // After interrupt() the interrupted turn's own `result` may still arrive; it is not a new boundary.
     let skipNextResult = false;
@@ -183,6 +186,8 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       env: claudeEnv(this.config.env ?? process.env, this.config.apiKey),
       hooks: { PreToolUse: [{ hooks: [preToolUse], timeout: this.config.hookTimeoutSec ?? 660 }] },
       canUseTool,
+      // M16 A: text deltas (stream_event) for the phone's live view; the whole message follows.
+      includePartialMessages: true,
       ...(this.config.claudePath ? { pathToClaudeCodeExecutable: this.config.claudePath } : {}),
       ...(this.config.model ? { model: this.config.model } : {}),
       ...(opts.resume ? { resume: opts.resume } : {}),
@@ -211,8 +216,10 @@ export class ClaudeCodeAdapter implements SessionAdapter {
     };
 
     const q = (this.config.queryFn ?? (sdkQuery as unknown as QueryFn))({ prompt: input, options });
-    input.push(userMessage(opts.prompt));
-    opts.onEvent({ type: "state", state: "running" });
+    if (firstTurn) {
+      input.push(userMessage(opts.prompt));
+      opts.onEvent({ type: "state", state: "running" });
+    } else opts.onEvent({ type: "state", state: "idle" });
 
     const done = (async () => {
       try {
@@ -307,7 +314,16 @@ export class ClaudeCodeAdapter implements SessionAdapter {
       session_id?: string;
       message?: { content?: unknown };
       usage?: Record<string, number>;
+      parent_tool_use_id?: string | null;
+      event?: { type?: string; delta?: { type?: string; text?: unknown } };
     };
+    if (m.type === "stream_event") {
+      // Only the main thread's text (a subagent's text isn't part of the session's reply).
+      const d = m.event?.type === "content_block_delta" ? m.event.delta : undefined;
+      if (!m.parent_tool_use_id && d?.type === "text_delta" && typeof d.text === "string" && d.text)
+        opts.onEvent({ type: "assistant_delta", text: d.text });
+      return;
+    }
     if (m.type === "system" && m.subtype === "init" && m.session_id) {
       opts.onEvent({ type: "started", providerSessionId: m.session_id });
       return;

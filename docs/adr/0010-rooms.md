@@ -36,3 +36,8 @@ The data layer moved to Supabase before M11 (ADR 0017), so the Firestore and Pub
 - **Fan-out:** Supabase Realtime private topics `chalito:room:<id>` carrying pointer payloads; the client fetches the row. Offline members still get a metadata-only push from the notifier.
 - **Expiry:** RLS hides `expires_at <= now()` and the pg_cron job `chalito-purge-rooms` deletes expired events every minute.
 
+
+## Amendment (M16, ADR 0022 §3): coding-agent links are the explicit exception
+- Companion Rooms are unchanged: no kind carries an instruction and there is no `room:*` origin.
+- The one exception is an owner-made **hand-off link** between coding agents (ADR 0022 §3). It is made only on the device, and its turns have origin `agent:<sessionId>`: relayed, never signed, never eligible for Developer-mode auto-approve, gated like any other turn and capped by the link's ceiling.
+- **Share** links follow this ADR's rule: what crosses them is a quoted data block with the same hygiene, and it never starts or steers a prompt.

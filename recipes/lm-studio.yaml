@@ -44,6 +44,8 @@ driver:
   terminal: { command: [lms, chat] }
   desktopApp: { bundleId: ai.elementlabs.lmstudio, exe: LM Studio.exe }
 capabilities: [terminal, remote-view, ai-control]
+notConnectable:
+  reason: "The desktop app itself isn't an agent; its local server is: use the lm-studio-api recipe."
 verification:
   checked: "2026-10-06"
   sources:

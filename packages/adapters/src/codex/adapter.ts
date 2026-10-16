@@ -350,6 +350,7 @@ const toolOf = (item: Item): { toolName: string; input: Record<string, unknown> 
 
 export class CodexAdapter implements SessionAdapter {
   readonly kind = "codex" as const;
+  readonly localMcp = true;
 
   constructor(private readonly config: CodexConfig) {}
 
@@ -500,7 +501,10 @@ export class CodexAdapter implements SessionAdapter {
         }
         case "item/agentMessage/delta": {
           const id = String(p.itemId);
-          deltas.set(id, (deltas.get(id) ?? "") + String(p.delta ?? ""));
+          const delta = String(p.delta ?? "");
+          deltas.set(id, (deltas.get(id) ?? "") + delta);
+          // M16 A: the agent throttles these (150 ms / 512 chars) and broadcasts them.
+          if (delta) opts.onEvent({ type: "assistant_delta", text: delta });
           return;
         }
         case "item/started": {
@@ -643,8 +647,13 @@ export class CodexAdapter implements SessionAdapter {
     }
 
     opts.onEvent({ type: "started", providerSessionId: threadId });
-    opts.onEvent({ type: "state", state: "running" });
-    startTurn(opts.prompt, opts.origin);
+    if (opts.prompt === "" && opts.resume) {
+      // Reopened without a prompt: the thread waits for the next one.
+      opts.onEvent({ type: "state", state: "idle" });
+    } else {
+      opts.onEvent({ type: "state", state: "running" });
+      startTurn(opts.prompt, opts.origin);
+    }
 
     return {
       prompt: (text, turnOrigin) => {

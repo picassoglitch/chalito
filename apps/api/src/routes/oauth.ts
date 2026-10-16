@@ -2,7 +2,16 @@ import { randomUUID } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from "@simplewebauthn/server";
 import { fromB64url, randomNonce } from "@chalito/crypto";
-import { CommandBody, RelayedCommand, SealedEnvelope } from "@chalito/protocol";
+import {
+  AgentCard,
+  AppId,
+  CommandBody,
+  denyAllLinkAuthorizer,
+  RelayedCommand,
+  SealedEnvelope,
+  type LinkAuthorizer,
+  type Origin,
+} from "@chalito/protocol";
 import { MemoryBuckets } from "@chalito/guard";
 import { z } from "zod";
 import type { Deps } from "../deps.js";
@@ -21,6 +30,7 @@ import {
 } from "../oauth/model.js";
 import { newSecret, pkceS256Ok, sameResource, sha256hex } from "../oauth/tokens.js";
 import { webauthnConfigFromEnv, type WebAuthnConfig } from "./webauthn.js";
+import { newExposureId, type A2aStore } from "../link/exposures.js";
 
 /**
  * Chalito's OAuth 2.1 authorization server for the MCP gateway (ADR 0009, D-017; MCP 2026-07-28):
@@ -39,8 +49,14 @@ import { webauthnConfigFromEnv, type WebAuthnConfig } from "./webauthn.js";
 export interface OAuthConfig {
   /** This authorization server's issuer (the api's public origin). */
   issuer: string;
-  /** The MCP gateway's resource URL (tokens are only ever issued for it). */
+  /** The MCP gateway's resource URL (tokens are only ever issued for it, or for `a2aResource`). */
   resource: string;
+  /**
+   * The A2A server's resource URL (ADR 0022 §4), only when the A2A server is turned on
+   * (`CHALITO_A2A_ENABLED=1` plus `CHALITO_A2A_RESOURCE`). Unset (the default): no token is ever
+   * issued for it and the exposure routes answer 404. Grants for it carry `link:handoff` only.
+   */
+  a2aResource?: string;
   /** Web app origin that renders the consent page. */
   webOrigin: string;
   /** Service token the gateway presents on /v1/gateway/*. */
@@ -56,6 +72,8 @@ export interface OAuthConfig {
 export const oauthConfigFromEnv = (env: Record<string, string | undefined> = process.env): OAuthConfig => ({
   issuer: env.CHALITO_API_ISSUER ?? "https://api.chalito.chalyb.com",
   resource: env.CHALITO_MCP_RESOURCE ?? "https://mcp.chalito.chalyb.com/mcp",
+  // Off by default; no default URL (the A2A server's domain is owner decision #36).
+  ...(env.CHALITO_A2A_ENABLED === "1" && env.CHALITO_A2A_RESOURCE ? { a2aResource: env.CHALITO_A2A_RESOURCE } : {}),
   webOrigin: env.CHALITO_WEB_ORIGIN ?? "https://chalito.chalyb.com",
   gatewayToken: env.CHALITO_GATEWAY_TOKEN ?? "",
   accessTtlMs: 15 * 60 * 1000,
@@ -87,6 +105,11 @@ export const SCOPE_TEXT: Record<McpScope, { es: string; en: string; defaultCheck
     en: "Send prompts to your agent sessions. Any action that needs it still asks for your signed approval.",
     defaultChecked: false,
   },
+  "link:handoff": {
+    es: "Pedir tareas a tus agentes, solo a los que enlaces tú en tu computadora. Cada acción riesgosa seguirá pidiendo tu aprobación firmada.",
+    en: "Hand tasks to your agents, only the ones you link on your computer. Every risky action still asks for your signed approval.",
+    defaultChecked: false,
+  },
 };
 
 type OAuthErrorCode =
@@ -116,8 +139,12 @@ const PROMPT_REFILL = 30 / 3600;
 
 const ORIGIN_OF = { claude: "mcp:claude", chatgpt: "mcp:chatgpt" } as const;
 
+/** create_task / A2A SendMessage per grant: a burst of 5, then 20 an hour. */
+const TASK_BURST = 5;
+const TASK_REFILL = 20 / 3600;
+
 export const oauthRoutes = (
-  deps: Deps & { mcp?: McpStore },
+  deps: Deps & { mcp?: McpStore; a2a?: A2aStore; linkAuthorizer?: LinkAuthorizer },
   cfg: OAuthConfig = oauthConfigFromEnv(),
   opts: { fetchCimd?: typeof fetch; webauthn?: WebAuthnConfig } = {},
 ) => {
@@ -125,6 +152,14 @@ export const oauthRoutes = (
   const promptBuckets = deps.rateBuckets ?? new MemoryBuckets();
   const wa = opts.webauthn ?? webauthnConfigFromEnv();
   const store = (): McpStore => deps.mcp ?? fail(503, "mcp_unavailable");
+  /** Which protected resource a URL names: the MCP gateway, the A2A server (when on), or neither. */
+  const resourceOf = (r: string): string | null =>
+    sameResource(r, cfg.resource)
+      ? cfg.resource
+      : cfg.a2aResource && sameResource(r, cfg.a2aResource)
+        ? cfg.a2aResource
+        : null;
+  const isA2a = (r: string) => !!cfg.a2aResource && sameResource(r, cfg.a2aResource);
   const limiter = rateLimit({ capacity: 30, refillPerSec: 1, now: deps.now });
 
   // ---------------------------------------------------------------- discovery (RFC 8414)
@@ -210,12 +245,18 @@ export const oauthRoutes = (
     if (q.response_type !== "code") return back("unsupported_response_type", "response_type must be code");
     if (q.code_challenge_method !== "S256" || !/^[A-Za-z0-9_-]{43,128}$/.test(q.code_challenge ?? ""))
       return back("invalid_request", "PKCE S256 is required");
-    if (!q.resource || !sameResource(q.resource, cfg.resource))
-      return back("invalid_target", "resource must be the Chalito MCP gateway");
-    const scopes = parseScopes(q.scope);
+    const resource = q.resource ? resourceOf(q.resource) : null;
+    if (!resource) return back("invalid_target", "resource must be the Chalito MCP gateway");
+    const a2a = isA2a(resource);
+    const scopes = parseScopes(q.scope ?? (a2a ? "link:handoff" : undefined));
     if (!scopes) return back("invalid_scope", `scopes are ${MCP_SCOPES.join(" ")}`);
-    if (scopes.includes("session:prompt") && providerOf(client) === "other")
+    // An A2A grant can only hand off tasks (ADR 0022 §4); it never reads or prompts.
+    if (a2a && !scopes.every((s) => s === "link:handoff"))
+      return back("invalid_scope", "the A2A server only grants link:handoff");
+    if (!a2a && scopes.includes("session:prompt") && providerOf(client) === "other")
       return back("invalid_scope", "session:prompt is only for Claude and ChatGPT connectors");
+    if (!a2a && scopes.includes("link:handoff") && providerOf(client) === "other")
+      return back("invalid_scope", "link:handoff over MCP is only for Claude and ChatGPT connectors");
     const requestId = newSecret(18);
     await store().putRequest({
       requestId,
@@ -224,7 +265,7 @@ export const oauthRoutes = (
       codeChallenge: q.code_challenge!,
       scopes,
       state: q.state ?? null,
-      resource: cfg.resource,
+      resource,
       expiresAt: deps.now() + cfg.requestTtlMs,
     });
     return c.redirect(`${cfg.webOrigin}/oauth/consent?request=${encodeURIComponent(requestId)}`, 302);
@@ -358,7 +399,7 @@ export const oauthRoutes = (
   });
 
   // ---------------------------------------------------------------- token
-  const issue = async (g: { owner: string; cid: string; clientId: string; scopes: McpScope[] }) => {
+  const issue = async (g: { owner: string; cid: string; clientId: string; scopes: McpScope[]; resource: string }) => {
     const access = `chalito_at_${newSecret(32)}`;
     const refresh = `chalito_rt_${newSecret(32)}`;
     const now = deps.now();
@@ -367,7 +408,8 @@ export const oauthRoutes = (
       cid: g.cid,
       clientId: g.clientId,
       scopes: g.scopes,
-      resource: cfg.resource,
+      // The grant's own audience: the MCP gateway, or the A2A server.
+      resource: resourceOf(g.resource) ?? cfg.resource,
       usedAt: null,
     };
     await store().putToken({ ...base, tokenHash: sha256hex(access), kind: "access", expiresAt: now + cfg.accessTtlMs });
@@ -389,7 +431,7 @@ export const oauthRoutes = (
   app.post("/oauth/token", limiter, async (c) => {
     const form = (await c.req.parseBody().catch(() => ({}))) as Record<string, string>;
     const grantType = form.grant_type;
-    if (form.resource !== undefined && !sameResource(form.resource, cfg.resource))
+    if (form.resource !== undefined && !resourceOf(form.resource))
       return oauthError(c, "invalid_target", "tokens are only issued for the Chalito MCP gateway");
     if (!form.client_id) return oauthError(c, "invalid_client", "client_id is required");
 
@@ -401,6 +443,8 @@ export const oauthRoutes = (
       if (!code) return oauthError(c, "invalid_grant", "unknown, used or expired code");
       if (code.clientId !== form.client_id || code.redirectUri !== form.redirect_uri)
         return oauthError(c, "invalid_grant", "client or redirect_uri mismatch");
+      if (!sameResource(form.resource, code.resource))
+        return oauthError(c, "invalid_target", "resource doesn't match the authorization");
       if (!pkceS256Ok(form.code_verifier, code.codeChallenge)) {
         // A failed verifier burns the grant: the code may have been intercepted.
         await store().revokeGrant(code.owner, code.cid, deps.now());
@@ -421,6 +465,8 @@ export const oauthRoutes = (
         t.grantRevokedAt !== null
       )
         return oauthError(c, "invalid_grant", "unknown, expired or revoked refresh token");
+      if (form.resource !== undefined && !sameResource(form.resource, t.resource))
+        return oauthError(c, "invalid_target", "resource doesn't match the grant");
       const used = await store().useRefresh(h, deps.now());
       if (used !== "ok") {
         // Reuse of a rotated refresh token: assume theft and revoke the whole grant.
@@ -431,9 +477,13 @@ export const oauthRoutes = (
       const scopes = form.scope ? parseScopes(form.scope) : t.scopes;
       if (!scopes || !scopes.every((s) => t.scopes.includes(s)))
         return oauthError(c, "invalid_scope", "scope exceeds the grant");
-      return c.json(await issue({ owner: t.owner, cid: t.cid, clientId: t.clientId, scopes }), 200, {
-        "cache-control": "no-store",
-      });
+      return c.json(
+        await issue({ owner: t.owner, cid: t.cid, clientId: t.clientId, scopes, resource: t.resource }),
+        200,
+        {
+          "cache-control": "no-store",
+        },
+      );
     }
 
     return oauthError(c, "unsupported_grant_type", "authorization_code or refresh_token");
@@ -508,7 +558,11 @@ export const oauthRoutes = (
 
   // ---------------------------------------------------------------- gateway writes
   /** The gateway's service token AND a live user access token with the needed scope. */
-  const gatewayCall = async (c: Context, scope: McpScope): Promise<TokenWithGrant | Response> => {
+  const gatewayCall = async (
+    c: Context,
+    scope: McpScope,
+    resources: readonly string[] = [cfg.resource],
+  ): Promise<TokenWithGrant | Response> => {
     if (!bearerOk(c.req.header("authorization"), cfg.gatewayToken))
       return oauthError(c, "invalid_client", "gateway only", 401);
     const tok = c.req.header("x-chalito-access-token") ?? "";
@@ -518,7 +572,7 @@ export const oauthRoutes = (
       t.kind !== "access" ||
       t.expiresAt <= deps.now() ||
       t.grantRevokedAt !== null ||
-      !sameResource(t.resource, cfg.resource)
+      !resources.some((r) => sameResource(t.resource, r))
     )
       return oauthError(c, "invalid_token", "unknown, expired or revoked access token", 401);
     if (!t.scopes.includes(scope)) return oauthError(c, "insufficient_scope", `requires ${scope}`, 403);
@@ -638,7 +692,10 @@ export const oauthRoutes = (
     const t = await gatewayCall(c, "mcp:read");
     if (t instanceof Response) return t;
     const b = z
-      .object({ tool: z.enum(["list_pending", "get_session_card"]), target: z.string().max(128).optional() })
+      .object({
+        tool: z.enum(["list_pending", "get_session_card", "list_agents"]),
+        target: z.string().max(128).optional(),
+      })
       .safeParse(await c.req.json().catch(() => null));
     if (!b.success) return fail(400, "bad_request");
     await deps.audit.record({
@@ -647,6 +704,202 @@ export const oauthRoutes = (
       actor: `mcp:${t.provider}`,
       ...(b.data.target ? { target: b.data.target } : {}),
       meta: { cid: t.cid },
+    });
+    return c.body(null, 204);
+  });
+
+  // ---------------------------------------------------------------- hand-off tasks (ADR 0022 §4)
+  const authorizer = deps.linkAuthorizer ?? denyAllLinkAuthorizer;
+  const a2aStore = (): A2aStore => deps.a2a ?? fail(503, "a2a_unavailable");
+
+  const LinkTaskBody = z
+    .object({
+      cid: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/),
+      /** The task's prompt, sealed by the gateway to the target agent's key. */
+      promptCt: SealedEnvelope,
+      /** MCP `create_task`: the agent the caller named (from `list_agents`). */
+      appId: AppId.optional(),
+      deviceId: z.string().min(1).max(128).optional(),
+      workspaceLabel: z.string().min(1).max(80).optional(),
+      /** A2A `SendMessage`: the exposure the caller reached; it names the agent, device and workspace. */
+      exposureId: z
+        .string()
+        .regex(/^a2x_[A-Za-z0-9_-]{16,64}$/)
+        .optional(),
+    })
+    .strict();
+
+  /**
+   * A hand-off task from outside: the MCP gateway's `create_task` (origin `mcp:<provider>`) or
+   * the A2A server's `SendMessage` (origin `a2a:<grant>`). The grant needs `link:handoff`; then a
+   * LinkAuthorizer must say yes (the default says no to everything); only then does the agent get
+   * a RelayedCommand, a `session.start` at most in the default permission mode. The agent applies
+   * its own origin policy (`a2a:` is off unless turned on locally) and gates every tool, and
+   * nothing here can approve anything.
+   */
+  app.post("/v1/gateway/link-tasks", async (c) => {
+    const t = await gatewayCall(c, "link:handoff", cfg.a2aResource ? [cfg.resource, cfg.a2aResource] : [cfg.resource]);
+    if (t instanceof Response) return t;
+    const viaA2a = isA2a(t.resource);
+    if (!viaA2a && t.provider === "other")
+      return oauthError(c, "insufficient_scope", "link:handoff over MCP needs a Claude or ChatGPT connector", 403);
+    if (!(await promptBuckets.take(sha256hex(`link.task:${t.owner}:${t.cid}`), TASK_BURST, TASK_REFILL, deps.now())))
+      return oauthError(c, "invalid_request", "too many tasks for this connector; try again later", 429);
+    const b = LinkTaskBody.safeParse(await c.req.json().catch(() => null));
+    if (!b.success) return fail(400, "bad_request");
+
+    let target: { appId: string; deviceId: string; workspaceLabel: string };
+    if (viaA2a) {
+      if (!b.data.exposureId || b.data.appId || b.data.deviceId || b.data.workspaceLabel)
+        return fail(400, "bad_request");
+      const e = await a2aStore().getExposure(b.data.exposureId);
+      // Another owner's exposure is "not found" too: an A2A grant reaches only its own owner's agents.
+      if (!e || e.owner !== t.owner) return fail(404, "no_agent");
+      target = { appId: e.appId, deviceId: e.deviceId, workspaceLabel: e.workspaceLabel };
+    } else {
+      if (b.data.exposureId || !b.data.appId || !b.data.deviceId || !b.data.workspaceLabel)
+        return fail(400, "bad_request");
+      target = { appId: b.data.appId, deviceId: b.data.deviceId, workspaceLabel: b.data.workspaceLabel };
+    }
+    const origin: Origin = viaA2a ? `a2a:${t.cid}` : ORIGIN_OF[t.provider as "claude" | "chatgpt"];
+    const decision = await authorizer
+      .authorize({
+        origin,
+        fromAgent: origin,
+        toAgent: target.appId,
+        targetDeviceId: target.deviceId,
+        // The outside caller is the chain's first (and only) hop, as LinkAuthorizer expects
+        // (hop === chain.length >= 1). No cwd: it's a path, and the caller names only a workspace.
+        hop: 1,
+        chain: [origin],
+      })
+      .catch(() => ({ ok: false as const, reason: "authorizer_failed" }));
+    const meta = { cid: t.cid, command: b.data.cid, appId: target.appId, device: target.deviceId };
+    if (!decision.ok) {
+      await deps.audit.record({
+        action: "link.handoff_denied",
+        owner: t.owner,
+        actor: origin,
+        meta: { ...meta, reason: decision.reason },
+      });
+      return c.json({ error: "link_denied", reason: decision.reason }, 403);
+    }
+    if (decision.mode !== "handoff") {
+      await deps.audit.record({
+        action: "link.handoff_denied",
+        owner: t.owner,
+        actor: origin,
+        meta: { ...meta, reason: "share_only" },
+      });
+      return c.json({ error: "link_denied", reason: "share_only" }, 403);
+    }
+    if (decision.confirm) {
+      // "Ask me each time" (the default) needs the phone's one-tap confirmation, which Phase C
+      // builds. Until then such a task is not relayed at all: fail closed.
+      // TODO(m16c): park the task for the owner's confirmation instead.
+      await deps.audit.record({
+        action: "link.handoff_pending",
+        owner: t.owner,
+        actor: origin,
+        meta: { ...meta, linkId: decision.linkId },
+      });
+      return c.json({ error: "confirmation_required", linkId: decision.linkId }, 409);
+    }
+    const now = deps.now();
+    const body = CommandBody.safeParse({
+      v: 1,
+      cid: b.data.cid,
+      uid: t.owner,
+      targetDeviceId: target.deviceId,
+      origin,
+      nonce: await randomNonce(),
+      issuedAt: now,
+      expiresAt: now + 5 * 60 * 1000,
+      payload: {
+        type: "session.start",
+        appId: target.appId,
+        workspaceLabel: target.workspaceLabel,
+        promptCt: b.data.promptCt,
+        // Never more than "default", whatever the link's ceiling; the device's ceiling applies on top.
+        permissionMode: decision.permissionCeiling === "plan" ? "plan" : "default",
+      },
+    });
+    if (!body.success) return fail(400, "bad_request");
+    const env = RelayedCommand.parse({ relayedBy: viaA2a ? "a2a-server" : "mcp-gateway", body: body.data });
+    if ((await store().insertCommand(t.owner, target.deviceId, b.data.cid, env, body.data.expiresAt)) === "no_device")
+      return fail(404, "no_device");
+    await deps.audit.record({
+      action: "link.handoff_relayed",
+      owner: t.owner,
+      actor: origin,
+      target: target.appId,
+      meta: { ...meta, linkId: decision.linkId },
+    });
+    return c.json({ cid: b.data.cid, linkId: decision.linkId, targetDeviceId: target.deviceId }, 201);
+  });
+
+  // ---------------------------------------------------------------- A2A exposures (the owner's)
+  const ExposureBody = z
+    .object({
+      appId: AppId,
+      deviceId: z.string().min(1).max(128),
+      workspaceLabel: z.string().min(1).max(80),
+      /** The card the client built from the recipe (agentCardFromRecipe); interfaces and auth are the server's. */
+      card: AgentCard,
+    })
+    .strict();
+  const a2aOn = () => !!cfg.a2aResource;
+
+  app.get("/v1/a2a/exposures", requireAuth(deps, ["user", "client"]), async (c) => {
+    if (!a2aOn()) return fail(404, "a2a_disabled");
+    const list = await a2aStore().listExposures(principal(c).owner);
+    return c.json({ exposures: list.map((e) => ({ ...e, owner: undefined })) });
+  });
+
+  /** Publishes one agent's card on the A2A server. It doesn't let anyone create work: that's a link. */
+  app.post("/v1/a2a/exposures", requireAuth(deps, ["client"]), limiter, async (c) => {
+    if (!a2aOn()) return fail(404, "a2a_disabled");
+    const p = principal(c);
+    const b = ExposureBody.safeParse(await c.req.json().catch(() => null));
+    if (!b.success) return fail(400, "bad_request");
+    const {
+      supportedInterfaces: _i,
+      securitySchemes: _s,
+      securityRequirements: _r,
+      signatures: _g,
+      ...card
+    } = b.data.card;
+    const exposureId = newExposureId();
+    const r = await a2aStore().createExposure({
+      owner: p.owner,
+      exposureId,
+      appId: b.data.appId,
+      deviceId: b.data.deviceId,
+      workspaceLabel: b.data.workspaceLabel,
+      card,
+      createdAt: deps.now(),
+      revokedAt: null,
+    });
+    if (r === "no_device") return fail(404, "no_device");
+    await deps.audit.record({
+      action: "a2a.exposure_created",
+      owner: p.owner,
+      actor: p.uid,
+      target: exposureId,
+      meta: { appId: b.data.appId, device: b.data.deviceId },
+    });
+    return c.json({ exposureId }, 201);
+  });
+
+  app.post("/v1/a2a/exposures/:id/revoke", requireAuth(deps, ["user", "client"]), async (c) => {
+    if (!a2aOn()) return fail(404, "a2a_disabled");
+    const p = principal(c);
+    if (!(await a2aStore().revokeExposure(p.owner, c.req.param("id"), deps.now()))) return fail(404, "not_found");
+    await deps.audit.record({
+      action: "a2a.exposure_revoked",
+      owner: p.owner,
+      actor: p.uid,
+      target: c.req.param("id"),
     });
     return c.body(null, 204);
   });

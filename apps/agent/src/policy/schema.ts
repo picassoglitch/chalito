@@ -31,8 +31,21 @@ export const Policy = z.object({
     maxPermissionMode: RemotePermissionMode,
     maxCodexSandbox: RemoteCodexSandbox,
   }),
-  /** Prompt origins; each can be turned off. */
-  origins: z.object({ local: z.boolean(), client: z.boolean(), mcp: z.boolean(), call: z.boolean() }),
+  /**
+   * Prompt origins; each can be turned off. `agent` (hand-offs over links, ADR 0022 §3) is
+   * optional so older policies keep their hash; absent = on, since a hand-off also needs a link
+   * the person made on this device. Remote surfaces can turn it off, never on. `a2a` (outside
+   * A2A clients, ADR 0022 §4) is optional too, but absent = off.
+   */
+  origins: z.object({
+    local: z.boolean(),
+    client: z.boolean(),
+    mcp: z.boolean(),
+    call: z.boolean(),
+    agent: z.boolean().optional(),
+    /** Outside A2A clients (ADR 0022 §4). Optional: missing = off; only a local edit turns it on. */
+    a2a: z.boolean().optional(),
+  }),
   approvals: z.object({ ttlSeconds: z.number().int().min(30).max(600) }),
   /** Plaintext egress exceptions (opt-in). */
   egress: z.object({ callLines: z.boolean(), mcpCards: z.boolean() }),
@@ -110,6 +123,39 @@ export const Policy = z.object({
       maxInputsPerMinute: z.number().int().min(1).max(1200),
       /** A screen session ends after this long, approved again to continue. */
       maxSessionMinutes: z.number().int().min(1).max(240),
+    })
+    .optional(),
+  /**
+   * LAN direct path (apps/agent/src/lan, ADR 0022 §5): mDNS discovery of this owner's other agents
+   * and a local WebSocket for the same signed commands and sealed events as the cloud path, with
+   * the cloud as fallback. Absent = off (older policies keep their hash). Turned on only by a
+   * local edit (`chalito policy edit`: confirmation plus OS auth); remote surfaces can only turn it off.
+   */
+  /**
+   * Agents an outside caller may start here (ADR 0022 §4, D-071): a hand-off task relayed by the
+   * MCP gateway (`create_task`, `mcp:*`) or the A2A server (`SendMessage`, `a2a:*`) arrives as a
+   * `session.start`, and the device runs it only for an app and workspace listed here, over a
+   * listed path. The cloud's LinkAuthorizer saying yes is not enough on its own. Absent or empty =
+   * every such start is refused. Added only by a local edit (`chalito policy edit`: confirmation
+   * plus OS authentication), like links (D-070); remote surfaces can only remove entries.
+   */
+  exposed: z
+    .array(
+      z
+        .object({
+          appId: AppId,
+          workspaceLabel: z.string().min(1).max(60),
+          via: z.array(z.enum(["mcp", "a2a"])).min(1),
+        })
+        .strict(),
+    )
+    .max(50)
+    .optional(),
+  lan: z
+    .object({
+      enabled: z.boolean(),
+      /** TCP port of the LAN listener; 0 = any free port (advertised over mDNS). */
+      port: z.number().int().min(0).max(65535),
     })
     .optional(),
 });

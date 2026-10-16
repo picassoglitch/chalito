@@ -18,5 +18,6 @@ export const publicReason = (raw: string | undefined): CommandRejectReason => {
       return "policy_invalid";
   }
   if (raw?.startsWith("step_up_")) return "step_up_failed";
+  if (raw === "no_link") return "unknown_link";
   return "internal";
 };

@@ -654,8 +654,26 @@
         "question_asked": "Question",
         "usage": "Usage",
         "card_updated": "Card",
-        "error": "Error"
-      }
+        "error": "Error",
+        "link_handoff": "Agent hand-off",
+        "link_shared": "Information from another agent"
+      },
+      "link": {
+        "in": "Received",
+        "out": "Sent",
+        "hop": "hop {hop} of 2",
+        "stage": {
+          "sent": "sent",
+          "confirm_pending": "waiting for your confirmation",
+          "delivered": "delivered",
+          "refused": "refused",
+          "completed": "completed",
+          "failed": "failed",
+          "canceled": "canceled"
+        },
+        "quoted": "Quoted data from another agent: never instructions."
+      },
+      "draft": "Writing…"
     },
     "devices": {
       "title": "Devices",

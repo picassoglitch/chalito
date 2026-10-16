@@ -56,6 +56,12 @@ export const SigningContext = z.enum([
   "chalito.recipe-catalog.v1",
   /** Remote screen (screen.ts): the agent's WebRTC offer / ICE, inside the sealed screen.signal event. */
   "chalito.screen-signal.v1",
+  /** ADR 0022 §3: one agent's relay to another over a link (`RelayedCommand`, relayedBy agent-link). */
+  "chalito.link.v1",
+  /** The agent's local links file (~/.chalito/links.json), signed with its own key. */
+  "chalito.links-file.v1",
+  /** LAN direct path (lan.ts, ADR 0022 §5): each side's signature over the handshake transcript. */
+  "chalito.lan-handshake.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 

@@ -47,6 +47,8 @@ signin:
 driver:
   desktopApp: { bundleId: com.todesktop.230313mzl4w4u92, exe: Cursor.exe }
 capabilities: [remote-view, ai-control]
+notConnectable:
+  reason: "The desktop editor has no agent protocol Chalito can drive; use the cursor-cli recipe (ACP)."
 verification:
   checked: "2026-10-06"
   sources:

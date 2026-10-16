@@ -311,7 +311,8 @@ jobs:
       # Builds dist/ first (beforeBuildCommand); generate_context! embeds it, so cargo test comes after.
       - run: pnpm tauri build --debug --bundles ${{ matrix.bundles }}
         working-directory: apps/desktop
-      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+      # --locked: the committed Cargo.lock must already match Cargo.toml.
+      - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
       # The dev-only SSO loopback (loopback.rs) must not exist in release builds: a cfg test
       # compiled in release, then a grep for its marker in both binaries (the debug one proves
       # the grep can find it).
@@ -326,12 +327,3 @@ jobs:
             echo "release binary contains the dev SSO loopback" >&2
             exit 1
           fi
-      # Not committed yet: the first green run's lockfile is the one to pin (text file only).
-      - name: Upload Cargo.lock
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Cargo.lock
-          path: apps/desktop/src-tauri/Cargo.lock
-          if-no-files-found: error
-          retention-days: 14

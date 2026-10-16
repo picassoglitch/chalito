@@ -26,3 +26,5 @@ export {
   sha256,
 } from "./webauthn.js";
 export type { WebAuthnCredentialRef, WebAuthnAssertionInput, AssertionCheck } from "./webauthn.js";
+export { lanEphemeral, lanTranscript, lanSessionKeys, LanCipher, lanAdvertId } from "./lan.js";
+export type { LanTranscriptInput, LanSessionKeys } from "./lan.js";

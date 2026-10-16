@@ -601,3 +601,92 @@ describe("SupabaseStore: endorsements (ADR 0018)", () => {
     expect(n).toBe(after + 2);
   });
 });
+
+describe("SupabaseStore: fast live path and batched events (M16 A)", () => {
+  const ev = (i: number, type = "session.state", extra: Record<string, unknown> = { state: "running" }) =>
+    ({
+      v: 1,
+      eid: `e${i}`,
+      sid: "s1",
+      deviceId: DEV,
+      seq: i,
+      t: T,
+      urgency: "low",
+      type,
+      ...extra,
+    }) as unknown as AgentEvent;
+  const manual = () => {
+    const due: (() => void)[] = [];
+    return {
+      schedule: (fn: () => void) => {
+        let dead = false;
+        due.push(() => !dead && fn());
+        return { clear: () => void (dead = true) };
+      },
+      fire: () => {
+        for (const f of due.splice(0)) f();
+      },
+    };
+  };
+
+  it("inserts durable events in one batch per 250 ms window, in seq order", async () => {
+    const db = new FakeSupabase();
+    const t = manual();
+    const store = new SupabaseStore(db, OWNER, DEV, { batch: { ms: 250, max: 32 }, schedule: t.schedule });
+    const writes = [0, 1, 2, 3, 4].map((i) => store.writeEvent(ev(i)));
+    await tick();
+    expect(db.rows("session_events")).toHaveLength(0);
+    t.fire();
+    await Promise.all(writes);
+    expect(db.rows("session_events").map((r) => r.seq)).toEqual([0, 1, 2, 3, 4]);
+    expect(db.ops.filter((o) => o.table === "session_events" && o.op === "insert")).toHaveLength(1);
+  });
+
+  it("flushes as soon as 32 events wait, and splits bigger bursts", async () => {
+    const db = new FakeSupabase();
+    const t = manual();
+    const store = new SupabaseStore(db, OWNER, DEV, { batch: { ms: 250, max: 32 }, schedule: t.schedule });
+    const writes = Array.from({ length: 70 }, (_, i) => store.writeEvent(ev(i)));
+    await tick();
+    t.fire();
+    await tick();
+    t.fire();
+    await Promise.all(writes);
+    const inserts = db.ops.filter((o) => o.table === "session_events" && o.op === "insert");
+    expect(inserts.map((o) => (Array.isArray(o.body) ? o.body.length : 1))).toEqual([32, 32, 6]);
+    expect(db.rows("session_events").map((r) => r.seq)).toEqual(Array.from({ length: 70 }, (_, i) => i));
+  });
+
+  it("a failed batch rejects every event in it", async () => {
+    const db = new FakeSupabase();
+    const store = new SupabaseStore(db, OWNER, DEV, { batch: { ms: 0, max: 32 } });
+    db.failNext("boom");
+    await expect(store.writeEvent(ev(0))).rejects.toBeInstanceOf(SupabaseError);
+  });
+
+  it("live-only events go to chalito.live_send, never to session_events; a screen end stays stored", async () => {
+    const db = new FakeSupabase();
+    const store = new SupabaseStore(db, OWNER, DEV, { batch: { ms: 0, max: 32 } });
+    const ct = { alg: "x", nonce: "n", ct: "c", keys: {} };
+    await Promise.all([
+      store.writeEvent(ev(0, "message.assistant.delta", { mid: "m1", n: 0, ct })),
+      store.writeEvent(ev(1, "terminal.output", { tid: "s1", dataCt: ct })),
+      store.writeEvent(ev(2, "screen.state", { state: "live", mode: "view" })),
+      store.writeEvent(ev(3, "screen.state", { state: "ended", mode: "view", reason: "closed" })),
+    ]);
+    expect(db.rows("session_events").map((r) => r.type)).toEqual(["screen.state"]);
+    const sent = db.rpcs.filter((r) => r.fn === "live_send").flatMap((r) => r.args.p_events as { type: string }[]);
+    expect(sent.map((e) => e.type)).toEqual(["message.assistant.delta", "terminal.output", "screen.state"]);
+    // One call in flight at a time: what queued meanwhile went in the next call.
+    expect(db.rpcs.filter((r) => r.fn === "live_send").length).toBeLessThanOrEqual(2);
+  });
+
+  it("close() sends whatever is still queued", async () => {
+    const db = new FakeSupabase();
+    const t = manual();
+    const store = new SupabaseStore(db, OWNER, DEV, { batch: { ms: 250, max: 32 }, schedule: t.schedule });
+    void store.writeEvent(ev(0));
+    await store.close();
+    expect(db.rows("session_events")).toHaveLength(1);
+  });
+});

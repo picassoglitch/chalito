@@ -17,11 +17,11 @@ type Enabling = {
 } | null;
 
 /** Recipe kinds that run sessions (the rest only open an app or a website). */
-const SESSION_KINDS: RecipeKind[] = ["claude-sdk", "codex", "acp"];
+const SESSION_KINDS: RecipeKind[] = ["claude-sdk", "codex", "acp", "chat-api", "a2a"];
 
 /** The sections of the catalog, in order; an app goes in its recipe's first kind. */
 const GROUPS: { id: string; kinds: RecipeKind[] }[] = [
-  { id: "agents", kinds: ["claude-sdk", "codex", "acp", "terminal"] },
+  { id: "agents", kinds: ["claude-sdk", "codex", "acp", "terminal", "chat-api", "a2a"] },
   { id: "desktop", kinds: ["desktop-app"] },
   { id: "web", kinds: ["web-app"] },
 ];

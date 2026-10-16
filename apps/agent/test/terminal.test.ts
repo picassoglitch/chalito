@@ -5,6 +5,8 @@ import { applyRemoteTighten, DEFAULT_POLICY, isTighterOrEqual, type Policy } fro
 import { TerminalControl, type TerminalApprovalOutcome, type TerminalDeps } from "../src/terminal/control.js";
 import { rawShellLaunch, resolveProgram, terminalDriverFactory, type TerminalLaunch } from "../src/terminal/driver.js";
 import { OutputStream, TokenBucket } from "../src/terminal/output.js";
+import { SupabaseStore } from "../src/supabase-store.js";
+import { FakeSupabase } from "./fake-supabase.js";
 import {
   PtyUnavailableError,
   bunBackend,
@@ -872,5 +874,41 @@ describe("enabling is local-only (OS auth + confirmations)", () => {
     expect(isTighterOrEqual({ ...cur, remoteTerminal: { ...ON, maxSessions: 1 } }, cur)).toBe(true);
     const shellOn: Policy = { ...DEFAULT_POLICY, remoteTerminal: { ...ON, rawShell: true } };
     expect(applyRemoteTighten(shellOn, { remoteTerminal: { rawShell: false } }).ok).toBe(true);
+  });
+});
+
+describe("remote terminal: database writes (M16 A fast live path)", () => {
+  it("a terminal session writes at least 5x fewer session_events rows than it emits events", async () => {
+    const h = setup();
+    const db = new FakeSupabase();
+    const store = new SupabaseStore(db, "hub-user-1", "dev_agent", { batch: { ms: 0, max: 32 } });
+    // Every event the terminal emits goes through the real store; before M16 A each one was a row.
+    h.deps.writeEvent = async (e) => {
+      h.events.push(e);
+      await store.writeEvent(e);
+    };
+    const tid = await running(h);
+    for (let i = 0; i < 40; i++) {
+      expect(h.c.input(tid, `make test ${i}\r`, PHONE)).toEqual({ ok: true });
+      await h.flush();
+    }
+    expect(await h.c.close(tid, PHONE)).toEqual({ ok: true });
+    await h.settle();
+    await store.flush();
+
+    const emitted = h.events.length;
+    const rows = db.rows("session_events");
+    expect(h.events.filter((e) => e.type === "terminal.output").length).toBeGreaterThanOrEqual(40);
+    // Only the durable milestones are stored: the approval, the start and the end.
+    expect(rows.map((r) => r.type)).not.toContain("terminal.output");
+    expect(rows.map((r) => r.type)).toContain("terminal.started");
+    expect(rows.map((r) => r.type)).toContain("terminal.closed");
+    expect(rows.length * 5).toBeLessThanOrEqual(emitted);
+    // The output still reached the clients, sealed, over the live path, in order.
+    const live = db.rpcs.filter((r) => r.fn === "live_send").flatMap((r) => r.args.p_events as AgentEvent[]);
+    expect(live.map((e) => e.type).every((t) => t === "terminal.output")).toBe(true);
+    expect(live.length).toBe(h.events.filter((e) => e.type === "terminal.output").length);
+    const seqs = live.map((e) => e.seq);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
   });
 });

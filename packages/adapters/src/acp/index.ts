@@ -1,5 +1,5 @@
 export * from "../core.js";
-export { AcpAdapter, spawnAcp, toolCallsFor } from "./adapter.js";
+export { AcpAdapter, ownMcpToolName, spawnAcp, toolCallsFor, type OwnMcp } from "./adapter.js";
 export type { AcpAdapterConfig, AcpSpawn, AcpTransport } from "./adapter.js";
 export {
   ACP_PRESETS,
