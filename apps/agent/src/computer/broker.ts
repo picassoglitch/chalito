@@ -27,6 +27,12 @@ export const brokerPath = (dir: string, platform: NodeJS.Platform = process.plat
     ? `\\\\.\\pipe\\chalito-computer-${safeUser(user ?? userInfo().username)}`
     : join(dir, "computer.sock");
 
+/** The links broker (links/tool-server.ts): the same wire format, its own socket and tokens. */
+export const linksBrokerPath = (dir: string, platform: NodeJS.Platform = process.platform, user?: string): string =>
+  platform === "win32"
+    ? `\\\\.\\pipe\\chalito-links-${safeUser(user ?? userInfo().username)}`
+    : join(dir, "links.sock");
+
 export interface Broker {
   readonly path: string;
   close(): Promise<void>;

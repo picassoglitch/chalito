@@ -13,7 +13,7 @@ import {
   Signature,
   Uid,
 } from "./common.js";
-import { LINK_RELAY_TYPES, LinkCommands, LinkRelayCommands } from "./agent-link.js";
+import { LINK_RELAY_TYPES, LinkCommands, LinkId, LinkRelayCommands } from "./agent-link.js";
 import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 import { ProviderConnectMethod } from "./provider.js";
@@ -109,6 +109,13 @@ const SessionStart = z
     promptCt: SealedEnvelope,
     permissionMode: RemotePermissionMode.default("default"),
     codexSandbox: RemoteCodexSandbox.optional(),
+    /**
+     * ADR 0022 §4 (M16 F): a hand-off task from outside (MCP `create_task`, A2A `SendMessage`) over a
+     * link set to "ask me each time". The agent asks the owner first (`link_handoff` approval, one
+     * tap) and starts the session only on a signed yes; a no or no answer rejects it. It can only
+     * add that step, never skip one.
+     */
+    linkConfirm: z.object({ linkId: LinkId }).strict().optional(),
   })
   .refine((p) => p.adapter !== undefined || p.appId !== undefined, { message: "adapter or appId is required" });
 

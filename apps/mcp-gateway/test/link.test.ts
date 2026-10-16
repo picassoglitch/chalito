@@ -51,7 +51,7 @@ const allowing = (over: Partial<{ confirm: boolean; ceiling: "default" | "plan" 
       seen.push(req);
       return {
         ok: true,
-        linkId: "lnk_test",
+        linkId: "lnk_testlink1",
         mode: "handoff",
         confirm: over.confirm ?? false,
         permissionCeiling: over.ceiling ?? "acceptEdits",
@@ -149,7 +149,7 @@ describe("MCP gateway: list_agents and create_task", () => {
         arguments: { appId: "claude-code", deviceId: AGENT, workspaceLabel: "chalito", prompt: "arregla el login" },
       }),
     );
-    expect(r.value).toMatchObject({ sent: true, linkId: "lnk_test" });
+    expect(r.value).toMatchObject({ sent: true, linkId: "lnk_testlink1" });
     expect(auth.seen).toEqual([
       {
         origin: "mcp:chatgpt",
@@ -176,7 +176,7 @@ describe("MCP gateway: list_agents and create_task", () => {
     expect(await openJson<string>(p.promptCt, AGENT, box, `command:${q.id}`)).toBe("arregla el login");
   });
 
-  it('"ask me each time" (confirm) fails closed until the phone confirmation exists', async () => {
+  it('"ask me each time": relayed marked for confirmation, AUTH_REQUIRED until the phone answers (get_task)', async () => {
     const { g } = await setup({ linkAuthorizer: allowing({ confirm: true }).a });
     const c = await g.mcpClient((await g.connect(["link:handoff"])).access_token);
     const r = g.result(
@@ -185,8 +185,67 @@ describe("MCP gateway: list_agents and create_task", () => {
         arguments: { appId: "claude-code", deviceId: AGENT, workspaceLabel: "chalito", prompt: "x" },
       }),
     );
-    expect(r).toEqual({ isError: true, value: "Chalito refused: confirmation_required" });
-    expect(g.mcp.commands).toHaveLength(0);
+    expect(r.value).toMatchObject({ sent: true, linkId: "lnk_testlink1", state: "TASK_STATE_AUTH_REQUIRED" });
+    const cid = (r.value as { cid: string }).cid;
+    // One command, marked: the device asks the owner (link_handoff) before it starts anything.
+    expect(g.mcp.commands).toHaveLength(1);
+    expect(RelayedCommand.parse(g.mcp.commands[0]!.env).body.payload).toMatchObject({
+      type: "session.start",
+      linkConfirm: { linkId: "lnk_testlink1" },
+    });
+    expect(g.audit.events.map((e) => e.action)).toContain("link.handoff_pending");
+    const state = async () =>
+      (
+        g.result(await c.callTool({ name: "get_task", arguments: { deviceId: AGENT, cid } })).value as {
+          state: string;
+        }
+      ).state;
+    expect(await state()).toBe("TASK_STATE_AUTH_REQUIRED");
+    const key = `${AGENT}/${cid}`;
+    g.data.linkApprovals.set(key, { status: "pending", expiresAt: Date.now() + 600_000, resolvedAt: null });
+    expect(await state()).toBe("TASK_STATE_AUTH_REQUIRED");
+    // Approved: starting, then working once the session (named after the cid) exists.
+    g.data.linkApprovals.set(key, { status: "approved", expiresAt: Date.now() + 600_000, resolvedAt: Date.now() });
+    expect(await state()).toBe("TASK_STATE_SUBMITTED");
+    g.data.sessions.set(cid, {
+      sid: cid,
+      deviceId: AGENT,
+      deviceName: "Desk",
+      adapter: "claude-code",
+      state: "running",
+      updatedAt: Date.now(),
+    });
+    expect(await state()).toBe("TASK_STATE_WORKING");
+    g.data.sessions.delete(cid);
+    // Declined, or no answer in time: rejected.
+    g.data.linkApprovals.set(key, { status: "denied", expiresAt: Date.now() + 600_000, resolvedAt: Date.now() });
+    expect(await state()).toBe("TASK_STATE_REJECTED");
+    g.data.linkApprovals.set(key, { status: "expired", expiresAt: Date.now() - 1, resolvedAt: Date.now() });
+    expect(await state()).toBe("TASK_STATE_REJECTED");
+    g.data.linkApprovals.set(key, { status: "pending", expiresAt: Date.now() - 1, resolvedAt: null });
+    expect(await state()).toBe("TASK_STATE_REJECTED");
+  });
+
+  it("get_task never reads another device's or owner's rows", async () => {
+    const { g } = await setup({ linkAuthorizer: allowing({ confirm: true }).a });
+    const c = await g.mcpClient((await g.connect(["link:handoff"])).access_token);
+    const r = g.result(
+      await c.callTool({
+        name: "create_task",
+        arguments: { appId: "claude-code", deviceId: AGENT, workspaceLabel: "chalito", prompt: "x" },
+      }),
+    );
+    const cid = (r.value as { cid: string }).cid;
+    g.data.sessions.set(cid, {
+      sid: cid,
+      deviceId: "dev_other",
+      deviceName: null,
+      adapter: null,
+      state: "running",
+      updatedAt: null,
+    });
+    const got = g.result(await c.callTool({ name: "get_task", arguments: { deviceId: AGENT, cid } }));
+    expect(got.value).toMatchObject({ state: "TASK_STATE_AUTH_REQUIRED" });
   });
 });
 
@@ -333,6 +392,80 @@ describe("A2A server", () => {
       },
     });
     expect((await client.getTask({ tenant: "", id: r.id })).id).toBe(r.id);
+  });
+});
+
+describe('A2A server: a link set to "ask me each time"', () => {
+  const confirmTask = async () => {
+    const { g } = await setup({ a2a: true, linkAuthorizer: allowing({ confirm: true }).a });
+    const made = await g.call("/v1/a2a/exposures", {
+      json: { appId: "claude-code", deviceId: AGENT, workspaceLabel: "chalito", card: claudeCard() },
+      headers: g.phoneAuth,
+    });
+    const tok = await g.connect(["link:handoff"], undefined, A2A_RESOURCE);
+    const client = await sdkClient(
+      g,
+      `${A2A_RESOURCE}/${made.json.exposureId}/.well-known/agent-card.json`,
+      tok.access_token,
+    );
+    const r = (await client.sendMessage(send("arregla el login"))) as Task;
+    const cid = g.mcp.commands[0]!.id;
+    const get = async () => (await client.getTask({ tenant: "", id: r.id })).status?.state;
+    return { g, r, cid, get };
+  };
+
+  it("SendMessage: AUTH_REQUIRED (not INPUT_REQUIRED), relayed marked for the phone's confirmation", async () => {
+    const { g, r, get } = await confirmTask();
+    expect(r.status?.state).toBe(TaskState.TASK_STATE_AUTH_REQUIRED);
+    expect(r.status?.message?.parts[0]?.content).toEqual({
+      $case: "text",
+      value: "Waiting for the owner to confirm on their phone.",
+    });
+    expect(RelayedCommand.parse(g.mcp.commands[0]!.env)).toMatchObject({
+      relayedBy: "a2a-server",
+      body: { payload: { type: "session.start", linkConfirm: { linkId: "lnk_testlink1" } } },
+    });
+    expect(await get()).toBe(TaskState.TASK_STATE_AUTH_REQUIRED);
+  });
+
+  it("approve: GetTask shows WORKING once the device started the session", async () => {
+    const { g, cid, get } = await confirmTask();
+    g.data.linkApprovals.set(`${AGENT}/${cid}`, {
+      status: "approved",
+      expiresAt: Date.now() + 600_000,
+      resolvedAt: Date.now(),
+    });
+    g.data.sessions.set(cid, {
+      sid: cid,
+      deviceId: AGENT,
+      deviceName: "Desk",
+      adapter: "claude-code",
+      state: "running",
+      updatedAt: Date.now(),
+    });
+    expect(await get()).toBe(TaskState.TASK_STATE_WORKING);
+    // Settled: it stays WORKING here even if the rows change.
+    g.data.sessions.delete(cid);
+    expect(await get()).toBe(TaskState.TASK_STATE_WORKING);
+  });
+
+  it("deny: REJECTED", async () => {
+    const { g, cid, get } = await confirmTask();
+    g.data.linkApprovals.set(`${AGENT}/${cid}`, {
+      status: "denied",
+      expiresAt: Date.now() + 600_000,
+      resolvedAt: Date.now(),
+    });
+    expect(await get()).toBe(TaskState.TASK_STATE_REJECTED);
+  });
+
+  it("expiry: REJECTED (TTL passed, or the device never picked the task up)", async () => {
+    const { g, cid, get } = await confirmTask();
+    g.data.linkApprovals.set(`${AGENT}/${cid}`, { status: "pending", expiresAt: Date.now() - 1, resolvedAt: null });
+    expect(await get()).toBe(TaskState.TASK_STATE_REJECTED);
+    const second = await confirmTask();
+    second.g.skew(7 * 60_000);
+    expect(await second.get()).toBe(TaskState.TASK_STATE_REJECTED);
   });
 });
 

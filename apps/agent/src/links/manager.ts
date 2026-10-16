@@ -188,6 +188,22 @@ export class LinkManager implements LinkAuthorizer {
   }
 
   /**
+   * Active links `sid` may send over: this device is the sender, and the link pins this session
+   * (or no session, and then the session's app if both name one). The session tools
+   * (tool-server.ts) are attached only when this isn't empty and can't reach past it.
+   */
+  senderLinks(sid: string): AgentLink[] {
+    const s = this.#host?.session(sid);
+    return s ? this.list().filter((l) => this.#isSender(l, s)) : [];
+  }
+
+  #isSender(l: AgentLink, s: LinkSessionInfo): boolean {
+    if (l.sender.deviceId !== this.d.deviceId) return false;
+    if (l.sender.sessionId !== undefined) return l.sender.sessionId === s.sid;
+    return l.sender.appId === undefined || s.appId === undefined || l.sender.appId === s.appId;
+  }
+
+  /**
    * A hand-off or share link made on this device (desktop panel or `chalito link add`). The
    * caller has already done OS authentication and the confirmations (links/local.ts).
    */
@@ -479,7 +495,9 @@ export class LinkManager implements LinkAuthorizer {
     if (link.sender.deviceId !== this.d.deviceId) return { ok: false, reason: "link_wrong_endpoint" };
     if (link.sender.sessionId !== undefined && link.sender.sessionId !== input.fromSid)
       return { ok: false, reason: "link_wrong_endpoint" };
-    if (!this.#h.session(input.fromSid)) return { ok: false, reason: "unknown_session" };
+    const fromSession = this.#h.session(input.fromSid);
+    if (!fromSession) return { ok: false, reason: "unknown_session" };
+    if (!this.#isSender(link, fromSession)) return { ok: false, reason: "link_wrong_endpoint" };
     // The chain this session is already in (if it runs a hand-off itself), plus itself.
     const prior = this.#inbound.get(input.fromSid);
     const hop = (prior && !prior.done ? prior.hop : 0) + 1;
@@ -553,7 +571,9 @@ export class LinkManager implements LinkAuthorizer {
     if (link.sender.deviceId !== this.d.deviceId) return { ok: false, reason: "link_wrong_endpoint" };
     if (link.sender.sessionId !== undefined && link.sender.sessionId !== input.fromSid)
       return { ok: false, reason: "link_wrong_endpoint" };
-    if (!this.#h.session(input.fromSid)) return { ok: false, reason: "unknown_session" };
+    const fromSession = this.#h.session(input.fromSid);
+    if (!fromSession) return { ok: false, reason: "unknown_session" };
+    if (!this.#isSender(link, fromSession)) return { ok: false, reason: "link_wrong_endpoint" };
     const message = LinkMessage.parse({
       messageId: randomUUID(),
       contextId: input.fromSid,

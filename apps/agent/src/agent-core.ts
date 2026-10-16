@@ -44,10 +44,14 @@ import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
 import { DeltaThrottle } from "./live/deltas.js";
 import type { LinkHost, LinkManager } from "./links/manager.js";
+import { partsAsData } from "./links/frame.js";
+import type { LinkTools } from "./links/tool-server.js";
+import { LINKS_TOOL_PREFIX } from "./links/tools.js";
 import type { ScreenManager } from "./screen/manager.js";
 import {
   PERMISSION_RANK,
   SANDBOX_RANK,
+  DEVMODE_OFF,
   applyRemoteTighten,
   classifyToolCall,
   decide,
@@ -142,6 +146,8 @@ export interface AgentCoreDeps {
   registry?: SessionRegistry;
   /** Agent-to-agent links (links/manager.ts, ADR 0022 §3); absent = `link.*` commands are refused. */
   links?: LinkManager;
+  /** The session link tools (links/tool-server.ts, M16 F); absent = never attached. */
+  linkTools?: LinkTools;
 }
 
 interface Session {
@@ -355,9 +361,30 @@ export class AgentCore {
         const target = await this.#sessionTarget(p.adapter, p.appId);
         if (!target.ok) return this.#reject(cid, target.reason);
         const prompt = await open<string>(p.promptCt);
+        // A hand-off task from outside (MCP create_task, A2A SendMessage): its session id is the
+        // task's command id, so the caller can follow it (gateway `get_task`, A2A GetTask).
+        const outside = origin.startsWith("mcp:") || origin.startsWith("a2a:");
+        const taskSid = outside && body ? body.cid : undefined;
+        if (taskSid && (this.sessions.has(taskSid) || this.#dormant.has(taskSid))) return this.#reject(cid, "invalid");
+        if (p.linkConfirm) {
+          // "Ask me each time": the owner's one tap first; the command path isn't held meanwhile.
+          void this.#confirmOutsideTask(cid, {
+            sid: taskSid ?? randomUUID(),
+            linkId: p.linkConfirm.linkId,
+            origin,
+            prompt,
+            workspace: ws,
+            target,
+            permissionMode: p.permissionMode,
+          }).catch((err: unknown) =>
+            this.d.log.error("link.task_confirm_failed", { cid, error: err instanceof Error ? err.message : "error" }),
+          );
+          return { ok: true, quiet: true };
+        }
         if (!(await this.#makeRoom())) return this.#reject(cid, "session_limit");
         try {
           const sid = await this.startSession({
+            ...(taskSid ? { sid: taskSid } : {}),
             adapter: target.adapter,
             ...(target.appId ? { appId: target.appId } : {}),
             ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
@@ -860,6 +887,16 @@ export class AgentCore {
             origin: input.origin,
           })
         : null;
+      // Link tools: only for a session that is the sender on an active link, for adapters that put
+      // the server's calls through the gate (the chat-api bridge does too).
+      const linkServer =
+        adapter.localMcp || adapter.kind === "chat-api" ? (this.d.linkTools?.attach(sid) ?? null) : null;
+      const mcpServers = {
+        ...(computer ? { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } : {}),
+        ...(linkServer
+          ? { [linkServer.name]: { command: linkServer.command, args: linkServer.args, env: linkServer.env } }
+          : {}),
+      };
       session.handle = await adapter.start({
         sid,
         cwd: session.cwd,
@@ -867,9 +904,7 @@ export class AgentCore {
         origin: input.origin,
         permissionMode: input.permissionMode,
         ...(resume?.providerSessionId ? { resume: resume.providerSessionId } : {}),
-        ...(computer
-          ? { mcpServers: { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } }
-          : {}),
+        ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
         gate: this.#gate(session),
         askUser: async (q) => {
           const first = q.questions[0]?.question ?? null;
@@ -898,6 +933,7 @@ export class AgentCore {
     } catch (err) {
       // Nothing runs: forget the live session (a resumable one goes back to waiting).
       this.d.computer?.end(sid);
+      this.d.linkTools?.end(sid);
       if (this.sessions.get(sid) === session) this.sessions.delete(sid);
       if (resume) this.#dormant.set(sid, { record: this.#record(session, false), card });
       this.#persist();
@@ -909,6 +945,86 @@ export class AgentCore {
       () => this.#retire(session),
     );
     return sid;
+  }
+
+  /**
+   * An outside hand-off task over a link set to "ask me each time" (ADR 0022 §4, M16 F): a
+   * `link_handoff` approval (one tap, MED, like Phase C's) on the owner's trusted devices, then the
+   * session on a signed yes. A no, no answer within the TTL, or no trusted device rejects it. The
+   * command's result (accepted with the sid, or rejected `link_refused`) is published only then.
+   */
+  async #confirmOutsideTask(
+    cid: string,
+    t: {
+      sid: string;
+      linkId: string;
+      origin: Origin;
+      prompt: string;
+      workspace: { label: string; path: string };
+      target: { adapter: AdapterKind; appId?: string; appAdapter?: SessionAdapter };
+      permissionMode: RemotePermissionMode;
+    },
+  ): Promise<void> {
+    this.#audit("link.task.confirm_requested", { cid, sid: t.sid, linkId: t.linkId, origin: t.origin });
+    const outcome = await this.approvals.request({
+      sid: t.sid,
+      risk: "MED",
+      stepUp: false,
+      origin: t.origin,
+      kind: "link_handoff",
+      details: {
+        toolName: "link.handoff",
+        input: {
+          linkId: t.linkId,
+          from: t.origin,
+          to: t.target.appId ?? t.target.adapter,
+          workspace: t.workspace.label,
+          request: partsAsData([{ text: t.prompt }]),
+        },
+        reasons: [`Task from ${t.origin} over link ${t.linkId}`],
+      },
+    });
+    if (!outcome.allow) {
+      this.#audit("link.task.declined", { cid, sid: t.sid, linkId: t.linkId, reason: outcome.reason });
+      return this.#publishResult(cid, { ok: false, reason: "link_refused" });
+    }
+    // The policy may have changed while the owner decided: the same checks again.
+    const policy = this.d.policy.get();
+    const ws = policy.workspaces.find((w) => w.label === t.workspace.label);
+    const r: CommandResult = !ws
+      ? this.#reject(cid, "unknown_workspace")
+      : !originAllowed(policy.origins, t.origin)
+        ? this.#reject(cid, "origin_disabled")
+        : PERMISSION_RANK[t.permissionMode] > PERMISSION_RANK[policy.remote.maxPermissionMode]
+          ? this.#reject(cid, "permission_mode_above_ceiling")
+          : !(await this.#makeRoom())
+            ? this.#reject(cid, "session_limit")
+            : await this.startSession({
+                sid: t.sid,
+                adapter: t.target.adapter,
+                ...(t.target.appId ? { appId: t.target.appId } : {}),
+                ...(t.target.appAdapter ? { appAdapter: t.target.appAdapter } : {}),
+                workspace: ws,
+                prompt: t.prompt,
+                origin: t.origin,
+                permissionMode: t.permissionMode,
+              }).then(
+                (sid): CommandResult => ({ ok: true, sid }),
+                (err: unknown) => {
+                  this.d.log.error("session.start_failed", {
+                    cid,
+                    error: err instanceof Error ? err.message : "error",
+                  });
+                  return this.#reject(cid, "start_failed");
+                },
+              );
+    this.#audit(r.ok ? "link.task.delivered" : "link.task.refused", {
+      cid,
+      sid: t.sid,
+      linkId: t.linkId,
+      ...(r.ok ? {} : { reason: r.reason }),
+    });
+    await this.#publishResult(cid, r);
   }
 
   // ---- session lifecycle (M16 A, ADR 0022 §1) -------------------------------------------------
@@ -1086,6 +1202,7 @@ export class AgentCore {
     s.draft?.throttle.discard();
     s.draft = undefined;
     this.d.computer?.end(s.sid);
+    this.d.linkTools?.end(s.sid);
     if (this.sessions.get(s.sid) === s) this.sessions.delete(s.sid);
     this.#dormant.set(s.sid, { record: this.#record(s, false), card: s.card });
     try {
@@ -1130,13 +1247,24 @@ export class AgentCore {
         }
         return r;
       }
+      // Link tools (M16 F): refused unless this session has them; never Developer-mode auto-approve.
+      const linkTool = call.toolName.startsWith(LINKS_TOOL_PREFIX);
+      if (linkTool && !this.d.linkTools?.attached(s.sid)) {
+        s.card.blocker(`Enlace bloqueado (link_tools_not_attached)`);
+        await this.#publishCard(s);
+        return { allow: false, reason: "link_tools_not_attached" };
+      }
+      const allowed = (): { allow: true } => {
+        if (linkTool) this.d.linkTools?.admit(s.sid, call.toolName, call.input);
+        return { allow: true };
+      };
       const policy = this.d.policy.get();
       const classification = classifyToolCall(call.toolName, call.input, this.#classifyContext(policy, s));
       const decision = decide({
         classification,
         origin: call.origin,
         originAllowed: originAllowed(policy.origins, call.origin),
-        devMode: this.d.devMode.state,
+        devMode: linkTool ? DEVMODE_OFF : this.d.devMode.state,
         permissionMode: s.permissionMode,
       });
       // R-M10: the same sanitised, explicitly-truncated summary the approval shows.
@@ -1144,7 +1272,7 @@ export class AgentCore {
       if (decision.action === "allow") {
         s.card.action(summary);
         if (classification.workspaceEdit) s.card.fileTouched(String(call.input.file_path ?? ""));
-        return { allow: true };
+        return allowed();
       }
       if (decision.action === "deny") {
         s.card.blocker(`${call.toolName} bloqueado (${decision.reason})`);
@@ -1159,7 +1287,7 @@ export class AgentCore {
       });
       if (outcome.allow) s.card.action(summary);
       await this.#publishCard(s);
-      return outcome.allow ? { allow: true } : { allow: false, reason: outcome.reason };
+      return outcome.allow ? allowed() : { allow: false, reason: outcome.reason };
     };
   }
 

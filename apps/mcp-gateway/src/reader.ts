@@ -76,4 +76,18 @@ export interface GatewayReader {
   agentBoxKey(owner: string, deviceId: string): Promise<string | null>;
   /** A live exposure by id (any owner; the caller checks the token's owner). */
   exposure(exposureId: string): Promise<ExposureRow | null>;
+  /**
+   * An outside hand-off task (M16 F): the newest `link_handoff` approval the agent made for
+   * session `sid` on `deviceId`, and that session if it started. Status only.
+   */
+  linkTask(owner: string, deviceId: string, sid: string): Promise<LinkTaskView>;
+}
+
+export interface LinkTaskView {
+  approval: {
+    status: "pending" | "approved" | "denied" | "expired" | "rejected_invalid";
+    expiresAt: number;
+    resolvedAt: number | null;
+  } | null;
+  session: { state: string | null } | null;
 }

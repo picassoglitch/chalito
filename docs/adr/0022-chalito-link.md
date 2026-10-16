@@ -93,13 +93,17 @@ Guardrails for hand-off links:
 - **Confirm toggle:** per link, either "ask me each time" (one tap on the phone, the **default**) or "automatic".
 - The result goes back to the sender as a `LinkArtifact` in **quoted data**. A result can never instruct the sender.
 - Links run across devices through the existing command path: a signed `RelayedCommand` with origin `agent:`, aimed at the receiver's `targetDeviceId`.
+- **Session tools (M16 F):** a running agent starts a hand-off or a share itself with `link_handoff` / `link_share` (and reads its links with `link_list`), from Chalito's local MCP server `chalito_links`.
+  - Attached to Claude Code, Codex, ACP and chat-api sessions **only when the session is the sender on at least one active link** (a session started before its link gets them at its next start or resume).
+  - Every call goes through the tool gate first: a hand-off or share always asks the phone (MED, one tap). Developer mode and LOW auto-allow never apply, whatever the turn's origin or `mcp.readOnlyTools`. The broker only runs a call the gate allowed (one-shot ticket), so the token alone can't skip it.
+  - Then the link manager runs the same checks as the panel's hand-off: only the session's own sender links in the tool's mode, hop and chain, the receiver's authorization, rate, budget and the confirm toggle. The tool returns the `LinkTask` id; the result comes back as quoted `LinkArtifact` data with the owner's next prompt.
 
 This **amends ADR 0010** only for coding agents with an explicit link. Rooms between companions keep "no kind that carries an instruction".
 
 ### 4. Phase D: connect everything
 - **Recipe driver `chat-api`**:
   - Any OpenAI-compatible endpoint (base URL, model and key in the device keychain), shown as a session in Chalito.
-  - Text by default. Tools only through Chalito's gated computer-control MCP when the model supports tool calls.
+  - Text by default. Tools only through Chalito's gated local MCP servers (computer control; the link tools of §3) when the model supports tool calls.
   - Covers xAI, DeepSeek, Mistral, Groq, OpenRouter and local models (Ollama, LM Studio).
   - Uses the user's own keys only. Chalito-paid usage goes through hub admit/settle as in M9.
 - **Recipe driver `a2a`:**
@@ -111,6 +115,10 @@ This **amends ADR 0010** only for coding agents with an explicit link. Rooms bet
   - A caller can only create tasks on exposed agents, inside a link-style scope.
   - It's off by default. The domain is an owner decision (it's externally visible).
 - **MCP gateway:** adds `list_agents` and `create_task` (scope `link:handoff`, off by default) so ChatGPT and Claude chats can hand work to the owner's agents under the same link rules.
+- **"Ask me each time" for outside tasks (M16 F):** an A2A, `create_task` or `/v1/gateway/link-tasks` task over a confirm link is relayed with `linkConfirm` on its `session.start`. The agent makes the `link_handoff` approval (one tap, as in §3), starts the session only on a signed yes, and rejects it on a no or when the TTL passes.
+  - The session is named after the task's command id, so the gateway follows it through what it may already read (the approval's status and the session row).
+  - The caller sees `TASK_STATE_AUTH_REQUIRED` while waiting, then `WORKING` (delivered) or `REJECTED` (declined or expired), through A2A `GetTask` or MCP `get_task`.
+  - We chose `AUTH_REQUIRED` over `INPUT_REQUIRED` because A2A uses INPUT_REQUIRED when the caller must send more, and nothing the caller sends can move this task. Only the owner's authorization can.
 - **Catalog growth:** every new tool that speaks ACP, MCP, A2A or a chat API is added as a signed recipe. A tool with none of these is listed as "not connectable" with the reason. **No browser automation of chat websites.**
 
 ### 5. Phase E: device to device

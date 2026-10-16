@@ -8,11 +8,13 @@ import {
   JsonRpcTransportHandler,
   ServerCallContext,
   type AgentExecutor,
+  type TaskStore,
   type User,
 } from "@a2a-js/sdk/server";
 import { fromB64url, sealJson } from "@chalito/crypto";
 import { AgentCard } from "@chalito/protocol";
 import { GatewayApiError, type GatewayApi } from "./api-client.js";
+import { readLinkTask, type LinkTaskState } from "./link-task.js";
 import type { GatewayReader, GatewayToken } from "./reader.js";
 
 /**
@@ -29,7 +31,9 @@ import type { GatewayReader, GatewayToken } from "./reader.js";
  *   their passkey. Its origin is `a2a:<grantId>`: relayed, never signed, never auto-approved.
  * - **Every task goes through the LinkAuthorizer** (in the api, deny-all by default) and only then
  *   becomes a RelayedCommand. A refused task comes back `TASK_STATE_REJECTED`; an accepted one
- *   `TASK_STATE_SUBMITTED` (its progress and results reach the caller with Phase C's links).
+ *   `TASK_STATE_SUBMITTED`. Over a link set to "ask me each time" it is `TASK_STATE_AUTH_REQUIRED`
+ *   until the owner's signed tap on their phone; GetTask then shows `WORKING` (delivered) or
+ *   `REJECTED` (declined, or no answer in time) (link-task.ts, M16 F).
  * - **Binding:** JSON-RPC 2.0 only (the SDK's JsonRpcTransportHandler on the SDK's
  *   DefaultRequestHandler). The card offers no other interface, no push notifications, no
  *   extended card.
@@ -105,7 +109,45 @@ export const createA2aServer = (deps: A2aDeps) => {
   const path = base.pathname.replace(/\/+$/, "");
   const prmPath = `/.well-known/oauth-protected-resource${path}`;
   // Tasks live in this instance only, scoped per grant (the SDK keys them by the call's user).
-  const tasks = new InMemoryTaskStore();
+  // A task still waiting on the owner (or the device) is refreshed from the database on each read.
+  const inner = new InMemoryTaskStore();
+  const waiting = new Map<
+    string,
+    { owner: string; deviceId: string; cid: string; confirm: boolean; issuedAt: number }
+  >();
+  const STATE: Record<LinkTaskState, TaskState> = {
+    TASK_STATE_SUBMITTED: TaskState.TASK_STATE_SUBMITTED,
+    TASK_STATE_AUTH_REQUIRED: TaskState.TASK_STATE_AUTH_REQUIRED,
+    TASK_STATE_WORKING: TaskState.TASK_STATE_WORKING,
+    TASK_STATE_REJECTED: TaskState.TASK_STATE_REJECTED,
+    TASK_STATE_FAILED: TaskState.TASK_STATE_FAILED,
+  };
+  const tasks: TaskStore = {
+    save: (task, ctx) => inner.save(task, ctx),
+    list: (params, ctx) => inner.list(params, ctx),
+    load: async (taskId, ctx) => {
+      const task = await inner.load(taskId, ctx);
+      const w = task && waiting.get(taskId);
+      if (!task || !w) return task;
+      const now = deps.now();
+      const r = await readLinkTask(deps.reader, w.owner, w, now);
+      const state = STATE[r.state];
+      // Once delivered or refused, nothing here changes it again (progress isn't relayed yet).
+      if (state !== TaskState.TASK_STATE_AUTH_REQUIRED && state !== TaskState.TASK_STATE_SUBMITTED)
+        waiting.delete(taskId);
+      if (state === task.status?.state) return task;
+      const next: Task = {
+        ...task,
+        status: {
+          state,
+          message: agentText(task.contextId, task.id, r.note),
+          timestamp: new Date(now).toISOString(),
+        },
+      };
+      await inner.save(next, ctx);
+      return next;
+    },
+  };
 
   const unauthorized = (c: Context, error = "invalid_token") =>
     c.json({ error }, 401, {
@@ -150,16 +192,16 @@ export const createA2aServer = (deps: A2aDeps) => {
       const cid = `lnk_${randomUUID().replace(/-/g, "")}`;
       const promptCt = await sealJson(text, { [deviceId]: await fromB64url(pubBox) }, `command:${cid}`);
       try {
-        await deps.api.linkTask(tok.raw, { cid, promptCt, exposureId });
-        finish(TaskState.TASK_STATE_SUBMITTED, "Handed to the owner's agent.");
+        const issuedAt = deps.now();
+        const r = await deps.api.linkTask(tok.raw, { cid, promptCt, exposureId });
+        const confirm = r?.state === "TASK_STATE_AUTH_REQUIRED";
+        // The device names the task's session after its command id: GetTask follows it there.
+        waiting.set(ctx.taskId, { owner: tok.owner, deviceId, cid, confirm, issuedAt });
+        if (confirm) finish(TaskState.TASK_STATE_AUTH_REQUIRED, "Waiting for the owner to confirm on their phone.");
+        else finish(TaskState.TASK_STATE_SUBMITTED, "Handed to the owner's agent.");
       } catch (err) {
         if (!(err instanceof GatewayApiError)) throw err;
-        finish(
-          TaskState.TASK_STATE_REJECTED,
-          err.code === "confirmation_required"
-            ? "The owner confirms each task on their phone; this server can't ask yet, so the task was not sent."
-            : `Chalito refused the task (${err.reason ?? err.code}).`,
-        );
+        finish(TaskState.TASK_STATE_REJECTED, `Chalito refused the task (${err.reason ?? err.code}).`);
       }
     },
     // Nothing runs here: an accepted task is the device's from then on.
