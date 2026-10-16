@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
 import { type GitFs } from "./git-hooks.js";
-import { repoUnion } from "./repo-index.js";
+import { repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
   AI_CONFIG_DIRS,
@@ -142,28 +142,36 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   // git hooks, worked out by reading git's own files (never by running git), for every repo in or
   // around each workspace (repo-index.ts). Classification only reads the last completed index: no
   // folder walk, no per-repo stat here.
-  const union = repoUnion(workspaces, {
+  const hooksOpts = {
     home: ctx.home,
     ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
     ...(ctx.env ? { env: ctx.env } : {}),
     platform,
     ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
-  });
+  };
+  const union = repoUnion(workspaces, hooksOpts);
   /**
    * Whether `abs` is part of how git runs hooks: any known repo's git dirs, config chain and hooks
-   * folders (a repo's hooksPath may point into another repo's tree).
+   * folders (a repo's hooksPath may point into another repo's tree), plus the path's own repo,
+   * looked up per folder so repos the index missed (skipped or unreadable folders) are covered.
    */
   const gitRuns = (abs: string): boolean => {
     if (union.gitDirs.some((d) => within(abs, d))) return true;
     if (fold ? [...union.chain].some((f) => same(f, abs)) : union.chain.has(abs)) return true;
     if (union.hooksDirs.some((d) => within(abs, d))) return true;
-    // Narrow fallback: the path's repo couldn't be read with confidence, its workspace's scan was cut
-    // short, or no scan has finished yet: that repo's (or workspace's) hooks/ and .githooks/ count.
-    const own = union.roots.find((r) => within(abs, r.root));
     const narrow = (root: string) => [join(root, "hooks"), join(root, ".githooks")].some((d) => within(abs, d));
-    if (own && (own.unknown || union.partial.some((w) => within(abs, w)))) return narrow(own.root);
-    const missingWs = union.missing.find((w) => within(abs, w));
-    return missingWs ? narrow(own?.root ?? missingWs) : false;
+    const own = repoForPath(abs, { ...hooksOpts, fallback: workspaces.find((w) => within(abs, w)) ?? dirname(abs) });
+    if (own) {
+      if (own.gitDirs.some((d) => within(abs, d))) return true;
+      if (fold ? [...own.chain].some((f) => same(f, abs)) : own.chain.has(abs)) return true;
+      if (own.hooksDirs.some((d) => within(abs, d))) return true;
+      // Its config couldn't be read with confidence: its usual hooks folders count (narrow).
+      if (own.info.dir === "unknown") return narrow(own.root);
+    }
+    // Repos past the index's cap are known by root only: narrow fallback for them.
+    const indexed = union.roots.find((r) => within(abs, r.root));
+    if (indexed?.unknown) return narrow(indexed.root);
+    return false;
   };
   const h = (rel: string) => real(join(ctx.home, rel));
   // A home-relative entry, plus (Windows) its AppData part under the real %APPDATA% / %LOCALAPPDATA%.

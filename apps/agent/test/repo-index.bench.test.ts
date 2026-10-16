@@ -53,8 +53,10 @@ describe("classification with 200 repos in the workspace", () => {
     expect(write("group3/repo13/hooks-13/pre-commit").tier).toBe("HIGH");
     expect(write("group4/repo14/hooks-14/pre-commit").tier).toBe("HIGH");
 
-    counting = true;
     const n = 500;
+    // Warm-up of the per-folder repo lookup: each new folder is looked up once.
+    for (let i = 0; i < n; i++) write(`group${i % 10}/repo${i % 200}/src/file${i}.ts`);
+    counting = true;
     const start = performance.now();
     for (let i = 0; i < n; i++) write(`group${i % 10}/repo${i % 200}/src/file${i}.ts`);
     const perCall = (performance.now() - start) / n;

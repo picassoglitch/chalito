@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -652,5 +653,39 @@ describe("every repo in the workspace is known up front", () => {
     // A complete scan: no fallback.
     clearHooksCache();
     expect(write(ws, home, "b/hooks/pre-commit").tier).toBe("MED");
+  });
+});
+
+describe("repos the index doesn't know are still covered", () => {
+  it("a repo under vendor/ (a folder the scan skips) keeps its hooksPath protected", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    const vendored = repo(join(ws, "vendor"), "lib", "[core]\n\thooksPath = lib-hooks\n");
+    expect(scanReposSync(ws).roots).not.toContain(vendored);
+    expect(write(ws, home, "vendor/lib/lib-hooks/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, "vendor/lib/.git/config").tier).toBe("HIGH");
+    expect(write(ws, home, "vendor/lib/src/a.ts").tier).toBe("MED");
+  });
+
+  it("an unreadable folder is skipped, not fatal: the scan stays complete and other repos are protected", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a", "[core]\n\thooksPath = ../b/from-a\n");
+    repo(ws, "b");
+    const locked = join(ws, "locked");
+    mkdirSync(join(locked, "inner"), { recursive: true });
+    chmodSync(locked, 0o000);
+    try {
+      const scan = scanReposSync(ws);
+      if (process.getuid?.() !== 0) {
+        expect(scan.unreadable).toContain(locked);
+        expect(scan.complete).toBe(true);
+      }
+      expect(write(ws, home, "b/from-a/pre-commit").tier).toBe("HIGH");
+    } finally {
+      chmodSync(locked, 0o755);
+    }
   });
 });

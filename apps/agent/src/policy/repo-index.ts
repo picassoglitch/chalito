@@ -1,6 +1,14 @@
 import { promises as fsp, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { SCAN_DEPTH, SCAN_MAX_REPOS, hooksFor, resolveHooks, type HooksInfo, type HooksOptions } from "./git-hooks.js";
+import {
+  SCAN_DEPTH,
+  SCAN_MAX_REPOS,
+  hooksFor,
+  repoRootOf,
+  resolveHooks,
+  type HooksInfo,
+  type HooksOptions,
+} from "./git-hooks.js";
 
 /**
  * Every git repo in (or around) each workspace, with how git runs its hooks, kept ready for the
@@ -41,7 +49,10 @@ export const MTIME_CHECK_MS = 5_000;
 
 export interface RepoScanResult {
   roots: string[];
+  /** False only when the folder budget ran out. */
   complete: boolean;
+  /** Folders that couldn't be read (skipped; the per-path lookup still covers repos there). */
+  unreadable: string[];
 }
 
 interface WsIndex {
@@ -84,16 +95,18 @@ const realOr = (p: string) => {
 export const scanReposAsync = async (ws: string, o: { budget?: number } = {}): Promise<RepoScanResult> => {
   let budget = o.budget ?? SCAN_DIR_BUDGET;
   const roots: string[] = [];
+  const unreadable: string[] = [];
   let queue: [string, number][] = [[ws, 0]];
   while (queue.length) {
     const next: [string, number][] = [];
     for (const [dir, depth] of queue) {
-      if (--budget < 0) return { roots, complete: false };
+      if (--budget < 0) return { roots, complete: false, unreadable };
       let entries;
       try {
         entries = await fsp.readdir(dir, { withFileTypes: true });
       } catch {
-        return { roots, complete: false };
+        unreadable.push(dir);
+        continue;
       }
       if (entries.some((e) => e.name === ".git")) roots.push(dir);
       if (depth < SCAN_DEPTH)
@@ -101,23 +114,25 @@ export const scanReposAsync = async (ws: string, o: { budget?: number } = {}): P
     }
     queue = next;
   }
-  return { roots, complete: true };
+  return { roots, complete: true, unreadable };
 };
 
 /** The same scan, synchronous: for tests and tools only, never the classify path. */
 export const scanReposSync = (ws: string, o: { budget?: number } = {}): RepoScanResult => {
   let budget = o.budget ?? SCAN_DIR_BUDGET;
   const roots: string[] = [];
+  const unreadable: string[] = [];
   let queue: [string, number][] = [[ws, 0]];
   while (queue.length) {
     const next: [string, number][] = [];
     for (const [dir, depth] of queue) {
-      if (--budget < 0) return { roots, complete: false };
+      if (--budget < 0) return { roots, complete: false, unreadable };
       let entries;
       try {
         entries = readdirSync(dir, { withFileTypes: true });
       } catch {
-        return { roots, complete: false };
+        unreadable.push(dir);
+        continue;
       }
       if (entries.some((e) => e.name === ".git")) roots.push(dir);
       if (depth < SCAN_DEPTH)
@@ -125,7 +140,7 @@ export const scanReposSync = (ws: string, o: { budget?: number } = {}): RepoScan
     }
     queue = next;
   }
-  return { roots, complete: true };
+  return { roots, complete: true, unreadable };
 };
 
 /** The repo around a workspace (a workspace inside a repo), or null. */
@@ -281,9 +296,73 @@ export const repoUnion = (workspaces: string[], o: HooksOptions, now = Date.now(
   return built.union;
 };
 
+/** How long a directory's repo lookup is trusted before it's checked again. */
+const DIR_TTL_MS = 30_000;
+const dirRepos = new Map<string, { root: string | null; at: number }>();
+interface RepoHooks {
+  root: string;
+  info: HooksInfo;
+  /** The info's paths, realpath'd once. */
+  hooksDirs: string[];
+  gitDirs: string[];
+  chain: Set<string>;
+  checkedAt: number;
+}
+const repoHooks = new Map<string, RepoHooks>();
+
+/**
+ * The repo a path belongs to and how it runs hooks: the nearest `.git` at or above the path's
+ * folder (cached per folder), resolved with hooksFor and re-checked at most every MTIME_CHECK_MS.
+ * This covers repos the index doesn't know (under skipped folders, unreadable siblings, a partial
+ * scan) at the cost of a few stats per new folder, once.
+ */
+export const repoForPath = (
+  abs: string,
+  o: HooksOptions & { fallback: string },
+  now = Date.now(),
+): RepoHooks | null => {
+  const dir = dirname(abs);
+  let hit = dirRepos.get(dir);
+  if (!hit || now - hit.at > DIR_TTL_MS) {
+    hit = {
+      root: repoRootOf(dir, {
+        fallback: o.fallback,
+        ...(o.env ? { env: o.env } : {}),
+        ...(o.fs ? { fs: o.fs } : {}),
+      }),
+      at: now,
+    };
+    dirRepos.set(dir, hit);
+  }
+  if (!hit.root) return null;
+  const key = `${hit.root}\0${o.home}\0${JSON.stringify(o.env ?? {})}\0${o.platform ?? ""}`;
+  const cached = repoHooks.get(key);
+  if (cached && now - cached.checkedAt < MTIME_CHECK_MS) return cached;
+  const info = hooksFor(hit.root, o);
+  if (cached && cached.info === info) {
+    cached.checkedAt = now;
+    return cached;
+  }
+  const entry: RepoHooks = {
+    root: realOr(hit.root),
+    info,
+    hooksDirs: [
+      ...(typeof info.dir === "string" && info.dir !== "unknown" ? [realOr(info.dir)] : []),
+      ...info.extraDirs.map(realOr),
+    ],
+    gitDirs: info.gitDirs.map(realOr),
+    chain: new Set(info.chain.map(realOr)),
+    checkedAt: now,
+  };
+  repoHooks.set(key, entry);
+  return entry;
+};
+
 /** Tests: forget everything. */
 export const clearRepoIndex = () => {
   indexes.clear();
+  dirRepos.clear();
+  repoHooks.clear();
   unionCache = null;
   version++;
 };
