@@ -54,19 +54,31 @@ describe("classification with 200 repos in the workspace", () => {
     expect(write("group4/repo14/hooks-14/pre-commit").tier).toBe("HIGH");
 
     const n = 500;
-    // Warm-up of the per-folder repo lookup: each new folder is looked up once.
-    for (let i = 0; i < n; i++) write(`group${i % 10}/repo${i % 200}/src/file${i}.ts`);
+    const loop = () => {
+      for (let i = 0; i < n; i++) write(`group${i % 10}/repo${i % 200}/src/file${i}.ts`);
+    };
+    // Warm-up of the per-folder repo lookup (each new folder once) and of the JIT.
+    loop();
+    loop();
     counting = true;
-    const start = performance.now();
-    for (let i = 0; i < n; i++) write(`group${i % 10}/repo${i % 200}/src/file${i}.ts`);
-    const perCall = (performance.now() - start) / n;
+    // The median of five batches: a busy CI runner (other packages' tests in parallel) mustn't
+    // decide this; the steady state is about 0.1 ms per call.
+    const batches: number[] = [];
+    for (let b = 0; b < 5; b++) {
+      const start = performance.now();
+      loop();
+      batches.push((performance.now() - start) / n);
+    }
     counting = false;
+    const perCall = batches.sort((x, y) => x - y)[2]!;
 
     expect(perCall).toBeLessThan(1);
     // No folder walk, no config reads, and no per-repo stat loop per call (at most one mtime sweep).
     expect(calls.readdirSync).toBe(0);
     expect(calls.readFileSync).toBe(0);
-    expect(calls.statSync).toBeLessThan(n);
+    // At most a throttled mtime sweep or two (~14 files per repo), never a stat per repo per call
+    // (2,500 calls × 200 repos).
+    expect(calls.statSync).toBeLessThan(6000);
     expect(write("group9/repo199/hooks-199/x").tier).toBe("HIGH");
     expect(write("group9/repo199/src/hooks/useX.ts").tier).toBe("MED");
   });
