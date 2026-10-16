@@ -17,6 +17,8 @@ import { SealedEnvelope } from "./crypto.js";
 import { AppId } from "./recipe.js";
 import { TerminalCloseReason, TerminalCols, TerminalId, TerminalRows } from "./terminal.js";
 import { ScreenEndReason, ScreenMode, ScreenState } from "./screen.js";
+import { LinkHandoffStage, LinkId, LinkMode, LinkRefusal } from "./agent-link.js";
+import { LinkTaskState } from "./link.js";
 
 export const SessionState = z.enum([
   "starting",
@@ -168,6 +170,36 @@ export const AgentEvent = z.discriminatedUnion("type", [
     exitCode: z.number().int().optional(),
   }),
   // ---- end TERMINAL ----
+  // ---- LINKS (ADR 0022 §3): every hand-off and share shows on the phone, in both sessions ----
+  /**
+   * A hand-off over a link: `out` in the sending session, `in` in the receiving one. `peerSid`
+   * is the other session (absent until the receiver's session exists); metadata only.
+   */
+  z.object({
+    ...base,
+    type: z.literal("link.handoff"),
+    linkId: LinkId,
+    taskId: Id,
+    direction: z.enum(["in", "out"]),
+    stage: LinkHandoffStage,
+    hop: z.number().int().min(1).max(3),
+    peerDeviceId: DeviceId,
+    peerSid: SessionId.optional(),
+    reason: LinkRefusal.optional(),
+  }),
+  /** Information over a share link (or a hand-off's result). `ct` opens to the quoted data. */
+  z.object({
+    ...base,
+    type: z.literal("link.shared"),
+    linkId: LinkId,
+    mode: LinkMode,
+    direction: z.enum(["in", "out"]),
+    peerDeviceId: DeviceId,
+    taskId: Id.optional(),
+    state: LinkTaskState.optional(),
+    ct: SealedEnvelope.optional(),
+  }),
+  // ---- end LINKS ----
 ]);
 export type AgentEvent = z.infer<typeof AgentEvent>;
 
@@ -252,6 +284,20 @@ export const CommandRejectReason = z.enum([
   "not_ready",
   "duplicate_answer",
   // ---- end SCREEN ----
+  // ---- LINKS (agent-link.ts) ----
+  /** This agent has no link support wired. */
+  "links_disabled",
+  /** A hand-off link can be made only on the device itself (desktop panel or `chalito link add`). */
+  "link_local_only",
+  /** No such link on this device, or it was revoked or expired. */
+  "unknown_link",
+  /** This device is neither end of the link. */
+  "link_wrong_endpoint",
+  /** The link's workspace isn't in this computer's policy. */
+  "link_out_of_scope",
+  /** A delivery over a link was refused (hop or cycle limit, rate, budget, signature, owner). */
+  "link_refused",
+  // ---- end LINKS ----
   "internal",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
@@ -374,6 +420,15 @@ export const DeviceEvent = z.discriminatedUnion("type", [
    * Remote screen's state on this device, for display only: what the person enabled locally
    * (view, control) and how many screen sessions are live. `by` names what ended them.
    */
+  /** This device's links changed (made, revoked, expired); counts only. `by` names what changed them. */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("link.changed"),
+    deviceId: DeviceId,
+    active: z.number().int().min(0).max(1000),
+    by: z.string().max(32).optional(),
+    t: EpochMs,
+  }),
   z.object({
     v: z.literal(1),
     type: z.literal("screen.changed"),

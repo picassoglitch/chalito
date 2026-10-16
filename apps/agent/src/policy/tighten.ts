@@ -15,7 +15,12 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   flagsOnlyOff(next.adapters, cur.adapters) &&
   PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
   SANDBOX_RANK[next.remote.maxCodexSandbox] <= SANDBOX_RANK[cur.remote.maxCodexSandbox] &&
-  flagsOnlyOff(next.origins, cur.origins) &&
+  // `origins.agent` absent means on (links, ADR 0022): compared as such, so a patch that drops it
+  // can't turn a local `false` back on.
+  flagsOnlyOff(
+    { ...next.origins, agent: next.origins.agent !== false },
+    { ...cur.origins, agent: cur.origins.agent !== false },
+  ) &&
   flagsOnlyOff(next.egress, cur.egress) &&
   next.approvals.ttlSeconds <= cur.approvals.ttlSeconds &&
   subsetOf(next.allowlist.commands, cur.allowlist.commands) &&

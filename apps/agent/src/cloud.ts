@@ -6,6 +6,7 @@ import type { Identity } from "./identity.js";
 import type { Logger } from "./redact.js";
 import type { AgentStore } from "./store.js";
 import { SupabaseStore, pairingTopic, type SupaClient } from "./supabase-store.js";
+import { SupabaseLinkCloud, type LinkCloud } from "./links/cloud.js";
 
 export type FetchFn = (
   url: string,
@@ -73,6 +74,8 @@ export interface Cloud {
   refresh(): Promise<void>;
   readonly refreshIntervalMs: number;
   store(owner: string, deviceId: string): AgentStore;
+  /** Agent-to-agent link relays and the phone's link list (links/cloud.ts); absent = links stay on this device. */
+  linkCloud?(owner: string, deviceId: string): LinkCloud;
   close(): Promise<void>;
 }
 
@@ -162,6 +165,7 @@ export const supabaseCloud = (
       stores.push(s);
       return s;
     },
+    linkCloud: (owner, deviceId) => new SupabaseLinkCloud(client, owner, deviceId),
     close: async () => {
       for (const s of stores) await s.close().catch(() => undefined);
       await client.removeAllChannels().catch(() => undefined);

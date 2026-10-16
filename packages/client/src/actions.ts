@@ -52,6 +52,12 @@ const CLIENT_COMMANDS = new Set<CommandPayload["type"]>([
   "devmode.off",
   "devmode.toggleOff",
   "device.revokeClient",
+  // Links (ADR 0022 §3): a share link (always with this device's passkey), revoke and list. A
+  // hand-off link can't be made from here (the protocol has no such command).
+  "link.create",
+  "link.revoke",
+  "link.revokeAll",
+  "link.list",
 ]);
 
 const b64Nonce = (): string => {
@@ -244,6 +250,40 @@ export class ClientActions {
       agentDeviceId,
       async () => ({ type: "device.revokeClient", clientDeviceId }),
       this.#revokeStepUp(agentDeviceId, clientDeviceId),
+    );
+  }
+
+  /** Revokes one agent-to-agent link on that computer, at once (ADR 0022 §3). */
+  async revokeLink(agentDeviceId: string, linkId: string): Promise<string> {
+    return this.#command(agentDeviceId, async () => ({ type: "link.revoke", linkId }));
+  }
+
+  /** Revokes every link on that computer. */
+  async revokeAllLinks(agentDeviceId: string): Promise<string> {
+    return this.#command(agentDeviceId, async () => ({ type: "link.revokeAll" }));
+  }
+
+  /** Asks that computer to publish its links again (chalito.agent_links; `listLinks` reads them). */
+  async refreshLinks(agentDeviceId: string): Promise<string> {
+    return this.#command(agentDeviceId, async () => ({ type: "link.list" }));
+  }
+
+  /**
+   * A share link (information only) on one end's computer, with this device's passkey over the
+   * command (agents refuse it without one). A cross-device link is sent to both ends.
+   */
+  async createShareLink(
+    agentDeviceId: string,
+    link: Extract<CommandPayload, { type: "link.create" }>["link"],
+  ): Promise<string> {
+    return this.#command(
+      agentDeviceId,
+      async () => ({ type: "link.create", link }),
+      async (unsigned) => {
+        const stepUp = await this.opts.stepUp({ aid: `link:${link.id}`, risk: "HIGH", agentDeviceId }, unsigned);
+        if (!stepUp) throw new ActionError("passkey_required");
+        return stepUp;
+      },
     );
   }
 

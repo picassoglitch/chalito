@@ -39,6 +39,7 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
+import { FileLinkStorage, LinkManager, MemoryLinkCloud } from "./links/index.js";
 import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
 import { osAuthFor } from "./os-auth.js";
@@ -853,6 +854,23 @@ const startDaemon = async (
     });
     coreDeps.screen = screen;
   }
+  // Agent-to-agent links (ADR 0022 §3): the list is local and signed (~/.chalito/links.json);
+  // the cloud only carries relays and shows the list on the phone.
+  const links = new LinkManager({
+    deviceId: id.deviceId,
+    owner: cfg.owner,
+    sign: id.sign,
+    box: id.box,
+    pubBox: id.pubBox,
+    storage: new FileLinkStorage(dir, id.sign),
+    cloud: cloud.linkCloud?.(cfg.owner, id.deviceId) ?? new MemoryLinkCloud(),
+    policy: () => policy.get(),
+    audit: auditAgent,
+    publishDeviceEvent: async (e) => publish(e),
+    now,
+    log,
+  });
+  coreDeps.links = links;
   const core = new AgentCore(coreDeps);
   if (computer) {
     const control = computer;
@@ -1148,6 +1166,7 @@ const startDaemon = async (
           computer,
           terminal,
           screen,
+          links,
           audit: auditAgent,
         }),
         onError: (method, err) =>

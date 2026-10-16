@@ -222,6 +222,10 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
       });
     }
 
+    // Agent-to-agent links (ADR 0022 §3) go too: the mirror is marked, and every agent drops a
+    // marked link before its next delivery (even one that gets no revokeClient below).
+    const linksRevoked = (await deps.repo.revokeAgentLinks?.(p.owner, "revoke_all")) ?? 0;
+
     // Queue the caller's signed revokeClient commands; anything else in the list is refused.
     const bundle = body.data.stepUp?.bundle ?? [];
     const agents = new Set(await deps.repo.activeAgents(p.owner));
@@ -262,9 +266,9 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
       owner: p.owner,
       actor: p.uid,
       target: caller.deviceId,
-      meta: { clients: revoked.length, commandsQueued: queued, banFailed: banFailed.length },
+      meta: { clients: revoked.length, commandsQueued: queued, banFailed: banFailed.length, linksRevoked },
     });
-    return c.json({ ok: true, revoked, agents: [...agents], commandsQueued: queued, refused, banFailed });
+    return c.json({ ok: true, revoked, agents: [...agents], commandsQueued: queued, refused, banFailed, linksRevoked });
   });
 
   return app;
