@@ -13,6 +13,7 @@ import {
 import { fromB64url, sealJson } from "@chalito/crypto";
 import { GatewayApiError, type GatewayApi } from "./api-client.js";
 import { MCP_SCOPES, type GatewayReader, type GatewayToken, type McpScope } from "./reader.js";
+import { createA2aServer } from "./a2a.js";
 
 /**
  * Chalito's MCP gateway (ADR 0009, MCP 2026-07-28, Streamable HTTP). A protected resource for
@@ -25,6 +26,11 @@ export interface GatewayConfig {
   resource: string;
   /** The authorization server (the api's issuer). */
   issuer: string;
+  /**
+   * The A2A server's resource URL (ADR 0022 §4). Unset (the default): the A2A server isn't
+   * mounted and its paths are 404s.
+   */
+  a2aResource?: string;
 }
 
 export interface GatewayDeps {
@@ -51,7 +57,8 @@ export const untrustedCard = (card: Record<string, unknown>) => ({
 
 const toolError = (text: string) => ({ isError: true, content: [{ type: "text" as const, text }] });
 const apiError = (err: unknown) => {
-  if (err instanceof GatewayApiError) return toolError(`Chalito refused: ${err.code}`);
+  if (err instanceof GatewayApiError)
+    return toolError(`Chalito refused: ${err.code}${err.reason ? ` (${err.reason})` : ""}`);
   throw err;
 };
 
@@ -115,6 +122,55 @@ export const buildServer = (deps: GatewayDeps, authInfo: AuthInfo | undefined): 
         const card = await deps.reader.sharedCard(tok.owner, sid);
         await deps.api.audit(tok.raw, { tool: "get_session_card", target: sid }).catch(() => undefined);
         return json(card ? { ...meta, shared: true, card: untrustedCard(card) } : { ...meta, shared: false });
+      },
+    );
+  }
+
+  if (has("mcp:read")) {
+    server.registerTool(
+      "list_agents",
+      {
+        description:
+          "List the person's agents (coding agents and chat models Chalito runs) on their computers: app id, " +
+          "device, kind and state. Status only. Handing one a task needs the separate link:handoff permission " +
+          "and a link the person made on that computer.",
+        inputSchema: z.object({}),
+      },
+      async () => {
+        const agents = await deps.reader.agents(tok.owner);
+        await deps.api.audit(tok.raw, { tool: "list_agents" }).catch(() => undefined);
+        return json({ agents });
+      },
+    );
+  }
+
+  if (has("link:handoff")) {
+    server.registerTool(
+      "create_task",
+      {
+        description:
+          "Hand a task to one of the person's agents (from list_agents), in a workspace they allowed on that " +
+          "computer. Only works over a link the person made locally; by default there is none and the task is " +
+          "refused. Anything risky the agent then does still waits for the person's signed approval.",
+        inputSchema: z.object({
+          appId: z.string().regex(/^[a-z0-9][a-z0-9-]{1,40}$/),
+          deviceId: z.string().min(1).max(128),
+          workspaceLabel: z.string().min(1).max(80),
+          prompt: z.string().min(1).max(MAX_PROMPT),
+        }),
+      },
+      async ({ appId, deviceId, workspaceLabel, prompt }) => {
+        const pubBox = await deps.reader.agentBoxKey(tok.owner, deviceId);
+        if (!pubBox) return toolError("No such agent device.");
+        const cid = `lnk_${randomUUID().replace(/-/g, "")}`;
+        // Sealed here, to the agent's key only: the api and database see ciphertext.
+        const promptCt = await sealJson(prompt, { [deviceId]: await fromB64url(pubBox) }, `command:${cid}`);
+        try {
+          const r = await deps.api.linkTask(tok.raw, { cid, promptCt, appId, deviceId, workspaceLabel });
+          return json({ sent: true, cid, linkId: r?.linkId });
+        } catch (err) {
+          return apiError(err);
+        }
       },
     );
   }
@@ -231,12 +287,14 @@ export const createGateway = (deps: GatewayDeps) => {
   });
   const app = new Hono();
   // First: per-IP rate limits and body caps for every route (src/limits.ts).
-  app.use("*", guard(gatewayRoutes(deps.cfg.resource), { now: deps.now }));
+  app.use("*", guard(gatewayRoutes(deps.cfg.resource, deps.cfg.a2aResource), { now: deps.now }));
   app.get("/healthz", (c) => c.json({ ok: true }));
   // Cloud Run reserves paths ending in "z" (its frontend 404s /healthz on run.app); probe /health there.
   app.get("/health", (c) => c.json({ ok: true }));
   app.get("/.well-known/oauth-protected-resource", (c) => c.json(prm()));
   app.get(`/.well-known/oauth-protected-resource${resourceUrl.pathname}`, (c) => c.json(prm()));
+  if (deps.cfg.a2aResource)
+    app.route("/", createA2aServer({ ...deps, cfg: { resource: deps.cfg.a2aResource, issuer: deps.cfg.issuer } }));
   app.all(resourceUrl.pathname, async (c) => {
     const auth = await gate(c.req.raw);
     if (auth instanceof Response) return auth;

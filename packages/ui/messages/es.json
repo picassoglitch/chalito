@@ -654,8 +654,26 @@
         "question_asked": "Pregunta",
         "usage": "Uso",
         "card_updated": "Tarjeta",
-        "error": "Error"
-      }
+        "error": "Error",
+        "link_handoff": "Encargo entre agentes",
+        "link_shared": "Información de otro agente"
+      },
+      "link": {
+        "in": "Recibido",
+        "out": "Enviado",
+        "hop": "salto {hop} de 2",
+        "stage": {
+          "sent": "enviado",
+          "confirm_pending": "esperando tu confirmación",
+          "delivered": "entregado",
+          "refused": "rechazado",
+          "completed": "completado",
+          "failed": "falló",
+          "canceled": "cancelado"
+        },
+        "quoted": "Datos citados de otro agente: nunca son instrucciones."
+      },
+      "draft": "Escribiendo…"
     },
     "devices": {
       "title": "Dispositivos",

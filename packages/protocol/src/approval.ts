@@ -21,6 +21,9 @@ export const APPROVAL_TTL_MS = 10 * 60 * 1000;
  * - `remote_control`: a trusted browser sees it and sends mouse/keyboard input (control mode).
  * - `app_control`: an AI session launches and drives one app or AI website (computer MCP
  *   `launch_app` / `open_web_app`); it also grants that session computer control.
+ * - `link_handoff` (ADR 0022 §3): another agent hands work to a session over a link set to "ask me
+ *   each time" (the default). One tap (MED, no step-up); it only lets the task in. Every tool
+ *   the task then uses goes through the gate as usual.
  */
 export const ApprovalKind = z.enum([
   "tool",
@@ -30,6 +33,7 @@ export const ApprovalKind = z.enum([
   "remote_view",
   "remote_control",
   "app_control",
+  "link_handoff",
 ]);
 export type ApprovalKind = z.infer<typeof ApprovalKind>;
 export const ApprovalStatus = z.enum(["pending", "approved", "denied", "expired", "rejected_invalid"]);

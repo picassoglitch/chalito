@@ -43,6 +43,8 @@ signin:
 driver:
   desktopApp: { bundleId: com.exafunction.windsurf, exe: Devin.exe }
 capabilities: [remote-view, ai-control]
+notConnectable:
+  reason: "No ACP, MCP-server, A2A or chat API mode is documented for the desktop app, so Chalito can only open and show it."
 verification:
   checked: "2026-10-06"
   sources:

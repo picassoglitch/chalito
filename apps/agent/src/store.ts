@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isLiveOnlyEvent } from "@chalito/protocol";
 import { sanitizeDeviceEvent } from "./redact.js";
 import type {
   AgentEvent,
@@ -20,6 +21,12 @@ export interface AgentStore {
   watchApproval(aid: string, onDecision: (decision: unknown) => void): () => void;
   resolveApproval(aid: string, status: ApprovalRequest["status"], reason: string, at: number): Promise<void>;
 
+  /**
+   * M16 A (ADR 0022 §1): live-only events (`isLiveOnlyEvent`: deltas, terminal output, screen
+   * state) are broadcast sealed to the person's clients and never stored; every other event is
+   * a `session_events` row, inserted in batches. Order is kept within each path. Resolves once
+   * the event was sent or stored.
+   */
   writeEvent(e: AgentEvent): Promise<void>;
   upsertSession(sid: string, data: Record<string, unknown>): Promise<void>;
 
@@ -89,7 +96,10 @@ export interface AuditEntry {
 /** In-memory store with hooks for tests to play the phone and the cloud. */
 export class MemoryStore implements AgentStore {
   approvals = new Map<string, ApprovalRequest & { decision?: unknown; resolvedAt?: number; reason?: string }>();
+  /** Stored events (the `session_events` rows). */
   events: AgentEvent[] = [];
+  /** Live-only events (broadcast, never stored). */
+  live: AgentEvent[] = [];
   sessions = new Map<string, Record<string, unknown>>();
   device: Record<string, unknown> = {};
   deviceEvents: DeviceEvent[] = [];
@@ -143,7 +153,7 @@ export class MemoryStore implements AgentStore {
     if (a) Object.assign(a, { status, reason, resolvedAt: at });
   }
   async writeEvent(e: AgentEvent) {
-    this.events.push(e);
+    (isLiveOnlyEvent(e) ? this.live : this.events).push(e);
   }
   async upsertSession(sid: string, data: Record<string, unknown>) {
     this.sessions.set(sid, { ...this.sessions.get(sid), ...data });

@@ -46,11 +46,14 @@ const FIRST_SET = [
   "lm-studio",
   "ollama",
 ];
+/** M16 D (ADR 0022 §4): OpenAI-compatible endpoints with the person's own key, and local servers. */
+const CHAT_API_SET = ["xai-api", "deepseek-api", "mistral-api", "groq", "openrouter", "ollama-api", "lm-studio-api"];
+const CURATED = [...FIRST_SET, ...CHAT_API_SET];
 
 describe("the curated recipes (recipes/)", () => {
   it("every source is a valid recipe with its verification notes, and catalog.json is built from them", () => {
     const sources = readSources();
-    expect(sources.map((s) => s.recipe.id).sort()).toEqual([...FIRST_SET].sort());
+    expect(sources.map((s) => s.recipe.id).sort()).toEqual([...CURATED].sort());
     for (const s of sources) expect(s.verification.sources.length).toBeGreaterThan(0);
     expect(readFileSync(join(RECIPES_DIR, "catalog.json"), "utf8")).toBe(
       catalogText(buildCatalog(BUILTIN_CATALOG.issuedAt)),
@@ -58,7 +61,7 @@ describe("the curated recipes (recipes/)", () => {
   });
 
   it("the built-in catalog is what the agent ships, and every web app only lists https origins", () => {
-    expect(BUILTIN_CATALOG.recipes.map((r) => r.id).sort()).toEqual([...FIRST_SET].sort());
+    expect(BUILTIN_CATALOG.recipes.map((r) => r.id).sort()).toEqual([...CURATED].sort());
     for (const r of BUILTIN_CATALOG.recipes) {
       expect(Recipe.safeParse(r).success).toBe(true);
       for (const o of r.driver.web?.allowedOrigins ?? []) expect(o.startsWith("https://")).toBe(true);

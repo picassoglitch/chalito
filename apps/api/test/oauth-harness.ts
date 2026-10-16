@@ -1,12 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
-import type { DeviceDoc } from "@chalito/protocol";
+import type { DeviceDoc, LinkAuthorizer } from "@chalito/protocol";
 import { MemoryAudit, type Deps } from "../src/deps.js";
 import { MemoryMcpStore } from "../src/oauth/memory-store.js";
 import type { McpStore } from "../src/oauth/model.js";
 import type { ApiRepo, StoredWebAuthnCredential, WebAuthnChallenge } from "../src/repo.js";
 import { oauthRoutes, type OAuthConfig } from "../src/routes/oauth.js";
+import { MemoryA2aStore } from "../src/link/exposures.js";
 import { webauthnRoutes } from "../src/routes/webauthn.js";
 import { device, owner } from "./contract/fixtures.js";
 
@@ -20,6 +21,8 @@ export const ORIGIN = `https://${RP}`;
 export const ISSUER = "https://api.chalito.test";
 export const RESOURCE = "https://mcp.chalito.test/mcp";
 export const GATEWAY_TOKEN = "gateway-service-token";
+/** The A2A server's resource, when a test turns it on (ADR 0022 §4). */
+export const A2A_RESOURCE = "https://mcp.chalito.test/a2a";
 export const CLAUDE_CLIENT = "https://claude.ai/oauth/mcp-oauth-client-metadata";
 export const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 export const CHATGPT_CLIENT = "https://chatgpt.com/oauth/client.json";
@@ -47,7 +50,9 @@ export const pkce = () => {
   return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
 };
 
-export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(opts: { now?: () => number; mcp?: S } = {}) => {
+export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(
+  opts: { now?: () => number; mcp?: S; a2a?: boolean; linkAuthorizer?: LinkAuthorizer } = {},
+) => {
   const o = owner();
   const phone: DeviceDoc = await device(o, "client");
   const challenges = new Map<string, WebAuthnChallenge>();
@@ -79,6 +84,7 @@ export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(opts: { 
   let clock = 1_790_000_000_000;
   const audit = new MemoryAudit();
   const mcp = (opts.mcp ?? new MemoryMcpStore()) as S;
+  const a2a = new MemoryA2aStore();
   const deps: Deps & { mcp: S } = {
     repo: repo as ApiRepo,
     identity: {
@@ -91,6 +97,8 @@ export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(opts: { 
     config: { ssoSecret: "s", adminToken: "a", recoveryCooldownMs: 1, skewMs: 60_000 },
     now: opts.now ?? (() => clock),
     mcp,
+    a2a,
+    ...(opts.linkAuthorizer ? { linkAuthorizer: opts.linkAuthorizer } : {}),
   };
   const cfg: OAuthConfig = {
     issuer: ISSUER,
@@ -102,6 +110,7 @@ export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(opts: { 
     codeTtlMs: 60 * 1000,
     requestTtlMs: 10 * 60 * 1000,
     cimdTtlMs: 60 * 60 * 1000,
+    ...(opts.a2a ? { a2aResource: A2A_RESOURCE } : {}),
   };
   const cimdFetches: string[] = [];
   const fetchCimd = (async (url: URL | string) => {
@@ -220,9 +229,9 @@ export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(opts: { 
     });
 
   /** A full flow, returning the token response. */
-  const connect = async (scopes: string[] = ["mcp:read"], clientId = CLAUDE_CLIENT) => {
-    const a = await authorize({ scopes, clientId });
-    const t = await exchange(a);
+  const connect = async (scopes: string[] = ["mcp:read"], clientId = CLAUDE_CLIENT, resource = RESOURCE) => {
+    const a = await authorize({ scopes, clientId, resource });
+    const t = await exchange(a, resource);
     if (t.status !== 200) throw new Error(`token: ${t.status} ${JSON.stringify(t.json)}`);
     return t.json as { access_token: string; refresh_token: string; scope: string; expires_in: number };
   };
@@ -232,6 +241,7 @@ export const oauthHarness = async <S extends McpStore = MemoryMcpStore>(opts: { 
     phone,
     deps,
     mcp,
+    a2a,
     audit,
     app,
     call,

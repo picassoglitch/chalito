@@ -1,0 +1,25 @@
+v: 1
+id: lm-studio-api
+name: LM Studio (local server)
+vendor: Element Labs
+homepage: https://lmstudio.ai/
+termsUrl: https://lmstudio.ai/app-terms
+kinds: [chat-api]
+platforms: {}
+signin:
+  via: none
+  planSignin: "off"
+driver:
+  chatApi: { baseUrl: "http://localhost:1234/v1", tools: true }
+capabilities: [sessions]
+verification:
+  checked: "2026-10-15"
+  sources:
+    - "https://lmstudio.ai/docs/app/api/endpoints/openai (examples at http://localhost:1234/v1; GET /v1/models, POST /v1/chat/completions)"
+    - "https://lmstudio.ai/docs/developer/core/authentication ('By default, LM Studio does not require authentication'; an optional API token as Authorization: Bearer)"
+    - "https://lmstudio.ai/docs/developer/openai-compat/tools ('LM Studio supports tool use through the /v1/chat/completions endpoint')"
+  unverified:
+    - field: driver.chatApi.baseUrl
+      note: "The docs say the examples 'assume the server port is 1234'; they don't call it the default. A token-protected server isn't covered (signin none)."
+    - field: driver.chatApi.streamUsage
+      note: "Not documented on the pages read."

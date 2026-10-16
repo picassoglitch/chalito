@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
-import type { SessionAdapter } from "@chalito/adapters";
+import type { SessionAdapter, SessionStartOptions } from "@chalito/adapters";
 import { loadLiabilityText } from "@chalito/config";
 import {
   MemoryNonceStore,
@@ -40,7 +40,7 @@ import { DEFAULT_ICE_SERVERS } from "../src/screen/peer.js";
 import { fakeDriver, fakePeers, manualTimers } from "./screen-fakes.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
-import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
+import { DEFAULT_POLICY, applyRemoteTighten, policyHash, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { MemoryStore } from "../src/store.js";
 import { syncEndorsements } from "../src/endorsement-sync.js";
@@ -266,7 +266,7 @@ const harness = async (
     o: {
       origin?: string;
       signer?: Device;
-      relayed?: "mcp-gateway" | "notifier";
+      relayed?: "mcp-gateway" | "notifier" | "a2a-server";
       target?: string;
       expiresAt?: number;
     } = {},
@@ -1471,7 +1471,8 @@ describe("session.start by app id (connect engine)", () => {
     expect(res.ok).toBe(true);
     await waitFor(() => goose.run.options !== undefined);
     expect(h.fake.run.options).toBeUndefined();
-    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "acp", appId: "goose", kind: "agent" });
+    // The card names the kind of the adapter that runs it (an ACP recipe's is "acp"; this stand-in's is claude-code).
+    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "claude-code", appId: "goose", kind: "agent" });
 
     // A disabled custom recipe, an unknown app, or one the policy turned off never starts.
     expect(
@@ -1554,6 +1555,52 @@ describe("computer control in sessions", () => {
       env: { CHALITO_COMPUTER_SOCKET: "/tmp/c.sock", CHALITO_COMPUTER_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/) },
     });
     expect(h.fake.run.options!.strictMcpConfig).toBe(true);
+  });
+
+  it("ACP sessions get the same server (M16 A parity); adapters without localMcp never do", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    const seen: SessionStartOptions[] = [];
+    const fakeAdapter = (localMcp: boolean): SessionAdapter => ({
+      kind: "acp",
+      ...(localMcp ? { localMcp: true } : {}),
+      start: async (o) => {
+        seen.push(o);
+        return {
+          prompt: () => undefined,
+          interrupt: async () => undefined,
+          setPermissionMode: async () => undefined,
+          close: () => undefined,
+          done: new Promise<void>(() => undefined),
+        };
+      },
+    });
+    const base = {
+      adapter: "acp" as const,
+      workspace: { label: "chalito", path: WS },
+      prompt: "hola",
+      origin: "client:dev_phone" as const,
+      permissionMode: "default" as const,
+    };
+    const sid = await h.core.startSession({ ...base, appId: "opencode", appAdapter: fakeAdapter(true) });
+    await h.core.startSession({ ...base, appId: "aider", appAdapter: fakeAdapter(false) });
+    expect(Object.keys(seen[0]!.mcpServers ?? {})).toEqual(["chalito_computer"]);
+    expect(seen[1]!.mcpServers).toBeUndefined();
+    // The adapter names a call after the server only for a real tool with valid arguments.
+    const isTool = seen[0]!.mcpServers!.chalito_computer!.isTool!;
+    expect(isTool("click", { x: 1, y: 1 })).toBe(true);
+    expect(isTool("click", { command: "rm -rf /" })).toBe(false);
+    expect(isTool("exec_shell", {})).toBe(false);
+    // An ACP agent's computer call is its own report: asked about each time (HIGH), never a blanket allow.
+    const gate = seen[0]!.gate(
+      { sid, toolUseId: "t1", toolName: "mcp__chalito_computer__click", input: {}, origin: "client:dev_phone" },
+      new AbortController().signal,
+    );
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    expect(h.store.pendingApprovals()[0]).toMatchObject({ kind: "tool", risk: "HIGH" });
+    await h.decide(false);
+    await expect(gate).resolves.toMatchObject({ allow: false });
+    // The broker also sees the turn's origin (for agents that run MCP tools without asking).
+    expect(h.core.turnOrigin(sid)).toBe("client:dev_phone");
   });
 
   it("the tool gate lets computer tools through to the broker only while control can be granted", async () => {
@@ -1691,9 +1738,10 @@ describe("remote terminal over signed commands and sealed events", () => {
     // Keystrokes aren't audited one by one.
     expect(h.store.audits.slice(audits).filter((a) => a.type === "command.accepted")).toHaveLength(0);
 
-    // Output: sealed to the trusted clients, bound to the terminal and the seq.
-    await waitFor(() => h.store.events.some((e) => e.type === "terminal.output"));
-    const out = h.store.events.find((e) => e.type === "terminal.output") as Extract<
+    // Output: sealed to the trusted clients, bound to the terminal and the seq; live only (M16 A).
+    await waitFor(() => h.store.live.some((e) => e.type === "terminal.output"));
+    expect(h.store.events.some((e) => e.type === "terminal.output")).toBe(false);
+    const out = h.store.live.find((e) => e.type === "terminal.output") as Extract<
       (typeof h.store.events)[number],
       { type: "terminal.output" }
     >;
@@ -1744,6 +1792,53 @@ describe("remote terminal over signed commands and sealed events", () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe("outside hand-off tasks (relayed session.start, D-071)", () => {
+  const start = async (
+    h: Awaited<ReturnType<typeof harness>>,
+    origin: string,
+    relayed: "mcp-gateway" | "a2a-server",
+    k = 1,
+  ) =>
+    h.command(
+      {
+        type: "session.start",
+        appId: "claude-code",
+        workspaceLabel: "chalito",
+        promptCt: await h.sealed(k, "revisa el PR"),
+        permissionMode: "default",
+      },
+      { origin, relayed },
+    );
+
+  it("is refused unless local policy exposes that agent and workspace over that path", async () => {
+    const none = await harness({ policy: { origins: { ...DEFAULT_POLICY.origins, a2a: true } } });
+    expect(await start(none, "mcp:claude", "mcp-gateway")).toEqual({ ok: false, reason: "not_exposed" });
+    expect(await start(none, "a2a:con_abc", "a2a-server")).toEqual({ ok: false, reason: "not_exposed" });
+    expect(none.fake.run.options).toBeUndefined();
+
+    const a2aOnly = await harness({
+      policy: {
+        origins: { ...DEFAULT_POLICY.origins, a2a: true },
+        exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a"] }],
+      },
+    });
+    expect(await start(a2aOnly, "mcp:claude", "mcp-gateway")).toEqual({ ok: false, reason: "not_exposed" });
+    expect(await start(a2aOnly, "a2a:con_abc", "a2a-server", 2)).toMatchObject({ ok: true });
+  });
+
+  it("a remote tighten can only remove exposures, never add one", () => {
+    const cur = {
+      ...DEFAULT_POLICY,
+      exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a" as const] }],
+    };
+    expect(applyRemoteTighten(cur, { exposed: [] })).toMatchObject({ ok: true });
+    expect(
+      applyRemoteTighten(cur, { exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a", "mcp"] }] }),
+    ).toMatchObject({ ok: false, reason: "would_loosen" });
+    expect(applyRemoteTighten(DEFAULT_POLICY, { exposed: cur.exposed })).toMatchObject({ ok: false });
   });
 });
 

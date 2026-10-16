@@ -54,6 +54,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 | M13 Solo landing (real renders) | Code-complete (branch `m13-landing-8d`; the app's home moves to `/inicio`) | — | Solo MXN amounts for checkout (Phase 0.2) | D-031 |
 | M14 Downloadable apps | Code-complete, owner-gated | [#16](https://github.com/picassoglitch/chalito/pull/16) | updater key, Apple, Azure, the publish go (Phase 9) | D-011, D-061 |
 | M15 Hardening + docs | Code-complete (on `all` via `m15-hardening`, no separate PR), owner-gated | — | the 1k load test, legal review (Phase 10) | D-060 |
+| M16 Chalito Link (ADR 0022) | In progress (owner go 2026-10-15): A efficiency, B link format, C links, D connect, E LAN | per phase | A2A server domain (#36), TURN relay (#37) | — |
 
 **Security fixes from the beta review** (`docs/reviews/beta-security-review.md`): [#17](https://github.com/picassoglitch/chalito/pull/17) R-C1 (critical), [#18](https://github.com/picassoglitch/chalito/pull/18) R-H2, [#19](https://github.com/picassoglitch/chalito/pull/19) R-L12 adapters env, [#20](https://github.com/picassoglitch/chalito/pull/20) R-M1 + revoke guard. The other findings were fixed on `all` in M15 (batches 2–3) and by the review owners.
 
@@ -272,6 +273,24 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 - **Scope:** rate limits, audit views, load test (1k devices + room fan-out), `RUNBOOK.md`, `LEGAL_CHECKLIST.md`, `OPS.md`, `CHALYB_HANDOFF.md` (flag off), README from zero (under 30 min, verified literally).
 - **Risks:** the load test needs a real dev project, so it costs money (owner's go).
 
+### M16: Chalito Link (ADR 0022)
+- **Scope:** one language for every AI, in phases, one branch and PR each:
+  - **A `m16a-efficiency`:** session idle-close and resume after restart, partial text streaming (`message.assistant.delta`, broadcast-only), fast live path (sealed broadcast plus batched inserts), computer-control MCP for ACP sessions, Cursor ACP probe.
+  - **B `m16b-link-format`:** `packages/protocol/src/link.ts` (`LinkTask`, `LinkMessage`, `LinkArtifact`, `AgentCard`) shaped like A2A v1, plus the `AdapterEvent` → `LinkTask` projection.
+  - **C `m16c-links`:** `AgentLink` with **share** and **hand-off** modes, origin `agent:<sessionId>` (relayed), hand-off links created only locally, confirm-each-time by default, hop limit of 2, budgets, audit, revoke-all.
+  - **D `m16d-connect`:** recipe drivers `chat-api` (OpenAI-compatible) and `a2a` (client), Chalito as an A2A server (off by default), MCP gateway `list_agents`/`create_task`.
+  - **E `m16e-lan`:** mDNS discovery plus device-key mutual auth, local WebSocket for sealed envelopes, with cloud fallback.
+- **AC:**
+  - Existing suites stay green. The `SessionAdapter` conformance suite covers resume and the new drivers.
+  - A: a terminal session writes at least 5× fewer `session_events` rows, and the phone sees deltas.
+  - C: prompt-injection fixtures between agents (share mode never prompts; hand-off never auto-approves); loop fixture stops at 2 hops.
+  - D: A2A conformance against the official SDK, pinned version.
+- **Risks:**
+  - A2A is young (v1.0, March 2026). Pin it and keep fixtures.
+  - Hand-off widens the attack surface, so the threat model must be updated in C.
+  - The A2A server is externally visible and TURN costs money; both need the owner's go.
+  - **No browser automation of chat websites.**
+
 ## Protocol review (for the owner)
 Everything is in `packages/protocol/src`, and every wire object has `v: 1`:
 
@@ -329,3 +348,7 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 31 | **New:** MXN charge amounts for the Solo USD ladder on the hub | Unset; Solo checkout "Disponible pronto" until set |
 | 32 | **New:** Hub changes for Chalito meter kinds + `store.purchase` | Proposed for the Chalyb PR at M2/M12 (D-030) |
 | 33 | **New:** Add Firebase to Chalyb's GCP project (custom-token sign-in, rules deploy) | Off until the owner says so (`enable_firebase = false`) |
+| 34 | **New (2026-10-15):** agent-to-agent | **Owner: both modes** (share and hand-off links, ADR 0022 §3) |
+| 35 | **New (2026-10-15):** M16 order | **Owner: all phases A–E** (no browser automation) |
+| 36 | **New:** A2A server public domain | Pending (off until set) |
+| 37 | **New:** TURN relay for remote screen | Pending (costs money) |

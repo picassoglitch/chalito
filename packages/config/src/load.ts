@@ -12,6 +12,7 @@ import {
   ProvidersConfig,
   RenderConfig,
   RoomsConfig,
+  SessionsConfig,
 } from "./schemas.js";
 
 /** Directory holding the YAML files (packages/config). */
@@ -33,6 +34,7 @@ export const loadProviders = (dir?: string) => load(ProvidersConfig, "providers.
 export const loadRooms = (dir?: string) => load(RoomsConfig, "rooms.yaml", dir);
 export const loadRender = (dir?: string) => load(RenderConfig, "render.yaml", dir);
 export const loadCatalog = (dir?: string) => load(CatalogConfig, "catalog.yaml", dir);
+export const loadSessions = (dir?: string) => load(SessionsConfig, "sessions.yaml", dir);
 export const loadEscalation = (dir?: string) => load(EscalationConfig, "escalation.yaml", dir);
 export const loadRechargeCopy = (locale: "es" | "en", dir?: string) =>
   load(RechargeCopy, `copy/recharge.${locale}.yaml`, dir);

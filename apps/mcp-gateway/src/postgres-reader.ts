@@ -1,5 +1,5 @@
 import postgres, { type Sql } from "postgres";
-import type { GatewayReader, GatewayToken, McpScope, PendingApproval } from "./reader.js";
+import type { AgentSummary, ExposureRow, GatewayReader, GatewayToken, McpScope, PendingApproval } from "./reader.js";
 
 /** A connection that acts as chalito_gateway (read-only; see migration 20261004001800). */
 export const gatewaySql = (url: string, opts: { role?: string; max?: number } = {}): Sql =>
@@ -130,5 +130,44 @@ export class PostgresGatewayReader implements GatewayReader {
       join chalito.devices d on d.owner = s.owner and d.device_id = s.device_id
       where s.owner = ${owner} and s.sid = ${sid} and d.role = 'agent' and not d.revoked`;
     return r ? { deviceId: r.device_id, pubBox: r.pub_box } : null;
+  }
+
+  async agents(owner: string): Promise<AgentSummary[]> {
+    const rows = await this.sql<
+      { provider: string; device_id: string; name: string | null; kind: string; state: string }[]
+    >`
+      select c.provider, c.device_id, d.name, c.doc ->> 'kind' as kind, c.doc ->> 'state' as state
+      from chalito.connections c
+      join chalito.devices d on d.owner = c.owner and d.device_id = c.device_id
+      where c.owner = ${owner} and d.role = 'agent' and not d.revoked
+        and c.doc ->> 'kind' in ('claude-sdk', 'codex', 'acp', 'chat-api', 'a2a')
+      order by c.device_id, c.provider
+      limit 200`;
+    return rows.map((r) => ({
+      appId: r.provider,
+      deviceId: r.device_id,
+      deviceName: r.name,
+      kind: r.kind,
+      state: r.state,
+    }));
+  }
+
+  async agentBoxKey(owner: string, deviceId: string) {
+    const [r] = await this.sql<{ pub_box: string }[]>`
+      select pub_box from chalito.devices
+      where owner = ${owner} and device_id = ${deviceId} and role = 'agent' and not revoked`;
+    return r?.pub_box ?? null;
+  }
+
+  async exposure(exposureId: string): Promise<ExposureRow | null> {
+    const [r] = await this.sql<
+      { owner: string; exposure_id: string; app_id: string; device_id: string; card: Record<string, unknown> }[]
+    >`
+      select e.owner, e.exposure_id, e.app_id, e.device_id, e.card from chalito.a2a_exposures e
+      join chalito.devices d on d.owner = e.owner and d.device_id = e.device_id
+      where e.exposure_id = ${exposureId} and e.revoked_at is null and not d.revoked`;
+    return r
+      ? { owner: r.owner, exposureId: r.exposure_id, appId: r.app_id, deviceId: r.device_id, card: r.card }
+      : null;
   }
 }
