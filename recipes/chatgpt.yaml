@@ -13,6 +13,8 @@ signin:
 driver:
   web: { startUrl: https://chatgpt.com/, allowedOrigins: [https://chatgpt.com, https://auth.openai.com] }
 capabilities: [remote-view, ai-control]
+notConnectable:
+  reason: "A chat website: Chalito never drives chat websites. ChatGPT reaches Chalito the other way, as an MCP client (Developer mode → the Chalito gateway); to run an OpenAI agent, use the codex recipe."
 verification:
   checked: "2026-10-06"
   sources: ["curl chatgpt.com/auth/login and auth.openai.com/log-in (both 403 Cloudflare to curl)"]

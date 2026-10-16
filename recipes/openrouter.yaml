@@ -1,0 +1,32 @@
+v: 1
+id: openrouter
+name: OpenRouter
+vendor: OpenRouter
+homepage: https://openrouter.ai/
+termsUrl: https://openrouter.ai/terms
+kinds: [chat-api]
+platforms: {}
+signin:
+  via: api-key
+  planSignin: "off"
+apiKey:
+  env: OPENROUTER_API_KEY
+  label: OpenRouter API key
+  docsUrl: https://openrouter.ai/docs/quickstart
+driver:
+  chatApi:
+    baseUrl: "https://openrouter.ai/api/v1"
+    model: "~openai/gpt-sol-latest"
+    tools: true
+    headers: { X-OpenRouter-Title: Chalito }
+capabilities: [sessions]
+verification:
+  checked: "2026-10-15"
+  sources:
+    - "https://openrouter.ai/docs/quickstart (base URL https://openrouter.ai/api/v1, /chat/completions, Authorization: Bearer <OPENROUTER_API_KEY>, optional HTTP-Referer and X-OpenRouter-Title; example model ~openai/gpt-sol-latest, a 'latest' alias)"
+    - "https://openrouter.ai/docs/api-reference/overview (tools passed down as-is; when streaming, usage is returned once in the final chunk before [DONE]; SSE comment payloads to ignore)"
+  unverified:
+    - field: driver.chatApi.headers
+      note: "HTTP-Referer (site URL) is left out until Chalito's domain is decided (owner decision #36)."
+    - field: termsUrl
+      note: "Not opened."

@@ -27,7 +27,7 @@ describe("OAuth metadata (RFC 8414)", () => {
       token_endpoint_auth_methods_supported: ["none"],
       code_challenge_methods_supported: ["S256"],
       authorization_response_iss_parameter_supported: true,
-      scopes_supported: ["mcp:read", "mesa:post", "approval:recommend", "session:prompt"],
+      scopes_supported: ["mcp:read", "mesa:post", "approval:recommend", "session:prompt", "link:handoff"],
     });
     expect(JSON.stringify(m)).not.toMatch(/approval:decide|devmode|policy|rooms|billing/);
   });
@@ -35,6 +35,7 @@ describe("OAuth metadata (RFC 8414)", () => {
   it("consent text exists in ES and EN, and session:prompt is never pre-checked", () => {
     for (const t of Object.values(SCOPE_TEXT)) expect(t.es && t.en).toBeTruthy();
     expect(SCOPE_TEXT["session:prompt"].defaultChecked).toBe(false);
+    expect(SCOPE_TEXT["link:handoff"].defaultChecked).toBe(false);
   });
 });
 

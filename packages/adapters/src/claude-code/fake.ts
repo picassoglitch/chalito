@@ -23,6 +23,10 @@ export interface FakeRun {
   options?: Options;
   modes: string[];
   interrupted: number;
+  /** The `resume` option of each query() (undefined for a new session). */
+  resumed?: (string | undefined)[];
+  /** Turns run (user messages taken from the prompt stream). */
+  turns?: number;
 }
 
 export const fakeClaudeCode = (
@@ -32,6 +36,9 @@ export const fakeClaudeCode = (
   const queryFn: QueryFn = ({ prompt, options }) => {
     run.options = options;
     run.modes.push(String(options.permissionMode));
+    (run.resumed ??= []).push(options.resume);
+    // A resumed session keeps its id, as the CLI does without forkSession.
+    const sessionId = options.resume ?? "fake-session-1";
     let aborter = new AbortController();
     let n = 0;
     const hooks = (options.hooks?.PreToolUse ?? []) as HookCallbackMatcher[];
@@ -41,7 +48,7 @@ export const fakeClaudeCode = (
       yield {
         type: "system",
         subtype: "init",
-        session_id: "fake-session-1",
+        session_id: sessionId,
         apiKeySource: options.env?.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : "none",
         permissionMode: options.permissionMode,
         claude_code_version: "2.9.0-fake",
@@ -51,10 +58,22 @@ export const fakeClaudeCode = (
       let turn = 0;
       for await (const _msg of prompt as AsyncIterable<SDKUserMessage>) {
         const steps = turns[turn++] ?? [];
+        run.turns = (run.turns ?? 0) + 1;
         aborter = new AbortController();
         for (const step of steps) {
           if (aborter.signal.aborted) break;
           if ("say" in step) {
+            if (options.includePartialMessages) {
+              // Two text deltas, then the complete message (as the CLI streams with partial messages on).
+              const half = Math.ceil(step.say.length / 2);
+              for (const text of [step.say.slice(0, half), step.say.slice(half)].filter(Boolean))
+                yield {
+                  type: "stream_event",
+                  event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+                  parent_tool_use_id: null,
+                  session_id: sessionId,
+                } as unknown as SDKMessage;
+            }
             yield {
               type: "assistant",
               message: { content: [{ type: "text", text: step.say }] },
@@ -77,7 +96,7 @@ export const fakeClaudeCode = (
                   tool_name: step.tool,
                   tool_input: input,
                   tool_use_id: id,
-                  session_id: "fake-session-1",
+                  session_id: sessionId,
                   cwd: options.cwd ?? "",
                   transcript_path: "",
                 } as never,

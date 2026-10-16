@@ -52,6 +52,13 @@ export const platformKey = (p: NodeJS.Platform): RecipePlatform | null =>
 
 /** Only web apps: they run wherever there's a browser. */
 export const isWebOnly = (r: Recipe) => r.kinds.every((k) => k === "web-app");
+/**
+ * A network driver with nothing installed here (ADR 0022 §4: an OpenAI-compatible endpoint or a
+ * remote A2A agent). It's "connected" once its key is in the keychain, or "available" when it
+ * needs none (a local model server).
+ */
+export const isNetworkOnly = (r: Recipe) =>
+  Object.keys(r.platforms).length === 0 && r.kinds.some((k) => k === "chat-api" || k === "a2a");
 
 /** What the agent remembers per app in ~/.chalito/apps.json (0600; never a secret). */
 const AppRecord = z.object({
@@ -371,6 +378,11 @@ export class AppManager {
 
     // A custom recipe that isn't enabled here (or was edited since): nothing of it runs, not even --version.
     if (e.custom && !e.enabled) return doc("error", false, null, "recipe_disabled");
+    if (isNetworkOnly(e.recipe)) {
+      if (!e.recipe.apiKey) return doc("available", true, null, live.error);
+      const keyed = rec.mode === "api_key" && (await this.#hasKey(appId));
+      return doc(keyed ? "connected" : live.error ? "error" : "needs_auth", true, null, live.error);
+    }
     if (isWebOnly(e.recipe)) return doc("available", true, null, live.error);
     const spec = this.#spec(e);
     if (!spec) return doc("not_installed", false, null, "unsupported_platform");
@@ -432,7 +444,7 @@ export class AppManager {
         doc,
         signinAllowed: this.d.signinAllowed(e),
         installRequestedUntil: this.#liveOf(e.recipe.id).installRequestedUntil,
-        supported: isWebOnly(e.recipe) || !!this.#spec(e),
+        supported: isWebOnly(e.recipe) || isNetworkOnly(e.recipe) || !!this.#spec(e),
         install: this.#spec(e)?.install ?? null,
       });
     }
@@ -514,6 +526,8 @@ export class AppManager {
     }
     if (live.busy) return { ok: false, reason: "provider_busy" };
     const s = e.recipe.signin;
+    // A key goes in with app.connect {key}; an endpoint without sign-in has nothing to start.
+    if (s.via === "api-key" || s.via === "none") return { ok: false, reason: "app_unavailable" };
     if (s.via === "desktop-app" || s.via === "web") {
       live.blocked = false;
       return this.launch(appId);

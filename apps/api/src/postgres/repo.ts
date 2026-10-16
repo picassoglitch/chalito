@@ -132,6 +132,11 @@ export class PostgresRepo implements ApiRepo {
     return rows.map((r) => r.device_id).sort();
   }
 
+  async revokeAgentLinks(owner: string, by: string) {
+    const [row] = await this.sql<{ n: number }[]>`select chalito_private.revoke_agent_links(${owner}, ${by}) as n`;
+    return Number(row?.n ?? 0);
+  }
+
   async activeAgents(owner: string) {
     const rows = await this.sql<{ device_id: string }[]>`
       select device_id from chalito.devices where owner = ${owner} and role = 'agent' and revoked = false`;

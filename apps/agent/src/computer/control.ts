@@ -55,6 +55,12 @@ export interface ComputerDeps {
   audit: (type: string, meta: Record<string, unknown>) => void;
   /** Reports the state to the account (`computer.changed` DeviceEvent). */
   publish: (state: { enabled: boolean; activeSessions: number; by?: string }) => void;
+  /**
+   * M16 A: the origin of the turn a session is running now (agent-core `turnOrigin`). Checked on
+   * every action, so an agent that runs MCP tools without asking (some ACP agents) still can't
+   * act for an unsigned (mcp:/call:) turn. Absent = only the session's own origin is checked.
+   */
+  turnOrigin?: (sid: string) => Origin | undefined;
   /** How to start the MCP server, or null while the broker socket isn't up (no desktop app). */
   mcpLaunch: () => { command: string; args: string[]; socket: string } | null;
   now: () => number;
@@ -367,6 +373,9 @@ export class ComputerControl {
   #checkLive(ctl: Ctl, fallback?: "denied"): void {
     if (!this.enabled()) throw new ComputerError("disabled", MESSAGES.disabled);
     if (!isSignedOrigin(ctl.origin)) throw new ComputerError("unsigned_origin", MESSAGES.unsigned_origin);
+    const turn = this.d.turnOrigin?.(ctl.sid);
+    if (turn !== undefined && !isSignedOrigin(turn))
+      throw new ComputerError("unsigned_origin", MESSAGES.unsigned_origin);
     if (ctl.state === "revoked") throw new ComputerError("revoked", MESSAGES.revoked);
     if (ctl.state === "denied" || fallback === "denied") throw new ComputerError("denied", MESSAGES.denied);
   }

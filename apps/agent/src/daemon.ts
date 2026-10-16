@@ -6,7 +6,7 @@ import type { SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv, type ClaudeAuth } from "@chalito/adapters/claude-code";
 import { CodexAdapter } from "@chalito/adapters/codex";
 import { builtinAcpRecipe } from "@chalito/adapters/acp";
-import { loadLiabilityText, loadProviders } from "@chalito/config";
+import { SESSIONS_DEFAULTS, loadLiabilityText, loadProviders, loadSessions } from "@chalito/config";
 import { fromB64url, sealJson, signEnvelope, type NonceStore, type TrustedClientList } from "@chalito/crypto";
 import {
   PROVIDER_APP,
@@ -39,6 +39,7 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
+import { FileLinkStorage, LinkManager, MemoryLinkCloud } from "./links/index.js";
 import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
 import { osAuthFor } from "./os-auth.js";
@@ -55,7 +56,9 @@ import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
+import { FileSessionRegistry, type SessionRegistry } from "./session-registry.js";
 import type { AgentStore } from "./store.js";
+import { lanPath, lanTee, peerEventLog, type LanService } from "./lan/index.js";
 import { TrustStore } from "./trust-store.js";
 
 export const CLAUDE_MISSING = {
@@ -156,6 +159,8 @@ export interface DaemonDeps {
   now?: () => number;
   /** One-shot timers for approvals (AgentCore). */
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
+  /** M16 A: where sessions are remembered for resume; defaults to ~/.chalito/sessions.json. */
+  sessionRegistry?: SessionRegistry;
   /** Repeating timer for the token refresh. */
   every?: (fn: () => void, ms: number) => { clear(): void };
   /** Installs SIGTERM/SIGINT handlers; tests pass a no-op. */
@@ -346,6 +351,22 @@ export const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 /** Presence: lastSeenAt every 5 min while running (the database skips broadcasts for last_seen-only updates). */
 export const PRESENCE_HEARTBEAT_MS = 5 * 60 * 1000;
 
+/**
+ * sessions.yaml (M16 A); the compiled-in defaults when the file isn't there (the single-file
+ * agent build) or doesn't validate.
+ */
+let sessionsCache: ReturnType<typeof loadSessions> | null = null;
+export const sessionsConfig = (log?: { warn(m: string, meta?: Record<string, unknown>): void }) => {
+  if (sessionsCache) return sessionsCache;
+  try {
+    sessionsCache = loadSessions();
+  } catch (err) {
+    log?.warn("config.sessions_defaults", { error: err instanceof Error ? err.message : "error" });
+    sessionsCache = SESSIONS_DEFAULTS;
+  }
+  return sessionsCache;
+};
+
 const defaultCloud =
   (log: Logger, secrets: SecretStore) =>
   (cfg: PairedConfig, mint: MintToken): Cloud => {
@@ -355,7 +376,10 @@ const defaultCloud =
         : new SupabaseAuthTokenSource(createDeviceAuth(cfg.supabase.url, cfg.supabase.publishableKey, secrets), mint, {
             log,
           });
-    return supabaseCloud(cfg.supabase, tokens, { log });
+    return supabaseCloud(cfg.supabase, tokens, {
+      log,
+      batch: { ms: sessionsConfig(log).events.batchMs, max: sessionsConfig(log).events.batchMax },
+    });
   };
 
 const repeat = (fn: () => void, ms: number) => {
@@ -434,6 +458,7 @@ const startDaemon = async (
       await computer?.onPolicyChange();
       await terminal?.onPolicyChange();
       await screen?.onPolicyChange();
+      await lan?.onPolicyChange();
       if (!store) return;
       await store.updateDevice({ policyHash: hash });
       await store.publishDeviceEvent({
@@ -450,6 +475,8 @@ const startDaemon = async (
   let computer: ComputerControl | null = null;
   let terminal: TerminalControl | null = null;
   let screen: ScreenManager | null = null;
+  // LAN direct path (lan/, ADR 0022 §5): null without a LAN-capable cloud; off until local policy.
+  let lan: LanService | null = null;
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
   const devModeBase = {
@@ -647,7 +674,8 @@ const startDaemon = async (
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {
     classifyExtras: () => extras,
-    store: signedInStore,
+    // Events also go live to the owner's other agents over the LAN; the cloud write is unchanged.
+    store: lanTee(signedInStore, () => lan),
     adapters: (deps.adapters ?? defaultAdapters)({
       apiKey,
       claudePath,
@@ -683,6 +711,9 @@ const startDaemon = async (
     now,
     log,
     ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
+    // M16 A: idle-close, the live cap, delta flushing, and resume after a restart.
+    sessionsConfig: sessionsConfig(log),
+    registry: deps.sessionRegistry ?? new FileSessionRegistry(dir, log),
   };
 
   // Computer control (computer/control.ts): only when the desktop app started this agent, since
@@ -717,6 +748,7 @@ const startDaemon = async (
     computer = new ComputerControl({
       policy: () => policy.get().computer,
       requestApproval: (sid, input) => core.requestComputerApproval(sid, input),
+      turnOrigin: (sid) => core.turnOrigin(sid),
       interrupt: async (sid) => {
         await core.sessions.get(sid)?.handle.interrupt();
       },
@@ -853,7 +885,42 @@ const startDaemon = async (
     });
     coreDeps.screen = screen;
   }
+  // Agent-to-agent links (ADR 0022 §3): the list is local and signed (~/.chalito/links.json);
+  // the cloud only carries relays and shows the list on the phone.
+  const links = new LinkManager({
+    deviceId: id.deviceId,
+    owner: cfg.owner,
+    sign: id.sign,
+    box: id.box,
+    pubBox: id.pubBox,
+    storage: new FileLinkStorage(dir, id.sign),
+    cloud: cloud.linkCloud?.(cfg.owner, id.deviceId) ?? new MemoryLinkCloud(),
+    policy: () => policy.get(),
+    audit: auditAgent,
+    publishDeviceEvent: async (e) => publish(e),
+    now,
+    log,
+  });
+  coreDeps.links = links;
   const core = new AgentCore(coreDeps);
+  // Sessions from before this start can be resumed (lazily: nothing is spawned for them now).
+  await core
+    .restore()
+    .catch((err: unknown) =>
+      log.warn("sessions.restore_failed", { error: err instanceof Error ? err.message : "error" }),
+    );
+  // The phone's list, and the mirror rows deliveries are checked against (retried until it lands).
+  void links.sync();
+  lan = lanPath({
+    cloud,
+    self: { deviceId: id.deviceId, sign: id.sign },
+    policy: () => policy.get().lan,
+    handleCommand: (cid, doc) => core.handleCommand(cid, doc),
+    onPeerEvent: peerEventLog(log, now),
+    log,
+    now,
+  });
+  await lan?.onPolicyChange();
   if (computer) {
     const control = computer;
     try {
@@ -1108,12 +1175,12 @@ const startDaemon = async (
     terminalWatchdog?.clear();
     await terminal?.kill("agent_stop").catch(() => undefined);
     await screen?.stopAll().catch(() => undefined);
-    for (const s of core.sessions.values()) {
-      await s.handle.interrupt().catch(() => undefined);
-      s.handle.close();
-    }
+    // Every session stays resumable after the restart (sessions.json).
+    await core.suspendAll().catch(() => undefined);
     await broker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
+    await lan?.stop("agent_stop").catch(() => undefined);
+    links.close();
     await cloud.close().catch(() => undefined);
     releaseLock();
     resolveDone();
@@ -1148,6 +1215,7 @@ const startDaemon = async (
           computer,
           terminal,
           screen,
+          links,
           audit: auditAgent,
         }),
         onError: (method, err) =>

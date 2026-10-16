@@ -1280,3 +1280,44 @@ Notable findings:
 - `jpeg-js` 0.4.4 `encode({width, height, data: RGBA}, quality)`. Source: its `index.d.ts` (checked 2026-10-06).
 - Chrome/Edge/Chromium flags `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--app=<url>`: long-standing Chromium switches; not re-run on each OS here (UNVERIFIED). Branded Chrome ignores `--load-extension` since 137, so no extension-based origin lock is used.
 - `open -a` / `open -b` (macOS), `explorer.exe shell:AppsFolder\<AUMID>` (Windows): documented OS launch paths; the curated recipes' bundle ids and AUMIDs are the ENGINE builder's to verify.
+
+## A2A (Agent2Agent) v1.0: the Link format (ADR 0022 §2, checked 2026-10-15)
+- **Pinned:** spec **1.0** (a2a-protocol.org/latest/specification lists 1.0.0 as the latest release; compatibility is tracked by Major.Minor) and the official JS SDK **`@a2a-js/sdk` 1.3.0** (npm `latest`, published 2026-09-29; `A2A_PROTOCOL_VERSION = "1.0"`, legacy `"0.3"` under `compat/v0_3`). The SDK is a `devDependency` of `packages/protocol` (exact version) and is used only by tests.
+- **Source:** the SDK's generated `lf.a2a.v1` types (`dist/a2a-*.d.ts`) and its ProtoJSON `toJSON` codecs (`dist/index.js`), read from the npm tarball.
+  - `Task`: `id`, `contextId`, `status`, `artifacts`, `history`, `metadata`.
+  - `TaskStatus`: `state`, `message`, `timestamp` (ISO 8601).
+  - `TaskState` JSON names: `TASK_STATE_SUBMITTED | WORKING | INPUT_REQUIRED | AUTH_REQUIRED | COMPLETED | FAILED | CANCELED | REJECTED` (plus `UNSPECIFIED`, which we refuse).
+  - `Message`: `messageId`, `contextId`, `taskId`, `role` (`ROLE_USER | ROLE_AGENT`), `parts`, `metadata`, `extensions`, `referenceTaskIds`.
+  - `Part`: one of `text | raw | url | data`, plus `metadata`, `filename` and `mediaType`. There is no `kind` discriminator: v1.0 removed it (spec appendix A.2.1).
+  - `Artifact`: `artifactId`, `name`, `description`, `parts`, `metadata`, `extensions`.
+  - `TaskStatusUpdateEvent`: `taskId`, `contextId`, `status`, `metadata`.
+  - `TaskArtifactUpdateEvent`: `taskId`, `contextId`, `artifact`, `append`, `lastChunk`, `metadata`.
+  - `StreamResponse`: one of `task | message | statusUpdate | artifactUpdate`.
+  - `AgentCard`: `name`, `description`, `supportedInterfaces` (`url`, `protocolBinding` JSONRPC/GRPC/HTTP+JSON, `tenant`, `protocolVersion`), `provider` (`url`, `organization`), `version`, `documentationUrl`, `capabilities` (`streaming`, `pushNotifications`, `extensions`, `extendedAgentCard`), `securitySchemes` (a map of one-of `apiKeySecurityScheme | httpAuthSecurityScheme | oauth2SecurityScheme | openIdConnectSecurityScheme | mtlsSecurityScheme`), `securityRequirements` (`schemes` → `{list}`), `defaultInputModes`, `defaultOutputModes`, `skills` (`id`, `name`, `description`, `tags`, `examples`, `inputModes`, `outputModes`, `securityRequirements`), `signatures` (JWS), `iconUrl`.
+  - ProtoJSON omits empty lists and `false`/empty defaults.
+- **Test:** `packages/protocol/test/link.test.ts` round-trips our task, message, card and every `StreamResponse` kind (plus the card of every curated recipe) through the SDK's `fromJSON` → `toJSON` and expects exactly the same JSON back.
+- ~~UNVERIFIED: the bindings~~ Verified in Phase D, below.
+
+### A2A 1.0 bindings (Phase D, checked 2026-10-15)
+- **Sources:** https://a2a-protocol.org/latest/specification/ (§3.6.1, §5.3, §6, §8.2, §9.1, §9.4) and the `@a2a-js/sdk` 1.3.0 tarball (`dist/client/index.js` JsonRpcTransport / RestTransport, `dist/server/index.js` JsonRpcTransportHandler, `dist/server/express/index.js` restHandler).
+- **Agent Card:** `GET https://{server}/.well-known/agent-card.json` (spec §8.2; SDK `AGENT_CARD_PATH`), ProtoJSON. **SDK quirk:** 1.3.0's express `agentCardHandler` writes the codec's internal form (`{"scheme": {"$case": …}}`) instead of ProtoJSON, and `DefaultAgentCardResolver` then drops the security schemes. Chalito fetches the card itself and parses it with `AgentCard.fromJSON` (and serves `AgentCard.toJSON`).
+- **Headers:** `A2A-Version: 1.0` (spec §3.6.1; SDK sends it). HTTP+JSON content type `application/a2a+json`. Streaming is server-sent events (`text/event-stream`, one `data:` line per event, spec §9.1).
+- **JSON-RPC 2.0** (POST to the interface URL; spec §9.4): `SendMessage`, `SendStreamingMessage` (SSE; each event is a JSON-RPC response whose `result` is a `StreamResponse`), `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, `GetExtendedAgentCard`, plus `CreateTaskPushNotificationConfig`, `GetTaskPushNotificationConfig`, `ListTaskPushNotificationConfigs`, `DeleteTaskPushNotificationConfig`. `SendMessage`'s result is `{task}` or `{message}`. Error codes: -32001 task not found, -32002 not cancelable, -32003 push not supported, -32004 unsupported operation, -32005 content type, -32006 invalid agent response, -32007 extended card not configured, -32008 extension required, -32009 version not supported.
+- **HTTP+JSON** (spec §5.3 table; SDK RestTransport): `POST /message:send`, `POST /message:stream` (SSE of `StreamResponse`), `GET /tasks/{id}`, `GET /tasks`, `POST /tasks/{id}:cancel`, `POST /tasks/{id}:subscribe` (SDK also `GET`), `GET /extendedAgentCard`, `…/tasks/{id}/pushNotificationConfigs[/{configId}]`; optional `/{tenant}` prefix. Errors are `{error: {code, status, message, details}}` (google.rpc-style). The v0.3 paths (`/v1/message:send`, `/v1/card`) are the SDK's legacy compat only; Chalito doesn't use them.
+- **Tests:** `packages/adapters/test/a2a.test.ts` runs Chalito's `a2a` driver against a test agent built from the SDK's own server (`DefaultRequestHandler`, `InMemoryTaskStore`, express `jsonRpcHandler` and `restHandler`) over both bindings, streaming and not; `apps/mcp-gateway/test/link.test.ts` runs the SDK's `ClientFactory` + `JsonRpcTransportFactory` against Chalito's A2A server.
+- **Not verified:** gRPC (not used); push notifications (not offered); signed cards (JWS, not checked or produced).
+
+## OpenAI-compatible chat APIs: the `chat-api` recipes (ADR 0022 §4, checked 2026-10-15)
+Each recipe's `verification` block has its sources and unverified fields. No real key was used and no paid API was called: the driver is tested against a mocked server (`packages/adapters/test/chat-api-fixture.ts`) that streams OpenAI-style chunks.
+
+| Recipe | Base URL | Default model | Tools (documented) | `stream_options.include_usage` | Source |
+|---|---|---|---|---|---|
+| `xai-api` | `https://api.x.ai/v1` | `grok-4.7` | not on chat completions (Responses only): **off** | not documented: off | docs.x.ai quickstart, models, function-calling guide |
+| `deepseek-api` | `https://api.deepseek.com` | `deepseek-flash` | yes (functions only) | yes (with `stream: true`) | api-docs.deepseek.com, create-chat-completion |
+| `mistral-api` | `https://api.mistral.ai/v1` | `mistral-medium-latest` | yes | not documented: off | docs.mistral.ai/api, function_calling |
+| `groq` | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` | yes ("all models") | not documented: off | console.groq.com/docs/openai, tool-use |
+| `openrouter` | `https://openrouter.ai/api/v1` | `~openai/gpt-sol-latest` (a "latest" alias) | yes (passed through) | usage always in the final chunk | openrouter.ai/docs/quickstart, api-reference/overview |
+| `ollama-api` | `http://localhost:11434/v1` | first of `GET /v1/models` | yes | yes | docs.ollama.com/api/openai-compatibility |
+| `lm-studio-api` | `http://localhost:1234/v1` (the docs' example port) | first of `GET /v1/models` | yes | not documented: off | lmstudio.ai/docs (OpenAI endpoints, authentication, tools) |
+
+Notes: DeepSeek's usage adds `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` (`prompt_tokens_details.cached_tokens` is the same number). Groq rejects `logprobs`, `logit_bias`, `top_logprobs`, `messages[].name` and `n ≠ 1` with 400 (the driver sends none). OpenRouter's optional attribution headers are `HTTP-Referer` and `X-OpenRouter-Title` (only the title is set until Chalito's domain is decided). Ollama ignores the key on a local server; LM Studio needs none unless the person turns on its token. UNVERIFIED: Groq's `x_groq.usage` chunk field (read if present, from Groq's SDKs, not the pages read).

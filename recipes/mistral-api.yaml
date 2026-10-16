@@ -1,0 +1,28 @@
+v: 1
+id: mistral-api
+name: Mistral API
+vendor: Mistral AI
+homepage: https://console.mistral.ai/
+termsUrl: https://mistral.ai/terms
+kinds: [chat-api]
+platforms: {}
+signin:
+  via: api-key
+  planSignin: "off"
+apiKey:
+  env: MISTRAL_API_KEY
+  label: Mistral API key
+  docsUrl: https://docs.mistral.ai/api/
+driver:
+  chatApi: { baseUrl: "https://api.mistral.ai/v1", model: mistral-medium-latest, tools: true }
+capabilities: [sessions]
+verification:
+  checked: "2026-10-15"
+  sources:
+    - "https://docs.mistral.ai/api/ (POST https://api.mistral.ai/v1/chat/completions, Authorization: Bearer $MISTRAL_API_KEY; stream: data-only server-sent events ending with data: [DONE]; tools, tool_choice, parallel_tool_calls)"
+    - "https://docs.mistral.ai/capabilities/function_calling/ (mistral-medium-latest among the function-calling models)"
+  unverified:
+    - field: driver.chatApi.streamUsage
+      note: "stream_options isn't documented; the response's usage (UsageInfo) fields aren't listed on the page read. Usage is read when a chunk carries it."
+    - field: homepage
+      note: "console.mistral.ai not opened."

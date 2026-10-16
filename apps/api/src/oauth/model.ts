@@ -1,5 +1,10 @@
 /** OAuth/MCP records (supabase/migrations/20261004001700_chalito_oauth.sql, 001800). */
-export const MCP_SCOPES = ["mcp:read", "mesa:post", "approval:recommend", "session:prompt"] as const;
+/**
+ * `link:handoff` (ADR 0022 §4, M16 D): create a hand-off task on one of the owner's agents
+ * (`create_task` on the MCP gateway, `SendMessage` on the A2A server). Off by default; every
+ * task still goes through a LinkAuthorizer.
+ */
+export const MCP_SCOPES = ["mcp:read", "mesa:post", "approval:recommend", "session:prompt", "link:handoff"] as const;
 export type McpScope = (typeof MCP_SCOPES)[number];
 export const isMcpScope = (s: string): s is McpScope => (MCP_SCOPES as readonly string[]).includes(s);
 

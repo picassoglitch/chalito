@@ -2,16 +2,17 @@ import { generateBoxKeyPair, toB64url, type BoxKeyPair } from "@chalito/crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { GatewayApi } from "../src/api-client.js";
 import { createGateway } from "../src/app.js";
-import type { GatewayReader, McpScope, PendingApproval, SessionMeta } from "../src/reader.js";
-import { GATEWAY_TOKEN, ISSUER, RESOURCE, oauthHarness } from "../../api/test/oauth-harness.js";
+import type { AgentSummary, GatewayReader, McpScope, PendingApproval, SessionMeta } from "../src/reader.js";
+import type { LinkAuthorizer } from "@chalito/protocol";
+import { A2A_RESOURCE, GATEWAY_TOKEN, ISSUER, RESOURCE, oauthHarness } from "../../api/test/oauth-harness.js";
 
 /**
  * The gateway wired to the api's OAuth server (in memory): the reader sees the api's token store,
  * so revocation through the api is visible to the gateway on its next call, as with the database.
  */
-export const gatewayHarness = async () => {
+export const gatewayHarness = async (opts: { a2a?: boolean; linkAuthorizer?: LinkAuthorizer } = {}) => {
   let skew = 0;
-  const h = await oauthHarness({ now: () => Date.now() + skew });
+  const h = await oauthHarness({ now: () => Date.now() + skew, ...opts });
   const phoneBox: BoxKeyPair = await generateBoxKeyPair();
   const data = {
     pending: [] as PendingApproval[],
@@ -19,6 +20,9 @@ export const gatewayHarness = async () => {
     cards: new Map<string, { deviceId: string; card: Record<string, unknown> }>(),
     clients: { [h.phone.deviceId]: await toB64url(phoneBox.publicKey) } as Record<string, string>,
     agents: new Map<string, { deviceId: string; pubBox: string }>(),
+    /** list_agents rows, and the agent devices' box keys (b64url). */
+    agentList: [] as AgentSummary[],
+    agentBoxes: {} as Record<string, string>,
   };
   const sharingOn = (owner: string, sid: string, device: string) =>
     !!h.mcp.sharing.get(`${owner}/session/${sid}`)?.enabled ||
@@ -45,10 +49,24 @@ export const gatewayHarness = async () => {
     },
     clientBoxKeys: async (owner) => (owner === h.o ? data.clients : {}),
     sessionAgent: async (owner, sid) => (owner === h.o ? (data.agents.get(sid) ?? null) : null),
+    agents: async (owner) => (owner === h.o ? data.agentList : []),
+    agentBoxKey: async (owner, deviceId) => (owner === h.o ? (data.agentBoxes[deviceId] ?? null) : null),
+    // The api's exposure store, as the database would show it to the gateway.
+    exposure: async (id) => {
+      const e = await h.a2a.getExposure(id);
+      return e
+        ? { owner: e.owner, exposureId: e.exposureId, appId: e.appId, deviceId: e.deviceId, card: e.card }
+        : null;
+    },
   };
   const api = new GatewayApi("http://api.test", GATEWAY_TOKEN, ((url: string | URL, init?: RequestInit) =>
     h.app.request(url.toString(), init)) as typeof fetch);
-  const gw = createGateway({ reader, api, cfg: { resource: RESOURCE, issuer: ISSUER }, now: h.deps.now });
+  const gw = createGateway({
+    reader,
+    api,
+    cfg: { resource: RESOURCE, issuer: ISSUER, ...(opts.a2a ? { a2aResource: A2A_RESOURCE } : {}) },
+    now: h.deps.now,
+  });
   const gwFetch = ((url: string | URL, init?: RequestInit) => gw.fetch(new Request(url, init))) as typeof fetch;
 
   const mcpClient = async (accessToken: string) => {

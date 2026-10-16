@@ -38,6 +38,11 @@ export type AskUser = (
 export type AdapterEvent =
   | { type: "started"; providerSessionId: string }
   | { type: "assistant_text"; text: string }
+  /**
+   * The next piece of the assistant text being written (M16 A partial streaming). Display only:
+   * the agent throttles and broadcasts it, and the `assistant_text` that follows is the message.
+   */
+  | { type: "assistant_delta"; text: string }
   | { type: "tool_started"; toolUseId: string; toolName: string; input: Record<string, unknown> }
   | { type: "tool_finished"; toolUseId: string; ok: boolean }
   | { type: "usage"; tokIn: number; tokOut: number; tokCacheRead: number; tokCacheWrite: number; model?: string }
@@ -53,15 +58,29 @@ export interface LocalMcpServer {
   command: string;
   args: string[];
   env: Record<string, string>;
+  /**
+   * Whether `tool` with `input` is one of this server's tools with valid arguments. An adapter
+   * that can only infer a call's server from what the agent reports (ACP titles) names a call
+   * after this server only when it holds; without it, such a call is never named as ours.
+   */
+  isTool?: (tool: string, input: Record<string, unknown>) => boolean;
 }
 
 export interface SessionStartOptions {
   sid: string;
   cwd: string;
+  /**
+   * The first turn's prompt. Empty only with `resume`: the session is reopened without a turn
+   * (state idle) and waits for `prompt()`.
+   */
   prompt: string;
   origin: Origin;
   permissionMode: RemotePermissionMode;
-  /** Provider session id to resume (Claude session_id, Codex thread id). */
+  /**
+   * Provider session id to resume (Claude session_id, Codex thread id, ACP sessionId). Claude
+   * passes it as the SDK's `resume`, Codex as `thread/resume`, ACP as `session/resume` or
+   * `session/load` when the agent advertises one (else a new session).
+   */
   resume?: string;
   gate: ToolGate;
   askUser: AskUser;
@@ -84,6 +103,11 @@ export interface SessionHandle {
 
 export interface SessionAdapter {
   readonly kind: AdapterKind;
+  /**
+   * The adapter accepts `mcpServers` (the agent's own local servers) and puts each of their tool
+   * calls through the gate as `mcp__<server>__<tool>`. Missing = never given any.
+   */
+  readonly localMcp?: boolean;
   start(opts: SessionStartOptions): Promise<SessionHandle>;
 }
 

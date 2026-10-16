@@ -1,0 +1,31 @@
+v: 1
+id: xai-api
+name: xAI API (Grok)
+vendor: xAI
+homepage: https://x.ai/api
+termsUrl: https://x.ai/legal/terms-of-service
+kinds: [chat-api]
+platforms: {}
+signin:
+  via: api-key
+  planSignin: "off"
+apiKey:
+  env: XAI_API_KEY
+  label: xAI API key
+  docsUrl: https://docs.x.ai/developers/quickstart
+driver:
+  chatApi: { baseUrl: "https://api.x.ai/v1", model: grok-4.7 }
+capabilities: [sessions]
+verification:
+  checked: "2026-10-15"
+  sources:
+    - "https://docs.x.ai/developers/quickstart (OpenAI-compatible base URL https://api.x.ai/v1, Responses and Chat Completions; XAI_API_KEY; checked 2026-10-03, docs/VERIFIED_APIS.md §OpenAI 5)"
+    - "https://docs.x.ai/developers/models (grok-4.7 recommended)"
+    - "https://docs.x.ai/docs/guides/function-calling (tools shown on the Responses API only)"
+  unverified:
+    - field: driver.chatApi.tools
+      note: "The function-calling guide and API reference document tools on /v1/responses only, not on /v1/chat/completions, so tools stay off."
+    - field: driver.chatApi.streamUsage
+      note: "stream_options.include_usage isn't documented on the pages read; usage is read when a chunk carries it."
+    - field: homepage
+      note: "https://x.ai/api not opened."

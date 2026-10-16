@@ -48,6 +48,8 @@ driver:
   terminal: { command: [ollama] }
   desktopApp: { bundleId: com.electron.ollama, exe: ollama app.exe }
 capabilities: [terminal, remote-view, ai-control]
+notConnectable:
+  reason: "The app itself isn't an agent; its local server is: use the ollama-api recipe."
 verification:
   checked: "2026-10-06"
   sources:

@@ -68,7 +68,7 @@ export class FakeSupabase implements RealtimeClient {
     const state: {
       op: "select" | "insert" | "update" | "delete";
       cols?: string;
-      body?: Row;
+      body?: Row | Row[];
       filters: [string, unknown][];
       gts: [string, number][];
       ins: [string, readonly unknown[]][];
@@ -89,10 +89,10 @@ export class FakeSupabase implements RealtimeClient {
       const rows = this.rows(table);
       switch (state.op) {
         case "insert":
-          this.seed(table, state.body!);
+          for (const r of Array.isArray(state.body) ? state.body : [state.body!]) this.seed(table, r);
           return { data: null, error: null };
         case "update":
-          for (const r of rows.filter(match)) this.bump(Object.assign(r, state.body));
+          for (const r of rows.filter(match)) this.bump(Object.assign(r, state.body as Row));
           return { data: null, error: null };
         case "delete": {
           const keep = rows.filter((r) => !match(r));

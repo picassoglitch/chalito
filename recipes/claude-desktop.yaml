@@ -45,6 +45,8 @@ signin:
 driver:
   desktopApp: { bundleId: com.anthropic.claudefordesktop, exe: claude.exe }
 capabilities: [remote-view, ai-control]
+notConnectable:
+  reason: "The desktop app has no agent protocol Chalito can drive. It reaches Chalito as an MCP client (custom connector → the Chalito gateway); to run Claude as an agent, use the claude-code recipe."
 verification:
   checked: "2026-10-06"
   sources:
