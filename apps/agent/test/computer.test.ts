@@ -83,6 +83,7 @@ const setup = (
     approve?: (sid: string) => Promise<ComputerApprovalOutcome>;
     launch?: boolean;
     apps?: ComputerDeps["apps"];
+    turnOrigin?: ComputerDeps["turnOrigin"];
   } = {},
 ) => {
   let policy: Policy["computer"] = "policy" in o ? o.policy : ON;
@@ -114,6 +115,7 @@ const setup = (
     },
     newToken: () => "tok_1",
     ...(o.apps ? { apps: o.apps } : {}),
+    ...(o.turnOrigin ? { turnOrigin: o.turnOrigin } : {}),
   };
   const c = new ComputerControl(deps);
   return {
@@ -444,6 +446,15 @@ describe("computer control gating", () => {
     expect(h.c.gate("other", "local")).toEqual({ allow: false, reason: "computer_not_attached" });
     h.c.end("s1");
     await expect(h.c.call("tok_1", "click", {})).rejects.toMatchObject({ code: "unknown_session" });
+  });
+
+  it("refuses every action while the session's current turn is unsigned, even if the agent never asked (M16 A)", async () => {
+    let turn: Origin = "client:dev_phone";
+    const h = setup({ approve: async () => ({ allow: true, reason: "signed_allow" }), turnOrigin: () => turn });
+    attached(h);
+    await expect(h.c.call("tok_1", "click", {})).resolves.toEqual({ text: "ok" });
+    turn = "mcp:chatgpt";
+    await expect(h.c.call("tok_1", "click", {})).rejects.toMatchObject({ code: "unsigned_origin" });
   });
 
   it("rate-limits actions per session (wait doesn't count) and audits the limit once a minute", async () => {

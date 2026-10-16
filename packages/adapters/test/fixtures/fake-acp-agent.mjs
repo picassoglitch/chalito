@@ -48,6 +48,7 @@ const runTurn = async (steps) => {
       const tc = { toolCallId: step.tool.id, title: step.tool.title ?? step.tool.id, kind: step.tool.kind };
       if (step.tool.rawInput) tc.rawInput = step.tool.rawInput;
       if (step.tool.locations) tc.locations = step.tool.locations;
+      if (step.tool.kind === undefined) delete tc.kind;
       notify(SID, { sessionUpdate: "tool_call", status: "pending", ...tc });
       let ok = true;
       if (step.tool.ask !== false) {
@@ -82,13 +83,21 @@ const handle = async (m) => {
         result: {
           protocolVersion: script.protocolVersion ?? 1,
           authMethods: script.authMethods ?? [],
-          agentCapabilities: { loadSession: true, promptCapabilities: {} },
+          agentCapabilities: {
+            loadSession: script.loadSession ?? true,
+            promptCapabilities: {},
+            ...(script.resumeSession ? { sessionCapabilities: { resume: {} } } : {}),
+          },
           agentInfo: { name: "fake-acp", version: "0.0.1" },
         },
       });
     case "authenticate":
       if (script.authFail) return send({ id, error: { code: -32000, message: script.authFail } });
       authenticated = true;
+      return send({ id, result: {} });
+    case "session/resume":
+      // Unlike session/load, resume doesn't replay the history.
+      SID = params.sessionId;
       return send({ id, result: {} });
     case "session/new":
     case "session/load": {

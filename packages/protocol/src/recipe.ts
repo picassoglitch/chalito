@@ -24,7 +24,17 @@ import { ProviderConnectMethod, ProviderErrorCode, ProviderState } from "./provi
 export const AppId = z.string().regex(/^[a-z0-9][a-z0-9-]{1,40}$/, "app id must be kebab-case, 2-41 chars");
 export type AppId = z.infer<typeof AppId>;
 
-export const RecipeKind = z.enum(["claude-sdk", "codex", "acp", "terminal", "desktop-app", "web-app"]);
+export const RecipeKind = z.enum([
+  "claude-sdk",
+  "codex",
+  "acp",
+  "terminal",
+  "desktop-app",
+  "web-app",
+  // ADR 0022 §4 (M16 D): an OpenAI-compatible chat endpoint, and a remote A2A agent.
+  "chat-api",
+  "a2a",
+]);
 export type RecipeKind = z.infer<typeof RecipeKind>;
 
 export const RecipeCapability = z.enum(["sessions", "terminal", "remote-view", "ai-control"]);
@@ -176,10 +186,14 @@ export type PlanSignin = z.infer<typeof PlanSignin>;
  * and, with `openLinks`, the agent opens it in this computer's browser, only on these hosts),
  * `acpMethod` (the ACP authenticate methodId for `via: acp`), `interactive` (a CLI sign-in that only
  * works inside the app's own terminal UI).
+ *
+ * Network drivers (ADR 0022 §4): `api-key` is the person's own key, stored in this computer's
+ * keychain (`app.connect` with a key) and sent only to the recipe's own endpoint; `none` is an
+ * endpoint that needs no sign-in (a local model server such as Ollama or LM Studio).
  */
 export const RecipeSignin = z
   .object({
-    via: z.enum(["cli", "acp", "desktop-app", "web"]),
+    via: z.enum(["cli", "acp", "desktop-app", "web", "api-key", "none"]),
     command: Argv.optional(),
     url: https.optional(),
     statusCommand: Argv.optional(),
@@ -223,8 +237,69 @@ export const RecipeApiKey = z
   .strict();
 export type RecipeApiKey = z.infer<typeof RecipeApiKey>;
 
+/**
+ * An OpenAI-compatible endpoint: https anywhere, or plain http only on this computer's loopback
+ * (a local model server). No credentials, query or fragment in the URL.
+ */
+const ChatBaseUrl = z
+  .string()
+  .max(300)
+  .refine((u) => {
+    try {
+      const x = new URL(u);
+      if (x.username || x.password || x.search || x.hash) return false;
+      if (x.protocol === "https:") return true;
+      return x.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(x.hostname);
+    } catch {
+      return false;
+    }
+  }, "https, or http on localhost only; no credentials, query or fragment");
+
+/** A model id as providers spell them (`grok-4.7`, `meta-llama/llama-4-scout`, `llama3.2:3b`). */
+/** `~` starts an OpenRouter "latest" alias (`~openai/gpt-sol-latest`). */
+export const ChatModelId = z.string().regex(/^~?[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/, "a model id");
+
+/** A non-secret request header a provider documents (attribution, never auth). */
+const HeaderName = z
+  .string()
+  .regex(/^[A-Za-z][A-Za-z0-9-]{0,63}$/)
+  .refine(
+    (h) => !/^(authorization|cookie|proxy-|x-api-key|api-key|host|content-)/i.test(h),
+    "not an auth or transport header",
+  );
+
+export const RecipeChatApi = z
+  .object({
+    /** Base URL; the driver calls `${baseUrl}/chat/completions` (and `/models` to pick a model). */
+    baseUrl: ChatBaseUrl,
+    /** The default model; without one, the first model `/models` lists (local servers). */
+    model: ChatModelId.optional(),
+    /** The provider documents OpenAI-style tool calls: only then may Chalito's gated computer MCP be offered. */
+    tools: z.boolean().optional(),
+    /** The provider documents `stream_options.include_usage` (others may reject the field). */
+    streamUsage: z.boolean().optional(),
+    headers: z.record(HeaderName, z.string().min(1).max(200)).optional(),
+  })
+  .strict();
+export type RecipeChatApi = z.infer<typeof RecipeChatApi>;
+
+export const A2aBinding = z.enum(["JSONRPC", "HTTP+JSON"]);
+export type A2aBinding = z.infer<typeof A2aBinding>;
+
+export const RecipeA2a = z
+  .object({
+    /** The agent's base URL; its card is at `${url}/.well-known/agent-card.json` (A2A 1.0 §8.2). https only. */
+    url: https,
+    /** Preferred binding when the card offers both (default JSONRPC). gRPC is not used. */
+    binding: A2aBinding.optional(),
+  })
+  .strict();
+export type RecipeA2a = z.infer<typeof RecipeA2a>;
+
 export const RecipeDriver = z
   .object({
+    chatApi: RecipeChatApi.optional(),
+    a2a: RecipeA2a.optional(),
     acp: z
       .object({
         command: Argv,
@@ -285,6 +360,11 @@ const argv0s = (r: {
   ...Object.values(r.platforms).flatMap((p) => (p?.launch?.command ? [p.launch.command[0]!] : [])),
 ];
 
+/** Kinds whose driver takes a prompt and runs it (an agent session). */
+const AGENT_KINDS: ReadonlySet<RecipeKind> = new Set(["claude-sdk", "codex", "acp", "chat-api", "a2a"]);
+/** Kinds that run wherever there's a network (nothing installed on the computer). */
+const NETWORK_KINDS: ReadonlySet<RecipeKind> = new Set(["web-app", "chat-api", "a2a"]);
+
 export const Recipe = z
   .object({
     v: z.literal(1),
@@ -306,6 +386,15 @@ export const Recipe = z
     driver: RecipeDriver,
     profile: RecipeProfile.optional(),
     capabilities: z.array(RecipeCapability).max(4),
+    /**
+     * A tool that speaks none of ACP, MCP, A2A or a chat API (ADR 0022 §4): listed so people find
+     * it, never driven as an agent (no browser automation of chat websites, ever). The reason says
+     * why and, where there is one, which recipe connects the same provider.
+     */
+    notConnectable: z
+      .object({ reason: z.string().min(1).max(300) })
+      .strict()
+      .optional(),
   })
   .strict()
   .refine((r) => new Set(r.kinds).size === r.kinds.length, { message: "kinds repeat" })
@@ -316,8 +405,16 @@ export const Recipe = z
   .refine((r) => !r.kinds.includes("web-app") || (r.driver.web !== undefined && r.signin.via === "web"), {
     message: "a web app needs driver.web and a web sign-in",
   })
-  .refine((r) => Object.keys(r.platforms).length > 0 || r.kinds.every((k) => k === "web-app"), {
-    message: "platforms may be empty only for a web app (it runs wherever there's a browser)",
+  .refine((r) => !r.kinds.includes("chat-api") || r.driver.chatApi !== undefined, {
+    message: "a chat-api app needs driver.chatApi",
+  })
+  .refine((r) => !r.kinds.includes("a2a") || r.driver.a2a !== undefined, { message: "an a2a app needs driver.a2a" })
+  .refine((r) => r.signin.via !== "api-key" || r.apiKey !== undefined, { message: "an api-key sign-in needs apiKey" })
+  .refine((r) => !r.notConnectable || !r.kinds.some((k) => AGENT_KINDS.has(k)), {
+    message: "a recipe with an agent driver is connectable",
+  })
+  .refine((r) => Object.keys(r.platforms).length > 0 || r.kinds.every((k) => NETWORK_KINDS.has(k)), {
+    message: "platforms may be empty only for a web app or a network driver (chat-api, a2a)",
   })
   .refine(
     (r) => {

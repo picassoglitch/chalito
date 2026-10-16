@@ -17,6 +17,8 @@ driver:
       allowedOrigins: [https://copilot.microsoft.com, https://login.live.com, https://login.microsoftonline.com],
     }
 capabilities: [remote-view, ai-control]
+notConnectable:
+  reason: "A chat website: Chalito never drives chat websites. For GitHub Copilot as an agent, use the copilot-cli recipe (ACP)."
 verification:
   checked: "2026-10-06"
   sources:

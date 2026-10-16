@@ -15,7 +15,12 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   flagsOnlyOff(next.adapters, cur.adapters) &&
   PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
   SANDBOX_RANK[next.remote.maxCodexSandbox] <= SANDBOX_RANK[cur.remote.maxCodexSandbox] &&
-  flagsOnlyOff(next.origins, cur.origins) &&
+  // `origins.agent` absent means on (links, ADR 0022): compared as such, so a patch that drops it
+  // can't turn a local `false` back on.
+  flagsOnlyOff(
+    { ...next.origins, agent: next.origins.agent !== false },
+    { ...cur.origins, agent: cur.origins.agent !== false },
+  ) &&
   flagsOnlyOff(next.egress, cur.egress) &&
   next.approvals.ttlSeconds <= cur.approvals.ttlSeconds &&
   subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
@@ -24,7 +29,12 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   computerTighterOrEqual(next.computer, cur.computer) &&
   appsTighterOrEqual(next.apps, cur.apps) &&
   remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
-  screenTighterOrEqual(next.screen, cur.screen);
+  screenTighterOrEqual(next.screen, cur.screen) &&
+  lanTighterOrEqual(next.lan, cur.lan);
+
+/** LAN direct path: can only be turned off remotely, and its port can't be moved while on. */
+export const lanTighterOrEqual = (next: Policy["lan"], cur: Policy["lan"]): boolean =>
+  !next?.enabled || (!!cur?.enabled && next.port === cur.port);
 
 /**
  * Engine: an app's sessions can only be turned off (an id without an entry is off, so a `true` is
@@ -105,7 +115,7 @@ export const presetPolicy = (preset: z.infer<typeof PolicyPreset>, cur: Policy):
       return {
         ...cur,
         remote: { maxPermissionMode: "default", maxCodexSandbox: "read-only" },
-        origins: { ...cur.origins, mcp: false, call: false },
+        origins: { ...cur.origins, mcp: false, call: false, ...(cur.origins.a2a ? { a2a: false } : {}) },
         egress: { callLines: false, mcpCards: false },
       };
     case "estandar":

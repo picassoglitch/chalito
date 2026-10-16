@@ -6,7 +6,7 @@ import type { RouteTable } from "@chalito/guard";
  * createGateway; test/route-limits.test.ts fails on a route without an entry. The gateway's
  * database role is read-only, so its buckets are per instance.
  */
-export const gatewayRoutes = (resource: string): RouteTable => {
+export const gatewayRoutes = (resource: string, a2aResource?: string): RouteTable => {
   const path = new URL(resource).pathname;
   const metadata = { capacity: 120, refillPerSec: 5, bodyBytes: 0 };
   return {
@@ -15,5 +15,13 @@ export const gatewayRoutes = (resource: string): RouteTable => {
     [`GET /.well-known/oauth-protected-resource${path}`]: metadata,
     // MCP over streamable HTTP: one request per tool call; prompts are capped at 8000 chars.
     [`ALL ${path}`]: { capacity: 120, refillPerSec: 2, bodyBytes: 64 * 1024 },
+    // The A2A server (ADR 0022 §4), only when it's on: cards, its PRM, and one JSON-RPC endpoint per exposure.
+    ...(a2aResource ? a2aRoutes(new URL(a2aResource).pathname.replace(/\/+$/, ""), metadata) : {}),
   };
 };
+
+const a2aRoutes = (path: string, metadata: RouteTable[string]): RouteTable => ({
+  [`GET /.well-known/oauth-protected-resource${path}`]: metadata,
+  [`GET ${path}/:id/.well-known/agent-card.json`]: metadata,
+  [`POST ${path}/:id`]: { capacity: 60, refillPerSec: 1, bodyBytes: 64 * 1024 },
+});

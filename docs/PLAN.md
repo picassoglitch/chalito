@@ -2,7 +2,7 @@
 
 - Owner: Aldo (picassoglitch)
 - Written: M0, 2026-10-03
-- Status: **M0–M15 code-complete; going live is owner-gated (`docs/GO_LIVE.md`, plain-language summary in `docs/OWNER_SUMMARY.md`)** (updated 2026-10-04). Revised 2026-10-03 after the owner's answers: Chalito is a Chalyb engine.
+- Status: **M0–M15 code-complete; M16 in progress; M17 planned (2026-10-16); going live is owner-gated (`docs/GO_LIVE.md`, plain-language summary in `docs/OWNER_SUMMARY.md`)** (updated 2026-10-04). Revised 2026-10-03 after the owner's answers: Chalito is a Chalyb engine.
 
 This is the build plan for the Chalito beta. It is the milestone list from the brief, adjusted to the APIs verified on 2026-10-03 (`docs/VERIFIED_APIS.md`), with risks per milestone. Where the plan differs from the brief, the reason is in `/DEVIATIONS.md`. Design decisions are in `docs/adr/`. Security invariants are in `docs/THREAT_MODEL.md`.
 
@@ -54,6 +54,8 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 | M13 Solo landing (real renders) | Code-complete (branch `m13-landing-8d`; the app's home moves to `/inicio`) | — | Solo MXN amounts for checkout (Phase 0.2) | D-031 |
 | M14 Downloadable apps | Code-complete, owner-gated | [#16](https://github.com/picassoglitch/chalito/pull/16) | updater key, Apple, Azure, the publish go (Phase 9) | D-011, D-061 |
 | M15 Hardening + docs | Code-complete (on `all` via `m15-hardening`, no separate PR), owner-gated | — | the 1k load test, legal review (Phase 10) | D-060 |
+| M16 Chalito Link (ADR 0022) | In progress (owner go 2026-10-15): A efficiency, B link format, C links, D connect, E LAN | per phase | A2A server domain (#36), TURN relay (#37) | — |
+| M17 Connectors, memory, coordinator, channels (ADRs 0023–0027) | Planned (docs, 2026-10-16): phases A–K | per phase | Apple items (GO_LIVE 9.2), Twilio number (#38, #39), Telegram bot (#41), Meta Tech Provider (#40) | — |
 
 **Security fixes from the beta review** (`docs/reviews/beta-security-review.md`): [#17](https://github.com/picassoglitch/chalito/pull/17) R-C1 (critical), [#18](https://github.com/picassoglitch/chalito/pull/18) R-H2, [#19](https://github.com/picassoglitch/chalito/pull/19) R-L12 adapters env, [#20](https://github.com/picassoglitch/chalito/pull/20) R-M1 + revoke guard. The other findings were fixed on `all` in M15 (batches 2–3) and by the review owners.
 
@@ -272,6 +274,66 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 - **Scope:** rate limits, audit views, load test (1k devices + room fan-out), `RUNBOOK.md`, `LEGAL_CHECKLIST.md`, `OPS.md`, `CHALYB_HANDOFF.md` (flag off), README from zero (under 30 min, verified literally).
 - **Risks:** the load test needs a real dev project, so it costs money (owner's go).
 
+### M16: Chalito Link (ADR 0022)
+- **Scope:** one language for every AI, in phases, one branch and PR each:
+  - **A `m16a-efficiency`:** session idle-close and resume after restart, partial text streaming (`message.assistant.delta`, broadcast-only), fast live path (sealed broadcast plus batched inserts), computer-control MCP for ACP sessions, Cursor ACP probe.
+  - **B `m16b-link-format`:** `packages/protocol/src/link.ts` (`LinkTask`, `LinkMessage`, `LinkArtifact`, `AgentCard`) shaped like A2A v1, plus the `AdapterEvent` → `LinkTask` projection.
+  - **C `m16c-links`:** `AgentLink` with **share** and **hand-off** modes, origin `agent:<sessionId>` (relayed), hand-off links created only locally, confirm-each-time by default, hop limit of 2, budgets, audit, revoke-all.
+  - **D `m16d-connect`:** recipe drivers `chat-api` (OpenAI-compatible) and `a2a` (client), Chalito as an A2A server (off by default), MCP gateway `list_agents`/`create_task`.
+  - **E `m16e-lan`:** mDNS discovery plus device-key mutual auth, local WebSocket for sealed envelopes, with cloud fallback.
+- **AC:**
+  - Existing suites stay green. The `SessionAdapter` conformance suite covers resume and the new drivers.
+  - A: a terminal session writes at least 5× fewer `session_events` rows, and the phone sees deltas.
+  - C: prompt-injection fixtures between agents (share mode never prompts; hand-off never auto-approves); loop fixture stops at 2 hops.
+  - D: A2A conformance against the official SDK, pinned version.
+- **Risks:**
+  - A2A is young (v1.0, March 2026). Pin it and keep fixtures.
+  - Hand-off widens the attack surface, so the threat model must be updated in C.
+  - The A2A server is externally visible and TURN costs money; both need the owner's go.
+  - **No browser automation of chat websites.**
+
+### M17: Agents that work together, and lines that reach you (ADRs 0023–0027, 0014 update)
+- **Status:** planned (docs, 2026-10-16). Owner decisions of 2026-10-16: agent connectors, shared memory and coordinator mode, plus the proven extras; full macOS signing, no paid Windows signing; a phone line for the owner that scales to users, including "connect your own line". Nothing is built until the owner's "go", and we stop for "go" after each phase.
+- **Phases, ordered by value, one branch and PR each:**
+
+| Phase | Branch | ADR | What | Owner-gated on |
+|---|---|---|---|---|
+| A | `m17a-connectors` | 0023 | Signed verified tier (GitHub, Supabase/Postgres, Linear, Slack, Google Drive) plus a community tier (any MCP server by URL or command, with an unverified warning), keychain/OAuth credentials on the device, grants per connector, scopes per session, local MCP proxy with read/write tiers, audit `connector.*` | the first catalog (#42) |
+| B | `m17b-desktop-signing` | 0014 update | macOS Developer ID + notarization end to end; Windows unsigned accepted for publishing (`unsigned-authenticode` label, updater-signed); `/descargar` SmartScreen steps; Linux AppImage/deb | Apple items (GO_LIVE 9.2), the publish go |
+| C | `m17c-channels` | 0026 (a, c) | **Telegram first** (deep-link binding, inline buttons, `secret_token` webhook, per-user "notify only" / "approve LOW/MED from chat" toggle); `ChannelLine` resolver; daily per-channel ceilings; opt-out on every channel. The shared Twilio number follows only after #38 is decided | the bot (#41); the number later (#38, #39) |
+| D | `m17d-checkpoints` | 0027 §1 | Snapshot before each writing turn, `session.undo` from phone and desktop, warnings for outside effects | — |
+| E | `m17e-memory` | 0024 | Sealed per-project memory, proposals and policy, quoted injection frame, budget and compaction, token-savings A/B | memory defaults (#43) |
+| F | `m17f-templates` | 0027 §2 | Task templates and skills (signed, shareable, never looser than policy) | — |
+| G | `m17g-coordinator` | 0025 | Plan → parallel worktrees via hand-off links, ledger for numbers, merge-base squash and deletion checks, reviewer agent, integration step, one-tap merge, budgets, kill switch | limits (#44) |
+| H | `m17h-routines` | 0027 §3 | Scheduled and event-triggered template runs on an online device, budgets, read ceiling by default | night escalation (#45) |
+| I | `m17i-byo-lines` | 0026 (b) | Bring your own Twilio (restricted API key) and WhatsApp Business number (Embedded Signup v4 as a Tech Provider) | Meta Tech Provider (#40) |
+| J | `m17j-routing` | 0027 §4 | Suggest agent and model per task from `usage_events` and outcomes; the owner confirms with one tap | — |
+| K | `m17k-teams` | 0027 §5 | Roles (owner, approver, member, viewer) on shared agents, sealing to members | hub seats (#46) |
+
+- **AC:**
+  - Existing suites stay green, including the `SessionAdapter` conformance suite and pgTAP.
+  - A: an agent with no grant sees no connector tools; a read-scoped session's `tools/list` has no write tools; every connector call passes the gate and writes an audit row; `strictMcpConfig` stays on and `~/.claude` is never read (test); an `agent:` turn never auto-allows a connector call; a tool result carrying "ignore previous instructions" doesn't change a gate decision.
+  - B: a tag build on a test Apple account yields a DMG that passes `spctl -a -vv` and `xcrun stapler validate`; a certificate without the API key still refuses to build; an unsigned Windows build is publishable, an unsigned macOS one isn't.
+  - C: a Telegram binding needs `/start <code>` from the user; a webhook without the right `X-Telegram-Bot-Api-Secret-Token` is refused; with "notify only" (the default) no approval can be decided from Telegram, with "approve LOW/MED" a HIGH or CRITICAL one still can't (deep link to the passkey only); every channel's opt-out stops the next ladder step; ceilings hold under a property test.
+  - D: undo restores the files byte for byte and never moves a branch, the stash or pushed history.
+  - E: memory injection is inside the quoted frame; an injected proposal never auto-accepts; the cloud row is ciphertext only; the budget is never exceeded.
+  - F: an imported template can't loosen the importer's policy.
+  - G: two helpers never get the same migration, pgTAP or D- number (including numbers only in a local worktree); a PR deleting an unlisted file is blocked; squash uses the merge-base; the kill switch stops every helper within 10 s; nothing merges to the base without the owner's tap.
+  - H: an offline device skips a run after the window, with a notice; a routine stays inside its budget.
+  - I: a BYO line's sends bill nothing on the hub; its webhooks verify with the user's own secret.
+  - J: suggestions only use models the user has access to; nothing is routed without the owner's one-tap confirm.
+  - K: an approver can't decide above their role's risk level; removing a member re-seals and revokes at once.
+- **Risks:**
+  - Remote MCP servers change often and some vendors gate them. Pin and re-verify each catalog entry; keep fixtures.
+  - Tool results are a new prompt-injection path (A, E, G). The threat model gains §4.8g–§4.8i and §4.10a.
+  - Notarizing the bun sidecar under the hardened runtime (JIT entitlements) must be proven on the first real run.
+  - The MX regulatory bundle needs a local address and ID, and its review time isn't published; the US number is the fallback.
+  - Meta Tech Provider status needs Business Verification and App Review; onboarding is capped at 10 businesses per 7 days until then.
+  - Coordinator and routines multiply spend. Budgets, the default of 3 agents and the kill switch are part of the AC.
+  - Teams needs Chalyb hub changes (seats or a shared balance), in Chalyb's own PR with the owner's go.
+  - Costs money or is visible, so needs the owner's go: the Twilio number and bundle, the Telegram bot, the Meta Tech Provider app, publishing desktop builds.
+  - **No browser automation, no SIM or phone-app automation.**
+
 ## Protocol review (for the owner)
 Everything is in `packages/protocol/src`, and every wire object has `v: 1`:
 
@@ -312,14 +374,14 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 14 | Native phone apps | **Pending** (PWA meanwhile) |
 | 15 | Room urgency sharing | Accepted: off |
 | 16 | Cosmetic prices | Accepted: seed items free |
-| 17 | Twilio number | **Pending** (US local assumed in docs) |
+| 17 | Twilio number | Superseded by #38 (ADR 0026) |
 | 18 | Chalyb integration live | **Owner: on.** Chalito is a Chalyb engine (D-025). |
 | 19 | Claude Code via subscription login | API key only unless Anthropic approves; owner may ask Anthropic |
 | 20 | Recovery cool-down | Accepted: 1 h |
 | 21 | Bundle `claude` binary | Accepted: use the user's install |
 | 22 | Domain | **Owner: `chalito.chalyb.com`**; owner is checking own Chalito domains |
 | 23 | Stripe entity | **Owner: no Stripe** (moot) |
-| 24 | Windows signing | **Pending** |
+| 24 | Windows signing | **Owner (2026-10-16): no paid signing.** Windows ships unsigned, updater-signed (ADR 0014 update) |
 | 25 | Front door | **Owner: Vercel** (ADR 0015) |
 | 26 | Codex ChatGPT plan | **Owner: make it work.** Official SIWC, `owner_only` until OpenAI approves (D-003) |
 | 27 | Grok Build login | **Owner: on** (D-022) |
@@ -329,3 +391,17 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 31 | **New:** MXN charge amounts for the Solo USD ladder on the hub | Unset; Solo checkout "Disponible pronto" until set |
 | 32 | **New:** Hub changes for Chalito meter kinds + `store.purchase` | Proposed for the Chalyb PR at M2/M12 (D-030) |
 | 33 | **New:** Add Firebase to Chalyb's GCP project (custom-token sign-in, rules deploy) | Off until the owner says so (`enable_firebase = false`) |
+| 34 | **New (2026-10-15):** agent-to-agent | **Owner: both modes** (share and hand-off links, ADR 0022 §3) |
+| 35 | **New (2026-10-15):** M16 order | **Owner: all phases A–E** (no browser automation) |
+| 36 | **New:** A2A server public domain | Pending (off until set) |
+| 37 | **New:** TURN relay for remote screen | Pending (costs money) |
+| 38 | **New (2026-10-16):** shared Twilio number | **Owner (2026-10-16): pending.** Phase C ships Telegram first; the number waits. Recommended when decided: **MX local (CDMX)**, USD 6.25/month, needs a regulatory bundle; US local (USD 1.15/month, no bundle) as the fallback (ADR 0026 a) |
+| 39 | **New:** whose name is on the MX bundle | Pending: the owner as an individual (ID + local address proof) or the business (Constancia de Situación Fiscal + local address) |
+| 40 | **New:** become a Meta WhatsApp Tech Provider for "bring your own WhatsApp number" | Pending (Business Verification + App Review; ADR 0026 b) |
+| 41 | **New:** Telegram bot | **Owner (2026-10-16): both, the user toggles it.** Per-user "notify only" (default) or "approve LOW/MED from chat"; HIGH/CRITICAL always need the passkey in the app. Still to do: create the bot with BotFather (name and handle) (ADR 0026 c) |
+| 42 | **New:** first connector catalog | **Owner (2026-10-16): GitHub, Supabase/Postgres, Linear, Slack, Google Drive, and every other tool that has an MCP server.** A verified tier (those, tested and signed) plus a community tier (any MCP server by URL or command, with an unverified warning, the same approval, scopes and gate) (ADR 0023 §1a) |
+| 43 | **New:** memory defaults | Proposed: nothing auto-accepted, 2,000-token budget per session (ADR 0024) |
+| 44 | **New:** coordinator limits | Proposed: 3 agents by default, 6 at most; reviewer on a different vendor's model when available (ADR 0025) |
+| 45 | **New:** routines at night | Proposed: routines never escalate to a call during quiet hours unless the template says so; read-only ceiling by default (ADR 0027 §3) |
+| 46 | **New:** Teams billing | Pending: needs Chalyb hub seats or a shared balance (a Chalyb PR, ADR 0027 §5) |
+| 47 | **New:** model and agent routing | **Owner (2026-10-16): suggest, the owner confirms with one tap** (ADR 0027 §4) |

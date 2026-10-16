@@ -13,6 +13,8 @@ signin:
 driver:
   web: { startUrl: https://www.perplexity.ai/, allowedOrigins: [https://www.perplexity.ai] }
 capabilities: [remote-view, ai-control]
+notConnectable:
+  reason: "A chat website: Chalito never drives chat websites, and no Perplexity API recipe is in the catalog yet."
 verification:
   checked: "2026-10-06"
   sources: ["curl www.perplexity.ai (403 Cloudflare)"]

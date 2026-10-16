@@ -97,7 +97,7 @@ export class ApprovalManager {
      */
     kind?: Extract<
       ApprovalKind,
-      "tool" | "computer_control" | "terminal" | "app_control" | "remote_view" | "remote_control"
+      "tool" | "computer_control" | "terminal" | "app_control" | "remote_view" | "remote_control" | "link_handoff"
     >;
     /** The summary is built here (R-M10: no format/control characters, explicit truncation). */
     details: { toolName: string; input: unknown; reasons: string[] };

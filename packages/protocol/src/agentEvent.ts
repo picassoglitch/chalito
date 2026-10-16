@@ -17,6 +17,8 @@ import { SealedEnvelope } from "./crypto.js";
 import { AppId } from "./recipe.js";
 import { TerminalCloseReason, TerminalCols, TerminalId, TerminalRows } from "./terminal.js";
 import { ScreenEndReason, ScreenMode, ScreenState } from "./screen.js";
+import { LinkHandoffStage, LinkId, LinkMode, LinkRefusal } from "./agent-link.js";
+import { LinkTaskState } from "./link.js";
 
 export const SessionState = z.enum([
   "starting",
@@ -71,7 +73,25 @@ export const AgentEvent = z.discriminatedUnion("type", [
     permissionMode: RemotePermissionMode.or(z.literal("local_only")),
   }),
   z.object({ ...base, type: z.literal("session.state"), state: SessionState }),
-  z.object({ ...base, type: z.literal("message.assistant"), ct: SealedEnvelope }),
+  /**
+   * A finished assistant message. `mid` (M16 A) names the streamed draft it completes, so a
+   * client drops that draft's `message.assistant.delta`s once this stored row arrives.
+   */
+  z.object({ ...base, type: z.literal("message.assistant"), mid: Id.optional(), ct: SealedEnvelope }),
+  /**
+   * Live-only (ADR 0022 §1): the next piece of the assistant message being written, sealed over
+   * `{text}` with AAD `event:<sid>`. Broadcast to the person's clients, never stored: the final
+   * `message.assistant` with the same `mid` is the durable copy. `n` counts the pieces of one
+   * draft from 0, so a client drops repeats and out-of-order pieces. `seq` is the seq the final
+   * message will take; deltas don't use up seq numbers.
+   */
+  z.object({
+    ...base,
+    type: z.literal("message.assistant.delta"),
+    mid: Id,
+    n: z.number().int().nonnegative(),
+    ct: SealedEnvelope,
+  }),
   z.object({ ...base, type: z.literal("message.user"), origin: Origin, ct: SealedEnvelope }),
   z.object({
     ...base,
@@ -168,8 +188,62 @@ export const AgentEvent = z.discriminatedUnion("type", [
     exitCode: z.number().int().optional(),
   }),
   // ---- end TERMINAL ----
+  // ---- LINKS (ADR 0022 §3): every hand-off and share shows on the phone, in both sessions ----
+  /**
+   * A hand-off over a link: `out` in the sending session, `in` in the receiving one. `peerSid`
+   * is the other session (absent until the receiver's session exists); metadata only.
+   */
+  z.object({
+    ...base,
+    type: z.literal("link.handoff"),
+    linkId: LinkId,
+    taskId: Id,
+    direction: z.enum(["in", "out"]),
+    stage: LinkHandoffStage,
+    hop: z.number().int().min(1).max(3),
+    peerDeviceId: DeviceId,
+    peerSid: SessionId.optional(),
+    reason: LinkRefusal.optional(),
+  }),
+  /** Information over a share link (or a hand-off's result). `ct` opens to the quoted data. */
+  z.object({
+    ...base,
+    type: z.literal("link.shared"),
+    linkId: LinkId,
+    mode: LinkMode,
+    direction: z.enum(["in", "out"]),
+    peerDeviceId: DeviceId,
+    taskId: Id.optional(),
+    state: LinkTaskState.optional(),
+    ct: SealedEnvelope.optional(),
+  }),
+  // ---- end LINKS ----
 ]);
 export type AgentEvent = z.infer<typeof AgentEvent>;
+
+/**
+ * ADR 0022 §1 fast live path: event types that are only broadcast (sealed, over the private
+ * realtime topic, to the same recipients) and never stored as `session_events` rows. Nothing
+ * durable may depend on them: a client that joins late resyncs from the stored rows. A
+ * `screen.state` "ended" is the exception and stays stored, since it carries the end reason.
+ */
+export const LIVE_ONLY_EVENT_TYPES = ["message.assistant.delta", "terminal.output", "screen.state"] as const;
+export type LiveOnlyEventType = (typeof LIVE_ONLY_EVENT_TYPES)[number];
+const LIVE_ONLY: ReadonlySet<string> = new Set(LIVE_ONLY_EVENT_TYPES);
+export const isLiveOnlyEvent = (e: { type: string; state?: unknown }): boolean =>
+  LIVE_ONLY.has(e.type) && !(e.type === "screen.state" && e.state === "ended");
+
+/**
+ * The payload of one live broadcast (realtime event `live`, topic `chalito:device:<client>`), as
+ * `chalito.live_send` sends it: up to 64 live-only events of one agent device, in order.
+ */
+export const LiveBroadcast = z.object({
+  table: z.literal("live"),
+  op: z.literal("events"),
+  deviceId: DeviceId,
+  events: z.array(z.unknown()).min(1).max(64),
+});
+export type LiveBroadcast = z.infer<typeof LiveBroadcast>;
 
 /**
  * Why an agent refused a command, as the person's clients see it (`command.rejected`). A closed
@@ -199,6 +273,11 @@ export const CommandRejectReason = z.enum([
   "adapter_disabled",
   "unknown_session",
   "unknown_question",
+  /**
+   * M16 A: this computer already runs its maximum of live sessions and none of them is idle
+   * (`session.maxLivePerDevice` in packages/config sessions.yaml).
+   */
+  "session_limit",
   "policy_would_loosen",
   "policy_invalid",
   "step_up_required",
@@ -252,6 +331,20 @@ export const CommandRejectReason = z.enum([
   "not_ready",
   "duplicate_answer",
   // ---- end SCREEN ----
+  // ---- LINKS (agent-link.ts) ----
+  /** This agent has no link support wired. */
+  "links_disabled",
+  /** A hand-off link can be made only on the device itself (desktop panel or `chalito link add`). */
+  "link_local_only",
+  /** No such link on this device, or it was revoked or expired. */
+  "unknown_link",
+  /** This device is neither end of the link. */
+  "link_wrong_endpoint",
+  /** The link's workspace isn't in this computer's policy. */
+  "link_out_of_scope",
+  /** A delivery over a link was refused (hop or cycle limit, rate, budget, signature, owner). */
+  "link_refused",
+  // ---- end LINKS ----
   "internal",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
@@ -374,6 +467,15 @@ export const DeviceEvent = z.discriminatedUnion("type", [
    * Remote screen's state on this device, for display only: what the person enabled locally
    * (view, control) and how many screen sessions are live. `by` names what ended them.
    */
+  /** This device's links changed (made, revoked, expired); counts only. `by` names what changed them. */
+  z.object({
+    v: z.literal(1),
+    type: z.literal("link.changed"),
+    deviceId: DeviceId,
+    active: z.number().int().min(0).max(1000),
+    by: z.string().max(32).optional(),
+    t: EpochMs,
+  }),
   z.object({
     v: z.literal(1),
     type: z.literal("screen.changed"),

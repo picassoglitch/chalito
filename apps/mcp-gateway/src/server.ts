@@ -24,6 +24,10 @@ const app = createGateway({
   cfg: {
     resource: process.env.CHALITO_MCP_RESOURCE ?? "https://mcp.chalito.chalyb.com/mcp",
     issuer: process.env.CHALITO_API_ISSUER ?? "https://api.chalito.chalyb.com",
+    // The A2A server: off unless both are set (no default URL; its domain is owner decision #36).
+    ...(process.env.CHALITO_A2A_ENABLED === "1" && process.env.CHALITO_A2A_RESOURCE
+      ? { a2aResource: process.env.CHALITO_A2A_RESOURCE }
+      : {}),
   },
   now: Date.now,
 });

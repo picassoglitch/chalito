@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
-import type { SessionAdapter } from "@chalito/adapters";
+import type { SessionAdapter, SessionStartOptions } from "@chalito/adapters";
 import { loadLiabilityText } from "@chalito/config";
 import {
   MemoryNonceStore,
@@ -1471,7 +1471,8 @@ describe("session.start by app id (connect engine)", () => {
     expect(res.ok).toBe(true);
     await waitFor(() => goose.run.options !== undefined);
     expect(h.fake.run.options).toBeUndefined();
-    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "acp", appId: "goose", kind: "agent" });
+    // The card names the kind of the adapter that runs it (an ACP recipe's is "acp"; this stand-in's is claude-code).
+    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "claude-code", appId: "goose", kind: "agent" });
 
     // A disabled custom recipe, an unknown app, or one the policy turned off never starts.
     expect(
@@ -1554,6 +1555,45 @@ describe("computer control in sessions", () => {
       env: { CHALITO_COMPUTER_SOCKET: "/tmp/c.sock", CHALITO_COMPUTER_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/) },
     });
     expect(h.fake.run.options!.strictMcpConfig).toBe(true);
+  });
+
+  it("ACP sessions get the same server (M16 A parity); adapters without localMcp never do", async () => {
+    const h = await harness({ computer: true, policy: ON, turns: [[{ say: "hola" }]] });
+    const seen: SessionStartOptions[] = [];
+    const fakeAdapter = (localMcp: boolean): SessionAdapter => ({
+      kind: "acp",
+      ...(localMcp ? { localMcp: true } : {}),
+      start: async (o) => {
+        seen.push(o);
+        return {
+          prompt: () => undefined,
+          interrupt: async () => undefined,
+          setPermissionMode: async () => undefined,
+          close: () => undefined,
+          done: new Promise<void>(() => undefined),
+        };
+      },
+    });
+    const base = {
+      adapter: "acp" as const,
+      workspace: { label: "chalito", path: WS },
+      prompt: "hola",
+      origin: "client:dev_phone" as const,
+      permissionMode: "default" as const,
+    };
+    const sid = await h.core.startSession({ ...base, appId: "opencode", appAdapter: fakeAdapter(true) });
+    await h.core.startSession({ ...base, appId: "aider", appAdapter: fakeAdapter(false) });
+    expect(Object.keys(seen[0]!.mcpServers ?? {})).toEqual(["chalito_computer"]);
+    expect(seen[1]!.mcpServers).toBeUndefined();
+    // Its MCP calls go through the same gate (computer prefix → the broker's per-session grant).
+    const gate = await seen[0]!.gate(
+      { sid, toolUseId: "t1", toolName: "mcp__chalito_computer__click", input: {}, origin: "client:dev_phone" },
+      new AbortController().signal,
+    );
+    expect(gate).toEqual({ allow: true });
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    // The broker also sees the turn's origin (for agents that run MCP tools without asking).
+    expect(h.core.turnOrigin(sid)).toBe("client:dev_phone");
   });
 
   it("the tool gate lets computer tools through to the broker only while control can be granted", async () => {
@@ -1691,9 +1731,10 @@ describe("remote terminal over signed commands and sealed events", () => {
     // Keystrokes aren't audited one by one.
     expect(h.store.audits.slice(audits).filter((a) => a.type === "command.accepted")).toHaveLength(0);
 
-    // Output: sealed to the trusted clients, bound to the terminal and the seq.
-    await waitFor(() => h.store.events.some((e) => e.type === "terminal.output"));
-    const out = h.store.events.find((e) => e.type === "terminal.output") as Extract<
+    // Output: sealed to the trusted clients, bound to the terminal and the seq; live only (M16 A).
+    await waitFor(() => h.store.live.some((e) => e.type === "terminal.output"));
+    expect(h.store.events.some((e) => e.type === "terminal.output")).toBe(false);
+    const out = h.store.live.find((e) => e.type === "terminal.output") as Extract<
       (typeof h.store.events)[number],
       { type: "terminal.output" }
     >;

@@ -109,7 +109,10 @@ describe("Codex adapter: recorded app-server transcript", () => {
       ],
     ]);
 
-    expect(events).toEqual([
+    // M16 A: every agentMessage delta is passed on as it arrives; the whole text still follows.
+    const deltas = events.flatMap((e) => (e.type === "assistant_delta" ? [e.text] : []));
+    expect(deltas.join("")).toBe("Voy a correr los tests.Usaré Postgres.");
+    expect(events.filter((e) => e.type !== "assistant_delta")).toEqual([
       { type: "started", providerSessionId: "thr_0199a1b2c3d4" },
       { type: "state", state: "running" },
       { type: "assistant_text", text: "Voy a correr los tests." },

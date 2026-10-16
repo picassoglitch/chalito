@@ -97,8 +97,11 @@ const record = (v: unknown): Record<string, unknown> =>
 export const toolCallsFor = (
   t: ToolCallUpdate,
   cwd: string,
+  ownMcp: ReadonlySet<string> = new Set(),
 ): { toolName: string; input: Record<string, unknown> }[] => {
   const raw = record(t.rawInput);
+  const mcp = ownMcpToolName(t, ownMcp);
+  if (mcp) return [{ toolName: mcp, input: raw }];
   const paths = [
     ...(t.locations ?? []).map((l) => l.path),
     ...[raw.file_path, raw.path, raw.absolute_path, raw.destination].map(str),
@@ -133,6 +136,34 @@ export const toolCallsFor = (
   }
 };
 
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * A permission request for a tool of one of the agent's own local MCP servers (computer
+ * control), as `mcp__<server>__<tool>`, the name the gate knows. ACP has no field for "which
+ * MCP server", so the agent's title is matched against the shapes agents use: `mcp__S__T`,
+ * `S__T`, `S.T`, `S/T`, `S: T`, `T (S MCP Server)`. Only for calls of kind `other` (or none):
+ * an agent's own shell, edit or fetch tool can't pass as one, whatever its title says. Anything
+ * unmatched stays an `acp:` call, which the classifier rates HIGH.
+ */
+export const ownMcpToolName = (t: ToolCallUpdate, servers: ReadonlySet<string>): string | null => {
+  if (servers.size === 0 || (t.kind && t.kind !== "other")) return null;
+  const labels = [str((t as { name?: unknown }).name), str(t.title)].filter((x): x is string => !!x);
+  for (const server of servers) {
+    const s = escapeRe(server);
+    const shapes = [
+      new RegExp(`^(?:mcp__)?${s}(?:__|\\.|/|:\\s*)([A-Za-z0-9_-]{1,64})$`),
+      new RegExp(`^([A-Za-z0-9_-]{1,64}) \\(${s} MCP Server\\)$`, "i"),
+    ];
+    for (const label of labels)
+      for (const re of shapes) {
+        const m = re.exec(label.trim());
+        if (m) return `mcp__${server}__${m[1]}`;
+      }
+  }
+  return null;
+};
+
 /** A select option's values, flattening groups. */
 const selectValues = (o: SessionConfigOption): { id: string; name: string }[] => {
   if (o.type !== "select") return [];
@@ -151,6 +182,7 @@ const MAX_MODE_RESTORES = 3;
  */
 export class AcpAdapter implements SessionAdapter {
   readonly kind: AdapterKind;
+  readonly localMcp = true;
   /** The recipe id. */
   readonly appId: string;
   readonly #profile: AcpProfile;
@@ -183,6 +215,14 @@ export class AcpAdapter implements SessionAdapter {
     const queue: { text: string; origin: Origin }[] = [];
     const tools = new Map<string, ToolCallUpdate & { started?: boolean }>();
     const commands = new Set<string>();
+    /** The agent's own local MCP servers (computer control), given to the agent in session/new. */
+    const ownMcp = new Set(Object.keys(opts.mcpServers ?? {}));
+    const mcpServers = Object.entries(opts.mcpServers ?? {}).map(([name, m]) => ({
+      name,
+      command: m.command,
+      args: m.args,
+      env: Object.entries(m.env).map(([k, value]) => ({ name: k, value })),
+    }));
     /** The ask mode the session is held in (session/set_mode), when the agent has modes. */
     let askMode: string | null = null;
     const modeNames = new Map<string, string>();
@@ -213,7 +253,7 @@ export class AcpAdapter implements SessionAdapter {
       const merged: ToolCallUpdate = { ...known, toolCallId: p.toolCall.toolCallId };
       for (const [k, v] of Object.entries(p.toolCall))
         if (v !== undefined && v !== null) Object.assign(merged, { [k]: v });
-      const calls = toolCallsFor(merged, opts.cwd);
+      const calls = toolCallsFor(merged, opts.cwd, ownMcp);
       let allow = true;
       try {
         for (const [i, c] of calls.entries()) {
@@ -236,13 +276,17 @@ export class AcpAdapter implements SessionAdapter {
       const u = n.update;
       switch (u.sessionUpdate) {
         case "agent_message_chunk":
-          if (u.content.type === "text") text += u.content.text;
+          if (u.content.type === "text" && u.content.text) {
+            text += u.content.text;
+            // M16 A: the agent throttles these (150 ms / 512 chars) and broadcasts them.
+            opts.onEvent({ type: "assistant_delta", text: u.content.text });
+          }
           return;
         case "tool_call": {
           flushText();
           const entry = { ...u, started: true };
           tools.set(u.toolCallId, entry);
-          const [first] = toolCallsFor(u, opts.cwd);
+          const [first] = toolCallsFor(u, opts.cwd, ownMcp);
           opts.onEvent({ type: "tool_started", toolUseId: u.toolCallId, ...first! });
           if (u.status === "completed" || u.status === "failed") {
             tools.delete(u.toolCallId);
@@ -474,7 +518,8 @@ export class AcpAdapter implements SessionAdapter {
           }
         }
         const caps = init.agentCapabilities ?? {};
-        const base = { cwd: opts.cwd, mcpServers: [] };
+        // The agent's own servers only (computer control, when attached); their tools still ask.
+        const base = { cwd: opts.cwd, mcpServers };
         let state: { modes?: SessionModeState | null; configOptions?: SessionConfigOption[] | null };
         if (opts.resume && caps.sessionCapabilities?.resume) {
           sessionId = opts.resume;
@@ -523,8 +568,13 @@ export class AcpAdapter implements SessionAdapter {
 
     started = true;
     opts.onEvent({ type: "started", providerSessionId: sessionId });
-    opts.onEvent({ type: "state", state: "running" });
-    startTurn(opts.prompt, opts.origin);
+    if (opts.prompt === "" && opts.resume) {
+      // Reopened without a prompt: the session waits for the next one.
+      opts.onEvent({ type: "state", state: "idle" });
+    } else {
+      opts.onEvent({ type: "state", state: "running" });
+      startTurn(opts.prompt, opts.origin);
+    }
     return handle;
   }
 }
