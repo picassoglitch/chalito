@@ -697,6 +697,9 @@ const startDaemon = async (
 
   // The agent's own binaries and persistence files are hard-floor targets for the classifier.
   const agentBin = isInterpreter(process.execPath) ? which("chalito", env) : process.execPath;
+  const pickEnv = (e: Record<string, string | undefined>, keys: string[]) =>
+    Object.fromEntries(keys.flatMap((k) => (e[k] !== undefined ? [[k, e[k]]] : [])));
+
   const extrasFor = (c: PairedConfig, claude: string | null) => ({
     agentBinaries: [...new Set([process.execPath, agentBin].filter((p): p is string => !!p && !isInterpreter(p)))],
     protectedPaths: [
@@ -707,7 +710,20 @@ const startDaemon = async (
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
     // Windows folder redirection: the classifier checks AppData entries under the real roots too.
-    env: { APPDATA: env.APPDATA, LOCALAPPDATA: env.LOCALAPPDATA, XDG_CONFIG_HOME: env.XDG_CONFIG_HOME },
+    env: pickEnv(claudeEnv(env, ""), [
+      "APPDATA",
+      "LOCALAPPDATA",
+      "XDG_CONFIG_HOME",
+      "ProgramData",
+      "ProgramFiles",
+      // Which git config sessions see (git-hooks.ts fails closed on the command-line ones).
+      "GIT_CONFIG_GLOBAL",
+      "GIT_CONFIG_SYSTEM",
+      "GIT_CONFIG_NOSYSTEM",
+      "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_PARAMETERS",
+      "GIT_CONFIG",
+    ]),
   });
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {

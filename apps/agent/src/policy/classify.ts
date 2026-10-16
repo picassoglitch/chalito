@@ -146,6 +146,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     info: hooksFor(w, {
       home: ctx.home,
       ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
+      ...(ctx.env ? { env: ctx.env } : {}),
+      platform,
       ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
     }),
   }));

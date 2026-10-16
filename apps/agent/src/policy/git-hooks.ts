@@ -1,5 +1,5 @@
-import { readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 
 /**
  * Where git would run a workspace repo's hooks from, worked out WITHOUT running git (running a
@@ -29,6 +29,8 @@ export interface GitFs {
   /** mtime in ms, or -1 when the file doesn't exist. */
   mtime(path: string): number;
   isDir(path: string): boolean | null;
+  /** The OS realpath; throws when it can't resolve. */
+  realpath(path: string): string;
 }
 
 const nodeFs: GitFs = {
@@ -40,6 +42,7 @@ const nodeFs: GitFs = {
       return -1;
     }
   },
+  realpath: (p) => realpathSync.native(p),
   isDir: (p) => {
     try {
       return statSync(p).isDirectory();
@@ -153,17 +156,59 @@ const gitdirPattern = (pattern: string, fromFile: string, home: string, icase: b
 };
 
 /** Whether git would follow an includeIf with this condition. Throws Unsure if we can't tell. */
-const includeIfApplies = (cond: string, gitDir: string, fromFile: string, home: string): boolean => {
+const includeIfApplies = (cond: string, gitDirs: string[], fromFile: string, home: string): boolean => {
   const m = /^(gitdir|gitdir\/i):(.*)$/.exec(cond);
   if (!m) throw new Unsure(`includeIf ${cond.split(":")[0]}`);
-  const dir = gitDir.replace(/\\/g, "/").replace(/\/+$/, "");
   const re = gitdirPattern(m[2]!.replace(/\\/g, "/"), fromFile, home, m[1] === "gitdir/i");
-  return re.test(dir) || re.test(`${dir}/`);
+  // git matches the git dir as given and its realpath.
+  return gitDirs.some((g) => {
+    const dir = g.replace(/\\/g, "/").replace(/\/+$/, "");
+    return re.test(dir) || re.test(`${dir}/`);
+  });
 };
 
 const expandHome = (p: string, home: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
 
-export const resolveHooks = (ws: string, o: { home: string; xdgConfigHome?: string; fs?: GitFs }): HooksInfo => {
+/** A path value we can't resolve like git would: `~user/…`, or git's `%(prefix)` interpolation. */
+const unsurePath = (v: string) => (v.startsWith("~") && !v.startsWith("~/")) || v.includes("%(");
+
+/** Environment variables that change which config git reads. */
+export interface GitEnv {
+  GIT_CONFIG_GLOBAL?: string | undefined;
+  GIT_CONFIG_SYSTEM?: string | undefined;
+  GIT_CONFIG_NOSYSTEM?: string | undefined;
+  GIT_CONFIG_COUNT?: string | undefined;
+  GIT_CONFIG_PARAMETERS?: string | undefined;
+  GIT_CONFIG?: string | undefined;
+  ProgramData?: string | undefined;
+  ProgramFiles?: string | undefined;
+  XDG_CONFIG_HOME?: string | undefined;
+}
+
+/** The system config files git might read on this OS (several installs can coexist: all are read). */
+export const systemConfigs = (platform: NodeJS.Platform, env: GitEnv): string[] => {
+  if (platform === "win32") {
+    const out: string[] = [];
+    if (env.ProgramData) out.push(win32.join(env.ProgramData, "Git", "config"));
+    if (env.ProgramFiles) {
+      out.push(win32.join(env.ProgramFiles, "Git", "etc", "gitconfig"));
+      out.push(win32.join(env.ProgramFiles, "Git", "mingw64", "etc", "gitconfig"));
+    }
+    return out;
+  }
+  return ["/etc/gitconfig", "/opt/homebrew/etc/gitconfig", "/usr/local/etc/gitconfig"];
+};
+
+export interface HooksOptions {
+  home: string;
+  xdgConfigHome?: string;
+  fs?: GitFs;
+  /** The environment sessions run with (GIT_CONFIG_*, ProgramData…). */
+  env?: GitEnv;
+  platform?: NodeJS.Platform;
+}
+
+export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   const fs = o.fs ?? nodeFs;
   const dotGit = join(ws, ".git");
   const kind = fs.isDir(dotGit);
@@ -194,7 +239,14 @@ export const resolveHooks = (ws: string, o: { home: string; xdgConfigHome?: stri
   }
 
   let hooksPath: string | null = null;
-  const readConfig = (file: string, depth: number) => {
+  let realGitDir: string | null;
+  try {
+    realGitDir = fs.realpath(gitDir);
+  } catch {
+    realGitDir = null;
+  }
+  const systemValues = new Set<string>();
+  const readConfig = (file: string, depth: number, system = false) => {
     chain.push(file);
     watched.push(file);
     if (depth > MAX_DEPTH) {
@@ -211,15 +263,27 @@ export const resolveHooks = (ws: string, o: { home: string; xdgConfigHome?: stri
     }
     for (const e of entries) {
       if (e.section === "core" && e.sub === null && e.key === "hookspath") {
-        if (e.value === true) unsure = true;
-        else hooksPath = e.value;
+        if (e.value === true || unsurePath(e.value)) unsure = true;
+        else {
+          hooksPath = e.value;
+          if (system) systemValues.add(e.value);
+        }
       } else if (e.section === "include" && e.sub === null && e.key === "path" && e.value !== true) {
-        readConfig(resolve(dirname(file), expandHome(e.value, o.home)), depth + 1);
+        if (unsurePath(e.value)) {
+          unsure = true;
+          continue;
+        }
+        readConfig(resolve(dirname(file), expandHome(e.value, o.home)), depth + 1, system);
       } else if (e.section === "includeif" && e.sub !== null && e.key === "path" && e.value !== true) {
+        if (unsurePath(e.value)) {
+          unsure = true;
+          continue;
+        }
         const target = resolve(dirname(file), expandHome(e.value, o.home));
         let applies: boolean;
         try {
-          applies = includeIfApplies(e.sub, gitDir, file, o.home);
+          if (realGitDir === null) throw new Unsure("realpath of the git dir");
+          applies = includeIfApplies(e.sub, [gitDir, realGitDir], file, o.home);
         } catch {
           // Can't evaluate: watch the file, and fail closed.
           chain.push(target);
@@ -227,7 +291,7 @@ export const resolveHooks = (ws: string, o: { home: string; xdgConfigHome?: stri
           unsure = true;
           continue;
         }
-        if (applies) readConfig(target, depth + 1);
+        if (applies) readConfig(target, depth + 1, system);
         else {
           chain.push(target);
           watched.push(target);
@@ -236,9 +300,23 @@ export const resolveHooks = (ws: string, o: { home: string; xdgConfigHome?: stri
     }
   };
 
-  // git's order: global (XDG, then ~/.gitconfig), the repo's, the worktree's. The last value wins.
-  readConfig(join(o.xdgConfigHome ?? join(o.home, ".config"), "git", "config"), 0);
-  readConfig(join(o.home, ".gitconfig"), 0);
+  const env = o.env ?? {};
+  // Config passed on the command line or through the environment can't be read from files.
+  if (env.GIT_CONFIG_COUNT || env.GIT_CONFIG_PARAMETERS || env.GIT_CONFIG) unsure = true;
+  // git's order: system, global (XDG, then ~/.gitconfig), the repo's, the worktree's. The last value wins.
+  const noSystem = !!env.GIT_CONFIG_NOSYSTEM && !/^(0|false|no|off)$/i.test(env.GIT_CONFIG_NOSYSTEM);
+  if (!noSystem)
+    for (const f of env.GIT_CONFIG_SYSTEM
+      ? [env.GIT_CONFIG_SYSTEM]
+      : systemConfigs(o.platform ?? process.platform, env))
+      readConfig(f, 0, true);
+  // Several system configs set it differently: we can't tell which install's git runs.
+  if (systemValues.size > 1) unsure = true;
+  if (env.GIT_CONFIG_GLOBAL) readConfig(env.GIT_CONFIG_GLOBAL, 0);
+  else {
+    readConfig(join(o.xdgConfigHome ?? env.XDG_CONFIG_HOME ?? join(o.home, ".config"), "git", "config"), 0);
+    readConfig(join(o.home, ".gitconfig"), 0);
+  }
   readConfig(join(common, "config"), 0);
   readConfig(join(gitDir, "config.worktree"), 0);
 
@@ -252,9 +330,9 @@ export const resolveHooks = (ws: string, o: { home: string; xdgConfigHome?: stri
 const cache = new Map<string, { stamp: string; info: HooksInfo }>();
 
 /** resolveHooks, cached per workspace until any watched file's mtime changes. */
-export const hooksFor = (ws: string, o: { home: string; xdgConfigHome?: string; fs?: GitFs }): HooksInfo => {
+export const hooksFor = (ws: string, o: HooksOptions): HooksInfo => {
   const fs = o.fs ?? nodeFs;
-  const key = `${ws}\0${o.home}\0${o.xdgConfigHome ?? ""}`;
+  const key = `${ws}\0${o.home}\0${o.xdgConfigHome ?? ""}\0${JSON.stringify(o.env ?? {})}\0${o.platform ?? ""}`;
   const hit = cache.get(key);
   if (hit && hit.stamp === hit.info.watched.map((f) => fs.mtime(f)).join(",")) return hit.info;
   const info = resolveHooks(ws, o);

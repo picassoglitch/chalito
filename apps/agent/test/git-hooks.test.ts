@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type * as ChildProcess from "node:child_process";
@@ -28,11 +37,12 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.js");
-const { clearHooksCache, parseGitConfig, resolveHooks } = await import("../src/policy/git-hooks.js");
+const { clearHooksCache, parseGitConfig, resolveHooks, systemConfigs } = await import("../src/policy/git-hooks.js");
 
 beforeEach(() => clearHooksCache());
 afterAll(() => expect(spawned).toEqual([]));
 
+const NOSYS = { GIT_CONFIG_NOSYSTEM: "1" };
 const root = () => realpathSync(mkdtempSync(join(tmpdir(), "chalito-gitfs-")));
 /** A repo made by hand: `.git/` with a config (no git binary involved). */
 const repo = (home: string, name = "app", config = "[core]\n\trepositoryformatversion = 0\n") => {
@@ -46,6 +56,8 @@ const ctx = (ws: string, home: string, o: Record<string, unknown> = {}) => ({
   home,
   cwd: ws,
   realpath: (x: string) => x,
+  // The machine's own /etc/gitconfig stays out of these tests (it gets its own below).
+  env: NOSYS,
   ...o,
 });
 const write = (ws: string, home: string, f: string, o: Record<string, unknown> = {}) =>
@@ -82,7 +94,7 @@ describe("hooks folder resolution, without running git", () => {
   it("core.hooksPath in the repo config is HIGH; .git and its config always are", () => {
     const home = root();
     const ws = repo(home, "app", "[core]\n\thooksPath = tools/git-hooks\n");
-    expect(resolveHooks(ws, { home }).dir).toBe(join(ws, "tools/git-hooks"));
+    expect(resolveHooks(ws, { home, env: NOSYS }).dir).toBe(join(ws, "tools/git-hooks"));
     expect(write(ws, home, "tools/git-hooks/pre-push").tier).toBe("HIGH");
     expect(write(ws, home, ".git/config").tier).toBe("HIGH");
     expect(write(ws, home, ".git/info/exclude").tier).toBe("HIGH");
@@ -93,7 +105,7 @@ describe("hooks folder resolution, without running git", () => {
   it("no hooksPath: the common dir's hooks", () => {
     const home = root();
     const ws = repo(home);
-    expect(resolveHooks(ws, { home }).dir).toBe(join(ws, ".git", "hooks"));
+    expect(resolveHooks(ws, { home, env: NOSYS }).dir).toBe(join(ws, ".git", "hooks"));
   });
 
   it("a worktree's gitdir file and commondir", () => {
@@ -105,7 +117,7 @@ describe("hooks folder resolution, without running git", () => {
     const wt = join(home, "wt");
     mkdirSync(wt);
     writeFileSync(join(wt, ".git"), `gitdir: ${gd}\n`);
-    const info = resolveHooks(wt, { home });
+    const info = resolveHooks(wt, { home, env: NOSYS });
     expect(info.dir).toBe(join(wt, "wt-hooks"));
     expect(info.gitDirs).toEqual([gd, join(main, ".git")]);
     expect(write(wt, home, "wt-hooks/pre-commit").tier).toBe("HIGH");
@@ -121,7 +133,7 @@ describe("hooks folder resolution, without running git", () => {
     mkdirSync(join(ws, "shared"));
     writeFileSync(join(ws, "shared", "rel.cfg"), `[include]\n\tpath = ${join(home, "shared", "abs.cfg")}\n`);
     writeFileSync(join(home, "shared", "abs.cfg"), "[core]\n\thooksPath = inc-hooks\n");
-    expect(resolveHooks(ws, { home }).dir).toBe(join(ws, "inc-hooks"));
+    expect(resolveHooks(ws, { home, env: NOSYS }).dir).toBe(join(ws, "inc-hooks"));
     expect(write(ws, home, "inc-hooks/x").tier).toBe("HIGH");
     // The include inside the workspace: editing it could redirect hooksPath.
     expect(write(ws, home, "shared/rel.cfg").tier).toBe("HIGH");
@@ -137,11 +149,11 @@ describe("hooks folder resolution, without running git", () => {
     );
     writeFileSync(join(home, "yes.cfg"), "[core]\n\thooksPath = if-hooks\n");
     writeFileSync(join(home, "no.cfg"), "[core]\n\thooksPath = wrong\n");
-    expect(resolveHooks(ws, { home }).dir).toBe(join(ws, "if-hooks"));
+    expect(resolveHooks(ws, { home, env: NOSYS }).dir).toBe(join(ws, "if-hooks"));
 
     clearHooksCache();
     const ws2 = repo(home, "app2", `[includeIf "onbranch:main"]\n\tpath = x.cfg\n`);
-    expect(resolveHooks(ws2, { home }).dir).toBe("unknown");
+    expect(resolveHooks(ws2, { home, env: NOSYS }).dir).toBe("unknown");
     expect(write(ws2, home, "hooks/pre-commit").tier).toBe("HIGH");
     expect(write(ws2, home, ".githooks/x").tier).toBe("HIGH");
     expect(write(ws2, home, ".husky/pre-push").tier).toBe("HIGH");
@@ -158,17 +170,17 @@ describe("hooks folder resolution, without running git", () => {
     mkdirSync(join(xdg, "git"), { recursive: true });
     writeFileSync(join(xdg, "git", "config"), "[core]\n\thooksPath = xdg-hooks\n");
     writeFileSync(join(home, ".gitconfig"), "");
-    expect(resolveHooks(ws, { home, xdgConfigHome: xdg }).dir).toBe(join(ws, "xdg-hooks"));
+    expect(resolveHooks(ws, { home, xdgConfigHome: xdg, env: NOSYS }).dir).toBe(join(ws, "xdg-hooks"));
     // The repo's own value wins over the global one.
     writeFileSync(join(ws, ".git", "config"), "[core]\n\thooksPath = repo-hooks\n");
     clearHooksCache();
-    expect(resolveHooks(ws, { home, xdgConfigHome: xdg }).dir).toBe(join(ws, "repo-hooks"));
+    expect(resolveHooks(ws, { home, xdgConfigHome: xdg, env: NOSYS }).dir).toBe(join(ws, "repo-hooks"));
   });
 
   it("a config it can't parse fails closed", () => {
     const home = root();
     const ws = repo(home, "app", "[core]\n\thooksPath = a\\\n\tb\n");
-    expect(resolveHooks(ws, { home }).dir).toBe("unknown");
+    expect(resolveHooks(ws, { home, env: NOSYS }).dir).toBe("unknown");
     expect(write(ws, home, "hooks/pre-commit").tier).toBe("HIGH");
   });
 
@@ -192,5 +204,102 @@ describe("hooks folder resolution, without running git", () => {
       expect(write(ws, home, f).tier, f).toBe("HIGH");
     expect(write(ws, home, "src/gitlab.ts").tier).toBe("MED");
     expect(spawned).toEqual([]);
+  });
+});
+
+describe("system config, the environment, and values we can't resolve", () => {
+  it("system config comes first; GIT_CONFIG_SYSTEM picks the file, GIT_CONFIG_NOSYSTEM skips it", () => {
+    const home = root();
+    const ws = repo(home);
+    const sys = join(home, "system.cfg");
+    writeFileSync(sys, "[core]\n\thooksPath = sys-hooks\n");
+    expect(resolveHooks(ws, { home, env: { GIT_CONFIG_SYSTEM: sys } }).dir).toBe(join(ws, "sys-hooks"));
+    expect(write(ws, home, "sys-hooks/x", { env: { GIT_CONFIG_SYSTEM: sys } }).tier).toBe("HIGH");
+    // The system file is in the chain: writing it is HIGH even if it were in a workspace.
+    expect(resolveHooks(ws, { home, env: { GIT_CONFIG_SYSTEM: sys } }).chain).toContain(sys);
+    expect(resolveHooks(ws, { home, env: { GIT_CONFIG_SYSTEM: sys, GIT_CONFIG_NOSYSTEM: "1" } }).dir).toBe(
+      join(ws, ".git", "hooks"),
+    );
+    // Global and repo values override the system one.
+    writeFileSync(join(home, ".gitconfig"), "[core]\n\thooksPath = global-hooks\n");
+    expect(resolveHooks(ws, { home, env: { GIT_CONFIG_SYSTEM: sys } }).dir).toBe(join(ws, "global-hooks"));
+  });
+
+  it("the default system files per OS", () => {
+    expect(systemConfigs("linux", {})).toEqual([
+      "/etc/gitconfig",
+      "/opt/homebrew/etc/gitconfig",
+      "/usr/local/etc/gitconfig",
+    ]);
+    expect(systemConfigs("win32", { ProgramData: "C:\\ProgramData", ProgramFiles: "C:\\Program Files" })).toEqual([
+      "C:\\ProgramData\\Git\\config",
+      "C:\\Program Files\\Git\\etc\\gitconfig",
+      "C:\\Program Files\\Git\\mingw64\\etc\\gitconfig",
+    ]);
+  });
+
+  it("GIT_CONFIG_GLOBAL replaces the user's files", () => {
+    const home = root();
+    const ws = repo(home);
+    writeFileSync(join(home, ".gitconfig"), "[core]\n\thooksPath = ignored\n");
+    const g = join(home, "g.cfg");
+    writeFileSync(g, "[core]\n\thooksPath = env-global\n");
+    expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_GLOBAL: g } }).dir).toBe(join(ws, "env-global"));
+  });
+
+  it.each(["GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG"])("%s in the environment fails closed", (k) => {
+    const home = root();
+    const ws = repo(home);
+    expect(resolveHooks(ws, { home, env: { ...NOSYS, [k]: "1" } }).dir).toBe("unknown");
+    expect(write(ws, home, "hooks/x", { env: { ...NOSYS, [k]: "1" } }).tier).toBe("HIGH");
+  });
+
+  it("~user/… and %(prefix) in hooksPath or include paths fail closed", () => {
+    const home = root();
+    for (const cfg of [
+      "[core]\n\thooksPath = ~bob/hooks\n",
+      "[core]\n\thooksPath = %(prefix)/hooks\n",
+      "[include]\n\tpath = ~bob/x.cfg\n",
+      '[includeIf "gitdir:/x/"]\n\tpath = %(prefix)/x.cfg\n',
+    ]) {
+      clearHooksCache();
+      const ws = repo(home, `r${Math.random().toString(36).slice(2)}`, cfg);
+      expect(resolveHooks(ws, { home, env: NOSYS }).dir, cfg).toBe("unknown");
+    }
+  });
+
+  it("includeIf gitdir matches the git dir's realpath too, and fails closed if it can't resolve it", () => {
+    const home = root();
+    const realHome = join(home, "real");
+    mkdirSync(realHome);
+    const ws = repo(realHome, "app", `[includeIf "gitdir:${realHome}/"]\n\tpath = ${join(home, "inc.cfg")}\n`);
+    writeFileSync(join(home, "inc.cfg"), "[core]\n\thooksPath = via-real\n");
+    // The workspace is reached through a symlink; the pattern names the real path.
+    symlinkSync(realHome, join(home, "link"));
+    const linked = join(home, "link", "app");
+    expect(resolveHooks(linked, { home, env: NOSYS }).dir).toBe(join(linked, "via-real"));
+    // A realpath that fails: unknown.
+    clearHooksCache();
+    const failing = {
+      read: (p: string) => readFileSync(p, "utf8"),
+      mtime: (p: string) => {
+        try {
+          return statSync(p).mtimeMs;
+        } catch {
+          return -1;
+        }
+      },
+      isDir: (p: string) => {
+        try {
+          return statSync(p).isDirectory();
+        } catch {
+          return null;
+        }
+      },
+      realpath: () => {
+        throw new Error("EACCES");
+      },
+    };
+    expect(resolveHooks(ws, { home, env: NOSYS, fs: failing }).dir).toBe("unknown");
   });
 });
