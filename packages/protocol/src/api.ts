@@ -83,31 +83,52 @@ export const PairingClaimBody = z.object({
   issuedAt: EpochMs,
 });
 export const PairingClaim = signed("chalito.pairing-claim.v1", PairingClaimBody);
+/**
+ * Hand-off pairing (ADR 0028 §3–§4). The desktop opens `/computadoras/aprobar#c=<codeId>&p=<port>`.
+ * The fragment carries the code id (and the agent's loopback port) only, never the short code,
+ * so typing the short code stays a proof of being in front of that computer.
+ */
+export const PAIRING_APPROVE_PATH = "/computadoras/aprobar";
+/** The unpaired agent's loopback endpoint listens on 127.0.0.1, on the first free port here. */
+export const PAIRING_LOOPBACK_PORTS = [47810, 47811, 47812, 47813, 47814] as const;
+export const pairingApproveUrl = (webBase: string, codeId: string, port?: number) =>
+  `${webBase.replace(/\/+$/, "")}${PAIRING_APPROVE_PATH}#c=${encodeURIComponent(codeId)}${port ? `&p=${port}` : ""}`;
+export const PairingCodeId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
+/** A server nonce (256 bits) issued to one client's /handoff, single use, for the loopback proof. */
+export const PairingNonce = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
+/**
+ * The agent's proof that the approving browser runs on the same computer: it answered the page's
+ * loopback request (Origin = the hub) and signed the nonce the api gave that browser, with the key
+ * it published at /codes. A link can't carry one: the nonce is the approving browser's own.
+ */
+export const PairingLoopbackProofBody = z.object({
+  v: z.literal(1),
+  codeId: PairingCodeId,
+  nonce: PairingNonce,
+  /** The page's origin as the agent saw it (Origin header), e.g. https://www.chalyb.com. */
+  origin: z.string().max(200),
+  issuedAt: EpochMs,
+});
+export const PairingLoopbackProof = signed("chalito.pairing-loopback.v1", PairingLoopbackProofBody);
+export type PairingLoopbackProof = z.infer<typeof PairingLoopbackProof>;
+
 export const ClaimPairingRequest = z.object({
   claim: PairingClaim,
   /**
-   * The short code the user typed from the computer's screen (ADR 0028 §4). Required by the
-   * server when the claim comes from another network than the computer; never in a link.
+   * The short code the user typed from the computer's screen (ADR 0028 §4). Required by the server
+   * unless the claim carries a loopback proof or this client already typed it at /resolve.
    */
   shortCode: z.string().min(8).max(20).optional(),
+  loopbackProof: PairingLoopbackProof.optional(),
 });
 
-/**
- * Hand-off pairing (ADR 0028 §3): the desktop opens `/computadoras/aprobar#c=<codeId>`. The
- * fragment carries the code id only, never the short code, so typing the short code stays a
- * proof of being in front of that computer.
- */
-export const PAIRING_APPROVE_PATH = "/computadoras/aprobar";
-export const pairingApproveUrl = (webBase: string, codeId: string) =>
-  `${webBase.replace(/\/+$/, "")}${PAIRING_APPROVE_PATH}#c=${encodeURIComponent(codeId)}`;
-export const PairingCodeId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
-
-/** Same public network as the computer that asked, another one, or can't tell (e.g. IPv4 vs IPv6). */
-export const PairingNetwork = z.enum(["same", "different", "unknown"]);
-export type PairingNetwork = z.infer<typeof PairingNetwork>;
-/** What the approving browser must do: one tap, type the short code, or nothing (blocked). */
+/** One tap is only for a browser proven to run on that computer (loopback); otherwise the code. */
 export const PairingApproval = z.enum(["one_tap", "code_required", "blocked"]);
 export type PairingApproval = z.infer<typeof PairingApproval>;
+/** Same public network as the computer, another one, or can't tell. Warning text only, never a gate. */
+export const PairingNetwork = z.enum(["same", "different", "unknown"]);
+export type PairingNetwork = z.infer<typeof PairingNetwork>;
 
 export const PairingHandoffRequest = z.object({ codeId: PairingCodeId });
 export const PairingHandoffResponse = z.object({
@@ -116,11 +137,21 @@ export const PairingHandoffResponse = z.object({
   platform: z.enum(["linux", "windows", "macos"]),
   expiresAt: EpochMs,
   network: PairingNetwork,
+  /** What approving needs without a loopback proof. */
   approval: PairingApproval,
   /** Coarse place of the computer's network when the platform reports one; never an address. */
   city: z.string().max(80).nullable(),
+  /** For the loopback proof (/handoff only); null after a typed code (/resolve). */
+  loopbackNonce: PairingNonce.nullable().default(null),
+  /** This client typed the short code already (/resolve): /claim needs nothing more. */
+  codeTyped: z.boolean().default(false),
 });
 export type PairingHandoffResponse = z.infer<typeof PairingHandoffResponse>;
+
+/** The agent withdraws its own code: "Cancelar" while waiting, "No fui yo" at the reverse check. */
+export const PairingWithdrawBody = z.object({ v: z.literal(1), codeId: PairingCodeId, issuedAt: EpochMs });
+export const PairingWithdraw = signed("chalito.pairing-withdraw.v1", PairingWithdrawBody);
+export const WithdrawPairingRequest = z.object({ withdraw: PairingWithdraw });
 
 /** "No estoy frente a esa computadora": cancels the code; the computer shows it was declined. */
 export const DeclinePairingRequest = z.object({ codeId: PairingCodeId });

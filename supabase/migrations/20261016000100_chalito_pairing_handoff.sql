@@ -5,14 +5,16 @@
 --     pairing broadcast, so its panel shows that the code was declined.
 --   * chalito_private.pairing_code_networks: which public network asked for the code, as a keyed
 --     hash (IPv4 address or IPv6 /64, never the address) plus a coarse city when the platform
---     sends one. The api compares it with the approving browser's network and, on a mismatch,
---     requires the short code shown on the computer (THREAT_MODEL §4.5, pairing phishing).
+--     sends one. Warning text only (owner decision #52): a public IP proves nothing, one tap needs
+--     the agent's loopback proof (THREAT_MODEL §4.5, pairing phishing).
 --     Server only: no grant to anon, authenticated (so not the pairing watch token, THREAT_MODEL
 --     §5) or service_role. Kept only while the code is open: dropped on claim or decline, with
 --     the code (cascade), and by a sweep at the code's expiry or 24 hours at most.
 --   * chalito_private.pairing_code_viewers: which signed-in clients opened an open code (hand-off
 --     link or typed short code). Only one of them may decline it, so knowing a code id isn't
---     enough to cancel someone else's pairing. Server only, same lifetime as the network record.
+--     enough to cancel someone else's pairing. It also holds, per client, whether it typed the
+--     short code (/resolve) and the hash of the single-use nonce /handoff gave it for the loopback
+--     proof. Server only, same lifetime as the network record.
 
 alter table chalito.pairing_codes add column cancelled boolean not null default false;
 
@@ -34,11 +36,15 @@ create table chalito_private.pairing_code_viewers (
   owner chalito.id not null,
   device_id chalito.id not null,
   viewed_at timestamptz not null default now(),
+  typed boolean not null default false,
+  nonce_hash text check (nonce_hash ~ '^[0-9a-f]{64}$'),
+  nonce_expires_at timestamptz,
+  check ((nonce_hash is null) = (nonce_expires_at is null)),
   primary key (code_id, owner, device_id)
 );
 alter table chalito_private.pairing_code_viewers enable row level security;
 revoke all on chalito_private.pairing_code_viewers from public, anon, authenticated, service_role;
-grant select, insert, delete on chalito_private.pairing_code_viewers to chalito_server;
+grant select, insert, update, delete on chalito_private.pairing_code_viewers to chalito_server;
 
 -- Claimed or declined: the network record and the viewers have done their job.
 create or replace function chalito_private.drop_pairing_network()

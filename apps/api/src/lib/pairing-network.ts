@@ -3,9 +3,10 @@ import { isIPv4, isIPv6 } from "node:net";
 import type { PairingApproval, PairingNetwork } from "@chalito/protocol";
 
 /**
- * The network check of hand-off pairing (ADR 0028 §4, THREAT_MODEL §4.5 "Pairing phishing via
+ * The network signal of hand-off pairing (ADR 0028 §4, THREAT_MODEL §4.5 "Pairing phishing via
  * hand-off link"). The api remembers which public network asked for a pairing code and compares
- * it with the network of the browser that approves it. Only a keyed hash of the network is kept
+ * it with the network of the browser that approves it, for the warning only (decision #52: it
+ * never grants one tap). Only a keyed hash of the network is kept
  * (IPv4 address, or the /64 of an IPv6 address), never the address itself, and only while the
  * code is open (migration 20261016000100).
  */
@@ -80,18 +81,19 @@ export const compareNetworks = (asked: PairingNet | null, approving: PairingNet 
 };
 
 /**
- * What a mismatch costs. Owner decision (2026-10-16): allow it once the user types the short
- * code shown on the computer. "block" is kept for the alternative the owner considered
- * (approve only from the computer's network).
+ * Owner decision #52 (2026-10-16): a public IP is not proof (CGNAT, offices, cafés). One tap only
+ * for a browser proven to run on the computer itself, through the agent's loopback proof; anyone
+ * else types the short code shown on the computer. The network comparison is warning text only.
+ * "block" is kept for the alternative the owner considered (no approval without the proof).
  */
 export type MismatchPolicy = "require_code" | "block";
 export const DEFAULT_MISMATCH_POLICY: MismatchPolicy = "require_code";
 
-/** The one place that turns a network comparison into what the approver must do. */
+/** The one place that decides what approving a pairing needs. */
 export const pairingApproval = (
-  network: PairingNetwork,
+  s: { sameComputer: boolean },
   policy: MismatchPolicy = DEFAULT_MISMATCH_POLICY,
 ): PairingApproval => {
-  if (network === "same") return "one_tap";
+  if (s.sameComputer) return "one_tap";
   return policy === "block" ? "blocked" : "code_required";
 };

@@ -47,6 +47,7 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/pairing/resolve": sensitive(20, 6),
   "POST /v1/pairing/handoff": sensitive(20, 6),
   "POST /v1/pairing/decline": sensitive(10, 6),
+  "POST /v1/pairing/withdraw": sensitive(10, 6),
   "POST /v1/pairing/claim": sensitive(20, 6, MEDIUM),
   "POST /v1/endorse/codes": sensitive(20, 6),
   "POST /v1/endorse/resolve": sensitive(20, 6),

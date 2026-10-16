@@ -6,6 +6,7 @@ import {
   fingerprint,
   fromB64url,
   randomNonce,
+  signEnvelope,
   verifyWebAuthnBinding,
   type WebAuthnCredentialRef,
 } from "@chalito/crypto";
@@ -95,6 +96,8 @@ export interface PairDeps {
   onClaimed?: (claimer: { fingerprint: string; passkeyId: string | null }) => void;
   /** Stops waiting for the claim (the panel's "Cancelar"). */
   signal?: AbortSignal;
+  /** The pairing loopback's port (pairing-loopback.ts), put in the link's fragment for one tap. */
+  loopbackPort?: number;
 }
 
 /** What the computer shows while it waits: never sent anywhere but the local screen. */
@@ -182,7 +185,16 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
     }),
   );
   const webBase = deps.webBase ?? deps.env?.CHALITO_WEB_BASE ?? DEFAULT_WEB_BASE;
-  const approveUrl = pairingApproveUrl(webBase, glyph.body.codeId);
+  const approveUrl = pairingApproveUrl(webBase, glyph.body.codeId, deps.loopbackPort);
+  /**
+   * "Cancelar" or "No fui yo": burn the code on the server too (signed with this computer's key),
+   * so it can't be claimed later, and a claim that already happened loses its device. Best effort.
+   */
+  const withdraw = async () => {
+    const body = { v: 1 as const, codeId: glyph.body.codeId, issuedAt: now() };
+    const w = await signEnvelope("chalito.pairing-withdraw.v1", body, id.deviceId, id.sign.secretKey);
+    await postJson(deps.fetch, `${base.apiBase}/v1/pairing/withdraw`, { withdraw: w }).catch(() => undefined);
+  };
   deps.out(c.code(created.shortCode, approveUrl));
   deps.out(c.thisFp(id.fingerprint));
   deps.out(c.expires(Math.round((created.expiresAt - now()) / 60_000)));
@@ -225,6 +237,7 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
   await watching.then((stop) => stop()).catch(() => undefined);
 
   if (outcome === "expired" || outcome === "cancelled") {
+    if (outcome === "cancelled") await withdraw();
     deps.out(c.expired);
     return { ok: false, reason: outcome };
   }
@@ -268,6 +281,7 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
   deps.out(passkey ? c.passkey(shortPasskeyId(passkey.credentialId)) : c.noPasskey);
   deps.onClaimed?.({ fingerprint: claimerFp, passkeyId: passkey ? shortPasskeyId(passkey.credentialId) : null });
   if (!(await deps.confirm(c.confirm))) {
+    await withdraw();
     deps.out(c.rejected);
     return { ok: false, reason: "rejected_locally" };
   }

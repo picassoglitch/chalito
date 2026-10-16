@@ -41,6 +41,11 @@ export interface ApiConfig {
    * webview (CHALITO_DESKTOP_ORIGINS). Exact matches only. Absent or empty: no CORS headers.
    */
   corsOrigins?: readonly string[];
+  /**
+   * Origins a loopback pairing proof may name (ADR 0028 §4): the hub (PAIRING_ORIGINS, default
+   * https://www.chalyb.com). A preview or local hub only in a dev deployment.
+   */
+  pairingOrigins?: readonly string[];
 }
 
 export interface Deps {

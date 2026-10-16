@@ -1,9 +1,11 @@
 /**
- * Hand-off pairing (ADR 0028 §3–§4): the network check is enforced by the api, not only shown on
- * the approval screen. From another network a claim must carry the short code typed from the
- * computer; the hand-off view never leaks the short code; decline cancels the code; every
- * pairing raises a security alert for the whole account.
+ * Hand-off pairing (ADR 0028 §3–§4, owner decision #52). One tap only with the agent's loopback
+ * proof that the approving browser runs on that computer; otherwise the short code typed from
+ * the computer (at /claim, or earlier at /resolve). The public network is warning text only. The
+ * hand-off view never leaks the short code; decline is bound to a client that opened the code;
+ * the computer can withdraw its own code; every pairing alerts the account.
  */
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import {
@@ -29,12 +31,13 @@ import { MemoryAudit, type Deps } from "../src/deps.js";
 import { compareNetworks, networkOf, pairingApproval, pairingNet } from "../src/lib/pairing-network.js";
 import type { ApiRepo } from "../src/repo.js";
 import type { PairingNet } from "../src/lib/pairing-network.js";
-import { pairingRoutes } from "../src/routes/pairing.js";
+import { PAIRING_NONCE_TTL_MS, pairingRoutes } from "../src/routes/pairing.js";
 import { device, owner } from "./contract/fixtures.js";
 
 const NOW = 1_790_000_000_000;
 const HOME = "189.203.10.20";
 const CAFE = "201.141.7.8";
+const HUB = "https://www.chalyb.com";
 
 interface Keys {
   deviceId: string;
@@ -45,13 +48,26 @@ const keys = async (): Promise<Keys> => {
   const sign = await generateSigningKeyPair();
   return { deviceId: await deriveDeviceId(sign.publicKey), sign, box: await generateBoxKeyPair() };
 };
+const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+
+interface Viewer {
+  typed: boolean;
+  nonceHash: string | null;
+  nonceExpiresAt: number | null;
+}
 
 /** The pairing slice of ApiRepo, in memory (same semantics as PostgresRepo). */
-const memoryRepo = (devices: DeviceDoc[]) => {
+const memoryRepo = (devices: DeviceDoc[], opts: { failNotify?: boolean } = {}) => {
   const codes = new Map<string, PairingCodeDoc>();
   const nets = new Map<string, PairingNet>();
-  const viewers = new Set<string>();
+  const viewers = new Map<string, Viewer>();
   const notifications: Record<string, unknown>[] = [];
+  const revoked: string[] = [];
+  const key = (id: string, o: string, d: string) => `${id}/${o}/${d}`;
+  const drop = (id: string) => {
+    nets.delete(id);
+    for (const k of [...viewers.keys()]) if (k.startsWith(`${id}/`)) viewers.delete(k);
+  };
   const repo: Partial<ApiRepo> = {
     getDevice: async (o, id) => devices.find((d) => d.owner === o && d.deviceId === id) ?? null,
     getDeviceWebAuthn: async () => null,
@@ -66,14 +82,30 @@ const memoryRepo = (devices: DeviceDoc[]) => {
       const doc = codes.get(id);
       return doc ? { doc, net: nets.get(id) ?? null } : null;
     },
-    recordPairingViewer: async (id, o, d) => void viewers.add(`${id}/${o}/${d}`),
-    isPairingViewer: async (id, o, d) => viewers.has(`${id}/${o}/${d}`),
+    recordPairingViewer: async (id, o, d, x = {}) => {
+      const cur = viewers.get(key(id, o, d)) ?? { typed: false, nonceHash: null, nonceExpiresAt: null };
+      viewers.set(key(id, o, d), {
+        typed: cur.typed || !!x.typed,
+        nonceHash: x.nonce ? x.nonce.hash : cur.nonceHash,
+        nonceExpiresAt: x.nonce ? x.nonce.expiresAt : cur.nonceExpiresAt,
+      });
+    },
+    getPairingViewer: async (id, o, d) => {
+      const v = viewers.get(key(id, o, d));
+      return v ? { typed: v.typed } : null;
+    },
+    takePairingNonce: async (id, o, d, h, now) => {
+      const v = viewers.get(key(id, o, d));
+      if (!v || v.nonceHash !== h || (v.nonceExpiresAt ?? 0) <= now) return false;
+      viewers.set(key(id, o, d), { ...v, nonceHash: null, nonceExpiresAt: null });
+      return true;
+    },
     cancelPairingCode: async (id) => {
       const doc = codes.get(id);
       if (!doc) return "not_found";
       if (doc.claimed) return "already_claimed";
       codes.set(id, { ...doc, cancelled: true });
-      nets.delete(id);
+      drop(id);
       return "cancelled";
     },
     claimPairingCode: async (id, claim, build) => {
@@ -84,21 +116,29 @@ const memoryRepo = (devices: DeviceDoc[]) => {
       const agent = await build(doc);
       devices.push(agent);
       codes.set(id, { ...doc, claimed: true, owner: claim.owner, claimedByDeviceId: claim.claimedByDeviceId });
-      nets.delete(id);
+      drop(id);
       return { ok: true, agentDeviceId: agent.deviceId };
     },
-    createNotification: async (o, nid, d) => void notifications.push({ owner: o, nid, ...d }),
+    revokeDevice: async (o, id) => {
+      revoked.push(`${o}/${id}`);
+      return "revoked";
+    },
+    createNotification: async (o, nid, d) => {
+      if (opts.failNotify) throw new Error("notifications down");
+      notifications.push({ owner: o, nid, ...d });
+    },
   };
-  return { repo: repo as ApiRepo, codes, nets, viewers, notifications };
+  return { repo: repo as ApiRepo, codes, nets, viewers, notifications, revoked };
 };
 
-const setup = async (opts: { trustedProxies?: number } = {}) => {
+const setup = async (opts: { trustedProxies?: number; failNotify?: boolean } = {}) => {
   const o = owner();
   const phone = await keys();
   const tablet = await keys();
   const stranger = await keys();
   const other = owner();
   const computer = await keys();
+  const attacker = await keys();
   const pub = async (k: Keys) => ({
     pubSign: await toB64url(k.sign.publicKey),
     pubBox: await toB64url(k.box.publicKey),
@@ -108,7 +148,7 @@ const setup = async (opts: { trustedProxies?: number } = {}) => {
     { ...(await device(o, "client")), deviceId: tablet.deviceId, ...(await pub(tablet)) },
     { ...(await device(other, "client")), deviceId: stranger.deviceId, ...(await pub(stranger)) },
   ];
-  const mem = memoryRepo(devices);
+  const mem = memoryRepo(devices, opts);
   const audit = new MemoryAudit();
   const tokens: Record<string, { uid: string; role: string; owner: string; deviceId?: string }> = {
     phone: { uid: `d_${phone.deviceId}`, role: "client", owner: o, deviceId: phone.deviceId },
@@ -116,6 +156,7 @@ const setup = async (opts: { trustedProxies?: number } = {}) => {
     stranger: { uid: `d_${stranger.deviceId}`, role: "client", owner: other, deviceId: stranger.deviceId },
     person: { uid: o, role: "user", owner: o },
   };
+  const disabled: string[] = [];
   const deps: Deps = {
     repo: mem.repo,
     identity: {
@@ -125,6 +166,7 @@ const setup = async (opts: { trustedProxies?: number } = {}) => {
         return c;
       },
       mintPairingWatch: async (codeId: string) => `watch-${codeId}`,
+      disableDevice: async (id: string) => (disabled.push(id), true),
     } as unknown as Deps["identity"],
     audit,
     config: {
@@ -134,15 +176,16 @@ const setup = async (opts: { trustedProxies?: number } = {}) => {
       skewMs: 60_000,
       ...(opts.trustedProxies ? { trustedProxies: opts.trustedProxies } : {}),
     },
-    now: () => NOW,
+    now: () => clock,
   };
+  let clock = NOW;
   const app = new Hono().route("/v1/pairing", pairingRoutes(deps));
-  const post = async (path: string, body: unknown, opts: { token?: string; ip: string; city?: string }) => {
+  const post = async (path: string, body: unknown, opts: { token?: string; ip?: string; city?: string }) => {
     const res = await app.request(path, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-forwarded-for": opts.ip,
+        "x-forwarded-for": opts.ip ?? HOME,
         ...(opts.city ? { "x-client-geo-city": opts.city } : {}),
         ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
       },
@@ -178,51 +221,69 @@ const setup = async (opts: { trustedProxies?: number } = {}) => {
     );
     return { ...r, codeId: glyph.body.codeId };
   };
-  /** The computer asks for a code from `ip` (what `chalito pair` and the panel do). */
+  /** The computer asks for a code (what `chalito pair` and the panel do). */
   const ask = async (ip = HOME, city?: string) => {
-    const glyph = await signGlyph(
-      {
-        v: 1,
-        purpose: "pair_device",
-        codeId: await randomNonce(),
-        issuerPubSign: (await pub(computer)).pubSign,
-        issuerPubBox: (await pub(computer)).pubBox,
-        label: "MacBook de Ana",
-        issuedAt: NOW,
-        expiresAt: NOW + PAIRING_TTL_MS,
-        nonce: await randomNonce(),
-      } as never,
-      computer.sign.secretKey,
-    );
-    const r = await post(
-      "/v1/pairing/codes",
-      { glyph, kind: "laptop", platform: "macos" },
-      { ip, ...(city ? { city } : {}) },
-    );
+    const r = await askWith(await randomNonce(), ip, city);
     expect(r.status).toBe(201);
-    return { codeId: glyph.body.codeId, shortCode: r.json.shortCode as string };
+    return { codeId: r.codeId, shortCode: r.json.shortCode as string };
   };
-  const claimBody = async (codeId: string, shortCode?: string) => ({
+  const claimBody = async (codeId: string, extra: Record<string, unknown> = {}, by: Keys = phone) => ({
     claim: await signEnvelope(
       "chalito.pairing-claim.v1",
       {
         v: 1,
-        owner: o,
+        owner: by === stranger ? other : o,
         codeId,
         agentDeviceId: computer.deviceId,
         agentFingerprint: await fingerprint(computer.sign.publicKey),
-        claimerDeviceId: phone.deviceId,
-        issuedAt: NOW,
+        claimerDeviceId: by.deviceId,
+        issuedAt: clock,
       },
-      phone.deviceId,
-      phone.sign.secretKey,
+      by.deviceId,
+      by.sign.secretKey,
     ),
-    ...(shortCode ? { shortCode } : {}),
+    ...extra,
   });
-  return { o, mem, audit, post, get, ask, askWith, claimBody, computer };
+  /** What the agent answers on loopback: (code id, nonce, origin) signed with `signer` (the computer). */
+  const proof = (codeId: string, nonce: string, o: { origin?: string; signer?: Keys } = {}) => {
+    const signer = o.signer ?? computer;
+    return signEnvelope(
+      "chalito.pairing-loopback.v1",
+      { v: 1, codeId, nonce, origin: o.origin ?? HUB, issuedAt: clock },
+      signer.deviceId,
+      signer.sign.secretKey,
+    );
+  };
+  const withdraw = (codeId: string, signer: Keys = computer) =>
+    signEnvelope(
+      "chalito.pairing-withdraw.v1",
+      { v: 1, codeId, issuedAt: clock },
+      signer.deviceId,
+      signer.sign.secretKey,
+    );
+  const handoff = async (codeId: string, token = "phone") =>
+    (await post("/v1/pairing/handoff", { codeId }, { token })).json as Record<string, string>;
+  return {
+    o,
+    mem,
+    audit,
+    disabled,
+    post,
+    get,
+    ask,
+    askWith,
+    claimBody,
+    proof,
+    withdraw,
+    handoff,
+    computer,
+    attacker,
+    stranger,
+    tick: (ms: number) => void (clock += ms),
+  };
 };
 
-describe("network of an address", () => {
+describe("network of an address (warning text only)", () => {
   it("IPv4 as is, IPv4-mapped IPv6 as IPv4, IPv6 by its /64, anything else null", () => {
     expect(networkOf("189.203.10.20")).toEqual({ family: 4, net: "189.203.10.20" });
     expect(networkOf("::ffff:189.203.10.20")).toEqual({ family: 4, net: "189.203.10.20" });
@@ -240,127 +301,223 @@ describe("network of an address", () => {
     expect(compareNetworks(a, pairingNet(CAFE, "k"))).toBe("different");
     expect(compareNetworks(a, pairingNet("2806:10a6:1:2::1", "k"))).toBe("unknown");
     expect(compareNetworks(null, a)).toBe("unknown");
-    expect(compareNetworks(pairingNet("2806:10a6:1:2::1", "k"), pairingNet("2806:10a6:1:2::99", "k"))).toBe("same");
   });
 
-  it("one policy decides a mismatch: the code by default, or blocked", () => {
-    expect(pairingApproval("same")).toBe("one_tap");
-    expect(pairingApproval("different")).toBe("code_required");
-    expect(pairingApproval("unknown")).toBe("code_required");
-    expect(pairingApproval("different", "block")).toBe("blocked");
-    expect(pairingApproval("same", "block")).toBe("one_tap");
+  it("one policy decides: one tap only on the same computer, else the code (or blocked)", () => {
+    expect(pairingApproval({ sameComputer: true })).toBe("one_tap");
+    expect(pairingApproval({ sameComputer: false })).toBe("code_required");
+    expect(pairingApproval({ sameComputer: false }, "block")).toBe("blocked");
+    expect(pairingApproval({ sameComputer: true }, "block")).toBe("one_tap");
   });
 
-  it("the approval link carries the code id in the fragment", () => {
-    expect(pairingApproveUrl("https://www.chalyb.com/app/chalito/", "abc_DEF-123")).toBe(
-      "https://www.chalyb.com/app/chalito/computadoras/aprobar#c=abc_DEF-123",
+  it("the approval link carries the code id and the loopback port, never the short code", () => {
+    expect(pairingApproveUrl("https://www.chalyb.com/app/chalito/", "abc_DEF-123", 47810)).toBe(
+      "https://www.chalyb.com/app/chalito/computadoras/aprobar#c=abc_DEF-123&p=47810",
     );
   });
 });
 
 describe("POST /v1/pairing/handoff", () => {
-  it("shows what would be approved, never the short code or its hash", async () => {
+  it("shows what would be approved and a nonce, never the short code or its hash", async () => {
     const s = await setup();
-    const { codeId, shortCode } = await s.ask(HOME);
-    const r = await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
+    const { codeId, shortCode } = await s.ask();
+    const r = await s.post("/v1/pairing/handoff", { codeId }, { token: "phone" });
     expect(r.status).toBe(200);
-    expect(PairingHandoffResponse.parse(r.json)).toMatchObject({ network: "same", approval: "one_tap", city: null });
+    const v = PairingHandoffResponse.parse(r.json);
+    expect(v).toMatchObject({ network: "same", approval: "code_required", codeTyped: false });
+    expect(v.loopbackNonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const text = JSON.stringify(r.json);
     expect(text).not.toContain(shortCode);
     expect(text).not.toContain(s.mem.codes.get(codeId)!.shortCodeHash);
-    expect(r.json).not.toHaveProperty("shortCodeHash");
-    expect(r.json).not.toHaveProperty("claimerPubSign");
   });
 
-  it("from another network: code required, with the computer's coarse city from the load balancer", async () => {
-    const s = await setup({ trustedProxies: 1 });
-    const { codeId } = await s.ask(HOME, "Guadalajara");
-    const r = await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: CAFE });
-    expect(r.json).toMatchObject({ network: "different", approval: "code_required", city: "Guadalajara" });
-  });
-
-  it("without a load balancer a city header is the client's own claim, so it's ignored", async () => {
+  it("the same public IP no longer means one tap: the code is still required", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME, "Guadalajara");
-    const r = await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: CAFE });
-    expect(r.json).toMatchObject({ network: "different", city: null });
+    const { codeId } = await s.ask(HOME);
+    await s.handoff(codeId);
+    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: HOME });
+    expect(r).toMatchObject({ status: 403, json: { error: "code_required" } });
   });
 
-  it("needs a signed-in client; unknown, claimed, declined or expired codes are 404", async () => {
-    const s = await setup();
-    const { codeId } = await s.ask();
-    expect((await s.post("/v1/pairing/handoff", { codeId }, { ip: HOME })).status).toBe(401);
-    expect((await s.post("/v1/pairing/handoff", { codeId }, { token: "person", ip: HOME })).status).toBe(403);
+  it("another network: warning info with the city from the load balancer only", async () => {
+    const lb = await setup({ trustedProxies: 1 });
+    const a = await lb.ask(HOME, "Guadalajara");
     expect(
-      (await s.post("/v1/pairing/handoff", { codeId: "nope_nope_nope" }, { token: "phone", ip: HOME })).status,
-    ).toBe(404);
-    s.mem.codes.set(codeId, { ...s.mem.codes.get(codeId)!, expiresAt: NOW });
-    expect((await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME })).status).toBe(404);
+      (await lb.post("/v1/pairing/handoff", { codeId: a.codeId }, { token: "phone", ip: CAFE })).json,
+    ).toMatchObject({
+      network: "different",
+      city: "Guadalajara",
+    });
+    const plain = await setup();
+    const b = await plain.ask(HOME, "Guadalajara");
+    expect(
+      (await plain.post("/v1/pairing/handoff", { codeId: b.codeId }, { token: "phone", ip: CAFE })).json,
+    ).toMatchObject({ network: "different", city: null });
   });
 
-  it("is rate-limited", async () => {
+  it("needs a signed-in client, and is rate-limited", async () => {
     const s = await setup();
     const { codeId } = await s.ask();
+    expect((await s.post("/v1/pairing/handoff", { codeId }, {})).status).toBe(401);
+    expect((await s.post("/v1/pairing/handoff", { codeId }, { token: "person" })).status).toBe(403);
     const statuses: number[] = [];
     for (let i = 0; i < 12; i++)
-      statuses.push((await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: CAFE })).status);
+      statuses.push((await s.post("/v1/pairing/handoff", { codeId }, { token: "phone" })).status);
     expect(statuses).toContain(429);
   });
 });
 
-describe("POST /v1/pairing/claim: the network check is server-side", () => {
-  it("same network: one tap, no code needed", async () => {
+describe("POST /v1/pairing/claim: one tap needs the loopback proof", () => {
+  it("a valid proof over this client's nonce: one tap, no code", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: HOME });
-    expect(r.status).toBe(200);
-    expect(r.json.agentDeviceId).toBe(s.computer.deviceId);
+    const { codeId } = await s.ask();
+    const { loopbackNonce } = await s.handoff(codeId);
+    const r = await s.post(
+      "/v1/pairing/claim",
+      await s.claimBody(codeId, { loopbackProof: await s.proof(codeId, loopbackNonce!) }),
+      { token: "phone", ip: CAFE },
+    );
+    expect(r).toMatchObject({ status: 200, json: { agentDeviceId: s.computer.deviceId } });
+    expect(s.audit.events).toContainEqual(
+      expect.objectContaining({ action: "pairing.claimed", meta: { approval: "one_tap" } }),
+    );
   });
 
-  it("another network without the code: refused, nothing created", async () => {
+  it("a forged proof (signed by another key) is refused", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: CAFE });
-    expect(r).toMatchObject({ status: 403, json: { error: "code_required" } });
-    expect(s.mem.codes.get(codeId)!.claimed).toBe(false);
-    expect(s.mem.notifications).toEqual([]);
+    const { codeId } = await s.ask();
+    const { loopbackNonce } = await s.handoff(codeId);
+    const forged = await s.proof(codeId, loopbackNonce!, { signer: s.attacker });
+    const tampered = { ...(await s.proof(codeId, loopbackNonce!)), signerDeviceId: s.computer.deviceId };
+    tampered.body = { ...tampered.body, issuedAt: tampered.body.issuedAt + 1 };
+    for (const p of [forged, tampered]) {
+      const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: p }), { token: "phone" });
+      expect(r).toMatchObject({ status: 403, json: { error: "bad_proof" } });
+    }
   });
 
-  it("another network with a wrong code: refused", async () => {
+  it("a wrong nonce, a reused nonce and an expired nonce are refused", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId, "ZZZZ-ZZZZ"), { token: "phone", ip: CAFE });
-    expect(r).toMatchObject({ status: 403, json: { error: "code_required" } });
+    const { codeId } = await s.ask();
+    const { loopbackNonce } = await s.handoff(codeId);
+    const wrong = "A".repeat(43);
+    expect(
+      (
+        await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: await s.proof(codeId, wrong) }), {
+          token: "phone",
+        })
+      ).json.error,
+    ).toBe("bad_proof");
+    // Used once (a failed claim, e.g. a stale claim body, still consumes it)…
+    const p = await s.proof(codeId, loopbackNonce!);
+    const stale = { ...(await s.claimBody(codeId)), loopbackProof: p };
+    stale.claim.body = { ...stale.claim.body, issuedAt: 1 };
+    await s.post("/v1/pairing/claim", stale, { token: "phone" });
+    expect(
+      (await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: p }), { token: "phone" })).json
+        .error,
+    ).toBe("bad_proof");
+    // …and a fresh nonce that waited too long.
+    const again = await s.handoff(codeId);
+    s.tick(PAIRING_NONCE_TTL_MS + 1);
+    const late = await s.proof(codeId, again.loopbackNonce!);
+    expect(
+      (await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: late }), { token: "phone" })).json
+        .error,
+    ).toBe("bad_proof");
   });
 
-  it("another network with the typed code (any case, spaces): allowed", async () => {
+  it("a proof over another client's nonce is refused (a link can't carry a pre-made proof)", async () => {
     const s = await setup();
-    const { codeId, shortCode } = await s.ask(HOME);
+    const { codeId } = await s.ask();
+    const theirs = await s.handoff(codeId, "tablet");
+    await s.handoff(codeId, "phone");
+    const r = await s.post(
+      "/v1/pairing/claim",
+      await s.claimBody(codeId, { loopbackProof: await s.proof(codeId, theirs.loopbackNonce!) }),
+      { token: "phone" },
+    );
+    expect(r).toMatchObject({ status: 403, json: { error: "bad_proof" } });
+  });
+
+  it("a proof naming another origin, or another code, is refused", async () => {
+    const s = await setup();
+    const { codeId } = await s.ask();
+    const other = await s.ask();
+    const n1 = (await s.handoff(codeId)).loopbackNonce!;
+    const evil = await s.proof(codeId, n1, { origin: "https://evil.example" });
+    expect(
+      (await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: evil }), { token: "phone" })).json
+        .error,
+    ).toBe("bad_proof");
+    const n2 = (await s.handoff(codeId)).loopbackNonce!;
+    const wrongCode = await s.proof(other.codeId, n2);
+    expect(
+      (await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: wrongCode }), { token: "phone" }))
+        .json.error,
+    ).toBe("bad_proof");
+  });
+
+  it("fallback: no proof, the typed code (any case, spaces) is enough; a wrong one isn't", async () => {
+    const s = await setup();
+    const { codeId, shortCode } = await s.ask();
+    expect(
+      (
+        await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode: "ZZZZ-ZZZZ" }), {
+          token: "phone",
+          ip: CAFE,
+        })
+      ).json.error,
+    ).toBe("code_required");
     const typed = ` ${shortCode.toLowerCase().replace("-", " ")} `;
-    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId, typed), { token: "phone", ip: CAFE });
+    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode: typed }), {
+      token: "phone",
+      ip: CAFE,
+    });
     expect(r.status).toBe(200);
+    expect(s.audit.events).toContainEqual(
+      expect.objectContaining({ action: "pairing.claimed", meta: { approval: "code_required" } }),
+    );
   });
 
-  it("IPv4 computer, IPv6 browser (can't compare): the code is required", async () => {
+  it("backwards compatible: a client that typed the code at /resolve claims without resending it", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: "2806:10a6:1:2::1" });
-    expect(r).toMatchObject({ status: 403, json: { error: "code_required" } });
+    const { codeId, shortCode } = await s.ask();
+    const r1 = await s.post("/v1/pairing/resolve", { shortCode }, { token: "phone", ip: CAFE });
+    expect(r1.json).toMatchObject({ codeTyped: true, loopbackNonce: null });
+    // Only that client: another one that didn't type it still needs the code.
+    expect(
+      (await s.post("/v1/pairing/claim", await s.claimBody(codeId, {}, s.stranger), { token: "stranger" })).json.error,
+    ).toBe("code_required");
+    expect((await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: CAFE })).status).toBe(
+      200,
+    );
   });
 
-  it("a declined code can't be claimed, even from the same network", async () => {
+  it("claimed, declined, expired and unknown codes answer the same 404", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
-    expect((await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: HOME })).status).toBe(200);
-    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: HOME });
-    expect(r).toMatchObject({ status: 410, json: { error: "cancelled" } });
+    const claimed = await s.ask();
+    await s.post("/v1/pairing/claim", await s.claimBody(claimed.codeId, { shortCode: claimed.shortCode }), {
+      token: "phone",
+    });
+    const declined = await s.ask();
+    await s.handoff(declined.codeId);
+    await s.post("/v1/pairing/decline", { codeId: declined.codeId }, { token: "phone" });
+    const expired = await s.ask();
+    s.mem.codes.set(expired.codeId, { ...s.mem.codes.get(expired.codeId)!, expiresAt: NOW });
+    const bodies = [];
+    for (const c of [claimed, declined, expired, { codeId: "A".repeat(22), shortCode: "ZZZZ-ZZZZ" }])
+      bodies.push(
+        await s.post("/v1/pairing/claim", await s.claimBody(c.codeId, { shortCode: c.shortCode }), { token: "phone" }),
+      );
+    expect(new Set(bodies.map((b) => JSON.stringify(b)))).toEqual(new Set([JSON.stringify(bodies[0])]));
+    expect(bodies[0]).toMatchObject({ status: 404, json: { error: "not_found" } });
   });
 
-  it("every pairing alerts all of the account's devices (security, revoke from Dispositivos)", async () => {
+  it("every pairing alerts all of the account's devices", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: HOME });
+    const { codeId, shortCode } = await s.ask();
+    await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" });
     expect(s.mem.notifications).toEqual([
       expect.objectContaining({
         owner: s.o,
@@ -371,72 +528,110 @@ describe("POST /v1/pairing/claim: the network check is server-side", () => {
         channels: ["desktop", "push"],
       }),
     ]);
-    expect(s.audit.events).toContainEqual(
-      expect.objectContaining({ action: "pairing.claimed", meta: { approval: "one_tap" } }),
-    );
+  });
+
+  it("a failed alert doesn't undo or fail the committed pairing", async () => {
+    const s = await setup({ failNotify: true });
+    const { codeId, shortCode } = await s.ask();
+    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" });
+    expect(r.status).toBe(200);
+    expect(s.mem.codes.get(codeId)!.claimed).toBe(true);
   });
 });
 
 describe("POST /v1/pairing/decline", () => {
-  it("cancels an open code the client opened, and drops its network record", async () => {
+  it("cancels an open code the client opened, and drops its records", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
+    const { codeId } = await s.ask();
     expect(s.mem.nets.has(codeId)).toBe(true);
-    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: CAFE });
-    const r = await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: CAFE });
-    expect(r).toMatchObject({ status: 200, json: { ok: true } });
+    await s.handoff(codeId);
+    expect(await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: CAFE })).toMatchObject({
+      status: 200,
+      json: { ok: true },
+    });
     expect(s.mem.codes.get(codeId)!.cancelled).toBe(true);
     expect(s.mem.nets.has(codeId)).toBe(false);
-    expect(s.audit.events).toContainEqual(expect.objectContaining({ action: "pairing.declined" }));
+    expect([...s.mem.viewers.keys()].some((k) => k.startsWith(codeId))).toBe(false);
   });
 
-  it("knowing the code id isn't enough: only a client that opened the code may decline it", async () => {
+  it("knowing the code id isn't enough: only a client that opened it may decline", async () => {
     const s = await setup();
-    const { codeId, shortCode } = await s.ask(HOME);
-    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
-    for (const token of ["stranger", "tablet"]) {
-      const r = await s.post("/v1/pairing/decline", { codeId }, { token, ip: CAFE });
-      expect(r, token).toMatchObject({ status: 403, json: { error: "not_opened" } });
-    }
-    expect(s.mem.codes.get(codeId)!.cancelled).toBe(false);
-    // Typing the code opens it too (the phone path).
-    await s.post("/v1/pairing/resolve", { shortCode }, { token: "tablet", ip: CAFE });
-    expect((await s.post("/v1/pairing/decline", { codeId }, { token: "tablet", ip: CAFE })).status).toBe(200);
+    const { codeId, shortCode } = await s.ask();
+    await s.handoff(codeId);
+    for (const token of ["stranger", "tablet"])
+      expect(await s.post("/v1/pairing/decline", { codeId }, { token })).toMatchObject({
+        status: 403,
+        json: { error: "not_opened" },
+      });
+    await s.post("/v1/pairing/resolve", { shortCode }, { token: "tablet" });
+    expect((await s.post("/v1/pairing/decline", { codeId }, { token: "tablet" })).status).toBe(200);
   });
 
-  it("needs a signed-in client; a claimed or unknown code is 404", async () => {
+  it("strangers' attempts don't use up the code's own decline budget", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    expect((await s.post("/v1/pairing/decline", { codeId }, { ip: HOME })).status).toBe(401);
-    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
-    await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: HOME });
-    expect((await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: HOME })).status).toBe(404);
+    const { codeId } = await s.ask();
+    await s.handoff(codeId);
+    for (const ip of ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4", "198.51.100.5"])
+      expect((await s.post("/v1/pairing/decline", { codeId }, { token: "stranger", ip })).status).toBe(403);
+    expect((await s.post("/v1/pairing/decline", { codeId }, { token: "phone" })).status).toBe(200);
+  });
+
+  it("is limited per client; the per-code bucket comes after the viewer check", async () => {
+    const s = await setup();
+    const perClient: number[] = [];
+    for (let i = 0; i < 7; i++)
+      perClient.push(
+        (await s.post("/v1/pairing/decline", { codeId: `unknown_code_${i}` }, { token: "phone", ip: CAFE })).status,
+      );
+    expect(perClient).toContain(429);
+
+    const t = await setup();
+    const { codeId } = await t.ask();
+    await t.handoff(codeId);
+    await t.handoff(codeId, "tablet");
+    // The per-code bucket is taken only after the viewer check; then a viewer can't hammer it.
+    const ok = await t.post("/v1/pairing/decline", { codeId }, { token: "phone" });
+    expect(ok.status).toBe(200);
+    expect((await t.post("/v1/pairing/decline", { codeId }, { token: "tablet" })).status).toBe(404);
+  });
+
+  it("needs a signed-in client; claimed or unknown codes are 404", async () => {
+    const s = await setup();
+    const { codeId, shortCode } = await s.ask();
+    expect((await s.post("/v1/pairing/decline", { codeId }, {})).status).toBe(401);
+    await s.handoff(codeId);
+    await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" });
+    expect((await s.post("/v1/pairing/decline", { codeId }, { token: "phone" })).status).toBe(404);
+  });
+});
+
+describe("POST /v1/pairing/withdraw: the computer burns its own code", () => {
+  it("Cancelar while waiting: the code can't be claimed any more", async () => {
+    const s = await setup();
+    const { codeId, shortCode } = await s.ask();
+    expect((await s.post("/v1/pairing/withdraw", { withdraw: await s.withdraw(codeId) }, {})).status).toBe(200);
+    expect(s.mem.codes.get(codeId)!.cancelled).toBe(true);
     expect(
-      (await s.post("/v1/pairing/decline", { codeId: "nope_nope_nope" }, { token: "phone", ip: HOME })).status,
+      (await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" })).status,
     ).toBe(404);
   });
 
-  it("is limited per client", async () => {
+  it("No fui yo after a claim: the device that claim created is revoked", async () => {
     const s = await setup();
-    const statuses: number[] = [];
-    for (let i = 0; i < 7; i++)
-      statuses.push(
-        (await s.post("/v1/pairing/decline", { codeId: `unknown_code_${i}` }, { token: "phone", ip: CAFE })).status,
-      );
-    expect(statuses.slice(0, 5)).toEqual([404, 404, 404, 404, 404]);
-    expect(statuses).toContain(429);
+    const { codeId, shortCode } = await s.ask();
+    await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" });
+    expect((await s.post("/v1/pairing/withdraw", { withdraw: await s.withdraw(codeId) }, {})).status).toBe(200);
+    expect(s.mem.revoked).toEqual([`${s.o}/${s.computer.deviceId}`]);
+    expect(s.disabled).toEqual([s.computer.deviceId]);
   });
 
-  it("and per code, from any number of clients and networks", async () => {
+  it("only the computer that published the code can withdraw it", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    const statuses: number[] = [];
-    const ips = ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4", "198.51.100.5"];
-    for (const [i, ip] of ips.entries())
-      statuses.push(
-        (await s.post("/v1/pairing/decline", { codeId }, { token: i % 2 ? "stranger" : "tablet", ip })).status,
-      );
-    expect(statuses).toEqual([403, 403, 403, 429, 429]);
+    const { codeId } = await s.ask();
+    const r = await s.post("/v1/pairing/withdraw", { withdraw: await s.withdraw(codeId, s.attacker) }, {});
+    expect(r).toMatchObject({ status: 403, json: { error: "not_this_computer" } });
+    const forged = { ...(await s.withdraw(codeId, s.attacker)), signerDeviceId: s.computer.deviceId };
+    expect((await s.post("/v1/pairing/withdraw", { withdraw: forged }, {})).status).toBe(403);
     expect(s.mem.codes.get(codeId)!.cancelled).toBe(false);
   });
 });
@@ -444,45 +639,38 @@ describe("POST /v1/pairing/decline", () => {
 describe("the code id is a capability", () => {
   it("the computer can't publish a guessable code id (under 128 bits)", async () => {
     const s = await setup();
-    const r = await s.askWith("short_id_123");
-    expect(r).toMatchObject({ status: 400, json: { error: "weak_code_id" } });
+    expect(await s.askWith("short_id_123")).toMatchObject({ status: 400, json: { error: "weak_code_id" } });
   });
 
-  it("unknown, claimed, declined and expired codes answer the same 404", async () => {
+  it("unknown, claimed, declined and expired codes answer the same 404 at /handoff", async () => {
     const s = await setup();
-    const claimed = await s.ask(HOME);
-    await s.post("/v1/pairing/claim", await s.claimBody(claimed.codeId), { token: "phone", ip: HOME });
-    const declined = await s.ask(HOME);
-    await s.post("/v1/pairing/handoff", { codeId: declined.codeId }, { token: "phone", ip: HOME });
-    await s.post("/v1/pairing/decline", { codeId: declined.codeId }, { token: "phone", ip: HOME });
-    const expired = await s.ask(HOME);
+    const claimed = await s.ask();
+    await s.post("/v1/pairing/claim", await s.claimBody(claimed.codeId, { shortCode: claimed.shortCode }), {
+      token: "phone",
+    });
+    const declined = await s.ask();
+    await s.handoff(declined.codeId);
+    await s.post("/v1/pairing/decline", { codeId: declined.codeId }, { token: "phone" });
+    const expired = await s.ask();
     s.mem.codes.set(expired.codeId, { ...s.mem.codes.get(expired.codeId)!, expiresAt: NOW });
     const bodies = [];
     for (const codeId of ["A".repeat(22), claimed.codeId, declined.codeId, expired.codeId])
-      bodies.push(await s.post("/v1/pairing/handoff", { codeId }, { token: "tablet", ip: HOME }));
+      bodies.push(await s.post("/v1/pairing/handoff", { codeId }, { token: "tablet" }));
     expect(new Set(bodies.map((b) => JSON.stringify(b)))).toEqual(new Set([JSON.stringify(bodies[0])]));
     expect(bodies[0]).toMatchObject({ status: 404, json: { error: "not_found" } });
   });
 
-  it("there is no route that lists codes, and the audit log never holds a code id", async () => {
+  it("no route lists codes, and the audit log never holds a code id or a nonce", async () => {
     const s = await setup();
-    const { codeId } = await s.ask(HOME);
-    for (const path of ["/v1/pairing/codes", "/v1/pairing", "/v1/pairing/handoff"]) {
-      const r = await s.get(path);
-      expect([404, 405], path).toContain(r.status);
-    }
-    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
-    await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: HOME });
-    expect(JSON.stringify(s.audit.events)).not.toContain(codeId);
-  });
-});
-
-describe("POST /v1/pairing/resolve (typed code)", () => {
-  it("returns the same view, flagged from another network", async () => {
-    const s = await setup();
-    const { shortCode } = await s.ask(HOME);
-    const r = await s.post("/v1/pairing/resolve", { shortCode }, { token: "phone", ip: CAFE });
-    expect(r.status).toBe(200);
-    expect(r.json).toMatchObject({ network: "different", approval: "code_required" });
+    const { codeId } = await s.ask();
+    for (const path of ["/v1/pairing/codes", "/v1/pairing", "/v1/pairing/handoff"])
+      expect([404, 405], path).toContain((await s.get(path)).status);
+    const { loopbackNonce } = await s.handoff(codeId);
+    await s.post("/v1/pairing/decline", { codeId }, { token: "phone" });
+    const log = JSON.stringify(s.audit.events);
+    expect(log).not.toContain(codeId);
+    expect(log).not.toContain(loopbackNonce!);
+    expect([...s.mem.viewers.values()].every((v) => v.nonceHash !== loopbackNonce)).toBe(true);
+    expect(sha(loopbackNonce!)).toMatch(/^[0-9a-f]{64}$/);
   });
 });

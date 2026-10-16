@@ -3,7 +3,10 @@ import { IpcError, ipcPath, startIpcServer, type IpcHandlers } from "./ipc-serve
 import { acquireInstanceLock } from "./instance-lock.js";
 import { AGENT_VERSION } from "./ipc-handlers.js";
 import { isPaired, readConfig } from "./config.js";
+import { signEnvelope } from "@chalito/crypto";
+import { loadOrCreateIdentity } from "./identity.js";
 import { runPair, type PairDeps, type PairResult, type PairingCodeShown } from "./pair.js";
+import { loopbackOrigins, startPairingLoopback } from "./pairing-loopback.js";
 
 /**
  * Pairing from the desktop panel (ADR 0028 §3), with no terminal. Before this computer is paired
@@ -15,6 +18,9 @@ import { runPair, type PairDeps, type PairResult, type PairingCodeShown } from "
  * The local reverse check stays local: the trusted list is written only after the person clicks
  * "Sí, fui yo" in the panel (confirmPairing match: true), and replacing an account still needs the
  * typed phrase. OS authentication runs first, as in the CLI (the system prompt on macOS and Linux).
+ *
+ * While a code waits, the loopback endpoint (pairing-loopback.ts) lets the approval page in this
+ * computer's browser prove it is here (one tap, ADR 0028 §4); anything else types the code.
  */
 
 export type PairingPhase =
@@ -64,6 +70,7 @@ export class PanelPairing {
   #abort: AbortController | null = null;
   #answer: ((a: Answer) => void) | null = null;
   #seq = 0;
+  #codeId: string | null = null;
   readonly done: Promise<PairResult & { ok: true }>;
   #resolveDone!: (r: PairResult & { ok: true }) => void;
 
@@ -101,7 +108,10 @@ export class PanelPairing {
       kind,
       signal: abort.signal,
       out: () => undefined,
-      onCode: ({ codeId: _c, ...computer }) => set({ state: "waiting", computer }),
+      onCode: ({ codeId, ...computer }) => {
+        if (this.#view?.pairingId === pairingId) this.#codeId = codeId;
+        set({ state: "waiting", computer });
+      },
       onClaimed: (claimer) => set({ claimer }),
       confirm: async () => (await ask({ state: "claimed" })).match,
       confirmTyped: async (_q, phrase) => {
@@ -111,6 +121,7 @@ export class PanelPairing {
     }).then(
       (r) => {
         this.#answer = null;
+        this.#codeId = null;
         if (r.ok) {
           set({ state: "paired", replacePhrase: null });
           this.#resolveDone(r);
@@ -126,11 +137,27 @@ export class PanelPairing {
       },
       (err: unknown) => {
         this.#answer = null;
+        this.#codeId = null;
         const code = err instanceof Error && /^[a-z_]{2,40}$/.test(err.message) ? err.message : "pairing_failed";
         set({ state: "failed", error: code });
       },
     );
     return this.view()!;
+  }
+
+  /**
+   * The loopback proof (ADR 0028 §4): only for the code this computer is waiting on, signed with
+   * the key it published at /codes. Null otherwise (nothing waiting, another code, already claimed).
+   */
+  async proveLoopback(codeId: string, nonce: string, origin: string, now = Date.now()): Promise<unknown | null> {
+    if (this.#view?.state !== "waiting" || !this.#codeId || codeId !== this.#codeId) return null;
+    const id = await loadOrCreateIdentity(this.deps.secrets);
+    return signEnvelope(
+      "chalito.pairing-loopback.v1",
+      { v: 1, codeId, nonce, origin, issuedAt: now },
+      id.deviceId,
+      id.sign.secretKey,
+    );
   }
 
   /**
@@ -175,9 +202,17 @@ export const runPairingHost = async (opts: {
   platform?: NodeJS.Platform;
   /** How often to notice a pairing done elsewhere (`chalito pair` in a terminal). */
   pollMs?: number;
+  loopbackPorts?: readonly number[];
 }): Promise<void> => {
   const release = (opts.lock ?? acquireInstanceLock)(opts.dir);
-  const pairing = new PanelPairing(opts.pair);
+  // The pairing object exists before the loopback starts; the port only goes into the link.
+  let pairing: PanelPairing | null = null;
+  const loopback = await startPairingLoopback({
+    origins: loopbackOrigins(opts.pair.env ?? process.env),
+    prove: (codeId, nonce, origin) => pairing?.proveLoopback(codeId, nonce, origin) ?? Promise.resolve(null),
+    ...(opts.loopbackPorts ? { ports: opts.loopbackPorts } : {}),
+  }).catch(() => null);
+  pairing = new PanelPairing({ ...opts.pair, ...(loopback ? { loopbackPort: loopback.port } : {}) });
   const server = await startIpcServer({
     path: ipcPath(opts.dir, opts.platform),
     secret: opts.secret,
@@ -200,6 +235,7 @@ export const runPairingHost = async (opts: {
     await new Promise((r) => setTimeout(r, 1500));
   } finally {
     clearInterval(timer);
+    await loopback?.close().catch(() => undefined);
     await server.close().catch(() => undefined);
     release();
   }

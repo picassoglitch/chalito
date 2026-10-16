@@ -7,6 +7,7 @@ import {
   PairingClaimBody,
   PairingHandoffResponse,
   RevokeDeviceRequest,
+  type PairingLoopbackProof,
   type DeviceRegistration,
 } from "@chalito/protocol";
 import type { ApiClient } from "./api.js";
@@ -88,9 +89,9 @@ export const resolveShortCode = async (api: ApiClient, shortCode: string, now: n
 };
 
 /**
- * Hand-off link (ADR 0028 §3): the code id from `#c=` resolves to the same signed payload, plus
- * whether this browser is on the computer's network and what approving needs (`one_tap` or
- * `code_required`, decided by the api).
+ * Hand-off link (ADR 0028 §3): the code id from `#c=` resolves to the same signed payload, plus the
+ * single-use nonce for the agent's loopback proof (one tap on the same computer) and the network
+ * warning info.
  */
 export const pairingHandoff = async (api: ApiClient, codeId: string, now: number) => {
   const view = PairingHandoffResponse.parse(await api.post("/v1/pairing/handoff", { codeId }));
@@ -103,11 +104,13 @@ export const declinePairing = (api: ApiClient, codeId: string) =>
 
 /**
  * After the user compared fingerprints and confirmed (biometric/passkey in the UI), sign the claim.
- * `shortCode` is what they typed from the computer's screen; the api requires it from another network.
+ * Send `shortCode` whenever the person typed it from the computer's screen, or `loopbackProof` when
+ * the agent on this same computer answered: without either (or a code typed earlier at /resolve by
+ * this client) the api refuses the claim (ADR 0028 §4).
  */
 export const buildPairingClaim = async (
   keys: DeviceKeys,
-  c: { owner: string; glyph: GlyphPayload; now: number; shortCode?: string },
+  c: { owner: string; glyph: GlyphPayload; now: number; shortCode?: string; loopbackProof?: PairingLoopbackProof },
 ): Promise<ClaimRequest> => {
   const display = await pairingDisplay(c.glyph, c.now);
   const body = PairingClaimBody.parse({
@@ -122,6 +125,7 @@ export const buildPairingClaim = async (
   return ClaimPairingRequest.parse({
     claim: await signEnvelope("chalito.pairing-claim.v1", body, keys.deviceId, keys.sign.secretKey),
     ...(c.shortCode ? { shortCode: c.shortCode } : {}),
+    ...(c.loopbackProof ? { loopbackProof: c.loopbackProof } : {}),
   });
 };
 

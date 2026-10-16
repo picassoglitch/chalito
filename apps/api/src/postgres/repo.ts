@@ -348,17 +348,38 @@ export class PostgresRepo implements ApiRepo {
     return { doc: toPairingCode(row), net };
   }
 
-  async recordPairingViewer(codeId: string, owner: string, deviceId: string) {
+  async recordPairingViewer(
+    codeId: string,
+    owner: string,
+    deviceId: string,
+    o: { typed?: boolean; nonce?: { hash: string; expiresAt: number } } = {},
+  ) {
+    const typed = o.typed ?? false;
+    const nonceHash = o.nonce?.hash ?? null;
+    const nonceAt = o.nonce ? ts(o.nonce.expiresAt) : null;
     await this.sql`
-      insert into chalito_private.pairing_code_viewers (code_id, owner, device_id)
-      values (${codeId}, ${owner}, ${deviceId})
-      on conflict do nothing`;
+      insert into chalito_private.pairing_code_viewers (code_id, owner, device_id, typed, nonce_hash, nonce_expires_at)
+      values (${codeId}, ${owner}, ${deviceId}, ${typed}, ${nonceHash}, ${nonceAt})
+      on conflict (code_id, owner, device_id) do update set
+        typed = pairing_code_viewers.typed or excluded.typed,
+        nonce_hash = coalesce(excluded.nonce_hash, pairing_code_viewers.nonce_hash),
+        nonce_expires_at = case when excluded.nonce_hash is null then pairing_code_viewers.nonce_expires_at
+                                else excluded.nonce_expires_at end`;
   }
 
-  async isPairingViewer(codeId: string, owner: string, deviceId: string) {
-    const rows = await this.sql`
-      select 1 from chalito_private.pairing_code_viewers
+  async getPairingViewer(codeId: string, owner: string, deviceId: string) {
+    const [row] = await this.sql<{ typed: boolean }[]>`
+      select typed from chalito_private.pairing_code_viewers
       where code_id = ${codeId} and owner = ${owner} and device_id = ${deviceId}`;
+    return row ? { typed: row.typed } : null;
+  }
+
+  async takePairingNonce(codeId: string, owner: string, deviceId: string, nonceHash: string, now: number) {
+    const rows = await this.sql`
+      update chalito_private.pairing_code_viewers set nonce_hash = null, nonce_expires_at = null
+      where code_id = ${codeId} and owner = ${owner} and device_id = ${deviceId}
+        and nonce_hash = ${nonceHash} and nonce_expires_at > ${ts(now)}
+      returning 1`;
     return rows.length > 0;
   }
 

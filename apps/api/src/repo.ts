@@ -107,10 +107,20 @@ export interface ApiRepo {
   findPairingCodeByShortHash(shortCodeHash: string): Promise<PairingCodeDoc | null>;
   /** The code by id plus the network it was asked from (null once purged or never recorded). */
   getPairingCode(codeId: string): Promise<{ doc: PairingCodeDoc; net: PairingNet | null } | null>;
-  /** Remembers that this client opened the open code (hand-off link or typed code). */
-  recordPairingViewer(codeId: string, owner: string, deviceId: string): Promise<void>;
-  /** Whether this client opened the code: only such a client may decline it. */
-  isPairingViewer(codeId: string, owner: string, deviceId: string): Promise<boolean>;
+  /**
+   * Remembers that this client opened the open code (hand-off link or typed code). `typed` sticks
+   * once true; `nonce` replaces the client's previous loopback nonce (hash only, single use).
+   */
+  recordPairingViewer(
+    codeId: string,
+    owner: string,
+    deviceId: string,
+    o?: { typed?: boolean; nonce?: { hash: string; expiresAt: number } },
+  ): Promise<void>;
+  /** This client's row for the code, or null: only such a client may decline it. */
+  getPairingViewer(codeId: string, owner: string, deviceId: string): Promise<{ typed: boolean } | null>;
+  /** Atomic, single use: consumes this client's nonce when it matches and hasn't expired. */
+  takePairingNonce(codeId: string, owner: string, deviceId: string, nonceHash: string, now: number): Promise<boolean>;
   /** "No estoy frente a esa computadora": marks an open code cancelled and drops its network record. */
   cancelPairingCode(codeId: string): Promise<"cancelled" | "not_found" | "already_claimed">;
   /**

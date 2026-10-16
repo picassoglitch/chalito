@@ -404,13 +404,21 @@ export const runApiRepoContract = (
         expect(await repo.cancelPairingCode(code.codeId)).toBe("not_found");
         await repo.createPairingCode(code, net);
         expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: false }, net });
-        expect(await repo.isPairingViewer(code.codeId, o, "dev_phone")).toBe(false);
-        await repo.recordPairingViewer(code.codeId, o, "dev_phone");
-        await repo.recordPairingViewer(code.codeId, o, "dev_phone"); // idempotent
-        expect(await repo.isPairingViewer(code.codeId, o, "dev_phone")).toBe(true);
-        expect(await repo.isPairingViewer(code.codeId, o, "dev_tablet")).toBe(false);
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_phone")).toBeNull();
+        const nonce = { hash: "b".repeat(64), expiresAt: Date.now() + 60_000 };
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone", { nonce });
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone", { typed: true }); // keeps the nonce
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone"); // typed sticks
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_phone")).toEqual({ typed: true });
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_tablet")).toBeNull();
+        // The nonce: only this client's, only its hash, only once, only before it expires.
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_tablet", nonce.hash, Date.now())).toBe(false);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", "c".repeat(64), Date.now())).toBe(false);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", nonce.hash, nonce.expiresAt + 1)).toBe(false);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", nonce.hash, Date.now())).toBe(true);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", nonce.hash, Date.now())).toBe(false);
         expect(await repo.cancelPairingCode(code.codeId)).toBe("cancelled");
-        expect(await repo.isPairingViewer(code.codeId, o, "dev_phone")).toBe(false); // dropped on decline
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_phone")).toBeNull(); // dropped on decline
         expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: true }, net: null });
         const claim = {
           owner: o,

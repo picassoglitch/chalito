@@ -9,6 +9,7 @@ import {
   generateSigningKeyPair,
   signEnvelope,
   toB64url,
+  verifyEnvelope,
 } from "@chalito/crypto";
 import { verifyGlyph } from "@chalito/glyph";
 import type { GlyphPayload, PairingCodeDoc } from "@chalito/protocol";
@@ -68,7 +69,17 @@ const world = async (
   const other = await phoneKeys();
   let glyph: GlyphPayload | null = null;
   const requests: { url: string; body: unknown }[] = [];
+  const withdrawals: { codeId: string; signerDeviceId: string; ok: boolean }[] = [];
   const fetch: FetchFn = async (url, init) => {
+    if (url.endsWith("/v1/pairing/withdraw")) {
+      const w = (
+        JSON.parse(init.body) as { withdraw: Parameters<typeof verifyEnvelope>[0] & { body: { codeId: string } } }
+      ).withdraw;
+      const pub = Buffer.from(glyph!.body.issuerPubSign, "base64url");
+      const ok = (await verifyEnvelope(w, "chalito.pairing-withdraw.v1", new Map([[w.signerDeviceId, pub]]))).ok;
+      withdrawals.push({ codeId: w.body.codeId, signerDeviceId: w.signerDeviceId, ok });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    }
     const body = JSON.parse(init.body) as { glyph: GlyphPayload; kind: string; platform: string };
     requests.push({ url, body });
     expect(await verifyGlyph(body.glyph, NOW)).toEqual({ ok: true });
@@ -177,7 +188,7 @@ const world = async (
     hostname: "aldo-desktop",
     platform: "linux",
   });
-  return { dir, phone, secrets, deps, requests, watched, out: () => out, asked, typed };
+  return { dir, phone, secrets, deps, requests, watched, withdrawals, out: () => out, asked, typed };
 };
 
 describe("chalito pair", () => {
@@ -246,12 +257,29 @@ describe("chalito pair", () => {
     expect(readConfig(w.dir, {}).owner).toBeNull();
   });
 
-  it("the panel's cancel stops waiting", async () => {
+  it("the panel's cancel stops waiting and burns the code on the server, signed by this computer", async () => {
     const w = await world({ claim: "never" });
     const ctl = new AbortController();
     const res = runPair({ ...w.deps(true), signal: ctl.signal, onCode: () => ctl.abort() });
     expect(await res).toEqual({ ok: false, reason: "cancelled" });
     expect(w.watched[0]!.stopped).toBe(true);
+    const id = await loadOrCreateIdentity(w.secrets);
+    const codeId = (w.requests[0]!.body as { glyph: GlyphPayload }).glyph.body.codeId;
+    expect(w.withdrawals).toEqual([{ codeId, signerDeviceId: id.deviceId, ok: true }]);
+  });
+
+  it("No at the reverse check burns the code too (the claim's device is revoked server-side)", async () => {
+    const w = await world();
+    expect(await runPair(w.deps(false))).toEqual({ ok: false, reason: "rejected_locally" });
+    expect(w.withdrawals).toHaveLength(1);
+    expect(w.withdrawals[0]!.ok).toBe(true);
+  });
+
+  it("the link carries the loopback port when there is one", async () => {
+    const w = await world();
+    const shown: PairingCodeShown[] = [];
+    await runPair({ ...w.deps(true), loopbackPort: 47811, onCode: (c) => void shown.push(c) });
+    expect(shown[0]!.approveUrl).toMatch(/#c=[A-Za-z0-9_-]+&p=47811$/);
   });
 
   it("answering no adds nothing and leaves the computer unpaired", async () => {

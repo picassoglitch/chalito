@@ -141,10 +141,11 @@ describe.skipIf(!READY)("2. pair a desktop agent with the glyph", () => {
     const other = await keys();
     const { signGlyph } = await import("@chalito/glyph");
     const g = await signGlyph(
-      { ...glyph.body, codeId: `code_x${Date.now()}`, issuerPubSign: other.pubSign, issuerPubBox: other.pubBox },
+      { ...glyph.body, codeId: `code_x${Date.now()}_second`, issuerPubSign: other.pubSign, issuerPubBox: other.pubBox },
       other.sign.secretKey,
     );
-    expect((await s.call("/v1/pairing/codes", { glyph: g, kind: "laptop", platform: "linux" })).status).toBe(201);
+    const second = await s.call("/v1/pairing/codes", { glyph: g, kind: "laptop", platform: "linux" });
+    expect(second.status).toBe(201);
     const claim = await signEnvelope(
       "chalito.pairing-claim.v1",
       {
@@ -159,7 +160,9 @@ describe.skipIf(!READY)("2. pair a desktop agent with the glyph", () => {
       p.phone.deviceId,
       p.phone.sign.secretKey,
     );
-    expect((await s.call("/v1/pairing/claim", { claim }, p.phone.token)).json.error).toBe("fingerprint_mismatch");
+    expect(
+      (await s.call("/v1/pairing/claim", { claim, shortCode: second.json.shortCode }, p.phone.token)).json.error,
+    ).toBe("fingerprint_mismatch");
   });
 });
 

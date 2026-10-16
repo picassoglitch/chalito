@@ -203,6 +203,13 @@ const app = createApp({
     recoveryCooldownMs: Number(process.env.RECOVERY_COOLDOWN_MS ?? 60 * 60 * 1000),
     skewMs: 60_000,
     trustedProxies: Number(process.env.TRUSTED_PROXIES ?? 0),
+    ...(process.env.PAIRING_ORIGINS
+      ? {
+          pairingOrigins: process.env.PAIRING_ORIGINS.split(",")
+            .map((o) => o.trim())
+            .filter(Boolean),
+        }
+      : {}),
     corsOrigins: [
       process.env.CHALITO_WEB_ORIGIN ?? "https://chalito.chalyb.com",
       // The Tauri webview's origins (macOS/Linux, then Windows).

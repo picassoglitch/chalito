@@ -56,7 +56,19 @@ for (const triple of triples) {
   const outfile = join(root, "dist", `chalito-agent-${triple}${triple.includes("windows") ? ".exe" : ""}`);
   const res = spawnSync(
     bun,
-    ["build", "--compile", "--minify", "--sourcemap", `--target=${TARGETS[triple]}`, entry, "--outfile", outfile],
+    [
+      "build",
+      "--compile",
+      "--minify",
+      "--sourcemap",
+      // Compiled agents are release builds: the pairing loopback accepts only the production hub.
+      "--define",
+      "__CHALITO_RELEASE__=true",
+      `--target=${TARGETS[triple]}`,
+      entry,
+      "--outfile",
+      outfile,
+    ],
     { cwd: root, stdio: "inherit" },
   );
   if (res.error)

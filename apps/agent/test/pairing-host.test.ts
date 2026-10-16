@@ -7,7 +7,14 @@ import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { deriveDeviceId, fingerprint, generateBoxKeyPair, generateSigningKeyPair, toB64url } from "@chalito/crypto";
+import {
+  deriveDeviceId,
+  fingerprint,
+  generateBoxKeyPair,
+  generateSigningKeyPair,
+  toB64url,
+  verifyEnvelope,
+} from "@chalito/crypto";
 import type { GlyphPayload, PairingCodeDoc } from "@chalito/protocol";
 import type { FetchFn, PairingWatcher } from "../src/cloud.js";
 import { configPath, readConfig } from "../src/config.js";
@@ -34,7 +41,8 @@ const world = async (opts: { owner?: string } = {}) => {
     fingerprint: await fingerprint(sign.publicKey),
   };
   let glyph: GlyphPayload | null = null;
-  const fetch: FetchFn = async (_url, init) => {
+  const fetch: FetchFn = async (url, init) => {
+    if (url.endsWith("/v1/pairing/withdraw")) return { ok: true, status: 200, json: async () => ({ ok: true }) };
     glyph = (JSON.parse(init.body) as { glyph: GlyphPayload }).glyph;
     return {
       ok: true,
@@ -89,7 +97,16 @@ const world = async (opts: { owner?: string } = {}) => {
     hostname: "MacBook de Ana",
     platform: "darwin",
   });
-  return { dir, phone, secrets, pairing, claim, decline: () => push!({ cancelled: true }), stopped };
+  return {
+    dir,
+    phone,
+    secrets,
+    pairing,
+    claim,
+    decline: () => push!({ cancelled: true }),
+    stopped,
+    codeId: () => glyph!.body.codeId,
+  };
 };
 
 /** Waits until the pairing reaches `state`. */
@@ -160,6 +177,29 @@ describe("pairing from the desktop panel", () => {
     await w.decline();
     await until(w.pairing, "declined");
     expect(readConfig(w.dir, {}).owner).toBeNull();
+  });
+
+  it("loopback proof: only for the waiting code, signed with the key published at /codes", async () => {
+    const w = await world();
+    const nonce = "N".repeat(43);
+    expect(await w.pairing.proveLoopback("abcdefghijklmnopqrstuv", nonce, "https://www.chalyb.com")).toBeNull();
+    w.pairing.start();
+    const waiting = await until(w.pairing, "waiting");
+    const codeId = w.codeId();
+    expect(await w.pairing.proveLoopback("another_code_id_012345", nonce, "https://www.chalyb.com")).toBeNull();
+    const proof = (await w.pairing.proveLoopback(codeId, nonce, "https://www.chalyb.com")) as Parameters<
+      typeof verifyEnvelope
+    >[0] & { body: Record<string, unknown> };
+    const id = await loadOrCreateIdentity(w.secrets);
+    expect(proof.body).toMatchObject({ v: 1, codeId, nonce, origin: "https://www.chalyb.com" });
+    expect(
+      (await verifyEnvelope(proof, "chalito.pairing-loopback.v1", new Map([[id.deviceId, id.sign.publicKey]]))).ok,
+    ).toBe(true);
+    expect(waiting.computer!.approveUrl).toContain(codeId);
+    // Once claimed, nothing more to prove.
+    await w.claim();
+    await until(w.pairing, "claimed");
+    expect(await w.pairing.proveLoopback(codeId, nonce, "https://www.chalyb.com")).toBeNull();
   });
 
   it("answers for another or a finished pairing are refused", async () => {

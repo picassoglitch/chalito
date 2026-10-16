@@ -46,6 +46,10 @@ export const SigningContext = z.enum([
   "chalito.room-key-wrap.v1",
   "chalito.device-register.v1",
   "chalito.pairing-claim.v1",
+  /** ADR 0028 §4: the unpaired agent's loopback proof that the approving browser is on this computer. */
+  "chalito.pairing-loopback.v1",
+  /** ADR 0028 §3: the unpaired agent withdraws its own code ("Cancelar" / "No fui yo" in the panel). */
+  "chalito.pairing-withdraw.v1",
   "chalito.trusted-list.v1",
   "chalito.devmode-state.v1",
   "chalito.devmode-liability.v1",

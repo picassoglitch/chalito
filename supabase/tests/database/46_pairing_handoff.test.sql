@@ -4,7 +4,7 @@
 -- code is visible to its watcher as `cancelled`.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(23);
+select plan(26);
 
 create function pg_temp.login(claims jsonb) returns void language plpgsql as $$
 begin
@@ -61,6 +61,16 @@ values ('ho_open1', 'ho-a', 'ho_phone'), ('ho_claim', 'ho-a', 'ho_phone'), ('ho_
        ('ho_gone1', 'ho-a', 'ho_phone');
 insert into chalito_private.pairing_code_viewers (code_id, owner, device_id, viewed_at)
 values ('ho_late1', 'ho-a', 'ho_phone', now() - interval '25 hours');
+
+select throws_ok($$insert into chalito_private.pairing_code_viewers (code_id, owner, device_id, nonce_hash)
+  values ('ho_old01', 'ho-a', 'ho_x', repeat('d', 64))$$, '23514', null, 'a nonce always has an expiry');
+select throws_ok($$insert into chalito_private.pairing_code_viewers (code_id, owner, device_id, nonce_hash, nonce_expires_at)
+  values ('ho_old01', 'ho-a', 'ho_x', 'raw-nonce', now())$$, '23514', null, 'only a nonce hash is kept, never the nonce');
+set local role chalito_server;
+select lives_ok($$update chalito_private.pairing_code_viewers set typed = true,
+  nonce_hash = repeat('e', 64), nonce_expires_at = now() + interval '2 minutes'
+  where code_id = 'ho_open1'$$, 'chalito_server marks a typed code and issues a nonce');
+reset role;
 
 -- ================================================================ nobody else reads it
 select pg_temp.as_pairing('ho_open1');
