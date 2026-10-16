@@ -110,7 +110,7 @@ export const parseGitConfig = (text: string): Entry[] => {
       const name = m[1]!;
       if (m[2] !== undefined) {
         section = name.toLowerCase();
-        sub = m[2].replace(/\\(.)/g, "$1");
+        sub = m[2].replace(/\\(.)/g, (_, c: string) => c);
       } else {
         // Legacy [section.sub]: the subsection is lower-cased by git.
         const dot = name.indexOf(".");
