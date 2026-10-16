@@ -196,6 +196,7 @@ export const pairingRowToDoc = (r: Record<string, unknown>): Record<string, unkn
   claimerPubSign: r.claimer_pub_sign ?? null,
   claimerPubBox: r.claimer_pub_box ?? null,
   claimerWebauthnBinding: r.claimer_webauthn_binding ?? null,
+  cancelled: r.cancelled ?? false,
   expiresAt: typeof r.expires_at === "string" ? Date.parse(r.expires_at) : r.expires_at,
 });
 

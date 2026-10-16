@@ -161,6 +161,39 @@ describe("chalito CLI", () => {
     expect(started).toBe(true);
   });
 
+  it("run, unpaired and started by the desktop app: serves the panel's pairing instead of the daemon", async () => {
+    const c = cli();
+    const input = new PassThrough();
+    input.end(`${"ab".repeat(16)}\n`);
+    let host: { dir: string; secret: string; osOk: boolean } | null = null;
+    let daemon = false;
+    const io = {
+      out: () => undefined,
+      err: () => undefined,
+      tty: { input, output: new PassThrough() },
+      env: { CHALITO_IPC: "stdin" },
+      home: c.home,
+      platform: "win32" as const,
+      secrets: c.secrets,
+      runner: { run: async () => ({ code: 0, stdout: "", stderr: "" }) },
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+      now: Date.now,
+      execPath: "/x",
+      tmpdir: tmpdir(),
+      daemon: async () => ((daemon = true), { done: Promise.resolve() } as unknown as Daemon),
+      pairingHost: async (o: {
+        dir: string;
+        secret: string;
+        pair: { osAuth: { verify: (r: string) => Promise<boolean> } };
+      }) => {
+        host = { dir: o.dir, secret: o.secret, osOk: await o.pair.osAuth.verify("x") };
+      },
+    };
+    expect(await main(["run"], io as never)).toBe(0);
+    expect(daemon).toBe(false);
+    expect(host).toMatchObject({ secret: "ab".repeat(16), osOk: true });
+  });
+
   describe("keys set", () => {
     it("saves the key in the keychain, never prints it", async () => {
       const c = cli();

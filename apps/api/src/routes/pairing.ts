@@ -1,22 +1,53 @@
 import { Hono } from "hono";
 import { deriveDeviceId, fingerprint, fromB64url, verifyEnvelope } from "@chalito/crypto";
 import { generateShortCode, hashShortCode, normalizeShortCode, verifyGlyph } from "@chalito/glyph";
+import { clientIp } from "@chalito/guard";
 import {
   ClaimPairingRequest,
   CreatePairingCodeRequest,
+  DeclinePairingRequest,
+  PairingHandoffRequest,
   ResolveShortCodeRequest,
   type PairingCodeDoc,
+  type PairingHandoffResponse,
 } from "@chalito/protocol";
+import type { Context } from "hono";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { buildDeviceDoc } from "../lib/devices.js";
 import { fail } from "../lib/errors.js";
+import { compareNetworks, pairingApproval, pairingNet, type PairingNet } from "../lib/pairing-network.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import { deviceLimitFor } from "../rooms/limits.js";
 
 /** Phone-first pairing (ADR 0006). The cloud relays and records; humans confirm fingerprints. */
 export const pairingRoutes = (deps: Deps) => {
   const app = new Hono<AuthEnv>();
+  // The network key: derived from the SSO secret, so a dump of the table alone can't be brute-forced.
+  const netKey = `chalito.pairing-net.v1:${deps.config.ssoSecret}`;
+  const proxies = deps.config.trustedProxies ?? 0;
+  // The city header is only believed behind a load balancer that sets it (TRUSTED_PROXIES > 0).
+  const netOf = (c: Context): PairingNet | null =>
+    pairingNet(clientIp(c, proxies), netKey, proxies > 0 ? (h) => c.req.header(h) : undefined);
+  /** An open code by id (unclaimed, not declined, not expired), or null. */
+  const openCode = async (codeId: string) => {
+    const found = await deps.repo.getPairingCode(codeId);
+    if (!found || found.doc.claimed || found.doc.cancelled || found.doc.expiresAt <= deps.now()) return null;
+    return found;
+  };
+  /** What the approving browser sees: never the short code, its hash, or anyone's keys but the computer's glyph. */
+  const handoffView = (found: { doc: PairingCodeDoc; net: PairingNet | null }, c: Context): PairingHandoffResponse => {
+    const network = compareNetworks(found.net, netOf(c));
+    return {
+      glyph: found.doc.glyph,
+      kind: found.doc.kind,
+      platform: found.doc.platform,
+      expiresAt: found.doc.expiresAt,
+      network,
+      approval: pairingApproval(network),
+      city: network === "same" ? null : (found.net?.city ?? null),
+    };
+  };
 
   /** The agent publishes its self-signed glyph. Unauthenticated (it has no identity yet), rate-limited. */
   app.post("/codes", rateLimit({ capacity: 10, refillPerSec: 0.1, now: deps.now }), async (c) => {
@@ -42,9 +73,10 @@ export const pairingRoutes = (deps: Deps) => {
       claimerPubSign: null,
       claimerPubBox: null,
       claimerWebauthnBinding: null,
+      cancelled: false,
       expiresAt: glyph.body.expiresAt,
     };
-    if ((await deps.repo.createPairingCode(doc)) === "exists") return fail(409, "code_exists");
+    if ((await deps.repo.createPairingCode(doc, netOf(c))) === "exists") return fail(409, "code_exists");
     // A credential that can only read this one pairing code: the agent waits on a listener, not a poll.
     const watchToken = await deps.identity.mintPairingWatch(glyph.body.codeId);
     await deps.audit.record({
@@ -66,8 +98,51 @@ export const pairingRoutes = (deps: Deps) => {
       const code = body.success ? normalizeShortCode(body.data.shortCode) : null;
       if (!code) return fail(400, "bad_request");
       const doc = await deps.repo.findPairingCodeByShortHash(await hashShortCode(code));
-      if (!doc || doc.claimed || doc.expiresAt <= deps.now()) return fail(404, "not_found");
-      return c.json({ glyph: doc.glyph });
+      const found = doc ? await openCode(doc.codeId) : null;
+      if (!found) return fail(404, "not_found");
+      return c.json(handoffView(found, c));
+    },
+  );
+
+  /**
+   * Hand-off link (ADR 0028 §3): the browser opened `/computadoras/aprobar#c=<codeId>` and asks
+   * what it would approve. Same rule as /resolve: any signed-in client (the code has no owner
+   * yet), rate-limited, open codes only.
+   */
+  app.post(
+    "/handoff",
+    requireAuth(deps, ["client"]),
+    rateLimit({ capacity: 10, refillPerSec: 0.05, now: deps.now }),
+    async (c) => {
+      const body = PairingHandoffRequest.safeParse(await c.req.json().catch(() => null));
+      if (!body.success) return fail(400, "bad_request");
+      const found = await openCode(body.data.codeId);
+      if (!found) return fail(404, "not_found");
+      return c.json(handoffView(found, c));
+    },
+  );
+
+  /** "No estoy frente a esa computadora": the code stops working and the computer says so. */
+  app.post(
+    "/decline",
+    requireAuth(deps, ["client"]),
+    rateLimit({ capacity: 5, refillPerSec: 0.02, now: deps.now }),
+    async (c) => {
+      const p = principal(c);
+      const body = DeclinePairingRequest.safeParse(await c.req.json().catch(() => null));
+      if (!body.success) return fail(400, "bad_request");
+      const found = await openCode(body.data.codeId);
+      if (!found) return fail(404, "not_found");
+      const res = await deps.repo.cancelPairingCode(body.data.codeId);
+      if (res !== "cancelled") return fail(res === "not_found" ? 404 : 409, res);
+      await deps.audit.record({
+        action: "pairing.declined",
+        owner: p.owner,
+        actor: p.uid,
+        target: body.data.codeId,
+        meta: { agentDeviceId: found.doc.agentDeviceId },
+      });
+      return c.json({ ok: true });
     },
   );
 
@@ -77,6 +152,17 @@ export const pairingRoutes = (deps: Deps) => {
     const body = ClaimPairingRequest.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
     const claim = body.data.claim;
+    // The network check is enforced here, not only on the screen (ADR 0028 §4): from another
+    // network the claim must carry the short code shown on the computer.
+    const found = await deps.repo.getPairingCode(claim.body.codeId);
+    if (!found) return fail(404, "not_found");
+    if (found.doc.cancelled) return fail(410, "cancelled");
+    const approval = pairingApproval(compareNetworks(found.net, netOf(c)));
+    if (approval === "blocked") return fail(403, "network_mismatch");
+    if (approval === "code_required") {
+      const typed = body.data.shortCode ? normalizeShortCode(body.data.shortCode) : null;
+      if (!typed || (await hashShortCode(typed)) !== found.doc.shortCodeHash) return fail(403, "code_required");
+    }
     const b = claim.body;
     if (b.owner !== p.owner || b.claimerDeviceId !== p.deviceId || claim.signerDeviceId !== p.deviceId)
       fail(403, "claimer_mismatch");
@@ -130,7 +216,33 @@ export const pairingRoutes = (deps: Deps) => {
       return fail(403, "device_limit", `Your plan allows ${res.limit ?? 0} computer(s). Remove one or upgrade.`);
     if (!res.ok) return fail(res.reason === "not_found" ? 404 : 409, res.reason);
     const agentId = res.agentDeviceId;
-    await deps.audit.record({ action: "pairing.claimed", owner: p.owner, actor: p.uid, target: agentId });
+    await deps.audit.record({
+      action: "pairing.claimed",
+      owner: p.owner,
+      actor: p.uid,
+      target: agentId,
+      meta: { approval },
+    });
+    // Every device of the account hears about a new computer (ADR 0028 §4), with revoke one tap away.
+    const nid = `pairing_${agentId}_${deps.now()}`;
+    await deps.repo.createNotification(p.owner, nid, {
+      v: 1,
+      nid,
+      uid: p.owner,
+      level: "L2",
+      source: "security",
+      urgency: "high",
+      counts: { approvals: 0, questions: 0, messages: 0, mesas: 0 },
+      deepLink: "/dispositivos",
+      coalesceKey: `security:pairing:${agentId}`,
+      state: "pending",
+      step: 0,
+      nextAt: null,
+      channels: ["desktop", "push"],
+      createdAt: deps.now(),
+      ackedAt: null,
+      ackedVia: null,
+    });
     return c.json({ ok: true, agentDeviceId: agentId });
   });
 

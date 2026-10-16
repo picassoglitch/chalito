@@ -9,6 +9,7 @@ import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
 import { Rooms } from "./Rooms.js";
+import { ConnectComputer } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
 import { Apps } from "./Apps.js";
 import { Security } from "./Security.js";
@@ -39,6 +40,8 @@ export interface PanelProps {
   updates?: UpdateController;
   /** The bundled agent and the `chalito` command (release builds). */
   localAgent?: LocalAgentApi;
+  /** The system browser (tauri-plugin-opener), for the pairing approval page. */
+  openUrl?: (url: string) => Promise<void>;
   /** Salas: the rooms list and join; null while signed out. */
   rooms?: RoomsSource | null;
   initialTab?: Tab;
@@ -61,6 +64,9 @@ export const Panel = (p: PanelProps) => {
           <input type="checkbox" checked={p.dnd} onChange={(e) => p.onDnd(e.target.checked)} /> {t("dnd")}
         </label>
       </header>
+      {p.localAgent && p.openUrl && (
+        <ConnectComputer ipc={p.ipc} openUrl={p.openUrl} agentStatus={() => p.localAgent!.status()} />
+      )}
       <main role="tabpanel">
         {tab === "inbox" &&
           (p.client ? (

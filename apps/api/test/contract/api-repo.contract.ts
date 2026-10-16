@@ -395,6 +395,36 @@ export const runApiRepoContract = (
         });
       });
 
+      it("hand-off: the network record comes back with the code; decline cancels and blocks the claim", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const code = await pairingCode();
+        const net = { family: 4 as const, netHash: "a".repeat(64), city: "Guadalajara" };
+        expect(await repo.getPairingCode(code.codeId)).toBeNull();
+        expect(await repo.cancelPairingCode(code.codeId)).toBe("not_found");
+        await repo.createPairingCode(code, net);
+        expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: false }, net });
+        expect(await repo.cancelPairingCode(code.codeId)).toBe("cancelled");
+        expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: true }, net: null });
+        const claim = {
+          owner: o,
+          claimedByDeviceId: "dev_phone",
+          claimerPubSign: "ps",
+          claimerPubBox: "pb",
+          claimedAt: 1,
+        };
+        expect(await repo.claimPairingCode(code.codeId, claim, () => agentFor(code, o, "dev_phone"))).toEqual({
+          ok: false,
+          reason: "cancelled",
+        });
+        // A code created without a network record has none; a claimed one can't be declined.
+        const other = await pairingCode();
+        await repo.createPairingCode(other);
+        expect((await repo.getPairingCode(other.codeId))?.net).toBeNull();
+        await repo.claimPairingCode(other.codeId, claim, () => agentFor(other, o, "dev_phone"));
+        expect(await repo.cancelPairingCode(other.codeId)).toBe("already_claimed");
+      });
+
       it("a throwing build aborts the claim and writes nothing", async () => {
         const repo = await makeRepo();
         const o = await seededOwner(repo);

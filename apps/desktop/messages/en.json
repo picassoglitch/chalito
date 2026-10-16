@@ -27,14 +27,6 @@
   "security": {
     "localOnly": "These screens only work on this computer. Neither your phone nor the web can change them.",
     "unavailable": "The local agent isn't answering. Make sure the Chalito service is running.",
-    "pairing": {
-      "title": "Pairing check",
-      "none": "No phone is waiting for confirmation.",
-      "compare": "Compare this fingerprint with the one your phone “{label}” shows.",
-      "passkey": "Passkey: {id}",
-      "match": "They match",
-      "mismatch": "They don't match"
-    },
     "policy": {
       "title": "Policy",
       "chain": "Version {seq} · {hash}",
@@ -356,7 +348,7 @@
     "title": "This computer's agent",
     "state": {
       "no_sidecar": "This build doesn't include the agent.",
-      "not_paired": "Pair this computer: open a terminal and type “chalito pair”.",
+      "not_paired": "This computer isn't connected yet: use “Connect this computer”.",
       "running": "The agent is running.",
       "restarting": "The agent stopped (code {code}). Restarting it in {seconds} s.",
       "needs_setup": "The agent needs one more step. Type “chalito status” in a terminal to see which.",
@@ -386,5 +378,41 @@
         "failed": "Couldn't install it. Nothing changed."
       }
     }
+  },
+  "connect": {
+    "title": "Connect this computer",
+    "intro": "Connect this computer to your account so Chalito can work here. No terminal needed: you approve it in your browser.",
+    "start": "Connect this computer",
+    "starting": "Starting this computer's agent…",
+    "preparing": "Asking for a code…",
+    "waiting": "We opened your browser to approve “{label}”. Sign in with your Chalyb account if it asks.",
+    "verification": "This computer's verification code (it must match the one in the browser):",
+    "otherNetwork": "If the browser asks for a code (for example, from your phone on another network), type this one:",
+    "phone": "Approve from your phone",
+    "glyphLabel": "Colour code for your phone's camera",
+    "reopen": "Open the browser again",
+    "cancel": "Cancel",
+    "reverse": {
+      "question": "Did you just approve this computer?",
+      "compare": "This is the verification code of the device that approved it. It must match the one your browser or phone shows:",
+      "passkey": "Passkey (fingerprint or Face ID): {id}",
+      "noPasskey": "That device has no passkey yet: it can't approve high-risk actions until it registers one.",
+      "yes": "Yes, it was me",
+      "no": "It wasn't me"
+    },
+    "replace": {
+      "warning": "This changes this computer's account and removes the approved devices it had.",
+      "prompt": "Type “{phrase}” to continue:",
+      "go": "Change account"
+    },
+    "paired": "Done: this computer is connected. Chalito can work here now.",
+    "ended": {
+      "expired": "The code expired before it was approved. You can ask for another.",
+      "declined": "Someone chose “I'm not in front of that computer” in the browser. Nothing was connected.",
+      "cancelled": "You cancelled. Nothing was connected.",
+      "rejected": "Nothing was connected. If you don't recognise that device, check Devices from an approved one.",
+      "failed": "Couldn't verify it's you on this computer. Try again."
+    },
+    "error": "Something failed ({code}). Try again."
   }
 }

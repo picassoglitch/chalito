@@ -346,7 +346,8 @@ const commands: Record<string, { help: string; run: () => Promise<void> }> = {
         s.deviceId,
         k.sign.secretKey,
       );
-      await post("/v1/pairing/claim", { claim }, idToken);
+      // Typed from the computer's screen: also the proof the api asks for from another network.
+      await post("/v1/pairing/claim", { claim, shortCode: need("code") }, idToken);
       saveState({ ...s, agent: { deviceId: agentId, pubBox: agentPubBox, fingerprint: agentFp } });
       out(`claimed. On the computer, confirm this phone's fingerprint: ${await fingerprint(k.sign.publicKey)}`);
     },

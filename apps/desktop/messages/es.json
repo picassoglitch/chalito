@@ -27,14 +27,6 @@
   "security": {
     "localOnly": "Estas pantallas solo funcionan en esta computadora. Ni el teléfono ni la web pueden cambiarlas.",
     "unavailable": "El agente local no responde. Asegúrate de que el servicio de Chalito esté corriendo.",
-    "pairing": {
-      "title": "Comprobación de emparejamiento",
-      "none": "No hay ningún teléfono esperando confirmación.",
-      "compare": "Compara esta huella con la que muestra tu teléfono «{label}».",
-      "passkey": "Llave de acceso: {id}",
-      "match": "Coinciden",
-      "mismatch": "No coinciden"
-    },
     "policy": {
       "title": "Política",
       "chain": "Versión {seq} · {hash}",
@@ -356,7 +348,7 @@
     "title": "Agente de esta computadora",
     "state": {
       "no_sidecar": "Esta compilación no trae el agente.",
-      "not_paired": "Empareja esta computadora: abre una terminal y escribe «chalito pair».",
+      "not_paired": "Esta computadora aún no está conectada: usa «Conectar esta computadora».",
       "running": "El agente está funcionando.",
       "restarting": "El agente se detuvo (código {code}). Lo vuelvo a iniciar en {seconds} s.",
       "needs_setup": "Al agente le falta un paso. Escribe «chalito status» en una terminal para ver cuál.",
@@ -386,5 +378,41 @@
         "failed": "No se pudo instalar. No cambió nada."
       }
     }
+  },
+  "connect": {
+    "title": "Conectar esta computadora",
+    "intro": "Conecta esta computadora a tu cuenta para que Chalito pueda trabajar aquí. No necesitas la terminal: lo apruebas en tu navegador.",
+    "start": "Conectar esta computadora",
+    "starting": "Preparando el agente de esta computadora…",
+    "preparing": "Pidiendo un código…",
+    "waiting": "Abrimos tu navegador para aprobar «{label}». Inicia sesión con tu cuenta de Chalyb si te lo pide.",
+    "verification": "Código de verificación de esta computadora (debe coincidir con el del navegador):",
+    "otherNetwork": "Si el navegador te pide un código (por ejemplo, desde tu teléfono en otra red), escribe este:",
+    "phone": "Aprobar desde tu teléfono",
+    "glyphLabel": "Código de colores para la cámara de tu teléfono",
+    "reopen": "Abrir el navegador otra vez",
+    "cancel": "Cancelar",
+    "reverse": {
+      "question": "¿Aprobaste tú esta computadora hace un momento?",
+      "compare": "Este es el código de verificación del dispositivo que la aprobó. Debe coincidir con el que muestra tu navegador o teléfono:",
+      "passkey": "Llave de acceso (huella o Face ID): {id}",
+      "noPasskey": "Ese dispositivo aún no tiene llave de acceso: no podrá aprobar acciones de riesgo alto hasta que registre una.",
+      "yes": "Sí, fui yo",
+      "no": "No fui yo"
+    },
+    "replace": {
+      "warning": "Esto cambia la cuenta de esta computadora y quita los dispositivos aprobados que tenía.",
+      "prompt": "Escribe «{phrase}» para continuar:",
+      "go": "Cambiar de cuenta"
+    },
+    "paired": "Listo: esta computadora está conectada. Chalito ya puede trabajar aquí.",
+    "ended": {
+      "expired": "El código venció antes de aprobarse. Puedes pedir otro.",
+      "declined": "Alguien eligió «No estoy frente a esa computadora» en el navegador. No se conectó nada.",
+      "cancelled": "Cancelaste la conexión. No se conectó nada.",
+      "rejected": "No se conectó nada. Si no reconoces ese dispositivo, revisa Dispositivos desde uno aprobado.",
+      "failed": "No se pudo verificar que eres tú en esta computadora. Inténtalo otra vez."
+    },
+    "error": "Algo falló ({code}). Inténtalo otra vez."
   }
 }

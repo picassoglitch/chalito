@@ -159,12 +159,16 @@ const appCall = async (d: IpcDeps, run: (m: AppManager) => Promise<AppResult>) =
  * or biometric) and re-checks the three answers, including the typed liability phrase. The panel
  * only carries the person's answers; it can't skip a step.
  *
- * The pairing reverse check happens in `chalito pair`'s own terminal (the daemon only runs once
- * paired), so there's never a pairing pending here.
+ * This daemon only runs once the computer is paired, so there's never a pairing pending here: the
+ * panel's pairing (startPairing / pendingPairing / confirmPairing) is served before that by
+ * pairing-host.ts, and `chalito pair` keeps its own terminal.
  */
 export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   ping: async () => ({ version: AGENT_VERSION }),
 
+  startPairing: async () => {
+    throw new IpcError("already_paired");
+  },
   pendingPairing: async () => null,
   confirmPairing: async (params) => {
     parse(ConfirmPairing, params);

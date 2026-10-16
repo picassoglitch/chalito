@@ -5,6 +5,7 @@ import {
   EnrollEndorsedClientRequest,
   GlyphPayload,
   PairingClaimBody,
+  PairingHandoffResponse,
   RevokeDeviceRequest,
   type DeviceRegistration,
 } from "@chalito/protocol";
@@ -86,10 +87,27 @@ export const resolveShortCode = async (api: ApiClient, shortCode: string, now: n
   return checkPairingGlyph(glyph, now);
 };
 
-/** After the user compared fingerprints and confirmed (biometric/passkey in the UI), sign the claim. */
+/**
+ * Hand-off link (ADR 0028 §3): the code id from `#c=` resolves to the same signed payload, plus
+ * whether this browser is on the computer's network and what approving needs (`one_tap` or
+ * `code_required`, decided by the api).
+ */
+export const pairingHandoff = async (api: ApiClient, codeId: string, now: number) => {
+  const view = PairingHandoffResponse.parse(await api.post("/v1/pairing/handoff", { codeId }));
+  return { view, scan: await checkPairingGlyph(view.glyph, now) };
+};
+
+/** "No estoy frente a esa computadora": the code stops working and the computer says so. */
+export const declinePairing = (api: ApiClient, codeId: string) =>
+  api.post<{ ok: true }>("/v1/pairing/decline", { codeId });
+
+/**
+ * After the user compared fingerprints and confirmed (biometric/passkey in the UI), sign the claim.
+ * `shortCode` is what they typed from the computer's screen; the api requires it from another network.
+ */
 export const buildPairingClaim = async (
   keys: DeviceKeys,
-  c: { owner: string; glyph: GlyphPayload; now: number },
+  c: { owner: string; glyph: GlyphPayload; now: number; shortCode?: string },
 ): Promise<ClaimRequest> => {
   const display = await pairingDisplay(c.glyph, c.now);
   const body = PairingClaimBody.parse({
@@ -103,6 +121,7 @@ export const buildPairingClaim = async (
   });
   return ClaimPairingRequest.parse({
     claim: await signEnvelope("chalito.pairing-claim.v1", body, keys.deviceId, keys.sign.secretKey),
+    ...(c.shortCode ? { shortCode: c.shortCode } : {}),
   });
 };
 

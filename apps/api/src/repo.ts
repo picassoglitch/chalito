@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { DeviceDoc, DeviceRegistration, Endorsement, HubTenantStatus, PairingCodeDoc } from "@chalito/protocol";
+import type { PairingNet } from "./lib/pairing-network.js";
 import type { RecoveryHash } from "./lib/recovery.js";
 
 /**
@@ -98,9 +99,16 @@ export interface ApiRepo {
   setDeviceWebAuthnBinding(owner: string, deviceId: string, binding: unknown): Promise<boolean>;
 
   // ---- pairing ----
-  /** "exists" if the code id was already published. */
-  createPairingCode(doc: PairingCodeDoc): Promise<"created" | "exists">;
+  /**
+   * "exists" if the code id was already published. `net` is the asking computer's network
+   * (keyed hash only, ADR 0028 §4), kept server-side until the code is claimed, declined or gone.
+   */
+  createPairingCode(doc: PairingCodeDoc, net?: PairingNet | null): Promise<"created" | "exists">;
   findPairingCodeByShortHash(shortCodeHash: string): Promise<PairingCodeDoc | null>;
+  /** The code by id plus the network it was asked from (null once purged or never recorded). */
+  getPairingCode(codeId: string): Promise<{ doc: PairingCodeDoc; net: PairingNet | null } | null>;
+  /** "No estoy frente a esa computadora": marks an open code cancelled and drops its network record. */
+  cancelPairingCode(codeId: string): Promise<"cancelled" | "not_found" | "already_claimed">;
   /**
    * Atomic: detaches the pairing watchers of codes this agent was claimed through and returns
    * their code ids, each at most once (the caller then deletes the watcher credentials).
@@ -130,7 +138,11 @@ export interface ApiRepo {
     build: (code: PairingCodeDoc) => Promise<DeviceDoc>,
   ): Promise<
     | { ok: true; agentDeviceId: string }
-    | { ok: false; reason: "not_found" | "already_claimed" | "device_exists" | "device_limit"; limit?: number }
+    | {
+        ok: false;
+        reason: "not_found" | "already_claimed" | "cancelled" | "device_exists" | "device_limit";
+        limit?: number;
+      }
   >;
 
   // ---- endorsement handoff (/v1/endorse) ----

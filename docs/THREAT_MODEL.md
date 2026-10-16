@@ -101,6 +101,7 @@ Mitigations:
 | Attacker triggers recovery | Hub sign-in + recovery code (Argon2id hash) + **cool-down** (default 1 h) + alerts to every device. After recovery **each desktop must confirm the new phone locally**. Recovery alone can't approve anything. |
 | SIM swap → phone takeover | No SMS second factor is used. A phone-number change triggers alerts plus a cool-down before calls/WhatsApp go to the new number. The number itself never grants approval authority. |
 | Lost/stolen phone | Revoke from the desktop or another client. The agent drops the key immediately, interrupts sessions it started, rotates recipients and room epochs. |
+| Pairing phishing via hand-off link (ADR 0028 §4) | An attacker runs pairing on their own computer and sends the victim the `/computadoras/aprobar#c=<codeId>` link. The link carries the code id only, **never the short code**. The api records a keyed hash of the network that asked (IPv4 address or IPv6 /64, plus a coarse city when the platform sends one; server-only table, dropped on claim, decline or expiry, 24 h at most) and **refuses a claim from another network unless it carries the short code shown on the computer** (one policy function, `pairingApproval`; owner decision: allow with the code). The approval screen warns "Esta computadora está en otra red. Si alguien te mandó este enlace, no lo apruebes." with a prominent "No estoy frente a esa computadora" that cancels the code. Every pairing alerts all of the account's devices. The computer still asks its local "Sí, fui yo" before trusting the approver. Residual: an attacker on the victim's own network (same public IP) keeps one tap. |
 | Lost/stolen laptop (agent) | Revoke the device from the phone. The Firebase user is disabled and refresh tokens revoked; rules deny on the `revoked` flag immediately. The agent's keychain keys are protected by the OS login. Recommend full-disk encryption (onboarding checklist). |
 
 ### 4.6 Managed brains and E2E
@@ -273,6 +274,7 @@ The link is a **transport, not a trust root**. A `cmd` frame goes into the same 
 - callLines expire, are deleted at call end and are opt-in with disclosure.
 - WhatsApp/SMS carry counts, enums and urgency only.
 - Data export and deletion are available regardless of plan state.
+- Pairing network records (ADR 0028 §4) keep a keyed hash of the network, never the IP address, plus a coarse city at most. They are server-only (not readable by the pairing watch token, devices or anon; pgTAP 46) and are dropped on claim, on decline, with the code at its expiry, and after 24 hours at most.
 
 ## 6. Tests that pin these invariants
 Listed per milestone in `docs/PLAN.md`. The most important:
@@ -292,6 +294,7 @@ Listed per milestone in `docs/PLAN.md`. The most important:
 - remote terminal: no command enables it or the raw shell, remote tighten can't, approval per terminal, sealed I/O round-trip, kill switch, raw shell as a separate gate (`apps/agent/test/terminal.test.ts`, `apps/agent/test/agent.test.ts`, `packages/protocol/test/protocol.test.ts`)
 - agent-to-agent links: share never prompts, a hand-off never auto-approves (even in Developer mode), at most 2 hops and no cycles, remote creation of a hand-off link refused, revoke-all clears links, budget exhaustion, forged relay signatures refused (`apps/agent/test/links.test.ts`, `packages/protocol/test/agent-link.test.ts`, pgTAP 42–43)
 - LAN direct path: off by default and only locally enabled, mutual auth (wrong owner, stolen token, spoofed key, unexpected peer, stale), frame and command replay, cloud fallback, revocation, mDNS carries only the opaque id (`apps/agent/test/lan-agents.test.ts`, `apps/agent/test/lan-handshake.test.ts`, `apps/agent/test/lan-mdns.test.ts`, `packages/crypto/test/lan.test.ts`, `supabase/tests/database/45_lan_tokens.test.sql`)
+- hand-off pairing: a claim from another network without the short code is refused, the link never carries the short code, decline cancels the code, every pairing alerts the account, the network record is server-only and dropped on claim/decline/expiry (`apps/api/test/pairing-handoff.test.ts`, `apps/agent/test/pairing-host.test.ts`, `supabase/tests/database/46_pairing_handoff.test.sql`)
 - remote screen and app control: no command enables them, approvals per session (`remote_view`, `remote_control`, `app_control`), signaling signed and sealed to the opener, kill switch ends streams and input, browser profile path and origin allowlist (`apps/agent/test/screen.test.ts`, `apps/agent/test/drivers.test.ts`, `apps/agent/test/agent.test.ts`, `packages/protocol/test/protocol.test.ts`)
 
 Several are already enforced at the schema level in `packages/protocol` (tests in `packages/protocol/test`).

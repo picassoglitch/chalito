@@ -15,7 +15,7 @@ import type { GlyphPayload, PairingCodeDoc } from "@chalito/protocol";
 import { ApiRequestError, type FetchFn, type PairingWatcher } from "../src/cloud.js";
 import { configPath, readConfig } from "../src/config.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
-import { runPair, type PairDeps } from "../src/pair.js";
+import { runPair, type PairDeps, type PairingCodeShown } from "../src/pair.js";
 import { MemorySecretStore } from "../src/secrets.js";
 import { TrustStore } from "../src/trust-store.js";
 
@@ -54,7 +54,7 @@ const passkeyBinding = (phone: Phone, signer: Phone = phone) =>
 const world = async (
   opts: {
     owner?: string;
-    claim?: "valid" | "wrong_key" | "never";
+    claim?: "valid" | "wrong_key" | "never" | "declined";
     ttlMs?: number;
     passkey?: "valid" | "forged" | "none";
   } = {},
@@ -88,7 +88,31 @@ const world = async (
     watch: async (token, codeId, onDoc) => {
       const w = { token, codeId, stopped: false };
       watched.push(w);
-      if (opts.claim !== "never") {
+      if (opts.claim === "declined") {
+        const g = glyph!;
+        const agentDeviceId = await deriveDeviceId(Buffer.from(g.body.issuerPubSign, "base64url"));
+        setTimeout(
+          () =>
+            onDoc({
+              v: 1,
+              codeId,
+              shortCodeHash: "0".repeat(64),
+              glyph: g,
+              agentDeviceId,
+              kind: "desktop",
+              platform: "linux",
+              claimed: false,
+              owner: null,
+              claimedByDeviceId: null,
+              claimerPubSign: null,
+              claimerPubBox: null,
+              claimerWebauthnBinding: null,
+              cancelled: true,
+              expiresAt: g.body.expiresAt,
+            }),
+          5,
+        );
+      } else if (opts.claim !== "never") {
         const g = glyph!;
         const claimer = opts.claim === "wrong_key" ? { ...phone, pubSign: other.pubSign } : phone;
         const unclaimed = {
@@ -98,6 +122,7 @@ const world = async (
           claimerPubSign: null,
           claimerPubBox: null,
           claimerWebauthnBinding: null,
+          cancelled: false,
         };
         const doc: PairingCodeDoc = {
           v: 1,
@@ -186,6 +211,47 @@ describe("chalito pair", () => {
       { deviceId: w.phone.deviceId, pubSign: w.phone.pubSign, via: "local_confirmation" },
     ]);
     expect(readConfig(w.dir, {})).toMatchObject({ owner: "hub-user-1", deviceId: id.deviceId });
+  });
+
+  it("prints the approval link with the code id in the fragment, never the short code in the link", async () => {
+    const w = await world();
+    const shown: PairingCodeShown[] = [];
+    const claimers: { fingerprint: string; passkeyId: string | null }[] = [];
+    await runPair({ ...w.deps(true), onCode: (c) => void shown.push(c), onClaimed: (c) => void claimers.push(c) });
+    const codeId = (w.requests[0]!.body as { glyph: GlyphPayload }).glyph.body.codeId;
+    const url = `https://www.chalyb.com/app/chalito/computadoras/aprobar#c=${codeId}`;
+    expect(w.out()).toContain(url);
+    expect(shown).toEqual([
+      expect.objectContaining({ codeId, shortCode: "7K3M-QX9P", approveUrl: url, label: "aldo-desktop" }),
+    ]);
+    expect(shown[0]!.approveUrl).not.toContain("7K3M");
+    expect(claimers).toEqual([{ fingerprint: w.phone.fingerprint, passkeyId: null }]);
+  });
+
+  it("CHALITO_WEB_BASE points the link at another hub (a local stack)", async () => {
+    const w = await world();
+    const shown: PairingCodeShown[] = [];
+    await runPair({
+      ...w.deps(true),
+      env: { CHALITO_WEB_BASE: "http://localhost:3000/app/chalito" },
+      onCode: (c) => void shown.push(c),
+    });
+    expect(shown[0]!.approveUrl).toMatch(/^http:\/\/localhost:3000\/app\/chalito\/computadoras\/aprobar#c=/);
+  });
+
+  it("a code declined from the browser ends the wait: nothing is trusted", async () => {
+    const w = await world({ claim: "declined" });
+    expect(await runPair(w.deps(true))).toEqual({ ok: false, reason: "declined" });
+    expect(w.asked).toHaveLength(0);
+    expect(readConfig(w.dir, {}).owner).toBeNull();
+  });
+
+  it("the panel's cancel stops waiting", async () => {
+    const w = await world({ claim: "never" });
+    const ctl = new AbortController();
+    const res = runPair({ ...w.deps(true), signal: ctl.signal, onCode: () => ctl.abort() });
+    expect(await res).toEqual({ ok: false, reason: "cancelled" });
+    expect(w.watched[0]!.stopped).toBe(true);
   });
 
   it("answering no adds nothing and leaves the computer unpaired", async () => {

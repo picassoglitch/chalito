@@ -14,16 +14,39 @@ import type { AppConnectionDoc, DevModeToggle, Recipe, RecipeInstall } from "@ch
  * panel rendering what the CLI renders on a TTY today.
  */
 
-/** The phone that claimed this computer, waiting for the local reverse check. */
+/** Where pairing from the panel is (apps/agent/src/pairing-host.ts `PairingView`). */
+export type PairingPhase =
+  | "starting"
+  | "waiting"
+  | "claimed"
+  | "replace"
+  | "paired"
+  | "expired"
+  | "declined"
+  | "cancelled"
+  | "rejected"
+  | "failed";
+
 export interface PendingPairing {
   pairingId: string;
-  /** Name the phone gave itself ("Pixel 9"). */
-  label: string;
-  /** The phone's key fingerprint; the phone shows the same string. */
-  fingerprint: string;
-  /** Short passkey id when the phone enrolled one (`shortPasskeyId`). */
-  passkeyId: string | null;
-  expiresAt: number;
+  state: PairingPhase;
+  /** This computer, as the approval screen shows it; null until the api answered. */
+  computer: {
+    shortCode: string;
+    /** This computer's verification code (key fingerprint). */
+    fingerprint: string;
+    label: string;
+    /** `…/computadoras/aprobar#c=<codeId>`: the code id only, never the short code. */
+    approveUrl: string;
+    expiresAt: number;
+    /** The pairing glyph, for a phone's camera on the approval screen. */
+    glyph: unknown;
+  } | null;
+  /** The device that approved, for the reverse check. */
+  claimer: { fingerprint: string; passkeyId: string | null } | null;
+  /** In `replace`: what to type before this computer changes account. */
+  replacePhrase: string | null;
+  error: string | null;
 }
 
 export interface PolicyView {
@@ -188,9 +211,14 @@ export type ScreenMode = "view" | "control";
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
+  /** "Conectar esta computadora": starts pairing (or returns the one in progress). Unpaired agents only. */
+  startPairing(kind?: "desktop" | "laptop"): Promise<PendingPairing>;
   pendingPairing(): Promise<PendingPairing | null>;
-  /** The local verdict on the reverse check; `match: false` aborts the pairing. */
-  confirmPairing(pairingId: string, match: boolean): Promise<void>;
+  /**
+   * The local verdict: at the reverse check, `match` is "Sí, fui yo"; while waiting, `false`
+   * cancels the code; when replacing an account, `typed` carries the phrase.
+   */
+  confirmPairing(pairingId: string, match: boolean, typed?: string): Promise<PendingPairing | void>;
   policy(): Promise<PolicyView>;
   devMode(): Promise<DevModeState>;
   devModeChallenge(toggle: DevModeToggle): Promise<DevModeChallenge>;
@@ -267,6 +295,7 @@ const unavailable = () => Promise.reject(new IpcUnavailableError());
 /** Until the agent's IPC server exists: every call fails with IpcUnavailableError. */
 export const unavailableIpc: AgentIpc = {
   ping: unavailable,
+  startPairing: unavailable,
   pendingPairing: unavailable,
   confirmPairing: unavailable,
   policy: unavailable,
@@ -329,8 +358,10 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
   };
   return {
     ping: () => call("ping"),
+    startPairing: (kind) => call("startPairing", kind ? { kind } : {}),
     pendingPairing: () => call("pendingPairing"),
-    confirmPairing: (pairingId, match) => call("confirmPairing", { pairingId, match }),
+    confirmPairing: (pairingId, match, typed) =>
+      call("confirmPairing", { pairingId, match, ...(typed !== undefined ? { typed } : {}) }),
     policy: () => call("policy"),
     devMode: () => call("devMode"),
     devModeChallenge: (toggle) => call("devModeChallenge", { toggle }),

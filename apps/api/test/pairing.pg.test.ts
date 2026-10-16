@@ -62,10 +62,15 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
   const clients: Db[] = [];
   let OWNER = "";
 
-  const call = async (path: string, body: unknown, bearer?: string) => {
+  /** The computer and the phone share a home network unless a test says otherwise (ADR 0028 §4). */
+  const call = async (path: string, body: unknown, bearer?: string, ip = "203.0.113.7") => {
     const res = await api.request(path, {
       method: "POST",
-      headers: { "content-type": "application/json", ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": ip,
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+      },
       body: JSON.stringify(body),
     });
     const text = await res.text();
@@ -327,8 +332,29 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
         phoneId,
         phone.sign.secretKey,
       );
+      // From another network the api wants the short code typed from the computer (enforced, not only shown).
+      const elsewhere = await call("/v1/pairing/handoff", { codeId: glyph.body.codeId }, phoneToken, "198.51.100.9");
+      expect(elsewhere.json).toMatchObject({ network: "different", approval: "code_required" });
+      expect(JSON.stringify(elsewhere.json)).not.toContain(shortCode);
+      expect((await call("/v1/pairing/claim", { claim }, phoneToken, "198.51.100.9")).json.error).toBe("code_required");
+      const net = await sql`select family, net_hash from chalito_private.pairing_code_networks
+                            where code_id = ${glyph.body.codeId}`;
+      expect(net).toHaveLength(1);
+      expect(net[0]!.net_hash).not.toContain("203.0.113");
+      expect((await call("/v1/pairing/handoff", { codeId: glyph.body.codeId }, phoneToken)).json.approval).toBe(
+        "one_tap",
+      );
+
       const t0 = Date.now();
       expect((await call("/v1/pairing/claim", { claim }, phoneToken)).status).toBe(200);
+      // Claimed: the network record is gone, and the account heard about the new computer.
+      expect(
+        await sql`select 1 from chalito_private.pairing_code_networks where code_id = ${glyph.body.codeId}`,
+      ).toHaveLength(0);
+      expect(
+        await sql`select source from chalito.notifications
+                  where owner = ${OWNER} and coalesce_key = ${`security:pairing:${agent.deviceId}`}`,
+      ).toEqual([{ source: "security" }]);
       expect((await claimedSeen) - t0).toBeLessThan(2000);
       // Reverse check material: the desktop reads the phone's key from its watched row.
       const { data } = await watchDb

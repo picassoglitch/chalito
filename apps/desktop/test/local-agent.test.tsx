@@ -36,7 +36,7 @@ describe("this computer's agent (panel, Security tab)", () => {
   it("says what the bundled agent is doing", async () => {
     const cases: [AgentStatus, RegExp][] = [
       [{ state: "running", pid: 7 }, /The agent is running/],
-      [{ state: "not_paired" }, /open a terminal and type “chalito pair”/],
+      [{ state: "not_paired" }, /isn.t connected yet: use “Connect this computer”/],
       [{ state: "restarting", exitCode: 1, retryInMs: 4000 }, /stopped \(code 1\)\. Restarting it in 4 s/],
       [{ state: "needs_setup" }, /“chalito status”/],
       [{ state: "elsewhere" }, /already running on this computer/],

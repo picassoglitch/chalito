@@ -83,7 +83,47 @@ export const PairingClaimBody = z.object({
   issuedAt: EpochMs,
 });
 export const PairingClaim = signed("chalito.pairing-claim.v1", PairingClaimBody);
-export const ClaimPairingRequest = z.object({ claim: PairingClaim });
+export const ClaimPairingRequest = z.object({
+  claim: PairingClaim,
+  /**
+   * The short code the user typed from the computer's screen (ADR 0028 §4). Required by the
+   * server when the claim comes from another network than the computer; never in a link.
+   */
+  shortCode: z.string().min(8).max(20).optional(),
+});
+
+/**
+ * Hand-off pairing (ADR 0028 §3): the desktop opens `/computadoras/aprobar#c=<codeId>`. The
+ * fragment carries the code id only, never the short code, so typing the short code stays a
+ * proof of being in front of that computer.
+ */
+export const PAIRING_APPROVE_PATH = "/computadoras/aprobar";
+export const pairingApproveUrl = (webBase: string, codeId: string) =>
+  `${webBase.replace(/\/+$/, "")}${PAIRING_APPROVE_PATH}#c=${encodeURIComponent(codeId)}`;
+export const PairingCodeId = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/);
+
+/** Same public network as the computer that asked, another one, or can't tell (e.g. IPv4 vs IPv6). */
+export const PairingNetwork = z.enum(["same", "different", "unknown"]);
+export type PairingNetwork = z.infer<typeof PairingNetwork>;
+/** What the approving browser must do: one tap, type the short code, or nothing (blocked). */
+export const PairingApproval = z.enum(["one_tap", "code_required", "blocked"]);
+export type PairingApproval = z.infer<typeof PairingApproval>;
+
+export const PairingHandoffRequest = z.object({ codeId: PairingCodeId });
+export const PairingHandoffResponse = z.object({
+  glyph: GlyphPayload,
+  kind: z.enum(["desktop", "laptop"]),
+  platform: z.enum(["linux", "windows", "macos"]),
+  expiresAt: EpochMs,
+  network: PairingNetwork,
+  approval: PairingApproval,
+  /** Coarse place of the computer's network when the platform reports one; never an address. */
+  city: z.string().max(80).nullable(),
+});
+export type PairingHandoffResponse = z.infer<typeof PairingHandoffResponse>;
+
+/** "No estoy frente a esa computadora": cancels the code; the computer shows it was declined. */
+export const DeclinePairingRequest = z.object({ codeId: PairingCodeId });
 
 export const RevokeDeviceRequest = z.object({ deviceId: DeviceId });
 
@@ -116,6 +156,8 @@ export const PairingCodeDoc = z.object({
   claimerPubBox: PubBox.nullable(),
   /** The claimer's passkey binding (signed by its device key), for the agent's reverse check. */
   claimerWebauthnBinding: WebAuthnBinding.nullable().default(null),
+  /** Declined from the approval screen; the code can't be claimed any more. */
+  cancelled: z.boolean().default(false),
   expiresAt: EpochMs,
 });
 export type PairingCodeDoc = z.infer<typeof PairingCodeDoc>;

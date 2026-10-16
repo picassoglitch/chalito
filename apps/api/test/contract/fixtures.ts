@@ -96,6 +96,7 @@ export const pairingCode = async (now = Date.now()) => {
     claimerPubSign: null,
     claimerPubBox: null,
     claimerWebauthnBinding: null,
+    cancelled: false,
     expiresAt: glyph.body.expiresAt,
   };
   return doc;

@@ -21,6 +21,8 @@ export {
   checkPairingGlyph,
   pairingDisplay,
   resolveShortCode,
+  pairingHandoff,
+  declinePairing,
   buildPairingClaim,
   claimPairing,
   buildEndorsedEnrolment,
