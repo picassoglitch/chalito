@@ -5,6 +5,9 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(11);
 
+-- pgTAP lives in `extensions`; the server role needs it for the assertions it runs below.
+grant usage on schema extensions to chalito_server;
+
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language plpgsql as $$
 begin
   perform set_config('request.jwt.claims', jsonb_build_object('role', 'authenticated', 'aud', 'authenticated',
