@@ -60,6 +60,8 @@ export const SigningContext = z.enum([
   "chalito.link.v1",
   /** The agent's local links file (~/.chalito/links.json), signed with its own key. */
   "chalito.links-file.v1",
+  /** LAN direct path (lan.ts, ADR 0022 §5): each side's signature over the handshake transcript. */
+  "chalito.lan-handshake.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 

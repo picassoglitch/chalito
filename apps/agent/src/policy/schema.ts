@@ -125,6 +125,19 @@ export const Policy = z.object({
       maxSessionMinutes: z.number().int().min(1).max(240),
     })
     .optional(),
+  /**
+   * LAN direct path (apps/agent/src/lan, ADR 0022 §5): mDNS discovery of this owner's other agents
+   * and a local WebSocket for the same signed commands and sealed events as the cloud path, with
+   * the cloud as fallback. Absent = off (older policies keep their hash). Turned on only by a
+   * local edit (`chalito policy edit`: confirmation plus OS auth); remote surfaces can only turn it off.
+   */
+  lan: z
+    .object({
+      enabled: z.boolean(),
+      /** TCP port of the LAN listener; 0 = any free port (advertised over mDNS). */
+      port: z.number().int().min(0).max(65535),
+    })
+    .optional(),
 });
 export type Policy = z.infer<typeof Policy>;
 

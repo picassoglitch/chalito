@@ -5,6 +5,7 @@ import type { AgentConfig, PairedConfig } from "./config.js";
 import type { Identity } from "./identity.js";
 import type { Logger } from "./redact.js";
 import type { AgentStore } from "./store.js";
+import { supabaseLanCloud, type LanCloud } from "./lan/cloud.js";
 import { SupabaseStore, pairingTopic, type SupaClient } from "./supabase-store.js";
 import { SupabaseLinkCloud, type LinkCloud } from "./links/cloud.js";
 
@@ -76,6 +77,8 @@ export interface Cloud {
   store(owner: string, deviceId: string): AgentStore;
   /** Agent-to-agent link relays and the phone's link list (links/cloud.ts); absent = links stay on this device. */
   linkCloud?(owner: string, deviceId: string): LinkCloud;
+  /** LAN pairing tokens and the owner's agent directory (lan/, ADR 0022 §5); absent = no LAN path. */
+  lan?(): LanCloud;
   close(): Promise<void>;
 }
 
@@ -169,6 +172,7 @@ export const supabaseCloud = (
       return s;
     },
     linkCloud: (owner, deviceId) => new SupabaseLinkCloud(client, owner, deviceId),
+    lan: () => supabaseLanCloud(client),
     close: async () => {
       for (const s of stores) await s.close().catch(() => undefined);
       await client.removeAllChannels().catch(() => undefined);
