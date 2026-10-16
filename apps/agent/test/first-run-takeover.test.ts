@@ -6,6 +6,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +18,8 @@ import { BUILTIN_CATALOG, type CatalogEntry } from "../src/apps/catalog.js";
 import { AppManager, knownBinDirs } from "../src/apps/manager.js";
 import { ipcHandlers } from "../src/ipc-handlers.js";
 import { DEFAULT_POLICY, classifyToolCall, type Policy } from "../src/policy/index.js";
-import { gitHooksPath } from "../src/policy/classify.js";
+import { clearHooksCache } from "../src/policy/git-hooks.js";
+import { execFileSync } from "node:child_process";
 import { SENSITIVE_FILES, USER_BIN_DIRS } from "../src/policy/persistence.js";
 import { createLogger } from "../src/redact.js";
 import { MemorySecretStore } from "../src/secrets.js";
@@ -183,7 +185,7 @@ describe('"Usar" and "se actualizó: confirmar" (local pin of what the panel sho
     expect(await checkClaudePin(pin)).toEqual({ ok: false, reason: "world_writable" });
     chmodSync(aider, 0o755);
     // Same size, same mtime, different bytes: a cache keyed on size+mtime would miss this; the check doesn't.
-    const { statSync, utimesSync } = await import("node:fs");
+    const { statSync } = await import("node:fs");
     const st = statSync(aider);
     writeFileSync(aider, readFileSync(aider, "utf8").replace("aider", "xxxxx"));
     utimesSync(aider, st.atime, st.mtime);
@@ -1045,30 +1047,99 @@ describe("follow-up 3: project files that run code, the repo's hooks folder, 8.3
       expect(write(ws, f).tier, f).toBe("MED");
   });
 
-  it("the folder named by core.hooksPath in the workspace's .git/config is HIGH", () => {
-    const ws = mk();
-    mkdirSync(join(ws, ".git"));
-    writeFileSync(
-      join(ws, ".git", "config"),
-      '[core]\n\trepositoryformatversion = 0\n\thooksPath = "tools/git-hooks"\n[remote "origin"]\n\thooksPath = nope\n',
-    );
-    expect(write(ws, "tools/git-hooks/pre-push").tier).toBe("HIGH");
-    expect(write(ws, "tools/other/x.sh").tier).toBe("MED");
-    // The parser: only [core], quoted or not, last one wins; no file → null.
-    expect(gitHooksPath(() => "[core]\nhooksPath = a\n[core]\n  HooksPath = b\n", "x")).toBe("b");
-    expect(gitHooksPath(() => '[remote "o"]\nhooksPath = a\n', "x")).toBeNull();
-    expect(
-      gitHooksPath(() => {
-        throw new Error("ENOENT");
-      }, "x"),
-    ).toBeNull();
-    // Injected reader (no real file).
-    expect(write("/w", "hooks2/x", { readFile: () => "[core]\n  hooksPath = hooks2\n" }).tier).toBe("HIGH");
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, {
+      cwd,
+      env: { HOME: cwd, PATH: process.env.PATH ?? "", GIT_CONFIG_NOSYSTEM: "1" },
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  const repo = (home: string) => {
+    const ws = join(home, "app");
+    mkdirSync(ws);
+    git(ws, "init", "-q");
+    return ws;
+  };
+  const home = () => realpathSync(mkdtempSync(join(tmpdir(), "chalito-gh-")));
+
+  it("core.hooksPath, as git resolves it, is HIGH; .git/config itself always is", () => {
+    clearHooksCache();
+    const h = home();
+    const ws = repo(h);
+    git(ws, "config", "core.hooksPath", "tools/git-hooks");
+    expect(write(ws, "tools/git-hooks/pre-push", { home: h }).tier).toBe("HIGH");
+    expect(write(ws, "tools/other/x.sh", { home: h }).tier).toBe("MED");
+    // Redirecting hooksPath means editing .git/config: never silent.
+    expect(write(ws, ".git/config", { home: h }).tier).toBe("HIGH");
+  });
+
+  it("follows an include", () => {
+    clearHooksCache();
+    const h = home();
+    const ws = repo(h);
+    writeFileSync(join(h, "extra.cfg"), "[core]\n\thooksPath = inc-hooks\n");
+    git(ws, "config", "include.path", join(h, "extra.cfg"));
+    expect(write(ws, "inc-hooks/pre-commit", { home: h }).tier).toBe("HIGH");
+  });
+
+  it("follows the user's global config (HOME)", () => {
+    clearHooksCache();
+    const h = home();
+    const ws = repo(h);
+    writeFileSync(join(h, ".gitconfig"), "[core]\n\thooksPath = global-hooks\n");
+    expect(write(ws, "global-hooks/pre-commit", { home: h }).tier).toBe("HIGH");
+  });
+
+  it("follows a worktree's gitdir file", () => {
+    clearHooksCache();
+    const h = home();
+    const main = repo(h);
+    git(main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x");
+    git(main, "config", "core.hooksPath", "wt-hooks");
+    const wt = join(h, "wt");
+    git(main, "worktree", "add", "-q", wt);
+    expect(readFileSync(join(wt, ".git"), "utf8")).toMatch(/^gitdir:/);
+    expect(write(wt, "wt-hooks/pre-commit", { home: h }).tier).toBe("HIGH");
+    expect(write(wt, "src/a.ts", { home: h }).tier).toBe("MED");
+  });
+
+  it("re-asks only when a config file changes, never per path", () => {
+    clearHooksCache();
+    const h = home();
+    const ws = repo(h);
+    let calls = 0;
+    const run = (args: string[]) => {
+      calls++;
+      return args.includes("rev-parse") ? "custom-hooks\n" : "";
+    };
+    for (const f of ["a.ts", "b.ts", "custom-hooks/x"]) write(ws, f, { home: h, git: run });
+    expect(calls).toBe(1);
+    expect(write(ws, "custom-hooks/x", { home: h, git: run }).tier).toBe("HIGH");
+    writeFileSync(join(ws, ".git", "config"), readFileSync(join(ws, ".git", "config"), "utf8") + "\n");
+    utimesSync(join(ws, ".git", "config"), new Date(), new Date(Date.now() + 5000));
+    write(ws, "a.ts", { home: h, git: run });
+    expect(calls).toBe(2);
+  });
+
+  it("git failing or timing out on a repo fails closed on every likely hooks folder", () => {
+    clearHooksCache();
+    const h = home();
+    const ws = repo(h);
+    const fail = () => {
+      throw new Error("timeout");
+    };
+    for (const f of [".githooks/pre-commit", "hooks/pre-commit", "scripts/hooks/x", ".husky/pre-push", ".git/info/x"])
+      expect(write(ws, f, { home: h, git: fail }).tier, f).toBe("HIGH");
+    expect(write(ws, "src/a.ts", { home: h, git: fail }).tier).toBe("MED");
+    // Not a repo: no git call at all, nothing extra.
+    clearHooksCache();
+    const plain = join(h, "plain");
+    mkdirSync(plain);
+    expect(write(plain, "hooks/x", { home: h, git: fail }).tier).toBe("MED");
   });
 
   it("on Windows only 8.3-shaped names (≤8 before ~N, extension ≤3) count as short names", () => {
     const ws = "/w";
-    const win = { platform: "win32" as const, readFile: () => "" };
+    const win = { platform: "win32" as const };
     for (const f of ["PROGRA~1/x.ts", ".VSCOD~1/tasks.json", "src/NOTESV~1.MD", "src/A_B~12.TXT"])
       expect(write(ws, f, win).reasons, f).toContain("ambiguous Windows path name");
     for (const f of [
