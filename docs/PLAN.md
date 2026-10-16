@@ -310,7 +310,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 - **Repos:** chalito (CI, desktop config, docs) and the hub (`/descargar`).
 - **Files likely touched:**
   - `.github/workflows/release.yml` (api base stays `https://api.chalito.chalyb.com`; the stable channel refuses unsigned Windows);
-  - `apps/desktop/src-tauri/tauri.conf.json` (CSP, updater endpoint);
+  - `apps/desktop/src-tauri/tauri.conf.json` (CSP) and the CI release config overlay that adds `plugins.updater` (endpoint and public key; read at `src-tauri/src/lib.rs:344`);
   - `apps/desktop/scripts/release/*`;
   - `infra/terraform/envs/dev/releases.tf` (unchanged, applied by the owner);
   - hub: the Descargar page and component, plus `src/lib/chalito/messages/{es,en}.json`. Merge or cherry-pick `chalito.download` from the unmerged hub branch `origin/claude/audit-hub-chalito`.
@@ -324,7 +324,8 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 - **Tests:**
   - Unit tests for OS detection and manifest parsing on the hub page.
   - A hub test that `/descargar` renders every string (no raw keys).
-  - A CI check that the CSP and updater hosts equal `CHALITO_API_BASE`.
+  - A CI check that the CSP and the overlay's updater host equal `CHALITO_API_BASE`.
+  - A release-script test that the **stable** channel refuses an unsigned Windows build (beta accepts it, labelled).
   - A manual three-OS install check, written up in `docs/QA_PLAN.md`.
 - **Owner-only:**
   - The DNS record for `api.chalito.chalyb.com` and the Cloud Run domain mapping to service `chalito` (Search Console verification of `chalyb.com` if needed).
@@ -337,27 +338,40 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 #### B `fr-b-pairing`: pairing a computer with no terminal
 - **Repos:** chalito (agent IPC, desktop panel, api) and the hub (approval screen).
 - **Files likely touched:**
-  - `apps/agent/src/ipc-handlers.ts` (real `pairing.start|status|confirm`, replacing the stub at 162-171);
+  - `apps/agent/src/ipc-handlers.ts` (implement the existing `pendingPairing` and `confirmPairing` at 168-169, add `startPairing`);
   - `apps/agent/src/pair.ts` (shared ceremony, used by CLI and IPC);
   - `apps/desktop/src/panel/` (a new "Conectar esta computadora" view with glyph, fingerprint and reverse-check buttons; `GlyphView.tsx`, `Security.tsx`, `SignIn.tsx`);
   - `apps/desktop/src-tauri` (open the hand-off URL);
-  - `apps/api/src/routes/pairing.ts` (record the requester's public IP and coarse location on `codes`; return a network-match flag to the claimer);
+  - `apps/api/src/routes/pairing.ts`:
+    - `/codes` records the requester's public IP and coarse location through `clientIp` (`@chalito/guard`);
+    - new `GET /codes/:codeId` for the approval screen;
+    - `/claim` **rejects a network mismatch without the short-code proof**;
+    - a decline route that burns the code;
+  - pairing alerts to every device of the account ("Se conectó la computadora *X*", with revoke). This is new work: an outbox row from the api or a trigger into `chalito_private.notify_outbox`, delivered by `apps/notifier/src/notify-outbox.ts` and `apps/notifier/src/senders/push.ts`, with a template in `apps/notifier/src/template.ts`;
   - `packages/protocol` (an optional pairing hand-off field, `v` stays 1);
-  - one Chalito migration plus pgTAP for the new pairing-code columns (**numbers from the coordinator**);
-  - hub: the new `/computadoras/aprobar` page (code from the URL fragment, or a camera scan, or typing as the fallback), reusing `Activate` for a first-ever device and endorsement for an untrusted browser.
+  - one Chalito migration plus pgTAP for the new pairing-code columns: IP and city purged with the code's TTL, and no read access for the agent's watch token (**numbers from the coordinator**);
+  - hub: the new `/computadoras/aprobar` page, built on the existing `AddDevice.tsx`:
+    - the codeId comes from the URL fragment (never the short code), and is kept in `sessionStorage` across the hub sign-in redirect;
+    - camera scan or typing as the fallback;
+    - "No estoy frente a esa computadora";
+    - reuses `Activate` for a first-ever device, and endorsement for an untrusted browser.
 - **AC:**
   - From a fresh install, the computer is paired with no terminal and no typing on the same machine: "Conectar esta computadora", then "Aprobar" with a passkey in the browser, then "Sí, fui yo" in the panel.
   - The fingerprint is shown on both sides.
   - A first-ever account activates its browser and pairs its computer in one flow.
   - A browser that isn't trusted can't approve.
-  - A claim from a different public IP than the requester gets the warning state and must type the short code.
+  - A claim from a different public IP than the requester gets the warning state and must type the short code. The api refuses it otherwise, whatever the screen does.
+  - "No estoy frente a esa computadora" burns the code.
+  - A mismatched pairing doesn't prompt for keys until it's confirmed in the panel.
+  - The hand-off survives the hub sign-in redirect.
   - Every pairing alerts all the account's devices.
   - `chalito pair` still works and prints the approval link.
 - **Tests:**
   - agent: IPC pairing tests, including reverse check "No" writes nothing;
-  - api: same-network one-tap vs. mismatch requires the code, expired or claimed refused, rate limit;
-  - pgTAP for the new columns and RLS;
-  - hub: unit and Playwright tests for the approval screen (fragment never sent to the server);
+  - api (where the mismatch rule is pinned): same-network one-tap, mismatch refused without the short code, decline burns the code, expired or claimed refused, rate limit, `clientIp` behind the proxy;
+  - pgTAP (data only): the new columns, the purge, and the watch token can't read them;
+  - notifier: a pairing alert reaches every device of the owner and none of another owner's;
+  - hub: unit and Playwright tests for the approval screen (fragment never sent to the server; survives the sign-in redirect; only the codeId is in the fragment);
   - a rehearsal run of the full ceremony (`scripts/e2e-phone.ts` path, updated);
   - a new `docs/THREAT_MODEL.md` §4.5 row "Pairing phishing via hand-off link" and its pinning test.
 - **Owner-only:** none beyond the hub PR go.
@@ -475,3 +489,4 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 48 | **New (2026-10-16):** First Run milestone | **Owner: ships before M17** (ADR 0028) |
 | 49 | **New (2026-10-16):** desktop api base | **Owner: `api.chalito.chalyb.com`** via DNS + Cloud Run domain mapping, run by the owner (amends ADR 0015's update) |
 | 50 | **New (2026-10-16):** autostart | **Owner: on by default**, with a switch in the panel and tray |
+| 51 | **New (2026-10-16):** pairing on a network mismatch | **Pending.** Proposed: a speed bump (type the short code) plus holding keys until confirmed. Stricter option: block on mismatch, approve only from the same network (ADR 0028 §4) |

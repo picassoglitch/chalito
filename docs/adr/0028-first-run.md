@@ -2,7 +2,7 @@
 
 - Status: Proposed (First Run docs, 2026-10-16). Nothing is built until the owner's "go".
 - Builds on: pairing and the local trusted-client list (ADR 0006), desktop distribution (ADR 0014), hosting and domain (ADR 0015, **amended here**: the api gets `api.chalito.chalyb.com` back), Chalito inside the hub (ADR 0015 update, Chalyb migration 0067), endorsement (ADR 0018), the M14 release pipeline (`docs/OPS.md` §10).
-- Protocol: `v` stays 1. One new pairing hand-off field and one new api route (§3). No new command shapes; nothing that enables or loosens anything remotely.
+- Protocol: `v` stays 1. One new pairing hand-off field (§3). Api changes (§3): `POST /v1/pairing/codes` records the requester's network, `POST /v1/pairing/claim` **enforces** the network rule, and one new read route, `GET /v1/pairing/codes/:codeId`, serves the approval screen. No new command shapes; nothing that enables or loosens anything remotely.
 - Order: **First Run ships before M17** (owner, 2026-10-16).
 
 ## Context
@@ -62,7 +62,7 @@ What already works and is kept:
 ### 2. Phase A: installers you can download
 - **One api base everywhere.**
   - `api.chalito.chalyb.com` maps to the `chalito` Cloud Run service.
-  - `release.yml`, the desktop CSP and the updater endpoint keep that host, so their current values become correct.
+  - `release.yml` (`CHALITO_API_BASE`), the desktop CSP (`tauri.conf.json:68`) and the updater endpoint keep that host, so their current values become correct. The updater endpoint isn't in `tauri.conf.json`: CI adds `plugins.updater` through the release config overlay (`src-tauri/src/lib.rs:344`).
   - The engine row's `admin_api_base` can stay on run.app (server to server). Moving it is optional.
 - **First real release** through the existing M14 pipeline (`docs/OPS.md` §10):
   - updater key;
@@ -84,17 +84,25 @@ The ceremony of ADR 0006 is kept: key-bound code, fingerprint shown on both side
 1. **Desktop: "Conectar esta computadora".**
    - The panel asks the agent (over the existing IPC) to start pairing. The agent calls `POST /v1/pairing/codes` exactly as `chalito pair` does today (same keys, 5-minute TTL, single claim).
    - The panel shows the device name, the computer's fingerprint and the glyph.
-   - The IPC pairing stub (`ipc-handlers.ts:162-171`) becomes real: `pairing.start`, `pairing.status`, `pairing.confirm`.
+   - The IPC pairing stub becomes real. The existing `pendingPairing` (`ipc-handlers.ts:168`, today always `null`) and `confirmPairing` (`:169`) are implemented, and one new `startPairing` is added. The panel's existing pairing check uses them.
 2. **Hand-off to the browser.**
-   - The panel opens `https://www.chalyb.com/app/chalito/computadoras/aprobar#c=<code>` in the default browser. The code travels in the **fragment**, so it never reaches server logs or `Referer`.
-   - The user is already signed into the hub there, or signs in.
+   - The panel opens `https://www.chalyb.com/app/chalito/computadoras/aprobar#c=<codeId>` in the default browser.
+   - The fragment carries the **codeId (or the signed glyph) only, never the short code**. The short code stays on the computer's screen as the out-of-band proof (§4).
+   - A fragment never reaches server logs or `Referer`.
+   - The user is already signed into the hub there, or signs in. The fragment must **survive the hub sign-in redirect**: the screen stashes it in `sessionStorage` before redirecting and restores it after, because fragments aren't sent to the server and the hub's `next` parameter alone would drop it.
    - No code is typed on the same machine.
 3. **Browser: "Aprobar computadora"** (new hub screen). It shows:
    - the computer's name and OS;
    - the computer's fingerprint as both the colour glyph and the short words, labelled "Debe coincidir con lo que ves en tu computadora";
    - the requester's coarse network signal (§4).
 
-   One button, **"Aprobar"**, does the WebAuthn step-up and signs the claim (`POST /v1/pairing/claim`, unchanged).
+   The screen reads that from `GET /v1/pairing/codes/:codeId` (new; trusted clients of the code's owner only, no keys or short code in the answer).
+
+   One button, **"Aprobar"**, does the WebAuthn step-up and signs the claim (`POST /v1/pairing/claim`). The claim's ceremony is unchanged, but **the route changes**: it compares the claimer's public IP with the one recorded at `/codes`, and on a mismatch it **rejects the claim unless it carries the short-code proof** (§4). The rule is enforced server-side, not only by the screen.
+
+   Next to it is **"No estoy frente a esa computadora"**. That declines, burns the code, and records a security event (§4).
+
+   The screen reuses the hub's `AddDevice.tsx` (code entry, camera scan, fingerprint compare, passkey approve) rather than a new component.
 
    If this browser isn't a trusted client yet and the account has **no** devices, the same screen first runs `Activate` (passkey plus recovery code), so the first device and the first computer happen in one flow. If the account already has devices and this browser isn't one of them, the screen sends the user to endorse it first (ADR 0018). It never approves from an untrusted browser.
 4. **Reverse check on the computer.** The panel shows the approving browser's fingerprint (or a phone's) next to "¿Lo aprobaste tú desde *Chrome en esta Mac*?" with **"Sí, fui yo"** and "No". This replaces the terminal y/N. The trusted list is written only after "Sí" (ADR 0006 step 5, unchanged).
@@ -104,22 +112,34 @@ The ceremony of ADR 0006 is kept: key-bound code, fingerprint shown on both side
 ### 4. Why the hand-off link is safe enough (THREAT_MODEL §4.2, §4.5)
 The new risk is **pairing phishing**, the device-code-phishing pattern: an attacker runs `chalito pair` on their own machine and sends the victim the approval link. If the victim taps "Aprobar", the attacker's computer becomes one of the victim's agents and receives what is sealed to it (prompts the victim sends there, keys pasted for it).
 
-Mitigations:
+**The short code isn't a real barrier.** In device-code phishing the attacker can send the short code along with the link ("type ABCD-1234 to continue"). Typing it on a mismatch is a **speed bump** that forces a pause and a warning, not proof that the user is at the computer.
+
+**The exposure is larger than "content the victim chooses to send".** Phase D's checklist actively guides a new user to paste API keys and pick a folder for "your computer". A phished user would be walked into sealing their provider keys to the attacker's machine. Mitigations:
 - **The approval says what it is approving.** The screen names the computer and asks the user to match the fingerprint "on your computer's screen". A victim who isn't sitting at that computer has nothing to match.
 - **Network check.**
   - The api records the public IP and coarse location of the `pairing/codes` request.
-  - When the claim comes from a different public IP, the screen switches to a **warning state**: "Esta computadora está en otra red (<ciudad aproximada>)". The one-tap button is replaced by typing the short code shown on the computer.
+  - When the claim comes from a different public IP, the screen switches to a **warning state**: "Esta computadora está en otra red (<ciudad aproximada>)". The one-tap button is replaced by typing the short code shown on the computer, and `/claim` refuses a mismatched claim without it.
   - Same network, which is the normal case after a hand-off from the same machine, keeps one tap.
+- **A visible way out:** "No estoy frente a esa computadora" declines in one tap, burns the code, and records `pairing.declined` in the server audit.
+- **Keys wait after a mismatch.** A computer paired through a mismatched claim is marked as such. Phase D doesn't prompt key entry for it until the user confirms the computer from the panel ("¿Esta computadora es tuya?") or 24 h pass with no revoke.
 - **Rate and TTL unchanged:** a 5-minute single-claim code, and the `/codes` rate limit.
+- **IP and location are kept only as long as needed.**
+  - They're stored on the pairing code row with the code's TTL, then purged by the existing pairing-code cleanup. Only the claimed computer's coarse city is kept, for the alert.
+  - The requester's IP is read through the api's existing `clientIp` helper (`@chalito/guard`, as in `apps/api/src/lib/rate-limit.ts`), so it honours the same trusted-proxy rules.
+  - The agent's pairing **watch token** (`mintPairingWatch`, `routes/pairing.ts:49`) must not be able to read these columns. RLS or a column grant limits it to what it reads today.
 - **Visible afterwards.** Every pairing raises an alert on all the account's devices ("Se conectó la computadora *X*"), with one-tap revoke (existing revoke path).
 - **What a phished approval can't do:**
   - It can't add an approver to the victim's *other* computers (G2: their trusted lists are local).
   - It can't approve anything there, and it can't enable anything (G3).
 
-The exposure is limited to content the victim later chooses to send to that computer, and the alert is there to cut that short.
+The exposure is content the victim sends to that computer, including keys the setup guide asks for. The alert, the mismatch hold on keys and revoke are there to cut that short.
 - **The cloud is still not a root of trust.** A compromised api could serve a fake fingerprint on the approval screen. The reverse check on the computer (step 4) still stops it from making the computer trust the wrong browser. This is the same argument as ADR 0006.
 
-`docs/THREAT_MODEL.md` gains a row under §4.5 ("Pairing phishing via hand-off link") with the mitigations above. The pgTAP and api tests in phase B pin the network-mismatch downgrade.
+`docs/THREAT_MODEL.md` gains a row under §4.5 ("Pairing phishing via hand-off link") with the mitigations above.
+- **Api tests** pin the server-side mismatch rule: one-tap on the same network, rejected without the short code on a mismatch, decline burns the code.
+- **pgTAP** pins only the data side: watch-token access to the new columns, and the purge.
+
+**Owner-pending (decision #51):** a stricter option is to **block on mismatch** and allow approval only from the same network, or by scanning the glyph from a phone on that network. That stops remote phishing outright, at the cost of "approve my office computer from home". The default proposed here is the speed bump plus the key hold; the owner picks.
 
 ### 5. Phase C: "leave the PC on and Chalito takes over"
 - **Autostart, on by default.**
