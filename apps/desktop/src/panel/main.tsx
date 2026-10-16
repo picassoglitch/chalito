@@ -17,12 +17,14 @@ import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { UpdateController, tauriUpdater } from "../lib/updates.js";
 import { Panel } from "./Panel.js";
 import { SignIn } from "./SignIn.js";
-import { createSession, readEnv, type Connected } from "../lib/session.js";
+import { DEFAULT_SSO_START_URL, createSession, firstTaskUrl, readEnv, type Connected } from "../lib/session.js";
 import type { SignInController } from "../lib/sign-in.js";
 
 const IDLE_AFTER_MS = 2 * 60 * 1000;
 const SIGNAL_POLL_MS = 5_000;
 const HUB_PLANS_URL = `${(import.meta.env.VITE_HUB_URL ?? "").replace(/\/+$/, "")}/planes`;
+/** The hub's New Session with the ready-made first task, on the same site as the desktop sign-in. */
+const FIRST_TASK_URL = firstTaskUrl(readEnv()?.ssoStartUrl ?? DEFAULT_SSO_START_URL);
 
 /** Phone codes go through the api with the account session; the desktop has none yet. */
 const offlinePhoneVerifier: PhoneVerifier = {
@@ -135,6 +137,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       localAgent={agentApi}
       thisComputer={computerApi}
       openUrl={(url) => openUrl(url)}
+      {...(FIRST_TASK_URL ? { firstTaskUrl: FIRST_TASK_URL } : {})}
     />
   );
 };

@@ -194,6 +194,8 @@ describe("chalito run (daemon)", () => {
       policyHash: policyHash(DEFAULT_POLICY),
       devMode: { on: false, toggles: [], since: null },
       lastSeenAt: NOW,
+      // First Run D: the checklist's view of this computer (ids and counts only).
+      presence: { setup: { adapters: ["claude-code"], workspaces: 0, labels: [] } },
     });
     expect(s.adapterInputs).toEqual([
       { apiKey: "sk-ant-test-key-123456", claudePath: s.claude, log: expect.anything() },
@@ -231,6 +233,16 @@ describe("chalito run (daemon)", () => {
       policyHash: policyHash(next),
       t: NOW,
     });
+    await d.stop();
+  });
+
+  it("First Run D: reports its setup (folder count and labels, never paths) at start and on a policy change", async () => {
+    const s = await setup();
+    const d = await runDaemon(s.deps);
+    expect((s.store.device.presence as { setup?: unknown }).setup).toMatchObject({ workspaces: 0, labels: [] });
+    await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: join(s.home, "w") }] }, "local");
+    expect((s.store.device.presence as { setup?: unknown }).setup).toMatchObject({ workspaces: 1, labels: ["w"] });
+    expect(JSON.stringify(s.store.device.presence)).not.toContain(s.home);
     await d.stop();
   });
 

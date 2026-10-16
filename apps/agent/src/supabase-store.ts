@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AppConnectionDoc,
+  DevicePresence,
   isLiveOnlyEvent,
   type AgentEvent,
   type ApprovalRequest,
@@ -563,14 +564,22 @@ export class SupabaseStore implements AgentStore {
 
   // ---- device --------------------------------------------------------------------
 
+  /** What this process last wrote to `presence`: each report replaces the whole column. */
+  #presence: DevicePresence = {};
+
   async updateDevice(fields: {
     policyHash?: string;
     devMode?: unknown;
     lastSeenAt?: number;
-    presence?: { desktopActive: boolean };
+    presence?: DevicePresence;
   }) {
     const patch: Record<string, unknown> = {};
-    if (fields.presence !== undefined) patch.presence = { desktopActive: fields.presence.desktopActive };
+    let presence: DevicePresence | null = null;
+    if (fields.presence !== undefined) {
+      // Strict: an unknown field (a path, say) throws here instead of reaching the cloud.
+      presence = DevicePresence.parse({ ...this.#presence, ...fields.presence });
+      patch.presence = presence;
+    }
     if (fields.policyHash !== undefined) patch.policy_hash = fields.policyHash;
     if (fields.devMode !== undefined) patch.dev_mode = fields.devMode;
     if (fields.lastSeenAt !== undefined) patch.last_seen_at = iso(fields.lastSeenAt);
@@ -578,6 +587,7 @@ export class SupabaseStore implements AgentStore {
     await this.#write("update device", () =>
       this.#device().update(patch).eq("owner", this.owner).eq("device_id", this.deviceId),
     );
+    if (presence) this.#presence = presence;
   }
 
   async publishDeviceEvent(raw: DeviceEvent) {

@@ -559,6 +559,7 @@ describe("panel: endorsement refusals are never silent (R-L13)", () => {
     devMode: { on: false, toggles: [], since: null },
     policyHash: null,
     lastEvent,
+    setup: null,
     rev: 1,
   });
   const refused = {

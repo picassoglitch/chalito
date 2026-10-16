@@ -36,6 +36,17 @@ export interface DesktopEnv {
 /** Chalito lives inside the hub (ADR 0015 update); release.yml sets the same value. */
 export const DEFAULT_SSO_START_URL = "https://www.chalyb.com/app/chalito/auth/desktop";
 
+/** First Run D: the hub's New Session with the ready-made first task, next to the sign-in page. */
+export const firstTaskUrl = (ssoStartUrl: string): string | null => {
+  try {
+    const u = new URL(ssoStartUrl);
+    if (u.protocol !== "https:" && u.hostname !== "localhost" && u.hostname !== "127.0.0.1") return null;
+    return new URL("../sesiones/nueva?first=1", u).toString();
+  } catch {
+    return null;
+  }
+};
+
 /** Public build-time configuration; null when this build has no account wiring. */
 export const readEnv = (e: Record<string, string | undefined> = import.meta.env): DesktopEnv | null => {
   const env = {

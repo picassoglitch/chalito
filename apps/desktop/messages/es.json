@@ -453,5 +453,31 @@
         "startup": "Lo que se guarda en esa carpeta puede ejecutarse solo (al iniciar la computadora o como un comando), o la contiene. Elige la carpeta de un proyecto."
       }
     }
+  },
+  "setup": {
+    "title": "Pon a trabajar a Chalito",
+    "progress": "{done} de {total} listos",
+    "step": {
+      "account": "Tu cuenta",
+      "browser": "Esta app, aprobada",
+      "computer": "Esta computadora, conectada",
+      "ai": "Una IA lista",
+      "folder": "Una carpeta elegida",
+      "firstTask": "Tu primera tarea"
+    },
+    "hint": {
+      "account": "Entra con tu cuenta de Chalyb en la Bandeja.",
+      "browser": "Entra con tu cuenta de Chalyb en la Bandeja para aprobar esta app.",
+      "computer": "Toca «Conectar esta computadora» aquí arriba y aprueba en tu navegador.",
+      "ai": "En «IA conectadas», toca «Usar» junto a una IA que ya tengas instalada.",
+      "folder": "En Ajustes → Esta computadora, agrega la carpeta de un proyecto.",
+      "firstTask": "Pídele a tu IA que resuma tu proyecto. Solo lee; no cambia nada."
+    },
+    "action": {
+      "signIn": "Ir a la Bandeja",
+      "ai": "Ir a IA conectadas",
+      "folder": "Elegir una carpeta",
+      "firstTask": "Probar la primera tarea"
+    }
   }
 }
