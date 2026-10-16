@@ -908,7 +908,66 @@ describe("follow-up 2: NFC-safe globs, more AI tools, in-workspace files that ru
       expect(c.reasons, f).toContain("config/CI/.env");
     }
     // Ordinary source edits stay as before.
-    for (const f of ["src/index.ts", "README.md", ".vscode/settings.json", "docs/envrc.md", "lib/devcontainer.ts"])
+    for (const f of [
+      "src/index.ts",
+      "README.md",
+      "docs/envrc.md",
+      "lib/devcontainer.ts",
+      "src/mcp.json",
+      "docs/vscode.md",
+    ])
       expect(write(`${ws}/${f}`).tier, f).toBe("MED");
+  });
+});
+
+describe("follow-up 2: code-running files, case-insensitive on macOS and Windows", () => {
+  const ws = "/home/ana/code/app";
+  const ctx = (platform?: NodeJS.Platform) => ({
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    ...(platform ? { platform } : {}),
+  });
+  const write = (f: string, platform?: NodeJS.Platform) =>
+    classifyToolCall("Write", { file_path: `${ws}/${f}`, content: "x" }, ctx(platform));
+
+  it("MCP configs, and everything under .vscode, .cursor and .windsurf, are HIGH", () => {
+    for (const f of [
+      ".mcp.json",
+      "packages/web/.mcp.json",
+      ".vscode/mcp.json",
+      ".cursor/mcp.json",
+      ".windsurf/mcp.json",
+      ".vscode/settings.json",
+      ".vscode/extensions.json",
+      ".cursor/rules/x.mdc",
+      ".windsurf/workflows/deploy.md",
+    ]) {
+      const c = write(f);
+      expect(c.tier, f).toBe("HIGH");
+      expect(c.reasons, f).toContain("config/CI/.env");
+    }
+  });
+
+  it.each(["darwin", "win32"] as const)("mixed case is the same file on %s", (platform) => {
+    for (const f of [
+      ".ENVRC",
+      ".VSCode/Tasks.json",
+      ".Git/Hooks/pre-commit",
+      ".GIT/CONFIG",
+      ".Claude/Settings.local.json",
+      ".MCP.json",
+      ".Cursor/MCP.json",
+      ".DevContainer/devcontainer.json",
+      "JENKINSFILE",
+    ])
+      expect(write(f, platform).tier, `${platform} ${f}`).toBe("HIGH");
+    expect(write("src/Index.ts", platform).tier).toBe("MED");
+  });
+
+  it("Linux is case-sensitive: other spellings are other files", () => {
+    expect(write(".ENVRC", "linux").tier).toBe("MED");
+    expect(write(".envrc", "linux").tier).toBe("HIGH");
   });
 });

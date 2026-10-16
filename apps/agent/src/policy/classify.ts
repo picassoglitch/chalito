@@ -178,24 +178,33 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       abs === "/etc/sudoers" ||
       within(abs, "/etc/sudoers.d"),
     configOrCi: (abs) => {
-      const parts = abs.split(sep);
+      // Compared folded (k): on macOS and Windows `.ENVRC` or `.Git/Hooks` are the same files.
+      const folded = k(abs);
+      const parts = folded.split(sep);
       const base = parts[parts.length - 1] ?? "";
+      const dirs = parts.slice(0, -1);
+      const has = (name: string) => dirs.includes(k(name));
+      const named = (...names: string[]) => names.some((n) => base === k(n));
+      const parent = parts[parts.length - 2] ?? "";
       return (
         /^\.env(\..*)?$/.test(base) ||
-        parts.includes(".github") ||
-        parts.includes(".circleci") ||
-        parts.includes(".buildkite") ||
-        ["Jenkinsfile", ".gitlab-ci.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml"].includes(base) ||
-        // Files that can make code run later (HIGH even inside a workspace): git hooks, agent
-        // settings with hooks, direnv, editor tasks/launch configs, dev containers.
-        abs.includes(`${sep}.git${sep}hooks${sep}`) ||
-        abs.includes(`${sep}.git${sep}config`) ||
-        (parts.includes(".claude") && /^settings.*\.json$/.test(base)) ||
-        base === ".envrc" ||
-        (parts[parts.length - 2] === ".vscode" && ["tasks.json", "launch.json"].includes(base)) ||
-        parts.includes(".devcontainer") ||
-        base === ".devcontainer.json" ||
-        parts.includes(".husky")
+        has(".github") ||
+        has(".circleci") ||
+        has(".buildkite") ||
+        named("Jenkinsfile", ".gitlab-ci.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml") ||
+        // Files that can make code run later (HIGH even inside a workspace): git hooks and config,
+        // agent settings with hooks, MCP server configs, direnv, editor folders (tasks, launch,
+        // terminal settings, extensions' configs), dev containers.
+        folded.includes(`${sep}${k(".git")}${sep}${k("hooks")}${sep}`) ||
+        folded.includes(`${sep}${k(".git")}${sep}${k("config")}`) ||
+        (has(".claude") && /^settings.*\.json$/.test(base)) ||
+        named(".mcp.json", ".envrc", ".devcontainer.json") ||
+        (named("mcp.json") && [".vscode", ".cursor", ".windsurf"].some((d) => parent === k(d))) ||
+        has(".vscode") ||
+        has(".cursor") ||
+        has(".windsurf") ||
+        has(".devcontainer") ||
+        has(".husky")
       );
     },
     buildOrTest: (abs) => {
