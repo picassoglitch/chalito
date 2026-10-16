@@ -2,7 +2,8 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { hooksFor, repoRootOf, scanRepos, type GitFs } from "./git-hooks.js";
+import { type GitFs } from "./git-hooks.js";
+import { repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
   AI_CONFIG_DIRS,
@@ -55,8 +56,6 @@ export interface ClassifyContext {
   pathDirs?: string[];
   /** How git config files are read (tests inject it). git itself is never run. */
   gitFs?: GitFs;
-  /** Tests: a lower cap for the workspace repo scan. */
-  repoScanLimit?: number;
   /** The OS (default: this one). macOS and Windows compare paths case-insensitively. */
   platform?: NodeJS.Platform;
   /**
@@ -140,59 +139,31 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
   const res = (p: string, cwd = ctx.cwd) => real(resolve(cwd, expand(p)));
   const workspaces = ctx.policy.workspaces.map((w) => real(resolve(expand(w.path))));
-  // git hooks, worked out per repo by reading git's own files (never by running git): the repo a
-  // written path belongs to is its nearest `.git` at or above it (a workspace can hold many repos,
-  // or sit inside one), each resolved once and cached until its config files change.
-  const hooksOpts = {
+  // git hooks, worked out by reading git's own files (never by running git), for every repo in or
+  // around each workspace (repo-index.ts). Classification only reads the last completed index: no
+  // folder walk, no per-repo stat here.
+  const union = repoUnion(workspaces, {
     home: ctx.home,
     ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
     ...(ctx.env ? { env: ctx.env } : {}),
     platform,
     ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
-  };
-  const repoOf = (abs: string, fallback: string) => {
-    const root = repoRootOf(dirname(abs), {
-      fallback,
-      ...(ctx.env ? { env: ctx.env } : {}),
-      ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
-    });
-    return root ? { root, info: hooksFor(root, hooksOpts) } : null;
-  };
-  // Every repo in (or around) each workspace, found by a scan (cached a few minutes), so the answer
-  // never depends on which repo happened to be touched first.
-  const scans = workspaces.map((w) => ({
-    w,
-    scan: scanRepos(w, {
-      ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
-      ...(ctx.repoScanLimit ? { max: ctx.repoScanLimit } : {}),
-    }),
-  }));
-  const workspaceRepos = [
-    ...workspaces.flatMap((w) => {
-      const r = repoOf(join(w, "x"), w);
-      return r ? [r] : [];
-    }),
-    ...scans.flatMap(({ scan }) => scan.roots.map((root) => ({ root, info: hooksFor(root, hooksOpts) }))),
-  ];
-  const partialScanIn = scans.filter((s) => !s.scan.complete).map((s) => s.w);
+  });
   /**
    * Whether `abs` is part of how git runs hooks: any known repo's git dirs, config chain and hooks
-   * folders (a repo's hooksPath may point into another repo's tree), plus the path's own repo.
+   * folders (a repo's hooksPath may point into another repo's tree).
    */
   const gitRuns = (abs: string): boolean => {
-    const r = repoOf(abs, workspaces.find((w) => within(abs, w)) ?? dirname(abs));
-    const repos = [...(r ? [r] : []), ...workspaceRepos];
-    for (const { info } of repos) {
-      if (info.gitDirs.some((d) => within(abs, real(d)))) return true;
-      if (info.chain.some((f) => same(real(f), abs))) return true;
-      if (typeof info.dir === "string" && info.dir !== "unknown" && within(abs, real(info.dir))) return true;
-      if (info.extraDirs.some((d) => within(abs, real(d)))) return true;
-    }
-    // The path's repo couldn't be read with confidence, or the workspace scan was cut short (cap or
-    // unreadable folder): its usual hooks folders count (narrow).
-    if (r && (r.info.dir === "unknown" || partialScanIn.some((w) => within(abs, w))))
-      return [join(r.root, "hooks"), join(r.root, ".githooks")].some((d) => within(abs, real(d)));
-    return false;
+    if (union.gitDirs.some((d) => within(abs, d))) return true;
+    if (fold ? [...union.chain].some((f) => same(f, abs)) : union.chain.has(abs)) return true;
+    if (union.hooksDirs.some((d) => within(abs, d))) return true;
+    // Narrow fallback: the path's repo couldn't be read with confidence, its workspace's scan was cut
+    // short, or no scan has finished yet: that repo's (or workspace's) hooks/ and .githooks/ count.
+    const own = union.roots.find((r) => within(abs, r.root));
+    const narrow = (root: string) => [join(root, "hooks"), join(root, ".githooks")].some((d) => within(abs, d));
+    if (own && (own.unknown || union.partial.some((w) => within(abs, w)))) return narrow(own.root);
+    const missingWs = union.missing.find((w) => within(abs, w));
+    return missingWs ? narrow(own?.root ?? missingWs) : false;
   };
   const h = (rel: string) => real(join(ctx.home, rel));
   // A home-relative entry, plus (Windows) its AppData part under the real %APPDATA% / %LOCALAPPDATA%.

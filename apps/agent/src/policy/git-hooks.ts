@@ -543,81 +543,10 @@ export const repoRootOf = (path: string, o: { fs?: GitFs; env?: GitEnv; fallback
   }
 };
 
-/** Folders a repo scan never enters: dependencies, build output, caches. */
-const SKIP = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  "out",
-  "target",
-  "vendor",
-  ".venv",
-  "venv",
-  "__pycache__",
-  ".next",
-  ".nuxt",
-  ".cache",
-  ".turbo",
-  "Pods",
-  ".gradle",
-  ".terraform",
-]);
 export const SCAN_DEPTH = 4;
 export const SCAN_MAX_REPOS = 200;
-/** Workspaces are re-scanned at least this often (new clones show up). */
+/** Workspaces are re-scanned this often (new clones show up). */
 export const SCAN_MAX_AGE_MS = 3 * 60 * 1000;
 
-export interface RepoScan {
-  /** Every folder holding a `.git` within the workspace (depth ≤ 4). */
-  roots: string[];
-  /** False when the cap was hit or a folder couldn't be read: unresolved repos get the narrow fallback. */
-  complete: boolean;
-  at: number;
-}
-
-const scans = new Map<string, RepoScan>();
-
-/** Finds the repos inside a workspace, so every one of them is known before anything is classified. */
-export const scanRepos = (
-  ws: string,
-  o: { fs?: GitFs; max?: number; now?: number; force?: boolean } = {},
-): RepoScan => {
-  const fs = o.fs ?? nodeFs;
-  const now = o.now ?? Date.now();
-  const max = o.max ?? SCAN_MAX_REPOS;
-  const key = `${ws}\0${max}`;
-  const hit = scans.get(key);
-  if (hit && !o.force && now - hit.at < SCAN_MAX_AGE_MS) return hit;
-  const roots: string[] = [];
-  let complete = !!fs.list;
-  const walk = (dir: string, depth: number) => {
-    if (!complete) return;
-    let entries: { name: string; dir: boolean }[];
-    try {
-      entries = fs.list!(dir);
-    } catch {
-      complete = false;
-      return;
-    }
-    if (entries.some((e) => e.name === ".git")) {
-      if (roots.length >= max) {
-        complete = false;
-        return;
-      }
-      roots.push(dir);
-    }
-    if (depth >= SCAN_DEPTH) return;
-    for (const e of entries) if (e.dir && !SKIP.has(e.name)) walk(join(dir, e.name), depth + 1);
-  };
-  if (fs.list) walk(ws, 0);
-  const scan = { roots, complete, at: now };
-  scans.set(key, scan);
-  return scan;
-};
-
 /** Tests: forget cached answers. */
-export const clearHooksCache = () => {
-  cache.clear();
-  scans.clear();
-};
+export const clearHooksCache = () => cache.clear();

@@ -37,10 +37,14 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.js");
-const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, scanRepos, systemConfigs } =
+const { clearRepoIndex, refreshRepoIndexSync, scanReposSync } = await import("../src/policy/repo-index.js");
+const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, systemConfigs } =
   await import("../src/policy/git-hooks.js");
 
-beforeEach(() => clearHooksCache());
+beforeEach(() => {
+  clearHooksCache();
+  clearRepoIndex();
+});
 afterAll(() => expect(spawned).toEqual([]));
 
 const NOSYS = { GIT_CONFIG_NOSYSTEM: "1" };
@@ -61,8 +65,12 @@ const ctx = (ws: string, home: string, o: Record<string, unknown> = {}) => ({
   env: NOSYS,
   ...o,
 });
-const write = (ws: string, home: string, f: string, o: Record<string, unknown> = {}) =>
-  classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, ctx(ws, home, o));
+/** Classifies a write after a (sync, test-only) repo scan: the classifier itself never scans. */
+const write = (ws: string, home: string, f: string, o: Record<string, unknown> = {}) => {
+  const { repoScanLimit, ...rest } = o as { repoScanLimit?: number };
+  refreshRepoIndexSync([ws], repoScanLimit ? { max: repoScanLimit } : {});
+  return classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, ctx(ws, home, rest));
+};
 const bump = (f: string) => utimesSync(f, new Date(), new Date(Date.now() + 10_000));
 
 describe("the parser", () => {
@@ -615,7 +623,7 @@ describe("every repo in the workspace is known up front", () => {
     expect(write(ws, home, "b/src/y.ts").tier).toBe("MED");
   });
 
-  it("the scan skips heavy folders, stops at depth 4 and at the cap", () => {
+  it("the scan skips heavy folders, stops at depth 4 and at the folder budget", () => {
     const home = root();
     const ws = join(home, "ws");
     mkdirSync(ws);
@@ -624,10 +632,11 @@ describe("every repo in the workspace is known up front", () => {
     mkdirSync(join(ws, "d1", "d2", "d3", "d4", "d5"), { recursive: true });
     repo(join(ws, "d1", "d2", "d3"), "deep");
     repo(join(ws, "d1", "d2", "d3", "d4", "d5"), "too-deep");
-    const scan = scanRepos(ws, { force: true });
+    const scan = scanReposSync(ws);
     expect(scan.roots.sort()).toEqual([join(ws, "a"), join(ws, "d1", "d2", "d3", "deep")].sort());
     expect(scan.complete).toBe(true);
-    expect(scanRepos(ws, { force: true, max: 1 }).complete).toBe(false);
+    // The folder budget cuts a scan short.
+    expect(scanReposSync(ws, { budget: 2 }).complete).toBe(false);
   });
 
   it("a scan cut short protects every repo's usual hooks folders (narrowly)", () => {
