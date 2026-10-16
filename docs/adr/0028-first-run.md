@@ -2,7 +2,7 @@
 
 - Status: Proposed (First Run docs, 2026-10-16). Nothing is built until the owner's "go".
 - Builds on: pairing and the local trusted-client list (ADR 0006), desktop distribution (ADR 0014), hosting and domain (ADR 0015, **amended here**: the api gets `api.chalito.chalyb.com` back), Chalito inside the hub (ADR 0015 update, Chalyb migration 0067), endorsement (ADR 0018), the M14 release pipeline (`docs/OPS.md` §10).
-- Protocol: `v` stays 1. One new pairing hand-off field (§3). Api changes (§3): `POST /v1/pairing/codes` records the requester's network, `POST /v1/pairing/claim` **enforces** the network rule, and one new read route, `GET /v1/pairing/codes/:codeId`, serves the approval screen. No new command shapes; nothing that enables or loosens anything remotely.
+- Protocol: `v` stays 1. One new pairing hand-off field (§3). Api changes (§3): `POST /v1/pairing/codes` records the requester's network, `POST /v1/pairing/claim` **enforces** the network rule, one new read route, `GET /v1/pairing/codes/:codeId`, serves the approval screen, and one new `POST /v1/pairing/decline` burns a code. No new command shapes; nothing that enables or loosens anything remotely.
 - Order: **First Run ships before M17** (owner, 2026-10-16).
 
 ## Context
@@ -96,11 +96,15 @@ The ceremony of ADR 0006 is kept: key-bound code, fingerprint shown on both side
    - the computer's fingerprint as both the colour glyph and the short words, labelled "Debe coincidir con lo que ves en tu computadora";
    - the requester's coarse network signal (§4).
 
-   The screen reads that from `GET /v1/pairing/codes/:codeId` (new; trusted clients of the code's owner only, no keys or short code in the answer).
+   The screen reads that from `GET /v1/pairing/codes/:codeId` (new). Its rule matches `/resolve` today (`routes/pairing.ts:60`), because an unclaimed code has no owner yet:
+   - any signed-in client (`requireAuth(["client"])`);
+   - rate-limited;
+   - unclaimed and unexpired codes only, otherwise 404;
+   - no short code and no keys in the answer.
 
    One button, **"Aprobar"**, does the WebAuthn step-up and signs the claim (`POST /v1/pairing/claim`). The claim's ceremony is unchanged, but **the route changes**: it compares the claimer's public IP with the one recorded at `/codes`, and on a mismatch it **rejects the claim unless it carries the short-code proof** (§4). The rule is enforced server-side, not only by the screen.
 
-   Next to it is **"No estoy frente a esa computadora"**. That declines, burns the code, and records a security event (§4).
+   Next to it is **"No estoy frente a esa computadora"**. That calls `POST /v1/pairing/decline` (new), which burns the code and records a security event (§4). It follows the same rule as the read route (any client, unclaimed and unexpired codes only), with **its own rate limit**.
 
    The screen reuses the hub's `AddDevice.tsx` (code entry, camera scan, fingerprint compare, passkey approve) rather than a new component.
 

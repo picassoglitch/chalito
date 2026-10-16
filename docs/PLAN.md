@@ -344,9 +344,9 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - `apps/desktop/src-tauri` (open the hand-off URL);
   - `apps/api/src/routes/pairing.ts`:
     - `/codes` records the requester's public IP and coarse location through `clientIp` (`@chalito/guard`);
-    - new `GET /codes/:codeId` for the approval screen;
+    - new `GET /codes/:codeId` for the approval screen: any `requireAuth(["client"])` client, rate-limited, unclaimed and unexpired codes only, and no short code or keys in the answer (the same rule as `/resolve`);
     - `/claim` **rejects a network mismatch without the short-code proof**;
-    - a decline route that burns the code;
+    - new `POST /decline` burns the code: the same rule, with its own rate limit;
   - pairing alerts to every device of the account ("Se conectó la computadora *X*", with revoke). This is new work: an outbox row from the api or a trigger into `chalito_private.notify_outbox`, delivered by `apps/notifier/src/notify-outbox.ts` and `apps/notifier/src/senders/push.ts`, with a template in `apps/notifier/src/template.ts`;
   - `packages/protocol` (an optional pairing hand-off field, `v` stays 1);
   - one Chalito migration plus pgTAP for the new pairing-code columns: IP and city purged with the code's TTL, and no read access for the agent's watch token (**numbers from the coordinator**);
