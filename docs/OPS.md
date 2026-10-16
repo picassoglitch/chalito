@@ -154,6 +154,11 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 
 > From picassoglitch-76. This matches `m14-apps` 9691094 (`.github/workflows/release.yml`, `apps/desktop/scripts/release`, `infra/terraform/envs/dev/releases.tf`).
 
+**0. Api host (First Run, ADR 0028; owner).** Release builds, the desktop CSP and the updater use `https://api.chalito.chalyb.com`, which doesn't resolve yet (ADR 0015's 2026-10-05 update removed subdomains; owner decision #49 brings this one back). Before any real release:
+- Map the `chalito` Cloud Run service (`us-central1`) to `api.chalito.chalyb.com`: `gcloud beta run domain-mappings create --service chalito --domain api.chalito.chalyb.com --region us-central1` (verify `chalyb.com` in Search Console first if gcloud asks).
+- Add the DNS record it prints (a `CNAME` to `ghs.googlehosted.com.`) at the `chalyb.com` DNS host, and wait for the managed certificate.
+- Check: `curl -fsS https://api.chalito.chalyb.com/health`.
+
 Until these are done, tag builds still produce DRAFT releases, labelled unsigned (`UNSIGNED_` file names, `unsigned` in latest.json, a note in the draft). Nothing is ever published automatically.
 
 **1. Updater signing key (required before any real release).**
@@ -181,6 +186,7 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 - Create an app registration with the "Artifact Signing Certificate Profile Signer" role on the profile.
 - Set the secrets `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`, and the repository variables `ARTIFACT_SIGNING_ENDPOINT` (e.g. `https://wus2.codesigning.azure.net`), `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`.
 - Expect SmartScreen warnings until reputation builds (/descargar explains this).
+- **Plan (owner decision #24, 2026-10-16):** beta and internal builds ship unsigned on the beta channel. Set this up before the public launch (an OV certificate instead if the account isn't eligible).
 
 **5. Linux (optional): AppImage GPG.**
 - Generate a signing key. Set `APPIMAGE_GPG_PRIVATE_KEY` (the armored private key), `APPIMAGE_SIGN_KEY` (key id), `APPIMAGETOOL_SIGN_PASSPHRASE`.

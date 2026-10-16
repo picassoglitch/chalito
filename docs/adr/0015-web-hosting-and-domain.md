@@ -1,6 +1,6 @@
 # ADR 0015: Region, hosting and domain
 
-- Status: Accepted (owner, 2026-10-03: "vercel hosting", "a subdomain of chalyb"; backend in Chalyb's GCP project)
+- Status: Accepted (owner, 2026-10-03: "vercel hosting", "a subdomain of chalyb"; backend in Chalyb's GCP project) **Amended by [ADR 0028](0028-first-run.md) (2026-10-16): the api gets `api.chalito.chalyb.com` back.**
 
 ## Verified context (2026-10-03)
 - Cloud Tasks and Vertex generative AI are not in `northamerica-south1`.
