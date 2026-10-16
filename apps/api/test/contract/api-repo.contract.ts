@@ -381,6 +381,8 @@ export const runApiRepoContract = (
         expect(res).toEqual({ ok: true, agentDeviceId: code.agentDeviceId });
         expect(seen).toMatchObject(code);
         expect(await repo.getDevice(o, code.agentDeviceId)).toEqual(agent);
+        expect(await repo.findDeviceById(code.agentDeviceId)).toEqual(agent);
+        expect(await repo.findDeviceById("dev_nobody_here_at_all_x")).toBeNull();
         expect(await repo.findPairingCodeByShortHash(code.shortCodeHash)).toMatchObject({
           claimed: true,
           owner: o,

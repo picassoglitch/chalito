@@ -76,6 +76,7 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 - `API_PUBLIC_URL`;
 - `SCHEDULER_SA_EMAIL`;
 - `TRUSTED_PROXIES`: 0 behind Cloud Run's front end, 1 behind an external load balancer;
+- `PAIRING_ORIGINS` (optional): origins a pairing loopback proof may name (ADR 0028 §4); unset = `https://www.chalyb.com`. Set a local or preview hub only on a dev deployment;
 - `AVATAR_FREE_MARKER_KEY` (secret, recommended, ≥ 32 random characters, e.g. `openssl rand -hex 32`): keys the free-custom-companion markers (migration `20261005000200`, `apps/api/src/avatar/free-marker.ts`). Without it the api derives a key from `CHALITO_SSO_SECRET`. **Set it once and don't rotate it:** a new key forgets who already used their free creation (each person could get one more).
 
 **Cloud Scheduler:** schedule `POST <api>/tasks/account-deletions` hourly, with OIDC as `SCHEDULER_SA_EMAIL`.

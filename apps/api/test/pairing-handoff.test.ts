@@ -70,6 +70,7 @@ const memoryRepo = (devices: DeviceDoc[], opts: { failNotify?: boolean } = {}) =
   };
   const repo: Partial<ApiRepo> = {
     getDevice: async (o, id) => devices.find((d) => d.owner === o && d.deviceId === id) ?? null,
+    findDeviceById: async (id) => devices.find((d) => d.deviceId === id) ?? null,
     getDeviceWebAuthn: async () => null,
     createPairingCode: async (doc, net) => {
       if (codes.has(doc.codeId)) return "exists";
@@ -199,20 +200,20 @@ const setup = async (opts: { trustedProxies?: number; failNotify?: boolean } = {
     return { status: res.status };
   };
   /** The computer publishes a code with this code id. */
-  const askWith = async (codeId: string, ip = HOME, city?: string) => {
+  const askWith = async (codeId: string, ip = HOME, city?: string, as: Keys = computer) => {
     const glyph = await signGlyph(
       {
         v: 1,
         purpose: "pair_device",
         codeId,
-        issuerPubSign: (await pub(computer)).pubSign,
-        issuerPubBox: (await pub(computer)).pubBox,
+        issuerPubSign: (await pub(as)).pubSign,
+        issuerPubBox: (await pub(as)).pubBox,
         label: "MacBook de Ana",
         issuedAt: NOW,
         expiresAt: NOW + PAIRING_TTL_MS,
         nonce: await randomNonce(),
       } as never,
-      computer.sign.secretKey,
+      as.sign.secretKey,
     );
     const r = await post(
       "/v1/pairing/codes",
@@ -394,6 +395,20 @@ describe("POST /v1/pairing/claim: one tap needs the loopback proof", () => {
       const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: p }), { token: "phone" });
       expect(r).toMatchObject({ status: 403, json: { error: "bad_proof" } });
     }
+  });
+
+  it("a validly signed proof from another agent (one that published its own code) is refused", async () => {
+    const s = await setup();
+    const { codeId } = await s.ask();
+    // The attacker's computer is a real pairing agent: its key is registered for ITS code.
+    const theirs = await s.askWith(await randomNonce(), HOME, undefined, s.attacker);
+    expect(theirs.status).toBe(201);
+    const { loopbackNonce } = await s.handoff(codeId);
+    // Signed by the attacker's key, under its own device id, over the victim's code and nonce.
+    const p = await s.proof(codeId, loopbackNonce!, { signer: s.attacker });
+    const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId, { loopbackProof: p }), { token: "phone" });
+    expect(r).toMatchObject({ status: 403, json: { error: "bad_proof" } });
+    expect(s.mem.codes.get(codeId)!.claimed).toBe(false);
   });
 
   it("a wrong nonce, a reused nonce and an expired nonce are refused", async () => {
@@ -623,6 +638,45 @@ describe("POST /v1/pairing/withdraw: the computer burns its own code", () => {
     expect((await s.post("/v1/pairing/withdraw", { withdraw: await s.withdraw(codeId) }, {})).status).toBe(200);
     expect(s.mem.revoked).toEqual([`${s.o}/${s.computer.deviceId}`]);
     expect(s.disabled).toEqual([s.computer.deviceId]);
+  });
+
+  it("a late No fui yo, after the code's TTL (even once purged), still revokes the claimed device", async () => {
+    for (const purge of [false, true]) {
+      const s = await setup();
+      const { codeId, shortCode } = await s.ask();
+      await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" });
+      s.tick(PAIRING_TTL_MS + 60_000);
+      if (purge) s.mem.codes.delete(codeId);
+      expect(
+        (await s.post("/v1/pairing/withdraw", { withdraw: await s.withdraw(codeId) }, {})).status,
+        `purge=${purge}`,
+      ).toBe(200);
+      expect(s.mem.revoked).toEqual([`${s.o}/${s.computer.deviceId}`]);
+    }
+  });
+
+  it("Cancelar racing a claim: the claim's device is revoked", async () => {
+    const s = await setup();
+    const { codeId, shortCode } = await s.ask();
+    const cancel = s.mem.repo.cancelPairingCode.bind(s.mem.repo);
+    // The claim lands between the withdraw's read and its cancel.
+    s.mem.repo.cancelPairingCode = async (id) => {
+      await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" });
+      return cancel(id);
+    };
+    expect((await s.post("/v1/pairing/withdraw", { withdraw: await s.withdraw(codeId) }, {})).status).toBe(200);
+    expect(s.mem.codes.get(codeId)!.claimed).toBe(true);
+    expect(s.mem.revoked).toEqual([`${s.o}/${s.computer.deviceId}`]);
+  });
+
+  it("another computer can't withdraw someone else's claimed code", async () => {
+    const s = await setup();
+    const { codeId, shortCode } = await s.ask();
+    await s.post("/v1/pairing/claim", await s.claimBody(codeId, { shortCode }), { token: "phone" });
+    expect((await s.post("/v1/pairing/withdraw", { withdraw: await s.withdraw(codeId, s.attacker) }, {})).status).toBe(
+      404,
+    );
+    expect(s.mem.revoked).toEqual([]);
   });
 
   it("only the computer that published the code can withdraw it", async () => {

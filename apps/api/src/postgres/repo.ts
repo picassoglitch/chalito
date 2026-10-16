@@ -103,6 +103,11 @@ export class PostgresRepo implements ApiRepo {
     return row ? toDevice(row) : null;
   }
 
+  async findDeviceById(deviceId: string) {
+    const [row] = await this.sql<DeviceRow[]>`select * from chalito.devices where device_id = ${deviceId}`;
+    return row ? toDevice(row) : null;
+  }
+
   async createDevice(owner: string, doc: DeviceDoc) {
     // device_id is unique across owners (derived from the device's keys).
     const rows = await insertDevice(this.sql, owner, doc, this.#authUser("device", doc.deviceId), true);

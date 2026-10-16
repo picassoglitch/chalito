@@ -232,30 +232,48 @@ export const pairingRoutes = (deps: Deps) => {
     const body = WithdrawPairingRequest.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return fail(400, "bad_request");
     const w = body.data.withdraw;
+    if (Math.abs(deps.now() - w.body.issuedAt) > deps.config.skewMs * 5) return fail(403, "not_this_computer");
+    const signedBy = async (pubSign: string) =>
+      (await verifyEnvelope(w, "chalito.pairing-withdraw.v1", new Map([[w.signerDeviceId, await fromB64url(pubSign)]])))
+        .ok;
+    /** Revokes the computer's device that a claim created (its own key asked). */
+    const revokeOwn = async (owner: string, deviceId: string) => {
+      const r = await deps.repo.revokeDevice(owner, deviceId, deps.now(), deviceId);
+      if (r === "revoked") await deps.identity.disableDevice(deviceId);
+    };
+    const audit = (owner: string | null, claimed: boolean) =>
+      deps.audit.record({
+        action: "pairing.withdrawn",
+        owner,
+        actor: w.signerDeviceId,
+        target: codeRef(w.body.codeId),
+        meta: { claimed },
+      });
+
     const found = await deps.repo.getPairingCode(w.body.codeId);
-    if (!found || found.doc.expiresAt <= deps.now()) return fail(404, "not_found");
-    const doc = found.doc;
-    if (w.signerDeviceId !== doc.agentDeviceId || Math.abs(deps.now() - w.body.issuedAt) > deps.config.skewMs * 5)
-      return fail(403, "not_this_computer");
-    const sig = await verifyEnvelope(
-      w,
-      "chalito.pairing-withdraw.v1",
-      new Map([[doc.agentDeviceId, await fromB64url(doc.glyph.body.issuerPubSign)]]),
-    );
-    if (!sig.ok) return fail(403, "not_this_computer");
-    if (!doc.claimed) {
-      await deps.repo.cancelPairingCode(doc.codeId);
-    } else if (doc.owner) {
-      const r = await deps.repo.revokeDevice(doc.owner, doc.agentDeviceId, deps.now(), doc.agentDeviceId);
-      if (r === "revoked") await deps.identity.disableDevice(doc.agentDeviceId);
+    // An open code: "Cancelar" cancels it. If a claim got in first, that claim's device goes instead.
+    if (found && !found.doc.claimed && found.doc.expiresAt > deps.now()) {
+      const doc = found.doc;
+      if (w.signerDeviceId !== doc.agentDeviceId || !(await signedBy(doc.glyph.body.issuerPubSign)))
+        return fail(403, "not_this_computer");
+      const res = await deps.repo.cancelPairingCode(doc.codeId);
+      if (res === "already_claimed") {
+        const now = (await deps.repo.getPairingCode(doc.codeId))?.doc;
+        if (now?.owner) await revokeOwn(now.owner, doc.agentDeviceId);
+        await audit(now?.owner ?? null, true);
+        return c.json({ ok: true });
+      }
+      await audit(null, false);
+      return c.json({ ok: true });
     }
-    await deps.audit.record({
-      action: "pairing.withdrawn",
-      owner: doc.owner,
-      actor: doc.agentDeviceId,
-      target: codeRef(doc.codeId),
-      meta: { claimed: doc.claimed },
-    });
+    // Claimed, or past its TTL (maybe already purged): keyed on the device the claim created, which
+    // only this computer's key can name. A late "No fui yo" still revokes it.
+    const dev = await deps.repo.findDeviceById(w.signerDeviceId);
+    if (!dev || dev.role !== "agent" || dev.enrolledVia !== "pairing") return fail(404, "not_found");
+    if (found && found.doc.agentDeviceId !== dev.deviceId) return fail(403, "not_this_computer");
+    if (!(await signedBy(dev.pubSign))) return fail(403, "not_this_computer");
+    await revokeOwn(dev.owner, dev.deviceId);
+    await audit(dev.owner, true);
     return c.json({ ok: true });
   });
 

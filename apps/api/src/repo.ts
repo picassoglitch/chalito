@@ -28,6 +28,8 @@ export interface ApiRepo {
 
   // ---- devices ----
   getDevice(owner: string, deviceId: string): Promise<DeviceDoc | null>;
+  /** A device by its id alone (ids are unique across owners): a computer withdrawing its own pairing. */
+  findDeviceById(deviceId: string): Promise<DeviceDoc | null>;
   /** Creates a device; "exists" if the id is taken. */
   createDevice(owner: string, doc: DeviceDoc): Promise<"created" | "exists">;
   touchDevice(owner: string, deviceId: string, at: number): Promise<void>;
