@@ -117,6 +117,15 @@ interface Paths {
 /** An 8.3 short name: at most 8 characters before `~N`, an extension of at most 3 (`PROGRA~1`, `.VSCOD~1`). */
 const SHORT_NAME = /^[^~.]?[^~]{0,7}~\d+(\.[^.~]{1,3})?$/;
 
+/** The git-hooks options a classification uses (the daemon passes the same to the repo index). */
+export const hooksOptionsFor = (ctx: Pick<ClassifyContext, "home" | "env" | "platform" | "gitFs">) => ({
+  home: ctx.home,
+  ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
+  ...(ctx.env ? { env: ctx.env } : {}),
+  platform: ctx.platform ?? process.platform,
+  ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
+});
+
 const pathsFor = (ctx: ClassifyContext): Paths => {
   // macOS and Windows file systems ignore case (and macOS stores names decomposed): compare there
   // on NFC, lower-cased paths, like workspaces.ts, so `~/.CLAUDE` is `~/.claude`.
@@ -134,13 +143,7 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   // git hooks, worked out by reading git's own files (never by running git), for every repo in or
   // around each workspace (repo-index.ts). Classification only reads the last completed index: no
   // folder walk, no per-repo stat here.
-  const hooksOpts = {
-    home: ctx.home,
-    ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
-    ...(ctx.env ? { env: ctx.env } : {}),
-    platform,
-    ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
-  };
+  const hooksOpts = hooksOptionsFor(ctx);
   const union = repoUnion(workspaces, hooksOpts);
   /**
    * Whether `abs` is part of how git runs hooks: any known repo's git dirs, config chain and hooks
@@ -169,6 +172,10 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     // Repos past the index's cap are known by root only: narrow fallback for them.
     const indexed = union.roots.find((r) => within(abs, r.root));
     if (indexed?.unknown) return narrow(indexed.root);
+    // A workspace whose first scan hasn't finished, or whose scan was cut short: other repos'
+    // hooksPath into this one may be unknown, so the narrow fallback applies on top.
+    const pending = [...union.missing, ...union.partial].find((w) => within(abs, w));
+    if (pending) return narrow(own?.root ?? indexed?.root ?? pending);
     return false;
   };
   const h = (rel: string) => real(join(ctx.home, rel));

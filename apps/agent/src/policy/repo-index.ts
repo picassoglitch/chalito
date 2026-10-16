@@ -205,17 +205,25 @@ const store = (ws: string, scan: RepoScanResult, around: string | null, max = SC
 /** Scans the workspaces (async) and keeps the result for the classifier. */
 export const refreshRepoIndex = async (
   workspaces: string[],
-  o: { max?: number; budget?: number } = {},
+  o: { max?: number; budget?: number; hooks?: HooksOptions } = {},
 ): Promise<void> => {
   for (const ws of workspaces) {
     const [scan, around] = await Promise.all([scanReposAsync(ws, o), enclosingRepo(ws)]);
     store(ws, scan, around, o.max);
   }
+  // The unions are built here, after the scan, not in a classification.
+  if (o.hooks) wanted.set(unionKey(workspaces, o.hooks), { workspaces, o: o.hooks });
+  buildUnions();
 };
 
 /** The same, synchronous: for tests and tools only, never the classify path. */
-export const refreshRepoIndexSync = (workspaces: string[], o: { max?: number; budget?: number } = {}): void => {
+export const refreshRepoIndexSync = (
+  workspaces: string[],
+  o: { max?: number; budget?: number; hooks?: HooksOptions } = {},
+): void => {
   for (const ws of workspaces) store(ws, scanReposSync(ws, o), enclosingRepoSync(ws), o.max);
+  if (o.hooks) wanted.set(unionKey(workspaces, o.hooks), { workspaces, o: o.hooks });
+  buildUnions();
 };
 
 interface UnionCache {
@@ -226,8 +234,9 @@ interface UnionCache {
   watched: string[];
   stamp: string;
   checkedAt: number;
+  /** A change was seen and a rebuild is queued: until it lands, every workspace counts as missing. */
+  stale?: boolean;
 }
-let unionCache: UnionCache | null = null;
 
 const mtime = (p: string) => {
   try {
@@ -301,19 +310,71 @@ const build = (workspaces: string[], o: HooksOptions): Omit<UnionCache, "key" | 
  * MTIME_CHECK_MS). A workspace without a completed scan triggers one in the background and counts
  * as missing meanwhile; nothing here walks folders.
  */
-export const repoUnion = (workspaces: string[], o: HooksOptions, now = Date.now()): RepoUnion => {
-  const key = `${workspaces.join("\0")}\0${o.home}\0${o.xdgConfigHome ?? ""}\0${JSON.stringify(o.env ?? {})}\0${o.platform ?? ""}`;
-  const c = unionCache;
-  if (c && c.key === key && c.version === version) {
-    if (now - c.checkedAt < MTIME_CHECK_MS) return c.union;
-    c.checkedAt = now;
-    if (c.watched.map(mtime).join(",") === c.stamp) return c.union;
+const unionKey = (workspaces: string[], o: HooksOptions) =>
+  `${workspaces.join("\0")}\0${o.home}\0${o.xdgConfigHome ?? ""}\0${JSON.stringify(o.env ?? {})}\0${o.platform ?? ""}`;
+
+/** What the classifier has asked for: rebuilt by the refreshes, never inside a classification. */
+const wanted = new Map<string, { workspaces: string[]; o: HooksOptions }>();
+const unions = new Map<string, UnionCache>();
+let rebuildQueued = false;
+
+/** Builds (or rebuilds) the unions for every request, from the current indexes. */
+const buildUnions = (keys?: string[], now = Date.now()) => {
+  for (const [key, w] of wanted) {
+    if (keys && !keys.includes(key)) continue;
+    unions.set(key, { key, version, checkedAt: now, ...build(w.workspaces, w.o) });
   }
+};
+
+/** Off the classify path: on the next turn of the event loop. */
+const queueRebuild = () => {
+  if (rebuildQueued) return;
+  rebuildQueued = true;
+  setImmediate(() => {
+    rebuildQueued = false;
+    buildUnions();
+  });
+};
+
+const EMPTY_SETS = { protectedKeys: new Set<string>(), chainKeys: new Set<string>() };
+
+/**
+ * The last finished union for these workspaces. It is built by the refreshes (scan done, or a
+ * watched file changed), never here: until one is ready every workspace counts as missing (narrow
+ * fallback in the classifier), and a change seen by the throttled mtime check only queues a rebuild.
+ */
+export const repoUnion = (workspaces: string[], o: HooksOptions, now = Date.now()): RepoUnion => {
+  const key = unionKey(workspaces, o);
+  if (!wanted.has(key)) wanted.set(key, { workspaces, o });
   const missingNow = workspaces.filter((w) => !indexes.has(w));
   if (missingNow.length) void refreshRepoIndex(missingNow).catch(() => undefined);
-  const built = build(workspaces, o);
-  unionCache = { key, version, checkedAt: now, ...built };
-  return built.union;
+  const c = unions.get(key);
+  if (!c) {
+    queueRebuild();
+    return {
+      hooksDirs: [],
+      gitDirs: [],
+      chain: new Set(),
+      roots: [],
+      partial: [],
+      missing: [...workspaces],
+      ...EMPTY_SETS,
+    };
+  }
+  if (!c.stale) {
+    if (c.version !== version) c.stale = true;
+    else if (now - c.checkedAt >= MTIME_CHECK_MS) {
+      if (c.watched.map(mtime).join(",") !== c.stamp) c.stale = true;
+      // No change: trust it for another interval. A change keeps checkedAt until the rebuild lands.
+      else c.checkedAt = now;
+    }
+  }
+  if (c.stale) {
+    queueRebuild();
+    // The old union still protects what it knew; the narrow fallback covers what may have changed.
+    return { ...c.union, missing: [...workspaces] };
+  }
+  return c.union;
 };
 
 /** How long a directory's repo lookup is trusted before it's checked again. */
@@ -383,6 +444,7 @@ export const clearRepoIndex = () => {
   indexes.clear();
   dirRepos.clear();
   repoHooks.clear();
-  unionCache = null;
+  unions.clear();
+  wanted.clear();
   version++;
 };
