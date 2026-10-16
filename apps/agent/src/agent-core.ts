@@ -40,7 +40,7 @@ import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
 import { publicReason } from "./command-result.js";
 import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
-import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
+import { COMPUTER_TOOL_PREFIX, ToolArgs, isToolName } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
 import { DeltaThrottle } from "./live/deltas.js";
 import type { LinkHost, LinkManager } from "./links/manager.js";
@@ -203,6 +203,9 @@ const REMOTE_ENABLE_ATTEMPT =
  * runs sessions through adapters, gates every tool call with local policy + signed
  * approvals, and reports typed, sealed events.
  */
+/** Adapters built on ACP (packages/adapters/src/acp): their tool calls are named from the agent's report. */
+const ACP_KINDS: ReadonlySet<AdapterKind> = new Set<AdapterKind>(["acp", "grok", "gemini"]);
+
 export class AgentCore {
   readonly sessions = new Map<string, Session>();
   /** Sessions without a process that a prompt or `session.resume` reopens (M16 A). */
@@ -868,7 +871,18 @@ export class AgentCore {
         permissionMode: input.permissionMode,
         ...(resume?.providerSessionId ? { resume: resume.providerSessionId } : {}),
         ...(computer
-          ? { mcpServers: { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } }
+          ? {
+              mcpServers: {
+                [computer.name]: {
+                  command: computer.command,
+                  args: computer.args,
+                  env: computer.env,
+                  // ACP names a call after this server only for a real tool with valid arguments.
+                  isTool: (tool: string, input: Record<string, unknown>) =>
+                    isToolName(tool) && ToolArgs[tool].safeParse(input).success,
+                },
+              },
+            }
           : {}),
         gate: this.#gate(session),
         askUser: async (q) => {
@@ -1127,6 +1141,23 @@ export class AgentCore {
         if (!r.allow) {
           s.card.blocker(`Control del equipo bloqueado (${r.reason})`);
           await this.#publishCard(s);
+          return r;
+        }
+        // An ACP agent only reports what a call is (its title and arguments), so the name is its
+        // word: each such call is asked about like any other tool, never allowed outright.
+        if (ACP_KINDS.has(s.adapter)) {
+          const outcome = await this.#approve(s, {
+            risk: "HIGH",
+            stepUp: true,
+            origin: call.origin,
+            details: {
+              toolName: call.toolName,
+              input: call.input,
+              reasons: ["computer control reported by an ACP agent"],
+            },
+          });
+          await this.#publishCard(s);
+          return outcome.allow ? { allow: true } : { allow: false, reason: outcome.reason };
         }
         return r;
       }

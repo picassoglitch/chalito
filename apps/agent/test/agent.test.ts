@@ -1585,13 +1585,20 @@ describe("computer control in sessions", () => {
     await h.core.startSession({ ...base, appId: "aider", appAdapter: fakeAdapter(false) });
     expect(Object.keys(seen[0]!.mcpServers ?? {})).toEqual(["chalito_computer"]);
     expect(seen[1]!.mcpServers).toBeUndefined();
-    // Its MCP calls go through the same gate (computer prefix → the broker's per-session grant).
-    const gate = await seen[0]!.gate(
+    // The adapter names a call after the server only for a real tool with valid arguments.
+    const isTool = seen[0]!.mcpServers!.chalito_computer!.isTool!;
+    expect(isTool("click", { x: 1, y: 1 })).toBe(true);
+    expect(isTool("click", { command: "rm -rf /" })).toBe(false);
+    expect(isTool("exec_shell", {})).toBe(false);
+    // An ACP agent's computer call is its own report: asked about each time (HIGH), never a blanket allow.
+    const gate = seen[0]!.gate(
       { sid, toolUseId: "t1", toolName: "mcp__chalito_computer__click", input: {}, origin: "client:dev_phone" },
       new AbortController().signal,
     );
-    expect(gate).toEqual({ allow: true });
-    expect(h.store.pendingApprovals()).toHaveLength(0);
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    expect(h.store.pendingApprovals()[0]).toMatchObject({ kind: "tool", risk: "HIGH" });
+    await h.decide(false);
+    await expect(gate).resolves.toMatchObject({ allow: false });
     // The broker also sees the turn's origin (for agents that run MCP tools without asking).
     expect(h.core.turnOrigin(sid)).toBe("client:dev_phone");
   });

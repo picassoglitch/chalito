@@ -58,6 +58,12 @@ export interface LocalMcpServer {
   command: string;
   args: string[];
   env: Record<string, string>;
+  /**
+   * Whether `tool` with `input` is one of this server's tools with valid arguments. An adapter
+   * that can only infer a call's server from what the agent reports (ACP titles) names a call
+   * after this server only when it holds; without it, such a call is never named as ours.
+   */
+  isTool?: (tool: string, input: Record<string, unknown>) => boolean;
 }
 
 export interface SessionStartOptions {
