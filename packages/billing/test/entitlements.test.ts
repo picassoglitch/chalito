@@ -73,9 +73,7 @@ describe("entitlements", () => {
   it("hub unlimited (admins) keeps managed brains on at any balance", () => {
     expect(ent({ hubTier: "pro", hubBalanceRemaining: 0, hubUnlimited: true }).managedAllowance.status).toBe("enabled");
     // Admins reach engines as VIP (hub launch-actions effectiveTier), never as Gratis.
-    expect(ent({ hubTier: "vip", hubBalanceRemaining: 0, hubUnlimited: true }).managedAllowance.status).toBe(
-      "enabled",
-    );
+    expect(ent({ hubTier: "vip", hubBalanceRemaining: 0, hubUnlimited: true }).managedAllowance.status).toBe("enabled");
   });
 
   it("a zero balance drops managed brains to free_min", () => {
