@@ -10,6 +10,7 @@ import { loadSettings } from "../lib/settings-local.js";
 import { PET_COSMETICS_REFRESH_MS, cosmeticsKey, watchCosmetics } from "./cosmetics.js";
 import type { CustomCardSource } from "@chalito/scene/custom-card";
 import { PetLook, QualityResolver } from "./look.js";
+import { CARD_WAIT_MS, loadLastDrawn, petCard, saveLastDrawn } from "./choice.js";
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
 const ROSTER_BASE = "/roster/";
@@ -40,13 +41,14 @@ const projectBounds = (obj: THREE.Object3D, camera: THREE.Camera) => {
  * gestures; auto settles from the renderer and a short probe. The equipped cosmetics (from
  * `cosmetics`, once the panel is signed in) are placed on the card as in a room. When the companion
  * wears the person's own custom character (`myCard`), that card is drawn instead of the roster one
- * (its anchors place the cosmetics); if it won't load, the roster card is.
+ * (its anchors place the cosmetics); if it won't load, the roster card is. Until it's known which
+ * one it wears, the neutral placeholder stays (see choice.ts): never one character, then another.
  */
 export const startPet = (
   canvas: HTMLCanvasElement,
   sh: DesktopShell,
   cosmetics: () => Promise<SceneCosmetic[] | null> = async () => null,
-  myCard: Pick<CustomCardSource, "subscribe" | "files" | "refresh"> | null = null,
+  myCard: Pick<CustomCardSource, "subscribe" | "getSnapshot" | "files" | "refresh"> | null = null,
 ) => {
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0);
@@ -94,11 +96,26 @@ export const startPet = (
     look?.setEmotion(tag);
   };
 
+  /** What this device drew last time: a returning pet shows its roster avatar without waiting. */
+  let last = loadLastDrawn();
+  let cardWaitOver = false;
+  const cardWait = setTimeout(() => {
+    cardWaitOver = true;
+    applySettings();
+  }, CARD_WAIT_MS);
+
   /** The slider and the companion come from the local settings the panel writes (any window). */
   const applySettings = () => {
     const s = loadSettings();
     applyLevel(quality.set(s.renderQuality));
-    const custom = myCard?.files() ?? null;
+    const choice = petCard({
+      avatar: s.avatar,
+      card: !myCard ? null : myCard.getSnapshot() === undefined ? undefined : myCard.files(),
+      gaveUp: cardWaitOver,
+      last,
+    });
+    if (choice.kind === "wait") return;
+    const custom = choice.kind === "custom" ? choice.files : null;
     const want = `${custom?.key ?? s.avatar}|${cosmeticsKey(wearing)}`;
     if (want === shown) return;
     shown = want;
@@ -106,6 +123,8 @@ export const startPet = (
     (custom ? loadCardAssets(ROSTER_BASE, custom, wearing).catch(roster) : roster()).then(
       (assets) => {
         if (want !== shown) return;
+        last = custom ? { kind: "custom" } : { kind: "roster", avatar: s.avatar };
+        saveLastDrawn(last);
         const next = new PetLook(assets, levelOf(quality.level));
         next.setEmotion(mood);
         if (look) {
@@ -192,6 +211,7 @@ export const startPet = (
 
   return () => {
     loop?.stop();
+    clearTimeout(cardWait);
     wear.stop();
     offCard?.();
     if (cardTimer) clearInterval(cardTimer);
