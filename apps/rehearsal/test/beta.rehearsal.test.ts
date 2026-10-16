@@ -347,7 +347,8 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
     const queued = await s.sql<{ id: string; message: { type: string; item?: { nid: string } } }[]>`
       select id, message from chalito_private.notify_outbox where owner = ${p.owner} order by id`;
     expect(queued.map((r) => r.message.type)).toContain("notify");
-    const row = queued.find((r) => r.message.type === "notify")!;
+    // The latest notify row is the approval's (pairing queued its own security alert earlier).
+    const row = [...queued].reverse().find((r) => r.message.type === "notify")!;
     net.server.listen({ onUnhandledFrame: "bypass" });
     expect((await notifier.poke(Number(row.id))).status).toBe(200);
     await waitFor(() => net.cap.push.some((x) => x.endpoint === sub.endpoint), 20_000, "the web push");
