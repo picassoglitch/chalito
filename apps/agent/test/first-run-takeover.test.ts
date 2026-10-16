@@ -760,3 +760,71 @@ describe("the AI tools' own config folders: never a workspace, writes CRITICAL",
     expect(await addWorkspace(d as never, "D:\\code\\app")).toMatchObject({ ok: true });
   });
 });
+
+describe("classifier parity: globs, case and redirected AppData", () => {
+  const ctxFor = (o: Partial<Parameters<typeof classifyToolCall>[2]> = {}) => ({
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: "/home/ana/code/app" }] },
+    home: "/home/ana",
+    cwd: "/home/ana/code/app",
+    realpath: (x: string) => x,
+    ...o,
+  });
+  const sh = (command: string, c = ctxFor()) => classifyToolCall("Bash", { command }, c);
+
+  it("a glob, brace or variable that can expand to ~/.aider* is persistence", () => {
+    for (const cmd of [
+      "cp evil.yml ~/.ai*",
+      "cp evil.yml ~/.aider$X",
+      "cp evil.yml ~/.aid{er.conf.yml,x}",
+      "cp evil.yml ~/.aide?.conf.yml",
+      "cp evil.yml ~/.aider.conf.yml",
+      "cp hook.sh /home/ana/.aider/x",
+    ]) {
+      const c = sh(cmd);
+      expect(c.tier, cmd).toBe("CRITICAL");
+      expect(c.reasons, cmd).toContain("startup file or PATH directory");
+    }
+    // A plain glob can't match a leading dot.
+    expect(sh("cp a.txt ~/notes/*").reasons).not.toContain("startup file or PATH directory");
+  });
+
+  it("macOS and Windows compare case-insensitively: ~/.CLAUDE/plugins and ~/.Codex are the real ones", () => {
+    const mac = ctxFor({ platform: "darwin" });
+    for (const f of [
+      "/home/ana/.CLAUDE/plugins/x/hooks.json",
+      "/home/ana/.Codex/config.toml",
+      "/home/ana/.Aider.conf.yml",
+    ]) {
+      const c = classifyToolCall("Write", { file_path: f, content: "x" }, mac);
+      expect(c.tier, f).toBe("CRITICAL");
+    }
+    expect(sh("cp x ~/.CLAUDE/commands/", mac).tier).toBe("CRITICAL");
+    // Linux is case-sensitive: a different folder.
+    expect(
+      classifyToolCall("Write", { file_path: "/home/ana/.CLAUDE/plugins/x", content: "x" }, ctxFor()).reasons,
+    ).not.toContain("startup file or PATH directory");
+  });
+
+  it("a redirected %APPDATA% / %LOCALAPPDATA% gets the same checks as the home-based one", () => {
+    const c = ctxFor({ env: { APPDATA: "/net/profiles/ana/Roaming", LOCALAPPDATA: "/data/local/ana" } });
+    for (const f of [
+      "/net/profiles/ana/Roaming/Claude/claude_desktop_config.json",
+      "/net/profiles/ana/Roaming/npm/claude.cmd",
+      "/net/profiles/ana/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/x.lnk",
+      "/data/local/ana/Microsoft/WindowsApps/python.exe",
+      "/data/local/ana/github-copilot/apps.json",
+    ]) {
+      const r = classifyToolCall("Write", { file_path: f, content: "x" }, c);
+      expect(r.tier, f).toBe("CRITICAL");
+      expect(r.reasons, f).toContain("startup file or PATH directory");
+    }
+    expect(classifyToolCall("Read", { file_path: "/net/profiles/ana/Roaming/Microsoft/Credentials/x" }, c).tier).toBe(
+      "CRITICAL",
+    );
+    // Without the env, those paths are just outside the workspace.
+    expect(
+      classifyToolCall("Write", { file_path: "/net/profiles/ana/Roaming/npm/claude.cmd", content: "x" }, ctxFor())
+        .reasons,
+    ).not.toContain("startup file or PATH directory");
+  });
+});

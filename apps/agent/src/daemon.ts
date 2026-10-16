@@ -228,7 +228,12 @@ export interface Daemon {
   store: AgentStore;
   policy: FilePolicyHolder;
   /** What the classifier treats as the agent's own binaries, protected files and Claude's PATH. */
-  classifyExtras(): { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
+  classifyExtras(): {
+    agentBinaries: string[];
+    protectedPaths: string[];
+    pathDirs: string[];
+    env?: Record<string, string | undefined>;
+  };
   stop(reason?: string): Promise<void>;
   readonly done: Promise<void>;
 }
@@ -682,6 +687,8 @@ const startDaemon = async (
       ...(agentBin ? [agentBin] : []),
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
+    // Windows folder redirection: the classifier checks AppData entries under the real roots too.
+    env: { APPDATA: env.APPDATA, LOCALAPPDATA: env.LOCALAPPDATA },
   });
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {
