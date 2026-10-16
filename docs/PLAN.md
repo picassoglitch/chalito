@@ -423,6 +423,8 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - Autostart and service install differ per OS and per Linux desktop.
   - Detecting CLIs across install methods (Homebrew, npm global, native installers).
   - The pairing-phishing residual risk (ADR 0028 §4).
+- **Follow-ups:**
+  - Windows has no OS prompt the agent can call before panel pairing (`os-auth.ts`): the panel's per-launch IPC secret and the local "Sí, fui yo" are the only local proof there. Add Windows Hello through `Windows.Security.Credentials.UI.UserConsentVerifier` from the desktop app (Tauri side) and require it for panel pairing, as macOS and Linux do with their system prompts.
 
 ## Protocol review (for the owner)
 Everything is in `packages/protocol/src`, and every wire object has `v: 1`:
@@ -489,3 +491,4 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 49 | **New (2026-10-16):** desktop api base | **Owner: `api.chalito.chalyb.com`** via DNS + Cloud Run domain mapping, run by the owner (amends ADR 0015's update) |
 | 50 | **New (2026-10-16):** autostart | **Owner: on by default**, with a switch in the panel and tray |
 | 51 | **New (2026-10-16):** pairing on a network mismatch | **Owner: allowed if the user types the short code** (enforced by `/claim`). Residual risk accepted: the attacker can send the code too; mitigations are the plain warning, the decline button and alerts to all devices. Block on mismatch was rejected (ADR 0028 §4) |
+| 52 | **New (2026-10-16):** what proves "same computer" for one-tap pairing | **Owner: the agent's loopback proof only** (127.0.0.1, hub origin, the api's single-use nonce for that browser, ADR 0028 §4). A public IP isn't proof (CGNAT, offices, cafés): it stays as warning text only. Without the proof the user types the short code |

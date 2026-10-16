@@ -11,7 +11,6 @@ import {
   type ComputerStatus,
   type DevModeChallenge,
   type DevModeState,
-  type PendingPairing,
   type PolicyView,
   type ScreenMode,
   type ScreenStatus,
@@ -37,35 +36,6 @@ const useAgent = <T,>(fetch: () => Promise<T>): [Load<T>, () => void] => {
 const Unavailable = () => {
   const t = useT();
   return <p className="muted">{t("security.unavailable")}</p>;
-};
-
-const ReverseCheck = ({ ipc }: { ipc: AgentIpc }) => {
-  const t = useT();
-  const fetch = useCallback(() => ipc.pendingPairing(), [ipc]);
-  const [p, reload] = useAgent<PendingPairing | null>(fetch);
-  return (
-    <section aria-labelledby="sec-pairing" data-section="pairing">
-      <h2 id="sec-pairing">{t("security.pairing.title")}</h2>
-      {p.state === "unavailable" && <Unavailable />}
-      {p.state === "error" && <p role="alert">{p.error}</p>}
-      {p.state === "ok" && !p.value && <p className="muted">{t("security.pairing.none")}</p>}
-      {p.state === "ok" && p.value && (
-        <div className="card">
-          <p>{t("security.pairing.compare", { label: p.value.label })}</p>
-          <code className="fingerprint">{p.value.fingerprint}</code>
-          {p.value.passkeyId && <p className="muted">{t("security.pairing.passkey", { id: p.value.passkeyId })}</p>}
-          <div className="row">
-            <button onClick={() => void ipc.confirmPairing(p.value!.pairingId, true).finally(reload)}>
-              {t("security.pairing.match")}
-            </button>
-            <button onClick={() => void ipc.confirmPairing(p.value!.pairingId, false).finally(reload)}>
-              {t("security.pairing.mismatch")}
-            </button>
-          </div>
-        </div>
-      )}
-    </section>
-  );
 };
 
 const Policy = ({ ipc }: { ipc: AgentIpc }) => {
@@ -454,7 +424,6 @@ export const Security = ({ ipc }: { ipc: AgentIpc }) => {
   return (
     <div className="stack">
       <p className="muted">{t("security.localOnly")}</p>
-      <ReverseCheck ipc={ipc} />
       <Policy ipc={ipc} />
       <DevMode ipc={ipc} />
       <Computer ipc={ipc} />

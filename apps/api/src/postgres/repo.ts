@@ -1,5 +1,6 @@
 import postgres, { type Sql, type TransactionSql } from "postgres";
 import type { DeviceDoc, DeviceRegistration, Endorsement, PairingCodeDoc } from "@chalito/protocol";
+import type { PairingNet } from "../lib/pairing-network.js";
 import type {
   ApiRepo,
   EndorseCodeRecord,
@@ -99,6 +100,11 @@ export class PostgresRepo implements ApiRepo {
   async getDevice(owner: string, deviceId: string) {
     const [row] = await this.sql<DeviceRow[]>`
       select * from chalito.devices where owner = ${owner} and device_id = ${deviceId}`;
+    return row ? toDevice(row) : null;
+  }
+
+  async findDeviceById(deviceId: string) {
+    const [row] = await this.sql<DeviceRow[]>`select * from chalito.devices where device_id = ${deviceId}`;
     return row ? toDevice(row) : null;
   }
 
@@ -311,8 +317,9 @@ export class PostgresRepo implements ApiRepo {
 
   // ---- pairing -----------------------------------------------------------------------
 
-  async createPairingCode(doc: PairingCodeDoc) {
+  async createPairingCode(doc: PairingCodeDoc, net?: PairingNet | null) {
     const rows = await this.sql`
+      with code as (
       insert into chalito.pairing_codes
         (code_id, short_code_hash, glyph, agent_device_id, kind, platform, claimed, owner,
          claimed_by_device_id, claimer_pub_sign, claimer_pub_box, expires_at, watch_auth_user_id)
@@ -321,8 +328,73 @@ export class PostgresRepo implements ApiRepo {
               ${doc.claimerPubSign}, ${doc.claimerPubBox}, ${ts(doc.expiresAt)},
               ${this.#authUser("pairing", doc.codeId)})
       on conflict (code_id) do nothing
-      returning code_id`;
+      returning code_id, expires_at),
+      net as (
+        insert into chalito_private.pairing_code_networks (code_id, family, net_hash, city, expires_at)
+        select code_id, ${net?.family ?? null}::smallint, ${net?.netHash ?? null}::text, ${net?.city ?? null}::text,
+               expires_at
+        from code where ${!!net}::boolean
+        returning code_id)
+      select code_id from code`;
     return rows.length ? ("created" as const) : ("exists" as const);
+  }
+
+  async getPairingCode(codeId: string) {
+    const [row] = await this.sql<
+      (PairingRow & { net_family: 4 | 6 | null; net_hash: string | null; net_city: string | null })[]
+    >`
+      select c.*, n.family as net_family, n.net_hash, n.city as net_city
+      from chalito.pairing_codes c
+      left join chalito_private.pairing_code_networks n on n.code_id = c.code_id
+      where c.code_id = ${codeId}`;
+    if (!row) return null;
+    const net: PairingNet | null =
+      row.net_family && row.net_hash ? { family: row.net_family, netHash: row.net_hash, city: row.net_city } : null;
+    return { doc: toPairingCode(row), net };
+  }
+
+  async recordPairingViewer(
+    codeId: string,
+    owner: string,
+    deviceId: string,
+    o: { typed?: boolean; nonce?: { hash: string; expiresAt: number } } = {},
+  ) {
+    const typed = o.typed ?? false;
+    const nonceHash = o.nonce?.hash ?? null;
+    const nonceAt = o.nonce ? ts(o.nonce.expiresAt) : null;
+    await this.sql`
+      insert into chalito_private.pairing_code_viewers (code_id, owner, device_id, typed, nonce_hash, nonce_expires_at)
+      values (${codeId}, ${owner}, ${deviceId}, ${typed}, ${nonceHash}, ${nonceAt})
+      on conflict (code_id, owner, device_id) do update set
+        typed = pairing_code_viewers.typed or excluded.typed,
+        nonce_hash = coalesce(excluded.nonce_hash, pairing_code_viewers.nonce_hash),
+        nonce_expires_at = case when excluded.nonce_hash is null then pairing_code_viewers.nonce_expires_at
+                                else excluded.nonce_expires_at end`;
+  }
+
+  async getPairingViewer(codeId: string, owner: string, deviceId: string) {
+    const [row] = await this.sql<{ typed: boolean }[]>`
+      select typed from chalito_private.pairing_code_viewers
+      where code_id = ${codeId} and owner = ${owner} and device_id = ${deviceId}`;
+    return row ? { typed: row.typed } : null;
+  }
+
+  async takePairingNonce(codeId: string, owner: string, deviceId: string, nonceHash: string, now: number) {
+    const rows = await this.sql`
+      update chalito_private.pairing_code_viewers set nonce_hash = null, nonce_expires_at = null
+      where code_id = ${codeId} and owner = ${owner} and device_id = ${deviceId}
+        and nonce_hash = ${nonceHash} and nonce_expires_at > ${ts(now)}
+      returning 1`;
+    return rows.length > 0;
+  }
+
+  async cancelPairingCode(codeId: string) {
+    const [row] = await this.sql<{ claimed: boolean }[]>`
+      update chalito.pairing_codes set cancelled = cancelled or not claimed
+      where code_id = ${codeId}
+      returning claimed`;
+    if (!row) return "not_found" as const;
+    return row.claimed ? ("already_claimed" as const) : ("cancelled" as const);
   }
 
   async findPairingCodeByShortHash(shortCodeHash: string) {
@@ -356,6 +428,7 @@ export class PostgresRepo implements ApiRepo {
       const [row] = await tx<PairingRow[]>`select * from chalito.pairing_codes where code_id = ${codeId} for update`;
       if (!row) return { ok: false as const, reason: "not_found" as const };
       if (row.claimed) return { ok: false as const, reason: "already_claimed" as const };
+      if (row.cancelled) return { ok: false as const, reason: "cancelled" as const };
       // `build` may throw: the transaction rolls back and the error propagates.
       const agent = await build(toPairingCode(row));
       if (await deviceIdTaken(tx, agent.deviceId)) return { ok: false as const, reason: "device_exists" as const };
@@ -531,6 +604,7 @@ interface PairingRow {
   claimer_pub_sign: string | null;
   claimer_pub_box: string | null;
   claimer_webauthn_binding?: unknown;
+  cancelled?: boolean;
   expires_at: Date;
 }
 
@@ -574,6 +648,7 @@ const toPairingCode = (r: PairingRow): PairingCodeDoc => ({
   claimerPubSign: r.claimer_pub_sign,
   claimerPubBox: r.claimer_pub_box,
   claimerWebauthnBinding: (r.claimer_webauthn_binding ?? null) as PairingCodeDoc["claimerWebauthnBinding"],
+  cancelled: r.cancelled ?? false,
   expiresAt: r.expires_at.getTime(),
 });
 

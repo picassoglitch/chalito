@@ -381,6 +381,8 @@ export const runApiRepoContract = (
         expect(res).toEqual({ ok: true, agentDeviceId: code.agentDeviceId });
         expect(seen).toMatchObject(code);
         expect(await repo.getDevice(o, code.agentDeviceId)).toEqual(agent);
+        expect(await repo.findDeviceById(code.agentDeviceId)).toEqual(agent);
+        expect(await repo.findDeviceById("dev_nobody_here_at_all_x")).toBeNull();
         expect(await repo.findPairingCodeByShortHash(code.shortCodeHash)).toMatchObject({
           claimed: true,
           owner: o,
@@ -393,6 +395,50 @@ export const runApiRepoContract = (
           ok: false,
           reason: "already_claimed",
         });
+      });
+
+      it("hand-off: the network record comes back with the code; decline cancels and blocks the claim", async () => {
+        const repo = await makeRepo();
+        const o = await seededOwner(repo);
+        const code = await pairingCode();
+        const net = { family: 4 as const, netHash: "a".repeat(64), city: "Guadalajara" };
+        expect(await repo.getPairingCode(code.codeId)).toBeNull();
+        expect(await repo.cancelPairingCode(code.codeId)).toBe("not_found");
+        await repo.createPairingCode(code, net);
+        expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: false }, net });
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_phone")).toBeNull();
+        const nonce = { hash: "b".repeat(64), expiresAt: Date.now() + 60_000 };
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone", { nonce });
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone", { typed: true }); // keeps the nonce
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone"); // typed sticks
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_phone")).toEqual({ typed: true });
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_tablet")).toBeNull();
+        // The nonce: only this client's, only its hash, only once, only before it expires.
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_tablet", nonce.hash, Date.now())).toBe(false);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", "c".repeat(64), Date.now())).toBe(false);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", nonce.hash, nonce.expiresAt + 1)).toBe(false);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", nonce.hash, Date.now())).toBe(true);
+        expect(await repo.takePairingNonce(code.codeId, o, "dev_phone", nonce.hash, Date.now())).toBe(false);
+        expect(await repo.cancelPairingCode(code.codeId)).toBe("cancelled");
+        expect(await repo.getPairingViewer(code.codeId, o, "dev_phone")).toBeNull(); // dropped on decline
+        expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: true }, net: null });
+        const claim = {
+          owner: o,
+          claimedByDeviceId: "dev_phone",
+          claimerPubSign: "ps",
+          claimerPubBox: "pb",
+          claimedAt: 1,
+        };
+        expect(await repo.claimPairingCode(code.codeId, claim, () => agentFor(code, o, "dev_phone"))).toEqual({
+          ok: false,
+          reason: "cancelled",
+        });
+        // A code created without a network record has none; a claimed one can't be declined.
+        const other = await pairingCode();
+        await repo.createPairingCode(other);
+        expect((await repo.getPairingCode(other.codeId))?.net).toBeNull();
+        await repo.claimPairingCode(other.codeId, claim, () => agentFor(other, o, "dev_phone"));
+        expect(await repo.cancelPairingCode(other.codeId)).toBe("already_claimed");
       });
 
       it("a throwing build aborts the claim and writes nothing", async () => {

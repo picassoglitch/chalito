@@ -91,13 +91,10 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
   return {
     calls,
     ping: async () => ({ version: "test" }),
-    pendingPairing: async () => ({
-      pairingId: "p1",
-      label: "Pixel 9",
-      fingerprint: "ab12 cd34 ef56",
-      passkeyId: "AbCdEf…wxyz",
-      expiresAt: Date.now() + 60_000,
-    }),
+    startPairing: async () => {
+      throw new Error("already_paired");
+    },
+    pendingPairing: async () => null,
     confirmPairing: async (...a) => void calls.push(["confirmPairing", ...a]),
     policy: async () => ({
       seq: 7,
@@ -231,16 +228,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(6));
-  });
-
-  it("reverse check: shows the phone's fingerprint and sends the local verdict", async () => {
-    const ipc = fakeIpc();
-    renderPanel({ initialTab: "security", ipc }, "en");
-    expect(await screen.findByText("ab12 cd34 ef56")).toBeTruthy();
-    expect(screen.getByText(/Pixel 9/)).toBeTruthy();
-    fireEvent.click(screen.getByText("They don't match"));
-    await waitFor(() => expect(ipc.calls).toContainEqual(["confirmPairing", "p1", false]));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(5));
   });
 
   it("policy view shows the chain head and rules", async () => {

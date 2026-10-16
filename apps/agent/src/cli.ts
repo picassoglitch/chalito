@@ -39,6 +39,7 @@ import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { osAuthFor, type StatFn } from "./os-auth.js";
 import { runPair } from "./pair.js";
+import { runPairingHost } from "./pairing-host.js";
 import { FilePolicyHolder, parsePolicyYaml, policyToYaml } from "./policy-file.js";
 import { appsTighterOrEqual, isTighterOrEqual, policyHash } from "./policy/index.js";
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
@@ -65,6 +66,8 @@ export interface CliIo {
   execPath: string;
   tmpdir: string;
   daemon?: (deps: DaemonDeps) => Promise<Daemon>;
+  /** `chalito run` before pairing, from the desktop app (tests stub it). */
+  pairingHost?: typeof runPairingHost;
   pairWatcher?: PairingWatcher;
   /** Injected in tests: how OS-auth helpers (/usr/bin/pkexec, osascript) are checked for root ownership. */
   osStat?: StatFn;
@@ -512,6 +515,31 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
         try {
           // Started by the desktop app: its per-launch IPC secret is the first line on stdin.
           const ipcSecret = io.env.CHALITO_IPC === "stdin" ? await readIpcSecret(io.tty.input) : null;
+          // Not paired yet and started by the desktop app: serve the panel's pairing only (ADR 0028 §3).
+          if (ipcSecret && !(cfg && isPaired(cfg))) {
+            await (io.pairingHost ?? runPairingHost)({
+              dir: ensureChalitoDir(dir),
+              secret: ipcSecret,
+              pair: {
+                dir: ensureChalitoDir(dir),
+                env: io.env,
+                secrets,
+                fetch: io.fetch,
+                // Windows has no OS prompt the agent can call (os-auth.ts); there the panel's
+                // per-launch IPC secret and its local "Sí, fui yo" are the local proof.
+                osAuth:
+                  io.platform === "win32"
+                    ? { verify: async () => true }
+                    : osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+                now: io.now,
+                platform: io.platform,
+                ...(io.pairWatcher ? { watcher: io.pairWatcher } : {}),
+                ...(io.hostname ? { hostname: io.hostname } : {}),
+              },
+              platform: io.platform,
+            });
+            return 0;
+          }
           d = await (io.daemon ?? runDaemon)({
             home: io.home,
             env: io.env,

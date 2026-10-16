@@ -86,30 +86,31 @@ The ceremony of ADR 0006 is kept: key-bound code, fingerprint shown on both side
    - The panel shows the device name, the computer's fingerprint and the glyph.
    - The IPC pairing stub becomes real. The existing `pendingPairing` (`ipc-handlers.ts:168`, today always `null`) and `confirmPairing` (`:169`) are implemented, and one new `startPairing` is added. The panel's existing pairing check uses them.
 2. **Hand-off to the browser.**
-   - The panel opens `https://www.chalyb.com/app/chalito/computadoras/aprobar#c=<codeId>` in the default browser.
-   - The fragment carries the **codeId (or the signed glyph) only, never the short code**. The short code stays on the computer's screen as the out-of-band proof (§4).
+   - The panel opens `https://www.chalyb.com/app/chalito/computadoras/aprobar#c=<codeId>&p=<port>` in the default browser. `p` is the agent's loopback port (§4).
+   - The fragment carries the **codeId (and the loopback port) only, never the short code**. The short code stays on the computer's screen as the out-of-band proof (§4).
    - A fragment never reaches server logs or `Referer`.
-   - The user is already signed into the hub there, or signs in. The fragment must **survive the hub sign-in redirect**: the screen stashes it in `sessionStorage` before redirecting and restores it after, because fragments aren't sent to the server and the hub's `next` parameter alone would drop it.
+   - The user is already signed into the hub there, or signs in. The fragment must **survive the hub sign-in redirect**: the hub sign-in page stashes it in `sessionStorage` (same tab only) and the approval screen restores it, because fragments aren't sent to the server and the hub's `next` parameter alone would drop it. The page then strips the fragment from the address bar (`history.replaceState`), and the hub's analytics strip any `#…` from event URLs.
    - No code is typed on the same machine.
 3. **Browser: "Aprobar computadora"** (new hub screen). It shows:
    - the computer's name and OS;
    - the computer's fingerprint as both the colour glyph and the short words, labelled "Debe coincidir con lo que ves en tu computadora";
    - the requester's coarse network signal (§4).
 
-   The screen reads that from `GET /v1/pairing/codes/:codeId` (new). Its rule matches `/resolve` today (`routes/pairing.ts:60`), because an unclaimed code has no owner yet:
+   The screen reads that from `POST /v1/pairing/handoff` (new; a POST so the code id never sits in a URL). Its rule matches `/resolve`, because an unclaimed code has no owner yet:
    - any signed-in client (`requireAuth(["client"])`);
    - rate-limited;
-   - unclaimed and unexpired codes only, otherwise 404;
-   - no short code and no keys in the answer.
+   - unclaimed, undeclined and unexpired codes only, otherwise the same 404;
+   - no short code and no keys in the answer except the computer's glyph;
+   - it records this client as having opened the code, and returns a fresh **single-use nonce** (256 bits, 2 minutes, stored as a hash) for the loopback proof (§4).
 
-   One button, **"Aprobar"**, does the WebAuthn step-up and signs the claim (`POST /v1/pairing/claim`). The claim's ceremony is unchanged, but **the route changes**: it compares the claimer's public IP with the one recorded at `/codes`, and on a mismatch it **rejects the claim unless it carries the short-code proof** (§4). The rule is enforced server-side, not only by the screen.
+   One button, **"Aprobar"**, does the WebAuthn step-up and signs the claim (`POST /v1/pairing/claim`). The claim's ceremony is unchanged, but **the route changes** (§4): one tap needs the agent's **loopback proof** over this client's nonce; otherwise the claim must carry the **short code** typed from the computer, or this client typed it earlier at `/resolve` (so `chalito pair` + typed-code clients keep working). The rule is enforced server-side, not only by the screen. Claimed, declined, expired and unknown codes all answer the same 404.
 
-   Next to it is **"No estoy frente a esa computadora"**. That calls `POST /v1/pairing/decline` (new), which burns the code and records a security event (§4). It follows the same rule as the read route (any client, unclaimed and unexpired codes only), with **its own rate limit**.
+   Next to it is **"No estoy frente a esa computadora"**. That calls `POST /v1/pairing/decline` (new), which burns the code and records a security event (§4). Only a client that opened the code (`/handoff` or `/resolve`) may decline it, with a per-client and a per-code limit.
 
    The screen reuses the hub's `AddDevice.tsx` (code entry, camera scan, fingerprint compare, passkey approve) rather than a new component.
 
    If this browser isn't a trusted client yet and the account has **no** devices, the same screen first runs `Activate` (passkey plus recovery code), so the first device and the first computer happen in one flow. If the account already has devices and this browser isn't one of them, the screen sends the user to endorse it first (ADR 0018). It never approves from an untrusted browser.
-4. **Reverse check on the computer.** The panel shows the approving browser's fingerprint (or a phone's) next to "¿Lo aprobaste tú desde *Chrome en esta Mac*?" with **"Sí, fui yo"** and "No". This replaces the terminal y/N. The trusted list is written only after "Sí" (ADR 0006 step 5, unchanged).
+4. **Reverse check on the computer.** The panel shows the approving browser's fingerprint (or a phone's) next to "¿Lo aprobaste tú desde *Chrome en esta Mac*?" with **"Sí, fui yo"** and "No". This replaces the terminal y/N. The trusted list is written only after "Sí" (ADR 0006 step 5, unchanged). "Cancelar" while waiting and "No fui yo" burn the code server-side through `POST /v1/pairing/withdraw`, signed with the key the computer published at `/codes`; after a claim, "No fui yo" revokes the device that claim created.
 5. **From another device:** the panel's glyph is scannable by a phone's `/computadoras/aprobar` camera view, with the short code as the fallback. That keeps the "my laptop, approved from my phone" path, also without typing.
 6. `chalito pair` stays for headless machines and prints the same `/computadoras/aprobar` link.
 
@@ -120,14 +121,16 @@ The new risk is **pairing phishing**, the device-code-phishing pattern: an attac
 
 **The exposure is larger than "content the victim chooses to send".** Phase D's checklist actively guides a new user to paste API keys and pick a folder for "your computer". A phished user would be walked into sealing their provider keys to the attacker's machine. Mitigations:
 - **The approval says what it is approving.** The screen names the computer and asks the user to match the fingerprint "on your computer's screen". A victim who isn't sitting at that computer has nothing to match.
-- **Network check.**
-  - The api records the public IP and coarse location of the `pairing/codes` request.
-  - When the claim comes from a different public IP, the screen switches to a **warning state**: "Esta computadora está en otra red (<ciudad aproximada>)". The one-tap button is replaced by typing the short code shown on the computer, and `/claim` refuses a mismatched claim without it.
-  - Same network, which is the normal case after a hand-off from the same machine, keeps one tap.
+- **One tap only on the same computer (owner decision #52, 2026-10-16).** A public IP proves nothing (CGNAT, offices, cafés), so it no longer gates anything.
+  - While a code waits, the unpaired agent serves `http://127.0.0.1:<port>/pairing/proof` (first free port of 47810–47814; the port travels in the fragment). It accepts only an exact `Origin` of the hub (`https://www.chalyb.com`; a local or preview hub only in non-release builds), a loopback `Host` (DNS rebinding), small bodies, a rate limit, and answers CORS and Chrome's Private Network Access preflight (`Access-Control-Allow-Private-Network: true`).
+  - The approval page sends `{codeId, nonce}` there, with the nonce `/handoff` issued to this client. The agent signs (code id, nonce, origin) with the key it registered at `/codes`, only for the code it is waiting on. The page forwards the proof to `/claim`, which checks the signature against the code's registered key, the origin, and consumes the nonce issued to **that same client** (single use, 2-minute TTL).
+  - A link can't carry a ready-made proof: the nonce belongs to the approving browser's own session.
+  - **No proof** (a phone, another browser, Safari blocking loopback, the agent not running): the user types the short code shown on the computer. `pairingApproval` stays the single decision function.
+  - The public network and coarse city are still recorded and compared, as **warning text only**: "Esta computadora está en otra red". Every link-opened approval that isn't loopback-proven shows the phishing warning.
 - **A visible way out:** "No estoy frente a esa computadora" declines in one tap, burns the code, and records `pairing.declined` in the server audit.
 - **Rate and TTL unchanged:** a 5-minute single-claim code, and the `/codes` rate limit.
 - **IP and location are kept only as long as needed.**
-  - They're stored on the pairing code row with the code's TTL, then purged by the existing pairing-code cleanup. Only the claimed computer's coarse city is kept, for the alert.
+  - Only a keyed hash of the network (IPv4 address or IPv6 /64) and a coarse city, in a server-only table, dropped on claim, decline, expiry and after 24 hours at most.
   - The requester's IP is read through the api's existing `clientIp` helper (`@chalito/guard`, as in `apps/api/src/lib/rate-limit.ts`), so it honours the same trusted-proxy rules.
   - The agent's pairing **watch token** (`mintPairingWatch`, `routes/pairing.ts:49`) must not be able to read these columns. RLS or a column grant limits it to what it reads today.
 - **Visible afterwards.** Every pairing raises an alert on all the account's devices ("Se conectó la computadora *X*"), with one-tap revoke (existing revoke path).
@@ -139,10 +142,12 @@ The exposure is content the victim sends to that computer, including keys the se
 - **The cloud is still not a root of trust.** A compromised api could serve a fake fingerprint on the approval screen. The reverse check on the computer (step 4) still stops it from making the computer trust the wrong browser. This is the same argument as ADR 0006.
 
 `docs/THREAT_MODEL.md` gains a row under §4.5 ("Pairing phishing via hand-off link") with the mitigations above.
-- **Api tests** pin the server-side mismatch rule: one-tap on the same network, rejected without the short code on a mismatch, decline burns the code.
-- **pgTAP** pins only the data side: watch-token access to the new columns, and the purge.
+- **Api tests** pin the server-side rule: one tap only with a valid loopback proof (forged proof, wrong nonce, reused nonce, another client's nonce and another origin are refused), the typed-code fallback, decline bound to a client that opened the code, withdraw by the computer, and the shared 404. Agent tests pin the loopback endpoint (origin, Host, preflight, limits).
+- **pgTAP** pins only the data side: watch-token access to the new tables, the nonce hash, and the purge.
 
 **Owner decision #51 (2026-10-16): a network mismatch is allowed if the user types the short code.** The `/claim` route enforces that.
+
+**Owner decision #52 (2026-10-16), superseding #51's one-tap rule:** the same public IP is not proof. One tap only when the approving browser is proven to run on the computer itself (the loopback proof above); everyone else types the code. IP and city are warning text only.
 
 **Residual risk accepted:** the attacker can send the short code too, so a determined phishing victim can still approve the attacker's computer. The mitigations we rely on are:
 - the plain warning on the approval screen;

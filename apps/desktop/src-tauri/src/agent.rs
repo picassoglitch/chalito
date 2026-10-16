@@ -2,7 +2,9 @@
 //!
 //! Release builds ship the agent as a sidecar next to the app's own binary. The supervisor
 //! starts it once this computer is paired (`~/.chalito/config.json` names an owner and a
-//! device; the agent itself checks the signature), restarts it with backoff when it crashes,
+//! device; the agent itself checks the signature), and before that only to serve the panel's
+//! "Conectar esta computadora" (ADR 0028 §3; the agent exits once paired and is started again
+//! as the real agent). It restarts it with backoff when it crashes,
 //! and stops it when the app quits. It never starts a second agent: `chalito run` exits 75
 //! when one is already running (e.g. the OS service), and 78 when a setup step is missing
 //! (Claude Code not pinned), in which case it waits for the config to change.
@@ -169,15 +171,20 @@ impl Supervisor {
     fn run(&self, bin: &Path, home: &Path, log_dir: &Path) {
         let mut attempt = 0u32;
         while !self.quitting() {
-            if !is_paired(home) {
+            let paired = is_paired(home);
+            // Before pairing the agent only runs when the panel can talk to it (it holds the secret).
+            if !paired && self.inner.secret.is_none() {
                 self.set(Status::NotPaired);
                 if self.sleep(UNPAIRED_POLL) {
                     break;
                 }
                 continue;
             }
+            // Not paired yet: `chalito run` serves only the panel's "Conectar esta computadora"
+            // (apps/agent/src/pairing-host.ts) and exits once paired; the loop then starts it again
+            // as the real agent. The panel keeps seeing `not_paired` meanwhile.
             let started = Instant::now();
-            let code = match self.spawn_and_wait(bin, log_dir) {
+            let code = match self.spawn_and_wait(bin, log_dir, !paired) {
                 Ok(code) => code,
                 Err(_) => None,
             };
@@ -207,7 +214,11 @@ impl Supervisor {
                 }
                 AfterExit::Restart(d) => {
                     attempt = attempt.saturating_add(1);
-                    self.set(Status::Restarting { exit_code: code, retry_in_ms: d.as_millis() as u64 });
+                    self.set(if paired {
+                        Status::Restarting { exit_code: code, retry_in_ms: d.as_millis() as u64 }
+                    } else {
+                        Status::NotPaired
+                    });
                     if self.sleep(d) {
                         break;
                     }
@@ -218,7 +229,7 @@ impl Supervisor {
     }
 
     /// Runs `chalito-agent run` and waits for it; `None` when it was killed by a signal.
-    fn spawn_and_wait(&self, bin: &Path, log_dir: &Path) -> std::io::Result<Option<i32>> {
+    fn spawn_and_wait(&self, bin: &Path, log_dir: &Path, pairing: bool) -> std::io::Result<Option<i32>> {
         let log = open_log(log_dir)?;
         let mut cmd = Command::new(bin);
         cmd.arg("run").stdout(log.try_clone()?).stderr(log);
@@ -240,7 +251,7 @@ impl Supervisor {
             use std::io::Write;
             let _ = stdin.write_all(format!("{secret}\n").as_bytes());
         }
-        self.set(Status::Running { pid: child.id() });
+        self.set(if pairing { Status::NotPaired } else { Status::Running { pid: child.id() } });
         if let Ok(mut c) = self.inner.child.lock() {
             *c = Some(child);
         }
@@ -372,7 +383,8 @@ mod tests {
         assert_eq!(fs::metadata(dir.join("agent.log")).unwrap().len(), 0);
     }
 
-    /// The whole loop against a fake agent script: unpaired → running → crash → restart; stop().
+    /// The whole loop against a fake agent script: unpaired (the agent runs for the panel's
+    /// pairing, then exits paired) → running → crash → restart; stop().
     #[cfg(unix)]
     #[test]
     fn supervises_a_fake_agent() {
@@ -380,23 +392,29 @@ mod tests {
         let home = tmp("loop-home");
         let logs = tmp("loop-logs");
         let bin = home.join("chalito-agent");
-        // Counts its runs and records the stdin secret; the first exits 1 (a crash), later ones
-        // stay up until SIGTERM.
+        let cfg = config_path(&home);
+        fs::write(home.join("paired.json"), r#"{"owner":"u1","deviceId":"d1"}"#).unwrap();
+        // Counts its runs and records the stdin secret. Run 1 is the pairing host: it "pairs"
+        // (writes config.json) and exits 0. Run 2 crashes (exit 1); later runs stay up until SIGTERM.
         let script = format!(
-            "#!/bin/sh\nread s; echo \"$CHALITO_IPC $s\" > '{}'\necho run >> '{}'\n[ $(wc -l < '{}') -eq 1 ] && exit 1\nwhile :; do sleep 0.1; done\n",
-            home.join("secret").display(),
-            home.join("runs").display(),
-            home.join("runs").display()
+            "#!/bin/sh\nread s; echo \"$CHALITO_IPC $s\" > '{secret}'\necho run >> '{runs}'\nn=$(wc -l < '{runs}')\n\
+             if [ $n -eq 1 ]; then sleep 0.4; mkdir -p '{dir}'; cp '{paired}' '{cfg}'; exit 0; fi\n\
+             [ $n -eq 2 ] && exit 1\nwhile :; do sleep 0.1; done\n",
+            secret = home.join("secret").display(),
+            runs = home.join("runs").display(),
+            dir = cfg.parent().unwrap().display(),
+            paired = home.join("paired.json").display(),
+            cfg = cfg.display(),
         );
         fs::write(&bin, script).unwrap();
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
 
         let sup = Supervisor::start(Some(bin), home.clone(), logs, Some("ab".repeat(32)));
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(150));
+        // The pairing host is running, and the panel still sees "not paired".
         assert_eq!(sup.status(), Status::NotPaired);
+        assert_eq!(fs::read_to_string(home.join("runs")).unwrap().lines().count(), 1);
 
-        fs::create_dir_all(home.join(".chalito")).unwrap();
-        fs::write(config_path(&home), r#"{"owner":"u1","deviceId":"d1"}"#).unwrap();
         let until = Instant::now() + Duration::from_secs(20);
         let mut saw_restart = false;
         loop {
@@ -408,9 +426,31 @@ mod tests {
             assert!(Instant::now() < until, "no restart: {:?}", sup.status());
             std::thread::sleep(Duration::from_millis(20));
         }
+        // "Running" is set when the child starts, before the script records its run.
+        let runs = || fs::read_to_string(home.join("runs")).map_or(0, |s| s.lines().count());
+        let settle = Instant::now() + Duration::from_secs(5);
+        while runs() < 3 && Instant::now() < settle {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         sup.stop();
         assert_eq!(sup.status(), Status::Stopped);
-        assert_eq!(fs::read_to_string(home.join("runs")).unwrap().lines().count(), 2);
+        assert_eq!(runs(), 3);
         assert_eq!(fs::read_to_string(home.join("secret")).unwrap().trim(), format!("stdin {}", "ab".repeat(32)));
+    }
+
+    /// Without the panel's secret (no window to pair from) an unpaired computer runs nothing.
+    #[cfg(unix)]
+    #[test]
+    fn without_the_secret_an_unpaired_computer_runs_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tmp("nosecret-home");
+        let bin = home.join("chalito-agent");
+        fs::write(&bin, format!("#!/bin/sh\necho run >> '{}'\n", home.join("runs").display())).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        let sup = Supervisor::start(Some(bin), home.clone(), tmp("nosecret-logs"), None);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(sup.status(), Status::NotPaired);
+        assert!(!home.join("runs").exists());
+        sup.stop();
     }
 }

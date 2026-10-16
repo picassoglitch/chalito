@@ -336,7 +336,8 @@ export const createStack = () => {
       p.phone.deviceId,
       p.phone.sign.secretKey,
     );
-    const claimed = await call("/v1/pairing/claim", { claim }, p.phone.token);
+    // Typed from the computer's screen: no loopback proof in the rehearsal (ADR 0028 §4).
+    const claimed = await call("/v1/pairing/claim", { claim, shortCode: published.json.shortCode }, p.phone.token);
     if (claimed.status !== 200) throw new Error(`claim ${claimed.status} ${JSON.stringify(claimed.json)}`);
     return { glyph, shortCode: String(published.json.shortCode), device: await deviceSession(p.owner, agent) };
   };

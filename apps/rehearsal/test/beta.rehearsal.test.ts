@@ -141,10 +141,11 @@ describe.skipIf(!READY)("2. pair a desktop agent with the glyph", () => {
     const other = await keys();
     const { signGlyph } = await import("@chalito/glyph");
     const g = await signGlyph(
-      { ...glyph.body, codeId: `code_x${Date.now()}`, issuerPubSign: other.pubSign, issuerPubBox: other.pubBox },
+      { ...glyph.body, codeId: `code_x${Date.now()}_second`, issuerPubSign: other.pubSign, issuerPubBox: other.pubBox },
       other.sign.secretKey,
     );
-    expect((await s.call("/v1/pairing/codes", { glyph: g, kind: "laptop", platform: "linux" })).status).toBe(201);
+    const second = await s.call("/v1/pairing/codes", { glyph: g, kind: "laptop", platform: "linux" });
+    expect(second.status).toBe(201);
     const claim = await signEnvelope(
       "chalito.pairing-claim.v1",
       {
@@ -159,7 +160,9 @@ describe.skipIf(!READY)("2. pair a desktop agent with the glyph", () => {
       p.phone.deviceId,
       p.phone.sign.secretKey,
     );
-    expect((await s.call("/v1/pairing/claim", { claim }, p.phone.token)).json.error).toBe("fingerprint_mismatch");
+    expect(
+      (await s.call("/v1/pairing/claim", { claim, shortCode: second.json.shortCode }, p.phone.token)).json.error,
+    ).toBe("fingerprint_mismatch");
   });
 });
 
@@ -344,7 +347,8 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
     const queued = await s.sql<{ id: string; message: { type: string; item?: { nid: string } } }[]>`
       select id, message from chalito_private.notify_outbox where owner = ${p.owner} order by id`;
     expect(queued.map((r) => r.message.type)).toContain("notify");
-    const row = queued.find((r) => r.message.type === "notify")!;
+    // The latest notify row is the approval's (pairing queued its own security alert earlier).
+    const row = [...queued].reverse().find((r) => r.message.type === "notify")!;
     net.server.listen({ onUnhandledFrame: "bypass" });
     expect((await notifier.poke(Number(row.id))).status).toBe(200);
     await waitFor(() => net.cap.push.some((x) => x.endpoint === sub.endpoint), 20_000, "the web push");
@@ -429,9 +433,14 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
     net.server.listen({ onUnhandledFrame: "bypass" });
     expect((await notifier.drainNotify()).status).toBe(200);
     net.server.close();
-    const left = await s.sql<{ status: string }[]>`
-      select status from chalito_private.notify_outbox where owner = ${p.owner}`;
-    expect(left.every((r) => r.status === "sent")).toBe(true);
+    // The approval's notification and its ack (the pairing's own security alert has its own ladder).
+    const left = await s.sql<{ status: string; message: { item?: { coalesceKey?: string } } }[]>`
+      select status, message from chalito_private.notify_outbox where owner = ${p.owner}`;
+    expect(
+      left
+        .filter((r) => !(r.message.item?.coalesceKey ?? "").startsWith("security:pairing:"))
+        .every((r) => r.status === "sent"),
+    ).toBe(true);
   });
 });
 

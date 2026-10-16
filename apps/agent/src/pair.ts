@@ -6,11 +6,18 @@ import {
   fingerprint,
   fromB64url,
   randomNonce,
+  signEnvelope,
   verifyWebAuthnBinding,
   type WebAuthnCredentialRef,
 } from "@chalito/crypto";
 import { signGlyph } from "@chalito/glyph";
-import { CreatePairingCodeResponse, PAIRING_TTL_MS, PairingCodeDoc } from "@chalito/protocol";
+import {
+  CreatePairingCodeResponse,
+  PAIRING_TTL_MS,
+  PairingCodeDoc,
+  pairingApproveUrl,
+  type GlyphPayload,
+} from "@chalito/protocol";
 import { postJson, supabasePairingWatcher, type FetchFn, type PairingWatcher } from "./cloud.js";
 import { createEphemeralAuth, exchangeTokenHash } from "./device-auth.js";
 import { ConfigTamperedError, readConfig, writeConfig } from "./config.js";
@@ -21,8 +28,9 @@ import { TrustStore } from "./trust-store.js";
 
 const COPY = {
   es: {
-    code: (c: string) =>
-      `\nEn tu teléfono, abre Chalito → Agregar computadora y escanea el glifo o escribe:\n\n    ${c}\n\n`,
+    code: (c: string, url: string) =>
+      `\nAbre este enlace en un navegador con tu cuenta de Chalito y aprueba esta computadora:\n\n    ${url}\n\n` +
+      `Si te lo pide (otra red), escribe este código:\n\n    ${c}\n\n`,
     thisFp: (fp: string) => `Huella de esta computadora: ${fp}\n`,
     expires: (min: number) => `El código vence en ${min} minutos. Esperando a tu teléfono…\n`,
     claimed: (fp: string) => `\nTu teléfono reclamó esta computadora. Huella del teléfono:\n\n    ${fp}\n\n`,
@@ -34,6 +42,7 @@ const COPY = {
     rejected:
       "No se agregó nada. Si no reconoces ese teléfono, revoca esta computadora desde un teléfono de confianza.\n",
     expired: "El código venció. Ejecuta `chalito pair` otra vez.\n",
+    declined: "Alguien rechazó este código desde el navegador. No se emparejó nada.\n",
     authFailed: "La autenticación del sistema falló. No se emparejó nada.\n",
     replaceWarn: (from: string | null, to: string) =>
       `\nATENCIÓN: esto reemplaza la cuenta de esta computadora (${from ?? "desconocida"} → ${to}) y borra los teléfonos de confianza actuales.\n`,
@@ -41,7 +50,9 @@ const COPY = {
     replacePhrase: "REEMPLAZAR",
   },
   en: {
-    code: (c: string) => `\nOn your phone, open Chalito → Add computer and scan the glyph or type:\n\n    ${c}\n\n`,
+    code: (c: string, url: string) =>
+      `\nOpen this link in a browser signed in to Chalito and approve this computer:\n\n    ${url}\n\n` +
+      `If it asks (another network), type this code:\n\n    ${c}\n\n`,
     thisFp: (fp: string) => `This computer's fingerprint: ${fp}\n`,
     expires: (min: number) => `The code expires in ${min} minutes. Waiting for your phone…\n`,
     claimed: (fp: string) => `\nYour phone claimed this computer. Phone fingerprint:\n\n    ${fp}\n\n`,
@@ -52,6 +63,7 @@ const COPY = {
     paired: "Done: this computer trusts your phone. Install the service with `chalito service install`.\n",
     rejected: "Nothing was added. If you don't recognise that phone, revoke this computer from a trusted phone.\n",
     expired: "The code expired. Run `chalito pair` again.\n",
+    declined: "Someone declined this code from the browser. Nothing was paired.\n",
     authFailed: "OS authentication failed. Nothing was paired.\n",
     replaceWarn: (from: string | null, to: string) =>
       `\nWARNING: this replaces this computer's account (${from ?? "unknown"} → ${to}) and removes the current trusted phones.\n`,
@@ -77,7 +89,30 @@ export interface PairDeps {
   hostname?: string;
   platform?: NodeJS.Platform;
   kind?: "desktop" | "laptop";
+  /** Where the approval screen lives (CHALITO_WEB_BASE, default the hub's /app/chalito). */
+  webBase?: string;
+  /** Progress for a GUI (the desktop panel, pairing-host.ts); the CLI only prints. */
+  onCode?: (code: PairingCodeShown) => void;
+  onClaimed?: (claimer: { fingerprint: string; passkeyId: string | null }) => void;
+  /** Stops waiting for the claim (the panel's "Cancelar"). */
+  signal?: AbortSignal;
+  /** The pairing loopback's port (pairing-loopback.ts), put in the link's fragment for one tap. */
+  loopbackPort?: number;
 }
+
+/** What the computer shows while it waits: never sent anywhere but the local screen. */
+export interface PairingCodeShown {
+  codeId: string;
+  shortCode: string;
+  /** This computer's fingerprint, as the approval screen shows it. */
+  fingerprint: string;
+  label: string;
+  approveUrl: string;
+  expiresAt: number;
+  glyph: GlyphPayload;
+}
+
+export const DEFAULT_WEB_BASE = "https://www.chalyb.com/app/chalito";
 
 /** A short, human-comparable form of a credential id (the phone shows the same). */
 export const shortPasskeyId = (credentialId: string) =>
@@ -85,7 +120,11 @@ export const shortPasskeyId = (credentialId: string) =>
 
 export type PairResult =
   | { ok: true; owner: string; deviceId: string; phoneDeviceId: string }
-  | { ok: false; reason: "expired" | "rejected_locally" | "bad_claim" | "os_auth_failed" | "replace_declined" };
+  | {
+      ok: false;
+      reason:
+        "expired" | "declined" | "cancelled" | "rejected_locally" | "bad_claim" | "os_auth_failed" | "replace_declined";
+    };
 
 const PLATFORMS: Partial<Record<NodeJS.Platform, "linux" | "windows" | "macos">> = {
   linux: "linux",
@@ -145,11 +184,31 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
       platform,
     }),
   );
-  deps.out(c.code(created.shortCode));
+  const webBase = deps.webBase ?? deps.env?.CHALITO_WEB_BASE ?? DEFAULT_WEB_BASE;
+  const approveUrl = pairingApproveUrl(webBase, glyph.body.codeId, deps.loopbackPort);
+  /**
+   * "Cancelar" or "No fui yo": burn the code on the server too (signed with this computer's key),
+   * so it can't be claimed later, and a claim that already happened loses its device. Best effort.
+   */
+  const withdraw = async () => {
+    const body = { v: 1 as const, codeId: glyph.body.codeId, issuedAt: now() };
+    const w = await signEnvelope("chalito.pairing-withdraw.v1", body, id.deviceId, id.sign.secretKey);
+    await postJson(deps.fetch, `${base.apiBase}/v1/pairing/withdraw`, { withdraw: w }).catch(() => undefined);
+  };
+  deps.out(c.code(created.shortCode, approveUrl));
   deps.out(c.thisFp(id.fingerprint));
   deps.out(c.expires(Math.round((created.expiresAt - now()) / 60_000)));
+  deps.onCode?.({
+    codeId: glyph.body.codeId,
+    shortCode: created.shortCode,
+    fingerprint: id.fingerprint,
+    label: glyph.body.label,
+    approveUrl,
+    expiresAt: created.expiresAt,
+    glyph,
+  });
 
-  // Wait for the claim (event-driven), or the code's expiry.
+  // Wait for the claim (event-driven), a decline from the browser, a local cancel, or expiry.
   const sb = base.supabase;
   const watcher =
     deps.watcher ??
@@ -159,20 +218,34 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
         ? { exchange: (h: string) => exchangeTokenHash(createEphemeralAuth(sb.url, sb.publishableKey), h) }
         : {}),
     });
-  let onClaim!: (d: PairingCodeDoc | null) => void;
-  const claim = new Promise<PairingCodeDoc | null>((resolve) => (onClaim = resolve));
-  const expiry = setTimeout(() => onClaim(null), Math.max(0, created.expiresAt - now()));
+  type Outcome = PairingCodeDoc | "expired" | "declined" | "cancelled";
+  let onClaim!: (d: Outcome) => void;
+  const claim = new Promise<Outcome>((resolve) => (onClaim = resolve));
+  const expiry = setTimeout(() => onClaim("expired"), Math.max(0, created.expiresAt - now()));
+  const onAbort = () => onClaim("cancelled");
+  if (deps.signal?.aborted) onAbort();
+  deps.signal?.addEventListener("abort", onAbort, { once: true });
   const watching = watcher.watch(created.watchToken, glyph.body.codeId, (data) => {
     const parsed = PairingCodeDoc.safeParse(data);
     if (parsed.success && parsed.data.claimed) onClaim(parsed.data);
+    else if (parsed.success && parsed.data.cancelled) onClaim("declined");
   });
-  const claimed = await Promise.race([claim, watching.then(() => claim)]).finally(() => clearTimeout(expiry));
+  const outcome = await Promise.race([claim, watching.then(() => claim)]).finally(() => {
+    clearTimeout(expiry);
+    deps.signal?.removeEventListener("abort", onAbort);
+  });
   await watching.then((stop) => stop()).catch(() => undefined);
 
-  if (!claimed) {
+  if (outcome === "expired" || outcome === "cancelled") {
+    if (outcome === "cancelled") await withdraw();
     deps.out(c.expired);
-    return { ok: false, reason: "expired" };
+    return { ok: false, reason: outcome };
   }
+  if (outcome === "declined") {
+    deps.out(c.declined);
+    return { ok: false, reason: "declined" };
+  }
+  const claimed = outcome;
 
   // The doc must describe THIS device and carry a phone key that matches its device id.
   const { owner, claimedByDeviceId, claimerPubSign, claimerPubBox } = claimed;
@@ -203,9 +276,12 @@ export const runPair = async (deps: PairDeps): Promise<PairResult> => {
     }
     passkey = check.credential;
   }
-  deps.out(c.claimed(await fingerprint(await fromB64url(claimerPubSign))));
+  const claimerFp = await fingerprint(await fromB64url(claimerPubSign));
+  deps.out(c.claimed(claimerFp));
   deps.out(passkey ? c.passkey(shortPasskeyId(passkey.credentialId)) : c.noPasskey);
+  deps.onClaimed?.({ fingerprint: claimerFp, passkeyId: passkey ? shortPasskeyId(passkey.credentialId) : null });
   if (!(await deps.confirm(c.confirm))) {
+    await withdraw();
     deps.out(c.rejected);
     return { ok: false, reason: "rejected_locally" };
   }

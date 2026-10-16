@@ -62,10 +62,15 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
   const clients: Db[] = [];
   let OWNER = "";
 
-  const call = async (path: string, body: unknown, bearer?: string) => {
+  /** The computer and the phone share a home network unless a test says otherwise (ADR 0028 §4). */
+  const call = async (path: string, body: unknown, bearer?: string, ip = "203.0.113.7") => {
     const res = await api.request(path, {
       method: "POST",
-      headers: { "content-type": "application/json", ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": ip,
+        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
+      },
       body: JSON.stringify(body),
     });
     const text = await res.text();
@@ -327,8 +332,30 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
         phoneId,
         phone.sign.secretKey,
       );
+      // The hand-off view: a single-use nonce for the loopback proof, never the short code. The
+      // network is warning text only; this phone already typed the code at /resolve above.
+      const view = await call("/v1/pairing/handoff", { codeId: glyph.body.codeId }, phoneToken, "198.51.100.9");
+      expect(view.json).toMatchObject({ network: "different", approval: "code_required", codeTyped: true });
+      expect(view.json.loopbackNonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(JSON.stringify(view.json)).not.toContain(shortCode);
+      const net = await sql`select family, net_hash from chalito_private.pairing_code_networks
+                            where code_id = ${glyph.body.codeId}`;
+      expect(net).toHaveLength(1);
+      expect(net[0]!.net_hash).not.toContain("203.0.113");
+      const viewer = await sql`select typed, nonce_hash from chalito_private.pairing_code_viewers
+                               where code_id = ${glyph.body.codeId}`;
+      expect(viewer).toEqual([{ typed: true, nonce_hash: expect.stringMatching(/^[0-9a-f]{64}$/) }]);
+
       const t0 = Date.now();
       expect((await call("/v1/pairing/claim", { claim }, phoneToken)).status).toBe(200);
+      // Claimed: the network record is gone, and the account heard about the new computer.
+      expect(
+        await sql`select 1 from chalito_private.pairing_code_networks where code_id = ${glyph.body.codeId}`,
+      ).toHaveLength(0);
+      expect(
+        await sql`select source from chalito.notifications
+                  where owner = ${OWNER} and coalesce_key = ${`security:pairing:${agent.deviceId}`}`,
+      ).toEqual([{ source: "security" }]);
       expect((await claimedSeen) - t0).toBeLessThan(2000);
       // Reverse check material: the desktop reads the phone's key from its watched row.
       const { data } = await watchDb
@@ -337,7 +364,8 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
         .eq("code_id", glyph.body.codeId)
         .single();
       expect(data).toEqual({ claimer_pub_sign: phone.pubSign, owner: OWNER });
-      expect((await call("/v1/pairing/claim", { claim }, phoneToken)).json.error).toBe("already_claimed");
+      // A claimed code answers the same 404 as an unknown one.
+      expect((await call("/v1/pairing/claim", { claim }, phoneToken)).json.error).toBe("not_found");
     });
 
     it("the agent gets its own credential by signing a one-time challenge; replays fail", async () => {
@@ -377,14 +405,17 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
       const g = await signGlyph(
         {
           ...glyph.body,
-          codeId: `code_x${Date.now()}`,
+          codeId: `code_x${Date.now()}_second_code`,
           issuerPubSign: other.pubSign,
           issuerPubBox: other.pubBox,
           nonce: await randomNonce(),
         },
         other.sign.secretKey,
       );
-      expect((await call("/v1/pairing/codes", { glyph: g, kind: "desktop", platform: "macos" })).status).toBe(201);
+      const created = await call("/v1/pairing/codes", { glyph: g, kind: "desktop", platform: "macos" });
+      expect(created.status).toBe(201);
+      // Typed from the computer's screen (no loopback proof here): what the api asks for.
+      const shortCode2 = created.json.shortCode as string;
       const claimBody = {
         v: 1 as const,
         owner: OWNER,
@@ -395,7 +426,9 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
         issuedAt: clock,
       };
       const wrongFp = await signEnvelope("chalito.pairing-claim.v1", claimBody, phoneId, phone.sign.secretKey);
-      expect((await call("/v1/pairing/claim", { claim: wrongFp }, phoneToken)).json.error).toBe("fingerprint_mismatch");
+      expect((await call("/v1/pairing/claim", { claim: wrongFp, shortCode: shortCode2 }, phoneToken)).json.error).toBe(
+        "fingerprint_mismatch",
+      );
 
       clock += 6 * 60_000;
       const late = await signEnvelope(
@@ -404,7 +437,7 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
         phoneId,
         phone.sign.secretKey,
       );
-      expect((await call("/v1/pairing/claim", { claim: late }, phoneToken)).status).toBe(410);
+      expect((await call("/v1/pairing/claim", { claim: late, shortCode: shortCode2 }, phoneToken)).status).toBe(404);
       // Re-signing the expired glyph with a later timestamp is impossible without the agent key.
       expect((await call("/v1/pairing/codes", { glyph: g, kind: "desktop", platform: "macos" })).status).toBe(400);
     });

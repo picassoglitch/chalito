@@ -10,6 +10,8 @@ import {
   generateDeviceKeys,
   publicKeys,
   resolveShortCode,
+  pairingHandoff,
+  declinePairing,
   revokeDevice,
   signDeviceRegistration,
   type ApiClient,
@@ -158,5 +160,39 @@ describe("endorse a new browser, revoke a device", () => {
       ["dev_b", { type: "device.revokeClient", clientDeviceId: "dev_lostphone_xxxxxxxxxx" }],
     ]);
     for (const c of cmds) expect(SignedCommand.safeParse(c).success).toBe(true);
+  });
+});
+
+describe("hand-off pairing (ADR 0028 §3)", () => {
+  it("resolves the link's code id to a verified glyph plus what approving needs", async () => {
+    const agent = await generateDeviceKeys();
+    const g = await agentGlyph(agent);
+    const view = {
+      glyph: g,
+      kind: "laptop",
+      platform: "macos",
+      expiresAt: NOW + 4 * 60_000,
+      network: "different",
+      approval: "code_required",
+      city: "Guadalajara",
+    };
+    const { api, calls } = fakeApi({ "/v1/pairing/handoff": () => view });
+    const r = await pairingHandoff(api, "code_abcdefgh", NOW + 1000);
+    expect(calls[0]).toEqual({ path: "/v1/pairing/handoff", body: { codeId: "code_abcdefgh" } });
+    expect(r.view).toMatchObject({ approval: "code_required", city: "Guadalajara" });
+    expect(r.scan.state).toBe("ready");
+  });
+
+  it("a claim carries the typed short code only when given; decline posts the code id", async () => {
+    const agent = await generateDeviceKeys();
+    const phone = await generateDeviceKeys();
+    const g = await agentGlyph(agent);
+    expect(await buildPairingClaim(phone, { owner: "u1", glyph: g, now: NOW })).not.toHaveProperty("shortCode");
+    expect(await buildPairingClaim(phone, { owner: "u1", glyph: g, now: NOW, shortCode: "7K3M-QX9P" })).toMatchObject({
+      shortCode: "7K3M-QX9P",
+    });
+    const { api, calls } = fakeApi({ "/v1/pairing/decline": () => ({ ok: true }) });
+    await declinePairing(api, "code_abcdefgh");
+    expect(calls).toEqual([{ path: "/v1/pairing/decline", body: { codeId: "code_abcdefgh" } }]);
   });
 });

@@ -50,6 +50,8 @@ describe("api route limits (M15)", () => {
       "POST /v1/avatar/creations",
       "POST /v1/pairing/resolve",
       "POST /v1/pairing/claim",
+      "POST /v1/pairing/handoff",
+      "POST /v1/pairing/decline",
       "POST /v1/endorse/resolve",
       "POST /v1/recovery/start",
       "POST /v1/phone/start",

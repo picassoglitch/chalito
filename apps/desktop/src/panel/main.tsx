@@ -1,5 +1,6 @@
 import { StrictMode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Snapshot } from "@chalito/client";
 import type { PhoneVerifier } from "@chalito/ui";
 import { TextProviders, detectLocale } from "../lib/i18n.js";
@@ -130,6 +131,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       phoneVerifier={offlinePhoneVerifier}
       updates={updates}
       localAgent={agentApi}
+      openUrl={(url) => openUrl(url)}
     />
   );
 };
