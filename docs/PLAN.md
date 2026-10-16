@@ -55,6 +55,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 | M14 Downloadable apps | Code-complete, owner-gated | [#16](https://github.com/picassoglitch/chalito/pull/16) | updater key, Apple, Azure, the publish go (Phase 9) | D-011, D-061 |
 | M15 Hardening + docs | Code-complete (on `all` via `m15-hardening`, no separate PR), owner-gated | — | the 1k load test, legal review (Phase 10) | D-060 |
 | M16 Chalito Link (ADR 0022) | In progress (owner go 2026-10-15): A efficiency, B link format, C links, D connect, E LAN | per phase | A2A server domain (#36), TURN relay (#37) | — |
+| First Run (ADR 0028) | Proposed (docs, 2026-10-16); ships before M17 | per phase | `api.` domain mapping (#49), Apple secrets, updater key, releases.tf, the publish go | — |
 
 **Security fixes from the beta review** (`docs/reviews/beta-security-review.md`): [#17](https://github.com/picassoglitch/chalito/pull/17) R-C1 (critical), [#18](https://github.com/picassoglitch/chalito/pull/18) R-H2, [#19](https://github.com/picassoglitch/chalito/pull/19) R-L12 adapters env, [#20](https://github.com/picassoglitch/chalito/pull/20) R-M1 + revoke guard. The other findings were fixed on `all` in M15 (batches 2–3) and by the review owners.
 
@@ -291,6 +292,125 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - The A2A server is externally visible and TURN costs money; both need the owner's go.
   - **No browser automation of chat websites.**
 
+### First Run (ADR 0028): installers, pairing without a terminal, autostart, guided setup
+- **Why:** a new user today can activate one browser and reach Mesas, but can't get to a paired computer, a connected AI or a first task.
+  - Nothing is downloadable (no release, `/releases/*/latest.json` 404, `/descargar` strings missing on hub `main`).
+  - No screen claims a `chalito pair` code.
+  - About eight setup steps need a terminal.
+  - The built api base `api.chalito.chalyb.com` doesn't resolve.
+- **Order:** before M17 (owner, 2026-10-16). One branch and PR per phase. A and B in parallel, then C, then D. We stop for "go" after each.
+- **Where the UI lives:** the live screens are the hub port in the Chalyb repo:
+  - pages in `src/app/[locale]/(dashboard)/app/chalito/`
+  - components in `src/components/tools/chalito/`
+  - strings in `src/lib/chalito/messages/{es,en}.json`
+
+  `chalito/apps/web` is not what users see. Hub changes go in Chalyb PRs with the owner's go.
+
+#### A `fr-a-installers`: installers you can download
+- **Repos:** chalito (CI, desktop config, docs) and the hub (`/descargar`).
+- **Files likely touched:**
+  - `.github/workflows/release.yml` (api base stays `https://api.chalito.chalyb.com`; the stable channel refuses unsigned Windows);
+  - `apps/desktop/src-tauri/tauri.conf.json` (CSP, updater endpoint);
+  - `apps/desktop/scripts/release/*`;
+  - `infra/terraform/envs/dev/releases.tf` (unchanged, applied by the owner);
+  - hub: the Descargar page and component, plus `src/lib/chalito/messages/{es,en}.json`. Merge or cherry-pick `chalito.download` from the unmerged hub branch `origin/claude/audit-hub-chalito`.
+- **AC:**
+  - `/descargar` detects macOS, Windows or Linux and shows one primary button, with the others below.
+  - The Windows SmartScreen step is explained while Windows is unsigned.
+  - Checksums are shown.
+  - A dry run of `release.yml` builds all three OSes with real account wiring, labelled correctly.
+  - The first beta release installs and signs in on macOS (signed and notarized), Windows (unsigned, beta) and Linux (AppImage and deb).
+  - The installed app's updater finds `latest.json` through `api.chalito.chalyb.com`.
+- **Tests:**
+  - Unit tests for OS detection and manifest parsing on the hub page.
+  - A hub test that `/descargar` renders every string (no raw keys).
+  - A CI check that the CSP and updater hosts equal `CHALITO_API_BASE`.
+  - A manual three-OS install check, written up in `docs/QA_PLAN.md`.
+- **Owner-only:**
+  - The DNS record for `api.chalito.chalyb.com` and the Cloud Run domain mapping to service `chalito` (Search Console verification of `chalyb.com` if needed).
+  - Apple secrets (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_PRIVATE_KEY`).
+  - The updater key secrets plus `TAURI_UPDATER_PUBKEY`.
+  - `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` repository variables.
+  - `releases.tf` apply, plus `CHALITO_RELEASES_BUCKET`/`SIGNER` on the api.
+  - The tag, then reviewing the draft, then publishing (`docs/OPS.md` §10 step 6).
+
+#### B `fr-b-pairing`: pairing a computer with no terminal
+- **Repos:** chalito (agent IPC, desktop panel, api) and the hub (approval screen).
+- **Files likely touched:**
+  - `apps/agent/src/ipc-handlers.ts` (real `pairing.start|status|confirm`, replacing the stub at 162-171);
+  - `apps/agent/src/pair.ts` (shared ceremony, used by CLI and IPC);
+  - `apps/desktop/src/panel/` (a new "Conectar esta computadora" view with glyph, fingerprint and reverse-check buttons; `GlyphView.tsx`, `Security.tsx`, `SignIn.tsx`);
+  - `apps/desktop/src-tauri` (open the hand-off URL);
+  - `apps/api/src/routes/pairing.ts` (record the requester's public IP and coarse location on `codes`; return a network-match flag to the claimer);
+  - `packages/protocol` (an optional pairing hand-off field, `v` stays 1);
+  - one Chalito migration plus pgTAP for the new pairing-code columns (**numbers from the coordinator**);
+  - hub: the new `/computadoras/aprobar` page (code from the URL fragment, or a camera scan, or typing as the fallback), reusing `Activate` for a first-ever device and endorsement for an untrusted browser.
+- **AC:**
+  - From a fresh install, the computer is paired with no terminal and no typing on the same machine: "Conectar esta computadora", then "Aprobar" with a passkey in the browser, then "Sí, fui yo" in the panel.
+  - The fingerprint is shown on both sides.
+  - A first-ever account activates its browser and pairs its computer in one flow.
+  - A browser that isn't trusted can't approve.
+  - A claim from a different public IP than the requester gets the warning state and must type the short code.
+  - Every pairing alerts all the account's devices.
+  - `chalito pair` still works and prints the approval link.
+- **Tests:**
+  - agent: IPC pairing tests, including reverse check "No" writes nothing;
+  - api: same-network one-tap vs. mismatch requires the code, expired or claimed refused, rate limit;
+  - pgTAP for the new columns and RLS;
+  - hub: unit and Playwright tests for the approval screen (fragment never sent to the server);
+  - a rehearsal run of the full ceremony (`scripts/e2e-phone.ts` path, updated);
+  - a new `docs/THREAT_MODEL.md` §4.5 row "Pairing phishing via hand-off link" and its pinning test.
+- **Owner-only:** none beyond the hub PR go.
+
+#### C `fr-c-takeover`: leave the PC on and Chalito takes over
+- **Repos:** chalito (desktop and agent).
+- **Files likely touched:**
+  - `apps/desktop/src-tauri/Cargo.toml` and `capabilities` (`tauri-plugin-autostart`), plus the Rust setup and tray menu;
+  - `apps/desktop/src/panel/Settings.tsx` (autostart switch, Avanzado → CLI on PATH);
+  - `src-tauri/src/agent.rs` (installs the OS service after pairing, with one confirmation; keeps the supervisor until it runs);
+  - agent service definitions (D-005);
+  - a new agent IPC `adapters.detect` / `adapters.pin` (same checks as `chalito <x> pin`);
+  - `apps/desktop/src/panel/Apps.tsx` ("Usar" next to each detected CLI; "se actualizó: confirmar" after a hash change);
+  - a new IPC `policy.addWorkspace` from the OS folder picker (a local signed policy change).
+- **AC:**
+  - After install and pairing, a reboot brings Chalito back in the tray, with the agent online and no terminal.
+  - Turning autostart off sticks.
+  - Installed claude, codex, grok, gemini, aider, copilot-cli and cursor-cli are detected and pinned with one click each.
+  - A self-updated binary asks to re-confirm.
+  - A workspace folder is chosen from a picker and "Espacio de trabajo" in New Session lists it.
+  - A remote client can't pin a binary or add a workspace without the local confirmation.
+- **Tests:**
+  - agent unit tests for detection paths per OS, pin refusal cases (world-writable, hash change), and `policy.addWorkspace` signing;
+  - desktop panel tests (`apps/desktop/test/panel.test.tsx`);
+  - Rust tests for the autostart toggle;
+  - the manual three-OS reboot check in `docs/QA_PLAN.md`.
+- **Owner-only:** none.
+
+#### D `fr-d-guided`: a setup that is actually guided
+- **Repos:** the hub (screens and strings) and chalito (panel checklist, agent state report).
+- **Files likely touched:**
+  - hub: `Home.tsx`, `Onboarding.tsx`, a new `SetupChecklist`, `Devices.tsx`, the New Session empty state, `ConnectProviders.tsx`, and `src/lib/chalito/messages/{es,en}.json`;
+  - chalito: the agent presence payload (pinned adapters and workspace count; no paths), and the desktop panel checklist.
+- **AC:**
+  - The checklist (Cuenta, Este navegador, Computadora, Una IA, Carpeta, Primera tarea) reads only real state and can't be marked done by hand.
+  - It shows on Inicio and in the panel until all green.
+  - `/bienvenida` skips go to "later", never "done".
+  - The first task runs a LOW-tier summary in the chosen folder.
+  - `/dispositivos` with no computer shows "Aún no conectas una computadora" plus Descargar.
+  - The jargon is replaced or explained, per ADR 0028 §6, in ES and EN.
+- **Tests:**
+  - hub unit tests for checklist state derivation, plus a Playwright happy path on a fresh account (the hub's Playwright gets its first Chalito spec);
+  - the brand lint on the new copy;
+  - an agent test that the presence payload carries no paths.
+- **Owner-only:** none beyond the hub PR go.
+
+- **Risks:**
+  - Cloud Run domain mapping is Preview. The fallback is a global external ALB, which costs money monthly (owner's go).
+  - Windows SmartScreen while unsigned.
+  - Autostart and service install differ per OS and per Linux desktop.
+  - Detecting CLIs across install methods (Homebrew, npm global, native installers).
+  - The pairing-phishing residual risk (ADR 0028 §4).
+
 ## Protocol review (for the owner)
 Everything is in `packages/protocol/src`, and every wire object has `v: 1`:
 
@@ -338,7 +458,7 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 21 | Bundle `claude` binary | Accepted: use the user's install |
 | 22 | Domain | **Owner: `chalito.chalyb.com`**; owner is checking own Chalito domains |
 | 23 | Stripe entity | **Owner: no Stripe** (moot) |
-| 24 | Windows signing | **Pending** |
+| 24 | Windows signing | **Owner (2026-10-16): unsigned for internal/beta, then Azure Artifact Signing before the public launch** (OV certificate if not eligible; ADR 0028) |
 | 25 | Front door | **Owner: Vercel** (ADR 0015) |
 | 26 | Codex ChatGPT plan | **Owner: make it work.** Official SIWC, `owner_only` until OpenAI approves (D-003) |
 | 27 | Grok Build login | **Owner: on** (D-022) |
@@ -352,3 +472,6 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 35 | **New (2026-10-15):** M16 order | **Owner: all phases A–E** (no browser automation) |
 | 36 | **New:** A2A server public domain | Pending (off until set) |
 | 37 | **New:** TURN relay for remote screen | Pending (costs money) |
+| 48 | **New (2026-10-16):** First Run milestone | **Owner: ships before M17** (ADR 0028) |
+| 49 | **New (2026-10-16):** desktop api base | **Owner: `api.chalito.chalyb.com`** via DNS + Cloud Run domain mapping, run by the owner (amends ADR 0015's update) |
+| 50 | **New (2026-10-16):** autostart | **Owner: on by default**, with a switch in the panel and tray |
