@@ -526,6 +526,7 @@ const EMPTY_SNAPSHOT: Snapshot = {
   approvals: [],
   sessions: [],
   events: {},
+  drafts: {},
   notifications: [],
   devices: [],
   devModeActive: false,

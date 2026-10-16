@@ -655,7 +655,8 @@
         "usage": "Usage",
         "card_updated": "Card",
         "error": "Error"
-      }
+      },
+      "draft": "Writing…"
     },
     "devices": {
       "title": "Devices",

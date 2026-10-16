@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AppConnectionDoc,
+  isLiveOnlyEvent,
   type AgentEvent,
   type ApprovalRequest,
   type CallLine,
@@ -21,7 +22,7 @@ export interface SupaResult<T = unknown> {
 }
 export interface SupaQuery extends PromiseLike<SupaResult> {
   select(columns?: string): SupaQuery;
-  insert(row: Record<string, unknown>): SupaQuery;
+  insert(row: Record<string, unknown> | Record<string, unknown>[]): SupaQuery;
   update(patch: Record<string, unknown>): SupaQuery;
   delete(): SupaQuery;
   eq(column: string, value: unknown): SupaQuery;
@@ -63,6 +64,15 @@ interface Pointer {
   rev?: number;
 }
 
+/** At most this many live events, and about this many bytes, per `live_send` call (the RPC's limits). */
+const LIVE_MAX_EVENTS = 64;
+const LIVE_MAX_BYTES = 192 * 1024;
+
+interface Pending {
+  resolve: () => void;
+  reject: (err: unknown) => void;
+}
+
 const EVENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Remote-terminal events (sealed output chunks) only need to outlive a reconnect. */
 const TERMINAL_EVENT_TTL_MS = 60 * 60 * 1000;
@@ -91,6 +101,12 @@ const isRateLimited = (e: SupaResult["error"]) =>
 
 export interface SupabaseStoreOptions {
   log?: Logger;
+  /**
+   * Durable events are inserted in batches: at most `ms` after the first one queued, or as soon
+   * as `max` wait (packages/config sessions.yaml `events`). Defaults 250 ms / 32.
+   */
+  batch?: { ms: number; max: number };
+  schedule?: (fn: () => void, ms: number) => { clear(): void };
   /** Backoff for rate-limited writes: base delay and number of retries (exponential, jittered). */
   retry?: { baseMs: number; attempts: number };
   sleep?: (ms: number) => Promise<void>;
@@ -123,6 +139,17 @@ export class SupabaseStore implements AgentStore {
   readonly #log: Logger | undefined;
   readonly #retry: { baseMs: number; attempts: number };
   readonly #sleep: (ms: number) => Promise<void>;
+  readonly #batch: { ms: number; max: number };
+  readonly #schedule: (fn: () => void, ms: number) => { clear(): void };
+  /** Durable events waiting for the next insert, and the inserts in flight (in order). */
+  #queued: { row: Record<string, unknown>; p: Pending }[] = [];
+  #batchTimer: { clear(): void } | null = null;
+  #inserting: Promise<void> = Promise.resolve();
+  /** Live events waiting, and whether a `live_send` is in flight. */
+  #liveQueue: { e: AgentEvent; size: number; p: Pending }[] = [];
+  #liveSending: Promise<void> | null = null;
+  /** Counters (tests, the audit): rows and calls. */
+  readonly stats = { eventRows: 0, eventInserts: 0, liveEvents: 0, liveCalls: 0 };
 
   constructor(
     private readonly db: SupaClient,
@@ -134,6 +161,14 @@ export class SupabaseStore implements AgentStore {
     this.#log = o.log;
     this.#retry = o.retry ?? { baseMs: 250, attempts: 5 };
     this.#sleep = o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.#batch = o.batch ?? { ms: 250, max: 32 };
+    this.#schedule =
+      o.schedule ??
+      ((fn, ms) => {
+        const t = setTimeout(fn, ms);
+        t.unref?.();
+        return { clear: () => clearTimeout(t) };
+      });
   }
 
   /** A write, retried while the database says the device is over its rate (S7). */
@@ -292,6 +327,8 @@ export class SupabaseStore implements AgentStore {
   #closed = false;
 
   async close(): Promise<void> {
+    // Whatever is queued still goes out (best effort) before the channel is left.
+    await this.flush().catch(() => undefined);
     this.#closed = true;
     await this.#joining;
     if (this.#channel) await this.db.removeChannel(this.#channel);
@@ -346,21 +383,103 @@ export class SupabaseStore implements AgentStore {
 
   // ---- sessions ------------------------------------------------------------------
 
-  async writeEvent(e: AgentEvent) {
-    await this.#write("write event", () =>
-      this.db.from("session_events").insert({
-        owner: this.owner,
-        sid: e.sid,
-        eid: e.eid,
-        device_id: this.deviceId,
-        seq: e.seq,
-        t: iso(e.t),
-        type: e.type,
-        urgency: e.urgency,
-        doc: e,
-        expires_at: iso(e.t + (e.type.startsWith("terminal.") ? TERMINAL_EVENT_TTL_MS : EVENT_TTL_MS)),
-      }),
-    );
+  writeEvent(e: AgentEvent): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const p = { resolve, reject };
+      if (isLiveOnlyEvent(e)) return this.#queueLive(e, p);
+      this.#queued.push({
+        row: {
+          owner: this.owner,
+          sid: e.sid,
+          eid: e.eid,
+          device_id: this.deviceId,
+          seq: e.seq,
+          t: iso(e.t),
+          type: e.type,
+          urgency: e.urgency,
+          doc: e,
+          expires_at: iso(e.t + (e.type.startsWith("terminal.") ? TERMINAL_EVENT_TTL_MS : EVENT_TTL_MS)),
+        },
+        p,
+      });
+      if (this.#queued.length >= this.#batch.max || this.#batch.ms === 0) this.#flushBatch();
+      else
+        this.#batchTimer ??= this.#schedule(() => {
+          this.#batchTimer = null;
+          this.#flushBatch();
+        }, this.#batch.ms);
+    });
+  }
+
+  /** Sends every queued event now and resolves once all of them went out. */
+  async flush(): Promise<void> {
+    while (this.#queued.length) this.#flushBatch();
+    await this.#inserting;
+    while (this.#liveSending) await this.#liveSending;
+  }
+
+  /** One insert of up to `max` rows, after the inserts before it (rows stay in seq order). */
+  #flushBatch(): void {
+    this.#batchTimer?.clear();
+    this.#batchTimer = null;
+    const take = this.#queued.splice(0, this.#batch.max);
+    if (!take.length) return;
+    if (this.#queued.length)
+      this.#batchTimer = this.#schedule(() => {
+        this.#batchTimer = null;
+        this.#flushBatch();
+      }, 0);
+    this.#inserting = this.#inserting.then(async () => {
+      try {
+        await this.#write("write events", () =>
+          this.db.from("session_events").insert(take.length === 1 ? take[0]!.row : take.map((t) => t.row)),
+        );
+        this.stats.eventRows += take.length;
+        this.stats.eventInserts++;
+        for (const t of take) t.p.resolve();
+      } catch (err) {
+        for (const t of take) t.p.reject(err);
+      }
+    });
+  }
+
+  /**
+   * The fast live path: sealed live-only events straight to the person's clients through
+   * `chalito.live_send` (migration 20261015000100), which broadcasts them on each client's private
+   * `chalito:device:<id>` topic, the same recipients and RLS as every pointer. One call at a time;
+   * whatever queues meanwhile goes in the next call, up to 64 events / ~192 KB.
+   */
+  #queueLive(e: AgentEvent, p: Pending): void {
+    this.#liveQueue.push({ e, size: JSON.stringify(e).length, p });
+    this.#liveSending ??= this.#pumpLive();
+  }
+
+  async #pumpLive(): Promise<void> {
+    try {
+      while (this.#liveQueue.length) {
+        let bytes = 0;
+        let n = 0;
+        while (
+          n < this.#liveQueue.length &&
+          n < LIVE_MAX_EVENTS &&
+          (n === 0 || bytes + this.#liveQueue[n]!.size <= LIVE_MAX_BYTES)
+        )
+          bytes += this.#liveQueue[n++]!.size;
+        const take = this.#liveQueue.splice(0, n);
+        try {
+          await this.#write("live send", () =>
+            this.db.rpc("live_send", { p_events: JSON.parse(JSON.stringify(take.map((t) => t.e))) }),
+          );
+          this.stats.liveEvents += take.length;
+          this.stats.liveCalls++;
+          for (const t of take) t.p.resolve();
+        } catch (err) {
+          for (const t of take) t.p.reject(err);
+        }
+      }
+    } finally {
+      this.#liveSending = null;
+    }
   }
 
   /** Merge semantics (Firestore `set(..., {merge: true})`) through the `chalito.session_merge` RPC. */

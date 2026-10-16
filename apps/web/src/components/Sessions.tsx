@@ -1,7 +1,7 @@
 "use client";
 import { useState, type FormEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ActionError, type EventView, type SessionView } from "@chalito/client";
+import { ActionError, type DraftView, type EventView, type SessionView } from "@chalito/client";
 import type { RemotePermissionMode } from "@chalito/protocol";
 import { Link } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
@@ -52,7 +52,7 @@ interface Question {
   options: { label: string; description?: string }[];
 }
 
-const Timeline = ({ events }: { events: readonly EventView[] }) => {
+const Timeline = ({ events, draft }: { events: readonly EventView[]; draft?: DraftView | undefined }) => {
   const t = useTranslations("live.timeline");
   return (
     <ol className="grid gap-2" aria-label={t("label")}>
@@ -68,6 +68,18 @@ const Timeline = ({ events }: { events: readonly EventView[] }) => {
           </li>
         );
       })}
+      {/* M16 A: the reply being written, from live deltas; replaced by the stored message. */}
+      {draft ? (
+        <li
+          data-testid="draft"
+          data-type="message.assistant.delta"
+          aria-live="polite"
+          className="rounded-lg border border-dashed bg-white p-2 text-sm"
+        >
+          <span className="font-medium">{t("draft")}</span>
+          <p className="mt-1 whitespace-pre-wrap">{draft.text}</p>
+        </li>
+      ) : null}
     </ol>
   );
 };
@@ -247,7 +259,7 @@ export const SessionDetail = ({ sid }: { sid: string }) => {
         <button className="rounded-lg bg-emerald-700 px-4 py-2 text-white">{t("send")}</button>
       </form>
       {note ? <p role="status">{note}</p> : null}
-      <Timeline events={events} />
+      <Timeline events={events} draft={live.drafts[sid]} />
     </div>
   );
 };

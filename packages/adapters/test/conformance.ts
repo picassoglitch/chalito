@@ -154,3 +154,88 @@ export const runConformance = (name: string, makeHarness: (turns: ConformanceSte
     });
   });
 };
+
+/** Resume and partial streaming (M16 A), for every adapter, ACP included. */
+export interface ResumeHarness {
+  adapter: SessionAdapter;
+  /** Per start: the provider session id the fake was asked to reopen, or null for a new session. */
+  resumedFrom(): (string | null)[];
+  /** Turns the fake ran. */
+  turns(): number;
+  /** The session's working directory (fakes that read their script from it). */
+  cwd?: string;
+}
+
+export const runResumeConformance = (name: string, makeHarness: (turns: ConformanceStep[][]) => ResumeHarness) => {
+  const setup = (turns: ConformanceStep[][]) => {
+    const h = makeHarness(turns);
+    const events: AdapterEvent[] = [];
+    const start = (over: { prompt?: string; resume?: string } = {}) =>
+      h.adapter.start({
+        sid: "s1",
+        cwd: h.cwd ?? "/ws",
+        prompt: over.prompt ?? "hola",
+        ...(over.resume ? { resume: over.resume } : {}),
+        origin: "client:phone1",
+        permissionMode: "default",
+        gate: async () => ({ allow: true }),
+        askUser: async () => ({}),
+        onEvent: (e) => events.push(e),
+      });
+    const states = () => events.flatMap((e) => (e.type === "state" ? [e.state] : []));
+    const idleCount = () => states().filter((s) => s === "idle").length;
+    const texts = () => events.flatMap((e) => (e.type === "assistant_text" ? [e.text] : []));
+    return { h, events, start, states, idleCount, texts };
+  };
+
+  describe(`SessionAdapter conformance (resume, streaming): ${name}`, () => {
+    it("a new session is not a resume", async () => {
+      const { h, start, idleCount } = setup([[{ say: "hola" }]]);
+      const s = await start();
+      await waitFor(() => idleCount() === 1, 5000);
+      expect(h.resumedFrom()).toEqual([null]);
+      s.close();
+      await s.done;
+    });
+
+    it("resume reopens the provider session it names and runs the prompt in it", async () => {
+      const { h, events, start, idleCount, texts } = setup([[{ say: "de vuelta" }]]);
+      const s = await start({ resume: "prev-1", prompt: "sigue" });
+      await waitFor(() => idleCount() === 1, 5000);
+      expect(h.resumedFrom()).toEqual(["prev-1"]);
+      expect(events).toContainEqual({ type: "started", providerSessionId: "prev-1" });
+      expect(texts()).toEqual(["de vuelta"]);
+      expect(h.turns()).toBe(1);
+      s.close();
+      await s.done;
+    });
+
+    it("resume without a prompt reopens the session idle and runs no turn until prompted", async () => {
+      const { h, start, states, idleCount, texts } = setup([[{ say: "aquí sigo" }]]);
+      const s = await start({ resume: "prev-1", prompt: "" });
+      await waitFor(() => idleCount() === 1, 5000);
+      expect(states()).toEqual(["idle"]);
+      expect(h.turns()).toBe(0);
+      s.prompt("¿sigues?", "client:phone1");
+      await waitFor(() => idleCount() === 2, 5000);
+      expect(h.turns()).toBe(1);
+      expect(texts()).toEqual(["aquí sigo"]);
+      s.close();
+      await s.done;
+    });
+
+    it("streams the reply as assistant_delta pieces that add up to the message", async () => {
+      const { events, start, idleCount } = setup([[{ say: "Voy a correr los tests." }]]);
+      const s = await start();
+      await waitFor(() => idleCount() === 1, 5000);
+      const deltas = events.flatMap((e) => (e.type === "assistant_delta" ? [e.text] : []));
+      expect(deltas.length).toBeGreaterThan(0);
+      expect(deltas.join("")).toBe("Voy a correr los tests.");
+      // Every delta comes before the message it belongs to.
+      const lastDelta = events.findLastIndex((e) => e.type === "assistant_delta");
+      expect(lastDelta).toBeLessThan(events.findIndex((e) => e.type === "assistant_text"));
+      s.close();
+      await s.done;
+    });
+  });
+};

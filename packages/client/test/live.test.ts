@@ -126,6 +126,96 @@ describe("LiveStore", () => {
     expect(snap.events.s1![2]!.meta).not.toHaveProperty("ct");
   });
 
+  it("M16 A: live deltas build a draft that the stored final message (same mid) replaces", async () => {
+    const { me, agent, db, live, topic } = await setup();
+    db.seed("sessions", { owner: OWNER, sid: "s1", device_id: agent.deviceId, doc: { state: "running" } });
+    live.start();
+    await tick(30);
+    const delta = async (n: number, text: string, mid = "m1") => ({
+      v: 1,
+      eid: `d${mid}${n}`,
+      sid: "s1",
+      deviceId: agent.deviceId,
+      seq: 4,
+      t: T,
+      urgency: "low",
+      type: "message.assistant.delta",
+      mid,
+      n,
+      ct: await sealTo({ text }, [me], "event:s1"),
+    });
+    const send = async (events: unknown[], deviceId = agent.deviceId) => {
+      db.broadcast(topic, { table: "live", op: "events", deviceId, events });
+      await tick(20);
+    };
+    await send([await delta(0, "Voy a "), await delta(1, "correr")]);
+    // A repeat is dropped; live events never trigger a pull.
+    const pulls = db.ops.filter((o) => o.op === "select").length;
+    await send([await delta(1, "correr")]);
+    expect(db.ops.filter((o) => o.op === "select").length).toBe(pulls);
+    expect(live.getSnapshot().drafts.s1).toMatchObject({ mid: "m1", text: "Voy a correr", seq: 4, pieces: 2 });
+    // Another device can't write into this session's draft.
+    const other = await newDevice();
+    await send([{ ...(await delta(2, "!!")), deviceId: other.deviceId }], other.deviceId);
+    expect(live.getSnapshot().drafts.s1!.text).toBe("Voy a correr");
+
+    db.seed("session_events", {
+      owner: OWNER,
+      sid: "s1",
+      eid: "final",
+      device_id: agent.deviceId,
+      seq: 4,
+      t: new Date(T).toISOString(),
+      type: "message.assistant",
+      urgency: "low",
+      doc: {
+        type: "message.assistant",
+        mid: "m1",
+        seq: 4,
+        ct: await sealTo({ text: "Voy a correr los tests." }, [me], "event:s1"),
+      },
+    });
+    db.broadcast(topic, { table: "session_events", op: "insert", key: { sid: "s1", eid: "final" }, rev: 1 });
+    await tick(30);
+    expect(live.getSnapshot().drafts.s1).toBeUndefined();
+    expect(live.getSnapshot().events.s1!.map((e) => e.content)).toEqual([{ text: "Voy a correr los tests." }]);
+    // A late delta of a finished message doesn't bring the draft back.
+    await send([await delta(2, " tarde")]);
+    expect(live.getSnapshot().drafts.s1).toBeUndefined();
+  });
+
+  it("M16 A: live terminal output is opened (AAD terminal:<tid>:<seq>) and joins the timeline unstored", async () => {
+    const { me, agent, db, live, topic } = await setup();
+    db.seed("sessions", { owner: OWNER, sid: "t1", device_id: agent.deviceId, doc: { state: "running" } });
+    live.start();
+    await tick(30);
+    db.broadcast(topic, {
+      table: "live",
+      op: "events",
+      deviceId: agent.deviceId,
+      events: [
+        {
+          v: 1,
+          eid: "o7",
+          sid: "t1",
+          tid: "t1",
+          deviceId: agent.deviceId,
+          seq: 7,
+          t: T,
+          urgency: "low",
+          type: "terminal.output",
+          dataCt: await sealTo({ data: "ok\r\n" }, [me], "terminal:t1:7"),
+        },
+        { not: "an event" },
+      ],
+    });
+    await tick(30);
+    expect(live.getSnapshot().events.t1).toEqual([
+      expect.objectContaining({ type: "terminal.output", seq: 7, rev: 0, live: true, content: { data: "ok\r\n" } }),
+    ]);
+    expect(live.getSnapshot().events.t1![0]!.meta).not.toHaveProperty("dataCt");
+  });
+
   it("a card sealed under another context doesn't open", async () => {
     const { me, agent, db, live } = await setup();
     db.seed("sessions", {

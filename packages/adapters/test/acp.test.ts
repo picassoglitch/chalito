@@ -22,6 +22,7 @@ import {
   grokSandboxFor,
   keyEnvAllowed,
   modeAllowed,
+  ownMcpToolName,
   slashCommand,
   toolCallsFor,
   unsafeLaunchArg,
@@ -145,7 +146,13 @@ describe("ACP adapter: Grok Build profile", () => {
       ["t1", { outcome: "selected", optionId: "allow-once" }],
       ["t2", { outcome: "selected", optionId: "allow-once" }],
     ]);
-    expect(s.events).toEqual([
+    // M16 A: each message chunk is passed on as a delta; the whole text still follows.
+    expect(s.events.flatMap((e) => (e.type === "assistant_delta" ? [e.text] : []))).toEqual([
+      "Voy a ",
+      "correr los tests.",
+      "Listo.",
+    ]);
+    expect(s.events.filter((e) => e.type !== "assistant_delta")).toEqual([
       { type: "started", providerSessionId: "fake-session-1" },
       { type: "state", state: "running" },
       { type: "assistant_text", text: "Voy a correr los tests." },
@@ -784,5 +791,84 @@ describe("toolCallsFor", () => {
     expect(toolCallsFor({ toolCallId: "a", kind: "switch_mode", title: "Exit plan mode" }, cwd)[0]!.toolName).toBe(
       "acp:Exit plan mode",
     );
+  });
+});
+
+describe("ACP adapter: computer control and resume (M16 A)", () => {
+  const computer = {
+    chalito_computer: {
+      command: "/opt/chalito/chalito-mcp",
+      args: ["computer"],
+      env: { CHALITO_COMPUTER_SOCKET: "/tmp/c.sock", CHALITO_COMPUTER_TOKEN: "tok" },
+    },
+  };
+
+  it("gives the agent only its own MCP servers in session/new, and their calls reach the gate as mcp__ tools", async () => {
+    const s = setup(
+      "grok",
+      {
+        turns: [
+          [
+            { tool: { id: "m1", title: "screenshot (chalito_computer MCP Server)", rawInput: { display: 0 } } },
+            { tool: { id: "m2", kind: "other", title: "mcp__chalito_computer__click", rawInput: { x: 1, y: 2 } } },
+            // An execute tool can't pass as a computer tool, whatever its title says.
+            {
+              tool: { id: "x1", kind: "execute", title: "chalito_computer__click", rawInput: { command: "rm -rf /" } },
+            },
+          ],
+        ],
+      },
+      { apiKey: "k" },
+    );
+    const h = await s.start({ mcpServers: computer });
+    await waitFor(() => s.states().includes("idle"), 5000);
+    expect(s.received("session/new")[0]!.params).toEqual({
+      cwd: s.ws,
+      mcpServers: [
+        {
+          name: "chalito_computer",
+          command: "/opt/chalito/chalito-mcp",
+          args: ["computer"],
+          env: [
+            { name: "CHALITO_COMPUTER_SOCKET", value: "/tmp/c.sock" },
+            { name: "CHALITO_COMPUTER_TOKEN", value: "tok" },
+          ],
+        },
+      ],
+    });
+    expect(s.calls.map((c) => [c.toolUseId, c.toolName])).toEqual([
+      ["m1", "mcp__chalito_computer__screenshot"],
+      ["m2", "mcp__chalito_computer__click"],
+      ["x1", "Bash"],
+    ]);
+    expect(s.calls[1]!.input).toEqual({ x: 1, y: 2 });
+    h.close();
+    await h.done;
+  });
+
+  it("without attached servers, an MCP-looking call stays an acp: call (HIGH)", () => {
+    expect(ownMcpToolName({ toolCallId: "a", title: "mcp__chalito_computer__click" }, new Set())).toBeNull();
+    expect(toolCallsFor({ toolCallId: "a", title: "mcp__chalito_computer__click" }, "/ws")[0]!.toolName).toBe(
+      "acp:mcp__chalito_computer__click",
+    );
+    const own = new Set(["chalito_computer"]);
+    for (const title of ["chalito_computer.type_text", "chalito_computer/type_text", "chalito_computer: type_text"])
+      expect(ownMcpToolName({ toolCallId: "a", title }, own)).toBe("mcp__chalito_computer__type_text");
+    // Another server's tools, or a title that only mentions ours, aren't ours.
+    expect(ownMcpToolName({ toolCallId: "a", title: "mcp__other__click" }, own)).toBeNull();
+    expect(ownMcpToolName({ toolCallId: "a", title: "run chalito_computer__click now" }, own)).toBeNull();
+    expect(ownMcpToolName({ toolCallId: "a", kind: "edit", title: "chalito_computer__click" }, own)).toBeNull();
+  });
+
+  it("an agent that advertises neither session/resume nor session/load gets a new session", async () => {
+    const s = setup("grok", { loadSession: false, turns: [[{ say: "nueva" }]] }, { apiKey: "k" });
+    const h = await s.start({ resume: "prev-session" });
+    await waitFor(() => s.states().includes("idle"), 5000);
+    expect(s.received("session/load")).toEqual([]);
+    expect(s.received("session/resume")).toEqual([]);
+    expect(s.received("session/new")).toHaveLength(1);
+    expect(s.events[0]).toEqual({ type: "started", providerSessionId: "fake-session-1" });
+    h.close();
+    await h.done;
   });
 });
