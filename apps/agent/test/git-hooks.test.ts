@@ -374,6 +374,19 @@ describe("the sessions' HOME, XDG and PATH", () => {
       expect.arrayContaining([join(xdg, "git", "config"), join(sessionHome, ".config", "git", "config")]),
     );
     expect(write(ws, agentHome, "session-hooks/x", { env: { ...NOSYS, HOME: sessionHome } }).tier).toBe("HIGH");
+    // The daemon's own global files are in the chain and watched too (HOME ≠ the daemon's home).
+    for (const f of [join(agentHome, ".gitconfig"), join(agentHome, ".config", "git", "config")]) {
+      expect(info.chain, f).toContain(f);
+      expect(info.watched, f).toContain(f);
+    }
+    expect(new Set(info.chain).size).toBe(info.chain.length);
+    expect(
+      classifyToolCall(
+        "Write",
+        { file_path: join(agentHome, ".gitconfig"), content: "x" },
+        ctx(agentHome, agentHome, { env: { ...NOSYS, HOME: sessionHome } }),
+      ).tier,
+    ).toBe("HIGH");
   });
 
   it("a git on the sessions' PATH brings its prefix's etc/gitconfig (existence only, never run)", () => {

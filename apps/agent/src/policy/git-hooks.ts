@@ -381,6 +381,12 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
     }
     readConfig(join(home, ".gitconfig"), 0);
   }
+  // The daemon's own home can differ from the sessions': its global files are watched and HIGH too.
+  for (const f of [join(o.home, ".gitconfig"), join(o.home, ".config", "git", "config")])
+    if (!chain.includes(f)) {
+      chain.push(f);
+      watched.push(f);
+    }
   readConfig(join(common, "config"), 0);
   readConfig(join(gitDir, "config.worktree"), 0);
 
