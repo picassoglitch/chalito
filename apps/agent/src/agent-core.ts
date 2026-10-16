@@ -43,6 +43,7 @@ import type { ComputerApprovalOutcome, ComputerControl } from "./computer/contro
 import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
 import { DeltaThrottle } from "./live/deltas.js";
+import type { LinkHost, LinkManager } from "./links/manager.js";
 import type { ScreenManager } from "./screen/manager.js";
 import {
   PERMISSION_RANK,
@@ -139,6 +140,8 @@ export interface AgentCoreDeps {
   sessionsConfig?: Pick<SessionsConfig, "session" | "live">;
   /** M16 A: where sessions are remembered for resume (~/.chalito/sessions.json); absent = memory only. */
   registry?: SessionRegistry;
+  /** Agent-to-agent links (links/manager.ts, ADR 0022 §3); absent = `link.*` commands are refused. */
+  links?: LinkManager;
 }
 
 interface Session {
@@ -193,7 +196,7 @@ const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 
 const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
 
 const REMOTE_ENABLE_ATTEMPT =
-  /devmode\.(on|enable|toggleOn)|computer|remoteTerminal|rawShell|(terminal|shell)\.(enable|on)|screen\.(enable|on|grant|allow)|remote_?(view|control)|app_?control|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access|apps?\.(custom|enable)|recipe\.(enable|add)/i;
+  /devmode\.(on|enable|toggleOn)|computer|remoteTerminal|rawShell|(terminal|shell)\.(enable|on)|screen\.(enable|on|grant|allow)|remote_?(view|control)|app_?control|policy\.(loosen|set)|trust\.add|bypass|dontAsk|\bauto\b|dangerous|danger-full-access|apps?\.(custom|enable)|recipe\.(enable|add)|link\.create:handoff/i;
 
 /**
  * The device agent's brain (ADR 0008): verifies commands against the local trusted list,
@@ -231,6 +234,7 @@ export class AgentCore {
       locale: d.locale,
       now: d.now,
     });
+    d.links?.attach(this.#linkHost());
   }
 
   // ---- commands ---------------------------------------------------------------
@@ -278,10 +282,13 @@ export class AgentCore {
     const parsed = CommandEnvelope.safeParse(env);
     if (!parsed.success) {
       const body = (env?.body ?? {}) as {
-        payload?: { type?: unknown; permissionMode?: unknown; codexSandbox?: unknown };
+        payload?: { type?: unknown; permissionMode?: unknown; codexSandbox?: unknown; link?: { mode?: unknown } };
         origin?: unknown;
       };
-      const attempted = [body.payload?.type, body.payload?.permissionMode, body.payload?.codexSandbox]
+      // A hand-off link is made only on the device (ADR 0022 §3): a remote attempt is reported.
+      const linkAttempt =
+        body.payload?.type === "link.create" && body.payload.link?.mode !== "share" ? "link.create:handoff" : undefined;
+      const attempted = [body.payload?.type, body.payload?.permissionMode, body.payload?.codexSandbox, linkAttempt]
         .filter((x) => typeof x === "string")
         .join(" ");
       if (REMOTE_ENABLE_ATTEMPT.test(attempted)) {
@@ -307,6 +314,12 @@ export class AgentCore {
     let body: CommandBody;
     if ("relayedBy" in envelope) {
       body = envelope.body;
+      // Another agent over a link: signed with the key recorded locally for that link.
+      if (envelope.relayedBy === "agent-link") {
+        if (!this.d.links) return this.#reject(id, "links_disabled");
+        const sig = await this.d.links.verifyRelay(envelope);
+        if (!sig.ok) return this.#reject(id, sig.reason);
+      }
     } else {
       const sig = await this.d.trust().verifySigned(envelope, "chalito.command.v1");
       if (!sig.ok) return this.#reject(id, sig.reason);
@@ -364,11 +377,11 @@ export class AgentCore {
         if (!s) {
           if (!this.#dormant.has(p.sid)) return this.#reject(cid, "unknown_session");
           const text = await open<string>(p.promptCt);
-          return this.#revive(cid, p.sid, text, origin);
+          return this.#revive(cid, p.sid, this.#withLinkData(p.sid, text, origin), origin);
         }
         const text = await open<string>(p.promptCt);
         await this.#event(s, { type: "message.user", origin, ct: await this.sealer.seal({ text }, `event:${s.sid}`) });
-        this.#prompt(s, text, origin);
+        this.#prompt(s, this.#withLinkData(s.sid, text, origin), origin);
         return { ok: true };
       }
       case "session.interrupt": {
@@ -382,9 +395,14 @@ export class AgentCore {
         if (!s) {
           // Idle-closed, ended, or from before a restart: reopen it in the provider (M16 A).
           if (!this.#dormant.has(p.sid)) return this.#reject(cid, "unknown_session");
-          return this.#revive(cid, p.sid, p.promptCt ? await open<string>(p.promptCt) : "", origin);
+          return this.#revive(
+            cid,
+            p.sid,
+            p.promptCt ? this.#withLinkData(p.sid, await open<string>(p.promptCt), origin) : "",
+            origin,
+          );
         }
-        if (p.promptCt) this.#prompt(s, await open<string>(p.promptCt), origin);
+        if (p.promptCt) this.#prompt(s, this.#withLinkData(s.sid, await open<string>(p.promptCt), origin), origin);
         return { ok: true };
       }
       case "session.setPermissionMode": {
@@ -442,6 +460,8 @@ export class AgentCore {
         }
         this.d.trust().remove(p.clientDeviceId);
         await this.d.saveTrust();
+        // ADR 0020 revoke-all (a bundle step-up) also revokes every link on this device.
+        if (body?.stepUp?.bundle) await this.d.links?.revokeAll("revoke_all");
         for (const s of this.sessions.values())
           if (s.startedBy === `client:${p.clientDeviceId}`) await s.handle.interrupt();
         await this.d.screen?.endForClient(p.clientDeviceId);
@@ -542,7 +562,137 @@ export class AgentCore {
         const r = await this.d.screen.signal(p.sid, origin, signal.data);
         return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "bad_signal");
       }
+
+      // ---- LINKS (links/manager.ts, ADR 0022 §3) ---------------------------------------------
+      case "link.create": {
+        // Share links only (hand-off is unrepresentable here), from a trusted client, with that
+        // client's passkey step-up over this command, always (no passkey = no remote link).
+        if (!this.d.links) return this.#reject(cid, "links_disabled");
+        const signer = origin.startsWith("client:") ? origin.slice("client:".length) : null;
+        if (!signer || !this.d.trust().webauthnFor(signer)) return this.#reject(cid, "step_up_required");
+        const failure = await this.#revokeStepUpFailure(signer, body);
+        if (failure) return this.#reject(cid, failure);
+        const r = await this.d.links.createFromClient(p.link, origin);
+        return r.ok ? { ok: true } : this.#reject(cid, r.reason);
+      }
+      case "link.revoke":
+        if (!this.d.links) return this.#reject(cid, "links_disabled");
+        return (await this.d.links.revoke(p.linkId, origin)) ? { ok: true } : this.#reject(cid, "unknown_link");
+      case "link.revokeAll":
+        if (!this.d.links) return this.#reject(cid, "links_disabled");
+        await this.d.links.revokeAll(origin);
+        return { ok: true };
+      case "link.list":
+        if (!this.d.links) return this.#reject(cid, "links_disabled");
+        await this.d.links.publish();
+        return { ok: true };
+      case "link.handoff":
+      case "link.share":
+      case "link.result": {
+        // Only an agent-link relay (verified in #handle) carries these (CommandBody refine).
+        if (!this.d.links || !origin.startsWith("agent:")) return this.#reject(cid, "links_disabled");
+        const r = await this.d.links.onRelay(cid, p, origin);
+        return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
+      }
     }
+  }
+
+  /** Queued link data (shares, results) goes in front of the owner's own prompt only. */
+  #withLinkData(sid: string, text: string, origin: Origin): string {
+    return this.d.links && isSignedOrigin(origin) ? this.d.links.takeShared(sid, text) : text;
+  }
+
+  /** What the link manager may do here: the same session, event and approval paths as commands. */
+  #linkHost(): LinkHost {
+    const info = (s: Session) => ({
+      sid: s.sid,
+      cwd: s.cwd,
+      workspaceLabel: s.workspaceLabel,
+      permissionMode: s.permissionMode,
+      ...(s.appId ? { appId: s.appId } : {}),
+    });
+    return {
+      session: (sid) => {
+        const s = this.sessions.get(sid);
+        if (s) return info(s);
+        // Idle-closed or from before a restart (M16 A): still the link's receiver; a prompt revives it.
+        const r = this.#dormant.get(sid)?.record;
+        const ws = r && this.d.policy.get().workspaces.find((w) => w.label === r.workspaceLabel);
+        return r && ws
+          ? {
+              sid,
+              cwd: ws.path,
+              workspaceLabel: r.workspaceLabel,
+              permissionMode: r.permissionMode,
+              ...(r.appId ? { appId: r.appId } : {}),
+            }
+          : undefined;
+      },
+      sessions: () => [...this.sessions.values()].map(info),
+      startSession: async (input) => {
+        const policy = this.d.policy.get();
+        const ws = policy.workspaces.find((w) => w.label === input.workspaceLabel);
+        if (!ws) return { ok: false, reason: "unknown_workspace" };
+        if (PERMISSION_RANK[input.permissionMode] > PERMISSION_RANK[policy.remote.maxPermissionMode])
+          return { ok: false, reason: "permission_mode_above_ceiling" };
+        const target = await this.#sessionTarget(undefined, input.appId ?? "claude-code");
+        if (!target.ok) return target;
+        try {
+          await this.startSession({
+            sid: input.sid,
+            adapter: target.adapter,
+            ...(target.appId ? { appId: target.appId } : {}),
+            ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
+            workspace: ws,
+            prompt: input.prompt,
+            origin: input.origin,
+            permissionMode: input.permissionMode,
+          });
+          return { ok: true };
+        } catch (err) {
+          this.d.log.error("link.start_failed", { error: err instanceof Error ? err.message : "error" });
+          return { ok: false, reason: "start_failed" };
+        }
+      },
+      prompt: async (sid, text, origin) => {
+        const s = this.sessions.get(sid);
+        if (!s) {
+          if (this.#dormant.has(sid)) await this.#revive(`link-${sid}-${this.d.now()}`, sid, text, origin);
+          return;
+        }
+        await this.#event(s, { type: "message.user", origin, ct: await this.sealer.seal({ text }, `event:${sid}`) });
+        this.#prompt(s, text, origin);
+      },
+      interrupt: async (sid) => {
+        await this.sessions.get(sid)?.handle.interrupt();
+      },
+      event: async (sid, partial) => {
+        const s = this.sessions.get(sid);
+        if (s) await this.#event(s, partial);
+      },
+      confirm: async (sid, input) => {
+        const s = this.sessions.get(sid);
+        const outcome = s
+          ? await this.#approve(s, {
+              risk: "MED",
+              stepUp: false,
+              origin: input.origin,
+              kind: "link_handoff",
+              details: input.details,
+            })
+          : await this.approvals.request({
+              sid,
+              risk: "MED",
+              stepUp: false,
+              origin: input.origin,
+              kind: "link_handoff",
+              details: input.details,
+            });
+        return { allow: outcome.allow };
+      },
+      handleCommand: (cid, doc) => this.handleCommand(cid, doc),
+      sealForClients: (value, aad) => this.sealer.seal(value, aad),
+    };
   }
 
   /**
@@ -1012,7 +1162,7 @@ export class AgentCore {
       risk: RiskTier;
       stepUp: boolean;
       origin: Origin;
-      kind?: "tool" | "computer_control" | "app_control";
+      kind?: "tool" | "computer_control" | "app_control" | "link_handoff";
       details: { toolName: string; input: unknown; reasons: string[] };
     },
   ): Promise<ComputerApprovalOutcome> {
@@ -1099,6 +1249,13 @@ export class AgentCore {
     // An idle-closed (or replaced) session's last words, e.g. "completed" after close().
     if (s.closing || this.sessions.get(s.sid) !== s) return;
     s.lastActiveAt = this.d.now();
+    // Hand-off tasks (links/manager.ts): projection, budget, the result back to the sender.
+    if (this.d.links)
+      void this.d.links
+        .onAdapterEvent(s.sid, e)
+        .catch((err: unknown) =>
+          this.d.log.warn("link.track_failed", { error: err instanceof Error ? err.message : "error" }),
+        );
     switch (e.type) {
       case "started":
         s.providerSessionId = e.providerSessionId;

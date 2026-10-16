@@ -18,3 +18,4 @@ export * from "./api.js";
 export * from "./endorse.js";
 export * from "./screen.js";
 export * from "./link.js";
+export * from "./agent-link.js";

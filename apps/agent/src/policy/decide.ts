@@ -26,7 +26,7 @@ export interface DecideInput {
 /**
  * Turns a classification into allow / ask / deny. Developer-mode auto-approve, `accept_edits`
  * and LOW auto-allow of anything but a read apply only to signed origins (local, client:*),
- * never to mcp:* or call:* turns, and never past the hard floor.
+ * never to mcp:*, call:* or agent:* (link hand-off) turns, and never past the hard floor.
  */
 export const decide = ({
   classification: c,
@@ -72,7 +72,7 @@ export const decide = ({
 
 /** Whether the policy allows prompts from this origin at all. */
 export const originAllowed = (
-  origins: { local: boolean; client: boolean; mcp: boolean; call: boolean },
+  origins: { local: boolean; client: boolean; mcp: boolean; call: boolean; agent?: boolean },
   origin: Origin,
 ) =>
   origin === "local"
@@ -81,4 +81,6 @@ export const originAllowed = (
       ? origins.client
       : origin.startsWith("mcp:")
         ? origins.mcp
-        : origins.call;
+        : origin.startsWith("agent:")
+          ? origins.agent !== false
+          : origins.call;

@@ -31,8 +31,18 @@ export const Policy = z.object({
     maxPermissionMode: RemotePermissionMode,
     maxCodexSandbox: RemoteCodexSandbox,
   }),
-  /** Prompt origins; each can be turned off. */
-  origins: z.object({ local: z.boolean(), client: z.boolean(), mcp: z.boolean(), call: z.boolean() }),
+  /**
+   * Prompt origins; each can be turned off. `agent` (hand-offs over links, ADR 0022 §3) is
+   * optional so older policies keep their hash; absent = on, since a hand-off also needs a link
+   * the person made on this device. Remote surfaces can turn it off, never on.
+   */
+  origins: z.object({
+    local: z.boolean(),
+    client: z.boolean(),
+    mcp: z.boolean(),
+    call: z.boolean(),
+    agent: z.boolean().optional(),
+  }),
   approvals: z.object({ ttlSeconds: z.number().int().min(30).max(600) }),
   /** Plaintext egress exceptions (opt-in). */
   egress: z.object({ callLines: z.boolean(), mcpCards: z.boolean() }),

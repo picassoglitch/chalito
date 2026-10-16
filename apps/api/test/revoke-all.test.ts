@@ -53,7 +53,14 @@ const memoryRepo = (devices: DeviceDoc[]) => {
   const challenges = new Map<string, WebAuthnChallenge>();
   const creds = new Map<string, StoredWebAuthnCredential>();
   const commands: { owner: string; targetDeviceId: string; id: string; env: unknown }[] = [];
+  /** Agent links in the cloud mirror (ADR 0022 §3), by owner: how many are still unrevoked. */
+  const links = new Map<string, number>();
   const repo: Partial<ApiRepo> = {
+    revokeAgentLinks: async (o) => {
+      const n = links.get(o) ?? 0;
+      links.set(o, 0);
+      return n;
+    },
     getDevice: async (o, id) => devices.find((d) => d.owner === o && d.deviceId === id) ?? null,
     revokeOtherClients: async (o, keep) => {
       const hit = devices.filter((d) => d.owner === o && d.role === "client" && !d.revoked && d.deviceId !== keep);
@@ -88,7 +95,7 @@ const memoryRepo = (devices: DeviceDoc[]) => {
       return "ok";
     },
   };
-  return { repo: repo as ApiRepo, commands };
+  return { repo: repo as ApiRepo, commands, links };
 };
 
 const setup = async () => {
@@ -337,5 +344,18 @@ describe("POST /v1/devices/revoke-all", () => {
     expect(s.voiceSessions.events.map((e) => e.amount)).toEqual([90]);
     expect(s.hungUp).toEqual([`rtc_${s.tablet.deviceId.slice(0, 6)}`]);
     expect(s.settled).toEqual([RID]);
+  });
+});
+
+describe("revoke-all and agent links (ADR 0022 §3)", () => {
+  it("marks every agent link of the account revoked, with or without commands to queue", async () => {
+    const s = await setup();
+    s.mem.links.set(s.o, 3);
+    await s.enrolPasskey();
+    const r = await s.post("/v1/devices/revoke-all", await s.bundled([]), "phone");
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ ok: true, linksRevoked: 3, commandsQueued: 0 });
+    expect(s.mem.links.get(s.o)).toBe(0);
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "device.revoked_all", meta: { linksRevoked: 3 } });
   });
 });

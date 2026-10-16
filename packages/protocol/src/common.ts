@@ -93,18 +93,26 @@ export type Provider = z.infer<typeof Provider>;
  * Where a session prompt came from. The agent's local policy can disable each origin.
  * Only `local` and `client:<id>` are signed by a trusted key; `mcp:*` and `call:*` are
  * relayed by the cloud and are therefore never eligible for Developer-mode auto-approve.
+ * `agent:<sessionId>` (ADR 0022 §3) is another coding agent's session handing off work over an
+ * owner-made link. It is relayed too (by the sending agent, never by a person's key), so it is
+ * never signed in this sense and never eligible for Developer-mode auto-approve either.
  */
 export const Origin = z.union([
   z.literal("local"),
   z.string().regex(/^client:[A-Za-z0-9_-]{1,128}$/),
   z.string().regex(/^mcp:(chatgpt|claude)$/),
   z.string().regex(/^call:CA[0-9a-f]{32}$/),
+  z.string().regex(/^agent:[A-Za-z0-9_-]{1,128}$/),
 ]);
 // There is deliberately no `room:*` origin: room content can never start or steer a session.
 // A human acting on a room notice does so from their own app, which is a `client:<id>` origin.
 export type Origin = z.infer<typeof Origin>;
 
+/** Signed by a key the person holds. `agent:*` is not: an agent's turn is never the owner's. */
 export const isSignedOrigin = (o: Origin): boolean => o === "local" || o.startsWith("client:");
+
+/** A hand-off from another agent's session over a link (ADR 0022 §3). */
+export const isAgentOrigin = (o: Origin): boolean => o.startsWith("agent:");
 
 /**
  * Permission modes a remote surface (client, cloud, MCP) may request.

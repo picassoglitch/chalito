@@ -32,6 +32,7 @@ import {
   enableRemoteTerminal,
 } from "./terminal/toggle.js";
 import type { AgentStore } from "./store.js";
+import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
 
 /** The agent version the panel's `ping` sees. */
 export const AGENT_VERSION = "0.0.0";
@@ -69,6 +70,18 @@ const ScreenEnable = z.object({
 const ScreenChallenge = z.object({ mode: ScreenMode });
 const ScreenDisable = z.object({ what: z.enum(["control", "all"]) });
 const ScreenClose = z.object({ sid: SessionId });
+const LinkModeParam = z.object({ mode: z.enum(["share", "handoff"]) });
+const LinkAdd = z.object({
+  /** Validated as an AgentLink by the manager (hand-off links are made only here). */
+  link: z.record(z.string(), z.unknown()),
+  answers: z.object({ confirm: z.boolean(), typed: z.string().max(200) }),
+});
+const ForLink = z.object({ linkId: z.string().max(80) });
+const LinkSend = z.object({
+  fromSid: SessionId,
+  linkId: z.string().max(80),
+  text: z.string().min(1).max(20_000),
+});
 const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boolean() });
 const ForProvider = z.object({ provider: Provider });
 const ProviderKey = z.object({ provider: Provider, key: z.string().min(1).max(512) });
@@ -108,9 +121,16 @@ export interface IpcDeps {
   terminal?: TerminalControl | null;
   /** Remote screen; null without the desktop app. */
   screen?: ScreenManager | null;
+  /** Agent-to-agent links (links/manager.ts); absent = the link calls answer `unavailable`. */
+  links?: LinkManager | null;
   /** Agent audit trail (computer.enabled / computer.disabled, terminal.*, screen.*). */
   audit: (type: string, meta: Record<string, unknown>) => void;
 }
+
+const linksOf = (d: IpcDeps): LinkManager => {
+  if (!d.links) throw new IpcError("unavailable");
+  return d.links;
+};
 
 const terminalToggleDeps = (d: IpcDeps, answers: z.infer<typeof TerminalEnable>["answers"]) => ({
   policy: { get: () => d.policy.get(), set: (p: Policy, via: "local") => d.policy.set(p, via) },
@@ -509,5 +529,38 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     if (!d.apps) throw new IpcError("unavailable");
     await d.apps.declineInstall(PROVIDER_APP[provider]);
     return { ok: true };
+  },
+
+  // ---- LINKS (ADR 0022 §3): made only here for hand-off; revoked from anywhere --------------
+  linkChallenge: async (params) => {
+    const { mode } = parse(LinkModeParam, params);
+    const copy = LINK_COPY[d.locale()];
+    return { mode, summary: mode === "handoff" ? copy.handoff : copy.share, phrase: copy.phrase };
+  },
+  /** OS authentication here, then the person's confirmation and typed phrase from the panel. */
+  linkAdd: async (params) => {
+    const { link, answers } = parse(LinkAdd, params);
+    return createLocalLink({
+      links: linksOf(d),
+      spec: link as never,
+      osAuth: d.osAuth(),
+      prompter: { confirm: async () => answers.confirm, typed: async () => answers.typed },
+      locale: d.locale(),
+    });
+  },
+  linkList: async () => ({ links: linksOf(d).list() }),
+  linkRevoke: async (params) => {
+    const { linkId } = parse(ForLink, params);
+    return { revoked: await linksOf(d).revoke(linkId, "local") };
+  },
+  linkRevokeAll: async () => ({ revoked: await linksOf(d).revokeAll("local") }),
+  /** The owner hands the sending session's work to the other agent from the panel. */
+  linkHandoff: async (params) => {
+    const { fromSid, linkId, text } = parse(LinkSend, params);
+    return linksOf(d).handoff({ fromSid, linkId, text });
+  },
+  linkShare: async (params) => {
+    const { fromSid, linkId, text } = parse(LinkSend, params);
+    return linksOf(d).share({ fromSid, linkId, parts: [{ text }] });
   },
 });
