@@ -21,6 +21,12 @@ tauri-plugin-deep-link = "2.6"
 tauri-plugin-global-shortcut = "2.3"
 tauri-plugin-opener = "2.7"
 tauri-plugin-process = "2.4"
+# First Run C: start with the computer (on by default; a switch in the panel and the tray).
+tauri-plugin-autostart = "2"
+# First Run C: the OS folder picker for workspaces (Rust side only; no JS permission).
+tauri-plugin-dialog = "2"
+# The tray item's language: the OS locale, like the panel's navigator.language (LANG is unset on macOS/Windows).
+sys-locale = "0.3"
 tauri-plugin-single-instance = { version = "2.5", features = ["deep-link"] }
 # Default features minus `zip`: every zip 4.x release (the updater's requirement) is yanked.
 # `zip` only adds installing v1-style .zip (Windows) / .tar.gz AppImage (Linux) payloads; our

@@ -255,7 +255,9 @@
         "provider_busy": "An install or a sign-in is already running.",
         "recipe_disabled": "Turn this recipe on for this computer first.",
         "app_unavailable": "That isn't available for this app on this computer.",
-        "other": "That didn't work. Try again."
+        "other": "That didn't work. Try again.",
+        "pin_failed": "I couldn't confirm it: any program can modify that file or its folder.",
+        "pin_mismatch": "It changed while you were looking. Check the version shown now and confirm again."
       },
       "problem": {
         "invalid": "{file}: not a valid recipe.",
@@ -268,6 +270,14 @@
         "off": "Sessions: off on this computer until you allow them here.",
         "allow": "Allow sessions here",
         "disallow": "Turn sessions off"
+      },
+      "pin": {
+        "not_pinned": "I found {name} on this computer ({path}). Use it?",
+        "changed": "{name} updated itself. Confirm it's your new version to keep using it.",
+        "missing": "I can't find {name} where it was ({path}).",
+        "unsafe": "Any program on this computer can change {name} ({path}), so I won't use it. Reinstall it with its official installer.",
+        "use": "Use",
+        "confirm": "Yes, it's mine: confirm"
       }
     }
   },
@@ -376,7 +386,8 @@
         "exists": "There's already another program called chalito at {path}. I didn't replace it.",
         "cancelled": "Cancelled: nothing changed.",
         "failed": "Couldn't install it. Nothing changed."
-      }
+      },
+      "advanced": "Advanced: the chalito command for the terminal"
     }
   },
   "connect": {
@@ -414,5 +425,33 @@
       "failed": "Couldn't verify it's you on this computer. Try again."
     },
     "error": "Something failed ({code}). Try again."
+  },
+  "computer": {
+    "title": "This computer",
+    "autostart": {
+      "label": "Start Chalito with the computer",
+      "hint": "That way, if you leave the computer on, Chalito comes back by itself after a restart and keeps working. You can also change it from Chalito's icon in the menu bar or taskbar.",
+      "failed": "I couldn't change it. Please try again."
+    },
+    "folders": {
+      "title": "Folders Chalito can work in",
+      "hint": "Choose your project folders. Chalito only works inside them, and your computer will ask for your password to add one.",
+      "none": "None yet: add a project folder to get started.",
+      "add": "Add a folder",
+      "remove": "Remove",
+      "added": "Done: Chalito can now work in “{label}”.",
+      "already": "“{label}” was already on the list.",
+      "unavailable": "Connect this computer first; then you can choose folders here.",
+      "error": {
+        "not_a_folder": "That isn't a folder I can open.",
+        "too_broad": "That folder is too broad (for example, your whole home folder or a system folder). Choose a project folder.",
+        "chalito_folder": "That's Chalito's own internal folder; choose another one.",
+        "os_auth_failed": "Your computer didn't confirm it was you, so I didn't add it.",
+        "too_many": "You already have the maximum number of folders. Remove one to add another.",
+        "other": "I couldn't add it. Please try again.",
+        "sensitive": "That folder holds keys or passwords (like .ssh or your keychains), or contains one that does. Choose a project folder.",
+        "startup": "Files saved in that folder can run by themselves (when the computer starts or as a command), or it contains such a folder. Choose a project folder."
+      }
+    }
   }
 }

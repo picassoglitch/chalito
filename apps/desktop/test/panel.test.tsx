@@ -128,6 +128,16 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     installApp: async (...a) => void calls.push(["installApp", ...a]),
     declineAppInstall: async (...a) => void calls.push(["declineAppInstall", ...a]),
     launchApp: async (...a) => void calls.push(["launchApp", ...a]),
+    pinApp: async (...a) => void calls.push(["pinApp", ...a]),
+    workspaces: async () => ({ workspaces: [] }),
+    addWorkspace: async (...a) => {
+      calls.push(["addWorkspace", ...a]);
+      return { ok: true, label: "x", added: true };
+    },
+    removeWorkspace: async (...a) => {
+      calls.push(["removeWorkspace", ...a]);
+      return { removed: true };
+    },
     customRecipeChallenge: async (appId) => ({
       title: `Activar «${appId}»`,
       warn: "Chalito ejecutará estos comandos.",

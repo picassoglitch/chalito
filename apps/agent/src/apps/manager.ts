@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   AppId,
   PROVIDER_APP,
@@ -14,7 +14,7 @@ import {
   type RecipePlatformSpec,
 } from "@chalito/protocol";
 import { z } from "zod";
-import { pinClaude, type ClaudePin } from "../claude-pin.js";
+import { checkClaudePin, pinClaude, sha256Fd, type ClaudePin } from "../claude-pin.js";
 import { officialLink, parseVersion, type ProviderProcs } from "../provider-cli.js";
 import type { Logger } from "../redact.js";
 import { which } from "../runner.js";
@@ -112,8 +112,29 @@ export type AppResult =
         | "provider_failed"
         | "unknown_app"
         | "recipe_disabled"
-        | "app_unavailable";
+        | "app_unavailable"
+        | "pin_failed"
+        | "pin_mismatch";
     };
+
+/**
+ * Whether Chalito trusts the app's CLI on this computer (the signed config's pin, path + sha256):
+ * `pinned` (it runs), `not_pinned` (found, not trusted yet), `changed` (it updated itself: the
+ * person confirms the new one), `missing` (the pinned file is gone) or `unsafe` (world-writable).
+ */
+export type AppPinState = "pinned" | "not_pinned" | "changed" | "missing" | "unsafe";
+export interface AppPinView {
+  state: AppPinState;
+  /** The pinned file, if any. */
+  path: string | null;
+  /** What "Usar" would pin now (the pinned file when it only changed), or null. */
+  detected: string | null;
+  /**
+   * The sha256 of `detected` as shown to the person: "Usar" / "confirmar" pin only a file that
+   * still hashes to this at click time.
+   */
+  sha256: string | null;
+}
 
 /** What the desktop panel shows per app. */
 export interface AppView {
@@ -131,6 +152,8 @@ export interface AppView {
   supported: boolean;
   /** The official install for this OS, if any. */
   install: RecipeInstall | null;
+  /** Apps with a CLI on this OS: whether Chalito trusts it here. Null otherwise. */
+  pin: AppPinView | null;
 }
 
 interface Live {
@@ -154,6 +177,40 @@ export const expandPath = (p: string, env: Record<string, string | undefined>): 
 };
 
 /**
+ * Where the official installers put the CLIs, beyond PATH: a computer's login service (launchd,
+ * systemd, a Scheduled Task) starts the agent with a short PATH, so Homebrew, `~/.local/bin`,
+ * npm's per-user folder and the vendors' own installers are looked at too. Only fixed folders of
+ * this user or the system; nothing from the current directory.
+ */
+export const knownBinDirs = (platform: NodeJS.Platform, env: Record<string, string | undefined>): string[] => {
+  const home = homeOf(env);
+  if (platform === "win32") {
+    const v = (name: string) => env[name] ?? env[name.toUpperCase()];
+    const under = (base: string | undefined, ...rest: string[]) => (base ? [[base, ...rest].join("\\")] : []);
+    return [
+      ...under(v("APPDATA"), "npm"),
+      ...under(v("LOCALAPPDATA"), "Microsoft", "WinGet", "Links"),
+      ...under(v("LOCALAPPDATA"), "Programs", "cursor", "resources", "app", "bin"),
+      ...under(v("ProgramFiles"), "nodejs"),
+      ...under(v("ProgramFiles"), "GitHub CLI"),
+      ...under(v("USERPROFILE") ?? home, ".local", "bin"),
+      ...under(v("USERPROFILE") ?? home, ".bun", "bin"),
+    ];
+  }
+  const user = [
+    join(home, ".local", "bin"),
+    join(home, ".claude", "local"),
+    join(home, ".npm-global", "bin"),
+    join(home, ".bun", "bin"),
+    join(home, ".volta", "bin"),
+    join(home, ".cargo", "bin"),
+  ];
+  return platform === "darwin"
+    ? ["/opt/homebrew/bin", "/usr/local/bin", ...user]
+    : ["/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin", join(home, ".linuxbrew", "bin"), ...user];
+};
+
+/**
  * The connect engine's executor (engine contract v2 §3): detect, install, sign in, status and
  * launch, for any app, driven by its recipe. Generalizes #30's ProviderManager: remote commands
  * (app.* and their provider.* aliases) and the desktop panel both land here, and the remote ones
@@ -163,6 +220,12 @@ export const expandPath = (p: string, env: Record<string, string | undefined>): 
 export class AppManager {
   readonly #live = new Map<string, Live>();
   #npmBin: Promise<string | null> | null = null;
+  /**
+   * sha256 per file for the panel's view only, kept while its inode, size and mtime don't change
+   * (the panel re-reads often). Never used to decide what runs: the daemon's exec path checks pins
+   * with checkClaudePin (a fresh read every time) and `pin()` hashes afresh.
+   */
+  readonly #hashes = new Map<string, { ino: number; size: number; mtimeMs: number; sha256: string }>();
 
   constructor(private readonly d: AppManagerDeps) {}
 
@@ -280,8 +343,107 @@ export class AppManager {
     }
     const onPath = which(want, this.d.env, this.#platform);
     if (onPath) return onPath;
+    const known = this.#inKnownDirs(want);
+    if (known) return known;
     const global = await this.#globalBin();
     return global ? which(want, { ...this.d.env, PATH: global }, this.#platform) : null;
+  }
+
+  #inKnownDirs(name: string): string | null {
+    const dirs = knownBinDirs(this.#platform, this.d.env);
+    return which(name, { ...this.d.env, PATH: dirs.join(this.#platform === "win32" ? ";" : ":") }, this.#platform);
+  }
+
+  /** The app's CLI ignoring the pin: what "Usar" would trust now. */
+  async #detected(bin: string): Promise<string | null> {
+    const onPath = which(bin, this.d.env, this.#platform) ?? this.#inKnownDirs(bin);
+    if (onPath) return onPath;
+    const global = await this.#globalBin();
+    return global ? which(bin, { ...this.d.env, PATH: global }, this.#platform) : null;
+  }
+
+  /** Display only (see #hashes): the file's sha256, cached per inode/size/mtime; null when unreadable or unsafe. */
+  async #viewHash(path: string): Promise<string | null> {
+    try {
+      const st = statSync(path);
+      const hit = this.#hashes.get(path);
+      if (hit && hit.ino === st.ino && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.sha256;
+      const sha256 = await sha256Fd(path);
+      this.#hashes.set(path, { ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, sha256 });
+      return sha256;
+    } catch {
+      this.#hashes.delete(path);
+      return null;
+    }
+  }
+
+  /** Whether Chalito trusts the app's CLI here; null for apps without a CLI on this OS. Display only. */
+  async pinView(appId: string): Promise<AppPinView | null> {
+    const e = this.entry(appId);
+    if (!e || (e.custom && !e.enabled)) return null;
+    const bin = this.#bin(e);
+    if (!bin) return null;
+    const pin = this.d.pins.get(appId);
+    const shown = async (state: AppPinState, path: string | null, detected: string | null): Promise<AppPinView> => ({
+      state,
+      path,
+      detected,
+      sha256: detected ? await this.#viewHash(detected) : null,
+    });
+    if (!pin) return shown("not_pinned", null, await this.#detected(bin));
+    // The same rules as checkClaudePin, on the cached hash (this only decides what the panel shows).
+    if (!existsSync(pin.path)) return shown("missing", pin.path, await this.#detected(bin));
+    const st = statSync(pin.path);
+    let parentOpen = true;
+    try {
+      parentOpen = (statSync(dirname(pin.path)).mode & 0o002) !== 0;
+    } catch {
+      /* unreadable folder: treat as unsafe */
+    }
+    if ((st.mode & 0o002) !== 0 || parentOpen) return shown("unsafe", pin.path, null);
+    const now = await this.#viewHash(pin.path);
+    if (now === null) return shown("missing", pin.path, await this.#detected(bin));
+    if (now === pin.sha256) return { state: "pinned", path: pin.path, detected: null, sha256: null };
+    return shown("changed", pin.path, pin.path);
+  }
+
+  /**
+   * "Usar" / "se actualizó: confirmar" in the desktop panel: trusts the app's CLI as the person saw
+   * it. `expected` is the sha256 the panel showed; the file is hashed again now through one open
+   * descriptor and pinned only if it still matches (otherwise `pin_mismatch`: the panel re-reads and
+   * asks again). Refused, like `chalito <tool> pin`, when the file or its folder is world-writable.
+   * Local only: no remote command reaches this; a remote connect or sign-in pins only when nothing
+   * is pinned, and never replaces a pin.
+   */
+  async pin(appId: string, expected: string): Promise<AppResult> {
+    const u = this.#usable(appId);
+    if ("fail" in u) return u.fail;
+    const bin = this.#bin(u.e);
+    if (!bin) return { ok: false, reason: "app_unavailable" };
+    const current = this.d.pins.get(appId);
+    const found =
+      current && existsSync(current.path) && !(await checkClaudePin(current)).ok
+        ? current.path
+        : await this.#detected(bin);
+    if (!found || !existsSync(found) || !statSync(found).isFile()) return { ok: false, reason: "pin_failed" };
+    let pin: ClaudePin;
+    try {
+      pin = await pinClaude(found);
+    } catch (err) {
+      this.d.log.warn("app.pin_failed", { appId, error: err instanceof Error ? err.message : "error" });
+      return { ok: false, reason: "pin_failed" };
+    }
+    if (pin.sha256 !== expected) {
+      this.#hashes.delete(pin.path);
+      return { ok: false, reason: "pin_mismatch" };
+    }
+    await this.d.pins.set(appId, pin);
+    this.#hashes.delete(pin.path);
+    const live = this.#liveOf(appId);
+    if (live.error === "pin_failed") live.error = null;
+    this.d.onChange();
+    await this.report(appId);
+    return { ok: true };
   }
 
   /** A desktop app without a CLI: one of its paths exists, or the OS knows its bundle id / AUMID. */
@@ -446,6 +608,7 @@ export class AppManager {
         installRequestedUntil: this.#liveOf(e.recipe.id).installRequestedUntil,
         supported: isWebOnly(e.recipe) || isNetworkOnly(e.recipe) || !!this.#spec(e),
         install: this.#spec(e)?.install ?? null,
+        pin: await this.pinView(e.recipe.id),
       });
     }
     return out;

@@ -106,7 +106,35 @@ export interface AppView {
    * owner decision 2026-10-06). Null for the four former providers (policy.adapters decides).
    */
   sessions: boolean | null;
+  /** Apps with a CLI here: whether Chalito trusts it (apps/agent/src/apps/manager.ts AppPinView). */
+  pin?: AppPinView | null;
 }
+
+/**
+ * `pinned`: it runs. `not_pinned`: found, not trusted yet ("Usar"). `changed`: it updated itself
+ * ("se actualizó: confirmar"). `missing`: the trusted file is gone. `unsafe`: anyone can change it.
+ */
+export interface AppPinView {
+  state: "pinned" | "not_pinned" | "changed" | "missing" | "unsafe";
+  path: string | null;
+  /** What "Usar" would trust now, or null. */
+  detected: string | null;
+  /** The sha256 of `detected` as shown; "Usar" / "confirmar" send it back and the agent re-checks it. */
+  sha256: string | null;
+}
+
+/** A folder Chalito may work in (the signed policy's workspaces). */
+export interface Workspace {
+  label: string;
+  path: string;
+}
+
+export type AddWorkspaceResult =
+  | { ok: true; label: string; added: boolean }
+  | {
+      ok: false;
+      reason: "not_a_folder" | "too_broad" | "chalito_folder" | "sensitive" | "startup" | "os_auth_failed" | "too_many";
+    };
 
 /** A custom recipe file that didn't load (local only). */
 export interface CustomProblem {
@@ -243,6 +271,16 @@ export interface AgentIpc {
   declineAppInstall(appId: string): Promise<void>;
   /** Opens the app on this computer. */
   launchApp(appId: string): Promise<void>;
+  /**
+   * "Usar" / "se actualizó: confirmar": trust the app's CLI as shown (local only). The agent hashes
+   * it again and refuses with `pin_mismatch` if it no longer matches `sha256`.
+   */
+  pinApp(appId: string, sha256: string): Promise<void>;
+  /** The folders Chalito may work in. */
+  workspaces(): Promise<{ workspaces: Workspace[] }>;
+  /** A folder from the OS picker; the agent asks the OS (password or biometric) before adding it. */
+  addWorkspace(path: string): Promise<AddWorkspaceResult>;
+  removeWorkspace(label: string): Promise<{ removed: boolean }>;
   /** Custom recipes: what enabling one runs, then the local enable (the agent asks the OS itself). */
   customRecipeChallenge(appId: string): Promise<CustomChallenge>;
   enableCustomRecipe(appId: string, answers: { review: boolean; typed: string }): Promise<CustomEnableResult>;
@@ -311,6 +349,10 @@ export const unavailableIpc: AgentIpc = {
   installApp: unavailable,
   declineAppInstall: unavailable,
   launchApp: unavailable,
+  pinApp: unavailable,
+  workspaces: unavailable,
+  addWorkspace: unavailable,
+  removeWorkspace: unavailable,
   customRecipeChallenge: unavailable,
   enableCustomRecipe: unavailable,
   disableCustomRecipe: unavailable,
@@ -375,6 +417,10 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     installApp: async (appId) => void (await call("installApp", { appId })),
     declineAppInstall: async (appId) => void (await call("declineAppInstall", { appId })),
     launchApp: async (appId) => void (await call("launchApp", { appId })),
+    pinApp: async (appId, sha256) => void (await call("pinApp", { appId, sha256 })),
+    workspaces: () => call("workspaces"),
+    addWorkspace: (path) => call("addWorkspace", { path }),
+    removeWorkspace: (label) => call("removeWorkspace", { label }),
     customRecipeChallenge: (appId) => call("customRecipeChallenge", { appId }),
     enableCustomRecipe: (appId, answers) => call("enableCustomRecipe", { appId, answers }),
     disableCustomRecipe: async (appId) => void (await call("disableCustomRecipe", { appId })),

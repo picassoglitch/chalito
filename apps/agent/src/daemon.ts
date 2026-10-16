@@ -1249,6 +1249,7 @@ const startDaemon = async (
           screen,
           links,
           audit: auditAgent,
+          chalitoDir: dir,
         }),
         onError: (method, err) =>
           log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),
