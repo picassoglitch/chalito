@@ -21,7 +21,9 @@ on:
         required: true
         default: "0.0.0-dryrun"
       channel:
-        description: "Update channel"
+        # stable refuses an unsigned Windows or macOS build (release plan): it needs the Azure Artifact
+        # Signing and the Apple Developer ID + notarization secrets. Without them, use beta.
+        description: "Update channel (stable needs the Windows and macOS signing secrets)"
         type: choice
         options: [beta, stable]
         default: beta

@@ -63,16 +63,20 @@ export const connectSrc = (csp: string): string[] =>
       .find(([name]) => name === "connect-src") ?? []
   ).slice(1);
 
+/** A connect-src entry that is an api host: `https://api.…`, or a Cloud Run `https://….run.app`. */
+const API_HOST = /^https:\/\/(?:api\.[^/]+|[^/]+\.run\.app)$/;
+
 /**
  * The app talks to exactly the api it was built for: the CSP must allow `apiBase`'s origin and no
- * other `api.` host, or a build would sign in fine and then fail every request (ADR 0028 §A).
+ * other api host (`api.…` or a `….run.app` service), or a build would sign in fine and then fail
+ * every request (ADR 0028 §A). `where` names the CSP in the error: tauri.conf.json's or the overlay's.
  */
-export const checkCsp = (csp: string, apiBase: string) => {
+export const checkCsp = (csp: string, apiBase: string, where = "tauri.conf.json CSP") => {
   const origin = new URL(apiBase).origin;
   const src = connectSrc(csp);
-  if (!src.includes(origin)) throw new Error(`tauri.conf.json CSP connect-src doesn't allow ${origin}`);
-  const stale = src.filter((s) => /^https:\/\/api\./.test(s) && s !== origin);
-  if (stale.length) throw new Error(`tauri.conf.json CSP connect-src allows another api: ${stale.join(" ")}`);
+  if (!src.includes(origin)) throw new Error(`${where} connect-src doesn't allow ${origin}`);
+  const stale = src.filter((s) => API_HOST.test(s) && s !== origin);
+  if (stale.length) throw new Error(`${where} connect-src allows another api: ${stale.join(" ")}`);
 };
 
 export const releasePlan = (i: PlanInput): Plan => {
@@ -172,7 +176,8 @@ export const releasePlan = (i: PlanInput): Plan => {
 export const checkOverlay = (baseCsp: string, overlay: Record<string, unknown>, apiBase: string) => {
   const origin = new URL(apiBase).origin;
   const app = overlay.app as { security?: { csp?: string } } | undefined;
-  checkCsp(app?.security?.csp ?? baseCsp, apiBase);
+  const own = app?.security?.csp;
+  checkCsp(own ?? baseCsp, apiBase, own === undefined ? "tauri.conf.json CSP" : "release overlay CSP");
   const updater = (overlay.plugins as { updater?: { endpoints?: string[] } } | undefined)?.updater;
   const endpoints = updater?.endpoints ?? [];
   if (!endpoints.length) throw new Error("release overlay has no updater endpoint");

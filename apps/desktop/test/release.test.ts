@@ -121,6 +121,17 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
     expect(() => checkCsp(csp, "https://api.chalito.chalyb.com/")).not.toThrow();
     expect(() => checkCsp(csp, "https://chalito-x.a.run.app")).toThrow(/doesn't allow/);
     expect(() => checkCsp(`${csp} https://api.other.example`, "https://api.chalito.chalyb.com")).toThrow(/another api/);
+    // A Cloud Run service URL left in the CSP is another api too…
+    expect(() => checkCsp(`${csp} https://chalito-znilbomw3q-uc.a.run.app`, "https://api.chalito.chalyb.com")).toThrow(
+      /another api: https:\/\/chalito-znilbomw3q-uc\.a\.run\.app/,
+    );
+    // …but a build against a run.app api is fine when the CSP lists exactly that one.
+    expect(() =>
+      checkCsp(
+        "connect-src 'self' https://chalito-x-uc.a.run.app https://*.supabase.co",
+        "https://chalito-x-uc.a.run.app",
+      ),
+    ).not.toThrow();
     expect(() =>
       releasePlan({ ...BASE, os: "linux", env: {}, updaterPubkey: PUB, apiBase: "https://elsewhere.example" }),
     ).toThrow(/CSP/);
@@ -147,7 +158,10 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
     );
     expect(() => checkOverlay(BASE.csp, up([]), api)).toThrow(/no updater endpoint/);
     const overlayCsp = { ...up([`${api}/r.json`]), app: { security: { csp: "connect-src 'self'" } } };
-    expect(() => checkOverlay(BASE.csp, overlayCsp, api)).toThrow(/doesn't allow/);
+    expect(() => checkOverlay(BASE.csp, overlayCsp, api)).toThrow(/^release overlay CSP connect-src doesn't allow/);
+    expect(() => checkOverlay("connect-src 'self'", up([`${api}/r.json`]), api)).toThrow(
+      /^tauri\.conf\.json CSP connect-src doesn't allow/,
+    );
   });
 
   it("refuses a bad version, a missing key or a non-https api", () => {
