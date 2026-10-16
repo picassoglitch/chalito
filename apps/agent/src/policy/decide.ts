@@ -70,9 +70,14 @@ export const decide = ({
   }
 };
 
-/** Whether the policy allows prompts from this origin at all. */
+/**
+ * Whether the policy allows prompts from this origin at all. `agent:*` (a hand-off over an
+ * owner-made link, ADR 0022 §3) is on unless turned off (`origins.agent: false`). `a2a:*` (an
+ * outside A2A client, ADR 0022 §4) is off unless the person turned it on locally (`origins.a2a: true`); a missing
+ * field is off, and no preset turns it on.
+ */
 export const originAllowed = (
-  origins: { local: boolean; client: boolean; mcp: boolean; call: boolean; agent?: boolean },
+  origins: { local: boolean; client: boolean; mcp: boolean; call: boolean; agent?: boolean | undefined; a2a?: boolean | undefined },
   origin: Origin,
 ) =>
   origin === "local"
@@ -83,4 +88,8 @@ export const originAllowed = (
         ? origins.mcp
         : origin.startsWith("agent:")
           ? origins.agent !== false
-          : origins.call;
+          : origin.startsWith("a2a:")
+            ? origins.a2a === true
+            : origin.startsWith("call:")
+              ? origins.call
+              : false;

@@ -40,6 +40,7 @@ import { PostgresAvatarRepo } from "./avatar/repo.js";
 import { markerKey } from "./avatar/free-marker.js";
 import { pgVoiceCap } from "./voice/caps.js";
 import type { VoiceDeps } from "./voice/routes.js";
+import { PostgresA2aStore, type A2aStore } from "./link/exposures.js";
 
 // Every stray console call is redacted (R-M9).
 installConsoleRedaction();
@@ -61,6 +62,7 @@ const backend = (): {
   repo: ApiRepo;
   identity: IdentityIssuer;
   mcp: McpStore;
+  a2a: A2aStore;
   rooms: RoomsRepo;
   phone?: PhoneDeps;
   voice?: VoiceDeps;
@@ -83,6 +85,7 @@ const backend = (): {
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
     mcp: new PostgresMcpStore(sql),
+    a2a: new PostgresA2aStore(sql),
     // Desktop push-to-talk when OpenAI is configured, admitted and metered through the hub.
     ...(process.env.OPENAI_API_KEY
       ? {

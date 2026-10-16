@@ -34,7 +34,8 @@ export const Policy = z.object({
   /**
    * Prompt origins; each can be turned off. `agent` (hand-offs over links, ADR 0022 §3) is
    * optional so older policies keep their hash; absent = on, since a hand-off also needs a link
-   * the person made on this device. Remote surfaces can turn it off, never on.
+   * the person made on this device. Remote surfaces can turn it off, never on. `a2a` (outside
+   * A2A clients, ADR 0022 §4) is optional too, but absent = off.
    */
   origins: z.object({
     local: z.boolean(),
@@ -42,6 +43,8 @@ export const Policy = z.object({
     mcp: z.boolean(),
     call: z.boolean(),
     agent: z.boolean().optional(),
+    /** Outside A2A clients (ADR 0022 §4). Optional: missing = off; only a local edit turns it on. */
+    a2a: z.boolean().optional(),
   }),
   approvals: z.object({ ttlSeconds: z.number().int().min(30).max(600) }),
   /** Plaintext egress exceptions (opt-in). */

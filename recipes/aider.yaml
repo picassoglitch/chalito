@@ -53,6 +53,8 @@ apiKey:
 driver:
   terminal: { command: [aider] }
 capabilities: [terminal]
+notConnectable:
+  reason: "Speaks no ACP, MCP, A2A or chat API (no ACP mode, checked 2026-10-06). It runs only as a terminal session."
 verification:
   checked: "2026-10-06"
   sources:

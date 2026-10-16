@@ -110,7 +110,7 @@ export const presetPolicy = (preset: z.infer<typeof PolicyPreset>, cur: Policy):
       return {
         ...cur,
         remote: { maxPermissionMode: "default", maxCodexSandbox: "read-only" },
-        origins: { ...cur.origins, mcp: false, call: false },
+        origins: { ...cur.origins, mcp: false, call: false, ...(cur.origins.a2a ? { a2a: false } : {}) },
         egress: { callLines: false, mcpCards: false },
       };
     case "estandar":

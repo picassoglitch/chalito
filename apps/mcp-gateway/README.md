@@ -18,12 +18,29 @@ Chalito as a remote MCP server (Streamable HTTP, MCP 2026-07-28) for Claude and 
 | `post_to_mesa`       | `mesa:post`          | Seals the text to the person's client devices here, then stores the turn (origin `mcp:<provider>`). |
 | `recommend_decision` | `approval:recommend` | Adds an advisory recommendation. The person still signs every decision on their phone.            |
 | `prompt_session`     | `session:prompt`     | Seals the prompt to the session's agent key and queues a `RelayedCommand` (origin `mcp:<provider>`). |
+| `list_agents`        | `mcp:read`           | The person's agent apps per device (app id, kind, state). Status only.                            |
+| `create_task`        | `link:handoff`       | A hand-off task for one agent. The api asks the LinkAuthorizer (deny-all by default) and only then queues a `session.start` (at most the default mode). |
 
 `session:prompt` is a separate grant. It is never pre-checked on the consent screen, and it is only offered to Claude
 and ChatGPT connectors. No scope exists for deciding approvals, device admin, policy, Developer mode, rooms or billing.
 
 A prompt from MCP is an unsigned turn. Developer mode never auto-approves it, so any HIGH or CRITICAL action it leads
 to waits for a passkey-signed decision from the phone, even with `autoApproveHigh` on.
+
+`link:handoff` (ADR 0022 §4) is also a separate grant, never pre-checked, and over MCP only for Claude and ChatGPT.
+
+## A2A server (ADR 0022 §4; off by default)
+
+Mounted only with `CHALITO_A2A_ENABLED=1` and `CHALITO_A2A_RESOURCE` (e.g. `https://<gateway>/a2a`) on both the gateway and
+the api; otherwise every path is a 404. No domain is configured (owner decision #36).
+
+- The owner exposes an agent from a client (`POST /v1/a2a/exposures`): it gets an opaque id, its card at
+  `/a2a/<id>/.well-known/agent-card.json` (A2A 1.0, ProtoJSON, a JSON-RPC interface and Chalito's OAuth), and its endpoint
+  `/a2a/<id>`. Revoking it makes both 404.
+- Callers get a token from the same authorization server with `resource` = the A2A resource and scope `link:handoff`
+  (the only scope an A2A grant can have), approved on the owner's phone with the passkey. Origin: `a2a:<grant id>`.
+- `SendMessage` goes through the same api route as `create_task`; a refused task comes back `TASK_STATE_REJECTED`, an
+  accepted one `TASK_STATE_SUBMITTED`. Tasks are kept in the instance's memory, per grant.
 
 ## Security model
 

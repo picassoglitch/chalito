@@ -718,6 +718,9 @@ export class AgentCore {
         grok: policy.adapters.grok ?? false,
         gemini: policy.adapters.gemini ?? false,
         acp: false,
+        // Like "acp": a chat-api or a2a session always names its app.
+        "chat-api": false,
+        a2a: false,
       }[kind];
       if (!this.d.adapters[kind] || !enabled) return { ok: false, reason: "adapter_disabled" };
       return { ok: true, adapter: kind, ...(appId ? { appId } : {}) };
@@ -732,7 +735,7 @@ export class AgentCore {
       this.d.appAdapters && Object.hasOwn(this.d.appAdapters, appId) ? this.d.appAdapters[appId] : undefined;
     if (!appAdapter) return { ok: false, reason: "adapter_disabled" };
     // The card names the protocol family; the session doc carries the app id.
-    return { ok: true, adapter: adapter ?? "acp", appId, appAdapter };
+    return { ok: true, adapter: adapter ?? appAdapter.kind, appId, appAdapter };
   }
 
   /** The daemon rebuilds the adapters when an app is connected, signed out or installed. */

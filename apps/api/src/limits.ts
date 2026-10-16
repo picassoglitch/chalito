@@ -74,6 +74,12 @@ export const API_ROUTES: RouteTable = {
   "POST /v1/gateway/mesa-turns": s2s(),
   "POST /v1/gateway/prompts": s2s(),
   "POST /v1/gateway/audit": s2s(),
+  "POST /v1/gateway/link-tasks": s2s(),
+
+  // A2A exposures (ADR 0022 §4; 404 unless the A2A server is on)
+  "GET /v1/a2a/exposures": user(60, 1, 0),
+  "POST /v1/a2a/exposures": user(30, 0.5),
+  "POST /v1/a2a/exposures/:id/revoke": user(30, 0.5),
 
   // Phone verification (each start sends an SMS: global cap)
   "POST /v1/phone/start": sensitive(5, 0.5, 2 * KB),
