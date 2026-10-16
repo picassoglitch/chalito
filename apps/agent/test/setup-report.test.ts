@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { DevicePresence, DeviceSetup } from "@chalito/protocol";
 import { deviceSetup, setupReporter } from "../src/setup-report.js";
+
+/** As the daemon decides it from the catalog: these run sessions, aider (a terminal app) doesn't. */
+const SESSION_APPS = new Set(["claude-code", "codex", "grok", "gemini"]);
+const runsSessions = (id: string) => SESSION_APPS.has(id);
 import { SupabaseStore } from "../src/supabase-store.js";
 import { FakeSupabase } from "./fake-supabase.js";
 
@@ -9,7 +13,7 @@ const HOME = "/Users/aldo";
 const pin = (p: string) => ({ path: `${HOME}/${p}`, sha256: HASH });
 
 describe("First Run D: the setup a computer reports (never paths)", () => {
-  it("lists pinned app ids, the folder count and labels", () => {
+  it("lists pinned session apps (not a pinned terminal app), the folder count and labels", () => {
     const s = deviceSetup(
       {
         claude: pin(".claude/local/claude"),
@@ -22,8 +26,9 @@ describe("First Run D: the setup a computer reports (never paths)", () => {
           { label: "web-2", path: `${HOME}/code/web` },
         ],
       },
+      runsSessions,
     );
-    expect(s).toEqual({ adapters: ["aider", "claude-code", "codex"], workspaces: 2, labels: ["chalito", "web-2"] });
+    expect(s).toEqual({ adapters: ["claude-code", "codex"], workspaces: 2, labels: ["chalito", "web-2"] });
     expect(JSON.stringify(s)).not.toContain(HOME);
     expect(JSON.stringify(s)).not.toContain(HASH);
   });
@@ -37,15 +42,20 @@ describe("First Run D: the setup a computer reports (never paths)", () => {
           { label: "~/notes", path: `${HOME}/notes` },
           { label: "C:proj", path: "C:\\proj" },
           { label: "a\\b", path: `${HOME}/ab` },
-          { label: "ok", path: `${HOME}/ok` },
+          { label: " ok ", path: `${HOME}/ok` },
+          { label: "..", path: `${HOME}/dotdot` },
+          { label: "a\u202Eb", path: `${HOME}/bidi` },
+          { label: "zero\u200Bwidth", path: `${HOME}/zw` },
+          { label: "   ", path: `${HOME}/blank` },
         ],
       },
+      runsSessions,
     );
-    expect(s).toEqual({ adapters: [], workspaces: 5, labels: ["ok"] });
+    expect(s).toEqual({ adapters: [], workspaces: 9, labels: ["ok"] });
   });
 
   it("is empty for a fresh computer", () => {
-    expect(deviceSetup({}, { workspaces: [] })).toEqual({ adapters: [], workspaces: 0, labels: [] });
+    expect(deviceSetup({}, { workspaces: [] }, runsSessions)).toEqual({ adapters: [], workspaces: 0, labels: [] });
   });
 
   it("the wire schema is strict: no extra field can ride along", () => {
@@ -55,7 +65,7 @@ describe("First Run D: the setup a computer reports (never paths)", () => {
   });
 
   it("reports only when something changed, and retries after a failed write", async () => {
-    let cur = deviceSetup({}, { workspaces: [] });
+    let cur = deviceSetup({}, { workspaces: [] }, runsSessions);
     const write = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
     const report = setupReporter(() => cur, write);
     await expect(report()).rejects.toThrow("offline");
@@ -82,6 +92,30 @@ describe("SupabaseStore: presence is merged, never partially overwritten", () =>
     expect(db.ops.at(-1)!.body).toEqual({ presence: { desktopActive: true, setup } });
     await store.updateDevice({ presence: { desktopActive: false } });
     expect(db.rows("devices")[0]!.presence).toEqual({ desktopActive: false, setup });
+  });
+
+  it("concurrent reports don't drop each other's field (one write at a time)", async () => {
+    const db = new FakeSupabase();
+    const store = new SupabaseStore(db, OWNER, DEV);
+    db.seed("devices", { owner: OWNER, device_id: DEV });
+    const setup = { adapters: ["codex"], workspaces: 2, labels: ["a", "b"] };
+    await Promise.all([
+      store.updateDevice({ presence: { desktopActive: true } }),
+      store.updateDevice({ presence: { setup } }),
+      store.updateDevice({ lastSeenAt: 1 }),
+    ]);
+    expect(db.rows("devices")[0]!.presence).toEqual({ desktopActive: true, setup });
+  });
+
+  it("a failed write doesn't block the next one", async () => {
+    const db = new FakeSupabase();
+    const store = new SupabaseStore(db, OWNER, DEV);
+    db.seed("devices", { owner: OWNER, device_id: DEV });
+    const bad = store.updateDevice({ presence: { setup: { adapters: [], workspaces: 1, labels: ["/x"] } } });
+    const good = store.updateDevice({ presence: { desktopActive: true } });
+    await expect(bad).rejects.toThrow();
+    await good;
+    expect(db.rows("devices")[0]!.presence).toEqual({ desktopActive: true });
   });
 
   it("refuses a presence with a path in it before writing anything", async () => {

@@ -3,15 +3,24 @@ import { AppId } from "./recipe.js";
 
 /**
  * A workspace label as the person named it (the folder's name, made unique: "proyecto-2"). Never
- * a path: no slash or backslash, no "~", no drive letter. Labels already travel in session rows.
+ * a path: no slash or backslash, no "~", no drive letter, not "." or "..". Trimmed; no control,
+ * bidi or zero-width characters (they'd hide what's shown). Labels already travel in session rows.
  */
 export const WorkspaceLabel = z
   .string()
+  .trim()
   .min(1)
   .max(60)
-  .refine((s) => !/[\\/]/.test(s) && !s.startsWith("~") && !/^[A-Za-z]:/.test(s), {
-    message: "a workspace label, not a path",
-  });
+  .refine(
+    (s) =>
+      !/[\\/]/.test(s) &&
+      !s.startsWith("~") &&
+      !/^[A-Za-z]:/.test(s) &&
+      s !== "." &&
+      s !== ".." &&
+      !/[\p{Cc}\p{Cf}]/u.test(s),
+    { message: "a workspace label, not a path" },
+  );
 
 /**
  * What a computer reports about its own setup (First Run D, ADR 0028 §6), so the checklist reads

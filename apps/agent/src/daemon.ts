@@ -50,7 +50,7 @@ import { buildDrivers, driverFactory, type Driver } from "./drivers/registry.js"
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, redactDeep, type Logger } from "./redact.js";
-import { deviceSetup, setupReporter } from "./setup-report.js";
+import { SESSION_KINDS, deviceSetup, setupReporter } from "./setup-report.js";
 import { acpDriver } from "./drivers/index.js";
 import { spawnRunner, which } from "./runner.js";
 import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
@@ -549,7 +549,11 @@ const startDaemon = async (
   const currentConfig = (): PairedConfig => requirePaired(readConfig(dir, env, { keys: id.sign }));
   // First Run D: what the checklist reads (pinned app ids, folder count and labels; never paths).
   const reportSetup = setupReporter(
-    () => deviceSetup(currentConfig(), policy.get()),
+    () =>
+      deviceSetup(currentConfig(), policy.get(), (appId) => {
+        const r = catalog.get(appId)?.recipe;
+        return !!r && r.kinds.some((k) => SESSION_KINDS.has(k));
+      }),
     async (setup) => {
       if (store) await store.updateDevice({ presence: { setup } });
     },

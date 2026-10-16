@@ -564,10 +564,27 @@ export class SupabaseStore implements AgentStore {
 
   // ---- device --------------------------------------------------------------------
 
-  /** What this process last wrote to `presence`: each report replaces the whole column. */
+  /**
+   * What this process last wrote to `presence`: each report replaces the whole column. It starts
+   * empty on purpose, so a restart's first report also clears a stale `desktopActive` left by a
+   * desktop app that's gone (the panel reports it again when it's open).
+   */
   #presence: DevicePresence = {};
+  /** updateDevice calls run one at a time, so each presence merge starts from the last write. */
+  #deviceChain: Promise<unknown> = Promise.resolve();
 
-  async updateDevice(fields: {
+  updateDevice(fields: {
+    policyHash?: string;
+    devMode?: unknown;
+    lastSeenAt?: number;
+    presence?: DevicePresence;
+  }): Promise<void> {
+    const run = this.#deviceChain.then(() => this.#updateDevice(fields));
+    this.#deviceChain = run.catch(() => undefined);
+    return run;
+  }
+
+  async #updateDevice(fields: {
     policyHash?: string;
     devMode?: unknown;
     lastSeenAt?: number;
