@@ -22,7 +22,7 @@ import {
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
-import { brokerPath, startBroker, type Broker } from "./computer/broker.js";
+import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
 import { TerminalControl } from "./terminal/control.js";
@@ -39,7 +39,7 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
-import { FileLinkStorage, LinkManager, MemoryLinkCloud } from "./links/index.js";
+import { FileLinkStorage, LinkManager, LinkTools, MemoryLinkCloud } from "./links/index.js";
 import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
 import { osAuthFor } from "./os-auth.js";
@@ -186,6 +186,8 @@ export interface DaemonDeps {
   computerDriver?: () => NativeDriver;
   /** Defaults to ~/.chalito/computer.sock (a named pipe on Windows). */
   brokerPath?: string;
+  /** Defaults to ~/.chalito/links.sock (a named pipe on Windows). */
+  linksBrokerPath?: string;
   /** Engine: the catalog built into the agent (tests pass their own). */
   builtinCatalog?: RecipeCatalog;
   /** Engine: keys that may sign a served catalog (production: the compiled-in CATALOG_KEYS). */
@@ -333,6 +335,16 @@ export const computerMcpCommand = (
   isInterpreter(execPath) && argv[1]
     ? { command: execPath, args: [...execArgv, argv[1], "computer", "mcp"] }
     : { command: execPath, args: ["computer", "mcp"] };
+
+/** How a coding agent starts `chalito link mcp` (the session link tools, links/tool-server.ts). */
+export const linkMcpCommand = (
+  execPath: string = process.execPath,
+  argv: string[] = process.argv,
+  execArgv: string[] = process.execArgv,
+): { command: string; args: string[] } => {
+  const c = computerMcpCommand(execPath, argv, execArgv);
+  return { command: c.command, args: [...c.args.slice(0, -2), "link", "mcp"] };
+};
 
 const servicePlanFiles = (bin: string, home: string): string[] => {
   try {
@@ -902,6 +914,17 @@ const startDaemon = async (
     log,
   });
   coreDeps.links = links;
+  // The session link tools (M16 F): a local MCP server for sessions that are a link's sender,
+  // over their own broker socket (no desktop app needed; every call still asks the phone).
+  let linksBroker: Broker | null = null;
+  const linkMcp = linkMcpCommand();
+  const linkTools = new LinkTools({
+    links,
+    mcpLaunch: () => (linksBroker ? { ...linkMcp, socket: linksBroker.path } : null),
+    audit: auditAgent,
+    now,
+  });
+  coreDeps.linkTools = linkTools;
   const core = new AgentCore(coreDeps);
   // Sessions from before this start can be resumed (lazily: nothing is spawned for them now).
   await core
@@ -921,6 +944,14 @@ const startDaemon = async (
     now,
   });
   await lan?.onPolicyChange();
+  try {
+    linksBroker = await startBroker({
+      path: deps.linksBrokerPath ?? linksBrokerPath(dir),
+      call: (token, tool, args) => linkTools.call(token, tool, args),
+    });
+  } catch (err) {
+    log.error("link.broker_unavailable", { error: err instanceof Error ? err.message : "error" });
+  }
   if (computer) {
     const control = computer;
     try {
@@ -1178,6 +1209,7 @@ const startDaemon = async (
     // Every session stays resumable after the restart (sessions.json).
     await core.suspendAll().catch(() => undefined);
     await broker?.close().catch(() => undefined);
+    await linksBroker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
     await lan?.stop("agent_stop").catch(() => undefined);
     links.close();

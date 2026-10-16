@@ -63,11 +63,13 @@ export class GatewayApi {
       exposureId?: string;
     },
   ) {
-    return this.#post<{ cid: string; linkId: string; targetDeviceId: string }>(
-      "/v1/gateway/link-tasks",
-      accessToken,
-      b,
-    );
+    return this.#post<{
+      cid: string;
+      linkId: string;
+      targetDeviceId: string;
+      /** AUTH_REQUIRED: over a link set to "ask me each time", waiting for the owner's tap. */
+      state?: "TASK_STATE_SUBMITTED" | "TASK_STATE_AUTH_REQUIRED";
+    }>("/v1/gateway/link-tasks", accessToken, b);
   }
   audit(accessToken: string, b: { tool: "list_pending" | "get_session_card" | "list_agents"; target?: string }) {
     return this.#post<null>("/v1/gateway/audit", accessToken, b);

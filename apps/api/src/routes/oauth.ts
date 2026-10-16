@@ -714,7 +714,8 @@ export const oauthRoutes = (
 
   const LinkTaskBody = z
     .object({
-      cid: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/),
+      /** `lnk_` + id chars only; the device makes the task's session id from it (outsideTaskSid). */
+      cid: z.string().regex(/^lnk_[A-Za-z0-9]{8,64}$/),
       /** The task's prompt, sealed by the gateway to the target agent's key. */
       promptCt: SealedEnvelope,
       /** MCP `create_task`: the agent the caller named (from `list_agents`). */
@@ -793,18 +794,10 @@ export const oauthRoutes = (
       });
       return c.json({ error: "link_denied", reason: "share_only" }, 403);
     }
-    if (decision.confirm) {
-      // "Ask me each time" (the default) needs the phone's one-tap confirmation, which Phase C
-      // builds. Until then such a task is not relayed at all: fail closed.
-      // TODO(m16c): park the task for the owner's confirmation instead.
-      await deps.audit.record({
-        action: "link.handoff_pending",
-        owner: t.owner,
-        actor: origin,
-        meta: { ...meta, linkId: decision.linkId },
-      });
-      return c.json({ error: "confirmation_required", linkId: decision.linkId }, 409);
-    }
+    // "Ask me each time" (the default): the task goes to the device marked for confirmation. The
+    // agent asks the owner's phone (`link_handoff`, one tap) and starts the session only on a
+    // signed yes; a no or no answer rejects it. The caller sees TASK_STATE_AUTH_REQUIRED meanwhile.
+    const confirm = decision.confirm;
     const now = deps.now();
     const body = CommandBody.safeParse({
       v: 1,
@@ -822,6 +815,7 @@ export const oauthRoutes = (
         promptCt: b.data.promptCt,
         // Never more than "default", whatever the link's ceiling; the device's ceiling applies on top.
         permissionMode: decision.permissionCeiling === "plan" ? "plan" : "default",
+        ...(confirm ? { linkConfirm: { linkId: decision.linkId } } : {}),
       },
     });
     if (!body.success) return fail(400, "bad_request");
@@ -829,13 +823,21 @@ export const oauthRoutes = (
     if ((await store().insertCommand(t.owner, target.deviceId, b.data.cid, env, body.data.expiresAt)) === "no_device")
       return fail(404, "no_device");
     await deps.audit.record({
-      action: "link.handoff_relayed",
+      action: confirm ? "link.handoff_pending" : "link.handoff_relayed",
       owner: t.owner,
       actor: origin,
       target: target.appId,
       meta: { ...meta, linkId: decision.linkId },
     });
-    return c.json({ cid: b.data.cid, linkId: decision.linkId, targetDeviceId: target.deviceId }, 201);
+    return c.json(
+      {
+        cid: b.data.cid,
+        linkId: decision.linkId,
+        targetDeviceId: target.deviceId,
+        state: confirm ? "TASK_STATE_AUTH_REQUIRED" : "TASK_STATE_SUBMITTED",
+      },
+      confirm ? 202 : 201,
+    );
   });
 
   // ---------------------------------------------------------------- A2A exposures (the owner's)

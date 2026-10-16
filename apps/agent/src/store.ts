@@ -11,6 +11,15 @@ import type {
 } from "@chalito/protocol";
 
 /**
+ * The database refused a write of this device's own rows (Postgres 42501: row-level security or
+ * privilege). The policies only let an active device write as itself, so this is how a revoked
+ * device's agent finds out: an expected outcome, not a crash. Stores surface it as an error with
+ * that `code` (SupabaseError does).
+ */
+export const isRevokedRefusal = (err: unknown): boolean =>
+  typeof err === "object" && err !== null && (err as { code?: unknown }).code === "42501";
+
+/**
  * Everything the agent reads from or writes to the cloud. Supabase in production
  * (supabase-store.ts), in memory for tests. The agent never trusts what it reads here
  * beyond what a signature from its local trusted list proves.

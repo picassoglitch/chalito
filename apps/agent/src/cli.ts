@@ -10,6 +10,7 @@ import { AnchorStore } from "./anchor.js";
 import { pinClaude } from "./claude-pin.js";
 import { brokerCall } from "./computer/broker.js";
 import { runMcpServer } from "./computer/mcp-server.js";
+import { LINKS_INSTRUCTIONS, LINKS_SERVER, linkMcpTools } from "./links/tools.js";
 import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/native.js";
 import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
 import { appsCli } from "./apps/cli.js";
@@ -454,6 +455,24 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       input: io.tty.input,
       write: io.out,
       call: (tool, args) => brokerCall(socket, token, tool, args),
+    });
+    return 0;
+  }
+
+  // The same for the link tools (links/tool-server.ts): started for a session that is the sender
+  // on a link; it holds only that session's token, and the agent decides every call.
+  if (cmd === "link" && sub === "mcp") {
+    const socket = io.env.CHALITO_LINKS_SOCKET;
+    const token = io.env.CHALITO_LINKS_TOKEN;
+    if (!socket || !token) {
+      io.err("chalito link mcp is started by Chalito for a session, not by hand.\n");
+      return 1;
+    }
+    await runMcpServer({
+      input: io.tty.input,
+      write: io.out,
+      call: (tool, args) => brokerCall(socket, token, tool, args),
+      server: { name: LINKS_SERVER, title: "Chalito links", instructions: LINKS_INSTRUCTIONS, tools: linkMcpTools },
     });
     return 0;
   }
