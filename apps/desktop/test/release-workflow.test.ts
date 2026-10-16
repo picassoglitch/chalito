@@ -107,4 +107,20 @@ describe("release workflow", () => {
     expect(step).toMatch(/integrity mismatch/);
     expect(code.slice(smoke, sidecar)).toContain("arch -x86_64");
   });
+
+  // ADR 0028 §A: one api address, written once in release.yml; the app's CSP and the updater
+  // endpoint must agree with it, or an installed build can't reach the api or find updates.
+  it("CHALITO_API_BASE is set once and the desktop CSP allows exactly that api", async () => {
+    const bases = [...yml.matchAll(/^\s*CHALITO_API_BASE:\s*(\S+)\s*$/gm)].map((m) => m[1]!);
+    expect(bases).toEqual(["https://api.chalito.chalyb.com"]);
+    const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+      app: { security: { csp: string } };
+    };
+    const { checkCsp } = await import("../scripts/release/plan.js");
+    expect(() => checkCsp(conf.app.security.csp, bases[0]!)).not.toThrow();
+    // The plan gets the same value, and derives the updater endpoint from it.
+    expect(code).toMatch(/release plan [^\n]*\n?[^\n]*--api "\$CHALITO_API_BASE"/);
+    // …and the build runs with the overlay the plan checked (it carries the updater endpoint).
+    expect(code).toMatch(/pnpm tauri build --config src-tauri\/tauri\.release\.conf\.json/);
+  });
 });

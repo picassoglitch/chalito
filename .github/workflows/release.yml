@@ -33,6 +33,8 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# The ONE api address for the desktop build (ADR 0028 §A): the plan derives the updater endpoint
+# from it and refuses a build whose tauri.conf.json CSP doesn't allow exactly this origin.
 env:
   CHALITO_API_BASE: https://api.chalito.chalyb.com
 
