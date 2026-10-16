@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import es from "../messages/es.json" with { type: "json" };
 import en from "../messages/en.json" with { type: "json" };
@@ -171,12 +171,25 @@ describe("companion picker", () => {
       </RosterAssetsProvider>,
       locale,
     );
-  const radios = () => screen.getAllByRole("radio") as HTMLInputElement[];
+  /*
+   * The picker renders up to 220 radios. `getAllByRole` resolves every node's implicit role and walks
+   * `getComputedStyle` up the tree for each candidate: ~150ms per call over 220 radios locally, many
+   * times that on a loaded CI runner (this block hit the 5s timeout there). jsdom applies no
+   * stylesheets, so that visibility check proves nothing; the radios are native inputs inside the
+   * one radiogroup, so select them directly, and scope category lookups to their group.
+   */
+  const radios = () => [
+    ...screen.getByRole("radiogroup", { hidden: true }).querySelectorAll<HTMLInputElement>('input[type="radio"]'),
+  ];
+  const category = (name: string) =>
+    within(screen.getByTestId("companion-categories")).getByRole("button", { name, hidden: true });
 
   it("opens on the chosen companion's category, with lazy thumbnails", () => {
     picker();
-    expect(screen.getByRole("button", { name: "Personas" }).getAttribute("aria-pressed")).toBe("true");
+    expect(category("Personas").getAttribute("aria-pressed")).toBe("true");
     expect(radios()).toHaveLength(20);
+    // The fast `radios()` selector finds exactly what the accessible-role query does (checked once, on 20).
+    expect(radios()).toEqual(screen.getAllByRole("radio"));
     expect(radios().find((r) => r.checked)?.value).toBe("chalito");
     const img = screen.getByRole("radiogroup").querySelector("img")!;
     expect(img.getAttribute("src")).toBe("/roster/assets/chalito/thumb-128.webp");
@@ -201,9 +214,9 @@ describe("companion picker", () => {
   it("switches category, shows everyone under Todos, and picks", () => {
     const picked: string[] = [];
     picker("chalito", (c) => picked.push(c));
-    fireEvent.click(screen.getByRole("button", { name: "Animales" }));
+    fireEvent.click(category("Animales"));
     expect(radios().map((r) => r.value)).toContain("bruno");
-    fireEvent.click(screen.getByRole("button", { name: "Todos" }));
+    fireEvent.click(category("Todos"));
     expect(radios()).toHaveLength(220);
     fireEvent.click(radios().find((r) => r.value === "luna")!);
     expect(picked).toEqual(["luna"]);
@@ -214,7 +227,7 @@ describe("companion picker", () => {
     const search = screen.getByRole("searchbox", { name: "Buscar compañero" });
     fireEvent.change(search, { target: { value: "bambu" } });
     expect(radios().map((r) => r.value)).toEqual(["bambu"]);
-    expect(screen.getByRole("button", { name: "Todos" }).getAttribute("aria-pressed")).toBe("true");
+    expect(category("Todos").getAttribute("aria-pressed")).toBe("true");
     fireEvent.change(search, { target: { value: "zzzz" } });
     expect(screen.queryByRole("radiogroup")).toBeNull();
     expect(screen.getByTestId("companion-empty").textContent).toBe("No encontramos a nadie con ese nombre.");
@@ -222,8 +235,8 @@ describe("companion picker", () => {
 
   it("labels categories in English", () => {
     picker("bruno", undefined, "en");
-    expect(screen.getByRole("button", { name: "Animals" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "Vehicles & space" })).toBeTruthy();
+    expect(category("Animals").getAttribute("aria-pressed")).toBe("true");
+    expect(category("Vehicles & space")).toBeTruthy();
   });
 });
 

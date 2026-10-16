@@ -35,7 +35,7 @@ import {
   isLegacyApp,
 } from "@chalito/protocol";
 import { SESSIONS_DEFAULTS, type SessionsConfig } from "@chalito/config";
-import { ApprovalManager } from "./approvals.js";
+import { ApprovalManager, type ApprovalOutcome } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
 import { publicReason } from "./command-result.js";
@@ -61,7 +61,7 @@ import {
 import { redact, redactDeep, type Logger } from "./redact.js";
 import { Sealer } from "./sealing.js";
 import { pruneRecords, type SessionRecord, type SessionRegistry } from "./session-registry.js";
-import type { AgentStore } from "./store.js";
+import { isRevokedRefusal, type AgentStore } from "./store.js";
 
 /** Holds the local policy; `set` persists, re-hashes and reports `policyHash`. */
 
@@ -215,6 +215,7 @@ export class AgentCore {
   readonly callLines: CallLinePublisher;
   readonly sealer: Sealer;
   pendingPreset: "estricto" | "estandar" | "relajado" | null = null;
+  #revoked = false;
 
   constructor(private readonly d: AgentCoreDeps) {
     this.sealer = new Sealer(d.trust, { deviceId: d.self.deviceId, pubBox: d.self.pubBox });
@@ -919,7 +920,9 @@ export class AgentCore {
           card.question(undefined);
           return answers;
         },
-        onEvent: (e) => void this.#onAdapterEvent(session, e),
+        // Never an unhandled rejection: one would take the whole agent process down.
+        onEvent: (e) =>
+          void this.#onAdapterEvent(session, e).catch((err: unknown) => this.#writeFailed("session.event_failed", err)),
       });
     } catch (err) {
       // Nothing runs: forget the live session (a resumable one goes back to waiting).
@@ -1089,7 +1092,7 @@ export class AgentCore {
   #armIdle(s: Session): void {
     s.idleTimer?.clear();
     s.idleTimer = undefined;
-    if (BUSY.has(s.state) || s.closing) return;
+    if (BUSY.has(s.state) || s.closing || this.#revoked) return;
     const timeout = this.#lifecycle.session.idleTimeout;
     const wait = Math.max(0, s.lastActiveAt + timeout - this.d.now());
     s.idleTimer = this.#schedule(() => {
@@ -1104,7 +1107,7 @@ export class AgentCore {
    * Closes a session's process and keeps it resumable: `handle.close()`, out of the live map,
    * its provider session id kept. The phone keeps the state it had (no "completed").
    */
-  #suspend(s: Session, reason: "idle" | "session_limit" | "agent_stop"): void {
+  #suspend(s: Session, reason: "idle" | "session_limit" | "agent_stop" | "agent_revoked"): void {
     if (s.closing) return;
     s.closing = true;
     s.idleTimer?.clear();
@@ -1121,6 +1124,8 @@ export class AgentCore {
     }
     this.#persist();
     this.d.log.info("session.closed", { sid: s.sid, reason });
+    // Revoked: the database refuses this device's writes, so there's no one to tell.
+    if (this.#revoked) return;
     void this.d.store
       .upsertSession(s.sid, { live: false, updatedAt: this.d.now() })
       .catch((err: unknown) =>
@@ -1132,6 +1137,37 @@ export class AgentCore {
   #retire(s: Session): void {
     if (s.closing || this.sessions.get(s.sid) !== s) return;
     this.#suspend(s, "idle");
+  }
+
+  /** True once the database refused a write as this device's (the account revoked it). */
+  get revoked(): boolean {
+    return this.#revoked;
+  }
+
+  /**
+   * A store write failed. An RLS refusal (42501) of this device's own rows means the account
+   * revoked it: an expected outcome, handled once by `#onRevoked`. Anything else is logged.
+   */
+  #writeFailed(what: string, err: unknown): void {
+    if (isRevokedRefusal(err)) return this.#onRevoked(err);
+    this.d.log.warn(what, { error: err instanceof Error ? err.message : "error" });
+  }
+
+  /**
+   * This device was revoked (the daemon also stops on its next token refresh): stop publishing
+   * at once. Pending approvals end as denied, every session process closes (keeping its idle and
+   * delta timers from firing), link retries stop, and no more cards, events or sessions are written.
+   */
+  #onRevoked(err?: unknown): void {
+    if (this.#revoked) return;
+    this.#revoked = true;
+    this.d.log.warn("agent.revoked", {
+      action: "stop_publishing",
+      ...(err instanceof Error ? { error: err.message } : {}),
+    });
+    this.approvals.revokeAll();
+    this.d.links?.close();
+    for (const s of [...this.sessions.values()]) this.#suspend(s, "agent_revoked");
   }
 
   /** Agent shutdown: interrupt busy sessions, close every process, keep all of them resumable. */
@@ -1225,7 +1261,7 @@ export class AgentCore {
     // the promise: the resolution below must not remove the call line before it was published,
     // or a fast decision leaves a stale plaintext line behind (seen over Supabase round-trips).
     let announced: Promise<void> = Promise.resolve();
-    const outcome = await this.approvals.request({
+    const outcome = await this.#requestApproval({
       sid: s.sid,
       risk: input.risk,
       stepUp: input.stepUp,
@@ -1250,12 +1286,15 @@ export class AgentCore {
             sessionLabel: s.label,
             question: null,
           });
-        })().catch((err: unknown) =>
-          this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" }),
-        );
+        })().catch((err: unknown) => {
+          if (isRevokedRefusal(err)) return this.#onRevoked(err);
+          this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" });
+        });
       },
     });
     await announced;
+    // Revoked meanwhile: the sweep already denied it and removed its call line; write nothing.
+    if (this.#revoked) return outcome;
     if (aid) {
       s.card.approvalPending(aid, false);
       await this.callLines.remove(`${s.sid}_${aid}`);
@@ -1268,6 +1307,17 @@ export class AgentCore {
       });
     }
     return outcome;
+  }
+
+  /** `approvals.request`, where a refusal of the approval's own rows (42501) is the revoke. */
+  async #requestApproval(input: Parameters<ApprovalManager["request"]>[0]): Promise<ApprovalOutcome> {
+    try {
+      return await this.approvals.request(input);
+    } catch (err) {
+      if (!isRevokedRefusal(err)) throw err;
+      this.#onRevoked(err);
+      return { allow: false, reason: "agent_revoked" };
+    }
   }
 
   /**
@@ -1301,7 +1351,7 @@ export class AgentCore {
 
   async #onAdapterEvent(s: Session, e: AdapterEvent): Promise<void> {
     // An idle-closed (or replaced) session's last words, e.g. "completed" after close().
-    if (s.closing || this.sessions.get(s.sid) !== s) return;
+    if (s.closing || this.#revoked || this.sessions.get(s.sid) !== s) return;
     s.lastActiveAt = this.d.now();
     // Hand-off tasks (links/manager.ts): projection, budget, the result back to the sender.
     if (this.d.links)
@@ -1398,6 +1448,7 @@ export class AgentCore {
    * is kept by the store. A failed write is logged.
    */
   async #event(s: Session, partial: Record<string, unknown>, opts: { seq?: number } = {}): Promise<void> {
+    if (this.#revoked) return;
     const event = AgentEvent.parse({
       v: 1,
       eid: randomUUID(),
@@ -1409,12 +1460,13 @@ export class AgentCore {
       urgency: "low",
       ...partial,
     });
-    void this.d.store.writeEvent(event).catch((err: unknown) =>
+    void this.d.store.writeEvent(event).catch((err: unknown) => {
+      if (isRevokedRefusal(err)) return this.#onRevoked(err);
       this.d.log.warn("event.write_failed", {
         type: event.type,
         error: err instanceof Error ? err.message : "error",
-      }),
-    );
+      });
+    });
   }
 
   /** One flushed delta: sealed, numbered, sent in order (broadcast only). */
@@ -1442,11 +1494,18 @@ export class AgentCore {
   }
 
   async #publishCard(s: Session): Promise<void> {
+    if (this.#revoked) return;
     const card = s.card.build();
-    await this.d.store.upsertSession(s.sid, {
-      card: { ct: await this.sealer.seal(card, `card:${s.sid}`) },
-      updatedAt: this.d.now(),
-    });
+    try {
+      await this.d.store.upsertSession(s.sid, {
+        card: { ct: await this.sealer.seal(card, `card:${s.sid}`) },
+        updatedAt: this.d.now(),
+      });
+    } catch (err) {
+      // Revoked: an expected end, not a failure for the caller (a tool gate, a question).
+      if (isRevokedRefusal(err)) return this.#onRevoked(err);
+      throw err;
+    }
     // MCP card sharing (opt-in, default off): the same redacted card, in plaintext, only while on.
     try {
       if (await this.d.store.mcpSharingOn(s.sid)) await this.d.store.writeSharedCard(s.sid, card);

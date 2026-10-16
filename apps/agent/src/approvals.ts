@@ -83,7 +83,21 @@ const defaultTimer = (fn: () => void, ms: number) => {
  * Anything else is rejected and logged, and the wait continues. No answer = deny.
  */
 export class ApprovalManager {
+  /** The waits in progress, so a revoke can end them (and their TTL timers) at once. */
+  readonly #pending = new Set<(o: ApprovalOutcome) => void>();
+  #revoked = false;
+
   constructor(private readonly deps: ApprovalDeps) {}
+
+  /**
+   * The account revoked this device: every wait ends as a deny (`agent_revoked`), its timer and
+   * watch cleared, and nothing more is written (the revoke sweep already denied the rows, and
+   * the database refuses this device's writes). Later requests are denied without a write.
+   */
+  revokeAll(): void {
+    this.#revoked = true;
+    for (const finish of [...this.#pending]) finish({ allow: false, reason: "agent_revoked" });
+  }
 
   async request(input: {
     sid: string;
@@ -104,6 +118,7 @@ export class ApprovalManager {
     onRequested?: (aid: string, expiresAt: number) => void;
   }): Promise<ApprovalOutcome> {
     const { store, trust, nonces, sealer, owner, deviceId, signer, now, ttlMs, audit } = this.deps;
+    if (this.#revoked) return { allow: false, reason: "agent_revoked" };
     if (Object.keys(trust().recipients()).length === 0) return { allow: false, reason: "untrusted_signer" };
 
     const aid = randomUUID();
@@ -167,6 +182,7 @@ export class ApprovalManager {
       const finish = (o: ApprovalOutcome) => {
         if (settled) return;
         settled = true;
+        this.#pending.delete(finish);
         unwatch();
         timer.clear();
         resolve(o);
@@ -225,8 +241,12 @@ export class ApprovalManager {
           });
         })();
       });
+      this.#pending.add(finish);
+      // Revoked while the request was being written: end this wait too.
+      if (this.#revoked) finish({ allow: false, reason: "agent_revoked" });
     });
 
+    if (outcome.reason === "agent_revoked") return outcome;
     const status = outcome.reason === "timeout_deny" ? "expired" : outcome.allow ? "approved" : "denied";
     await store.resolveApproval(aid, status, outcome.reason, now());
     return outcome;
