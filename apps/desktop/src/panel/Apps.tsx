@@ -130,9 +130,25 @@ export const Apps = ({ ipc, pollMs = APPS_POLL_MS }: { ipc: AgentIpc; pollMs?: n
         {failure?.appId === id && (
           <p role="alert">
             {t(
-              `integrations.apps.failure.${["blocked_by_policy", "provider_busy", "recipe_disabled", "app_unavailable"].includes(failure.code) ? failure.code : "other"}`,
+              `integrations.apps.failure.${["blocked_by_policy", "provider_busy", "recipe_disabled", "app_unavailable", "pin_failed", "pin_mismatch"].includes(failure.code) ? failure.code : "other"}`,
             )}
           </p>
+        )}
+
+        {kindOk && v.pin && v.pin.state !== "pinned" && (v.pin.detected || v.pin.state !== "not_pinned") && (
+          <div className="row" data-pin={v.pin.state}>
+            <span>
+              {t(`integrations.apps.pin.${v.pin.state}`, {
+                name: r.name,
+                path: (v.pin.state === "not_pinned" ? v.pin.detected : v.pin.path) ?? "",
+              })}
+            </span>
+            {v.pin.detected && v.pin.sha256 && v.pin.state !== "unsafe" && (
+              <button disabled={busy} onClick={() => void act(id, () => ipc.pinApp(id, v.pin!.sha256!))}>
+                {t(v.pin.state === "changed" ? "integrations.apps.pin.confirm" : "integrations.apps.pin.use")}
+              </button>
+            )}
+          </div>
         )}
 
         {enabling?.appId === id ? (

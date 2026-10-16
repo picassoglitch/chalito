@@ -5,6 +5,7 @@ import { useT } from "../lib/i18n.js";
 import type { AgentIpc } from "../lib/ipc.js";
 import type { PushToTalk } from "../lib/voice.js";
 import type { LocalAgentApi } from "../lib/local-agent.js";
+import type { ThisComputerApi } from "../lib/this-computer.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
@@ -15,6 +16,7 @@ import { Apps } from "./Apps.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { Settings } from "./Settings.js";
+import { ThisComputer } from "./ThisComputer.js";
 import { Updates } from "./Updates.js";
 import { Voice } from "./Voice.js";
 
@@ -40,6 +42,8 @@ export interface PanelProps {
   updates?: UpdateController;
   /** The bundled agent and the `chalito` command (release builds). */
   localAgent?: LocalAgentApi;
+  /** Start with the computer and the folder picker (First Run C). */
+  thisComputer?: ThisComputerApi;
   /** The system browser (tauri-plugin-opener), for the pairing approval page. */
   openUrl?: (url: string) => Promise<void>;
   /** Salas: the rooms list and join; null while signed out. */
@@ -89,6 +93,7 @@ export const Panel = (p: PanelProps) => {
             phoneVerifier={p.phoneVerifier}
           />
         )}
+        {tab === "settings" && p.thisComputer && <ThisComputer api={p.thisComputer} ipc={p.ipc} />}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
         {tab === "ai" && <Apps ipc={p.ipc} />}
         {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}

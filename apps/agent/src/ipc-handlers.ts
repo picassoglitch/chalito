@@ -13,6 +13,7 @@ import type { ComputerControl } from "./computer/control.js";
 import { COMPUTER_COPY, disableComputer, enableComputer } from "./computer/toggle.js";
 import { DevMode, RISK_COPY, type DevModeDeps, type OsAuth } from "./devmode.js";
 import { IpcError, type IpcHandlers } from "./ipc-server.js";
+import { addWorkspace, removeWorkspace } from "./workspaces.js";
 import type { ScreenManager } from "./screen/manager.js";
 import { SCREEN_COPY, disableScreen, enableScreen } from "./screen/toggle.js";
 import type { FilePolicyHolder } from "./policy-file.js";
@@ -86,6 +87,10 @@ const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boole
 const ForProvider = z.object({ provider: Provider });
 const ProviderKey = z.object({ provider: Provider, key: z.string().min(1).max(512) });
 const ForApp = z.object({ appId: AppId });
+/** The sha256 the panel showed: the pin happens only if the file still hashes to it. */
+const PinApp = z.object({ appId: AppId, sha256: z.string().regex(/^[0-9a-f]{64}$/) });
+const WorkspacePath = z.object({ path: z.string().min(1).max(4096) });
+const WorkspaceLabel = z.object({ label: z.string().min(1).max(60) });
 const AppKey = z.object({ appId: AppId, key: z.string().min(1).max(512) });
 const CustomEnable = z.object({
   appId: AppId,
@@ -125,6 +130,10 @@ export interface IpcDeps {
   links?: LinkManager | null;
   /** Agent audit trail (computer.enabled / computer.disabled, terminal.*, screen.*). */
   audit: (type: string, meta: Record<string, unknown>) => void;
+  /** ~/.chalito: never a workspace. Absent = the workspace calls answer `unavailable`. */
+  chalitoDir?: string;
+  /** The person's home folder (default: the OS's); tests point it elsewhere. */
+  home?: string;
 }
 
 const linksOf = (d: IpcDeps): LinkManager => {
@@ -499,6 +508,46 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
       "panel",
     );
     return { changed };
+  },
+
+  /**
+   * "Usar" / "se actualizó: confirmar": trust the app's CLI as the panel showed it (First Run C).
+   * Local only: this socket is the panel's (its per-launch secret); remote commands never pin over
+   * a pin.
+   */
+  pinApp: async (params) => {
+    const { appId, sha256 } = parse(PinApp, params);
+    return appCall(d, (m) => m.pin(appId, sha256));
+  },
+
+  // ---- WORKSPACES (First Run C): the OS folder picker, then a local, OS-checked policy change ----
+  workspaces: async () => ({ workspaces: d.policy.get().workspaces }),
+  addWorkspace: async (params) => {
+    const { path } = parse(WorkspacePath, params);
+    if (!d.chalitoDir) throw new IpcError("unavailable");
+    return addWorkspace(
+      {
+        policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) },
+        osAuth: d.osAuth(),
+        locale: d.locale(),
+        chalitoDir: d.chalitoDir,
+        ...(d.home ? { home: d.home } : {}),
+        emit: (type, meta) => d.audit(type, { ...meta, via: "panel" }),
+      },
+      path,
+    );
+  },
+  removeWorkspace: async (params) => {
+    const { label } = parse(WorkspaceLabel, params);
+    return {
+      removed: await removeWorkspace(
+        {
+          policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) },
+          emit: (type, meta) => d.audit(type, { ...meta, via: "panel" }),
+        },
+        label,
+      ),
+    };
   },
 
   // #30's provider methods, kept as aliases (older panels).

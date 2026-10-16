@@ -70,7 +70,9 @@ export const LocalAgent = ({ api, pollMs = AGENT_POLL_MS }: { api: LocalAgentApi
       )}
 
       {cli && !cli.unavailable && (
-        <div data-cli={cli.installed ? "installed" : "absent"}>
+        // First Run C: nobody needs the terminal to set Chalito up, so the command sits under Avanzado.
+        <details data-cli={cli.installed ? "installed" : "absent"} data-advanced="cli">
+          <summary>{t("agent.cli.advanced")}</summary>
           <h3>{t("agent.cli.title")}</h3>
           {cli.installed ? (
             <>
@@ -95,7 +97,7 @@ export const LocalAgent = ({ api, pollMs = AGENT_POLL_MS }: { api: LocalAgentApi
               <button onClick={() => setConfirming(true)}>{t("agent.cli.install")}</button>
             </>
           )}
-        </div>
+        </details>
       )}
       {cli?.unavailable === "move_to_applications" && <p>{t("agent.cli.error.move_to_applications")}</p>}
       {error && <p role="alert">{t(`agent.cli.error.${error}`, { path: cli?.command ?? "" })}</p>}

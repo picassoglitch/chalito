@@ -255,7 +255,9 @@
         "provider_busy": "Ya hay una instalación o un inicio de sesión en curso.",
         "recipe_disabled": "Activa primero esta receta en esta computadora.",
         "app_unavailable": "Eso no está disponible para esta app en esta computadora.",
-        "other": "No se pudo completar. Inténtalo otra vez."
+        "other": "No se pudo completar. Inténtalo otra vez.",
+        "pin_failed": "No pude confirmarlo: cualquier programa puede modificar ese archivo o su carpeta.",
+        "pin_mismatch": "Cambió mientras lo veías. Revisa la versión que aparece ahora y confirma otra vez."
       },
       "problem": {
         "invalid": "{file}: no es una receta válida.",
@@ -268,6 +270,14 @@
         "off": "Sesiones: apagadas en esta computadora hasta que las permitas aquí.",
         "allow": "Permitir sesiones aquí",
         "disallow": "Apagar sesiones"
+      },
+      "pin": {
+        "not_pinned": "Encontré {name} en esta computadora ({path}). ¿Lo usamos?",
+        "changed": "{name} se actualizó. Confirma que es tu versión nueva para seguir usándolo.",
+        "missing": "Ya no encuentro {name} donde estaba ({path}).",
+        "unsafe": "Cualquier programa de esta computadora puede cambiar {name} ({path}), así que no lo uso. Reinstálalo con su instalador oficial.",
+        "use": "Usar",
+        "confirm": "Sí, es mía: confirmar"
       }
     }
   },
@@ -376,7 +386,8 @@
         "exists": "Ya hay otro programa llamado chalito en {path}. No lo reemplacé.",
         "cancelled": "Cancelaste: no cambió nada.",
         "failed": "No se pudo instalar. No cambió nada."
-      }
+      },
+      "advanced": "Avanzado: comando chalito para la terminal"
     }
   },
   "connect": {
@@ -414,5 +425,33 @@
       "failed": "No se pudo verificar que eres tú en esta computadora. Inténtalo otra vez."
     },
     "error": "Algo falló ({code}). Inténtalo otra vez."
+  },
+  "computer": {
+    "title": "Esta computadora",
+    "autostart": {
+      "label": "Iniciar Chalito con la computadora",
+      "hint": "Así, si dejas la computadora encendida, Chalito vuelve solo después de reiniciar y sigue trabajando. También puedes cambiarlo desde el ícono de Chalito en la barra.",
+      "failed": "No pude cambiarlo. Inténtalo otra vez."
+    },
+    "folders": {
+      "title": "Carpetas donde Chalito puede trabajar",
+      "hint": "Elige las carpetas de tus proyectos. Chalito solo trabaja dentro de ellas, y tu computadora te pedirá tu contraseña para agregar una.",
+      "none": "Todavía no hay ninguna: agrega la carpeta de un proyecto para empezar.",
+      "add": "Agregar una carpeta",
+      "remove": "Quitar",
+      "added": "Listo: Chalito ya puede trabajar en «{label}».",
+      "already": "«{label}» ya estaba en la lista.",
+      "unavailable": "Conecta esta computadora primero; después podrás elegir carpetas aquí.",
+      "error": {
+        "not_a_folder": "Eso no es una carpeta que pueda abrir.",
+        "too_broad": "Esa carpeta es demasiado amplia (por ejemplo, tu carpeta personal completa o una del sistema). Elige la carpeta de un proyecto.",
+        "chalito_folder": "Esa es la carpeta interna de Chalito; elige otra.",
+        "os_auth_failed": "Tu computadora no confirmó que fuiste tú, así que no la agregué.",
+        "too_many": "Ya tienes el máximo de carpetas. Quita una para agregar otra.",
+        "other": "No pude agregarla. Inténtalo otra vez.",
+        "sensitive": "Esa carpeta guarda llaves o contraseñas (como .ssh o tus llaveros), o contiene una que las guarda. Elige la carpeta de un proyecto.",
+        "startup": "Lo que se guarda en esa carpeta puede ejecutarse solo (al iniciar la computadora o como un comando), o la contiene. Elige la carpeta de un proyecto."
+      }
+    }
   }
 }

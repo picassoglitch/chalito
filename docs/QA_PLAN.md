@@ -425,6 +425,24 @@ Usa la beta del borrador de release (o el artefacto de un dry run de `release.ym
 - [ ] **I-6 Página de descarga** · LISTO
   - Esperado: `/descargar` detecta tu sistema y muestra un botón principal con los otros abajo, y las sumas SHA-256. Sin release publicada dice "Muy pronto", nunca texto roto.
 
+#### 14. Deja la computadora encendida y Chalito se encarga (First Run C, ADR 0028)
+En cada sistema (macOS, Windows, Linux), con Chalito instalado y la computadora ya conectada (§13 y First Run B).
+- [ ] **T-1 Vuelve solo después de reiniciar** · LISTO
+  - Pasos: abre Chalito una vez. Reinicia la computadora e inicia sesión. No abras nada.
+  - Esperado: la mascota y el ícono de la bandeja vuelven solos; en Ajustes → Esta computadora, "Iniciar Chalito con la computadora" está activado; el agente dice "El agente está funcionando". Ninguna terminal.
+- [ ] **T-2 Apagarlo se respeta** · LISTO
+  - Pasos: desactiva "Iniciar Chalito con la computadora" (en el panel o en el menú del ícono de la bandeja). Reinicia.
+  - Esperado: Chalito no se abre solo. Ábrelo: el interruptor sigue apagado (no se vuelve a encender). Actívalo desde la bandeja y revisa que el panel lo muestre activado.
+- [ ] **T-3 Encuentra tus IA** · LISTO
+  - Pasos: con Claude Code, Codex, Gemini CLI, Grok, Aider, Copilot CLI o Cursor CLI instalados por su instalador oficial (Homebrew, npm, instalador nativo), abre "IA conectadas".
+  - Esperado: cada una dice "Encontré … en esta computadora (ruta)" con un botón "Usar"; tras tocarlo ya no aparece el aviso. Después de que la IA se actualice sola, aparece "… se actualizó" con "Sí, es mía: confirmar".
+  - Automático: `apps/agent/test/first-run-takeover.test.ts`; `apps/desktop/test/takeover.test.tsx`.
+- [ ] **T-4 Elegir una carpeta** · LISTO
+  - Pasos: Ajustes → Esta computadora → "Agregar una carpeta". Elige la carpeta de un proyecto. Confirma con tu contraseña o huella cuando la computadora la pida.
+  - Esperado: la carpeta aparece en la lista y en "Espacio de trabajo" al crear una sesión nueva desde el teléfono o la web. Tu carpeta personal completa o una del sistema se rechazan con una explicación.
+- [ ] **T-5 Nada de esto desde otro dispositivo** · LISTO
+  - Esperado: desde el teléfono o la web no se puede confiar en una IA nueva ni agregar carpetas; solo desde esta computadora.
+
 ---
 
 ## English
@@ -842,3 +860,21 @@ Use the beta from the draft release (or a `release.yml` dry-run artifact). Note 
   - Expected: it finds N+1 at `https://api.chalito.chalyb.com/releases/<channel>/latest.json`, downloads it and restarts.
 - [ ] **I-6 Download page** · READY
   - Expected: `/descargar` detects your OS and shows one main button with the others below, plus the SHA-256 sums. With no published release it says "Muy pronto", never broken text.
+
+#### 14. Leave the computer on and Chalito takes over (First Run C, ADR 0028)
+On each OS (macOS, Windows, Linux), with Chalito installed and the computer already connected (§13 and First Run B).
+- [ ] **T-1 Comes back by itself after a restart** · READY
+  - Steps: open Chalito once. Restart the computer and sign in. Don't open anything.
+  - Expected: the pet and the tray icon come back by themselves; in Settings → This computer, "Start Chalito with the computer" is on; the agent says "The agent is running". No terminal.
+- [ ] **T-2 Turning it off sticks** · READY
+  - Steps: turn off "Start Chalito with the computer" (in the panel or in the tray icon's menu). Restart.
+  - Expected: Chalito doesn't open by itself. Open it: the switch is still off (it isn't turned back on). Turn it on from the tray and check the panel shows it on.
+- [ ] **T-3 Finds your AIs** · READY
+  - Steps: with Claude Code, Codex, Gemini CLI, Grok, Aider, Copilot CLI or Cursor CLI installed by their official installer (Homebrew, npm, native installer), open "Connected AIs".
+  - Expected: each says "I found … on this computer (path)" with a "Use" button; after tapping it the notice goes away. After the AI updates itself, "… updated itself" appears with "Yes, it's mine: confirm".
+  - Automated: `apps/agent/test/first-run-takeover.test.ts`; `apps/desktop/test/takeover.test.tsx`.
+- [ ] **T-4 Choose a folder** · READY
+  - Steps: Settings → This computer → "Add a folder". Choose a project folder. Confirm with your password or fingerprint when the computer asks.
+  - Expected: the folder shows in the list and under "Workspace" when you start a new session from the phone or the web. Your whole home folder or a system folder is refused with an explanation.
+- [ ] **T-5 None of this from another device** · READY
+  - Expected: from the phone or the web you can't trust a new AI or add folders; only on this computer.

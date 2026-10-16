@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
+import { STARTUP_DIRS, STARTUP_FILES } from "./persistence.js";
 
 /**
  * Risk classification of a single tool call (ADR 0008):
@@ -124,38 +125,17 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const protectedPaths = (ctx.protectedPaths ?? []).map((p) => real(resolve(expand(p))));
   const agentBinaries = (ctx.agentBinaries ?? []).map((p) => real(resolve(expand(p))));
   const floor = [chalito, ...protectedPaths, ...agentBinaries];
-  const startupFiles = [
-    ".bashrc",
-    ".bash_profile",
-    ".bash_login",
-    ".bash_logout",
-    ".profile",
-    ".zshrc",
-    ".zshenv",
-    ".zprofile",
-    ".zlogin",
-    ".config/fish/config.fish",
-    ".config/powershell/Microsoft.PowerShell_profile.ps1",
-    ".config/powershell/profile.ps1",
-    ".xprofile",
-    ".xinitrc",
-  ].map(h);
-  const startupDirs = [
-    ".local/bin",
-    "bin",
-    ".config/systemd/user",
-    ".config/autostart",
-    ".config/fish/conf.d",
-    "Library/LaunchAgents",
-    "Documents/PowerShell",
-    "Documents/WindowsPowerShell",
-    "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup",
-  ].map(h);
-  // PATH entries inside a workspace (node_modules/.bin, ./scripts) stay workspace paths.
+  const startupFiles = STARTUP_FILES.map(h);
+  const startupDirs = STARTUP_DIRS.map(h);
+  // A project's own PATH entries (node_modules/.bin, ./scripts) stay workspace paths. A PATH entry
+  // in a workspace that is the home folder or above (only reachable by a hand edit of the policy)
+  // stays a PATH dir: a write there still replaces what later commands run.
+  const homeReal = real(ctx.home);
+  const projectPath = (d: string) => workspaces.some((w) => within(d, w) && !within(homeReal, w));
   const pathDirs = (ctx.pathDirs ?? [])
     .filter((d) => isAbsolute(d) || d.startsWith("~"))
     .map((d) => real(resolve(expand(d))))
-    .filter((d) => !inWorkspace(d) && d !== sep);
+    .filter((d) => !projectPath(d) && d !== sep);
   const persistDirs = [...startupDirs, ...pathDirs];
   return {
     home: ctx.home,
@@ -354,7 +334,9 @@ const classifyPath = (
     return;
   }
   // Shell arguments of anything but a read-only tool count as writes here: whether `curl -o` or `ln` writes is a guess.
-  if ((write || persistAlways) && !paths.inWorkspace(abs) && paths.persistence(abs)) {
+  // Defense in depth: CRITICAL even inside a workspace (workspaces.ts refuses these folders, but
+  // a hand-edited policy might not).
+  if ((write || persistAlways) && paths.persistence(abs)) {
     raise(out, "CRITICAL", "startup file or PATH directory");
     return;
   }

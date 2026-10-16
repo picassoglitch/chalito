@@ -1,4 +1,5 @@
 mod agent;
+mod autostart;
 mod cli_install;
 mod computer;
 mod hittest;
@@ -13,9 +14,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use agent::Supervisor;
 use computer::{ComputerUi, SharedUi, View};
 use hittest::{Activity, ClickThrough, Rect};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_dialog::DialogExt as _;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// Whether this build carries the dev-only SSO loopback (never in release; see loopback.rs).
@@ -218,14 +221,88 @@ fn spawn_computer_poll(app: AppHandle, ui: SharedUi, stop_item: Option<MenuItem<
     });
 }
 
-/// Tray icon: open the panel, and "Detener control" (enabled while a session has control).
+/// The tray's "Iniciar con la computadora" item, kept so the panel's switch can tick it too.
+#[derive(Default)]
+struct AutostartItem(Mutex<Option<CheckMenuItem<tauri::Wry>>>);
+
+/// Turns start-with-the-computer on or off now, saves the person's choice and ticks the tray item.
+/// Returns what the OS has afterwards.
+fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<bool, String> {
+    let launch = app.autolaunch();
+    let r = if enabled { launch.enable() } else { launch.disable() };
+    r.map_err(|e| e.to_string())?;
+    if let Ok(dir) = app.path().app_config_dir() {
+        if let Err(e) = autostart::write(&dir, autostart::Pref { enabled }) {
+            eprintln!("autostart: saving the choice failed: {e}");
+        }
+    }
+    let now = launch.is_enabled().unwrap_or(enabled);
+    if let Some(slot) = app.try_state::<AutostartItem>() {
+        if let Some(item) = slot.0.lock().ok().and_then(|g| g.clone()) {
+            let _ = item.set_checked(now);
+        }
+    }
+    Ok(now)
+}
+
+/// Whether Chalito starts with the computer (the panel's switch).
+#[tauri::command]
+fn autostart_status(app: AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// Panel only: the person's switch.
+#[tauri::command]
+fn set_autostart(app: AppHandle, window: tauri::Window, enabled: bool) -> Result<bool, String> {
+    if window.label() != "panel" {
+        return Err("not allowed".into());
+    }
+    apply_autostart(&app, enabled)
+}
+
+/// Panel only: the OS folder picker for a workspace. The agent then asks the OS itself before it
+/// adds the folder (`addWorkspace`); this only returns the path the person chose, or null.
+#[tauri::command]
+async fn pick_folder(app: AppHandle, window: tauri::Window) -> Result<Option<String>, String> {
+    if window.label() != "panel" {
+        return Err("not allowed".into());
+    }
+    let picked = tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
+}
+
+/// Tray icon: open the panel, "Detener control" (enabled while a session has control) and
+/// "Iniciar con la computadora".
 fn build_tray(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
     let open = MenuItem::with_id(app, computer::TRAY_OPEN, "Abrir Chalito", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, computer::TRAY_STOP, "Detener control", false, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &stop])?;
+    // The OS locale (what the panel's navigator.language follows); Spanish when unknown.
+    let lang = sys_locale::get_locale().unwrap_or_default();
+    let start = CheckMenuItem::with_id(
+        app,
+        autostart::TRAY_ITEM,
+        autostart::tray_label(&lang),
+        true,
+        app.autolaunch().is_enabled().unwrap_or(false),
+        None::<&str>,
+    )?;
+    if let Some(slot) = app.try_state::<AutostartItem>() {
+        if let Ok(mut g) = slot.0.lock() {
+            *g = Some(start.clone());
+        }
+    }
+    let menu = Menu::with_items(app, &[&open, &stop, &start])?;
     let mut tray = TrayIconBuilder::with_id("chalito").menu(&menu).tooltip("Chalito").on_menu_event(|app, event| {
         match event.id().as_ref() {
             computer::TRAY_STOP => computer_kill(app, "tray"),
+            autostart::TRAY_ITEM => {
+                let on = app.autolaunch().is_enabled().unwrap_or(false);
+                if let Err(e) = apply_autostart(app, !on) {
+                    eprintln!("autostart: {e}");
+                }
+            }
             computer::TRAY_OPEN => {
                 if let Some(panel) = app.get_webview_window("panel") {
                     let _ = panel.show();
@@ -329,6 +406,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_dialog::init())
         // Computer control's kill switch. The shortcut is registered only while it's enabled.
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -340,7 +419,8 @@ pub fn run() {
                 .build(),
         )
         .manage(state.clone())
-        .manage(computer_ui.clone());
+        .manage(computer_ui.clone())
+        .manage(AutostartItem::default());
     // The updater exists only in release builds: CI adds `plugins.updater` (public key +
     // endpoint) through the release config overlay. Dev and plain debug builds have no updater.
     let context = tauri::generate_context!();
@@ -362,6 +442,9 @@ pub fn run() {
         computer_stop,
         computer_permissions,
         computer_open_settings,
+        autostart_status,
+        set_autostart,
+        pick_folder,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -376,11 +459,23 @@ pub fn run() {
         install_cli,
         computer_stop,
         computer_permissions,
-        computer_open_settings
+        computer_open_settings,
+        autostart_status,
+        set_autostart,
+        pick_folder
     ]);
     builder
         .setup(move |app| {
             spawn_cursor_poll(app.handle().clone(), state.clone());
+            // Start with the computer: on by default the first time; the person's choice after that.
+            // Release builds only: a dev build must not register itself to start at login.
+            if let (false, Ok(dir)) = (cfg!(debug_assertions), app.path().app_config_dir()) {
+                if let Some(on) = autostart::on_launch(autostart::read(&dir)) {
+                    if let Err(e) = apply_autostart(app.handle(), on) {
+                        eprintln!("autostart: {e}");
+                    }
+                }
+            }
             // The bundled agent runs while the app is open (release builds; none in dev).
             let handle = app.handle();
             let exe = std::env::current_exe().ok();
