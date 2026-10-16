@@ -971,3 +971,42 @@ describe("follow-up 2: code-running files, case-insensitive on macOS and Windows
     expect(write(".envrc", "linux").tier).toBe("HIGH");
   });
 });
+
+describe("follow-up 2: Windows names the checks can't trust fail closed", () => {
+  const ws = "/home/ana/code/app";
+  const win = {
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    platform: "win32" as const,
+  };
+  const write = (f: string, c: Parameters<typeof classifyToolCall>[2] = win) =>
+    classifyToolCall("Write", { file_path: `${ws}/${f}`, content: "x" }, c);
+
+  it("trailing dots and spaces are stripped before the name checks", () => {
+    for (const f of [".envrc.", ".envrc ", ".vscode./tasks.json", ".git /hooks/pre-commit", ".mcp.json..."])
+      expect(write(f).tier, JSON.stringify(f)).toBe("HIGH");
+  });
+
+  it("NTFS streams, 8.3 short names and trailing dots/spaces are at least HIGH", () => {
+    for (const f of [
+      ".mcp.json::$DATA",
+      ".mcp.json:stream",
+      "src/index.ts:hidden",
+      ".VSCOD~1/tasks.json",
+      "PROGRA~1.TXT",
+      "notes.md.",
+      "src /a.ts",
+    ]) {
+      const c = write(f);
+      expect(["HIGH", "CRITICAL"], JSON.stringify(f)).toContain(c.tier);
+    }
+    expect(write("src/index.ts:hidden").reasons).toContain("ambiguous Windows path name");
+    // A drive letter's colon is fine, and so are ordinary names.
+    expect(write("src/index.ts").tier).toBe("MED");
+    expect(write("src/file~name.ts").tier).toBe("MED");
+    // Other systems keep these as ordinary names.
+    expect(write("notes.md.", { ...win, platform: "linux" }).tier).toBe("MED");
+  });
+});

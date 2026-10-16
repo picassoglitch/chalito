@@ -99,6 +99,11 @@ interface Paths {
   /** The agent's own executables, resolved. */
   agentBinaries: string[];
   configOrCi(abs: string): boolean;
+  /**
+   * Windows only: a name the checks can't trust (a trailing dot or space, an NTFS stream `:x`,
+   * an 8.3 short name `~1`). Fail closed: at least HIGH.
+   */
+  winAmbiguous(abs: string): boolean;
   /** Build/test manifests, lockfiles, tool configs and test code: editing them changes what a test or build run executes. */
   buildOrTest(abs: string): boolean;
   /** Whether a path that starts with `prefix` (then `next`, a glob/variable char) can land on a protected path. */
@@ -110,7 +115,17 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   // on NFC, lower-cased paths, like workspaces.ts, so `~/.CLAUDE` is `~/.claude`.
   const platform = ctx.platform ?? process.platform;
   const fold = platform === "darwin" || platform === "win32";
-  const k = (p: string) => (fold ? p.normalize("NFC").toLowerCase() : p);
+  // Windows also ignores trailing dots and spaces in a name (`.envrc.` is `.envrc`).
+  const winTrim = (p: string) =>
+    p
+      .split(/([\\/])/)
+      .map((c) => (c === "." || c === ".." || c === "/" || c === "\\" ? c : c.replace(/[. ]+$/, "")))
+      .join("");
+  const k = (p: string) => {
+    if (!fold) return p;
+    const n = p.normalize("NFC").toLowerCase();
+    return platform === "win32" ? winTrim(n) : n;
+  };
   const within = (child: string, parent: string) => withinExact(k(child), k(parent));
   const same = (a: string, b: string) => k(a) === k(b);
   const real = ctx.realpath ?? defaultRealpath;
@@ -177,6 +192,12 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       abs === "/etc/shadow" ||
       abs === "/etc/sudoers" ||
       within(abs, "/etc/sudoers.d"),
+    winAmbiguous: (abs) => {
+      if (platform !== "win32") return false;
+      const rest = abs.replace(/^[A-Za-z]:/, "");
+      if (rest.includes(":")) return true;
+      return rest.split(/[\\/]/).some((c) => c !== "." && c !== ".." && c !== "" && (/[. ]$/.test(c) || /~\d/.test(c)));
+    },
     configOrCi: (abs) => {
       // Compared folded (k): on macOS and Windows `.ENVRC` or `.Git/Hooks` are the same files.
       const folded = k(abs);
@@ -383,6 +404,10 @@ const classifyPath = (
   // a hand-edited policy might not).
   if ((write || persistAlways) && paths.persistence(abs)) {
     raise(out, "CRITICAL", "startup file or PATH directory");
+    return;
+  }
+  if (paths.winAmbiguous(abs)) {
+    raise(out, "HIGH", "ambiguous Windows path name");
     return;
   }
   if (!paths.inWorkspace(abs)) {
