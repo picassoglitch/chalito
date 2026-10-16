@@ -178,7 +178,12 @@ export class ChatApiAdapter implements SessionAdapter {
   /** The recipe's model, else the first one the server lists (a local server's pulled model). */
   async #model(signal: AbortSignal): Promise<string> {
     if (this.#api.model) return this.#api.model;
-    const res = await (this.config.fetch ?? fetch)(`${this.#base}/models`, { headers: this.#headers(false), signal });
+    const res = await (this.config.fetch ?? fetch)(`${this.#base}/models`, {
+      headers: this.#headers(false),
+      // The key never follows a redirect to another host.
+      redirect: "error",
+      signal,
+    });
     const text = await res.text();
     if (!res.ok) throw new ChatApiError(errorCodeFor(res.status, text), `${this.#name}: /models ${res.status}`);
     const data = rec(JSON.parse(text)).data;
@@ -252,6 +257,7 @@ export class ChatApiAdapter implements SessionAdapter {
       const res = await (this.config.fetch ?? fetch)(`${this.#base}/chat/completions`, {
         method: "POST",
         headers: this.#headers(true),
+        redirect: "error",
         body: JSON.stringify({
           model,
           messages,

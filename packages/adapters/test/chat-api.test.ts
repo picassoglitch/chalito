@@ -215,6 +215,25 @@ describe("chat-api driver", () => {
     await r.handle.done;
   });
 
+  it("never follows a redirect with the key (every request is redirect: error)", async () => {
+    mock.script.push({ text: "ok" });
+    const modes: (RequestInit["redirect"] | undefined)[] = [];
+    const r = await run(
+      new ChatApiAdapter(recipe({ model: undefined }), {
+        apiKey: "sk-own",
+        fetch: async (input, init) => {
+          modes.push(init?.redirect);
+          return fetch(input, init);
+        },
+      }),
+    );
+    await waitFor(r.ended);
+    expect(modes.length).toBeGreaterThanOrEqual(2); // /models, then /chat/completions
+    expect(modes.every((m) => m === "error")).toBe(true);
+    r.handle.close();
+    await r.handle.done;
+  });
+
   it("usage events fit the usage / hub admit-settle path (cached tokens split out; Groq's x_groq)", async () => {
     mock.script.push(
       { text: "a", usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 60 } } },

@@ -188,7 +188,8 @@ export class A2aAdapter implements SessionAdapter {
       if (url.origin !== origin) throw new Error(`refused to call ${url.origin}`);
       const headers = new Headers(init?.headers);
       for (const [k, v] of Object.entries(extra)) headers.set(k, v);
-      const res = await base(input, { ...init, headers });
+      // A redirect would carry the key to wherever it points: refused (never followed).
+      const res = await base(input, { ...init, headers, redirect: "error" });
       // The SDK's errors don't keep the HTTP status; an auth refusal must still read as one.
       if (res.status === 401 || res.status === 403)
         throw new A2aAuthError(`HTTP ${res.status}: the agent refused the credentials`);
