@@ -121,7 +121,6 @@ The new risk is **pairing phishing**, the device-code-phishing pattern: an attac
   - When the claim comes from a different public IP, the screen switches to a **warning state**: "Esta computadora está en otra red (<ciudad aproximada>)". The one-tap button is replaced by typing the short code shown on the computer, and `/claim` refuses a mismatched claim without it.
   - Same network, which is the normal case after a hand-off from the same machine, keeps one tap.
 - **A visible way out:** "No estoy frente a esa computadora" declines in one tap, burns the code, and records `pairing.declined` in the server audit.
-- **Keys wait after a mismatch.** A computer paired through a mismatched claim is marked as such. Phase D doesn't prompt key entry for it until the user confirms the computer from the panel ("¿Esta computadora es tuya?") or 24 h pass with no revoke.
 - **Rate and TTL unchanged:** a 5-minute single-claim code, and the `/codes` rate limit.
 - **IP and location are kept only as long as needed.**
   - They're stored on the pairing code row with the code's TTL, then purged by the existing pairing-code cleanup. Only the claimed computer's coarse city is kept, for the alert.
@@ -132,14 +131,19 @@ The new risk is **pairing phishing**, the device-code-phishing pattern: an attac
   - It can't add an approver to the victim's *other* computers (G2: their trusted lists are local).
   - It can't approve anything there, and it can't enable anything (G3).
 
-The exposure is content the victim sends to that computer, including keys the setup guide asks for. The alert, the mismatch hold on keys and revoke are there to cut that short.
+The exposure is content the victim sends to that computer, including keys the setup guide asks for. The alert to every device and revoke are there to cut that short.
 - **The cloud is still not a root of trust.** A compromised api could serve a fake fingerprint on the approval screen. The reverse check on the computer (step 4) still stops it from making the computer trust the wrong browser. This is the same argument as ADR 0006.
 
 `docs/THREAT_MODEL.md` gains a row under §4.5 ("Pairing phishing via hand-off link") with the mitigations above.
 - **Api tests** pin the server-side mismatch rule: one-tap on the same network, rejected without the short code on a mismatch, decline burns the code.
 - **pgTAP** pins only the data side: watch-token access to the new columns, and the purge.
 
-**Owner-pending (decision #51):** a stricter option is to **block on mismatch** and allow approval only from the same network, or by scanning the glyph from a phone on that network. That stops remote phishing outright, at the cost of "approve my office computer from home". The default proposed here is the speed bump plus the key hold; the owner picks.
+**Owner decision #51 (2026-10-16): a network mismatch is allowed if the user types the short code.** The `/claim` route enforces that.
+
+**Residual risk accepted:** the attacker can send the short code too, so a determined phishing victim can still approve the attacker's computer. The mitigations we rely on are:
+- the plain warning on the approval screen;
+- the "No estoy frente a esa computadora" decline;
+- the alert to all the account's devices, with revoke.
 
 ### 5. Phase C: "leave the PC on and Chalito takes over"
 - **Autostart, on by default.**
@@ -195,6 +199,7 @@ The exposure is content the victim sends to that computer, including keys the se
 - **Pair through a local loopback page** (the browser talks to the agent on `127.0.0.1` to prove it's the same machine). It's a stronger same-machine proof, but Chrome's Local Network Access prompts and per-browser differences make it unreliable. The network check (§4) gives most of the benefit.
 - **Let the desktop panel approve its own agent** (the panel is already a trusted client after desktop sign-in). That makes one machine both requester and approver. It breaks the "a second, already trusted device approves" property, and it doesn't work for a first-ever device without a passkey on the desktop. Rejected.
 - **Bundle Claude Code.** Out of scope, as before (`docs/OPS.md` §10 item 7).
+- **Block pairing on a network mismatch** (approve only from the same network, or by scanning the glyph from a phone on that network). That stops remote pairing phishing outright, but it breaks approving a computer from another network, such as an office computer from home. Rejected by the owner (decision #51).
 - **Ship Windows only when signed.** It blocks internal and beta testing on the signing account. Rejected by the owner (pick 24).
 
 ## Consequences

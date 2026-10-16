@@ -362,7 +362,6 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
   - A browser that isn't trusted can't approve.
   - A claim from a different public IP than the requester gets the warning state and must type the short code. The api refuses it otherwise, whatever the screen does.
   - "No estoy frente a esa computadora" burns the code.
-  - A mismatched pairing doesn't prompt for keys until it's confirmed in the panel.
   - The hand-off survives the hub sign-in redirect.
   - Every pairing alerts all the account's devices.
   - `chalito pair` still works and prints the approval link.
@@ -489,4 +488,4 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 48 | **New (2026-10-16):** First Run milestone | **Owner: ships before M17** (ADR 0028) |
 | 49 | **New (2026-10-16):** desktop api base | **Owner: `api.chalito.chalyb.com`** via DNS + Cloud Run domain mapping, run by the owner (amends ADR 0015's update) |
 | 50 | **New (2026-10-16):** autostart | **Owner: on by default**, with a switch in the panel and tray |
-| 51 | **New (2026-10-16):** pairing on a network mismatch | **Pending.** Proposed: a speed bump (type the short code) plus holding keys until confirmed. Stricter option: block on mismatch, approve only from the same network (ADR 0028 §4) |
+| 51 | **New (2026-10-16):** pairing on a network mismatch | **Owner: allowed if the user types the short code** (enforced by `/claim`). Residual risk accepted: the attacker can send the code too; mitigations are the plain warning, the decline button and alerts to all devices. Block on mismatch was rejected (ADR 0028 §4) |
