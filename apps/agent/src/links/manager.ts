@@ -222,7 +222,38 @@ export class LinkManager implements LinkAuthorizer {
   #isSender(l: AgentLink, s: LinkSessionInfo): boolean {
     if (l.sender.deviceId !== this.d.deviceId) return false;
     if (l.sender.sessionId !== undefined) return l.sender.sessionId === s.sid;
-    return l.sender.appId === undefined || s.appId === undefined || l.sender.appId === s.appId;
+    // A link that names an app is that app's only: a session without one doesn't match.
+    return l.sender.appId === undefined || l.sender.appId === s.appId;
+  }
+
+  /** Whether any link (active or not yet expired from the list) pins this session id at either end. */
+  namesSession(sid: string): boolean {
+    return this.#state.links.some((l) => l.sender.sessionId === sid || l.receiver.sessionId === sid);
+  }
+
+  /**
+   * The locally held hand-off link an outside task (MCP create_task, A2A SendMessage) for `appId`
+   * in `workspaceLabel` may go over: this device receives it, it starts new sessions (no pinned
+   * session), and it names that app or none. One with confirm off wins; otherwise the first.
+   */
+  outsideLink(appId: string | undefined, workspaceLabel: string): AgentLink | undefined {
+    const unpublished = new Set(this.pendingPublish());
+    const fit = this.list().filter(
+      (l) =>
+        l.mode === "handoff" &&
+        !unpublished.has(l.id) &&
+        l.receiver.deviceId === this.d.deviceId &&
+        l.receiver.sessionId === undefined &&
+        l.workspaceLabel === workspaceLabel &&
+        (l.receiver.appId === undefined || l.receiver.appId === appId),
+    );
+    return fit.find((l) => !l.confirm) ?? fit[0];
+  }
+
+  /** Why a link can't carry a delivery now (gone here, revoked by revoke-all, no cloud row), or null. */
+  async linkRefusal(linkId: string): Promise<LinkRefusal | null> {
+    if (!this.get(linkId)) return "link_revoked";
+    return this.#cloudRefusal(linkId);
   }
 
   /**

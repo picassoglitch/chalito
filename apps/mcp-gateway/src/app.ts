@@ -61,8 +61,16 @@ export const untrustedCard = (card: Record<string, unknown>) => ({
  * besides the database. Bounded; a task it forgot still reads from the database.
  */
 const LINK_TASKS_MAX = 10_000;
-const linkTasks = new Map<string, { owner: string; confirm: boolean; issuedAt: number }>();
-const rememberLinkTask = (cid: string, t: { owner: string; confirm: boolean; issuedAt: number }) => {
+interface LinkTaskMemo {
+  owner: string;
+  /** The connector (grant) that created it: only that one may read it. */
+  connector: string;
+  deviceId: string;
+  confirm: boolean;
+  issuedAt: number;
+}
+const linkTasks = new Map<string, LinkTaskMemo>();
+const rememberLinkTask = (cid: string, t: LinkTaskMemo) => {
   linkTasks.set(cid, t);
   if (linkTasks.size > LINK_TASKS_MAX) linkTasks.delete(linkTasks.keys().next().value!);
 };
@@ -183,7 +191,13 @@ export const buildServer = (deps: GatewayDeps, authInfo: AuthInfo | undefined): 
           const issuedAt = deps.now();
           const r = await deps.api.linkTask(tok.raw, { cid, promptCt, appId, deviceId, workspaceLabel });
           const state = r?.state ?? "TASK_STATE_SUBMITTED";
-          rememberLinkTask(cid, { owner: tok.owner, confirm: state === "TASK_STATE_AUTH_REQUIRED", issuedAt });
+          rememberLinkTask(cid, {
+            owner: tok.owner,
+            connector: tok.cid,
+            deviceId,
+            confirm: state === "TASK_STATE_AUTH_REQUIRED",
+            issuedAt,
+          });
           return json({ sent: true, cid, deviceId, linkId: r?.linkId, state });
         } catch (err) {
           return apiError(err);
@@ -204,13 +218,15 @@ export const buildServer = (deps: GatewayDeps, authInfo: AuthInfo | undefined): 
         }),
       },
       async ({ deviceId, cid }) => {
-        const known = linkTasks.get(cid);
-        const mine = known?.owner === tok.owner ? known : undefined;
+        // Only the connector that created the task, for the device it went to.
+        const mine = linkTasks.get(cid);
+        if (!mine || mine.owner !== tok.owner || mine.connector !== tok.cid || mine.deviceId !== deviceId)
+          return toolError("No such task.");
         const now = deps.now();
         const r = await readLinkTask(
           deps.reader,
           tok.owner,
-          { deviceId, cid, confirm: mine?.confirm ?? false, issuedAt: mine?.issuedAt ?? now },
+          { deviceId, cid, origin, confirm: mine.confirm, issuedAt: mine.issuedAt },
           now,
         );
         return json({ cid, deviceId, ...r });

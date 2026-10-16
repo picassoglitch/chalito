@@ -170,11 +170,11 @@ export const createA2aServer = (deps: A2aDeps) => {
   const WAITING_MAX = 10_000;
   const waiting = new Map<
     string,
-    { owner: string; deviceId: string; cid: string; confirm: boolean; issuedAt: number }
+    { owner: string; deviceId: string; cid: string; origin: string; confirm: boolean; issuedAt: number }
   >();
   const wait = (
     taskId: string,
-    w: { owner: string; deviceId: string; cid: string; confirm: boolean; issuedAt: number },
+    w: { owner: string; deviceId: string; cid: string; origin: string; confirm: boolean; issuedAt: number },
   ) => {
     waiting.set(taskId, w);
     if (waiting.size > WAITING_MAX) waiting.delete(waiting.keys().next().value!);
@@ -260,7 +260,7 @@ export const createA2aServer = (deps: A2aDeps) => {
         const r = await deps.api.linkTask(tok.raw, { cid, promptCt, exposureId });
         const confirm = r?.state === "TASK_STATE_AUTH_REQUIRED";
         // The device names the task's session after its command id: GetTask follows it there.
-        wait(ctx.taskId, { owner: tok.owner, deviceId, cid, confirm, issuedAt });
+        wait(ctx.taskId, { owner: tok.owner, deviceId, cid, origin: `a2a:${tok.cid}`, confirm, issuedAt });
         if (confirm) finish(TaskState.TASK_STATE_AUTH_REQUIRED, "Waiting for the owner to confirm on their phone.");
         else finish(TaskState.TASK_STATE_SUBMITTED, "Handed to the owner's agent.");
       } catch (err) {

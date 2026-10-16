@@ -1,9 +1,10 @@
+import { outsideTaskSid } from "@chalito/crypto";
 import type { GatewayReader, LinkTaskView } from "./reader.js";
 
 /**
  * Where an outside hand-off task is (ADR 0022 §4, M16 F), from what the gateway may read: the
  * `link_handoff` approval the agent made for it and the session it started. The agent names that
- * session after the task's command id, so `(owner, deviceId, cid)` finds both.
+ * session `outsideTaskSid(owner, origin, cid)`, so the gateway finds both.
  *
  * While the owner hasn't answered, the task is `TASK_STATE_AUTH_REQUIRED`, not `INPUT_REQUIRED`:
  * A2A uses INPUT_REQUIRED when the *caller* must send more, and AUTH_REQUIRED when an
@@ -48,9 +49,11 @@ export const linkTaskState = (
     : { state: "TASK_STATE_SUBMITTED", note: "Handed to the owner's agent." };
 };
 
+/** `origin` is the task's (`mcp:<provider>`, `a2a:<grant>`): the device names the session from it. */
 export const readLinkTask = async (
   reader: GatewayReader,
   owner: string,
-  t: { deviceId: string; cid: string; confirm: boolean; issuedAt: number },
+  t: { deviceId: string; cid: string; origin: string; confirm: boolean; issuedAt: number },
   now: number,
-) => linkTaskState(await reader.linkTask(owner, t.deviceId, t.cid), { ...t, now });
+) =>
+  linkTaskState(await reader.linkTask(owner, t.deviceId, await outsideTaskSid(owner, t.origin, t.cid)), { ...t, now });

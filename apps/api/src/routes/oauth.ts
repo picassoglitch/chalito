@@ -714,7 +714,8 @@ export const oauthRoutes = (
 
   const LinkTaskBody = z
     .object({
-      cid: z.string().regex(/^[A-Za-z0-9_-]{8,128}$/),
+      /** `lnk_` + id chars only; the device makes the task's session id from it (outsideTaskSid). */
+      cid: z.string().regex(/^lnk_[A-Za-z0-9]{8,64}$/),
       /** The task's prompt, sealed by the gateway to the target agent's key. */
       promptCt: SealedEnvelope,
       /** MCP `create_task`: the agent the caller named (from `list_agents`). */

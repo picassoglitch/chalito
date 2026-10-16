@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { canonicalize } from "@chalito/crypto";
+import type { Origin } from "@chalito/protocol";
 import { ComputerError, type McpServerSpec, type ToolOutput } from "../computer/control.js";
 import { LINK_DATA_RULE, quoteLinkData } from "./frame.js";
 import type { LinkManager } from "./manager.js";
@@ -36,12 +37,17 @@ const TICKET_TTL_MS = 60_000;
 export class LinkTools {
   readonly #bySid = new Map<string, string>();
   readonly #byToken = new Map<string, string>();
-  /** Gate-allowed calls not yet made, per session: canonical (tool, args) → expiry. */
-  readonly #tickets = new Map<string, Map<string, number>>();
+  /** Gate-allowed calls not yet made, per session: canonical (tool, args) → one expiry per allowed call. */
+  readonly #tickets = new Map<string, Map<string, number[]>>();
 
   constructor(private readonly d: LinkToolDeps) {}
 
-  attach(sid: string): McpServerSpec | null {
+  /**
+   * `startedBy` is the session's starting origin: a session an outside caller started (`mcp:`,
+   * `a2a:`) never gets the tools, so an outside task can't hop on through them.
+   */
+  attach(sid: string, startedBy: Origin): McpServerSpec | null {
+    if (startedBy.startsWith("mcp:") || startedBy.startsWith("a2a:")) return null;
     if (this.d.links.senderLinks(sid).length === 0) return null;
     const launch = this.d.mcpLaunch();
     if (!launch) return null;
@@ -72,10 +78,15 @@ export class LinkTools {
   /** The gate allowed this exact call (`mcp__chalito_links__<tool>` with `input`). */
   admit(sid: string, toolName: string, input: unknown): void {
     if (!this.#bySid.has(sid) || !toolName.startsWith(LINKS_TOOL_PREFIX)) return;
-    const t = this.#tickets.get(sid) ?? new Map<string, number>();
+    const t = this.#tickets.get(sid) ?? new Map<string, number[]>();
     const now = this.d.now();
-    for (const [k, exp] of t) if (exp <= now) t.delete(k);
-    t.set(this.#key(toolName.slice(LINKS_TOOL_PREFIX.length), input), now + TICKET_TTL_MS);
+    for (const [k, exps] of t) {
+      const live = exps.filter((e) => e > now);
+      if (live.length) t.set(k, live);
+      else t.delete(k);
+    }
+    const k = this.#key(toolName.slice(LINKS_TOOL_PREFIX.length), input);
+    t.set(k, [...(t.get(k) ?? []), now + TICKET_TTL_MS].slice(-16));
     this.#tickets.set(sid, t);
   }
 
@@ -86,10 +97,17 @@ export class LinkTools {
   #take(sid: string, tool: string, input: unknown): boolean {
     const t = this.#tickets.get(sid);
     const k = this.#key(tool, input);
-    const exp = t?.get(k);
-    if (exp === undefined) return false;
-    t!.delete(k);
-    return exp > this.d.now();
+    const now = this.d.now();
+    const live = (t?.get(k) ?? []).filter((e) => e > now);
+    if (!live.length) {
+      t?.delete(k);
+      return false;
+    }
+    // One allowed call, one run: two identical approved calls each take their own ticket.
+    live.shift();
+    if (live.length) t!.set(k, live);
+    else t!.delete(k);
+    return true;
   }
 
   /** One `tools/call` from the MCP server (the links broker). */
