@@ -828,3 +828,185 @@ describe("classifier parity: globs, case and redirected AppData", () => {
     ).not.toContain("startup file or PATH directory");
   });
 });
+
+describe("follow-up 2: NFC-safe globs, more AI tools, in-workspace files that run code", () => {
+  const ws = "/home/ana/code/app";
+  const ctx = (o: Partial<Parameters<typeof classifyToolCall>[2]> = {}) => ({
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    ...o,
+  });
+  const write = (file_path: string, c = ctx()) => classifyToolCall("Write", { file_path, content: "x" }, c);
+
+  it("a `*` glob in the home folder can't match its dot-folders, even when NFC changes the path's length", () => {
+    // macOS: the home folder comes back decomposed (NFD), the command spells it composed (NFC).
+    const home = "/Users/josé";
+    const c = ctx({
+      platform: "darwin",
+      home,
+      cwd: `${home}/code/app`,
+      policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: `${home}/code/app` }] },
+    });
+    const r = classifyToolCall("Bash", { command: "cp notes.txt /Users/josé/*" }, c);
+    // ~/.chalito is a dot-folder: `*` can't reach it (before the fix, slicing the unfolded path
+    // misaligned by one and made this the hard floor). ~/Library/Keychains is not a dot-folder, so
+    // "credentials path" is right here.
+    expect(r.hardFloor).toBe(false);
+    expect(r.reasons).not.toContain("may touch ~/.chalito or the agent's own files");
+    // A prefix that does name a dot-folder still reaches it.
+    expect(classifyToolCall("Bash", { command: "cp x /Users/josé/.cl*" }, c).tier).toBe("CRITICAL");
+  });
+
+  it("Continue, Codeium/Windsurf, opencode and editor extensions are AI config", () => {
+    for (const f of [
+      ".continue/config.json",
+      ".codeium/windsurf/mcp_config.json",
+      ".windsurf/x",
+      ".config/opencode/opencode.json",
+      ".vscode/extensions/evil/package.json",
+      ".config/Code/User/mcp.json",
+      ".config/Windsurf/User/settings.json",
+    ])
+      expect(write(`/home/ana/${f}`).reasons, f).toContain("startup file or PATH directory");
+    expect(write("/home/ana/Library/Application Support/Windsurf/x", ctx({ platform: "darwin" })).tier).toBe(
+      "CRITICAL",
+    );
+    expect(write("/net/r/Code/User/tasks.json", ctx({ env: { APPDATA: "/net/r" } })).reasons).toContain(
+      "startup file or PATH directory",
+    );
+    expect(
+      workspaceProblem("/home/ana/.continue", {
+        home: "/home/ana",
+        chalitoDir: "/home/ana/.chalito",
+        platform: "linux",
+      }),
+    ).toBe("ai_config");
+    expect(
+      workspaceProblem("/home/ana/.vscode", { home: "/home/ana", chalitoDir: "/home/ana/.chalito", platform: "linux" }),
+    ).toBe("ai_config");
+  });
+
+  it("inside a workspace, files that make code run later need approval (HIGH), not MED", () => {
+    for (const f of [
+      ".git/hooks/pre-commit",
+      ".git/hooks/sub/x",
+      ".claude/settings.json",
+      ".claude/settings.local.json",
+      ".claude/settings.team.json",
+      ".envrc",
+      "sub/.envrc",
+      ".vscode/tasks.json",
+      ".vscode/launch.json",
+      ".devcontainer/devcontainer.json",
+      ".devcontainer/scripts/post-create.sh",
+      ".devcontainer.json",
+    ]) {
+      const c = write(`${ws}/${f}`);
+      expect(c.tier, f).toBe("HIGH");
+      expect(c.reasons, f).toContain("config/CI/.env");
+    }
+    // Ordinary source edits stay as before.
+    for (const f of [
+      "src/index.ts",
+      "README.md",
+      "docs/envrc.md",
+      "lib/devcontainer.ts",
+      "src/mcp.json",
+      "docs/vscode.md",
+    ])
+      expect(write(`${ws}/${f}`).tier, f).toBe("MED");
+  });
+});
+
+describe("follow-up 2: code-running files, case-insensitive on macOS and Windows", () => {
+  const ws = "/home/ana/code/app";
+  const ctx = (platform?: NodeJS.Platform) => ({
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    ...(platform ? { platform } : {}),
+  });
+  const write = (f: string, platform?: NodeJS.Platform) =>
+    classifyToolCall("Write", { file_path: `${ws}/${f}`, content: "x" }, ctx(platform));
+
+  it("MCP configs, and everything under .vscode, .cursor and .windsurf, are HIGH", () => {
+    for (const f of [
+      ".mcp.json",
+      "packages/web/.mcp.json",
+      ".vscode/mcp.json",
+      ".cursor/mcp.json",
+      ".windsurf/mcp.json",
+      ".vscode/settings.json",
+      ".vscode/extensions.json",
+      ".cursor/rules/x.mdc",
+      ".windsurf/workflows/deploy.md",
+    ]) {
+      const c = write(f);
+      expect(c.tier, f).toBe("HIGH");
+      expect(c.reasons, f).toContain("config/CI/.env");
+    }
+  });
+
+  it.each(["darwin", "win32"] as const)("mixed case is the same file on %s", (platform) => {
+    for (const f of [
+      ".ENVRC",
+      ".VSCode/Tasks.json",
+      ".Git/Hooks/pre-commit",
+      ".GIT/CONFIG",
+      ".Claude/Settings.local.json",
+      ".MCP.json",
+      ".Cursor/MCP.json",
+      ".DevContainer/devcontainer.json",
+      "JENKINSFILE",
+    ])
+      expect(write(f, platform).tier, `${platform} ${f}`).toBe("HIGH");
+    expect(write("src/Index.ts", platform).tier).toBe("MED");
+  });
+
+  it("Linux is case-sensitive: other spellings are other files", () => {
+    expect(write(".ENVRC", "linux").tier).toBe("MED");
+    expect(write(".envrc", "linux").tier).toBe("HIGH");
+  });
+});
+
+describe("follow-up 2: Windows names the checks can't trust fail closed", () => {
+  const ws = "/home/ana/code/app";
+  const win = {
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    platform: "win32" as const,
+  };
+  const write = (f: string, c: Parameters<typeof classifyToolCall>[2] = win) =>
+    classifyToolCall("Write", { file_path: `${ws}/${f}`, content: "x" }, c);
+
+  it("trailing dots and spaces are stripped before the name checks", () => {
+    for (const f of [".envrc.", ".envrc ", ".vscode./tasks.json", ".git /hooks/pre-commit", ".mcp.json..."])
+      expect(write(f).tier, JSON.stringify(f)).toBe("HIGH");
+  });
+
+  it("NTFS streams, 8.3 short names and trailing dots/spaces are at least HIGH", () => {
+    for (const f of [
+      ".mcp.json::$DATA",
+      ".mcp.json:stream",
+      "src/index.ts:hidden",
+      ".VSCOD~1/tasks.json",
+      "PROGRA~1.TXT",
+      "notes.md.",
+      "src /a.ts",
+    ]) {
+      const c = write(f);
+      expect(["HIGH", "CRITICAL"], JSON.stringify(f)).toContain(c.tier);
+    }
+    expect(write("src/index.ts:hidden").reasons).toContain("ambiguous Windows path name");
+    // A drive letter's colon is fine, and so are ordinary names.
+    expect(write("src/index.ts").tier).toBe("MED");
+    expect(write("src/file~name.ts").tier).toBe("MED");
+    // Other systems keep these as ordinary names.
+    expect(write("notes.md.", { ...win, platform: "linux" }).tier).toBe("MED");
+  });
+});

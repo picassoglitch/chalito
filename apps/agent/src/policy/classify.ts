@@ -99,6 +99,11 @@ interface Paths {
   /** The agent's own executables, resolved. */
   agentBinaries: string[];
   configOrCi(abs: string): boolean;
+  /**
+   * Windows only: a name the checks can't trust (a trailing dot or space, an NTFS stream `:x`,
+   * an 8.3 short name `~1`). Fail closed: at least HIGH.
+   */
+  winAmbiguous(abs: string): boolean;
   /** Build/test manifests, lockfiles, tool configs and test code: editing them changes what a test or build run executes. */
   buildOrTest(abs: string): boolean;
   /** Whether a path that starts with `prefix` (then `next`, a glob/variable char) can land on a protected path. */
@@ -110,7 +115,17 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   // on NFC, lower-cased paths, like workspaces.ts, so `~/.CLAUDE` is `~/.claude`.
   const platform = ctx.platform ?? process.platform;
   const fold = platform === "darwin" || platform === "win32";
-  const k = (p: string) => (fold ? p.normalize("NFC").toLowerCase() : p);
+  // Windows also ignores trailing dots and spaces in a name (`.envrc.` is `.envrc`).
+  const winTrim = (p: string) =>
+    p
+      .split(/([\\/])/)
+      .map((c) => (c === "." || c === ".." || c === "/" || c === "\\" ? c : c.replace(/[. ]+$/, "")))
+      .join("");
+  const k = (p: string) => {
+    if (!fold) return p;
+    const n = p.normalize("NFC").toLowerCase();
+    return platform === "win32" ? winTrim(n) : n;
+  };
   const within = (child: string, parent: string) => withinExact(k(child), k(parent));
   const same = (a: string, b: string) => k(a) === k(b);
   const real = ctx.realpath ?? defaultRealpath;
@@ -177,20 +192,40 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       abs === "/etc/shadow" ||
       abs === "/etc/sudoers" ||
       within(abs, "/etc/sudoers.d"),
+    winAmbiguous: (abs) => {
+      if (platform !== "win32") return false;
+      const rest = abs.replace(/^[A-Za-z]:/, "");
+      if (rest.includes(":")) return true;
+      return rest.split(/[\\/]/).some((c) => c !== "." && c !== ".." && c !== "" && (/[. ]$/.test(c) || /~\d/.test(c)));
+    },
     configOrCi: (abs) => {
-      const parts = abs.split(sep);
+      // Compared folded (k): on macOS and Windows `.ENVRC` or `.Git/Hooks` are the same files.
+      const folded = k(abs);
+      const parts = folded.split(sep);
       const base = parts[parts.length - 1] ?? "";
+      const dirs = parts.slice(0, -1);
+      const has = (name: string) => dirs.includes(k(name));
+      const named = (...names: string[]) => names.some((n) => base === k(n));
+      const parent = parts[parts.length - 2] ?? "";
       return (
         /^\.env(\..*)?$/.test(base) ||
-        parts.includes(".github") ||
-        parts.includes(".circleci") ||
-        parts.includes(".buildkite") ||
-        ["Jenkinsfile", ".gitlab-ci.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml"].includes(base) ||
-        // Files that can make code run later: git hooks, agent settings with hooks.
-        abs.includes(`${sep}.git${sep}hooks${sep}`) ||
-        abs.includes(`${sep}.git${sep}config`) ||
-        (parts.includes(".claude") && /^settings(\.local)?\.json$/.test(base)) ||
-        parts.includes(".husky")
+        has(".github") ||
+        has(".circleci") ||
+        has(".buildkite") ||
+        named("Jenkinsfile", ".gitlab-ci.yml", "azure-pipelines.yml", "bitbucket-pipelines.yml") ||
+        // Files that can make code run later (HIGH even inside a workspace): git hooks and config,
+        // agent settings with hooks, MCP server configs, direnv, editor folders (tasks, launch,
+        // terminal settings, extensions' configs), dev containers.
+        folded.includes(`${sep}${k(".git")}${sep}${k("hooks")}${sep}`) ||
+        folded.includes(`${sep}${k(".git")}${sep}${k("config")}`) ||
+        (has(".claude") && /^settings.*\.json$/.test(base)) ||
+        named(".mcp.json", ".envrc", ".devcontainer.json") ||
+        (named("mcp.json") && [".vscode", ".cursor", ".windsurf"].some((d) => parent === k(d))) ||
+        has(".vscode") ||
+        has(".cursor") ||
+        has(".windsurf") ||
+        has(".devcontainer") ||
+        has(".husky")
       );
     },
     buildOrTest: (abs) => {
@@ -219,7 +254,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       const reaches = (target: string) => {
         if (within(abs.endsWith(sep) ? abs.slice(0, -1) || sep : abs, target)) return true;
         if (!k(target).startsWith(k(abs))) return false;
-        return !(dotSafe && target.slice(abs.length).startsWith("."));
+        // Slice the folded path: NFC can change the length on macOS.
+        return !(dotSafe && k(target).slice(k(abs).length).startsWith("."));
       };
       if (floor.some(reaches)) return "hard_floor";
       if ([...sensitiveDirs, ...sensitiveFiles, ...systemSecrets].some(reaches)) return "credentials";
@@ -368,6 +404,10 @@ const classifyPath = (
   // a hand-edited policy might not).
   if ((write || persistAlways) && paths.persistence(abs)) {
     raise(out, "CRITICAL", "startup file or PATH directory");
+    return;
+  }
+  if (paths.winAmbiguous(abs)) {
+    raise(out, "HIGH", "ambiguous Windows path name");
     return;
   }
   if (!paths.inWorkspace(abs)) {
