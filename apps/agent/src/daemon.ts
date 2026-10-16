@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
-import { basename, delimiter, join } from "node:path";
+import { realpathSync, watch, type FSWatcher } from "node:fs";
+import { basename, delimiter, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv, type ClaudeAuth } from "@chalito/adapters/claude-code";
@@ -22,7 +22,8 @@ import {
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
-import { SCAN_MAX_AGE_MS, scanRepos } from "./policy/git-hooks.js";
+import { SCAN_MAX_AGE_MS } from "./policy/git-hooks.js";
+import { refreshRepoIndex } from "./policy/repo-index.js";
 import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
@@ -470,13 +471,21 @@ const startDaemon = async (
   const anchor = await new AnchorStore(secrets).load();
   // The classifier knows every repo in each workspace (git-hooks.ts): scan at start, when the
   // policy changes and every few minutes (new clones), never depending on what was touched first.
-  const scanWorkspaceRepos = (force = false) => {
-    for (const w of policyRef?.get().workspaces ?? [])
+  const scanWorkspaceRepos = (_force = false) => {
+    const home = deps.home ?? homedir();
+    // The same paths the classifier uses: ~ expanded, then resolved.
+    const paths = (policyRef?.get().workspaces ?? []).map((w) => {
+      const p = w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : resolve(w.path);
       try {
-        scanRepos(w.path, { force });
-      } catch (err) {
-        log.warn("repos.scan_failed", { error: err instanceof Error ? err.message : "error" });
+        return realpathSync.native(p);
+      } catch {
+        return p;
       }
+    });
+    // Async (fs.promises): never blocks a classification; the classifier keeps the last result.
+    void refreshRepoIndex(paths).catch((err: unknown) =>
+      log.warn("repos.scan_failed", { error: err instanceof Error ? err.message : "error" }),
+    );
   };
   let policyRef: FilePolicyHolder | null = null;
   const policy = new FilePolicyHolder(dir, id.sign, {

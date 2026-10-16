@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -37,10 +38,14 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.js");
-const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, scanRepos, systemConfigs } =
+const { clearRepoIndex, refreshRepoIndexSync, scanReposSync } = await import("../src/policy/repo-index.js");
+const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, systemConfigs } =
   await import("../src/policy/git-hooks.js");
 
-beforeEach(() => clearHooksCache());
+beforeEach(() => {
+  clearHooksCache();
+  clearRepoIndex();
+});
 afterAll(() => expect(spawned).toEqual([]));
 
 const NOSYS = { GIT_CONFIG_NOSYSTEM: "1" };
@@ -61,8 +66,12 @@ const ctx = (ws: string, home: string, o: Record<string, unknown> = {}) => ({
   env: NOSYS,
   ...o,
 });
-const write = (ws: string, home: string, f: string, o: Record<string, unknown> = {}) =>
-  classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, ctx(ws, home, o));
+/** Classifies a write after a (sync, test-only) repo scan: the classifier itself never scans. */
+const write = (ws: string, home: string, f: string, o: Record<string, unknown> = {}) => {
+  const { repoScanLimit, ...rest } = o as { repoScanLimit?: number };
+  refreshRepoIndexSync([ws], repoScanLimit ? { max: repoScanLimit } : {});
+  return classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, ctx(ws, home, rest));
+};
 const bump = (f: string) => utimesSync(f, new Date(), new Date(Date.now() + 10_000));
 
 describe("the parser", () => {
@@ -615,7 +624,7 @@ describe("every repo in the workspace is known up front", () => {
     expect(write(ws, home, "b/src/y.ts").tier).toBe("MED");
   });
 
-  it("the scan skips heavy folders, stops at depth 4 and at the cap", () => {
+  it("the scan skips heavy folders, stops at depth 4 and at the folder budget", () => {
     const home = root();
     const ws = join(home, "ws");
     mkdirSync(ws);
@@ -624,10 +633,11 @@ describe("every repo in the workspace is known up front", () => {
     mkdirSync(join(ws, "d1", "d2", "d3", "d4", "d5"), { recursive: true });
     repo(join(ws, "d1", "d2", "d3"), "deep");
     repo(join(ws, "d1", "d2", "d3", "d4", "d5"), "too-deep");
-    const scan = scanRepos(ws, { force: true });
+    const scan = scanReposSync(ws);
     expect(scan.roots.sort()).toEqual([join(ws, "a"), join(ws, "d1", "d2", "d3", "deep")].sort());
     expect(scan.complete).toBe(true);
-    expect(scanRepos(ws, { force: true, max: 1 }).complete).toBe(false);
+    // The folder budget cuts a scan short.
+    expect(scanReposSync(ws, { budget: 2 }).complete).toBe(false);
   });
 
   it("a scan cut short protects every repo's usual hooks folders (narrowly)", () => {
@@ -643,5 +653,50 @@ describe("every repo in the workspace is known up front", () => {
     // A complete scan: no fallback.
     clearHooksCache();
     expect(write(ws, home, "b/hooks/pre-commit").tier).toBe("MED");
+  });
+});
+
+describe("repos the index doesn't know are still covered", () => {
+  it("a repo under vendor/ (a folder the scan skips) keeps its hooksPath protected", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    const vendored = repo(join(ws, "vendor"), "lib", "[core]\n\thooksPath = lib-hooks\n");
+    expect(scanReposSync(ws).roots).not.toContain(vendored);
+    expect(write(ws, home, "vendor/lib/lib-hooks/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, "vendor/lib/.git/config").tier).toBe("HIGH");
+    expect(write(ws, home, "vendor/lib/src/a.ts").tier).toBe("MED");
+  });
+
+  it("an unreadable folder is skipped, not fatal: the scan stays complete and other repos are protected", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a", "[core]\n\thooksPath = ../b/from-a\n");
+    repo(ws, "b");
+    const locked = join(ws, "locked");
+    mkdirSync(join(locked, "inner"), { recursive: true });
+    chmodSync(locked, 0o000);
+    try {
+      const scan = scanReposSync(ws);
+      if (process.getuid?.() !== 0) {
+        expect(scan.unreadable).toContain(locked);
+        expect(scan.complete).toBe(true);
+      }
+      expect(write(ws, home, "b/from-a/pre-commit").tier).toBe("HIGH");
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+});
+
+describe("one comparison key for the index and the classifier", () => {
+  it.each(["hooks-a.", "hooks-a ", "Hooks-A.."])("win32: a hooksPath written as %j still protects hooks-a", (hp) => {
+    const home = root();
+    const ws = repo(home, "app", `[core]\n\thooksPath = "${hp}"\n`);
+    const o = { platform: "win32" };
+    expect(write(ws, home, "hooks-a/pre-commit", o).tier).toBe("HIGH");
+    expect(write(ws, home, "HOOKS-A/pre-commit", o).tier).toBe("HIGH");
+    expect(write(ws, home, "src/a.ts", o).tier).toBe("MED");
   });
 });
