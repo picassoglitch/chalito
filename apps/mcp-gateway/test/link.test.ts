@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentCard as SdkAgentCard, Role, TaskState, type Task } from "@a2a-js/sdk";
 import { ClientFactory, JsonRpcTransportFactory } from "@a2a-js/sdk/client";
+import { ServerCallContext } from "@a2a-js/sdk/server";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
@@ -41,6 +42,7 @@ import { DEFAULT_POLICY } from "../../agent/src/policy/index.js";
 import { createLogger } from "../../agent/src/redact.js";
 import { MemoryStore } from "../../agent/src/store.js";
 import { A2A_RESOURCE, CHATGPT_CLIENT, RESOURCE } from "../../api/test/oauth-harness.js";
+import { GrantTaskStores } from "../src/a2a.js";
 import { gatewayHarness } from "./harness.js";
 
 const AGENT = "dev_agent";
@@ -458,5 +460,32 @@ describe("a relayed A2A task on the real AgentCore", () => {
     expect(a.store.pendingApprovals()[0]!.origin).toMatch(/^a2a:con_/);
     await new Promise((r) => setTimeout(r, 50));
     expect(a.fake.run.ran).toHaveLength(0);
+  });
+});
+
+describe("A2A task store", () => {
+  const ctx = (user: string) => new ServerCallContext({ user: { isAuthenticated: true, userName: user } as never });
+  const task = (id: string) =>
+    ({ id, contextId: "c", status: { state: TaskState.TASK_STATE_SUBMITTED }, artifacts: [], history: [] }) as never;
+
+  it("drops a grant's tasks after the TTL, keeps at most N per grant and M grants", async () => {
+    let now = 0;
+    const stores = new GrantTaskStores(() => now, { ttlMs: 1000, perGrant: 2, grants: 2 });
+    const g1 = stores.for("o/g1");
+    await g1.save(task("t1"), ctx("o/g1"));
+    expect(await stores.for("o/g1").load("t1", ctx("o/g1"))).toMatchObject({ id: "t1" });
+    // Idle past the TTL: gone.
+    now = 1500;
+    expect(await stores.for("o/g1").load("t1", ctx("o/g1"))).toBeUndefined();
+    // Per grant: a third new task starts the grant's store over.
+    const s = stores.for("o/g1");
+    for (const id of ["a", "b", "c"]) await s.save(task(id), ctx("o/g1"));
+    expect(await s.load("a", ctx("o/g1"))).toBeUndefined();
+    expect(await s.load("c", ctx("o/g1"))).toMatchObject({ id: "c" });
+    // Grants: the least recently used goes beyond the cap.
+    stores.for("o/g2");
+    stores.for("o/g3");
+    expect(stores.size).toBe(2);
+    expect(await stores.for("o/g1").load("c", ctx("o/g1"))).toBeUndefined();
   });
 });
