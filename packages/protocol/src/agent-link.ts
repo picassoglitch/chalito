@@ -207,6 +207,8 @@ export const LINK_RELAY_TYPES = ["link.handoff", "link.share", "link.result"] as
 export const LinkRefusal = z.enum([
   "no_link",
   "link_revoked",
+  /** The link has no row in the cloud mirror yet (its publish failed): not delivered until it has one. */
+  "link_unpublished",
   "link_expired",
   "wrong_mode",
   "wrong_endpoint",

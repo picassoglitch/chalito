@@ -13,6 +13,12 @@
 --    "Cerrar sesión en todos los demás dispositivos" calls. Each agent checks this mark before
 --    every delivery and drops the link (fail closed), so a revoke-all reaches links even on a
 --    computer that gets no revokeClient command (no other clients to revoke).
+--  * A delivery needs the row to EXIST and not be revoked: a link whose publish failed has no row
+--    for revoke-all to mark, so the agent treats a missing row as "not yet" and republishes. The
+--    revoke-all also records its time per account (chalito_private.agent_link_revoke_all): a link
+--    made before it but first published after it arrives already revoked, so a late publish can't
+--    bring it back. (created_at is the device's clock; a device clock ahead of the database's by
+--    more than the gap between making the link and the revoke-all would let it through.)
 -- Reads: the owner's devices (RLS).
 
 create table chalito.agent_links (
@@ -25,6 +31,8 @@ create table chalito.agent_links (
   confirm boolean not null,
   permission_ceiling text not null check (permission_ceiling in ('default', 'plan', 'acceptEdits')),
   expires_at timestamptz not null,
+  -- When the link was made on the device (the revoke-all cut-off is compared against it).
+  created_at timestamptz not null,
   revoked_at timestamptz,
   revoked_by text check (revoked_by is null or length(revoked_by) <= 64),
   details_ct jsonb not null check (jsonb_typeof(details_ct) = 'object'),
@@ -35,6 +43,14 @@ create table chalito.agent_links (
   check (device_id in (sender_device_id, receiver_device_id))
 );
 create index agent_links_owner_idx on chalito.agent_links (owner);
+
+-- The account's last revoke-all (server-only; read by publish_agent_links below).
+create table chalito_private.agent_link_revoke_all (
+  owner chalito.id primary key references chalito.users (id) on delete cascade,
+  revoked_at timestamptz not null,
+  revoked_by text not null check (length(revoked_by) <= 64)
+);
+revoke all on chalito_private.agent_link_revoke_all from public, anon, authenticated;
 
 alter table chalito.agent_links enable row level security;
 create policy agent_links_read on chalito.agent_links for select to authenticated
@@ -53,6 +69,7 @@ declare
   v_owner text := chalito.jwt_owner();
   v_device text := chalito.jwt_device_id();
   v_ids text[];
+  v_cut chalito_private.agent_link_revoke_all;
   l jsonb;
 begin
   if not chalito_private.active_agent() then
@@ -62,6 +79,7 @@ begin
     raise exception 'links must be an array of at most 200' using errcode = '22023';
   end if;
   select coalesce(array_agg(e ->> 'link_id'), '{}') into v_ids from jsonb_array_elements(p_links) e;
+  select * into v_cut from chalito_private.agent_link_revoke_all c where c.owner = v_owner;
 
   -- Links it no longer holds were revoked (or expired) on the device.
   update chalito.agent_links a
@@ -71,11 +89,18 @@ begin
 
   for l in select * from jsonb_array_elements(p_links) loop
     insert into chalito.agent_links as a (owner, device_id, link_id, mode, sender_device_id, receiver_device_id,
-                                          confirm, permission_ceiling, expires_at, revoked_at, revoked_by,
-                                          details_ct, updated_at)
+                                          confirm, permission_ceiling, expires_at, created_at, revoked_at,
+                                          revoked_by, details_ct, updated_at)
     values (v_owner, v_device, l ->> 'link_id', l ->> 'mode', l ->> 'sender_device_id', l ->> 'receiver_device_id',
             (l ->> 'confirm')::boolean, l ->> 'permission_ceiling', (l ->> 'expires_at')::timestamptz,
-            (l ->> 'revoked_at')::timestamptz, case when l ->> 'revoked_at' is null then null else 'agent' end,
+            (l ->> 'created_at')::timestamptz,
+            -- Made before the account's last revoke-all: revoked, however late it's first published.
+            case when l ->> 'revoked_at' is not null then (l ->> 'revoked_at')::timestamptz
+                 when v_cut.owner is not null and (l ->> 'created_at')::timestamptz <= v_cut.revoked_at
+                   then v_cut.revoked_at end,
+            case when l ->> 'revoked_at' is not null then 'agent'
+                 when v_cut.owner is not null and (l ->> 'created_at')::timestamptz <= v_cut.revoked_at
+                   then v_cut.revoked_by end,
             l -> 'details_ct', now())
     on conflict (owner, device_id, link_id) do update
       set mode = excluded.mode,
@@ -84,6 +109,7 @@ begin
           confirm = excluded.confirm,
           permission_ceiling = excluded.permission_ceiling,
           expires_at = excluded.expires_at,
+          created_at = a.created_at,
           -- Never un-revoke: a revoke-all mark stays, whatever the agent sends.
           revoked_at = coalesce(a.revoked_at, excluded.revoked_at),
           revoked_by = coalesce(a.revoked_by, excluded.revoked_by),
@@ -110,6 +136,10 @@ begin
      set revoked_at = now(), revoked_by = left(coalesce(p_by, 'revoke_all'), 64), updated_at = now()
    where owner = p_owner and revoked_at is null;
   get diagnostics n = row_count;
+  -- Links not published yet (no row to mark) are cut off by time when they are.
+  insert into chalito_private.agent_link_revoke_all as c (owner, revoked_at, revoked_by)
+  values (p_owner, now(), left(coalesce(p_by, 'revoke_all'), 64))
+  on conflict (owner) do update set revoked_at = excluded.revoked_at, revoked_by = excluded.revoked_by;
   return n;
 end
 $$;

@@ -909,6 +909,8 @@ const startDaemon = async (
     .catch((err: unknown) =>
       log.warn("sessions.restore_failed", { error: err instanceof Error ? err.message : "error" }),
     );
+  // The phone's list, and the mirror rows deliveries are checked against (retried until it lands).
+  void links.sync();
   lan = lanPath({
     cloud,
     self: { deviceId: id.deviceId, sign: id.sign },
@@ -1177,6 +1179,7 @@ const startDaemon = async (
     await broker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
     await lan?.stop("agent_stop").catch(() => undefined);
+    links.close();
     await cloud.close().catch(() => undefined);
     releaseLock();
     resolveDone();

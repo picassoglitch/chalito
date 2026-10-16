@@ -1,6 +1,20 @@
 import type { AgentLinkSummary, RelayedCommand, SealedEnvelope } from "@chalito/protocol";
 import type { SupaClient } from "../supabase-store.js";
 
+/** One published link: plaintext metadata, details sealed to the person's clients. */
+export interface PublishedLink {
+  summary: AgentLinkSummary;
+  /** When the link was made here: a link first published after a revoke-all but made before it arrives revoked. */
+  createdAt: number;
+  detailsCt: SealedEnvelope;
+}
+
+/**
+ * A link's row in the cloud mirror. A link with no row is absent from the answer: it was never
+ * published (or its publish failed), so revoke-all had nothing to mark. Delivery needs "active".
+ */
+export type CloudLinkStatus = "active" | "revoked";
+
 /**
  * What links need from the cloud (ADR 0022 §3). Nothing here grants anything: the cloud carries
  * relays between the owner's agents, shows the links on the phone, and can say a link was
@@ -11,27 +25,59 @@ export interface LinkCloud {
   /** A relay to another of the owner's agents (chalito.commands; RLS: an active agent, agent-link only). */
   queueCommand(targetDeviceId: string, cid: string, env: RelayedCommand, expiresAt: number): Promise<void>;
   /** This device's links for the person's clients: plaintext metadata, details sealed to them. */
-  publishLinks(rows: { summary: AgentLinkSummary; detailsCt: SealedEnvelope }[]): Promise<void>;
-  /** Of these link ids, the ones the account revoked (revoke-all marks the mirror rows). */
-  revokedInCloud(ids: string[]): Promise<string[]>;
+  publishLinks(rows: PublishedLink[]): Promise<void>;
+  /** The mirror rows of these link ids (revoke-all marks them); an id without a row is left out. */
+  linkStatus(ids: string[]): Promise<Map<string, CloudLinkStatus>>;
 }
 
-/** For tests and setups without a cloud: relays go nowhere, nothing is revoked remotely. */
+/**
+ * For tests and setups without a cloud. Like chalito.publish_agent_links: a published link gets a
+ * row, a revoked row stays revoked, and after `revokeAll()` a link made before it arrives revoked.
+ * (Rows aren't kept per device, so two test agents can share one.)
+ */
 export class MemoryLinkCloud implements LinkCloud {
   queued: { targetDeviceId: string; cid: string; env: RelayedCommand; expiresAt: number }[] = [];
-  published: { summary: AgentLinkSummary; detailsCt: SealedEnvelope }[] = [];
+  published: PublishedLink[] = [];
+  /** link id → revoked? (the mirror). */
+  readonly rows = new Map<string, boolean>();
+  /** Test hook: ids the account revoked (revoke-all), whether or not they have a row. */
   revoked = new Set<string>();
+  /** Test hook: the next this-many publishes fail. */
+  failPublishes = 0;
+  /** Test hook: every status lookup fails (the cloud is unreachable). */
+  statusFails = false;
+  #revokedAllAt: number | null = null;
   /** Test hook: where queued relays go (another agent's handleCommand). */
   deliver?: (targetDeviceId: string, cid: string, env: RelayedCommand) => Promise<void>;
   async queueCommand(targetDeviceId: string, cid: string, env: RelayedCommand, expiresAt: number) {
     this.queued.push({ targetDeviceId, cid, env, expiresAt });
     await this.deliver?.(targetDeviceId, cid, env);
   }
-  async publishLinks(rows: { summary: AgentLinkSummary; detailsCt: SealedEnvelope }[]) {
+  async publishLinks(rows: PublishedLink[]) {
+    if (this.failPublishes > 0) {
+      this.failPublishes--;
+      throw new Error("publish links: unavailable");
+    }
+    for (const r of rows) {
+      const cut = this.#revokedAllAt !== null && r.createdAt <= this.#revokedAllAt;
+      this.rows.set(r.summary.id, (this.rows.get(r.summary.id) ?? false) || r.summary.revokedAt !== null || cut);
+    }
     this.published = rows;
   }
-  async revokedInCloud(ids: string[]) {
-    return ids.filter((id) => this.revoked.has(id));
+  /** Test hook: chalito_private.revoke_agent_links (every row, and the account's cut-off). */
+  revokeAll(at = Date.now()) {
+    for (const id of this.rows.keys()) this.rows.set(id, true);
+    this.#revokedAllAt = at;
+  }
+  async linkStatus(ids: string[]) {
+    if (this.statusFails) throw new Error("link status: unavailable");
+    const out = new Map<string, CloudLinkStatus>();
+    for (const id of ids) {
+      const row = this.rows.get(id);
+      if (this.revoked.has(id) || row === true) out.set(id, "revoked");
+      else if (row === false) out.set(id, "active");
+    }
+    return out;
   }
 }
 
@@ -57,8 +103,8 @@ export class SupabaseLinkCloud implements LinkCloud {
     if (error) throw new Error(`link relay: ${error.message}`);
   }
 
-  async publishLinks(rows: { summary: AgentLinkSummary; detailsCt: SealedEnvelope }[]) {
-    const links = rows.map(({ summary: s, detailsCt }) => ({
+  async publishLinks(rows: PublishedLink[]) {
+    const links = rows.map(({ summary: s, createdAt, detailsCt }) => ({
       link_id: s.id,
       mode: s.mode,
       sender_device_id: s.senderDeviceId,
@@ -66,6 +112,7 @@ export class SupabaseLinkCloud implements LinkCloud {
       confirm: s.confirm,
       permission_ceiling: s.permissionCeiling,
       expires_at: iso(s.expiresAt),
+      created_at: iso(createdAt),
       revoked_at: s.revokedAt === null ? null : iso(s.revokedAt),
       details_ct: detailsCt,
     }));
@@ -73,8 +120,9 @@ export class SupabaseLinkCloud implements LinkCloud {
     if (error) throw new Error(`publish links: ${error.message}`);
   }
 
-  async revokedInCloud(ids: string[]) {
-    if (ids.length === 0) return [];
+  async linkStatus(ids: string[]) {
+    const out = new Map<string, CloudLinkStatus>();
+    if (ids.length === 0) return out;
     const { data, error } = await this.db
       .from("agent_links")
       .select("link_id, revoked_at")
@@ -82,8 +130,8 @@ export class SupabaseLinkCloud implements LinkCloud {
       .eq("device_id", this.deviceId)
       .in("link_id", ids);
     if (error) throw new Error(`link status: ${error.message}`);
-    return ((data as { link_id: string; revoked_at: string | null }[] | null) ?? [])
-      .filter((r) => r.revoked_at !== null)
-      .map((r) => r.link_id);
+    for (const r of (data as { link_id: string; revoked_at: string | null }[] | null) ?? [])
+      out.set(r.link_id, r.revoked_at === null ? "active" : "revoked");
+    return out;
   }
 }
