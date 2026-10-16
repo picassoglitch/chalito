@@ -234,6 +234,8 @@ interface UnionCache {
   watched: string[];
   stamp: string;
   checkedAt: number;
+  /** A change was seen and a rebuild is queued: until it lands, every workspace counts as missing. */
+  stale?: boolean;
 }
 
 const mtime = (p: string) => {
@@ -359,10 +361,18 @@ export const repoUnion = (workspaces: string[], o: HooksOptions, now = Date.now(
       ...EMPTY_SETS,
     };
   }
-  if (c.version !== version) queueRebuild();
-  else if (now - c.checkedAt >= MTIME_CHECK_MS) {
-    c.checkedAt = now;
-    if (c.watched.map(mtime).join(",") !== c.stamp) queueRebuild();
+  if (!c.stale) {
+    if (c.version !== version) c.stale = true;
+    else if (now - c.checkedAt >= MTIME_CHECK_MS) {
+      if (c.watched.map(mtime).join(",") !== c.stamp) c.stale = true;
+      // No change: trust it for another interval. A change keeps checkedAt until the rebuild lands.
+      else c.checkedAt = now;
+    }
+  }
+  if (c.stale) {
+    queueRebuild();
+    // The old union still protects what it knew; the narrow fallback covers what may have changed.
+    return { ...c.union, missing: [...workspaces] };
   }
   return c.union;
 };

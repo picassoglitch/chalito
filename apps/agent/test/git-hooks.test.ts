@@ -738,3 +738,43 @@ describe("before the first scan finishes", () => {
     expect(classify("a/src/a.ts").tier).toBe("MED");
   });
 });
+
+describe("a stale union falls back until its rebuild lands", () => {
+  it("config changed: narrow fallback (old union still applies) until the async rebuild, then the new answer", async () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    const a = repo(ws, "a", "[core]\n\thooksPath = old-hooks\n");
+    const c = ctx(ws, home);
+    refreshRepoIndexSync([ws], { hooks: hooksOptionsFor(c as never) });
+    const classify = (f: string) => classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, c);
+    expect(classify("a/hooks/x").tier).toBe("MED");
+    expect(classify("a/old-hooks/x").tier).toBe("HIGH");
+
+    writeFileSync(join(a, ".git", "config"), "[core]\n\thooksPath = new-hooks\n");
+    bump(join(a, ".git", "config"));
+    const realNow = Date.now;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 10_000);
+    try {
+      // The throttled check sees the change: fallback now, rebuild queued (not done in this call).
+      expect(classify("a/hooks/x").tier).toBe("HIGH");
+      expect(classify("a/old-hooks/x").tier).toBe("HIGH");
+      expect(classify("a/src/a.ts").tier).toBe("MED");
+      await new Promise((r) => setImmediate(r));
+      // Rebuilt: the new hooksPath, and no more fallback.
+      expect(classify("a/new-hooks/x").tier).toBe("HIGH");
+      expect(classify("a/hooks/x").tier).toBe("MED");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("the very first call, before any union exists, gets the fallback", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a");
+    const c = ctx(ws, home);
+    expect(classifyToolCall("Write", { file_path: join(ws, "a/hooks/x"), content: "x" }, c).tier).toBe("HIGH");
+  });
+});

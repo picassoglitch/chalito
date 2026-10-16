@@ -24,6 +24,7 @@ import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
 import { SCAN_MAX_AGE_MS } from "./policy/git-hooks.js";
 import { refreshRepoIndex } from "./policy/repo-index.js";
+import { hooksOptionsFor } from "./policy/classify.js";
 import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
@@ -483,7 +484,14 @@ const startDaemon = async (
       }
     });
     // Async (fs.promises): never blocks a classification; the classifier keeps the last result.
-    void refreshRepoIndex(paths).catch((err: unknown) =>
+    // The union is prebuilt with the classification's own options (agent-core's classify context).
+    let hooks: ReturnType<typeof hooksOptionsFor> | undefined;
+    try {
+      hooks = hooksOptionsFor({ home, env: extras.env });
+    } catch {
+      hooks = undefined; // before the classifier extras exist; the classifier's own request covers it
+    }
+    void refreshRepoIndex(paths, hooks ? { hooks } : {}).catch((err: unknown) =>
       log.warn("repos.scan_failed", { error: err instanceof Error ? err.message : "error" }),
     );
   };
