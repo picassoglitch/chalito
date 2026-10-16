@@ -33,14 +33,10 @@ billingUnit:
 # The token allowance comes from the hub's own balance.
 hubTiers:
   free: # Chalyb Gratis
-    # Owner decision 2026-10-06: Gratis gets every feature (Energía chat metered from the hub
-    # balance, companion + store, desktop agent / own keys, Salas/Mesas) with 1 computer and
-    # 1 room of 4. Lite's inclusions, capped below. WhatsApp stays off for Gratis (not in the
-    # owner's list; Lite's 100/month would be a paid channel for free).
-    access: lite
-    limits:
-      devices: 1
-      whatsapp: 0
+    # Owner decision #53 (2026-10-16): Chalito is part of Pro and VIP only, matching the hub's
+    # engine row (tier_required PRO). Gratis has no Chalito access; the hub shows "Chalito viene
+    # en Pro" with the trial or the plans. Supersedes the 2026-10-06 "Gratis gets Lite" decision.
+    access: none
   pro:
     access: standard
   vip:
