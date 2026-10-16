@@ -17,6 +17,7 @@ import { BUILTIN_CATALOG, type CatalogEntry } from "../src/apps/catalog.js";
 import { AppManager, knownBinDirs } from "../src/apps/manager.js";
 import { ipcHandlers } from "../src/ipc-handlers.js";
 import { DEFAULT_POLICY, classifyToolCall, type Policy } from "../src/policy/index.js";
+import { gitHooksPath } from "../src/policy/classify.js";
 import { SENSITIVE_FILES, USER_BIN_DIRS } from "../src/policy/persistence.js";
 import { createLogger } from "../src/redact.js";
 import { MemorySecretStore } from "../src/secrets.js";
@@ -1008,5 +1009,75 @@ describe("follow-up 2: Windows names the checks can't trust fail closed", () => 
     expect(write("src/file~name.ts").tier).toBe("MED");
     // Other systems keep these as ordinary names.
     expect(write("notes.md.", { ...win, platform: "linux" }).tier).toBe("MED");
+  });
+});
+
+describe("follow-up 3: project files that run code, the repo's hooks folder, 8.3 shapes", () => {
+  const mk = () => {
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "chalito-fr3-")));
+    return ws;
+  };
+  const ctx = (ws: string, o: Partial<Parameters<typeof classifyToolCall>[2]> = {}) => ({
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    ...o,
+  });
+  const write = (ws: string, f: string, o: Partial<Parameters<typeof classifyToolCall>[2]> = {}) =>
+    classifyToolCall("Write", { file_path: `${ws}/${f}`, content: "x" }, ctx(ws, o));
+
+  it("package-manager, toolchain and IDE run settings in a project are HIGH", () => {
+    const ws = mk();
+    for (const f of [
+      ".npmrc",
+      "packages/web/.npmrc",
+      ".yarnrc",
+      ".yarnrc.yml",
+      ".idea/runConfigurations/Dev.xml",
+      ".idea/workspace.xml",
+      ".mise.toml",
+      ".tool-versions",
+      ".githooks/pre-commit",
+    ])
+      expect(write(ws, f).tier, f).toBe("HIGH");
+    for (const f of [".idea/misc.xml", "src/tool-versions.ts", "docs/npmrc.md"])
+      expect(write(ws, f).tier, f).toBe("MED");
+  });
+
+  it("the folder named by core.hooksPath in the workspace's .git/config is HIGH", () => {
+    const ws = mk();
+    mkdirSync(join(ws, ".git"));
+    writeFileSync(
+      join(ws, ".git", "config"),
+      '[core]\n\trepositoryformatversion = 0\n\thooksPath = "tools/git-hooks"\n[remote "origin"]\n\thooksPath = nope\n',
+    );
+    expect(write(ws, "tools/git-hooks/pre-push").tier).toBe("HIGH");
+    expect(write(ws, "tools/other/x.sh").tier).toBe("MED");
+    // The parser: only [core], quoted or not, last one wins; no file → null.
+    expect(gitHooksPath(() => "[core]\nhooksPath = a\n[core]\n  HooksPath = b\n", "x")).toBe("b");
+    expect(gitHooksPath(() => '[remote "o"]\nhooksPath = a\n', "x")).toBeNull();
+    expect(
+      gitHooksPath(() => {
+        throw new Error("ENOENT");
+      }, "x"),
+    ).toBeNull();
+    // Injected reader (no real file).
+    expect(write("/w", "hooks2/x", { readFile: () => "[core]\n  hooksPath = hooks2\n" }).tier).toBe("HIGH");
+  });
+
+  it("on Windows only 8.3-shaped names (≤8 before ~N, extension ≤3) count as short names", () => {
+    const ws = "/w";
+    const win = { platform: "win32" as const, readFile: () => "" };
+    for (const f of ["PROGRA~1/x.ts", ".VSCOD~1/tasks.json", "src/NOTESV~1.MD", "src/A_B~12.TXT"])
+      expect(write(ws, f, win).reasons, f).toContain("ambiguous Windows path name");
+    for (const f of [
+      "src/meeting-notes~1.md",
+      "src/notes~1.backup",
+      "src/draft~v2.md",
+      "src/file~name.ts",
+      "src/a~1.json5",
+    ])
+      expect(write(ws, f, win).reasons, f).not.toContain("ambiguous Windows path name");
   });
 });

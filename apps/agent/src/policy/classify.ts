@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
@@ -52,6 +52,8 @@ export interface ClassifyContext {
   protectedPaths?: string[];
   /** Directories on the session's PATH. Writing into them (outside workspaces) is CRITICAL: it replaces what later commands run. */
   pathDirs?: string[];
+  /** Reads a workspace's .git/config (tests inject it). */
+  readFile?: (path: string) => string;
   /** The OS (default: this one). macOS and Windows compare paths case-insensitively. */
   platform?: NodeJS.Platform;
   /**
@@ -110,6 +112,32 @@ interface Paths {
   covers(prefix: string, next: string, cwd: string): Cover;
 }
 
+/** An 8.3 short name: at most 8 characters before `~N`, an extension of at most 3 (`PROGRA~1`, `.VSCOD~1`). */
+const SHORT_NAME = /^[^~.]?[^~]{0,7}~\d+(\.[^.~]{1,3})?$/;
+
+/** `core.hooksPath` from a git config file, or null (no file, or not set). */
+export const gitHooksPath = (read: (path: string) => string, file: string): string | null => {
+  let text: string;
+  try {
+    text = read(file);
+  } catch {
+    return null;
+  }
+  let inCore = false;
+  let found: string | null = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const section = /^\[([^\]"\s]+)(?:\s+"[^"]*")?\]/.exec(line);
+    if (section) {
+      inCore = section[1]!.toLowerCase() === "core";
+      continue;
+    }
+    const kv = /^hookspath\s*=\s*(.*)$/i.exec(line);
+    if (inCore && kv) found = kv[1]!.replace(/^"(.*)"$/, "$1").trim() || null;
+  }
+  return found;
+};
+
 const pathsFor = (ctx: ClassifyContext): Paths => {
   // macOS and Windows file systems ignore case (and macOS stores names decomposed): compare there
   // on NFC, lower-cased paths, like workspaces.ts, so `~/.CLAUDE` is `~/.claude`.
@@ -132,6 +160,11 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
   const res = (p: string, cwd = ctx.cwd) => real(resolve(cwd, expand(p)));
   const workspaces = ctx.policy.workspaces.map((w) => real(resolve(expand(w.path))));
+  // Each workspace repo's own hooks folder (`core.hooksPath` in .git/config): its files run on git commands.
+  const hooksDirs = workspaces.flatMap((w) => {
+    const path = gitHooksPath(ctx.readFile ?? ((f) => readFileSync(f, "utf8")), join(w, ".git", "config"));
+    return path ? [real(resolve(w, expand(path)))] : [];
+  });
   const h = (rel: string) => real(join(ctx.home, rel));
   // A home-relative entry, plus (Windows) its AppData part under the real %APPDATA% / %LOCALAPPDATA%.
   const env = ctx.env ?? {};
@@ -196,7 +229,9 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       if (platform !== "win32") return false;
       const rest = abs.replace(/^[A-Za-z]:/, "");
       if (rest.includes(":")) return true;
-      return rest.split(/[\\/]/).some((c) => c !== "." && c !== ".." && c !== "" && (/[. ]$/.test(c) || /~\d/.test(c)));
+      return rest
+        .split(/[\\/]/)
+        .some((c) => c !== "." && c !== ".." && c !== "" && (/[. ]$/.test(c) || SHORT_NAME.test(c)));
     },
     configOrCi: (abs) => {
       // Compared folded (k): on macOS and Windows `.ENVRC` or `.Git/Hooks` are the same files.
@@ -225,7 +260,14 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
         has(".cursor") ||
         has(".windsurf") ||
         has(".devcontainer") ||
-        has(".husky")
+        has(".husky") ||
+        // Package managers' and toolchains' per-project settings, IDE run configurations and the
+        // repo's own hooks folder: each can run code later.
+        named(".npmrc", ".mise.toml", ".tool-versions") ||
+        /^\.yarnrc/.test(base) ||
+        (has(".idea") && (dirs.includes(k("runConfigurations")) || named("workspace.xml"))) ||
+        has(".githooks") ||
+        hooksDirs.some((d) => within(abs, d))
       );
     },
     buildOrTest: (abs) => {
