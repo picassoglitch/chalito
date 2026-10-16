@@ -93,16 +93,28 @@ const nextMessage = (conn: LanConn, queue: string[], waiters: ((t: string | null
     waiters.push((t) => (t === null ? reject(new LanAuthError("closed")) : resolve(t)));
   });
 
-const reader = (conn: LanConn) => {
+/** Messages a handshake keeps for the link that arrive before it's done; more closes the socket. */
+const HANDSHAKE_QUEUE = 16;
+
+/**
+ * The handshake's reader. After the `expect`-th message (the last one the handshake reads) it
+ * asks the connection to hold further input until the link is ready, so the other side's first
+ * frames wait in the socket. Where a connection can't hold, extra messages queue up to
+ * HANDSHAKE_QUEUE; beyond that the socket is closed, never a frame silently dropped.
+ */
+const reader = (conn: LanConn, expect: number) => {
   const queue: string[] = [];
   const waiters: ((t: string | null) => void)[] = [];
   let closed = false;
   let stopped = false;
+  let seen = 0;
   conn.onMessage((t) => {
-    if (stopped) return;
+    if (stopped || closed) return;
+    if (++seen === expect) conn.hold?.();
     const w = waiters.shift();
     if (w) w(t);
-    else if (queue.length < 4) queue.push(t);
+    else if (queue.length < HANDSHAKE_QUEUE) queue.push(t);
+    else conn.close(LAN_AUTH_CLOSE, "overflow");
   });
   conn.onClose(() => {
     closed = true;
@@ -236,6 +248,8 @@ const secureLink = (
   });
   for (const t of pending) onText(t);
   conn.onMessage(onText);
+  // Full message size and reading again: whatever the other side sent meanwhile comes through now.
+  conn.ready?.();
   return {
     peerDeviceId,
     tokenExpiresAt,
@@ -269,7 +283,7 @@ export const dialHandshake = async (
   expectPeer: string | null,
   timeoutMs = HANDSHAKE_TIMEOUT_MS,
 ): Promise<SecureLink> => {
-  const r = reader(conn);
+  const r = reader(conn, 1);
   const run = async () => {
     const eph = await lanEphemeral();
     const nonce = await randomBytes(32);
@@ -319,7 +333,7 @@ export const listenHandshake = async (
   ctx: HandshakeContext,
   timeoutMs = HANDSHAKE_TIMEOUT_MS,
 ): Promise<SecureLink> => {
-  const r = reader(conn);
+  const r = reader(conn, 2);
   const run = async () => {
     const hello = LanHello.safeParse(parseJson(await r.next()));
     if (!hello.success) return fail(conn, "malformed");

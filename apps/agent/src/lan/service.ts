@@ -51,6 +51,8 @@ export interface LanServiceDeps {
   host?: string;
   ackTimeoutMs?: number;
   dialTimeoutMs?: number;
+  /** All the addresses of one peer are tried within this long (default LAN_DIAL_DEADLINE_MS). */
+  dialDeadlineMs?: number;
   /** How often to refresh the grant (revocations), re-advertise and query (default 30 s). */
   tickMs?: number;
   /** Advertised-id rotation window (default 5 min). */
@@ -61,6 +63,10 @@ export interface LanServiceDeps {
 /** Per-link inbound command bucket, like the cloud's per-device S7 limit on `commands`. */
 const CMD_BURST = 30;
 const CMD_REFILL_PER_S = 1;
+/** At most this many advertised addresses are dialled per peer (a flood of A records is cut off)… */
+export const LAN_MAX_DIAL_ADDRESSES = 4;
+/** …within this long in all, however slow each one is. */
+export const LAN_DIAL_DEADLINE_MS = 8000;
 /** Unknown advertised ids may trigger a grant refresh at most this often. */
 const UNKNOWN_REFRESH_MS = 60 * 1000;
 
@@ -144,6 +150,7 @@ export class LanService {
       path: LAN_WS_PATH,
       maxBytes: LAN_MAX_MESSAGE_BYTES,
       maxConnections: 16,
+      maxPerAddress: 3,
       onConn: (conn) => {
         listenHandshake(conn, this.#ctx())
           .then((link) => this.#adopt(link))
@@ -365,8 +372,13 @@ export class LanService {
     // One link per pair: the lower device id dials.
     if (this.d.self.deviceId > peer || this.#links.has(peer) || this.#dialing.has(peer)) return;
     this.#dialing.add(peer);
+    const deadline = this.d.now() + (this.d.dialDeadlineMs ?? LAN_DIAL_DEADLINE_MS);
     try {
-      for (const addr of s.addresses) {
+      for (const addr of [...new Set(s.addresses)].slice(0, LAN_MAX_DIAL_ADDRESSES)) {
+        if (this.d.now() >= deadline || !this.#running) {
+          this.d.log.warn("lan.dial_deadline", { peer });
+          return;
+        }
         try {
           const conn = await dialLan(
             `ws://${addr}:${s.port}${LAN_WS_PATH}`,

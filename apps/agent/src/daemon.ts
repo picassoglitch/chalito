@@ -58,7 +58,7 @@ import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
 import { FileSessionRegistry, type SessionRegistry } from "./session-registry.js";
 import type { AgentStore } from "./store.js";
-import { lanPath, lanTee, type LanService } from "./lan/index.js";
+import { lanPath, lanTee, peerEventLog, type LanService } from "./lan/index.js";
 import { TrustStore } from "./trust-store.js";
 
 export const CLAUDE_MISSING = {
@@ -916,6 +916,7 @@ const startDaemon = async (
     self: { deviceId: id.deviceId, sign: id.sign },
     policy: () => policy.get().lan,
     handleCommand: (cid, doc) => core.handleCommand(cid, doc),
+    onPeerEvent: peerEventLog(log, now),
     log,
     now,
   });

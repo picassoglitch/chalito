@@ -3,6 +3,7 @@
  * real WebSocket listeners on 127.0.0.1, the real handshake, in-memory discovery and a fake cloud
  * for tokens and the directory. Commands are signed by the owner's phone, which only agent B trusts.
  */
+import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import { LAN_WS_PATH, type AgentEvent, type SignedCommand } from "@chalito/protocol";
+import { AgentEvent, LAN_WS_PATH, type SignedCommand } from "@chalito/protocol";
 import { AgentCore } from "../src/agent-core.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { LanService } from "../src/lan/service.js";
@@ -85,7 +86,15 @@ interface Node {
 const node = async (
   cloud: FakeLanCloud,
   hub: MemoryDiscoveryHub,
-  o: { owner?: string; trusts?: Keys; k?: Keys; lan?: boolean; slow?: () => boolean } = {},
+  o: {
+    owner?: string;
+    trusts?: Keys;
+    k?: Keys;
+    lan?: boolean;
+    slow?: () => boolean;
+    addresses?: string[];
+    dialDeadlineMs?: number;
+  } = {},
 ): Promise<Node> => {
   const k = o.k ?? (await keys());
   const owner = o.owner ?? OWNER;
@@ -136,7 +145,7 @@ const node = async (
   lan = new LanService({
     self: { deviceId: k.id, sign: k.sign },
     cloud: cloud.for(owner, k.id),
-    discovery: async () => hub.join(["127.0.0.1"]),
+    discovery: async () => hub.join(o.addresses ?? ["127.0.0.1"]),
     policy: () => policy.lan,
     handleCommand: async (id, doc) => {
       while (o.slow?.()) await new Promise((r) => setTimeout(r, 10));
@@ -150,6 +159,7 @@ const node = async (
     host: "127.0.0.1",
     ackTimeoutMs: 300,
     every: () => ({ clear: () => undefined }),
+    ...(o.dialDeadlineMs !== undefined ? { dialDeadlineMs: o.dialDeadlineMs } : {}),
   });
   // The cloud path, as the daemon wires it.
   store.watchCommands(
@@ -353,6 +363,54 @@ describe("LAN direct path: two agents of the same owner", () => {
     const n = await node(cloud, new MemoryDiscoveryHub());
     expect(n.lan.running).toBe(false);
     expect(n.lan.port).toBeNull();
+  });
+});
+
+describe("LAN dialing limits", () => {
+  /** B advertises `addresses` (its real one is 127.0.0.1); A, the lower id, dials. */
+  const flood = async (addresses: string[], dialDeadlineMs?: number) => {
+    const cloud = new FakeLanCloud();
+    const hub = new MemoryDiscoveryHub();
+    let [ka, kb] = [await keys(), await keys()];
+    if (ka.id > kb.id) [ka, kb] = [kb, ka];
+    const b = await node(cloud, hub, { k: kb, addresses });
+    const a = await node(cloud, hub, { k: ka, ...(dialDeadlineMs !== undefined ? { dialDeadlineMs } : {}) });
+    return { a, b };
+  };
+
+  it("an mDNS answer with many addresses: at most 4 are dialled", async () => {
+    // Ten loopback addresses nobody listens on, then the real one (never reached).
+    const fake = Array.from({ length: 10 }, (_, i) => `127.0.0.${i + 2}`);
+    const { a, b } = await flood([...fake, "127.0.0.1"]);
+    await waitFor(() => a.logs.filter((l) => l.includes("lan.connect_failed")).length >= 4);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(a.logs.filter((l) => l.includes("lan.connect_failed"))).toHaveLength(4);
+    expect(a.lan.peers()).not.toContain(b.k.id);
+  });
+
+  it("all of a peer's addresses are tried within one deadline", async () => {
+    const { a, b } = await flood(["127.0.0.1"], 0);
+    await waitFor(() => a.logs.some((l) => l.includes("lan.dial_deadline")));
+    expect(a.lan.peers()).not.toContain(b.k.id);
+  });
+
+  it("frames above the pre-auth size flow once the link is up", async () => {
+    const { a, b } = await pair();
+    const sid = randomUUID();
+    const e = AgentEvent.parse({
+      v: 1,
+      eid: randomUUID(),
+      type: "message.assistant",
+      deviceId: b.k.id,
+      sid,
+      seq: 1,
+      t: Date.now(),
+      ct: await sealJson("x".repeat(20_000), { [a.k.id]: a.k.box.publicKey }, `event:${sid}`),
+    });
+    expect(JSON.stringify(e).length).toBeGreaterThan(4096);
+    b.lan.broadcastEvent(e);
+    await waitFor(() => a.peerEvents.some((x) => x.sid === sid));
+    expect(a.lan.peers()).toContain(b.k.id);
   });
 });
 
