@@ -28,3 +28,4 @@ export {
 export type { WebAuthnCredentialRef, WebAuthnAssertionInput, AssertionCheck } from "./webauthn.js";
 export { lanEphemeral, lanTranscript, lanSessionKeys, LanCipher, lanAdvertId } from "./lan.js";
 export type { LanTranscriptInput, LanSessionKeys } from "./lan.js";
+export { outsideTaskSid } from "./outside-task.js";

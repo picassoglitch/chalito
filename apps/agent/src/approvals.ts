@@ -102,6 +102,8 @@ export class ApprovalManager {
     /** The summary is built here (R-M10: no format/control characters, explicit truncation). */
     details: { toolName: string; input: unknown; reasons: string[] };
     onRequested?: (aid: string, expiresAt: number) => void;
+    /** Ends the wait as a no (revoke-all cancelling a pending outside task, M16 F). */
+    signal?: AbortSignal;
   }): Promise<ApprovalOutcome> {
     const { store, trust, nonces, sealer, owner, deviceId, signer, now, ttlMs, audit } = this.deps;
     if (Object.keys(trust().recipients()).length === 0) return { allow: false, reason: "untrusted_signer" };
@@ -175,6 +177,9 @@ export class ApprovalManager {
         () => finish({ allow: false, reason: "timeout_deny" }),
         expiresAt - now(),
       );
+      const cancel = () => finish({ allow: false, reason: "policy_block" });
+      if (input.signal?.aborted) queueMicrotask(cancel);
+      input.signal?.addEventListener("abort", cancel, { once: true });
       const unwatch = store.watchApproval(aid, (raw) => {
         void (async () => {
           const parsed = Decision.safeParse(raw);

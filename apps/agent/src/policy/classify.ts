@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
+import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 
 /**
  * Risk classification of a single tool call (ADR 0008):
@@ -1387,6 +1388,15 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
       // Spawns a subagent; its own tool calls are gated, but starting one isn't a read.
       return base("other");
     default: {
+      // The session link tools (links/tools.ts): a hand-off or share always asks the phone (MED,
+      // and the gate never lets Developer mode near them); listing the session's links is a read.
+      if (toolName.startsWith(LINKS_TOOL_PREFIX)) {
+        const tool = toolName.slice(LINKS_TOOL_PREFIX.length);
+        if ((LINK_READ_ONLY as readonly string[]).includes(tool)) return { ...base("mcp"), readOnly: true };
+        return isLinkToolName(tool)
+          ? { ...base("mcp"), tier: "MED", reasons: [`${tool}: reaches another agent over a link`] }
+          : { ...base("mcp"), tier: "HIGH", reasons: [`unknown link tool ${tool}`] };
+      }
       if (toolName.startsWith("mcp__")) {
         const readOnly = ctx.policy.mcp.readOnlyTools.includes(toolName);
         return readOnly

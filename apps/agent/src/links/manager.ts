@@ -208,6 +208,55 @@ export class LinkManager implements LinkAuthorizer {
   }
 
   /**
+   * Active links `sid` may send over: this device is the sender, and the link pins this session
+   * (or no session, and then the session's app if both name one). The session tools
+   * (tool-server.ts) are attached only when this isn't empty and can't reach past it.
+   */
+  senderLinks(sid: string): AgentLink[] {
+    const s = this.#host?.session(sid);
+    // A link the cloud mirror doesn't hold yet isn't delivered to (fail closed): not offered either.
+    const unpublished = new Set(this.pendingPublish());
+    return s ? this.list().filter((l) => !unpublished.has(l.id) && this.#isSender(l, s)) : [];
+  }
+
+  #isSender(l: AgentLink, s: LinkSessionInfo): boolean {
+    if (l.sender.deviceId !== this.d.deviceId) return false;
+    if (l.sender.sessionId !== undefined) return l.sender.sessionId === s.sid;
+    // A link that names an app is that app's only: a session without one doesn't match.
+    return l.sender.appId === undefined || l.sender.appId === s.appId;
+  }
+
+  /** Whether any link (active or not yet expired from the list) pins this session id at either end. */
+  namesSession(sid: string): boolean {
+    return this.#state.links.some((l) => l.sender.sessionId === sid || l.receiver.sessionId === sid);
+  }
+
+  /**
+   * The locally held hand-off link an outside task (MCP create_task, A2A SendMessage) for `appId`
+   * in `workspaceLabel` may go over: this device receives it, it starts new sessions (no pinned
+   * session), and it names that app or none. One with confirm off wins; otherwise the first.
+   */
+  outsideLink(appId: string | undefined, workspaceLabel: string): AgentLink | undefined {
+    const unpublished = new Set(this.pendingPublish());
+    const fit = this.list().filter(
+      (l) =>
+        l.mode === "handoff" &&
+        !unpublished.has(l.id) &&
+        l.receiver.deviceId === this.d.deviceId &&
+        l.receiver.sessionId === undefined &&
+        l.workspaceLabel === workspaceLabel &&
+        (l.receiver.appId === undefined || l.receiver.appId === appId),
+    );
+    return fit.find((l) => !l.confirm) ?? fit[0];
+  }
+
+  /** Why a link can't carry a delivery now (gone here, revoked by revoke-all, no cloud row), or null. */
+  async linkRefusal(linkId: string): Promise<LinkRefusal | null> {
+    if (!this.get(linkId)) return "link_revoked";
+    return this.#cloudRefusal(linkId);
+  }
+
+  /**
    * Active links the cloud mirror doesn't hold yet (a publish failed; retried with backoff). The
    * panel shows them as "pending publish": none of them is delivered to until it's published.
    */
@@ -568,7 +617,9 @@ export class LinkManager implements LinkAuthorizer {
     if (link.sender.deviceId !== this.d.deviceId) return { ok: false, reason: "link_wrong_endpoint" };
     if (link.sender.sessionId !== undefined && link.sender.sessionId !== input.fromSid)
       return { ok: false, reason: "link_wrong_endpoint" };
-    if (!this.#h.session(input.fromSid)) return { ok: false, reason: "unknown_session" };
+    const fromSession = this.#h.session(input.fromSid);
+    if (!fromSession) return { ok: false, reason: "unknown_session" };
+    if (!this.#isSender(link, fromSession)) return { ok: false, reason: "link_wrong_endpoint" };
     // The chain this session is already in (if it runs a hand-off itself), plus itself.
     const found = this.#inbound.get(input.fromSid);
     const prior = found && !found.done && !found.reserved ? found : undefined;
@@ -643,7 +694,9 @@ export class LinkManager implements LinkAuthorizer {
     if (link.sender.deviceId !== this.d.deviceId) return { ok: false, reason: "link_wrong_endpoint" };
     if (link.sender.sessionId !== undefined && link.sender.sessionId !== input.fromSid)
       return { ok: false, reason: "link_wrong_endpoint" };
-    if (!this.#h.session(input.fromSid)) return { ok: false, reason: "unknown_session" };
+    const fromSession = this.#h.session(input.fromSid);
+    if (!fromSession) return { ok: false, reason: "unknown_session" };
+    if (!this.#isSender(link, fromSession)) return { ok: false, reason: "link_wrong_endpoint" };
     const message = LinkMessage.parse({
       messageId: randomUUID(),
       contextId: input.fromSid,

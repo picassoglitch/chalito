@@ -1,5 +1,13 @@
 import postgres, { type Sql } from "postgres";
-import type { AgentSummary, ExposureRow, GatewayReader, GatewayToken, McpScope, PendingApproval } from "./reader.js";
+import type {
+  AgentSummary,
+  ExposureRow,
+  GatewayReader,
+  GatewayToken,
+  LinkTaskView,
+  McpScope,
+  PendingApproval,
+} from "./reader.js";
 
 /** A connection that acts as chalito_gateway (read-only; see migration 20261004001800). */
 export const gatewaySql = (url: string, opts: { role?: string; max?: number } = {}): Sql =>
@@ -157,6 +165,30 @@ export class PostgresGatewayReader implements GatewayReader {
       select pub_box from chalito.devices
       where owner = ${owner} and device_id = ${deviceId} and role = 'agent' and not revoked`;
     return r?.pub_box ?? null;
+  }
+
+  async linkTask(owner: string, deviceId: string, sid: string): Promise<LinkTaskView> {
+    const [a] = await this.sql<{ status: string; expires_at: Date; resolved_at: Date | null }[]>`
+      select a.status, a.expires_at, a.resolved_at from chalito.approvals a
+      join chalito.devices d on d.owner = a.owner and d.device_id = a.device_id
+      where a.owner = ${owner} and a.device_id = ${deviceId} and a.sid = ${sid} and a.kind = 'link_handoff'
+        and d.role = 'agent' and not d.revoked
+      order by a.created_at desc
+      limit 1`;
+    const [s] = await this.sql<{ state: string | null }[]>`
+      select s.state from chalito_private.gateway_sessions s
+      join chalito.devices d on d.owner = s.owner and d.device_id = s.device_id
+      where s.owner = ${owner} and s.device_id = ${deviceId} and s.sid = ${sid} and not d.revoked`;
+    return {
+      approval: a
+        ? {
+            status: a.status as NonNullable<LinkTaskView["approval"]>["status"],
+            expiresAt: a.expires_at.getTime(),
+            resolvedAt: a.resolved_at ? a.resolved_at.getTime() : null,
+          }
+        : null,
+      session: s ? { state: s.state } : null,
+    };
   }
 
   async exposure(exposureId: string): Promise<ExposureRow | null> {
