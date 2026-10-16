@@ -32,8 +32,22 @@ Not to be confused with ADR 0009: the gateway lets *outside chats* reach Chalito
 | `risk` | default risk class per tool for the gate (LOW / MED / HIGH) |
 | `verified` | the date and version we last checked it |
 
-- Preference order: the vendor's **official remote MCP server** (GitHub, Linear, Slack, Supabase and others publish one), then an official stdio package, then nothing. Community servers are not added in beta.
-- A tool that isn't in the catalog can be added only locally, as a "custom connector", with the same OS-auth + typed confirmation as a hand-off link (ADR 0022 §3), and is marked unverified everywhere.
+- Preference order for catalog entries: the vendor's **official remote MCP server** (GitHub, Linear, Slack, Supabase and others publish one), then an official stdio package.
+
+### 1a. Two tiers (owner, 2026-10-16, decision #42)
+| Tier | What | How it gets there |
+|---|---|---|
+| **Verified** | **GitHub, Supabase/Postgres, Linear, Slack, Google Drive** (the six launch entries; Supabase and Postgres are separate entries) | In the signed `connectors.yaml`: pinned server, tested against fixtures by us, re-verified before each release |
+| **Community / any MCP server** | Any other tool that has an MCP server | The user adds it by **URL** (remote, streamable HTTP) or **command** (stdio: command, args, env) |
+
+- Adding a community connector shows a clear **unverified warning** before anything runs: "Chalito hasn't checked this server. It can see what you send it and act with the access you give it." The user confirms it, and it's labelled *unverified* everywhere it appears (grant screen, Session Card, audit, phone).
+- Exactly the same rules as verified ones apply after that: one approval per connector (§3), per-session scopes, read/write tiers, the local proxy and the gate (§4), and audit (§5).
+- Differences for community connectors, because we don't know their tools:
+  - Every tool is **write** tier and **MED** risk unless the user marks a tool read-only (on the device). Tools whose names look destructive (`delete`, `drop`, `merge`, `send`, `post`, `publish`) are HIGH.
+  - A stdio command is recorded with a hash of the resolved executable; if it changes, the connector is paused until the user confirms again.
+  - A remote URL must be HTTPS (localhost allowed), and the server's MCP authorization is used if it offers one, otherwise a token in the keychain.
+  - Adding one from a remote client needs passkey step-up; adding a stdio command (it runs code on the device) is allowed only on the device, with OS authentication.
+- A community connector can be promoted to verified later by adding it to the signed catalog.
 
 ### 2. Credentials stay on the device
 - `token` connectors: the secret goes into the OS keychain under `chalito.connector.<id>.<account>`. It is passed to a stdio server through its `env`, or as a header by Chalito's local MCP proxy (§4). It never goes into a prompt, a session event, the cloud or a log.
@@ -77,4 +91,4 @@ Not to be confused with ADR 0009: the gateway lets *outside chats* reach Chalito
 ## Not doing
 - Reading the user's own MCP configuration or other apps' tokens.
 - A cloud-side tool runner. Tool calls run on the device.
-- Community servers in the default catalog during beta.
+- Shipping community servers inside the signed catalog without testing them (the user adds them, with the warning).

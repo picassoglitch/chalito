@@ -41,11 +41,11 @@ Owner decision (2026-10-16): add the features that proved useful in similar prod
 - **Risk:** medium. Runaway cost (budget per run and per day, kill switch from ADR 0025); unattended writes (default ceiling `read` for routines, write needs an explicit template rule).
 
 ### 4. Automatic model and agent routing by cost and quality
-- **What:** for a task without a fixed agent, Chalito suggests (or, if the owner allows, picks) the agent and model, from the user's own `usage_events` and outcomes: tokens and cost per task kind, success (tests pass, PR merged, no undo), time.
-- Starts as **suggestions only**, with a simple rule table in `models.yaml` (kind → candidates); it learns per user once there are 20+ finished tasks of a kind. Only models the user has keys or plan access for are candidates.
+- **What:** for a task without a fixed agent, Chalito **suggests** the agent and model and the owner **confirms with one tap** (owner, 2026-10-16, decision #47; no automatic pick), from the user's own `usage_events` and outcomes: tokens and cost per task kind, success (tests pass, PR merged, no undo), time.
+- Always a suggestion with its reason; the one-tap confirm can change the pick. It starts with a simple rule table in `models.yaml` (kind → candidates); it learns per user once there are 20+ finished tasks of a kind. Only models the user has keys or plan access for are candidates.
 - **Value:** medium–high (costs are the main complaint with agents).
 - **Effort:** M (data is already in `usage_events`; needs outcome signals and a small scorer).
-- **Risk:** medium. Bad picks on thin data (suggest-only by default, show the reason); vendor terms (we never route a request through a plan login we don't hold; Claude Code stays on API keys, D-002).
+- **Risk:** medium. Bad picks on thin data (always suggest-and-confirm, show the reason); vendor terms (we never route a request through a plan login we don't hold; Claude Code stays on API keys, D-002).
 
 ### 5. Teams: sharing agents and approvals with roles
 - **What:** an owner invites people (Chalyb accounts) to a team. Roles:

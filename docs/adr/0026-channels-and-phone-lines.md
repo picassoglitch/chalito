@@ -28,7 +28,7 @@ What exists (M6):
 
 SMS to Mexico costs USD 0.1819 per segment on a long code, and MX A2P on long codes is "OTP only, best effort"; alphanumeric sender IDs need ~3 weeks of pre-registration. That matches the M6 choice: **SMS is the last rung, off by default for MX**, and WhatsApp is the text channel.
 
-**Recommendation:** for the owner now, an **MX local number** (CDMX), with a bundle in the owner's (or the business's) name. It's USD 6.25/month and the calls Chalito makes are outbound to MX mobiles, where a +52 caller ID matters. A US local number stays the fallback if the bundle stalls. Decision #38.
+**Recommendation:** for the owner now, an **MX local number** (CDMX), with a bundle in the owner's (or the business's) name. It's USD 6.25/month and the calls Chalito makes are outbound to MX mobiles, where a +52 caller ID matters. A US local number stays the fallback if the bundle stalls. Decision #38: **still pending** (owner, 2026-10-16). M17 phase C ships Telegram first; the shared number waits for that decision.
 
 Sources (checked 2026-10-16):
 - Twilio MX voice pricing: https://www.twilio.com/en-us/voice/pricing/mx
@@ -74,8 +74,10 @@ Sources (checked 2026-10-16):
 
 **Approvals over Telegram/Slack/Discord are not signed by a trusted client.** These channels can:
 - notify and **acknowledge** (stop the ladder), and
-- approve **LOW/MED** items only if the owner turns that on per channel (a button press is a `RelayedCommand` with origin `chat:<channel>`, treated like `call:`: it can answer, never decide HIGH/CRITICAL).
-- HIGH and CRITICAL always open the PWA for a signed, passkey decision (a button deep-links there).
+- approve **LOW/MED** items only when the user chooses so (a button press is a `RelayedCommand` with origin `chat:<channel>`, treated like `call:`: it can answer, never decide HIGH/CRITICAL).
+- HIGH and CRITICAL always open the app for a signed, passkey decision (a button deep-links there). This invariant doesn't change.
+
+**Owner, 2026-10-16 (decision #41): both, the user toggles it.** A per-user setting `chatApprovals`: **"notify only" (default)** or **"approve LOW/MED from chat"**. Turning it on needs passkey step-up in the app; turning it off works from anywhere. The setting is part of local policy's ceiling, so a device can forbid it.
 
 Sources (checked 2026-10-16):
 - Telegram Bot API: https://core.telegram.org/bots/api
