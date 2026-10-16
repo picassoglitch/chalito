@@ -71,7 +71,25 @@ export const AgentEvent = z.discriminatedUnion("type", [
     permissionMode: RemotePermissionMode.or(z.literal("local_only")),
   }),
   z.object({ ...base, type: z.literal("session.state"), state: SessionState }),
-  z.object({ ...base, type: z.literal("message.assistant"), ct: SealedEnvelope }),
+  /**
+   * A finished assistant message. `mid` (M16 A) names the streamed draft it completes, so a
+   * client drops that draft's `message.assistant.delta`s once this stored row arrives.
+   */
+  z.object({ ...base, type: z.literal("message.assistant"), mid: Id.optional(), ct: SealedEnvelope }),
+  /**
+   * Live-only (ADR 0022 §1): the next piece of the assistant message being written, sealed over
+   * `{text}` with AAD `event:<sid>`. Broadcast to the person's clients, never stored: the final
+   * `message.assistant` with the same `mid` is the durable copy. `n` counts the pieces of one
+   * draft from 0, so a client drops repeats and out-of-order pieces. `seq` is the seq the final
+   * message will take; deltas don't use up seq numbers.
+   */
+  z.object({
+    ...base,
+    type: z.literal("message.assistant.delta"),
+    mid: Id,
+    n: z.number().int().nonnegative(),
+    ct: SealedEnvelope,
+  }),
   z.object({ ...base, type: z.literal("message.user"), origin: Origin, ct: SealedEnvelope }),
   z.object({
     ...base,
@@ -172,6 +190,30 @@ export const AgentEvent = z.discriminatedUnion("type", [
 export type AgentEvent = z.infer<typeof AgentEvent>;
 
 /**
+ * ADR 0022 §1 fast live path: event types that are only broadcast (sealed, over the private
+ * realtime topic, to the same recipients) and never stored as `session_events` rows. Nothing
+ * durable may depend on them: a client that joins late resyncs from the stored rows. A
+ * `screen.state` "ended" is the exception and stays stored, since it carries the end reason.
+ */
+export const LIVE_ONLY_EVENT_TYPES = ["message.assistant.delta", "terminal.output", "screen.state"] as const;
+export type LiveOnlyEventType = (typeof LIVE_ONLY_EVENT_TYPES)[number];
+const LIVE_ONLY: ReadonlySet<string> = new Set(LIVE_ONLY_EVENT_TYPES);
+export const isLiveOnlyEvent = (e: { type: string; state?: unknown }): boolean =>
+  LIVE_ONLY.has(e.type) && !(e.type === "screen.state" && e.state === "ended");
+
+/**
+ * The payload of one live broadcast (realtime event `live`, topic `chalito:device:<client>`), as
+ * `chalito.live_send` sends it: up to 64 live-only events of one agent device, in order.
+ */
+export const LiveBroadcast = z.object({
+  table: z.literal("live"),
+  op: z.literal("events"),
+  deviceId: DeviceId,
+  events: z.array(z.unknown()).min(1).max(64),
+});
+export type LiveBroadcast = z.infer<typeof LiveBroadcast>;
+
+/**
  * Why an agent refused a command, as the person's clients see it (`command.rejected`). A closed
  * set: the agent maps its internal reasons onto it (apps/agent/src/command-result.ts), so no
  * path, label or free text reaches the row.
@@ -199,6 +241,11 @@ export const CommandRejectReason = z.enum([
   "adapter_disabled",
   "unknown_session",
   "unknown_question",
+  /**
+   * M16 A: this computer already runs its maximum of live sessions and none of them is idle
+   * (`session.maxLivePerDevice` in packages/config sessions.yaml).
+   */
+  "session_limit",
   "policy_would_loosen",
   "policy_invalid",
   "step_up_required",

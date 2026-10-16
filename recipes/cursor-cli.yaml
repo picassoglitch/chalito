@@ -54,7 +54,7 @@ driver:
   terminal: { command: [cursor-agent] }
 capabilities: [sessions, terminal]
 verification:
-  checked: "2026-10-06"
+  checked: "2026-10-15"
   sources:
     - https://cursor.com/docs/cli/installation
     - https://cursor.com/docs/cli/reference/authentication
@@ -62,6 +62,7 @@ verification:
     - https://cursor.com/docs/cli/acp
     - "https://cursor.com/install (downloaded, not run; version 2026.10.01-e373342): symlinks ~/.local/bin/agent (primary) and ~/.local/bin/cursor-agent (legacy)"
     - "https://cursor.com/install?win32=true (downloaded, not run): installs to %LOCALAPPDATA%\\cursor-agent, copies cursor-agent.exe to agent.exe"
+    - "Local probe 2026-10-15 (M16 A), cursor-agent 2026.09.15-d2fe57e on Linux, empty HOME (no Cursor credentials): `cursor-agent acp` answers initialize with protocolVersion 1, agentCapabilities {loadSession: true, mcpCapabilities {http, sse}, sessionCapabilities {list}} (no session/resume, so Chalito resumes with session/load), authMethods [cursor_login]; session/new before authenticate fails with -32000 'Authentication required'."
   unverified:
     - field: signin.statusCommand
       note: "'agent status' / 'whoami' documented as auth status; exit code when signed out not documented or tested."
@@ -70,4 +71,4 @@ verification:
     - field: launch.command
       note: "Docs now name the binary 'agent'; the installer still creates 'cursor-agent' as a legacy alias. cursor-agent used as argv[0] because 'agent' is a generic name likely to collide with other tools. Binary itself not run (not on npm)."
     - field: driver.acp
-      note: "'agent acp' and methodId cursor_login from cursor.com/docs/cli/acp; docs flag acp as advanced/hidden. Not probed."
+      note: "Handshake probed (see sources): `cursor-agent acp`, ACP v1, methodId cursor_login, session/load. Not yet run signed in: a prompt turn, session/request_permission option kinds, ask/agent modes, and how MCP tool calls are titled (computer control falls back to HIGH approvals until that's seen). Needs a probe with a Cursor account the owner chooses."

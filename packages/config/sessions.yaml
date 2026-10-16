@@ -1,0 +1,20 @@
+schemaVersion: 1
+# M16 A (ADR 0022 §1): how long coding-agent sessions stay live on a device, and how events
+# travel to the person's clients.
+session:
+  # An idle session (no turn running, no approval or question waiting) is closed after this long.
+  # It keeps its provider session id and resumes on the next prompt or `session.resume`.
+  idleTimeout: PT30M
+  # Live sessions per device. A new or resumed session first closes the longest-idle one; when
+  # every live session is busy, the command is refused with `session_limit`.
+  maxLivePerDevice: 6
+live:
+  # Partial assistant text (`message.assistant.delta`) is flushed at most this often…
+  deltaFlushMs: 150
+  # …or as soon as this many characters wait.
+  deltaFlushChars: 512
+events:
+  # Durable events are inserted in batches: one insert at most this long after the first queued…
+  batchMs: 250
+  # …or as soon as this many wait.
+  batchMax: 32

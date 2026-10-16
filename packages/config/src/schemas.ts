@@ -225,3 +225,47 @@ export const RechargeCopy = z.object({
   lines: z.array(z.string().min(1).max(200)).min(3),
 });
 export type RechargeCopy = z.infer<typeof RechargeCopy>;
+
+/** ISO-8601 time-of-day durations only (`PT30M`, `PT1H30M`, `PT45S`), in milliseconds. */
+const IsoTimeDuration = z
+  .string()
+  .regex(/^PT(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/, "an ISO-8601 duration like PT30M")
+  .transform((v) => {
+    const [, h, m, s] = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(v)!;
+    return ((Number(h ?? 0) * 60 + Number(m ?? 0)) * 60 + Number(s ?? 0)) * 1000;
+  })
+  .refine((ms) => ms >= 60_000 && ms <= 24 * 60 * 60 * 1000, "between 1 minute and 24 hours");
+
+/** sessions.yaml (M16 A, ADR 0022 §1): session lifecycle and the live event path. */
+export const SessionsConfig = z.object({
+  schemaVersion: z.literal(1),
+  session: z.object({
+    /** Milliseconds (parsed from the ISO duration in the file). */
+    idleTimeout: IsoTimeDuration,
+    maxLivePerDevice: z.number().int().min(1).max(64),
+  }),
+  live: z.object({
+    deltaFlushMs: z.number().int().min(16).max(2000),
+    deltaFlushChars: z
+      .number()
+      .int()
+      .min(16)
+      .max(16 * 1024),
+  }),
+  events: z.object({
+    batchMs: z.number().int().min(0).max(2000),
+    batchMax: z.number().int().min(1).max(64),
+  }),
+});
+export type SessionsConfig = z.infer<typeof SessionsConfig>;
+
+/**
+ * The values in sessions.yaml, for runtimes that can't read the file (the compiled agent falls
+ * back to these when it isn't there). A test keeps the two equal.
+ */
+export const SESSIONS_DEFAULTS: SessionsConfig = {
+  schemaVersion: 1,
+  session: { idleTimeout: 30 * 60 * 1000, maxLivePerDevice: 6 },
+  live: { deltaFlushMs: 150, deltaFlushChars: 512 },
+  events: { batchMs: 250, batchMax: 32 },
+};

@@ -428,6 +428,7 @@ const fakeClient = (snap: Partial<Snapshot>) => {
     approvals: [],
     sessions: [],
     events: {},
+    drafts: {},
     notifications: [],
     devices: [],
     devModeActive: false,

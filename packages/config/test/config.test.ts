@@ -9,9 +9,10 @@ import {
   loadRechargeCopy,
   loadRender,
   loadRooms,
+  loadSessions,
 } from "../src/load.js";
 import { isLintedFile, lintCurrency } from "../src/currency.js";
-import { CatalogConfig } from "../src/schemas.js";
+import { CatalogConfig, SESSIONS_DEFAULTS, SessionsConfig } from "../src/schemas.js";
 import { SkinEffect } from "@chalito/protocol";
 
 describe("config files", () => {
@@ -56,6 +57,26 @@ describe("config files", () => {
   it("coding agents never draw on the managed balance and Claude Code is API-key only", () => {
     const p = loadProviders();
     expect(p.codingAgents["claude-code"].auth).toEqual(["api_key"]);
+  });
+});
+
+describe("sessions.yaml (M16 A)", () => {
+  it("loads, with the idle timeout in milliseconds, and matches the compiled-in defaults", () => {
+    const c = loadSessions();
+    expect(c.session.idleTimeout).toBe(30 * 60 * 1000);
+    expect(c).toEqual(SESSIONS_DEFAULTS);
+  });
+
+  it("refuses durations outside 1 minute to 24 hours and anything but a time duration", () => {
+    const base = { ...SESSIONS_DEFAULTS, session: { maxLivePerDevice: 6 } };
+    const parse = (idleTimeout: string) =>
+      SessionsConfig.safeParse({ ...base, session: { ...base.session, idleTimeout } }).success;
+    expect(parse("PT1H30M")).toBe(true);
+    expect(parse("PT30S")).toBe(false);
+    expect(parse("PT25H")).toBe(false);
+    expect(parse("P1D")).toBe(false);
+    expect(parse("PT")).toBe(false);
+    expect(parse("30")).toBe(false);
   });
 });
 

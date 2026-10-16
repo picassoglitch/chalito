@@ -1,5 +1,11 @@
 import { canonicalize, fromB64url, sha256, utf8, verifyEnvelope } from "@chalito/crypto";
-import { SealedApprovalPayload, type SealedEnvelope, type SessionCard } from "@chalito/protocol";
+import {
+  AgentEvent,
+  LiveBroadcast,
+  SealedApprovalPayload,
+  type SealedEnvelope,
+  type SessionCard,
+} from "@chalito/protocol";
 import type { ClientKeys } from "./keys.js";
 import { deviceTopic, must, type SupaChannel, type SupaClient } from "./supa.js";
 
@@ -100,9 +106,30 @@ export interface EventView {
   urgency: string;
   /** Plain metadata of the event (no ciphertext). */
   meta: Record<string, unknown>;
-  /** Opened `ct` (AAD event:<sid>) when the event carries one and this device can read it. */
+  /**
+   * Opened `ct` (AAD event:<sid>) when the event carries one and this device can read it; for
+   * `terminal.output`, the opened `dataCt` (AAD terminal:<tid>:<seq>).
+   */
   content: unknown;
+  /** 0 for live-only events (M16 A: broadcast, never stored, so no resync cursor). */
   rev: number;
+  /** Came over the live path (not a stored row): gone after a reload, never resynced. */
+  live?: boolean;
+}
+
+/**
+ * The assistant message a session is writing right now (M16 A partial streaming), from its
+ * `message.assistant.delta` broadcasts. Display only: it disappears when the stored
+ * `message.assistant` with the same `mid` arrives, or when the turn ends.
+ */
+export interface DraftView {
+  sid: string;
+  mid: string;
+  text: string;
+  /** The seq the final message will take (sorts with the timeline). */
+  seq: number;
+  /** Pieces received (the last `n` + 1). */
+  pieces: number;
 }
 
 export interface NotificationView {
@@ -141,8 +168,10 @@ export interface Snapshot {
   /** Pending first, then newest. */
   approvals: readonly ApprovalView[];
   sessions: readonly SessionView[];
-  /** By sid, in seq order, capped per session. */
+  /** By sid, in seq order, capped per session. Stored rows and live-only events together. */
   events: Readonly<Record<string, readonly EventView[]>>;
+  /** By sid: the assistant text being streamed now, if any (M16 A). */
+  drafts: Readonly<Record<string, DraftView>>;
   notifications: readonly NotificationView[];
   devices: readonly DeviceView[];
   /** "Modo desarrollador ACTIVO": any of the owner's devices has Developer mode on. */
@@ -154,6 +183,7 @@ const EMPTY: Snapshot = {
   approvals: [],
   sessions: [],
   events: {},
+  drafts: {},
   notifications: [],
   devices: [],
   devModeActive: false,
@@ -198,6 +228,9 @@ export class LiveStore {
   readonly #events = new Map<string, Map<string, EventView>>();
   readonly #notifications = new Map<string, NotificationView>();
   readonly #devices = new Map<string, DeviceView>();
+  readonly #drafts = new Map<string, DraftView>();
+  /** Drafts already completed by their stored message: late deltas for them are dropped. */
+  readonly #finished = new Set<string>();
   #status: Snapshot["status"] = "idle";
   readonly #opts: Required<Omit<LiveStoreOptions, "onError">> & Pick<LiveStoreOptions, "onError">;
 
@@ -315,8 +348,76 @@ export class LiveStore {
       return;
     }
     const table = (p as { table?: unknown } | null)?.table;
-    if (typeof table === "string" && (TABLES as readonly string[]).includes(table)) void this.#pull(table as Table);
+    if (table === "live") void this.#onLive(p);
+    else if (typeof table === "string" && (TABLES as readonly string[]).includes(table))
+      void this.#pull(table as Table);
     else if (typeof table === "string") for (const l of this.#pointerListeners) l(table, (p as { key?: unknown }).key);
+  }
+
+  /**
+   * M16 A fast live path: a batch of sealed live-only events (`chalito.live_send`), straight from
+   * the agent through the database, to this device's private topic. Never stored, so a late join
+   * simply doesn't see them; only the deltas' draft and live events are built from them.
+   */
+  async #onLive(p: unknown): Promise<void> {
+    try {
+      const batch = LiveBroadcast.safeParse(p);
+      if (!batch.success) return;
+      for (const raw of batch.data.events) {
+        const parsed = AgentEvent.safeParse(raw);
+        if (!parsed.success) continue;
+        const e = parsed.data;
+        // The database checked the sender; a session we know must also be that agent's.
+        if (e.deviceId !== batch.data.deviceId) continue;
+        const known = this.#sessions.get(e.sid);
+        if (known && known.agentDeviceId !== e.deviceId) continue;
+        if (e.type === "message.assistant.delta") await this.#applyDelta(e);
+        else if (e.type === "terminal.output" || e.type === "screen.state")
+          this.#addEvent(
+            await this.#event(
+              { sid: e.sid, eid: e.eid, seq: e.seq, t: e.t, type: e.type, urgency: e.urgency, doc: e, rev: 0 },
+              true,
+            ),
+          );
+      }
+      this.#publish();
+    } catch (err) {
+      this.#opts.onError?.(err, "live");
+    }
+  }
+
+  async #applyDelta(e: Extract<AgentEvent, { type: "message.assistant.delta" }>): Promise<void> {
+    if (this.#finished.has(e.mid)) return;
+    const opened = await this.#open<{ text?: unknown }>(e.ct, `event:${e.sid}`);
+    if (typeof opened?.text !== "string") return;
+    const cur = this.#drafts.get(e.sid);
+    if (cur && cur.mid === e.mid) {
+      // Repeats and out-of-order pieces are dropped (Realtime keeps order; a rejoin may repeat).
+      if (e.n < cur.pieces) return;
+      this.#drafts.set(e.sid, { ...cur, text: cur.text + opened.text, pieces: e.n + 1 });
+    } else this.#drafts.set(e.sid, { sid: e.sid, mid: e.mid, text: opened.text, seq: e.seq, pieces: e.n + 1 });
+  }
+
+  /** A stored row ends a draft: its final message (same mid), or the end of the turn. */
+  #settleDraft(ev: EventView): void {
+    const d = this.#drafts.get(ev.sid);
+    if (ev.type === "message.assistant" && typeof ev.meta.mid === "string") {
+      this.#finished.add(ev.meta.mid);
+      if (this.#finished.size > 500) this.#finished.delete(this.#finished.values().next().value!);
+      if (d?.mid === ev.meta.mid) this.#drafts.delete(ev.sid);
+    } else if (d && ev.type === "session.state" && !BUSY_STATES.has(String(ev.meta.state)) && ev.seq >= d.seq)
+      this.#drafts.delete(ev.sid);
+  }
+
+  #addEvent(ev: EventView): void {
+    const list = this.#events.get(ev.sid) ?? new Map<string, EventView>();
+    list.set(ev.eid, ev);
+    if (list.size > this.#opts.maxEventsPerSession) {
+      const keep = [...list.values()].sort((a, b) => a.seq - b.seq).slice(-this.#opts.maxEventsPerSession);
+      list.clear();
+      for (const x of keep) list.set(x.eid, x);
+    }
+    this.#events.set(ev.sid, list);
   }
 
   /** Coalesced: while a pull runs, further requests for the table schedule exactly one more. */
@@ -370,15 +471,9 @@ export class LiveStore {
       case "sessions":
         return void this.#sessions.set(String(r.sid), await this.#session(r));
       case "session_events": {
-        const sid = String(r.sid);
-        const list = this.#events.get(sid) ?? new Map<string, EventView>();
-        list.set(String(r.eid), await this.#event(r));
-        if (list.size > this.#opts.maxEventsPerSession) {
-          const keep = [...list.values()].sort((a, b) => a.seq - b.seq).slice(-this.#opts.maxEventsPerSession);
-          list.clear();
-          for (const e of keep) list.set(e.eid, e);
-        }
-        this.#events.set(sid, list);
+        const ev = await this.#event(r);
+        this.#addEvent(ev);
+        this.#settleDraft(ev);
         return;
       }
       case "notifications":
@@ -483,9 +578,14 @@ export class LiveStore {
     };
   }
 
-  async #event(r: Row): Promise<EventView> {
+  async #event(r: Row, live = false): Promise<EventView> {
     const sid = String(r.sid);
-    const { ct, ...meta } = (r.doc ?? {}) as Row;
+    const { ct, dataCt, ...meta } = (r.doc ?? {}) as Row;
+    const content = ct
+      ? await this.#open(ct, `event:${sid}`)
+      : dataCt && r.type === "terminal.output"
+        ? await this.#open(dataCt, `terminal:${String(meta.tid)}:${num(r.seq)}`)
+        : null;
     return {
       sid,
       eid: String(r.eid),
@@ -494,8 +594,9 @@ export class LiveStore {
       type: String(r.type),
       urgency: String(r.urgency ?? "low"),
       meta,
-      content: ct ? await this.#open(ct, `event:${sid}`) : null,
+      content,
       rev: num(r.rev),
+      ...(live ? { live: true } : {}),
     };
   }
 
@@ -544,6 +645,7 @@ export class LiveStore {
       events: Object.fromEntries(
         [...this.#events].map(([sid, m]) => [sid, [...m.values()].sort((a, b) => a.seq - b.seq)]),
       ),
+      drafts: Object.fromEntries(this.#drafts),
       notifications: [...this.#notifications.values()].sort((a, b) => b.createdAt - a.createdAt),
       devices,
       devModeActive: devices.some((d) => !d.revoked && d.devMode.on),
@@ -566,7 +668,12 @@ const notification = (r: Row): NotificationView => ({
   rev: num(r.rev),
 });
 
+/** Session states in which a turn is still going (a draft may still be completed). */
+const BUSY_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting_approval", "waiting_input"]);
+
 const revs = (xs: readonly { rev: number }[]) => xs.map((x) => x.rev).join(",");
+/** Live events all have rev 0: they're told apart by eid. */
+const eventKeys = (xs: readonly EventView[]) => xs.map((x) => `${x.rev}:${x.eid}`).join(",");
 const sameSnapshot = (a: Snapshot, b: Snapshot) =>
   a.status === b.status &&
   a.devModeActive === b.devModeActive &&
@@ -574,5 +681,7 @@ const sameSnapshot = (a: Snapshot, b: Snapshot) =>
   revs(a.sessions) === revs(b.sessions) &&
   revs(a.notifications) === revs(b.notifications) &&
   revs(a.devices) === revs(b.devices) &&
-  JSON.stringify(Object.entries(a.events).map(([s, e]) => [s, revs(e)])) ===
-    JSON.stringify(Object.entries(b.events).map(([s, e]) => [s, revs(e)]));
+  JSON.stringify(Object.entries(a.events).map(([s, e]) => [s, eventKeys(e)])) ===
+    JSON.stringify(Object.entries(b.events).map(([s, e]) => [s, eventKeys(e)])) &&
+  JSON.stringify(Object.values(a.drafts).map((d) => [d.sid, d.mid, d.pieces])) ===
+    JSON.stringify(Object.values(b.drafts).map((d) => [d.sid, d.mid, d.pieces]));

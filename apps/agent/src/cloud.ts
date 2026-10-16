@@ -141,7 +141,7 @@ export const createSupabaseClient: CreateSupaClient = (url, publishableKey, acce
 export const supabaseCloud = (
   cfg: SupabaseConfig,
   tokens: TokenSource,
-  opts: { create?: CreateSupaClient; log?: Logger } = {},
+  opts: { create?: CreateSupaClient; log?: Logger; batch?: { ms: number; max: number } } = {},
 ): Cloud => {
   let token: string | null = null;
   const client = (opts.create ?? createSupabaseClient)(cfg.url, cfg.publishableKey, async () => token);
@@ -158,7 +158,10 @@ export const supabaseCloud = (
     refreshIntervalMs: tokens.refreshIntervalMs,
     refresh: async () => apply(await tokens.getToken()),
     store: (owner, deviceId) => {
-      const s = new SupabaseStore(client, owner, deviceId, opts.log ? { log: opts.log } : {});
+      const s = new SupabaseStore(client, owner, deviceId, {
+        ...(opts.log ? { log: opts.log } : {}),
+        ...(opts.batch ? { batch: opts.batch } : {}),
+      });
       stores.push(s);
       return s;
     },

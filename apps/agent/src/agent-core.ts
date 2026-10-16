@@ -34,6 +34,7 @@ import {
   PROVIDER_APP,
   isLegacyApp,
 } from "@chalito/protocol";
+import { SESSIONS_DEFAULTS, type SessionsConfig } from "@chalito/config";
 import { ApprovalManager } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
@@ -41,6 +42,7 @@ import { publicReason } from "./command-result.js";
 import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
 import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
+import { DeltaThrottle } from "./live/deltas.js";
 import type { ScreenManager } from "./screen/manager.js";
 import {
   PERMISSION_RANK,
@@ -56,6 +58,7 @@ import {
 } from "./policy/index.js";
 import { redact, redactDeep, type Logger } from "./redact.js";
 import { Sealer } from "./sealing.js";
+import { pruneRecords, type SessionRecord, type SessionRegistry } from "./session-registry.js";
 import type { AgentStore } from "./store.js";
 
 /** Holds the local policy; `set` persists, re-hashes and reports `policyHash`. */
@@ -132,6 +135,10 @@ export interface AgentCoreDeps {
   terminal?: TerminalCommands;
   /** Remote screen (screen/manager.ts); absent = `screen.*` commands are refused. */
   screen?: ScreenManager;
+  /** M16 A: idle-close, live cap and delta flushing (packages/config sessions.yaml). */
+  sessionsConfig?: Pick<SessionsConfig, "session" | "live">;
+  /** M16 A: where sessions are remembered for resume (~/.chalito/sessions.json); absent = memory only. */
+  registry?: SessionRegistry;
 }
 
 interface Session {
@@ -151,10 +158,36 @@ interface Session {
   questions: Map<string, (answers: Record<string, string | string[]>) => void>;
   /** Set by a relayed (mcp:/call:) answer: the rest of the current turn is gated at this trust. Cleared when the turn ends. */
   turnOriginFloor?: Origin;
+  // ---- M16 A lifecycle ----
+  state: SessionState;
+  lastActiveAt: number;
+  /** The origin of the turn running (or last run): prompts queued into a running turn lower it. */
+  turnOrigin: Origin;
+  idleTimer?: { clear(): void };
+  /** Being idle-closed or shut down: what the adapter reports from now on is ignored. */
+  closing?: boolean;
+  /** The assistant message being streamed (`message.assistant.delta`), until its final text. */
+  draft?: { mid: string; n: number; throttle: DeltaThrottle };
+  /** Deltas are sealed and sent in order. */
+  liveChain: Promise<void>;
 }
 
-/** Adapters that get the computer-control MCP server (see startSession). */
-const COMPUTER_ADAPTERS: ReadonlySet<AdapterKind> = new Set<AdapterKind>(["claude-code", "codex"]);
+/** A session with no process (idle-closed, ended, or from before a restart) that can be resumed. */
+interface Dormant {
+  record: SessionRecord;
+  /** Kept while this process runs, so a resumed session keeps its card. */
+  card?: CardBuilder;
+}
+
+/** States in which a session is doing something or waiting on the person: never idle-closed. */
+const BUSY: ReadonlySet<SessionState> = new Set<SessionState>([
+  "starting",
+  "running",
+  "waiting_approval",
+  "waiting_input",
+]);
+/** After a crash, events may have used seq numbers past the last save. */
+const RESTART_SEQ_MARGIN = 1000;
 
 const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
 const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
@@ -169,6 +202,8 @@ const REMOTE_ENABLE_ATTEMPT =
  */
 export class AgentCore {
   readonly sessions = new Map<string, Session>();
+  /** Sessions without a process that a prompt or `session.resume` reopens (M16 A). */
+  readonly #dormant = new Map<string, Dormant>();
   readonly approvals: ApprovalManager;
   readonly callLines: CallLinePublisher;
   readonly sealer: Sealer;
@@ -307,6 +342,7 @@ export class AgentCore {
         const target = await this.#sessionTarget(p.adapter, p.appId);
         if (!target.ok) return this.#reject(cid, target.reason);
         const prompt = await open<string>(p.promptCt);
+        if (!(await this.#makeRoom())) return this.#reject(cid, "session_limit");
         try {
           const sid = await this.startSession({
             adapter: target.adapter,
@@ -325,32 +361,44 @@ export class AgentCore {
       }
       case "session.prompt": {
         const s = this.sessions.get(p.sid);
-        if (!s) return this.#reject(cid, "unknown_session");
+        if (!s) {
+          if (!this.#dormant.has(p.sid)) return this.#reject(cid, "unknown_session");
+          const text = await open<string>(p.promptCt);
+          return this.#revive(cid, p.sid, text, origin);
+        }
         const text = await open<string>(p.promptCt);
         await this.#event(s, { type: "message.user", origin, ct: await this.sealer.seal({ text }, `event:${s.sid}`) });
-        s.handle.prompt(text, origin);
+        this.#prompt(s, text, origin);
         return { ok: true };
       }
       case "session.interrupt": {
         const s = this.sessions.get(p.sid);
-        if (!s) return this.#reject(cid, "unknown_session");
+        if (!s) return this.#dormant.has(p.sid) ? { ok: true } : this.#reject(cid, "unknown_session");
         await s.handle.interrupt();
         return { ok: true };
       }
       case "session.resume": {
         const s = this.sessions.get(p.sid);
-        if (!s) return this.#reject(cid, "unknown_session");
-        if (p.promptCt) s.handle.prompt(await open<string>(p.promptCt), origin);
+        if (!s) {
+          // Idle-closed, ended, or from before a restart: reopen it in the provider (M16 A).
+          if (!this.#dormant.has(p.sid)) return this.#reject(cid, "unknown_session");
+          return this.#revive(cid, p.sid, p.promptCt ? await open<string>(p.promptCt) : "", origin);
+        }
+        if (p.promptCt) this.#prompt(s, await open<string>(p.promptCt), origin);
         return { ok: true };
       }
       case "session.setPermissionMode": {
         const s = this.sessions.get(p.sid);
-        if (!s) return this.#reject(cid, "unknown_session");
+        const dormant = s ? undefined : this.#dormant.get(p.sid);
+        if (!s && !dormant) return this.#reject(cid, "unknown_session");
         if (aboveCeiling(p.permissionMode)) return this.#reject(cid, "permission_mode_above_ceiling");
         if (sandboxAboveCeiling(p.codexSandbox)) return this.#reject(cid, "codex_sandbox_above_ceiling");
-        await s.handle.setPermissionMode(p.permissionMode);
-        s.permissionMode = p.permissionMode;
-        await this.d.store.upsertSession(s.sid, { permissionMode: p.permissionMode });
+        if (s) {
+          await s.handle.setPermissionMode(p.permissionMode);
+          s.permissionMode = p.permissionMode;
+        } else dormant!.record.permissionMode = p.permissionMode;
+        await this.d.store.upsertSession(p.sid, { permissionMode: p.permissionMode });
+        this.#persist();
         return { ok: true };
       }
       case "session.answer": {
@@ -571,13 +619,21 @@ export class AgentCore {
     origin: Origin;
     permissionMode: RemotePermissionMode;
     sid?: string;
+    /**
+     * M16 A: reopen a session that has no process (idle-closed, ended, from before a restart) in
+     * its provider session. `prompt` may then be empty (reopened idle, no turn).
+     */
+    resume?: { providerSessionId?: string; seq: number; startedBy: Origin; card?: CardBuilder };
   }): Promise<string> {
     const sid = input.sid ?? randomUUID();
-    const card = new CardBuilder(
-      { sid, adapter: input.adapter, label: input.workspace.label, workspaceLabel: input.workspace.label },
-      this.d.now,
-    );
-    card.goal(input.prompt);
+    const resume = input.resume;
+    const card =
+      resume?.card ??
+      new CardBuilder(
+        { sid, adapter: input.adapter, label: input.workspace.label, workspaceLabel: input.workspace.label },
+        this.d.now,
+      );
+    if (input.prompt) card.goal(input.prompt);
     const session: Session = {
       sid,
       adapter: input.adapter,
@@ -585,80 +641,318 @@ export class AgentCore {
       cwd: input.workspace.path,
       label: input.workspace.label,
       workspaceLabel: input.workspace.label,
-      startedBy: input.origin,
+      startedBy: resume?.startedBy ?? input.origin,
       permissionMode: input.permissionMode,
       handle: undefined as unknown as SessionHandle,
       card,
-      seq: 0,
+      seq: resume?.seq ?? 0,
+      ...(resume?.providerSessionId ? { providerSessionId: resume.providerSessionId } : {}),
       questions: new Map(),
+      state: "starting",
+      lastActiveAt: this.d.now(),
+      turnOrigin: input.origin,
+      liveChain: Promise.resolve(),
     };
     this.sessions.set(sid, session);
-    await this.d.store.upsertSession(sid, {
-      deviceId: this.d.self.deviceId,
-      adapter: input.adapter,
-      // Engine: chalito.sessions.kind / app_id are generated from these (migration 20261006000300).
-      kind: "agent",
-      ...(input.appId ? { appId: input.appId } : {}),
-      label: session.label,
-      cwdLabel: session.workspaceLabel,
-      state: "starting",
-      permissionMode: input.permissionMode,
-      updatedAt: this.d.now(),
-    });
-    await this.#event(session, {
-      type: "session.started",
-      adapter: input.adapter,
-      origin: input.origin,
-      permissionMode: input.permissionMode,
-    });
+    this.#dormant.delete(sid);
+    try {
+      if (resume) {
+        await this.d.store.upsertSession(sid, { state: "starting", live: true, updatedAt: this.d.now() });
+      } else {
+        await this.d.store.upsertSession(sid, {
+          deviceId: this.d.self.deviceId,
+          adapter: input.adapter,
+          // Engine: chalito.sessions.kind / app_id are generated from these (migration 20261006000300).
+          kind: "agent",
+          ...(input.appId ? { appId: input.appId } : {}),
+          label: session.label,
+          cwdLabel: session.workspaceLabel,
+          state: "starting",
+          live: true,
+          permissionMode: input.permissionMode,
+          updatedAt: this.d.now(),
+        });
+        await this.#event(session, {
+          type: "session.started",
+          adapter: input.adapter,
+          origin: input.origin,
+          permissionMode: input.permissionMode,
+        });
+      }
+      if (resume && input.prompt)
+        await this.#event(session, {
+          type: "message.user",
+          origin: input.origin,
+          ct: await this.sealer.seal({ text: input.prompt }, `event:${sid}`),
+        });
+      this.#persist();
 
-    // Computer control: only when the person turned it on here, for signed origins, with the
-    // desktop app running. Its tools stay inert until this session's computer_control approval.
-    // Claude Code and Codex only: the ACP agents (Grok Build, Gemini CLI) name and permission MCP
-    // tool calls their own way, which the gate can't recognise yet, so they don't get it.
-    const computer =
-      COMPUTER_ADAPTERS.has(input.adapter) && !input.appAdapter
+      const adapter = input.appAdapter ?? this.d.adapters[input.adapter]!;
+      // Computer control: only when the person turned it on here, for signed origins, with the
+      // desktop app running, and only for adapters that put the server's tool calls through the
+      // gate (Claude Code, Codex, ACP: `localMcp`). Its tools stay inert until this session's
+      // computer_control approval.
+      const computer = adapter.localMcp
         ? this.d.computer?.attach(sid, {
             label: session.label,
             adapter: input.adapter,
             origin: input.origin,
           })
         : null;
-    session.handle = await (input.appAdapter ?? this.d.adapters[input.adapter]!).start({
-      sid,
-      cwd: session.cwd,
-      prompt: input.prompt,
-      origin: input.origin,
-      permissionMode: input.permissionMode,
-      ...(computer
-        ? { mcpServers: { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } }
-        : {}),
-      gate: this.#gate(session),
-      askUser: async (q) => {
-        const first = q.questions[0]?.question ?? null;
-        await this.#event(session, {
-          type: "question.asked",
-          questionId: q.questionId,
-          ct: await this.sealer.seal(q.questions, `event:${sid}`),
-        });
-        card.question(first ?? undefined);
-        await this.#publishCard(session);
-        await this.callLines.publish(`${sid}_${q.questionId}`, {
-          notificationId: `q_${q.questionId}`,
-          sid,
-          sessionLabel: session.label,
-          question: first,
-        });
-        const answers = await new Promise<Record<string, string | string[]>>((resolve) =>
-          session.questions.set(q.questionId, resolve),
-        );
-        await this.callLines.remove(`${sid}_${q.questionId}`);
-        card.question(undefined);
-        return answers;
-      },
-      onEvent: (e) => void this.#onAdapterEvent(session, e),
-    });
+      session.handle = await adapter.start({
+        sid,
+        cwd: session.cwd,
+        prompt: input.prompt,
+        origin: input.origin,
+        permissionMode: input.permissionMode,
+        ...(resume?.providerSessionId ? { resume: resume.providerSessionId } : {}),
+        ...(computer
+          ? { mcpServers: { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } }
+          : {}),
+        gate: this.#gate(session),
+        askUser: async (q) => {
+          const first = q.questions[0]?.question ?? null;
+          await this.#event(session, {
+            type: "question.asked",
+            questionId: q.questionId,
+            ct: await this.sealer.seal(q.questions, `event:${sid}`),
+          });
+          card.question(first ?? undefined);
+          await this.#publishCard(session);
+          await this.callLines.publish(`${sid}_${q.questionId}`, {
+            notificationId: `q_${q.questionId}`,
+            sid,
+            sessionLabel: session.label,
+            question: first,
+          });
+          const answers = await new Promise<Record<string, string | string[]>>((resolve) =>
+            session.questions.set(q.questionId, resolve),
+          );
+          await this.callLines.remove(`${sid}_${q.questionId}`);
+          card.question(undefined);
+          return answers;
+        },
+        onEvent: (e) => void this.#onAdapterEvent(session, e),
+      });
+    } catch (err) {
+      // Nothing runs: forget the live session (a resumable one goes back to waiting).
+      this.d.computer?.end(sid);
+      if (this.sessions.get(sid) === session) this.sessions.delete(sid);
+      if (resume) this.#dormant.set(sid, { record: this.#record(session, false), card });
+      this.#persist();
+      throw err;
+    }
+    // The process is gone (it exited, crashed, or was closed): keep the session resumable.
+    void session.handle.done.then(
+      () => this.#retire(session),
+      () => this.#retire(session),
+    );
     return sid;
+  }
+
+  // ---- session lifecycle (M16 A, ADR 0022 §1) -------------------------------------------------
+
+  get #lifecycle() {
+    return this.d.sessionsConfig ?? SESSIONS_DEFAULTS;
+  }
+
+  #schedule(fn: () => void, ms: number): { clear(): void } {
+    if (this.d.setTimer) return this.d.setTimer(fn, ms);
+    const t = setTimeout(fn, ms);
+    t.unref?.();
+    return { clear: () => clearTimeout(t) };
+  }
+
+  /** The origin the computer-control broker checks each action against (this turn's, lowered). */
+  turnOrigin(sid: string): Origin | undefined {
+    const s = this.sessions.get(sid);
+    if (!s) return undefined;
+    return s.turnOriginFloor ? lowerTrust(s.turnOrigin, s.turnOriginFloor) : s.turnOrigin;
+  }
+
+  /** Sessions that can be resumed (no process), by sid. */
+  dormantSessions(): SessionRecord[] {
+    return [...this.#dormant.values()].map((d) => ({ ...d.record }));
+  }
+
+  #prompt(s: Session, text: string, origin: Origin): void {
+    // A prompt queued into a running turn lowers that turn's origin, as the adapters do.
+    s.turnOrigin = BUSY.has(s.state) ? lowerTrust(s.turnOrigin, origin) : origin;
+    s.lastActiveAt = this.d.now();
+    s.idleTimer?.clear();
+    s.idleTimer = undefined;
+    s.handle.prompt(text, origin);
+  }
+
+  #record(s: Session, live: boolean): SessionRecord {
+    return {
+      sid: s.sid,
+      adapter: s.adapter,
+      ...(s.appId ? { appId: s.appId } : {}),
+      workspaceLabel: s.workspaceLabel,
+      label: s.label,
+      permissionMode: s.permissionMode,
+      startedBy: s.startedBy,
+      ...(s.providerSessionId ? { providerSessionId: s.providerSessionId } : {}),
+      seq: s.seq,
+      state: s.state,
+      lastActiveAt: s.lastActiveAt,
+      live,
+    };
+  }
+
+  /** Saves every live and resumable session (labels and ids only); a failed write is logged. */
+  #persist(): void {
+    if (!this.d.registry) return;
+    try {
+      const records = [
+        ...[...this.sessions.values()].filter((s) => !s.closing).map((s) => this.#record(s, true)),
+        ...[...this.#dormant.values()].map((d) => d.record),
+      ];
+      this.d.registry.save(pruneRecords(records, this.d.now()));
+    } catch (err) {
+      this.d.log.warn("sessions.persist_failed", { error: err instanceof Error ? err.message : "error" });
+    }
+  }
+
+  /**
+   * At startup: the sessions saved before this agent stopped become resumable. Lazily: nothing is
+   * spawned until a prompt or `session.resume` for one arrives. A session that was mid-turn when
+   * the agent stopped is reported interrupted.
+   */
+  async restore(): Promise<number> {
+    if (!this.d.registry) return 0;
+    const records = pruneRecords(this.d.registry.load(), this.d.now());
+    for (const r of records) {
+      if (this.sessions.has(r.sid)) continue;
+      const record = { ...r, seq: r.live ? r.seq + RESTART_SEQ_MARGIN : r.seq, live: false };
+      if (BUSY.has(r.state)) {
+        record.state = "interrupted";
+        await this.d.store
+          .upsertSession(r.sid, { state: "interrupted", live: false, updatedAt: this.d.now() })
+          .catch((err: unknown) =>
+            this.d.log.warn("sessions.restore_report_failed", { error: err instanceof Error ? err.message : "error" }),
+          );
+      }
+      this.#dormant.set(r.sid, { record });
+    }
+    this.#persist();
+    if (records.length) this.d.log.info("sessions.restored", { resumable: this.#dormant.size });
+    return this.#dormant.size;
+  }
+
+  /**
+   * Reopens a resumable session in its provider session (Claude `resume`, Codex `thread/resume`,
+   * ACP `session/resume|load`), re-checking everything `session.start` checks: the workspace (by
+   * label), the adapter or app, the permission ceiling, the live-session cap.
+   */
+  async #revive(cid: string, sid: string, prompt: string, origin: Origin): Promise<CommandResult> {
+    const d = this.#dormant.get(sid);
+    if (!d) return this.#reject(cid, "unknown_session");
+    const r = d.record;
+    const policy = this.d.policy.get();
+    const ws = policy.workspaces.find((w) => w.label === r.workspaceLabel);
+    if (!ws) return this.#reject(cid, "unknown_workspace");
+    if (PERMISSION_RANK[r.permissionMode] > PERMISSION_RANK[policy.remote.maxPermissionMode])
+      return this.#reject(cid, "permission_mode_above_ceiling");
+    const target = await this.#sessionTarget(r.appId ? undefined : r.adapter, r.appId);
+    if (!target.ok) return this.#reject(cid, target.reason);
+    // Never learned a provider session (it failed at start): a prompt starts afresh in the same sid.
+    if (!r.providerSessionId && !prompt) return { ok: true, sid };
+    if (!(await this.#makeRoom())) return this.#reject(cid, "session_limit");
+    try {
+      await this.startSession({
+        adapter: target.adapter,
+        ...(target.appId ? { appId: target.appId } : {}),
+        ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
+        workspace: ws,
+        prompt,
+        origin,
+        permissionMode: r.permissionMode,
+        sid,
+        resume: {
+          ...(r.providerSessionId ? { providerSessionId: r.providerSessionId } : {}),
+          seq: r.seq,
+          startedBy: r.startedBy,
+          ...(d.card ? { card: d.card } : {}),
+        },
+      });
+      this.#audit("session.resumed", { sid, adapter: r.adapter, by: origin, withPrompt: prompt !== "" });
+      return { ok: true, sid };
+    } catch (err) {
+      this.d.log.error("session.resume_failed", { cid, error: err instanceof Error ? err.message : "error" });
+      return this.#reject(cid, "start_failed");
+    }
+  }
+
+  /**
+   * Below the live cap, or made so by closing the longest-idle session. False when every live
+   * session is busy.
+   */
+  async #makeRoom(): Promise<boolean> {
+    const max = this.#lifecycle.session.maxLivePerDevice;
+    const live = [...this.sessions.values()].filter((s) => !s.closing);
+    if (live.length < max) return true;
+    const idle = live.filter((s) => !BUSY.has(s.state)).sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+    for (const s of idle.slice(0, live.length - max + 1)) this.#suspend(s, "session_limit");
+    return idle.length >= live.length - max + 1;
+  }
+
+  /** (Re)arms the idle-close timer of a session that isn't busy. */
+  #armIdle(s: Session): void {
+    s.idleTimer?.clear();
+    s.idleTimer = undefined;
+    if (BUSY.has(s.state) || s.closing) return;
+    const timeout = this.#lifecycle.session.idleTimeout;
+    const wait = Math.max(0, s.lastActiveAt + timeout - this.d.now());
+    s.idleTimer = this.#schedule(() => {
+      s.idleTimer = undefined;
+      if (this.sessions.get(s.sid) !== s || s.closing || BUSY.has(s.state)) return;
+      if (this.d.now() - s.lastActiveAt >= timeout) this.#suspend(s, "idle");
+      else this.#armIdle(s);
+    }, wait);
+  }
+
+  /**
+   * Closes a session's process and keeps it resumable: `handle.close()`, out of the live map,
+   * its provider session id kept. The phone keeps the state it had (no "completed").
+   */
+  #suspend(s: Session, reason: "idle" | "session_limit" | "agent_stop"): void {
+    if (s.closing) return;
+    s.closing = true;
+    s.idleTimer?.clear();
+    s.idleTimer = undefined;
+    s.draft?.throttle.discard();
+    s.draft = undefined;
+    this.d.computer?.end(s.sid);
+    if (this.sessions.get(s.sid) === s) this.sessions.delete(s.sid);
+    this.#dormant.set(s.sid, { record: this.#record(s, false), card: s.card });
+    try {
+      s.handle?.close();
+    } catch {
+      /* already closed */
+    }
+    this.#persist();
+    this.d.log.info("session.closed", { sid: s.sid, reason });
+    void this.d.store
+      .upsertSession(s.sid, { live: false, updatedAt: this.d.now() })
+      .catch((err: unknown) =>
+        this.d.log.warn("session.close_report_failed", { error: err instanceof Error ? err.message : "error" }),
+      );
+  }
+
+  /** The adapter's process ended on its own: the session stays resumable. */
+  #retire(s: Session): void {
+    if (s.closing || this.sessions.get(s.sid) !== s) return;
+    this.#suspend(s, "idle");
+  }
+
+  /** Agent shutdown: interrupt busy sessions, close every process, keep all of them resumable. */
+  async suspendAll(): Promise<void> {
+    for (const s of [...this.sessions.values()]) {
+      if (BUSY.has(s.state)) await s.handle?.interrupt().catch(() => undefined);
+      this.#suspend(s, "agent_stop");
+    }
   }
 
   #gate(s: Session): ToolGate {
@@ -802,17 +1096,51 @@ export class AgentCore {
   }
 
   async #onAdapterEvent(s: Session, e: AdapterEvent): Promise<void> {
+    // An idle-closed (or replaced) session's last words, e.g. "completed" after close().
+    if (s.closing || this.sessions.get(s.sid) !== s) return;
+    s.lastActiveAt = this.d.now();
     switch (e.type) {
       case "started":
         s.providerSessionId = e.providerSessionId;
+        this.#persist();
         await this.d.store.upsertSession(s.sid, { providerSessionId: e.providerSessionId });
         return;
-      case "assistant_text":
-        await this.#event(s, {
-          type: "message.assistant",
-          ct: await this.sealer.seal({ text: e.text }, `event:${s.sid}`),
-        });
+      case "assistant_delta": {
+        // Throttled (sessions.yaml live.*), broadcast only; the final text below is the message.
+        const live = this.#lifecycle.live;
+        if (!s.draft) {
+          const draft: NonNullable<Session["draft"]> = {
+            mid: randomUUID(),
+            n: 0,
+            throttle: new DeltaThrottle({
+              flushMs: live.deltaFlushMs,
+              flushChars: live.deltaFlushChars,
+              schedule: (fn, ms) => this.#schedule(fn, ms),
+              emit: (text) => this.#delta(s, draft, text),
+            }),
+          };
+          s.draft = draft;
+        }
+        s.draft.throttle.push(e.text);
         return;
+      }
+      case "assistant_text": {
+        const draft = s.draft;
+        draft?.throttle.discard();
+        s.draft = undefined;
+        // Reserved before sealing: the seq the deltas carried, ahead of what follows (usage, idle).
+        const seq = s.seq++;
+        await this.#event(
+          s,
+          {
+            type: "message.assistant",
+            ...(draft ? { mid: draft.mid } : {}),
+            ct: await this.sealer.seal({ text: e.text }, `event:${s.sid}`),
+          },
+          { seq },
+        );
+        return;
+      }
       case "tool_started": {
         const policy = this.d.policy.get();
         const c = classifyToolCall(e.toolName, e.input, this.#classifyContext(policy, s));
@@ -832,7 +1160,15 @@ export class AgentCore {
         await this.#event(s, { type: "usage", tokIn: e.tokIn, tokOut: e.tokOut, tokCached: e.tokCacheRead });
         return;
       case "state":
+        s.state = e.state as SessionState;
         if (e.state !== "running") s.turnOriginFloor = undefined;
+        if (!BUSY.has(s.state)) {
+          // The turn is over: a draft without its final text is dropped.
+          s.draft?.throttle.discard();
+          s.draft = undefined;
+        }
+        this.#armIdle(s);
+        this.#persist();
         if (e.state === "completed" || e.state === "failed") this.d.computer?.end(s.sid);
         s.card.state(e.state as SessionState);
         await this.#event(s, { type: "session.state", state: e.state });
@@ -845,18 +1181,53 @@ export class AgentCore {
     }
   }
 
-  async #event(s: Session, partial: Record<string, unknown>): Promise<void> {
+  /**
+   * One event for the person's clients. The store sends live-only types over the live path and
+   * batches the rest into `session_events` (M16 A); the core doesn't wait for either, and order
+   * is kept by the store. A failed write is logged.
+   */
+  async #event(s: Session, partial: Record<string, unknown>, opts: { seq?: number } = {}): Promise<void> {
     const event = AgentEvent.parse({
       v: 1,
       eid: randomUUID(),
       sid: s.sid,
       deviceId: this.d.self.deviceId,
-      seq: s.seq++,
+      // A caller may reserve the seq up front (before an await), so events keep their order.
+      seq: opts.seq ?? s.seq++,
       t: this.d.now(),
       urgency: "low",
       ...partial,
     });
-    await this.d.store.writeEvent(event);
+    void this.d.store.writeEvent(event).catch((err: unknown) =>
+      this.d.log.warn("event.write_failed", {
+        type: event.type,
+        error: err instanceof Error ? err.message : "error",
+      }),
+    );
+  }
+
+  /** One flushed delta: sealed, numbered, sent in order (broadcast only). */
+  #delta(s: Session, draft: NonNullable<Session["draft"]>, text: string): void {
+    const n = draft.n++;
+    const seq = s.seq;
+    s.liveChain = s.liveChain
+      .then(async () => {
+        if (s.closing) return;
+        await this.#event(
+          s,
+          {
+            type: "message.assistant.delta",
+            mid: draft.mid,
+            n,
+            ct: await this.sealer.seal({ text }, `event:${s.sid}`),
+          },
+          // A delta takes the seq its final message will have, without using it up.
+          { seq },
+        );
+      })
+      .catch((err: unknown) =>
+        this.d.log.warn("event.delta_failed", { error: err instanceof Error ? err.message : "error" }),
+      );
   }
 
   async #publishCard(s: Session): Promise<void> {

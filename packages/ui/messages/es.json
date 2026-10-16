@@ -655,7 +655,8 @@
         "usage": "Uso",
         "card_updated": "Tarjeta",
         "error": "Error"
-      }
+      },
+      "draft": "Escribiendo…"
     },
     "devices": {
       "title": "Dispositivos",

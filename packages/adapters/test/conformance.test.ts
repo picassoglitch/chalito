@@ -1,7 +1,12 @@
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { AcpAdapter } from "../src/acp/index.js";
 import { ClaudeCodeAdapter } from "../src/claude-code/index.js";
 import { APPROVAL_POLICY, CodexAdapter } from "../src/codex/index.js";
 import { fakeClaudeCode, fakeCodex, type FakeCodexStep, type FakeStep } from "../src/testing.js";
-import { runConformance, type ConformanceStep } from "./conformance.js";
+import { runConformance, runResumeConformance, type ConformanceStep } from "./conformance.js";
 
 const target = (input: Record<string, unknown>) => String(input.command ?? input.file_path ?? "");
 
@@ -79,3 +84,70 @@ runConformance("codex", (turns) => {
     violations: () => fake.run.violations,
   };
 });
+
+// ---- M16 A: resume and partial streaming, for all three protocol families ----
+
+runResumeConformance("claude-code", (turns) => {
+  const fake = fakeClaudeCode(
+    turns.map((t) => t.flatMap((s) => ("say" in s ? [s] : []))),
+    { ran: [], refused: [], modes: [], interrupted: 0 },
+  );
+  return {
+    adapter: new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }),
+    resumedFrom: () => (fake.run.resumed ?? []).map((r) => r ?? null),
+    turns: () => fake.run.turns ?? 0,
+  };
+});
+
+runResumeConformance("codex", (turns) => {
+  const fake = fakeCodex(turns.map((t) => t.flatMap((s) => ("say" in s ? [s] : []))));
+  const sent = (method: string) => fake.run.received.filter((m) => m.method === method);
+  return {
+    adapter: new CodexAdapter({ apiKey: "sk-test", spawn: fake.spawn, env: {} }),
+    resumedFrom: () =>
+      fake.run.received
+        .filter((m) => m.method === "thread/start" || m.method === "thread/resume")
+        .map((m) => (m.method === "thread/resume" ? String(m.params?.threadId) : null)),
+    turns: () => sent("turn/start").length,
+  };
+});
+
+const FAKE_ACP = fileURLToPath(new URL("./fixtures/fake-acp-agent.mjs", import.meta.url));
+chmodSync(FAKE_ACP, 0o755);
+
+for (const variant of [
+  { name: "acp (session/resume advertised)", script: { resumeSession: true } },
+  { name: "acp (session/load only)", script: { loadSession: true } },
+]) {
+  runResumeConformance(variant.name, (turns) => {
+    const ws = mkdtempSync(join(tmpdir(), "chalito-acp-conf-"));
+    const home = mkdtempSync(join(tmpdir(), "chalito-acp-conf-home-"));
+    writeFileSync(
+      join(ws, ".fake-acp.json"),
+      JSON.stringify({ ...variant.script, turns: turns.map((t) => t.flatMap((s) => ("say" in s ? [s] : []))) }),
+    );
+    const received = () =>
+      existsSync(join(ws, ".fake-acp.log.jsonl"))
+        ? readFileSync(join(ws, ".fake-acp.log.jsonl"), "utf8")
+            .trim()
+            .split("\n")
+            .map((l) => JSON.parse(l) as { in?: { method?: string; params?: Record<string, unknown> } })
+            .flatMap((e) => (e.in?.method ? [e.in] : []))
+        : [];
+    return {
+      adapter: new AcpAdapter("grok", {
+        binPath: FAKE_ACP,
+        home,
+        apiKey: "k",
+        startTimeoutMs: 10_000,
+        env: { PATH: process.env.PATH, HOME: ws },
+      }),
+      cwd: ws,
+      resumedFrom: () =>
+        received()
+          .filter((m) => ["session/new", "session/load", "session/resume"].includes(m.method!))
+          .map((m) => (m.method === "session/new" ? null : String(m.params?.sessionId))),
+      turns: () => received().filter((m) => m.method === "session/prompt").length,
+    };
+  });
+}
