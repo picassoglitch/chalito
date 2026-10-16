@@ -182,21 +182,45 @@ export interface GitEnv {
   GIT_CONFIG?: string | undefined;
   ProgramData?: string | undefined;
   ProgramFiles?: string | undefined;
+  "ProgramFiles(x86)"?: string | undefined;
+  LOCALAPPDATA?: string | undefined;
   XDG_CONFIG_HOME?: string | undefined;
 }
 
-/** The system config files git might read on this OS (several installs can coexist: all are read). */
-export const systemConfigs = (platform: NodeJS.Platform, env: GitEnv): string[] => {
+/**
+ * The system config files git might read on this OS. Several installs can coexist, so all are read
+ * (and all are in the chain, so writing one is HIGH). We don't try to find the running git's own
+ * prefix from PATH: admin-owned system configs aren't writable by the agent anyway; the per-user
+ * installs (Homebrew on Linux, Git for Windows under LOCALAPPDATA) are listed explicitly.
+ * `unsure`: Windows variables we need are missing, so we can't know where they'd be.
+ */
+export const systemConfigs = (
+  platform: NodeJS.Platform,
+  env: GitEnv,
+  home: string,
+): { files: string[]; unsure: boolean } => {
   if (platform === "win32") {
-    const out: string[] = [];
-    if (env.ProgramData) out.push(win32.join(env.ProgramData, "Git", "config"));
+    const pf86 = env["ProgramFiles(x86)"];
+    const files: string[] = [];
+    if (env.ProgramData) files.push(win32.join(env.ProgramData, "Git", "config"));
     if (env.ProgramFiles) {
-      out.push(win32.join(env.ProgramFiles, "Git", "etc", "gitconfig"));
-      out.push(win32.join(env.ProgramFiles, "Git", "mingw64", "etc", "gitconfig"));
+      files.push(win32.join(env.ProgramFiles, "Git", "etc", "gitconfig"));
+      files.push(win32.join(env.ProgramFiles, "Git", "mingw64", "etc", "gitconfig"));
     }
-    return out;
+    if (pf86) files.push(win32.join(pf86, "Git", "etc", "gitconfig"));
+    if (env.LOCALAPPDATA) files.push(win32.join(env.LOCALAPPDATA, "Programs", "Git", "etc", "gitconfig"));
+    return { files, unsure: !env.ProgramData || !env.ProgramFiles || !env.LOCALAPPDATA };
   }
-  return ["/etc/gitconfig", "/opt/homebrew/etc/gitconfig", "/usr/local/etc/gitconfig"];
+  return {
+    files: [
+      "/etc/gitconfig",
+      "/opt/homebrew/etc/gitconfig",
+      "/usr/local/etc/gitconfig",
+      "/home/linuxbrew/.linuxbrew/etc/gitconfig",
+      join(home, ".linuxbrew", "etc", "gitconfig"),
+    ],
+    unsure: false,
+  };
 };
 
 export interface HooksOptions {
@@ -305,11 +329,20 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   if (env.GIT_CONFIG_COUNT || env.GIT_CONFIG_PARAMETERS || env.GIT_CONFIG) unsure = true;
   // git's order: system, global (XDG, then ~/.gitconfig), the repo's, the worktree's. The last value wins.
   const noSystem = !!env.GIT_CONFIG_NOSYSTEM && !/^(0|false|no|off)$/i.test(env.GIT_CONFIG_NOSYSTEM);
-  if (!noSystem)
-    for (const f of env.GIT_CONFIG_SYSTEM
-      ? [env.GIT_CONFIG_SYSTEM]
-      : systemConfigs(o.platform ?? process.platform, env))
-      readConfig(f, 0, true);
+  const known = systemConfigs(o.platform ?? process.platform, env, o.home);
+  if (!noSystem) {
+    if (env.GIT_CONFIG_SYSTEM) readConfig(env.GIT_CONFIG_SYSTEM, 0, true);
+    else {
+      if (known.unsure) unsure = true;
+      for (const f of known.files) readConfig(f, 0, true);
+    }
+  }
+  // Every known system config is in the chain (writing it is HIGH), read or not.
+  for (const f of known.files)
+    if (!chain.includes(f)) {
+      chain.push(f);
+      watched.push(f);
+    }
   // Several system configs set it differently: we can't tell which install's git runs.
   if (systemValues.size > 1) unsure = true;
   if (env.GIT_CONFIG_GLOBAL) readConfig(env.GIT_CONFIG_GLOBAL, 0);

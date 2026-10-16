@@ -710,20 +710,26 @@ const startDaemon = async (
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
     // Windows folder redirection: the classifier checks AppData entries under the real roots too.
-    env: pickEnv(claudeEnv(env, ""), [
-      "APPDATA",
-      "LOCALAPPDATA",
-      "XDG_CONFIG_HOME",
-      "ProgramData",
-      "ProgramFiles",
-      // Which git config sessions see (git-hooks.ts fails closed on the command-line ones).
-      "GIT_CONFIG_GLOBAL",
-      "GIT_CONFIG_SYSTEM",
-      "GIT_CONFIG_NOSYSTEM",
-      "GIT_CONFIG_COUNT",
-      "GIT_CONFIG_PARAMETERS",
-      "GIT_CONFIG",
-    ]),
+    env: {
+      // Where things live on this computer: the daemon's own environment.
+      ...pickEnv(env, [
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+      ]),
+      // Which git config the sessions see (git-hooks.ts fails closed on the command-line ones).
+      ...pickEnv(claudeEnv(env, ""), [
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG",
+      ]),
+    },
   });
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {

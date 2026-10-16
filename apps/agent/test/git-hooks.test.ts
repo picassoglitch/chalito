@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type * as ChildProcess from "node:child_process";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -225,17 +225,73 @@ describe("system config, the environment, and values we can't resolve", () => {
     expect(resolveHooks(ws, { home, env: { GIT_CONFIG_SYSTEM: sys } }).dir).toBe(join(ws, "global-hooks"));
   });
 
-  it("the default system files per OS", () => {
-    expect(systemConfigs("linux", {})).toEqual([
-      "/etc/gitconfig",
-      "/opt/homebrew/etc/gitconfig",
-      "/usr/local/etc/gitconfig",
-    ]);
-    expect(systemConfigs("win32", { ProgramData: "C:\\ProgramData", ProgramFiles: "C:\\Program Files" })).toEqual([
-      "C:\\ProgramData\\Git\\config",
-      "C:\\Program Files\\Git\\etc\\gitconfig",
-      "C:\\Program Files\\Git\\mingw64\\etc\\gitconfig",
-    ]);
+  it("the known system files per OS; missing Windows variables fail closed", () => {
+    expect(systemConfigs("linux", {}, "/home/ana")).toEqual({
+      files: [
+        "/etc/gitconfig",
+        "/opt/homebrew/etc/gitconfig",
+        "/usr/local/etc/gitconfig",
+        "/home/linuxbrew/.linuxbrew/etc/gitconfig",
+        "/home/ana/.linuxbrew/etc/gitconfig",
+      ],
+      unsure: false,
+    });
+    const winEnv = {
+      ProgramData: "C:\\ProgramData",
+      ProgramFiles: "C:\\Program Files",
+      "ProgramFiles(x86)": "C:\\Program Files (x86)",
+      LOCALAPPDATA: "C:\\Users\\ana\\AppData\\Local",
+    };
+    expect(systemConfigs("win32", winEnv, "C:\\Users\\ana")).toEqual({
+      files: [
+        "C:\\ProgramData\\Git\\config",
+        "C:\\Program Files\\Git\\etc\\gitconfig",
+        "C:\\Program Files\\Git\\mingw64\\etc\\gitconfig",
+        "C:\\Program Files (x86)\\Git\\etc\\gitconfig",
+        "C:\\Users\\ana\\AppData\\Local\\Programs\\Git\\etc\\gitconfig",
+      ],
+      unsure: false,
+    });
+    for (const k of ["ProgramData", "ProgramFiles", "LOCALAPPDATA"] as const) {
+      const env = { ...winEnv, [k]: undefined };
+      expect(systemConfigs("win32", env, "C:\\Users\\ana").unsure, k).toBe(true);
+      const home = root();
+      const ws = repo(home);
+      expect(resolveHooks(ws, { home, env, platform: "win32" }).dir, k).toBe("unknown");
+    }
+  });
+
+  it("every known system config is in the chain, even when not read; a per-user one is HIGH to write", () => {
+    const home = root();
+    const ws = repo(home);
+    const own = join(home, ".linuxbrew", "etc", "gitconfig");
+    const info = resolveHooks(ws, { home, env: NOSYS, platform: "linux" });
+    expect(info.chain).toEqual(expect.arrayContaining(["/etc/gitconfig", own]));
+    // A per-user git install's system config read for real: its hooksPath counts.
+    mkdirSync(dirname(own), { recursive: true });
+    writeFileSync(own, "[core]\n\thooksPath = brew-hooks\n");
+    clearHooksCache();
+    // Only files under this temp home exist for this check (the machine's /etc/gitconfig stays out).
+    const onlyHome = {
+      read: (p: string) => readFileSync(p, "utf8"),
+      mtime: (p: string) => {
+        if (!p.startsWith(home)) return -1;
+        try {
+          return statSync(p).mtimeMs;
+        } catch {
+          return -1;
+        }
+      },
+      isDir: (p: string) => {
+        try {
+          return statSync(p).isDirectory();
+        } catch {
+          return null;
+        }
+      },
+      realpath: (p: string) => realpathSync(p),
+    };
+    expect(resolveHooks(ws, { home, platform: "linux", fs: onlyHome }).dir).toBe(join(ws, "brew-hooks"));
   });
 
   it("GIT_CONFIG_GLOBAL replaces the user's files", () => {
