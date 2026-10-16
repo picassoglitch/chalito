@@ -133,7 +133,15 @@ export type AddWorkspaceResult =
   | { ok: true; label: string; added: boolean }
   | {
       ok: false;
-      reason: "not_a_folder" | "too_broad" | "chalito_folder" | "sensitive" | "startup" | "os_auth_failed" | "too_many";
+      reason:
+        | "not_a_folder"
+        | "too_broad"
+        | "chalito_folder"
+        | "sensitive"
+        | "startup"
+        | "ai_config"
+        | "os_auth_failed"
+        | "too_many";
     };
 
 /** A custom recipe file that didn't load (local only). */

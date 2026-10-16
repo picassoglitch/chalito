@@ -87,3 +87,25 @@ export const SENSITIVE_FILES = [
   ".claude/.credentials.json",
   ".claude.json",
 ];
+
+/**
+ * The AI tools' own configuration: hooks, MCP servers, commands, agents, skills, plugins and
+ * settings there run code or steer the next session (prompt injection). Writing there is CRITICAL
+ * in the classifier, even inside a workspace, and none of them (nor anything inside or above them)
+ * can be a workspace. `~/.aider*` (its config files and folders) is matched by prefix
+ * (AI_CONFIG_PREFIXES).
+ */
+export const AI_CONFIG_DIRS = [
+  ".claude",
+  ".codex",
+  ".gemini",
+  ".cursor",
+  ".config/github-copilot",
+  ".config/Claude",
+  "Library/Application Support/Claude",
+  "AppData/Roaming/Claude",
+  "AppData/Roaming/Cursor",
+  "AppData/Local/github-copilot",
+];
+/** Names in the home folder that start with these are AI tool config too (`~/.aider.conf.yml`, …). */
+export const AI_CONFIG_PREFIXES = [".aider"];

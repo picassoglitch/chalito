@@ -450,7 +450,8 @@
         "too_many": "Ya tienes el máximo de carpetas. Quita una para agregar otra.",
         "other": "No pude agregarla. Inténtalo otra vez.",
         "sensitive": "Esa carpeta guarda llaves o contraseñas (como .ssh o tus llaveros), o contiene una que las guarda. Elige la carpeta de un proyecto.",
-        "startup": "Lo que se guarda en esa carpeta puede ejecutarse solo (al iniciar la computadora o como un comando), o la contiene. Elige la carpeta de un proyecto."
+        "startup": "Lo que se guarda en esa carpeta puede ejecutarse solo (al iniciar la computadora o como un comando), o la contiene. Elige la carpeta de un proyecto.",
+        "ai_config": "Esa es la configuración de una IA (como ~/.claude o ~/.cursor), o la contiene: lo que se guarde ahí puede cambiar lo que hacen tus IA. Elige la carpeta de un proyecto."
       }
     }
   }

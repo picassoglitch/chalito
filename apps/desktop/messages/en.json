@@ -450,7 +450,8 @@
         "too_many": "You already have the maximum number of folders. Remove one to add another.",
         "other": "I couldn't add it. Please try again.",
         "sensitive": "That folder holds keys or passwords (like .ssh or your keychains), or contains one that does. Choose a project folder.",
-        "startup": "Files saved in that folder can run by themselves (when the computer starts or as a command), or it contains such a folder. Choose a project folder."
+        "startup": "Files saved in that folder can run by themselves (when the computer starts or as a command), or it contains such a folder. Choose a project folder.",
+        "ai_config": "That's an AI tool's own settings (like ~/.claude or ~/.cursor), or contains them: whatever is saved there can change what your AIs do. Choose a project folder."
       }
     }
   }

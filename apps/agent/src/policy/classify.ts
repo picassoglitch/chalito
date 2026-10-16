@@ -3,7 +3,14 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
-import { SENSITIVE_DIRS, SENSITIVE_FILES, STARTUP_DIRS, STARTUP_FILES } from "./persistence.js";
+import {
+  AI_CONFIG_DIRS,
+  AI_CONFIG_PREFIXES,
+  SENSITIVE_DIRS,
+  SENSITIVE_FILES,
+  STARTUP_DIRS,
+  STARTUP_FILES,
+} from "./persistence.js";
 
 /**
  * Risk classification of a single tool call (ADR 0008):
@@ -116,14 +123,25 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     .filter((d) => isAbsolute(d) || d.startsWith("~"))
     .map((d) => real(resolve(expand(d))))
     .filter((d) => !projectPath(d) && d !== sep);
-  const persistDirs = [...startupDirs, ...pathDirs];
+  const homeRoot = h("");
+  // ~/.aider.conf.yml, ~/.aider/…: anything in the home folder whose name starts with ".aider".
+  const aiPrefixed = (abs: string) => {
+    if (!within(abs, homeRoot) || abs === homeRoot) return false;
+    const first =
+      abs
+        .slice(homeRoot.length)
+        .replace(/^[\\/]+/, "")
+        .split(/[\\/]/)[0] ?? "";
+    return AI_CONFIG_PREFIXES.some((p) => first.startsWith(p));
+  };
+  const persistDirs = [...startupDirs, ...AI_CONFIG_DIRS.map(h), ...pathDirs];
   return {
     home: ctx.home,
     resolve: res,
     inWorkspace,
     hardFloor: (abs) => floor.some((f) => within(abs, f)),
     floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
-    persistence: (abs) => startupFiles.includes(abs) || persistDirs.some((d) => within(abs, d)),
+    persistence: (abs) => startupFiles.includes(abs) || persistDirs.some((d) => within(abs, d)) || aiPrefixed(abs),
     agentBinaries,
     sensitive: (abs) =>
       sensitiveDirs.some((d) => within(abs, d)) ||

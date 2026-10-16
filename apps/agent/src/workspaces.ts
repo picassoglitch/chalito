@@ -2,7 +2,15 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import type { OsAuth } from "./devmode.js";
-import { SENSITIVE_DIRS, SENSITIVE_FILES, STARTUP_DIRS, STARTUP_FILES } from "./policy/persistence.js";
+import { knownBinDirs } from "./apps/manager.js";
+import {
+  AI_CONFIG_DIRS,
+  AI_CONFIG_PREFIXES,
+  SENSITIVE_DIRS,
+  SENSITIVE_FILES,
+  STARTUP_DIRS,
+  STARTUP_FILES,
+} from "./policy/persistence.js";
 import type { Policy } from "./policy/index.js";
 
 /**
@@ -20,10 +28,10 @@ export type AddWorkspaceResult =
   | { ok: true; label: string; added: boolean }
   | {
       ok: false;
-      reason: "not_a_folder" | "too_broad" | "chalito_folder" | "sensitive" | "startup" | "os_auth_failed" | "too_many";
+      reason: WorkspaceProblem | "not_a_folder" | "os_auth_failed" | "too_many";
     };
 
-export type WorkspaceProblem = "too_broad" | "chalito_folder" | "sensitive" | "startup";
+export type WorkspaceProblem = "too_broad" | "chalito_folder" | "sensitive" | "startup" | "ai_config";
 
 export interface WorkspaceDeps {
   policy: { get(): Policy; set(p: Policy, via: "local"): Promise<void> };
@@ -38,6 +46,8 @@ export interface WorkspaceDeps {
    * a workspace: a file written there would run in place of a command later.
    */
   pathDirs?: string[];
+  /** The agent's environment (APPDATA, LOCALAPPDATA, USERPROFILE…); default: its own. */
+  env?: Record<string, string | undefined>;
   /** The OS realpath and folder check (tests inject them to play Windows short names). */
   realpath?: (p: string) => string;
   isDirectory?: (p: string) => boolean;
@@ -123,6 +133,11 @@ export const workspaceProblem = (
      * ~/.ssh → ~/dotfiles/ssh) also blocks its target and everything above it.
      */
     resolve?: (p: string) => string;
+    /**
+     * APPDATA / LOCALAPPDATA: on Windows they can be redirected away from the home folder (roaming
+     * profiles, folder redirection), so the AppData entries are checked under them too.
+     */
+    env?: Record<string, string | undefined>;
   },
 ): WorkspaceProblem | null => {
   const { P, key, within } = pathsFor(o.platform);
@@ -131,24 +146,38 @@ export const workspaceProblem = (
   // The whole home folder (or anything above it) holds ~/.chalito, keys and every other app's data.
   if (within(o.home, dir)) return "too_broad";
   if (within(dir, o.chalitoDir) || within(o.chalitoDir, dir)) return "chalito_folder";
-  const inHome = (rel: string) => P.join(o.home, ...rel.split("/"));
+  const appData = (name: string) => o.env?.[name] ?? o.env?.[name.toUpperCase()];
+  // A home-relative entry; AppData ones also under the real %APPDATA% / %LOCALAPPDATA%.
+  const placesOf = (rel: string): string[] => {
+    const parts = rel.split("/");
+    const out = [P.join(o.home, ...parts)];
+    if (o.platform === "win32") {
+      const roaming = appData("APPDATA");
+      const local = appData("LOCALAPPDATA");
+      if (rel.startsWith("AppData/Roaming/") && roaming) out.push(P.join(roaming, ...parts.slice(2)));
+      if (rel.startsWith("AppData/Local/") && local) out.push(P.join(local, ...parts.slice(2)));
+    }
+    return out;
+  };
+  const inHome = (rels: string[]) => rels.flatMap(placesOf);
   // A file's folder, other than the home folder itself (refused above as too broad).
-  const folderOf = (files: string[]) => files.filter((f) => f.includes("/")).map((f) => P.dirname(inHome(f)));
+  const folderOf = (files: string[]) =>
+    files.filter((f) => f.includes("/")).flatMap((f) => placesOf(f).map((x) => P.dirname(x)));
   // Each entry as written and as the OS resolves it.
   const both = (paths: string[]) => paths.flatMap((p) => (o.resolve ? [p, o.resolve(p)] : [p]));
   const hits = (paths: string[]) => both(paths).some((abs) => within(dir, abs) || within(abs, dir));
   // A credentials file's folder can't be a workspace, nor anything above it (its other subfolders can).
   const above = (paths: string[]) => both(paths).some((abs) => within(abs, dir));
-  if (hits(SENSITIVE_DIRS.map(inHome)) || above(folderOf(SENSITIVE_FILES))) return "sensitive";
+  if (hits(inHome(SENSITIVE_DIRS)) || above(folderOf(SENSITIVE_FILES))) return "sensitive";
   // Startup, autostart and bin folders (shared with the classifier), startup files' folders, PATH.
-  if (
-    hits([
-      ...STARTUP_DIRS.map(inHome),
-      ...folderOf(STARTUP_FILES),
-      ...(o.pathDirs ?? []).filter((p) => P.isAbsolute(p)),
-    ])
-  )
+  if (hits([...inHome(STARTUP_DIRS), ...folderOf(STARTUP_FILES), ...(o.pathDirs ?? []).filter((p) => P.isAbsolute(p))]))
     return "startup";
+  // The AI tools' own config (hooks, MCP servers, commands, settings): inside it or above it.
+  if (hits(inHome(AI_CONFIG_DIRS))) return "ai_config";
+  if (within(dir, o.home)) {
+    const first = P.relative(key(o.home), key(dir)).split(/[\\/]/)[0] ?? "";
+    if (AI_CONFIG_PREFIXES.some((p) => first.startsWith(p.toLowerCase()) || first.startsWith(p))) return "ai_config";
+  }
   if (within(dir, o.home)) return null;
 
   if (o.platform === "win32") {
@@ -193,10 +222,15 @@ export const addWorkspace = async (d: WorkspaceDeps, rawPath: string): Promise<A
   };
   const home = resolved(d.home ?? homedir());
   const chalitoDir = resolved(d.chalitoDir);
-  const pathDirs = (d.pathDirs ?? (process.env.PATH ?? "").split(platform === "win32" ? ";" : ":"))
+  const env = d.env ?? process.env;
+  // The agent's PATH, plus every folder it looks in for CLIs (built from the real APPDATA etc.).
+  const pathDirs = [
+    ...(d.pathDirs ?? (env.PATH ?? "").split(platform === "win32" ? ";" : ":")),
+    ...knownBinDirs(platform, { ...env, HOME: home }),
+  ]
     .filter((p) => p && P.isAbsolute(p))
     .map(resolved);
-  const problem = workspaceProblem(dir, { home, chalitoDir, platform, pathDirs, resolve: resolved });
+  const problem = workspaceProblem(dir, { home, chalitoDir, platform, pathDirs, resolve: resolved, env });
   if (problem) return { ok: false, reason: problem };
 
   const policy = d.policy.get();

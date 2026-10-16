@@ -652,3 +652,111 @@ describe("follow-up: one shared list, resolved like the folder being added", () 
       expect(knownBinDirs("linux", env), d).toContain(`/h/${d}`);
   });
 });
+
+describe("the AI tools' own config folders: never a workspace, writes CRITICAL", () => {
+  const linux = { home: "/home/ana", chalitoDir: "/home/ana/.chalito", platform: "linux" as const };
+  const mac = { home: "/Users/ana", chalitoDir: "/Users/ana/.chalito", platform: "darwin" as const };
+  const win = { home: "C:\\Users\\ana", chalitoDir: "C:\\Users\\ana\\.chalito", platform: "win32" as const };
+
+  it("refuses ~/.claude, ~/.codex, ~/.gemini, ~/.cursor, ~/.aider*, copilot's config, and anything inside them", () => {
+    for (const p of [
+      ".claude/commands",
+      ".claude/agents",
+      ".claude/skills/x",
+      ".claude/plugins",
+      ".codex/prompts",
+      ".gemini",
+      ".gemini/extensions/x",
+      ".cursor",
+      ".cursor/rules",
+      ".aider",
+      ".aider.tags.cache.v4",
+      ".config/github-copilot",
+    ])
+      expect(workspaceProblem(`/home/ana/${p}`, linux), p).not.toBeNull();
+    expect(workspaceProblem("/home/ana/.gemini/extensions/x", linux)).toBe("ai_config");
+    expect(workspaceProblem("/home/ana/.cursor/rules", linux)).toBe("ai_config");
+    expect(workspaceProblem("/home/ana/.aider.tags.cache.v4", linux)).toBe("ai_config");
+    expect(workspaceProblem("/home/ana/.config/github-copilot", linux)).toBe("ai_config");
+    // ~/.claude/local is still refused as a bin folder.
+    expect(workspaceProblem("/home/ana/.claude/local", linux)).toBe("startup");
+    expect(workspaceProblem("/Users/ana/Library/Application Support/Claude", mac)).toBe("ai_config");
+    expect(workspaceProblem("/Users/ana/Library/Application Support", mac)).toBe("ai_config");
+    expect(workspaceProblem("C:\\Users\\ana\\AppData\\Roaming\\Claude", win)).toBe("ai_config");
+    expect(workspaceProblem("C:\\Users\\ana\\.CURSOR\\x", win)).toBe("ai_config");
+    // Look-alike names are fine.
+    expect(workspaceProblem("/home/ana/code/.claude-notes", linux)).toBeNull();
+    expect(workspaceProblem("/home/ana/claude-projects/app", linux)).toBeNull();
+  });
+
+  it("writes there are CRITICAL, even when a hand-edited workspace covers the home folder", () => {
+    const home = {
+      policy: { ...DEFAULT_POLICY, workspaces: [{ label: "home", path: "/home/ana" }] },
+      home: "/home/ana",
+      cwd: "/home/ana",
+      realpath: (x: string) => x,
+    };
+    for (const f of [
+      ".claude/settings.json",
+      ".claude/commands/deploy.md",
+      ".claude/agents/x.md",
+      ".claude/skills/x/SKILL.md",
+      ".claude/plugins/x/hooks.json",
+      ".codex/config.toml",
+      ".gemini/settings.json",
+      ".cursor/mcp.json",
+      ".aider.conf.yml",
+      ".config/github-copilot/apps.json",
+    ]) {
+      const c = classifyToolCall("Write", { file_path: `/home/ana/${f}`, content: "x" }, home);
+      expect(c.tier, f).toBe("CRITICAL");
+    }
+    expect(classifyToolCall("Bash", { command: "cp hook.sh ~/.claude/hooks/" }, home).tier).toBe("CRITICAL");
+    expect(classifyToolCall("Write", { file_path: "/home/ana/notes/aider.md", content: "x" }, home).tier).not.toBe(
+      "CRITICAL",
+    );
+  });
+
+  it("Windows folder redirection: AppData checks follow the real %APPDATA% and %LOCALAPPDATA%", async () => {
+    const env = {
+      USERPROFILE: "C:\\Users\\ana",
+      APPDATA: "\\\\server\\profiles\\ana\\Roaming",
+      LOCALAPPDATA: "D:\\Local\\ana",
+    };
+    const o = { ...win, env };
+    expect(workspaceProblem("\\\\server\\profiles\\ana\\Roaming\\Claude", o)).toBe("ai_config");
+    expect(workspaceProblem("\\\\server\\profiles\\ana\\Roaming\\npm", o)).toBe("startup");
+    expect(
+      workspaceProblem("\\\\server\\profiles\\ana\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup", o),
+    ).toBe("startup");
+    expect(workspaceProblem("\\\\server\\profiles\\ana\\Roaming\\Microsoft\\Credentials", o)).toBe("sensitive");
+    expect(workspaceProblem("D:\\Local\\ana\\Microsoft\\WindowsApps", o)).toBe("startup");
+    expect(workspaceProblem("D:\\Local\\ana\\github-copilot", o)).toBe("ai_config");
+    expect(workspaceProblem("D:\\Local\\ana", o)).toBe("startup");
+    expect(workspaceProblem("D:\\code\\app", o)).toBeNull();
+
+    // addWorkspace feeds knownBinDirs(env) in as PATH folders too.
+    const d = {
+      policy: { get: () => ({ ...DEFAULT_POLICY }), set: async () => undefined },
+      osAuth: { verify: async () => true },
+      locale: "en" as const,
+      chalitoDir: win.chalitoDir,
+      home: win.home,
+      platform: "win32" as const,
+      env,
+      pathDirs: [],
+      realpath: (p: string) => p,
+      isDirectory: () => true,
+      emit: () => undefined,
+    };
+    expect(await addWorkspace(d as never, "D:\\Local\\ana\\Microsoft\\WinGet\\Links")).toEqual({
+      ok: false,
+      reason: "startup",
+    });
+    expect(await addWorkspace(d as never, "\\\\server\\profiles\\ana\\Roaming\\npm")).toEqual({
+      ok: false,
+      reason: "startup",
+    });
+    expect(await addWorkspace(d as never, "D:\\code\\app")).toMatchObject({ ok: true });
+  });
+});
