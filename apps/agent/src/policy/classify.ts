@@ -156,9 +156,15 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
    * looked up per folder so repos the index missed (skipped or unreadable folders) are covered.
    */
   const gitRuns = (abs: string): boolean => {
-    if (union.gitDirs.some((d) => within(abs, d))) return true;
-    if (fold ? [...union.chain].some((f) => same(f, abs)) : union.chain.has(abs)) return true;
-    if (union.hooksDirs.some((d) => within(abs, d))) return true;
+    // The path and each folder above it, against the known repos' hooks and git dirs: O(depth).
+    const key = k(abs);
+    if (union.chainKeys.has(key)) return true;
+    for (let p = key; ;) {
+      if (union.protectedKeys.has(p)) return true;
+      const up = dirname(p);
+      if (up === p) break;
+      p = up;
+    }
     const narrow = (root: string) => [join(root, "hooks"), join(root, ".githooks")].some((d) => within(abs, d));
     const own = repoForPath(abs, { ...hooksOpts, fallback: workspaces.find((w) => within(abs, w)) ?? dirname(abs) });
     if (own) {

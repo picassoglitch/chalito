@@ -78,7 +78,17 @@ export interface RepoUnion {
   partial: string[];
   /** Workspaces with no completed scan yet. */
   missing: string[];
+  /**
+   * hooksDirs ∪ gitDirs, and the chain, as comparison keys (`foldKey`): the classifier checks a
+   * path's ancestors against these sets, O(depth) instead of O(repos).
+   */
+  protectedKeys: Set<string>;
+  chainKeys: Set<string>;
 }
+
+/** The comparison key the classifier uses: NFC and lower case where the file system ignores case. */
+export const foldKey = (p: string, platform: NodeJS.Platform) =>
+  platform === "darwin" || platform === "win32" ? p.normalize("NFC").toLowerCase() : p;
 
 const indexes = new Map<string, WsIndex>();
 let version = 0;
@@ -268,6 +278,8 @@ const build = (workspaces: string[], o: HooksOptions): Omit<UnionCache, "key" | 
         .sort((a, b) => b.root.length - a.root.length),
       partial,
       missing,
+      protectedKeys: new Set([...hooksDirs, ...gitDirs].map((d) => foldKey(d, o.platform ?? process.platform))),
+      chainKeys: new Set([...chain].map((f) => foldKey(f, o.platform ?? process.platform))),
     },
     infos: infos.map((i) => i.info),
     watched: watchedList,
