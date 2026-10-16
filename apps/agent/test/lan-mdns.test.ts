@@ -37,6 +37,17 @@ describe("mDNS records", () => {
     expect(txt?.data).toEqual(["v=1"]);
   });
 
+  it("an answer flooded with addresses keeps the first 4 distinct ones", () => {
+    const many = ["10.0.0.1", "10.0.0.1", ...Array.from({ length: 30 }, (_, i) => `10.0.1.${i}`)];
+    const pkt = encodePacket({ id: 0, response: true, questions: [], answers: serviceRecords(id, 4242, many) });
+    expect(servicesFrom(decodePacket(pkt)!).found[0]!.addresses).toEqual([
+      "10.0.0.1",
+      "10.0.1.0",
+      "10.0.1.1",
+      "10.0.1.2",
+    ]);
+  });
+
   it("a goodbye (TTL 0) is reported as gone", () => {
     const pkt = encodePacket({ id: 0, response: true, questions: [], answers: serviceRecords(id, 1, ["10.0.0.2"], 0) });
     expect(servicesFrom(decodePacket(pkt)!)).toEqual({ found: [], gone: [id] });

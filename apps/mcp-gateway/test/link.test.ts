@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentCard as SdkAgentCard, Role, TaskState, type Task } from "@a2a-js/sdk";
 import { ClientFactory, JsonRpcTransportFactory } from "@a2a-js/sdk/client";
+import { ServerCallContext } from "@a2a-js/sdk/server";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
@@ -41,6 +42,7 @@ import { DEFAULT_POLICY } from "../../agent/src/policy/index.js";
 import { createLogger } from "../../agent/src/redact.js";
 import { MemoryStore } from "../../agent/src/store.js";
 import { A2A_RESOURCE, CHATGPT_CLIENT, RESOURCE } from "../../api/test/oauth-harness.js";
+import { GrantTaskStores } from "../src/a2a.js";
 import { gatewayHarness } from "./harness.js";
 
 const AGENT = "dev_agent";
@@ -156,8 +158,7 @@ describe("MCP gateway: list_agents and create_task", () => {
         fromAgent: "mcp:chatgpt",
         toAgent: "claude-code",
         targetDeviceId: AGENT,
-        cwd: "chalito",
-        hop: 0,
+        hop: 1,
         chain: ["mcp:chatgpt"],
       },
     ]);
@@ -381,7 +382,8 @@ describe("A2A server", () => {
       origin: `a2a:${grant.cid}`,
       toAgent: "claude-code",
       targetDeviceId: AGENT,
-      hop: 0,
+      hop: 1,
+      chain: [`a2a:${grant.cid}`],
     });
     const env = RelayedCommand.parse(g.mcp.commands[0]!.env);
     expect(env).toMatchObject({
@@ -480,7 +482,12 @@ describe("a relayed A2A task on the real AgentCore", () => {
     }
   };
 
-  const core = async (owner: string, box: Awaited<ReturnType<typeof generateBoxKeyPair>>, a2aOn: boolean) => {
+  const core = async (
+    owner: string,
+    box: Awaited<ReturnType<typeof generateBoxKeyPair>>,
+    a2aOn: boolean,
+    exposed = a2aOn,
+  ) => {
     const sign = await generateSigningKeyPair();
     const store = new MemoryStore();
     const liability = loadLiabilityText("es");
@@ -516,6 +523,8 @@ describe("a relayed A2A task on the real AgentCore", () => {
       ...DEFAULT_POLICY,
       workspaces: [{ label: "chalito", path: WS }],
       origins: { ...DEFAULT_POLICY.origins, ...(a2aOn ? { a2a: true } : {}) },
+      // The device's own opt-in for this agent (D-071): the cloud's yes alone isn't enough.
+      ...(exposed ? { exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a" as const] }] } : {}),
     };
     const c = new AgentCore({
       store,
@@ -562,6 +571,16 @@ describe("a relayed A2A task on the real AgentCore", () => {
     expect(a.fake.run.ran).toHaveLength(0);
   });
 
+  it("is refused with a2a: on but the agent not exposed in local policy", async () => {
+    const { g, box, q } = await relayed();
+    const a = await core(g.o, box, true, false);
+    expect(await a.core.handleCommand(q.id, { env: q.env, fromDeviceId: "a2a-server" })).toEqual({
+      ok: false,
+      reason: "not_exposed",
+    });
+    expect(a.fake.run.ran).toHaveLength(0);
+  });
+
   it("with it on, a HIGH action still waits for a signed phone decision, even with autoApproveHigh", async () => {
     const { g, box, q } = await relayed();
     const a = await core(g.o, box, true);
@@ -574,5 +593,32 @@ describe("a relayed A2A task on the real AgentCore", () => {
     expect(a.store.pendingApprovals()[0]!.origin).toMatch(/^a2a:con_/);
     await new Promise((r) => setTimeout(r, 50));
     expect(a.fake.run.ran).toHaveLength(0);
+  });
+});
+
+describe("A2A task store", () => {
+  const ctx = (user: string) => new ServerCallContext({ user: { isAuthenticated: true, userName: user } as never });
+  const task = (id: string) =>
+    ({ id, contextId: "c", status: { state: TaskState.TASK_STATE_SUBMITTED }, artifacts: [], history: [] }) as never;
+
+  it("drops a grant's tasks after the TTL, keeps at most N per grant and M grants", async () => {
+    let now = 0;
+    const stores = new GrantTaskStores(() => now, { ttlMs: 1000, perGrant: 2, grants: 2 });
+    const g1 = stores.for("o/g1");
+    await g1.save(task("t1"), ctx("o/g1"));
+    expect(await stores.for("o/g1").load("t1", ctx("o/g1"))).toMatchObject({ id: "t1" });
+    // Idle past the TTL: gone.
+    now = 1500;
+    expect(await stores.for("o/g1").load("t1", ctx("o/g1"))).toBeUndefined();
+    // Per grant: a third new task starts the grant's store over.
+    const s = stores.for("o/g1");
+    for (const id of ["a", "b", "c"]) await s.save(task(id), ctx("o/g1"));
+    expect(await s.load("a", ctx("o/g1"))).toBeUndefined();
+    expect(await s.load("c", ctx("o/g1"))).toMatchObject({ id: "c" });
+    // Grants: the least recently used goes beyond the cap.
+    stores.for("o/g2");
+    stores.for("o/g3");
+    expect(stores.size).toBe(2);
+    expect(await stores.for("o/g1").load("c", ctx("o/g1"))).toBeUndefined();
   });
 });

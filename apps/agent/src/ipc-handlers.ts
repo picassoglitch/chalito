@@ -548,7 +548,8 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
       locale: d.locale(),
     });
   },
-  linkList: async () => ({ links: linksOf(d).list() }),
+  // `pendingPublish`: links the cloud mirror doesn't hold yet; nothing is delivered over them until it does.
+  linkList: async () => ({ links: linksOf(d).list(), pendingPublish: linksOf(d).pendingPublish() }),
   linkRevoke: async (params) => {
     const { linkId } = parse(ForLink, params);
     return { revoked: await linksOf(d).revoke(linkId, "local") };

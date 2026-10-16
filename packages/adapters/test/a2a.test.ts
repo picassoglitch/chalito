@@ -127,6 +127,21 @@ describe("a2a driver: the card, auth and the origin pin", () => {
     await r.handle.done;
   });
 
+  it("never follows a redirect with the key (card and every transport call are redirect: error)", async () => {
+    const live = (agent = await startTestAgent());
+    const modes: (RequestInit["redirect"] | undefined)[] = [];
+    const watched = (async (input: string | URL | Request, init?: RequestInit) => {
+      modes.push(init?.redirect);
+      return live.fetch(input, init);
+    }) as typeof fetch;
+    const r = await run(new A2aAdapter(recipe(), { apiKey: AGENT_KEY, fetch: watched }), "hola");
+    await waitFor(() => r.idles() === 1);
+    expect(modes.length).toBeGreaterThanOrEqual(2);
+    expect(modes.every((m) => m === "error")).toBe(true);
+    r.handle.close();
+    await r.handle.done;
+  });
+
   it("without streaming in the card, SendMessage (non-streaming) is used", async () => {
     agent = await startTestAgent({ streaming: false });
     const r = await run(new A2aAdapter(recipe(), { apiKey: AGENT_KEY, fetch: agent.fetch }), "hola");

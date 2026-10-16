@@ -38,7 +38,7 @@ import {
 } from "@chalito/protocol";
 import { PERMISSION_RANK, originAllowed, type Policy } from "../policy/index.js";
 import type { Logger } from "../redact.js";
-import type { LinkCloud } from "./cloud.js";
+import type { LinkCloud, PublishedLink } from "./cloud.js";
 import { artifactsAsData, handoffFrame, partsAsData, sharedBlock, withLinkData } from "./frame.js";
 import type { LinkState, LinkStorage } from "./storage.js";
 
@@ -48,8 +48,11 @@ import type { LinkState, LinkStorage } from "./storage.js";
  *
  * Guardrails, in the order they run on the receiving device:
  * 1. The relay verifies against the sender key recorded locally for that link (`verifyRelay`).
- * 2. The link is active here (not revoked, here or in the cloud's revoke-all; not expired), this
- *    device is its receiver, the mode matches and the policy allows `agent:` turns.
+ * 2. The link is active here (not revoked, not expired), this device is its receiver, the mode
+ *    matches and the policy allows `agent:` turns. Its cloud mirror row must exist and not be
+ *    revoked (revoke-all marks the rows); a link with no row (its publish failed) is not
+ *    delivered until a republish gives it one. Checked again after the phone's tap and on every
+ *    usage event of a running task, which stops when the row is revoked.
  * 3. Hop limit (2) and no cycle through the chain; the sender is the chain's last session.
  * 4. Scope: the link's workspace is in local policy (and the cwd inside it).
  * 5. Rate (deliveries per hour) and the daily token budget.
@@ -106,6 +109,8 @@ export interface LinkManagerDeps {
   publishDeviceEvent: (e: DeviceEvent) => Promise<void>;
   now: () => number;
   log: Logger;
+  /** Retry timer for a failed publish (tests pass a fake). Default: an unref'd setTimeout. */
+  setTimer?: (fn: () => void, ms: number) => { clear(): void };
 }
 
 export type LinkResultOf<T = object> = ({ ok: true } & T) | { ok: false; reason: string };
@@ -121,6 +126,8 @@ interface Inbound {
   fromSid: string;
   projector: LinkProjector;
   done: boolean;
+  /** Held for this hand-off while the phone is asked: the session counts as busy, nothing is tracked yet. */
+  reserved: boolean;
 }
 
 /** A hand-off this device sent and waits on. */
@@ -134,6 +141,14 @@ interface Outbound {
 }
 
 const RELAY_TTL_MS = 5 * 60_000;
+/** Republish backoff after a failed publish: 2 s, doubling, at most 5 min. */
+const PUBLISH_RETRY_MIN_MS = 2_000;
+const PUBLISH_RETRY_MAX_MS = 5 * 60_000;
+const defaultTimer = (fn: () => void, ms: number) => {
+  const t = setTimeout(fn, ms);
+  t.unref?.();
+  return { clear: () => clearTimeout(t) };
+};
 const HOUR_MS = 60 * 60_000;
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const within = (child: string, parent: string) =>
@@ -156,6 +171,11 @@ export class LinkManager implements LinkAuthorizer {
   readonly #outbound = new Map<string, Outbound>();
   /** Quoted blocks (shares, results) waiting for the owner's next prompt, per session. */
   readonly #pending = new Map<string, string[]>();
+  /** Link ids the cloud mirror took in the last successful publish. */
+  #publishedIds = new Set<string>();
+  #retry: { clear(): void } | null = null;
+  #retryMs = PUBLISH_RETRY_MIN_MS;
+  #closed = false;
 
   constructor(private readonly d: LinkManagerDeps) {
     const { state, tampered } = d.storage.load();
@@ -194,13 +214,59 @@ export class LinkManager implements LinkAuthorizer {
    */
   senderLinks(sid: string): AgentLink[] {
     const s = this.#host?.session(sid);
-    return s ? this.list().filter((l) => this.#isSender(l, s)) : [];
+    // A link the cloud mirror doesn't hold yet isn't delivered to (fail closed): not offered either.
+    const unpublished = new Set(this.pendingPublish());
+    return s ? this.list().filter((l) => !unpublished.has(l.id) && this.#isSender(l, s)) : [];
   }
 
   #isSender(l: AgentLink, s: LinkSessionInfo): boolean {
     if (l.sender.deviceId !== this.d.deviceId) return false;
     if (l.sender.sessionId !== undefined) return l.sender.sessionId === s.sid;
     return l.sender.appId === undefined || s.appId === undefined || l.sender.appId === s.appId;
+  }
+
+  /**
+   * Active links the cloud mirror doesn't hold yet (a publish failed; retried with backoff). The
+   * panel shows them as "pending publish": none of them is delivered to until it's published.
+   */
+  pendingPublish(): string[] {
+    return this.list()
+      .filter((l) => !this.#publishedIds.has(l.id))
+      .map((l) => l.id);
+  }
+
+  /** Publishes now, or schedules a retry on failure (the daemon calls it at start). Never throws. */
+  async sync(): Promise<void> {
+    this.#retry?.clear();
+    this.#retry = null;
+    if (this.#closed) return;
+    try {
+      await this.publish();
+      this.#retryMs = PUBLISH_RETRY_MIN_MS;
+    } catch (err) {
+      this.d.log.warn("link.publish_failed", {
+        error: err instanceof Error ? err.message : "error",
+        pending: this.pendingPublish().length,
+        retryMs: this.#retryMs,
+      });
+      this.#scheduleSync(this.#retryMs);
+      this.#retryMs = Math.min(this.#retryMs * 2, PUBLISH_RETRY_MAX_MS);
+    }
+  }
+
+  #scheduleSync(ms: number): void {
+    if (this.#closed || this.#retry) return;
+    this.#retry = (this.d.setTimer ?? defaultTimer)(() => {
+      this.#retry = null;
+      void this.sync();
+    }, ms);
+  }
+
+  /** Agent shutdown: no more retries. */
+  close(): void {
+    this.#closed = true;
+    this.#retry?.clear();
+    this.#retry = null;
   }
 
   /**
@@ -277,14 +343,22 @@ export class LinkManager implements LinkAuthorizer {
     this.#state.revoked = this.#state.revoked.slice(-2000);
     this.#save();
     // Running hand-off tasks over a revoked link stop now.
-    for (const [sid, t] of this.#inbound)
-      if (ids.includes(t.linkId) && !t.done) void this.#h.interrupt(sid).catch(() => undefined);
+    for (const [sid, t] of this.#inbound) {
+      if (!ids.includes(t.linkId) || t.done) continue;
+      // A hand-off still waiting on the phone is dropped (its confirm finds the link gone).
+      if (t.reserved) this.#inbound.delete(sid);
+      else
+        void this.#finish(sid, t, "TASK_STATE_FAILED", "link_revoked")
+          .catch(() => undefined)
+          .then(() => this.#h.interrupt(sid))
+          .catch(() => undefined);
+    }
     for (const id of ids) this.d.audit("link.revoked", { linkId: id, by });
   }
 
   /** Publishes the summaries (and sealed details) for the person's clients; `link.list`. */
   async publish(): Promise<void> {
-    const rows = [];
+    const rows: PublishedLink[] = [];
     const revokedAt = new Map(this.#state.revoked.map((r) => [r.id, r.at]));
     const all: AgentLink[] = [...this.#state.links];
     for (const link of all) {
@@ -315,9 +389,10 @@ export class LinkManager implements LinkAuthorizer {
         },
         `link:${link.id}`,
       );
-      rows.push({ summary, detailsCt });
+      rows.push({ summary, createdAt: link.createdAt, detailsCt });
     }
     await this.d.cloud.publishLinks(rows);
+    this.#publishedIds = new Set(rows.map((r) => r.summary.id));
   }
 
   async #changed(by: string): Promise<void> {
@@ -331,9 +406,7 @@ export class LinkManager implements LinkAuthorizer {
         t: this.d.now(),
       })
       .catch(() => undefined);
-    await this.publish().catch((err: unknown) =>
-      this.d.log.warn("link.publish_failed", { error: err instanceof Error ? err.message : "error" }),
-    );
+    await this.sync();
   }
 
   #save(): void {
@@ -387,17 +460,8 @@ export class LinkManager implements LinkAuthorizer {
     const recent = (this.#state.deliveries[link.id] ?? []).filter((t) => t > now - HOUR_MS);
     if (recent.length >= link.ratePerHour) return refuse("rate_limited");
     if (this.#tokensToday(link.id) >= link.dailyTokenBudget) return refuse("budget_exhausted");
-    // Revoke-all marks the cloud mirror; a link the account revoked stops here too. Fail closed.
-    try {
-      if ((await this.d.cloud.revokedInCloud([link.id])).includes(link.id)) {
-        this.#revokeLocal([link.id], "cloud");
-        await this.#changed("revoked");
-        return refuse("link_revoked");
-      }
-    } catch (err) {
-      this.d.log.warn("link.cloud_check_failed", { error: err instanceof Error ? err.message : "error" });
-      return refuse("link_revoked");
-    }
+    const cloud = await this.#cloudRefusal(link.id);
+    if (cloud) return refuse(cloud);
     return {
       ok: true,
       linkId: link.id,
@@ -405,6 +469,33 @@ export class LinkManager implements LinkAuthorizer {
       confirm: link.confirm,
       permissionCeiling: minMode(link.permissionCeiling, policy.remote.maxPermissionMode),
     };
+  }
+
+  /**
+   * The cloud mirror's say on a link (fail closed): revoke-all marks the rows, so a revoked row
+   * revokes the link here; a missing row (never published, or its publish failed) can't carry a
+   * revoke-all mark, so nothing is delivered until a republish adds it; no answer is a refusal.
+   */
+  async #cloudRefusal(linkId: string): Promise<LinkRefusal | null> {
+    let status;
+    try {
+      status = (await this.d.cloud.linkStatus([linkId])).get(linkId);
+    } catch (err) {
+      this.d.log.warn("link.cloud_check_failed", { error: err instanceof Error ? err.message : "error" });
+      return "link_revoked";
+    }
+    if (status === "active") return null;
+    if (status === "revoked") {
+      if (this.#state.links.some((l) => l.id === linkId)) {
+        this.#revokeLocal([linkId], "cloud");
+        await this.#changed("revoked");
+      }
+      return "link_revoked";
+    }
+    this.#publishedIds.delete(linkId);
+    this.d.audit("link.unpublished", { linkId });
+    this.#scheduleSync(0);
+    return "link_unpublished";
   }
 
   #tokensToday(linkId: string): number {
@@ -499,9 +590,10 @@ export class LinkManager implements LinkAuthorizer {
     if (!fromSession) return { ok: false, reason: "unknown_session" };
     if (!this.#isSender(link, fromSession)) return { ok: false, reason: "link_wrong_endpoint" };
     // The chain this session is already in (if it runs a hand-off itself), plus itself.
-    const prior = this.#inbound.get(input.fromSid);
-    const hop = (prior && !prior.done ? prior.hop : 0) + 1;
-    const chain = [...(prior && !prior.done ? prior.chain : []), input.fromSid];
+    const found = this.#inbound.get(input.fromSid);
+    const prior = found && !found.done && !found.reserved ? found : undefined;
+    const hop = (prior ? prior.hop : 0) + 1;
+    const chain = [...(prior ? prior.chain : []), input.fromSid];
     const taskId = randomUUID();
     const refused = async (reason: LinkRefusal) => {
       await this.#handoffEvent(input.fromSid, {
@@ -651,12 +743,37 @@ export class LinkManager implements LinkAuthorizer {
     }
     this.#recordDelivery(link.id);
     const sid = target?.sid ?? randomUUID();
+    // The session is held for this hand-off from now on, so a second one into the same pinned
+    // session is refused as busy while the phone is still asked about the first.
+    const inbound: Inbound = {
+      linkId: link.id,
+      taskId: p.taskId,
+      hop: p.hop,
+      chain: [...p.chain],
+      fromDeviceId: link.sender.deviceId,
+      fromSid,
+      projector: new LinkProjector({ contextId: sid, now: this.d.now }),
+      done: false,
+      reserved: true,
+    };
+    this.#inbound.set(sid, inbound);
     // The relay is accepted; asking the phone (up to the approval TTL) and starting the session
     // run after it, so the command path isn't held while the owner decides.
-    void this.#deliver({ link, p, origin, fromSid, message, sid, target, ceiling: auth.permissionCeiling, back }).catch(
-      (err: unknown) =>
-        this.d.log.error("link.deliver_failed", { error: err instanceof Error ? err.message : "error" }),
-    );
+    void this.#deliver({
+      link,
+      p,
+      origin,
+      fromSid,
+      message,
+      sid,
+      target,
+      ceiling: auth.permissionCeiling,
+      inbound,
+      back,
+    }).catch((err: unknown) => {
+      this.#release(sid, inbound);
+      this.d.log.error("link.deliver_failed", { error: err instanceof Error ? err.message : "error" });
+    });
     return { ok: true, sid };
   }
 
@@ -669,9 +786,14 @@ export class LinkManager implements LinkAuthorizer {
     sid: string;
     target: LinkSessionInfo | undefined;
     ceiling: RemotePermissionMode;
+    inbound: Inbound;
     back: (reason: LinkRefusal) => Promise<unknown>;
   }): Promise<void> {
-    const { link, p, origin, fromSid, message, sid, target, back } = o;
+    const { link, p, origin, fromSid, message, sid, target, inbound } = o;
+    const back = async (reason: LinkRefusal) => {
+      this.#release(sid, inbound);
+      await o.back(reason);
+    };
     if (link.confirm) {
       this.d.audit("link.handoff.confirm_requested", { linkId: link.id, taskId: p.taskId, hop: p.hop });
       const { allow } = await this.#h.confirm(sid, {
@@ -689,22 +811,15 @@ export class LinkManager implements LinkAuthorizer {
         },
       });
       if (!allow) return void (await back("owner_declined"));
-      // Revoked (or expired) while the phone was asked: still refused.
-      if (!this.get(link.id)) return void (await back("link_revoked"));
+      // Revoked (or expired) while the phone was asked, here or by a revoke-all: still refused.
+      if (!this.get(link.id) || this.#inbound.get(sid) !== inbound) return void (await back("link_revoked"));
+      const cloud = await this.#cloudRefusal(link.id);
+      if (cloud) return void (await back(cloud));
     }
-    const projector = new LinkProjector({ contextId: sid, now: this.d.now });
-    projector.prompt(message.parts.find((x) => x.text !== undefined)?.text ?? "", { messageId: message.messageId });
-    const inbound: Inbound = {
-      linkId: link.id,
-      taskId: p.taskId,
-      hop: p.hop,
-      chain: [...p.chain],
-      fromDeviceId: link.sender.deviceId,
-      fromSid,
-      projector,
-      done: false,
-    };
-    this.#inbound.set(sid, inbound);
+    inbound.reserved = false;
+    inbound.projector.prompt(message.parts.find((x) => x.text !== undefined)?.text ?? "", {
+      messageId: message.messageId,
+    });
     const frame = handoffFrame({
       link,
       fromDeviceId: link.sender.deviceId,
@@ -723,10 +838,7 @@ export class LinkManager implements LinkAuthorizer {
         origin,
         permissionMode: o.ceiling,
       });
-      if (!started.ok) {
-        this.#inbound.delete(sid);
-        return void (await back("start_failed"));
-      }
+      if (!started.ok) return void (await back("start_failed"));
     }
     await this.#handoffEvent(sid, {
       linkId: link.id,
@@ -862,7 +974,7 @@ export class LinkManager implements LinkAuthorizer {
   /** Every adapter event of every session (agent-core); only hand-off tasks are tracked. */
   async onAdapterEvent(sid: string, e: AdapterEvent): Promise<void> {
     const t = this.#inbound.get(sid);
-    if (!t || t.done) return;
+    if (!t || t.done || t.reserved) return;
     t.projector.push(e);
     if (e.type === "usage") {
       const spent = this.#spend(t.linkId, e.tokIn + e.tokOut);
@@ -870,6 +982,14 @@ export class LinkManager implements LinkAuthorizer {
       if (link && spent >= link.dailyTokenBudget) {
         this.d.audit("link.budget_exhausted", { linkId: t.linkId, taskId: t.taskId, spent });
         await this.#finish(sid, t, "TASK_STATE_FAILED", "budget_exhausted");
+        await this.#h.interrupt(sid).catch(() => undefined);
+        return;
+      }
+      // A revoke-all reaches a running task too: the receiving session stops at its next usage.
+      const cloud = await this.#cloudRefusal(t.linkId);
+      if (cloud) {
+        this.d.audit("link.handoff.stopped", { linkId: t.linkId, taskId: t.taskId, reason: cloud });
+        await this.#finish(sid, t, "TASK_STATE_FAILED", cloud);
         await this.#h.interrupt(sid).catch(() => undefined);
       }
       return;
@@ -908,6 +1028,11 @@ export class LinkManager implements LinkAuthorizer {
       },
       sid,
     );
+  }
+
+  /** Drops a hand-off's hold on its session (declined, expired, revoked, failed to start). */
+  #release(sid: string, t: Inbound): void {
+    if (this.#inbound.get(sid) === t) this.#inbound.delete(sid);
   }
 
   // ---- shared data for the owner's next prompt -----------------------------------------------

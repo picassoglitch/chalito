@@ -3,7 +3,7 @@
 -- server) marks every link of the account; other accounts see nothing.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(11);
+select plan(14);
 
 -- pgTAP lives in `extensions`; the server role needs it for the assertions it runs below.
 grant usage on schema extensions to chalito_server;
@@ -20,10 +20,11 @@ begin
   reset role;
   perform set_config('request.jwt.claims', '', true);
 end $$;
-create function pg_temp.link(id text, sender text, receiver text) returns jsonb language sql as $$
+create function pg_temp.link(id text, sender text, receiver text, made timestamptz default now() - interval '1 minute')
+returns jsonb language sql as $$
   select jsonb_build_object('link_id', id, 'mode', 'handoff', 'sender_device_id', sender, 'receiver_device_id', receiver,
     'confirm', true, 'permission_ceiling', 'default', 'expires_at', (now() + interval '1 day')::text,
-    'revoked_at', null, 'details_ct', '{"alg": "x"}'::jsonb) $$;
+    'created_at', made::text, 'revoked_at', null, 'details_ct', '{"alg": "x"}'::jsonb) $$;
 
 insert into chalito.tenants (id) values ('lk-user'), ('lk-other');
 insert into chalito.users (id, tenant_id) values ('lk-user', 'lk-user'), ('lk-other', 'lk-other');
@@ -68,6 +69,18 @@ select is((select count(*)::int from chalito.agent_links where owner = 'lk-user'
   'a revoked link is never un-revoked by the agent');
 select is((select revoked_by from chalito.agent_links where link_id = 'lnk_two12345'), 'revoke_all',
   'a link the agent no longer sends keeps its revoke-all mark');
+
+-- A link whose publish failed had no row for revoke-all to mark: made before it, it arrives
+-- revoked however late it's published; one made after it is active.
+select pg_temp.as_device('lk-user', 'lk_a', 'agent');
+select is(chalito.publish_agent_links(jsonb_build_array(
+  pg_temp.link('lnk_late1234', 'lk_a', 'lk_a', now() - interval '1 hour'),
+  pg_temp.link('lnk_new12345', 'lk_a', 'lk_a', now() + interval '1 second'))), 2, 'late links published');
+select pg_temp.logout();
+select is((select revoked_by from chalito.agent_links where link_id = 'lnk_late1234'), 'revoke_all',
+  'a link made before the revoke-all and first published after it is revoked');
+select is((select revoked_at from chalito.agent_links where link_id = 'lnk_new12345'), null,
+  'a link made after the revoke-all is active');
 
 select pg_temp.as_device('lk-user', 'lk_phone', 'client');
 select throws_ok($$select chalito_private.revoke_agent_links('lk-user', 'x')$$, '42501', null,

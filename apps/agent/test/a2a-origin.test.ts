@@ -59,6 +59,10 @@ describe("the a2a: origin", () => {
     expect(presetPolicy("estricto", on).origins.a2a).toBe(false);
     for (const p of ["estandar", "relajado"] as const)
       expect(presetPolicy(p, DEFAULT_POLICY).origins.a2a).toBeUndefined();
+    // Estándar and Relajado keep what the person set locally for agent: and a2a:.
+    const local = { ...DEFAULT_POLICY, origins: { ...DEFAULT_POLICY.origins, agent: false, a2a: true } };
+    for (const p of ["estandar", "relajado"] as const)
+      expect(presetPolicy(p, local).origins).toMatchObject({ agent: false, a2a: true });
     expect(applyRemoteTighten(DEFAULT_POLICY, { origins: { ...DEFAULT_POLICY.origins, a2a: true } })).toMatchObject({
       ok: false,
     });

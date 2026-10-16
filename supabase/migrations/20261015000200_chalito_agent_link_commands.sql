@@ -10,12 +10,16 @@
 --    the sender's own name; the receiving agent checks the signature against the key it recorded
 --    locally for the link, so RLS only gates who may write. Clients keep commands_client_create,
 --    which still refuses any `relayedBy`.
--- 3. audit: link.* gets its own category and view (every earlier category kept).
+-- 3. audit: link.* and lan.* (the LAN direct path, 000500) get their own categories and views
+--    (every earlier category kept).
 
+-- NOT VALID, then VALIDATE: the new check doesn't hold an exclusive lock while it scans the
+-- existing rows (validation takes only a SHARE UPDATE EXCLUSIVE lock).
 alter table chalito.approvals drop constraint approvals_kind_check;
 alter table chalito.approvals add constraint approvals_kind_check
   check (kind in ('tool', 'decision', 'computer_control', 'terminal', 'remote_view', 'remote_control', 'app_control',
-                  'link_handoff'));
+                  'link_handoff')) not valid;
+alter table chalito.approvals validate constraint approvals_kind_check;
 
 create policy commands_agent_link_create on chalito.commands for insert to authenticated
   with check (
@@ -37,7 +41,7 @@ create policy commands_agent_link_create on chalito.commands for insert to authe
                   and d.role = 'agent' and not d.revoked)
   );
 
--- Every category so far, plus links.
+-- Every category so far, plus links and the LAN path.
 create or replace function chalito.audit_category(type text)
 returns text
 language sql
@@ -52,6 +56,7 @@ as $$
     when type ~ '^terminal\.' then 'terminal'
     when type ~ '^screen\.' then 'screen'
     when type ~ '^link\.' then 'links'
+    when type ~ '^lan\.' then 'lan'
     when type ~ '^(mcp|oauth|connector)\.' then 'connectors'
     when type ~ '^store\.' then 'store'
     when type ~ '^(phone|channel)\.' then 'channels'
@@ -67,3 +72,8 @@ create view chalito.audit_links with (security_invoker = true) as
   select * from chalito.audit_trail where category = 'links';
 grant select on chalito.audit_links to authenticated;
 revoke all on chalito.audit_links from anon;
+
+create view chalito.audit_lan with (security_invoker = true) as
+  select * from chalito.audit_trail where category = 'lan';
+grant select on chalito.audit_lan to authenticated;
+revoke all on chalito.audit_lan from anon;

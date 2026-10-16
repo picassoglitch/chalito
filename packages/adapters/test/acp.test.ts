@@ -800,6 +800,10 @@ describe("ACP adapter: computer control and resume (M16 A)", () => {
       command: "/opt/chalito/chalito-mcp",
       args: ["computer"],
       env: { CHALITO_COMPUTER_SOCKET: "/tmp/c.sock", CHALITO_COMPUTER_TOKEN: "tok" },
+      // Stands in for the agent's ToolArgs check (computer/tools.ts).
+      isTool: (tool: string, input: Record<string, unknown>) =>
+        (tool === "screenshot" && Object.keys(input).every((k) => k === "display")) ||
+        ((tool === "click" || tool === "type_text") && Object.keys(input).every((k) => ["x", "y", "text"].includes(k))),
     },
   };
 
@@ -847,17 +851,41 @@ describe("ACP adapter: computer control and resume (M16 A)", () => {
   });
 
   it("without attached servers, an MCP-looking call stays an acp: call (HIGH)", () => {
-    expect(ownMcpToolName({ toolCallId: "a", title: "mcp__chalito_computer__click" }, new Set())).toBeNull();
+    expect(ownMcpToolName({ toolCallId: "a", title: "mcp__chalito_computer__click" }, new Map())).toBeNull();
     expect(toolCallsFor({ toolCallId: "a", title: "mcp__chalito_computer__click" }, "/ws")[0]!.toolName).toBe(
       "acp:mcp__chalito_computer__click",
     );
-    const own = new Set(["chalito_computer"]);
+    const own = new Map([["chalito_computer", computer.chalito_computer.isTool]]);
     for (const title of ["chalito_computer.type_text", "chalito_computer/type_text", "chalito_computer: type_text"])
       expect(ownMcpToolName({ toolCallId: "a", title }, own)).toBe("mcp__chalito_computer__type_text");
     // Another server's tools, or a title that only mentions ours, aren't ours.
     expect(ownMcpToolName({ toolCallId: "a", title: "mcp__other__click" }, own)).toBeNull();
     expect(ownMcpToolName({ toolCallId: "a", title: "run chalito_computer__click now" }, own)).toBeNull();
     expect(ownMcpToolName({ toolCallId: "a", kind: "edit", title: "chalito_computer__click" }, own)).toBeNull();
+  });
+
+  it("title spoofing: a name that isn't one of the server's tools, or arguments that don't parse, stay acp: calls", () => {
+    const own = new Map([["chalito_computer", computer.chalito_computer.isTool]]);
+    // Not a tool of the server.
+    expect(ownMcpToolName({ toolCallId: "a", title: "chalito_computer__exec_shell" }, own)).toBeNull();
+    // A real tool name with arguments that aren't its own.
+    expect(
+      ownMcpToolName({ toolCallId: "a", title: "chalito_computer__click", rawInput: { command: "rm -rf /" } }, own),
+    ).toBeNull();
+    expect(
+      toolCallsFor(
+        { toolCallId: "a", title: "chalito_computer__click", rawInput: { command: "rm -rf /" } },
+        "/ws",
+        own,
+      )[0]!.toolName,
+    ).toBe("acp:chalito_computer__click");
+    // A server given without a check never names a call as its own.
+    expect(
+      ownMcpToolName({ toolCallId: "a", title: "chalito_computer__click" }, new Map([["chalito_computer", undefined]])),
+    ).toBeNull();
+    expect(ownMcpToolName({ toolCallId: "a", title: "chalito_computer__click", rawInput: { x: 1, y: 2 } }, own)).toBe(
+      "mcp__chalito_computer__click",
+    );
   });
 
   it("an agent that advertises neither session/resume nor session/load gets a new session", async () => {

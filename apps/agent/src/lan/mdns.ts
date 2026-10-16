@@ -239,6 +239,9 @@ export interface DiscoveredService {
   addresses: string[];
 }
 
+/** Addresses kept per advertised service. */
+export const MAX_ADDRESSES = 4;
+
 /**
  * Folds response records into services. A goodbye (TTL 0) is reported with no addresses. Only
  * `_chalito._tcp` instances whose id is a 16-character Crockford string are considered.
@@ -261,9 +264,14 @@ export const servicesFrom = (p: DnsPacket): { found: DiscoveredService[]; gone: 
     const srv = p.answers.find((r) => r.type === T_SRV && r.name === instanceName(id));
     if (!srv || typeof srv.data !== "object" || Array.isArray(srv.data)) continue;
     const target = srv.data.target;
-    const addresses = p.answers
-      .filter((r) => r.type === T_A && r.name === target && typeof r.data === "string")
-      .map((r) => r.data as string);
+    // A flood of A records is cut to the first few distinct ones (the dialer caps them too).
+    const addresses = [
+      ...new Set(
+        p.answers
+          .filter((r) => r.type === T_A && r.name === target && typeof r.data === "string")
+          .map((r) => r.data as string),
+      ),
+    ].slice(0, MAX_ADDRESSES);
     if (addresses.length) found.push({ id, port: srv.data.port, addresses });
   }
   return { found, gone };

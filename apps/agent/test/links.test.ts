@@ -455,6 +455,18 @@ describe("making links", () => {
     expect(a.links.list()).toHaveLength(0);
   });
 
+  it("a remote enable attempt from an agent: or a2a: origin is reported with that origin", async () => {
+    const { a } = await oneDevice();
+    for (const origin of ["agent:s1", "a2a:con_abc"]) {
+      const body = { v: 1, cid: "x1", uid: OWNER, targetDeviceId: a.self.id, origin, payload: { type: "devmode.on" } };
+      expect(await a.core.handleCommand("x1", { env: { relayedBy: "agent-link", body } })).toEqual({
+        ok: false,
+        reason: "remote_enable_rejected",
+      });
+      expect(a.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected").at(-1)).toMatchObject({ origin });
+    }
+  });
+
   it("a share link from the phone needs its passkey step-up", async () => {
     const { a } = await oneDevice();
     const spec = baseLink({ sender: { deviceId: a.self.id }, receiver: { deviceId: a.self.id }, mode: "share" });
@@ -940,6 +952,143 @@ describe("revoke", () => {
     expect(a.links.list()).toHaveLength(0);
   });
 
+  const refusedWith = (a: Agent) =>
+    a.store.events.find((e) => e.type === "link.handoff" && e.stage === "refused") as { reason?: string } | undefined;
+
+  it("a link with no cloud row (its publish failed) is never delivered; pending publish until a republish lands", async () => {
+    const { a } = await oneDevice();
+    a.cloud.failPublishes = 1;
+    const link = await sameDeviceHandoff(a, { confirm: false });
+    expect(a.links.pendingPublish()).toEqual([link.id]);
+    const from = await a.ownSession();
+    await a.links.handoff({ fromSid: from, linkId: link.id, text: "x" });
+    await waitFor(() => !!refusedWith(a));
+    expect(refusedWith(a)).toMatchObject({ reason: "link_unpublished" });
+    expect(a.adapter.runs).toHaveLength(1);
+    expect(a.links.list()).toHaveLength(1); // kept: only not delivered yet
+    await a.links.sync();
+    expect(a.links.pendingPublish()).toEqual([]);
+    await a.links.handoff({ fromSid: from, linkId: link.id, text: "y" });
+    await waitFor(() => a.adapter.runs.length === 2);
+  });
+
+  it("a failed publish is retried with backoff", async () => {
+    const timers: { fn: () => void; ms: number }[] = [];
+    const { a } = await oneDevice();
+    const links = new LinkManager({
+      deviceId: a.self.id,
+      owner: OWNER,
+      sign: a.self.sign,
+      box: a.self.box,
+      pubBox: a.self.pubBox,
+      storage: new MemoryLinkStorage(),
+      cloud: a.cloud,
+      policy: a.getPolicy,
+      audit: () => undefined,
+      publishDeviceEvent: async () => undefined,
+      now: Date.now,
+      log: createLogger(() => undefined),
+      setTimer: (fn, ms) => {
+        timers.push({ fn, ms });
+        return { clear: () => undefined };
+      },
+    });
+    links.attach({ sealForClients: async () => ({}) } as never);
+    a.cloud.failPublishes = 2;
+    const r = await links.createLocal(baseLink({ sender: { deviceId: a.self.id }, receiver: { deviceId: a.self.id } }));
+    expect(r.ok).toBe(true);
+    expect(timers.map((t) => t.ms)).toEqual([2000]);
+    timers.at(-1)!.fn();
+    await waitFor(() => timers.length === 2);
+    expect(timers[1]!.ms).toBe(4000);
+    expect(links.pendingPublish()).toHaveLength(1);
+    timers[1]!.fn();
+    await waitFor(() => links.pendingPublish().length === 0);
+    expect(timers).toHaveLength(2);
+  });
+
+  it("revoke-all before a failed publish: the late publish arrives revoked, so it still fails closed", async () => {
+    const { a } = await oneDevice();
+    a.cloud.failPublishes = 1;
+    const link = await sameDeviceHandoff(a, { confirm: false });
+    a.cloud.revokeAll(); // the api marks rows; this link has none yet
+    await a.links.sync(); // published now, after the cut-off
+    const from = await a.ownSession();
+    await a.links.handoff({ fromSid: from, linkId: link.id, text: "x" });
+    await waitFor(() => !!refusedWith(a));
+    expect(refusedWith(a)).toMatchObject({ reason: "link_revoked" });
+    expect(a.adapter.runs).toHaveLength(1);
+    expect(a.links.list()).toHaveLength(0);
+  });
+
+  it("no answer from the cloud is a refusal (fail closed)", async () => {
+    const { a } = await oneDevice();
+    const link = await sameDeviceHandoff(a, { confirm: false });
+    a.cloud.statusFails = true;
+    const from = await a.ownSession();
+    await a.links.handoff({ fromSid: from, linkId: link.id, text: "x" });
+    await waitFor(() => !!refusedWith(a));
+    expect(a.adapter.runs).toHaveLength(1);
+  });
+
+  it("a revoke-all while the phone is asked: the tap doesn't deliver it", async () => {
+    const { a } = await oneDevice();
+    const link = await sameDeviceHandoff(a);
+    const from = await a.ownSession();
+    await a.links.handoff({ fromSid: from, linkId: link.id, text: "x" });
+    await waitFor(() => a.store.pendingApprovals().length === 1);
+    a.cloud.revokeAll();
+    await a.answer(true);
+    await waitFor(() => !!refusedWith(a));
+    expect(refusedWith(a)).toMatchObject({ reason: "link_revoked" });
+    expect(a.adapter.runs).toHaveLength(1);
+    expect(a.links.list()).toHaveLength(0);
+  });
+
+  it("a revoke-all stops a running hand-off at its next usage event", async () => {
+    const { a } = await oneDevice();
+    const link = await sameDeviceHandoff(a, { confirm: false });
+    const from = await a.ownSession();
+    await a.links.handoff({ fromSid: from, linkId: link.id, text: "trabajo" });
+    await waitFor(() => a.adapter.runs.length === 2);
+    const recv = a.adapter.runs[1]!;
+    recv.emit({ type: "state", state: "running" });
+    recv.emit({ type: "usage", tokIn: 10, tokOut: 10, tokCacheRead: 0, tokCacheWrite: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(a.audits.some((x) => x.type === "link.handoff.stopped")).toBe(false);
+    a.cloud.revokeAll();
+    recv.emit({ type: "usage", tokIn: 10, tokOut: 10, tokCacheRead: 0, tokCacheWrite: 0 });
+    await waitFor(() => a.audits.some((x) => x.type === "link.handoff.stopped"));
+    expect(
+      a.store.events.find((e) => e.type === "link.handoff" && e.direction === "in" && e.stage === "failed"),
+    ).toMatchObject({ reason: "link_revoked" });
+    expect(a.links.list()).toHaveLength(0);
+    expect(link.id).toBeTruthy();
+  });
+
+  it("two hand-offs into one pinned session while the phone is asked: the second is busy", async () => {
+    const { a } = await oneDevice();
+    const target = await a.ownSession();
+    const from1 = await a.ownSession();
+    const from2 = await a.ownSession();
+    const link = await sameDeviceHandoff(a, { receiver: { deviceId: a.self.id, sessionId: target } });
+    await a.links.handoff({ fromSid: from1, linkId: link.id, text: "uno" });
+    await waitFor(() => a.store.pendingApprovals().length === 1);
+    await a.links.handoff({ fromSid: from2, linkId: link.id, text: "dos" });
+    await waitFor(() => !!refusedWith(a));
+    expect(refusedWith(a)).toMatchObject({ reason: "receiver_busy", sid: from2 });
+    expect(a.store.pendingApprovals()).toHaveLength(1);
+    // The first is declined: the session is free again.
+    await a.answer(false);
+    await waitFor(() =>
+      a.store.events.some((e) => e.type === "link.handoff" && e.stage === "refused" && e.sid === from1),
+    );
+    await a.links.handoff({ fromSid: from2, linkId: link.id, text: "dos otra vez" });
+    await waitFor(
+      () => a.store.pendingApprovals().length === 1 && a.store.pendingApprovals()[0]!.origin === `agent:${from2}`,
+    );
+  });
+
   it("policy can turn agent: turns off (tighten), and a patch can't turn them back on", async () => {
     const { a } = await oneDevice();
     const p = a.getPolicy();
@@ -1199,6 +1348,8 @@ describe("session link tools (M16 F): a running agent hands off or shares itself
 describe('outside tasks over a link set to "ask me each time" (M16 F)', () => {
   const outside = async (a: Agent, confirm = true) => {
     a.getPolicy().origins = { ...a.getPolicy().origins, a2a: true };
+    // The device's own exposure (D-071 (8)): this app, in this workspace, over A2A.
+    a.getPolicy().exposed = [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a"] }];
     const cid = `lnk_${randomHex()}`;
     const promptCt = await sealJson("arregla el login", { [a.self.id]: a.self.box.publicKey }, `command:${cid}`);
     const body = {
@@ -1263,6 +1414,17 @@ describe('outside tasks over a link set to "ask me each time" (M16 F)', () => {
     a.timers.forEach((fire) => fire());
     await waitFor(() => !!result(a, cid));
     expect(result(a, cid)).toMatchObject({ type: "command.rejected", meta: { reason: "link_refused" } });
+    expect(a.adapter.runs).toHaveLength(0);
+  });
+
+  it("the exposure is checked again after the tap: removed meanwhile, nothing starts", async () => {
+    const { a } = await oneDevice();
+    const { cid } = await outside(a);
+    await waitFor(() => a.store.pendingApprovals().length === 1);
+    a.getPolicy().exposed = [];
+    await a.answer(true);
+    await waitFor(() => !!result(a, cid));
+    expect(result(a, cid)).toMatchObject({ type: "command.rejected", meta: { reason: "not_exposed" } });
     expect(a.adapter.runs).toHaveLength(0);
   });
 

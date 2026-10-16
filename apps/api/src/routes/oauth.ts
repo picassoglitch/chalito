@@ -768,8 +768,9 @@ export const oauthRoutes = (
         fromAgent: origin,
         toAgent: target.appId,
         targetDeviceId: target.deviceId,
-        cwd: target.workspaceLabel,
-        hop: 0,
+        // The outside caller is the chain's first (and only) hop, as LinkAuthorizer expects
+        // (hop === chain.length >= 1). No cwd: it's a path, and the caller names only a workspace.
+        hop: 1,
         chain: [origin],
       })
       .catch(() => ({ ok: false as const, reason: "authorizer_failed" }));

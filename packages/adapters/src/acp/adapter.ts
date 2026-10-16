@@ -15,7 +15,14 @@ import {
   type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
 import type { AdapterKind, Origin } from "@chalito/protocol";
-import type { AdapterEvent, SessionAdapter, SessionHandle, SessionStartOptions, ToolCall } from "../core.js";
+import type {
+  AdapterEvent,
+  LocalMcpServer,
+  SessionAdapter,
+  SessionHandle,
+  SessionStartOptions,
+  ToolCall,
+} from "../core.js";
 import { askModeOf, commandAllowed, modeAllowed, slashCommand, unsafeToggle } from "./policy.js";
 import { type AcpConfig, type AcpKind, type AcpProfile, builtinAcpRecipe, profileFor } from "./profiles.js";
 import type { AcpRecipe } from "./recipe.js";
@@ -97,7 +104,7 @@ const record = (v: unknown): Record<string, unknown> =>
 export const toolCallsFor = (
   t: ToolCallUpdate,
   cwd: string,
-  ownMcp: ReadonlySet<string> = new Set(),
+  ownMcp: OwnMcp = new Map(),
 ): { toolName: string; input: Record<string, unknown> }[] => {
   const raw = record(t.rawInput);
   const mcp = ownMcpToolName(t, ownMcp);
@@ -138,18 +145,24 @@ export const toolCallsFor = (
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** The agent's own local MCP servers by name, each with its tool check (LocalMcpServer.isTool). */
+export type OwnMcp = ReadonlyMap<string, LocalMcpServer["isTool"]>;
+
 /**
  * A permission request for a tool of one of the agent's own local MCP servers (computer
  * control), as `mcp__<server>__<tool>`, the name the gate knows. ACP has no field for "which
  * MCP server", so the agent's title is matched against the shapes agents use: `mcp__S__T`,
  * `S__T`, `S.T`, `S/T`, `S: T`, `T (S MCP Server)`. Only for calls of kind `other` (or none):
  * an agent's own shell, edit or fetch tool can't pass as one, whatever its title says. Anything
- * unmatched stays an `acp:` call, which the classifier rates HIGH.
+ * unmatched stays an `acp:` call, which the classifier rates HIGH. A match counts only when the
+ * server's `isTool` accepts the tool name and its arguments.
  */
-export const ownMcpToolName = (t: ToolCallUpdate, servers: ReadonlySet<string>): string | null => {
+
+export const ownMcpToolName = (t: ToolCallUpdate, servers: OwnMcp): string | null => {
   if (servers.size === 0 || (t.kind && t.kind !== "other")) return null;
   const labels = [str((t as { name?: unknown }).name), str(t.title)].filter((x): x is string => !!x);
-  for (const server of servers) {
+  const input = record(t.rawInput);
+  for (const [server, isTool] of servers) {
     const s = escapeRe(server);
     const shapes = [
       new RegExp(`^(?:mcp__)?${s}(?:__|\\.|/|:\\s*)([A-Za-z0-9_-]{1,64})$`),
@@ -158,7 +171,9 @@ export const ownMcpToolName = (t: ToolCallUpdate, servers: ReadonlySet<string>):
     for (const label of labels)
       for (const re of shapes) {
         const m = re.exec(label.trim());
-        if (m) return `mcp__${server}__${m[1]}`;
+        // The title is the agent's word only: the name must be one of the server's tools and the
+        // arguments must parse as that tool's, else it stays an acp: call (HIGH).
+        if (m && isTool?.(m[1]!, input)) return `mcp__${server}__${m[1]}`;
       }
   }
   return null;
@@ -216,7 +231,7 @@ export class AcpAdapter implements SessionAdapter {
     const tools = new Map<string, ToolCallUpdate & { started?: boolean }>();
     const commands = new Set<string>();
     /** The agent's own local MCP servers (computer control), given to the agent in session/new. */
-    const ownMcp = new Set(Object.keys(opts.mcpServers ?? {}));
+    const ownMcp: OwnMcp = new Map(Object.entries(opts.mcpServers ?? {}).map(([name, m]) => [name, m.isTool]));
     const mcpServers = Object.entries(opts.mcpServers ?? {}).map(([name, m]) => ({
       name,
       command: m.command,

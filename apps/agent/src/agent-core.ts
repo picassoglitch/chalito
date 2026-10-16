@@ -40,13 +40,13 @@ import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
 import { publicReason } from "./command-result.js";
 import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
-import { COMPUTER_TOOL_PREFIX } from "./computer/tools.js";
+import { COMPUTER_TOOL_PREFIX, ToolArgs, isToolName } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
 import { DeltaThrottle } from "./live/deltas.js";
 import type { LinkHost, LinkManager } from "./links/manager.js";
 import { partsAsData } from "./links/frame.js";
 import type { LinkTools } from "./links/tool-server.js";
-import { LINKS_TOOL_PREFIX } from "./links/tools.js";
+import { LINKS_TOOL_PREFIX, LinkToolArgs, isLinkToolName } from "./links/tools.js";
 import type { ScreenManager } from "./screen/manager.js";
 import {
   PERMISSION_RANK,
@@ -56,6 +56,7 @@ import {
   classifyToolCall,
   decide,
   originAllowed,
+  exposedFor,
   policyHash,
   presetPolicy,
   type ClassifyContext,
@@ -209,6 +210,9 @@ const REMOTE_ENABLE_ATTEMPT =
  * runs sessions through adapters, gates every tool call with local policy + signed
  * approvals, and reports typed, sealed events.
  */
+/** Adapters built on ACP (packages/adapters/src/acp): their tool calls are named from the agent's report. */
+const ACP_KINDS: ReadonlySet<AdapterKind> = new Set<AdapterKind>(["acp", "grok", "gemini"]);
+
 export class AgentCore {
   readonly sessions = new Map<string, Session>();
   /** Sessions without a process that a prompt or `session.resume` reopens (M16 A). */
@@ -304,7 +308,7 @@ export class AgentCore {
           deviceId: this.d.self.deviceId,
           attempted: redact(attempted).slice(0, 64),
           origin:
-            typeof body.origin === "string" && /^(local|client:|mcp:|call:)/.test(body.origin)
+            typeof body.origin === "string" && /^(local|client:|mcp:|call:|agent:|a2a:)/.test(body.origin)
               ? (body.origin as Origin)
               : "local",
           t: this.d.now(),
@@ -338,6 +342,17 @@ export class AgentCore {
     if (body.expiresAt <= now || body.issuedAt > now + 60_000) return this.#reject(id, "expired");
     if (!(await this.d.nonces.claim(body.nonce, body.expiresAt, now))) return this.#reject(id, "replayed_nonce");
     if (!originAllowed(this.d.policy.get().origins, body.origin)) return this.#reject(id, "origin_disabled");
+    // An outside hand-off task (MCP create_task, A2A SendMessage): the cloud's LinkAuthorizer
+    // isn't enough; local policy must expose that agent in that workspace over that path.
+    if (
+      "relayedBy" in envelope &&
+      (envelope.relayedBy === "mcp-gateway" || envelope.relayedBy === "a2a-server") &&
+      body.payload.type === "session.start" &&
+      !exposedFor(this.d.policy.get(), body.origin, body.payload.appId, body.payload.workspaceLabel)
+    ) {
+      this.#audit("link.task_not_exposed", { id, origin: body.origin, appId: body.payload.appId ?? null });
+      return this.#reject(id, "not_exposed");
+    }
 
     const r = await this.#dispatch(body.cid, body.payload, body.origin, body);
     const sid = (body.payload as { sid?: unknown }).sid;
@@ -372,6 +387,7 @@ export class AgentCore {
             sid: taskSid ?? randomUUID(),
             linkId: p.linkConfirm.linkId,
             origin,
+            appId: p.appId,
             prompt,
             workspace: ws,
             target,
@@ -892,9 +908,28 @@ export class AgentCore {
       const linkServer =
         adapter.localMcp || adapter.kind === "chat-api" ? (this.d.linkTools?.attach(sid) ?? null) : null;
       const mcpServers = {
-        ...(computer ? { [computer.name]: { command: computer.command, args: computer.args, env: computer.env } } : {}),
+        ...(computer
+          ? {
+              [computer.name]: {
+                command: computer.command,
+                args: computer.args,
+                env: computer.env,
+                // ACP names a call after this server only for a real tool with valid arguments.
+                isTool: (tool: string, input: Record<string, unknown>) =>
+                  isToolName(tool) && ToolArgs[tool].safeParse(input).success,
+              },
+            }
+          : {}),
         ...(linkServer
-          ? { [linkServer.name]: { command: linkServer.command, args: linkServer.args, env: linkServer.env } }
+          ? {
+              [linkServer.name]: {
+                command: linkServer.command,
+                args: linkServer.args,
+                env: linkServer.env,
+                isTool: (tool: string, input: Record<string, unknown>) =>
+                  isLinkToolName(tool) && LinkToolArgs[tool].safeParse(input).success,
+              },
+            }
           : {}),
       };
       session.handle = await adapter.start({
@@ -959,6 +994,8 @@ export class AgentCore {
       sid: string;
       linkId: string;
       origin: Origin;
+      /** The app the command named (what its exposure was checked against). */
+      appId: string | undefined;
       prompt: string;
       workspace: { label: string; path: string };
       target: { adapter: AdapterKind; appId?: string; appAdapter?: SessionAdapter };
@@ -995,29 +1032,31 @@ export class AgentCore {
       ? this.#reject(cid, "unknown_workspace")
       : !originAllowed(policy.origins, t.origin)
         ? this.#reject(cid, "origin_disabled")
-        : PERMISSION_RANK[t.permissionMode] > PERMISSION_RANK[policy.remote.maxPermissionMode]
-          ? this.#reject(cid, "permission_mode_above_ceiling")
-          : !(await this.#makeRoom())
-            ? this.#reject(cid, "session_limit")
-            : await this.startSession({
-                sid: t.sid,
-                adapter: t.target.adapter,
-                ...(t.target.appId ? { appId: t.target.appId } : {}),
-                ...(t.target.appAdapter ? { appAdapter: t.target.appAdapter } : {}),
-                workspace: ws,
-                prompt: t.prompt,
-                origin: t.origin,
-                permissionMode: t.permissionMode,
-              }).then(
-                (sid): CommandResult => ({ ok: true, sid }),
-                (err: unknown) => {
-                  this.d.log.error("session.start_failed", {
-                    cid,
-                    error: err instanceof Error ? err.message : "error",
-                  });
-                  return this.#reject(cid, "start_failed");
-                },
-              );
+        : !exposedFor(policy, t.origin, t.appId, t.workspace.label)
+          ? this.#reject(cid, "not_exposed")
+          : PERMISSION_RANK[t.permissionMode] > PERMISSION_RANK[policy.remote.maxPermissionMode]
+            ? this.#reject(cid, "permission_mode_above_ceiling")
+            : !(await this.#makeRoom())
+              ? this.#reject(cid, "session_limit")
+              : await this.startSession({
+                  sid: t.sid,
+                  adapter: t.target.adapter,
+                  ...(t.target.appId ? { appId: t.target.appId } : {}),
+                  ...(t.target.appAdapter ? { appAdapter: t.target.appAdapter } : {}),
+                  workspace: ws,
+                  prompt: t.prompt,
+                  origin: t.origin,
+                  permissionMode: t.permissionMode,
+                }).then(
+                  (sid): CommandResult => ({ ok: true, sid }),
+                  (err: unknown) => {
+                    this.d.log.error("session.start_failed", {
+                      cid,
+                      error: err instanceof Error ? err.message : "error",
+                    });
+                    return this.#reject(cid, "start_failed");
+                  },
+                );
     this.#audit(r.ok ? "link.task.delivered" : "link.task.refused", {
       cid,
       sid: t.sid,
@@ -1244,6 +1283,23 @@ export class AgentCore {
         if (!r.allow) {
           s.card.blocker(`Control del equipo bloqueado (${r.reason})`);
           await this.#publishCard(s);
+          return r;
+        }
+        // An ACP agent only reports what a call is (its title and arguments), so the name is its
+        // word: each such call is asked about like any other tool, never allowed outright.
+        if (ACP_KINDS.has(s.adapter)) {
+          const outcome = await this.#approve(s, {
+            risk: "HIGH",
+            stepUp: true,
+            origin: call.origin,
+            details: {
+              toolName: call.toolName,
+              input: call.input,
+              reasons: ["computer control reported by an ACP agent"],
+            },
+          });
+          await this.#publishCard(s);
+          return outcome.allow ? { allow: true } : { allow: false, reason: outcome.reason };
         }
         return r;
       }

@@ -58,7 +58,7 @@ import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
 import { FileSessionRegistry, type SessionRegistry } from "./session-registry.js";
 import type { AgentStore } from "./store.js";
-import { lanPath, lanTee, type LanService } from "./lan/index.js";
+import { lanPath, lanTee, peerEventLog, type LanService } from "./lan/index.js";
 import { TrustStore } from "./trust-store.js";
 
 export const CLAUDE_MISSING = {
@@ -932,11 +932,14 @@ const startDaemon = async (
     .catch((err: unknown) =>
       log.warn("sessions.restore_failed", { error: err instanceof Error ? err.message : "error" }),
     );
+  // The phone's list, and the mirror rows deliveries are checked against (retried until it lands).
+  void links.sync();
   lan = lanPath({
     cloud,
     self: { deviceId: id.deviceId, sign: id.sign },
     policy: () => policy.get().lan,
     handleCommand: (cid, doc) => core.handleCommand(cid, doc),
+    onPeerEvent: peerEventLog(log, now),
     log,
     now,
   });
@@ -1209,6 +1212,7 @@ const startDaemon = async (
     await linksBroker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
     await lan?.stop("agent_stop").catch(() => undefined);
+    links.close();
     await cloud.close().catch(() => undefined);
     releaseLock();
     resolveDone();

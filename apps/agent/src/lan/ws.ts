@@ -16,9 +16,19 @@ export interface LanConn {
   close(code?: number, reason?: string): void;
   onMessage(cb: (text: string) => void): void;
   onClose(cb: (code: number) => void): void;
+  /**
+   * The handshake has read its last message: stop reading until `ready()` (the other side's
+   * next frames wait in the socket, not in memory). Optional: the dialer's runtime client can't.
+   */
+  hold?(): void;
+  /** The handshake succeeded: the full message size applies from now on, and reading resumes. */
+  ready?(): void;
   /** `address:port` of the other end, for logs only. */
   readonly remote: string;
 }
+
+/** Until the handshake completes, a message (and the unread buffer) is at most this big. */
+export const LAN_PRE_AUTH_BYTES = 4096;
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const OP_TEXT = 0x1;
@@ -52,18 +62,27 @@ const frame = (op: number, payload: Buffer): Buffer => {
   return Buffer.concat([head, payload]);
 };
 
-/** Server side of one upgraded socket. Client frames must be masked (RFC 6455 §5.1). */
+/**
+ * Server side of one upgraded socket. Client frames must be masked (RFC 6455 §5.1). Received
+ * chunks are kept as a list and joined only once a whole frame is there, so a peer dribbling
+ * bytes costs no repeated copying; before `ready()` a frame may be at most LAN_PRE_AUTH_BYTES.
+ */
 class ServerConn implements LanConn {
-  #buf: Buffer = Buffer.alloc(0);
+  #chunks: Buffer[] = [];
+  #len = 0;
   #msg: ((t: string) => void)[] = [];
   #closed: ((c: number) => void)[] = [];
   #done = false;
   #queued: string[] = [];
+  #limit: number;
+  #held = false;
   constructor(
     private readonly socket: Socket,
     private readonly maxBytes: number,
     readonly remote: string,
+    preAuthBytes = LAN_PRE_AUTH_BYTES,
   ) {
+    this.#limit = Math.min(preAuthBytes, maxBytes);
     socket.setNoDelay(true);
     socket.on("data", (d: Buffer) => this.#onData(d));
     socket.on("close", () => this.#finish(1006));
@@ -77,6 +96,48 @@ class ServerConn implements LanConn {
   }
   onClose(cb: (c: number) => void) {
     this.#closed.push(cb);
+  }
+
+  hold() {
+    if (this.#done || this.#held) return;
+    this.#held = true;
+    this.socket.pause();
+  }
+
+  ready() {
+    if (this.#done) return;
+    this.#limit = this.maxBytes;
+    if (this.#held) {
+      this.#held = false;
+      this.socket.resume();
+    }
+    this.#parse();
+  }
+
+  /** The first `n` buffered bytes as one buffer (joining only the chunks needed). */
+  #peek(n: number): Buffer {
+    const first = this.#chunks[0]!;
+    if (first.length >= n) return first;
+    let k = 0;
+    let have = 0;
+    while (have < n && k < this.#chunks.length) have += this.#chunks[k++]!.length;
+    const joined = Buffer.concat(this.#chunks.slice(0, k));
+    this.#chunks.splice(0, k, joined);
+    return joined;
+  }
+
+  #consume(n: number) {
+    this.#len -= n;
+    while (n > 0) {
+      const c = this.#chunks[0]!;
+      if (c.length <= n) {
+        this.#chunks.shift();
+        n -= c.length;
+      } else {
+        this.#chunks[0] = c.subarray(n);
+        n = 0;
+      }
+    }
   }
 
   send(text: string) {
@@ -104,35 +165,47 @@ class ServerConn implements LanConn {
 
   #onData(d: Buffer) {
     if (this.#done) return;
-    this.#buf = this.#buf.length ? Buffer.concat([this.#buf, d]) : d;
-    if (this.#buf.length > this.maxBytes + 14) return this.close(1009, "too_big");
+    this.#chunks.push(d);
+    this.#len += d.length;
+    this.#parse();
+  }
+
+  #parse() {
     for (;;) {
-      const b = this.#buf;
-      if (b.length < 2) return;
-      const fin = (b[0]! & 0x80) !== 0;
-      const rsv = b[0]! & 0x70;
-      const op = b[0]! & 0x0f;
-      const masked = (b[1]! & 0x80) !== 0;
-      let len = b[1]! & 0x7f;
+      if (this.#done) return;
+      // While held, bytes that were already read wait here, bounded by the full message size.
+      if (this.#held) {
+        if (this.#len > this.maxBytes + 14) this.close(1009, "too_big");
+        return;
+      }
+      if (this.#len < 2) return;
+      const head = this.#peek(Math.min(this.#len, 14));
+      const fin = (head[0]! & 0x80) !== 0;
+      const rsv = head[0]! & 0x70;
+      const op = head[0]! & 0x0f;
+      const masked = (head[1]! & 0x80) !== 0;
+      let len = head[1]! & 0x7f;
       let off = 2;
       if (len === 126) {
-        if (b.length < 4) return;
-        len = b.readUInt16BE(2);
+        if (head.length < 4) return;
+        len = head.readUInt16BE(2);
         off = 4;
       } else if (len === 127) {
-        if (b.length < 10) return;
-        const big = b.readBigUInt64BE(2);
-        if (big > BigInt(this.maxBytes)) return this.close(1009, "too_big");
+        if (head.length < 10) return;
+        const big = head.readBigUInt64BE(2);
+        if (big > BigInt(this.#limit)) return this.close(1009, "too_big");
         len = Number(big);
         off = 10;
       }
       if (!fin || rsv || !masked || op === 0) return this.close(1002, "protocol");
-      if (len > this.maxBytes) return this.close(1009, "too_big");
-      if (b.length < off + 4 + len) return;
+      if (len > this.#limit) return this.close(1009, "too_big");
+      const total = off + 4 + len;
+      if (this.#len < total) return;
+      const b = this.#peek(total);
       const mask = b.subarray(off, off + 4);
-      const payload = Buffer.from(b.subarray(off + 4, off + 4 + len));
+      const payload = Buffer.from(b.subarray(off + 4, total));
       for (let i = 0; i < payload.length; i++) payload[i] = payload[i]! ^ mask[i & 3]!;
-      this.#buf = b.subarray(off + 4 + len);
+      this.#consume(total);
       switch (op) {
         case OP_TEXT: {
           const text = payload.toString("utf8");
@@ -151,7 +224,6 @@ class ServerConn implements LanConn {
         default:
           return this.close(1003, "unsupported"); // binary and anything else
       }
-      if (this.#done) return;
     }
   }
 }
@@ -168,6 +240,10 @@ export interface ListenOptions {
   maxBytes: number;
   /** Upgrades refused while this many connections are open (handshakes included). */
   maxConnections: number;
+  /** …and while this many are open from the same address (default 3). */
+  maxPerAddress?: number;
+  /** Message size until the handshake calls `ready()` (default LAN_PRE_AUTH_BYTES). */
+  preAuthBytes?: number;
   onConn(conn: LanConn): void;
 }
 
@@ -177,7 +253,9 @@ export const listenLan = async (o: ListenOptions): Promise<LanListener> => {
     res.writeHead(404).end();
   });
   const sockets = new Set<Socket>();
+  const perAddress = new Map<string, number>();
   server.on("upgrade", (req: IncomingMessage, socket: Socket) => {
+    const from = socket.remoteAddress ?? "?";
     const key = req.headers["sec-websocket-key"];
     const ok =
       req.method === "GET" &&
@@ -186,7 +264,7 @@ export const listenLan = async (o: ListenOptions): Promise<LanListener> => {
       req.headers["sec-websocket-version"] === "13" &&
       typeof key === "string" &&
       Buffer.from(key, "base64").length === 16;
-    if (!ok || sockets.size >= o.maxConnections) {
+    if (!ok || sockets.size >= o.maxConnections || (perAddress.get(from) ?? 0) >= (o.maxPerAddress ?? 3)) {
       socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
       return;
     }
@@ -198,9 +276,15 @@ export const listenLan = async (o: ListenOptions): Promise<LanListener> => {
         `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
     sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-    const remote = `${socket.remoteAddress ?? "?"}:${socket.remotePort ?? 0}`;
-    o.onConn(new ServerConn(socket, o.maxBytes, remote));
+    perAddress.set(from, (perAddress.get(from) ?? 0) + 1);
+    socket.on("close", () => {
+      sockets.delete(socket);
+      const n = (perAddress.get(from) ?? 1) - 1;
+      if (n > 0) perAddress.set(from, n);
+      else perAddress.delete(from);
+    });
+    const remote = `${from}:${socket.remotePort ?? 0}`;
+    o.onConn(new ServerConn(socket, o.maxBytes, remote, o.preAuthBytes));
   });
   // Slow-loris guard for the plain HTTP side.
   server.headersTimeout = 5000;
@@ -248,6 +332,8 @@ export const dialLan = (url: string, maxBytes: number, timeoutMs: number): Promi
     const closed: ((c: number) => void)[] = [];
     let open = false;
     let done = false;
+    // The listener isn't authenticated until the handshake says so: small messages until then.
+    let limit = Math.min(LAN_PRE_AUTH_BYTES, maxBytes);
     const timer = setTimeout(() => {
       if (!open) {
         reject(new Error("lan: dial timeout"));
@@ -283,6 +369,7 @@ export const dialLan = (url: string, maxBytes: number, timeoutMs: number): Promi
         for (const t of queued.splice(0)) safe([cb], t);
       },
       onClose: (cb) => void closed.push(cb),
+      ready: () => void (limit = maxBytes),
     };
     ws.addEventListener("open", () => {
       open = true;
@@ -291,7 +378,7 @@ export const dialLan = (url: string, maxBytes: number, timeoutMs: number): Promi
     });
     ws.addEventListener("message", (ev) => {
       if (done) return;
-      if (typeof ev.data !== "string" || ev.data.length > maxBytes) return conn.close(1009, "too_big");
+      if (typeof ev.data !== "string" || ev.data.length > limit) return conn.close(1009, "too_big");
       if (msg.length) safe(msg, ev.data);
       else if (queued.length < 4) queued.push(ev.data);
       else conn.close(1008, "policy");
