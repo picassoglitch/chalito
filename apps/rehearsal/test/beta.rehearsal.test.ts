@@ -433,9 +433,14 @@ describe.skipIf(!READY)("4. HIGH tool → signed approval request → escalation
     net.server.listen({ onUnhandledFrame: "bypass" });
     expect((await notifier.drainNotify()).status).toBe(200);
     net.server.close();
-    const left = await s.sql<{ status: string }[]>`
-      select status from chalito_private.notify_outbox where owner = ${p.owner}`;
-    expect(left.every((r) => r.status === "sent")).toBe(true);
+    // The approval's notification and its ack (the pairing's own security alert has its own ladder).
+    const left = await s.sql<{ status: string; message: { item?: { coalesceKey?: string } } }[]>`
+      select status, message from chalito_private.notify_outbox where owner = ${p.owner}`;
+    expect(
+      left
+        .filter((r) => !(r.message.item?.coalesceKey ?? "").startsWith("security:pairing:"))
+        .every((r) => r.status === "sent"),
+    ).toBe(true);
   });
 });
 

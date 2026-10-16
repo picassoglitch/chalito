@@ -426,9 +426,15 @@ mod tests {
             assert!(Instant::now() < until, "no restart: {:?}", sup.status());
             std::thread::sleep(Duration::from_millis(20));
         }
+        // "Running" is set when the child starts, before the script records its run.
+        let runs = || fs::read_to_string(home.join("runs")).map_or(0, |s| s.lines().count());
+        let settle = Instant::now() + Duration::from_secs(5);
+        while runs() < 3 && Instant::now() < settle {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         sup.stop();
         assert_eq!(sup.status(), Status::Stopped);
-        assert_eq!(fs::read_to_string(home.join("runs")).unwrap().lines().count(), 3);
+        assert_eq!(runs(), 3);
         assert_eq!(fs::read_to_string(home.join("secret")).unwrap().trim(), format!("stdin {}", "ab".repeat(32)));
     }
 
