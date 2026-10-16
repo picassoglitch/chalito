@@ -233,6 +233,8 @@ export const createGateway = (deps: GatewayDeps) => {
   // First: per-IP rate limits and body caps for every route (src/limits.ts).
   app.use("*", guard(gatewayRoutes(deps.cfg.resource), { now: deps.now }));
   app.get("/healthz", (c) => c.json({ ok: true }));
+  // Cloud Run reserves paths ending in "z" (its frontend 404s /healthz on run.app); probe /health there.
+  app.get("/health", (c) => c.json({ ok: true }));
   app.get("/.well-known/oauth-protected-resource", (c) => c.json(prm()));
   app.get(`/.well-known/oauth-protected-resource${resourceUrl.pathname}`, (c) => c.json(prm()));
   app.all(resourceUrl.pathname, async (c) => {

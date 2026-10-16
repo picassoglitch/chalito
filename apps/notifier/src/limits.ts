@@ -15,6 +15,7 @@ const provider = (bodyBytes: number): Limit => ({ capacity: 600, refillPerSec: 2
  */
 export const NOTIFIER_ROUTES: RouteTable = {
   "GET /healthz": { capacity: 120, refillPerSec: 10, bodyBytes: 0 },
+  "GET /health": { capacity: 120, refillPerSec: 10, bodyBytes: 0 },
   "POST /pubsub/notifications": google,
   "POST /pubsub/room-events": google,
   "POST /tasks/tick": google,

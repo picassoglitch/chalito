@@ -4,7 +4,7 @@ Everything here needs the owner: an account, a payment, a submission to a third 
 
 **Sources:** collected from `docs/PLAN.md` (Owner decisions), `DEVIATIONS.md`, the ADRs, `docs/integrations/*`, `docs/VERIFIED_APIS.md` and the app/package READMEs. Paths are as on branch `all` unless another branch is named. Collected 2026-10-04.
 
-**Status key:** `[ ]` open, `[x]` done (with date and who), `[~]` decided but not yet applied.
+**Status key:** `[ ]` open, `[x]` done (with date and who), `[~]` decided but not yet applied, `N/A` no longer applies (with the reason).
 
 ## 1. Chalyb hub PR (Chalyb repo, owner's go)
 
@@ -14,7 +14,7 @@ The details are in `docs/integrations/CHALYB_ENGINE.md`. These changes go in `pi
 |---|---|---|---|
 | [ ] | Engine definition `chalito` in `src/lib/engines/integrations/definitions.ts` | SSO and launch from the hub (M2) | `docs/integrations/CHALYB_ENGINE.md` §1 |
 | [ ] | `register_chalito_engine` migration (ships `coming_soon`) | Engine row on the hub | CHALYB_ENGINE.md §2 |
-| [ ] | tfvars `engines` entry; domain override so `chalito.chalyb.com` → Vercel and `api.chalito.chalyb.com` → Cloud Run | Infra (M2) | CHALYB_ENGINE.md §3, ADR 0015 |
+| [x] | tfvars `engines` entry (2026-10-15, verified). No domain override: Chalito lives inside the hub at `www.chalyb.com/app/chalito`, and the api keeps its run.app URL as `admin_api_base` (owner, 2026-10-05; Chalyb migration 0067) | Infra (M2) | CHALYB_ENGINE.md §3, ADR 0015, `docs/GO_LIVE.md` "Where Chalito lives" |
 | [ ] | Secrets `chalito-sso-secret`, `chalito-admin-token`, plus read access to the admin token for the `orchestrator` and `notifier` service accounts | SSO, tenants, usage reporting | CHALYB_ENGINE.md §4 |
 | [ ] | Meter kinds accepted: `llm.tokens`, `voice.seconds`, `call.seconds`, `whatsapp.messages`, `sms.segments`, `compute.seconds`, and **`store.purchase` billed as already a price** (`ceil(cost_usd_micros / 4)`, like `boost.fee`) | Usage reporting (M12); paid cosmetics (M8), D-030 | CHALYB_ENGINE.md §5, `DEVIATIONS.md` D-030, decision #32 |
 | [ ] | `/usage/admit`, `/usage/settle` and `reserved` in the balance merged to chalyb `main` (commit `a5733df` is on unmerged branches) | Managed AI fails closed to free_min until then (M12) | CHALYB_ENGINE.md §7b |
@@ -50,12 +50,14 @@ The details are in `docs/integrations/CHALYB_ENGINE.md`. These changes go in `pi
 
 ## 4. Domain and Vercel
 
+**Update (2026-10-05):** the owner put Chalito inside the hub. Its screens are `https://www.chalyb.com/app/chalito` in the hub's own Next.js app and Vercel project; there's no `chalito.chalyb.com` and no `api.`/`mcp.` subdomain, and the services use their Cloud Run run.app URLs (Chalyb migration 0067, ADR 0015). The hub's Vercel project is on the **Hobby** plan, which is for non-commercial use; staying on it is an owner decision, to revisit before anything is sold.
+
 | | What | Why / blocks | Reference |
 |---|---|---|---|
-| [~] | Domain `chalito.chalyb.com` (decision #22). The owner is still checking their own Chalito domains | Web, SSO `external_url` | `docs/PLAN.md` decision #22, ADR 0015 |
-| [ ] | Vercel project for `apps/web` under the picassoglitch account. Check that the hub's Pro plan covers another commercial project | Web/PWA (M5) | ADR 0015 |
-| [ ] | Vercel env: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (publishable only), `NEXT_PUBLIC_CHALITO_API_BASE`, `NEXT_PUBLIC_HUB_URL=https://www.chalyb.com`. Never `NEXT_PUBLIC_CHALITO_DEV_BACKEND` (the build refuses it on Vercel) | Web | `apps/web/src/lib/env.ts` |
-| [ ] | Cloud Run domain mappings `api.chalito.chalyb.com` and `mcp.chalito.chalyb.com` | api, MCP gateway | ADR 0015 |
+| [x] | Domain: none of its own. Chalito is at `www.chalyb.com/app/chalito` (owner, 2026-10-05; replaces `chalito.chalyb.com`, decision #22). Own Chalito domains can come later | Web, SSO `external_url` | `docs/PLAN.md` decision #22, ADR 0015 |
+| N/A | ~~Vercel project for `apps/web`~~: not needed, the screens ship with the hub. The hub's project is on Hobby (non-commercial), kept by owner decision | Web/PWA (M5) | ADR 0015 |
+| N/A | ~~Separate Vercel env~~ (no separate project). Kept for reference: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (publishable only), `NEXT_PUBLIC_CHALITO_API_BASE`, `NEXT_PUBLIC_HUB_URL=https://www.chalyb.com`. Never `NEXT_PUBLIC_CHALITO_DEV_BACKEND` (the build refuses it on Vercel) | Web | `apps/web/src/lib/env.ts` |
+| N/A | ~~Cloud Run domain mappings~~: none. The api and the MCP gateway keep their run.app URLs (`docs/GO_LIVE.md` "Where Chalito lives") | api, MCP gateway | ADR 0015 |
 
 ## 5. Secrets (Secret Manager)
 

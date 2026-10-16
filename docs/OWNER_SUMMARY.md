@@ -33,6 +33,12 @@
   - [prueba de carga](LOAD_TEST.md);
   - README para levantar todo desde cero.
 
+### Dónde vamos (15 de octubre de 2026)
+- **Listo:** el PR del hub, la base de datos en nexo-ai, la nube (Terraform) y el despliegue de los cuatro servicios. El motor ya está activo en el hub.
+- **A medias:** faltan las llaves reales de OpenAI, Twilio, Meta y xAI; los trabajos programados se están agregando; tu computadora ya está emparejada (8 de octubre), pero falta probar una aprobación de ida y vuelta.
+- **Decidido:** Chalito vive dentro del hub, en `www.chalyb.com/app/chalito`. Las migraciones de Chalito se copian al repositorio del hub, y el hub lleva el registro de la base de datos de aquí en adelante (15 de octubre).
+- El detalle, paso por paso, está en la columna "Status" de [`GO_LIVE.md`](GO_LIVE.md).
+
 ### Lo que necesita de ti (en este orden)
 1. **Decidir** ([Fase 0](GO_LIVE.md#phase-0-decisions-owner-no-cost)):
    - los precios de los 3 cosméticos de pago;
@@ -43,7 +49,7 @@
 3. **Base de datos en nexo-ai** ([Fase 2](GO_LIVE.md#phase-2-supabase-on-nexo-ai-owner--hub-sign-off-visible)): tu visto bueno, luego una prueba en una rama de Supabase, y después aplicar. Ahí también se activa `pg_net` y se guardan dos secretos en Vault, para que las aprobaciones avisen a tu teléfono en segundos.
 4. **Nube** ([Fases 3–4](GO_LIVE.md#phase-3-gcp-with-terraform-ops-owners-go-cost)): aprobar `terraform apply` y los despliegues. 💲
 5. **Cuentas** ([Fase 5](GO_LIVE.md#phase-5-provider-accounts-owner-cost-visible)): OpenAI, Anthropic, Twilio y Meta/WhatsApp (verificación y aprobación de plantilla). 💲
-6. **Web en Vercel** ([Fase 6](GO_LIVE.md#phase-6-web-on-vercel-ops-visible)).
+6. ~~**Web en Vercel**~~: ya no hace falta ([Fase 6](GO_LIVE.md#phase-6-web-on-vercel-not-applicable)). Desde el 5 de octubre de 2026, Chalito vive dentro del hub, en `www.chalyb.com/app/chalito`: no tiene dominio propio ni proyecto aparte en Vercel. El hub está en el plan gratuito (Hobby) de Vercel, que es para uso no comercial; seguir ahí fue tu decisión, y conviene revisarla antes de cobrar.
 7. **Encender** ([Fase 8](GO_LIVE.md#phase-8-turn-it-on-for-the-beta-owner-visible)):
    - activar el motor en el hub;
    - tu primera prueba;
@@ -92,6 +98,12 @@ Las limitaciones que verán los testers están en [`BETA_NOTES.md`](BETA_NOTES.m
   - the [load test](LOAD_TEST.md);
   - a README to set everything up from zero.
 
+### Where things stand (15 October 2026)
+- **Done:** the hub PR, the database on nexo-ai, the cloud setup (Terraform) and the deploy of all four services. The engine is active on the hub.
+- **Partly done:** the real OpenAI, Twilio, Meta and xAI keys are still missing; the scheduled jobs are being added; your computer is paired (8 October), but an approval round trip hasn't been tested yet.
+- **Decided:** Chalito lives inside the hub at `www.chalyb.com/app/chalito`. Chalito's migrations are copied into the hub's repo, and the hub keeps the database's record of them from now on (15 October).
+- The step-by-step detail is in the "Status" column of [`GO_LIVE.md`](GO_LIVE.md).
+
 ### What needs you (in this order)
 1. **Decide** ([Phase 0](GO_LIVE.md#phase-0-decisions-owner-no-cost)):
    - the 3 paid cosmetic prices;
@@ -102,7 +114,7 @@ Las limitaciones que verán los testers están en [`BETA_NOTES.md`](BETA_NOTES.m
 3. **Database on nexo-ai** ([Phase 2](GO_LIVE.md#phase-2-supabase-on-nexo-ai-owner--hub-sign-off-visible)): your sign-off, then a dry run on a Supabase branch, then apply. That's also where `pg_net` is turned on and two Vault secrets are stored, so approvals reach your phone in seconds.
 4. **Cloud** ([Phases 3–4](GO_LIVE.md#phase-3-gcp-with-terraform-ops-owners-go-cost)): approve `terraform apply` and the deploys. 💲
 5. **Accounts** ([Phase 5](GO_LIVE.md#phase-5-provider-accounts-owner-cost-visible)): OpenAI, Anthropic, Twilio and Meta/WhatsApp (verification and template approval). 💲
-6. **Web on Vercel** ([Phase 6](GO_LIVE.md#phase-6-web-on-vercel-ops-visible)).
+6. ~~**Web on Vercel**~~: no longer needed ([Phase 6](GO_LIVE.md#phase-6-web-on-vercel-not-applicable)). Since 5 October 2026, Chalito lives inside the hub at `www.chalyb.com/app/chalito`: no domain of its own and no separate Vercel project. The hub is on Vercel's free Hobby plan, which is for non-commercial use; staying on it was your decision, worth revisiting before you charge for anything.
 7. **Turn it on** ([Phase 8](GO_LIVE.md#phase-8-turn-it-on-for-the-beta-owner-visible)):
    - activate the engine on the hub;
    - your own first run;
