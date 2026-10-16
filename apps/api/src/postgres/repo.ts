@@ -348,6 +348,20 @@ export class PostgresRepo implements ApiRepo {
     return { doc: toPairingCode(row), net };
   }
 
+  async recordPairingViewer(codeId: string, owner: string, deviceId: string) {
+    await this.sql`
+      insert into chalito_private.pairing_code_viewers (code_id, owner, device_id)
+      values (${codeId}, ${owner}, ${deviceId})
+      on conflict do nothing`;
+  }
+
+  async isPairingViewer(codeId: string, owner: string, deviceId: string) {
+    const rows = await this.sql`
+      select 1 from chalito_private.pairing_code_viewers
+      where code_id = ${codeId} and owner = ${owner} and device_id = ${deviceId}`;
+    return rows.length > 0;
+  }
+
   async cancelPairingCode(codeId: string) {
     const [row] = await this.sql<{ claimed: boolean }[]>`
       update chalito.pairing_codes set cancelled = cancelled or not claimed

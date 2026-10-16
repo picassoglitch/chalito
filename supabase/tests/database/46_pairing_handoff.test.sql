@@ -4,7 +4,7 @@
 -- code is visible to its watcher as `cancelled`.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(19);
+select plan(23);
 
 create function pg_temp.login(claims jsonb) returns void language plpgsql as $$
 begin
@@ -56,6 +56,12 @@ select throws_ok($$insert into chalito_private.pairing_code_networks (code_id, f
 insert into chalito_private.pairing_code_networks (code_id, family, net_hash, created_at, expires_at)
 values ('ho_old01', 6, repeat('c', 64), now() - interval '25 hours', now() - interval '1 hour' - interval '1 second');
 
+insert into chalito_private.pairing_code_viewers (code_id, owner, device_id)
+values ('ho_open1', 'ho-a', 'ho_phone'), ('ho_claim', 'ho-a', 'ho_phone'), ('ho_decl1', 'ho-a', 'ho_phone'),
+       ('ho_gone1', 'ho-a', 'ho_phone');
+insert into chalito_private.pairing_code_viewers (code_id, owner, device_id, viewed_at)
+values ('ho_late1', 'ho-a', 'ho_phone', now() - interval '25 hours');
+
 -- ================================================================ nobody else reads it
 select pg_temp.as_pairing('ho_open1');
 select is((select count(*)::int from chalito.pairing_codes where code_id = 'ho_open1'), 1,
@@ -64,9 +70,13 @@ select is((select cancelled from chalito.pairing_codes where code_id = 'ho_open1
   'a fresh code is not cancelled, and the watcher can see that column');
 select throws_ok($$select 1 from chalito_private.pairing_code_networks$$, '42501', null,
   'the pairing watch token can''t read network records (THREAT_MODEL §5)');
+select throws_ok($$select 1 from chalito_private.pairing_code_viewers$$, '42501', null,
+  'nor who opened a code');
 select pg_temp.as_agent('ho-a', 'ho_desk');
 select throws_ok($$select 1 from chalito_private.pairing_code_networks$$, '42501', null,
   'an agent device can''t read them');
+select throws_ok($$insert into chalito_private.pairing_code_viewers (code_id, owner, device_id)
+  values ('ho_open1', 'ho-a', 'ho_desk')$$, '42501', null, 'a device can''t make itself a viewer');
 select pg_temp.logout();
 set local role anon;
 select throws_ok($$select 1 from chalito_private.pairing_code_networks$$, '42501', null, 'anon can''t read them');
@@ -83,6 +93,8 @@ select ok(not exists (select 1 from chalito_private.pairing_code_networks where 
 update chalito.pairing_codes set cancelled = true where code_id = 'ho_decl1';
 select ok(not exists (select 1 from chalito_private.pairing_code_networks where code_id = 'ho_decl1'),
   'declining a code drops its network record');
+select ok(not exists (select 1 from chalito_private.pairing_code_viewers where code_id in ('ho_claim', 'ho_decl1')),
+  'claiming or declining drops who opened it too');
 select is((select cancelled from chalito.pairing_codes where code_id = 'ho_decl1'), true, 'the code stays, marked cancelled');
 delete from chalito.pairing_codes where code_id = 'ho_gone1';
 select ok(not exists (select 1 from chalito_private.pairing_code_networks where code_id = 'ho_gone1'),
@@ -91,6 +103,8 @@ update chalito_private.pairing_code_networks set expires_at = now() - interval '
 select is(chalito_private.purge_pairing_networks(), 2, 'the sweep removes the expired and the over-24-hour records');
 select is((select array_agg(code_id order by code_id) from chalito_private.pairing_code_networks where code_id like 'ho_%'),
   array['ho_open1']::text[], 'an open code''s record is kept');
+select is((select array_agg(code_id order by code_id) from chalito_private.pairing_code_viewers where code_id like 'ho_%'),
+  array['ho_open1']::text[], 'the sweep keeps only an open code''s viewers (24 h at most)');
 select is((select schedule from cron.job where jobname = 'chalito-purge-pairing-networks'), '*/5 * * * *',
   'the sweep runs every five minutes under pg_cron');
 select ok(not has_function_privilege('authenticated', 'chalito_private.purge_pairing_networks()', 'execute'),

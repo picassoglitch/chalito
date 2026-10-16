@@ -107,6 +107,10 @@ export interface ApiRepo {
   findPairingCodeByShortHash(shortCodeHash: string): Promise<PairingCodeDoc | null>;
   /** The code by id plus the network it was asked from (null once purged or never recorded). */
   getPairingCode(codeId: string): Promise<{ doc: PairingCodeDoc; net: PairingNet | null } | null>;
+  /** Remembers that this client opened the open code (hand-off link or typed code). */
+  recordPairingViewer(codeId: string, owner: string, deviceId: string): Promise<void>;
+  /** Whether this client opened the code: only such a client may decline it. */
+  isPairingViewer(codeId: string, owner: string, deviceId: string): Promise<boolean>;
   /** "No estoy frente a esa computadora": marks an open code cancelled and drops its network record. */
   cancelPairingCode(codeId: string): Promise<"cancelled" | "not_found" | "already_claimed">;
   /**

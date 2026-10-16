@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { deriveDeviceId, fingerprint, fromB64url, verifyEnvelope } from "@chalito/crypto";
 import { generateShortCode, hashShortCode, normalizeShortCode, verifyGlyph } from "@chalito/glyph";
-import { clientIp } from "@chalito/guard";
+import { MemoryBuckets, clientIp } from "@chalito/guard";
 import {
   ClaimPairingRequest,
   CreatePairingCodeRequest,
@@ -29,6 +30,13 @@ export const pairingRoutes = (deps: Deps) => {
   // The city header is only believed behind a load balancer that sets it (TRUSTED_PROXIES > 0).
   const netOf = (c: Context): PairingNet | null =>
     pairingNet(clientIp(c, proxies), netKey, proxies > 0 ? (h) => c.req.header(h) : undefined);
+  /**
+   * A code id is a capability: whoever has it (the hand-off link) can see the code. It never goes
+   * to the audit log or anywhere else in clear, only this short hash.
+   */
+  const codeRef = (codeId: string) =>
+    createHash("sha256").update(`chalito.pairing-code:${codeId}`).digest("hex").slice(0, 16);
+  const declineBuckets = deps.rateBuckets ?? new MemoryBuckets();
   /** An open code by id (unclaimed, not declined, not expired), or null. */
   const openCode = async (codeId: string) => {
     const found = await deps.repo.getPairingCode(codeId);
@@ -55,6 +63,8 @@ export const pairingRoutes = (deps: Deps) => {
     if (!body.success) return fail(400, "bad_request");
     const { glyph, kind, platform } = body.data;
     if (glyph.body.purpose !== "pair_device") fail(400, "wrong_purpose");
+    // The code id doubles as the hand-off capability: at least 128 random bits (22 base64url chars).
+    if (glyph.body.codeId.length < 22) fail(400, "weak_code_id");
     const check = await verifyGlyph(glyph, deps.now(), deps.config.skewMs);
     if (!check.ok) return fail(400, check.reason);
     const agentDeviceId = await deriveDeviceId(await fromB64url(glyph.body.issuerPubSign));
@@ -83,7 +93,7 @@ export const pairingRoutes = (deps: Deps) => {
       action: "pairing.code_created",
       owner: null,
       actor: agentDeviceId,
-      target: glyph.body.codeId,
+      target: codeRef(glyph.body.codeId),
     });
     return c.json({ shortCode, watchToken, expiresAt: glyph.body.expiresAt }, 201);
   });
@@ -100,6 +110,8 @@ export const pairingRoutes = (deps: Deps) => {
       const doc = await deps.repo.findPairingCodeByShortHash(await hashShortCode(code));
       const found = doc ? await openCode(doc.codeId) : null;
       if (!found) return fail(404, "not_found");
+      const p = principal(c);
+      await deps.repo.recordPairingViewer(found.doc.codeId, p.owner, p.deviceId!);
       return c.json(handoffView(found, c));
     },
   );
@@ -118,6 +130,8 @@ export const pairingRoutes = (deps: Deps) => {
       if (!body.success) return fail(400, "bad_request");
       const found = await openCode(body.data.codeId);
       if (!found) return fail(404, "not_found");
+      const p = principal(c);
+      await deps.repo.recordPairingViewer(found.doc.codeId, p.owner, p.deviceId!);
       return c.json(handoffView(found, c));
     },
   );
@@ -131,15 +145,21 @@ export const pairingRoutes = (deps: Deps) => {
       const p = principal(c);
       const body = DeclinePairingRequest.safeParse(await c.req.json().catch(() => null));
       if (!body.success) return fail(400, "bad_request");
-      const found = await openCode(body.data.codeId);
+      const { codeId } = body.data;
+      // Per code too, not only per client: a code can't be hammered from many clients.
+      if (!(await declineBuckets.take(`pairing-decline:${codeRef(codeId)}`, 3, 1 / 60, deps.now())))
+        return fail(429, "rate_limited");
+      const found = await openCode(codeId);
       if (!found) return fail(404, "not_found");
-      const res = await deps.repo.cancelPairingCode(body.data.codeId);
+      // Only a client that opened this code (link or typed code) may decline it.
+      if (!(await deps.repo.isPairingViewer(codeId, p.owner, p.deviceId!))) return fail(403, "not_opened");
+      const res = await deps.repo.cancelPairingCode(codeId);
       if (res !== "cancelled") return fail(res === "not_found" ? 404 : 409, res);
       await deps.audit.record({
         action: "pairing.declined",
         owner: p.owner,
         actor: p.uid,
-        target: body.data.codeId,
+        target: codeRef(codeId),
         meta: { agentDeviceId: found.doc.agentDeviceId },
       });
       return c.json({ ok: true });

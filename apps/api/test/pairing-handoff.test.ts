@@ -50,6 +50,7 @@ const keys = async (): Promise<Keys> => {
 const memoryRepo = (devices: DeviceDoc[]) => {
   const codes = new Map<string, PairingCodeDoc>();
   const nets = new Map<string, PairingNet>();
+  const viewers = new Set<string>();
   const notifications: Record<string, unknown>[] = [];
   const repo: Partial<ApiRepo> = {
     getDevice: async (o, id) => devices.find((d) => d.owner === o && d.deviceId === id) ?? null,
@@ -65,6 +66,8 @@ const memoryRepo = (devices: DeviceDoc[]) => {
       const doc = codes.get(id);
       return doc ? { doc, net: nets.get(id) ?? null } : null;
     },
+    recordPairingViewer: async (id, o, d) => void viewers.add(`${id}/${o}/${d}`),
+    isPairingViewer: async (id, o, d) => viewers.has(`${id}/${o}/${d}`),
     cancelPairingCode: async (id) => {
       const doc = codes.get(id);
       if (!doc) return "not_found";
@@ -86,22 +89,31 @@ const memoryRepo = (devices: DeviceDoc[]) => {
     },
     createNotification: async (o, nid, d) => void notifications.push({ owner: o, nid, ...d }),
   };
-  return { repo: repo as ApiRepo, codes, nets, notifications };
+  return { repo: repo as ApiRepo, codes, nets, viewers, notifications };
 };
 
 const setup = async (opts: { trustedProxies?: number } = {}) => {
   const o = owner();
   const phone = await keys();
+  const tablet = await keys();
+  const stranger = await keys();
+  const other = owner();
   const computer = await keys();
   const pub = async (k: Keys) => ({
     pubSign: await toB64url(k.sign.publicKey),
     pubBox: await toB64url(k.box.publicKey),
   });
-  const devices = [{ ...(await device(o, "client")), deviceId: phone.deviceId, ...(await pub(phone)) }];
+  const devices = [
+    { ...(await device(o, "client")), deviceId: phone.deviceId, ...(await pub(phone)) },
+    { ...(await device(o, "client")), deviceId: tablet.deviceId, ...(await pub(tablet)) },
+    { ...(await device(other, "client")), deviceId: stranger.deviceId, ...(await pub(stranger)) },
+  ];
   const mem = memoryRepo(devices);
   const audit = new MemoryAudit();
   const tokens: Record<string, { uid: string; role: string; owner: string; deviceId?: string }> = {
     phone: { uid: `d_${phone.deviceId}`, role: "client", owner: o, deviceId: phone.deviceId },
+    tablet: { uid: `d_${tablet.deviceId}`, role: "client", owner: o, deviceId: tablet.deviceId },
+    stranger: { uid: `d_${stranger.deviceId}`, role: "client", owner: other, deviceId: stranger.deviceId },
     person: { uid: o, role: "user", owner: o },
   };
   const deps: Deps = {
@@ -138,6 +150,33 @@ const setup = async (opts: { trustedProxies?: number } = {}) => {
     });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return { status: res.status, json: (await res.json().catch(() => null)) as Record<string, any> };
+  };
+  const get = async (path: string) => {
+    const res = await app.request(path, { method: "GET", headers: { authorization: "Bearer phone" } });
+    return { status: res.status };
+  };
+  /** The computer publishes a code with this code id. */
+  const askWith = async (codeId: string, ip = HOME, city?: string) => {
+    const glyph = await signGlyph(
+      {
+        v: 1,
+        purpose: "pair_device",
+        codeId,
+        issuerPubSign: (await pub(computer)).pubSign,
+        issuerPubBox: (await pub(computer)).pubBox,
+        label: "MacBook de Ana",
+        issuedAt: NOW,
+        expiresAt: NOW + PAIRING_TTL_MS,
+        nonce: await randomNonce(),
+      } as never,
+      computer.sign.secretKey,
+    );
+    const r = await post(
+      "/v1/pairing/codes",
+      { glyph, kind: "laptop", platform: "macos" },
+      { ip, ...(city ? { city } : {}) },
+    );
+    return { ...r, codeId: glyph.body.codeId };
   };
   /** The computer asks for a code from `ip` (what `chalito pair` and the panel do). */
   const ask = async (ip = HOME, city?: string) => {
@@ -180,7 +219,7 @@ const setup = async (opts: { trustedProxies?: number } = {}) => {
     ),
     ...(shortCode ? { shortCode } : {}),
   });
-  return { o, mem, audit, post, ask, claimBody, computer };
+  return { o, mem, audit, post, get, ask, askWith, claimBody, computer };
 };
 
 describe("network of an address", () => {
@@ -312,6 +351,7 @@ describe("POST /v1/pairing/claim: the network check is server-side", () => {
   it("a declined code can't be claimed, even from the same network", async () => {
     const s = await setup();
     const { codeId } = await s.ask(HOME);
+    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
     expect((await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: HOME })).status).toBe(200);
     const r = await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: HOME });
     expect(r).toMatchObject({ status: 410, json: { error: "cancelled" } });
@@ -338,21 +378,37 @@ describe("POST /v1/pairing/claim: the network check is server-side", () => {
 });
 
 describe("POST /v1/pairing/decline", () => {
-  it("cancels an open code and drops its network record", async () => {
+  it("cancels an open code the client opened, and drops its network record", async () => {
     const s = await setup();
     const { codeId } = await s.ask(HOME);
     expect(s.mem.nets.has(codeId)).toBe(true);
+    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: CAFE });
     const r = await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: CAFE });
     expect(r).toMatchObject({ status: 200, json: { ok: true } });
     expect(s.mem.codes.get(codeId)!.cancelled).toBe(true);
     expect(s.mem.nets.has(codeId)).toBe(false);
-    expect(s.audit.events).toContainEqual(expect.objectContaining({ action: "pairing.declined", target: codeId }));
+    expect(s.audit.events).toContainEqual(expect.objectContaining({ action: "pairing.declined" }));
+  });
+
+  it("knowing the code id isn't enough: only a client that opened the code may decline it", async () => {
+    const s = await setup();
+    const { codeId, shortCode } = await s.ask(HOME);
+    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
+    for (const token of ["stranger", "tablet"]) {
+      const r = await s.post("/v1/pairing/decline", { codeId }, { token, ip: CAFE });
+      expect(r, token).toMatchObject({ status: 403, json: { error: "not_opened" } });
+    }
+    expect(s.mem.codes.get(codeId)!.cancelled).toBe(false);
+    // Typing the code opens it too (the phone path).
+    await s.post("/v1/pairing/resolve", { shortCode }, { token: "tablet", ip: CAFE });
+    expect((await s.post("/v1/pairing/decline", { codeId }, { token: "tablet", ip: CAFE })).status).toBe(200);
   });
 
   it("needs a signed-in client; a claimed or unknown code is 404", async () => {
     const s = await setup();
     const { codeId } = await s.ask(HOME);
     expect((await s.post("/v1/pairing/decline", { codeId }, { ip: HOME })).status).toBe(401);
+    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
     await s.post("/v1/pairing/claim", await s.claimBody(codeId), { token: "phone", ip: HOME });
     expect((await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: HOME })).status).toBe(404);
     expect(
@@ -360,15 +416,64 @@ describe("POST /v1/pairing/decline", () => {
     ).toBe(404);
   });
 
-  it("has its own, tighter rate limit", async () => {
+  it("is limited per client", async () => {
     const s = await setup();
     const statuses: number[] = [];
     for (let i = 0; i < 7; i++)
       statuses.push(
-        (await s.post("/v1/pairing/decline", { codeId: "nope_nope_nope" }, { token: "phone", ip: CAFE })).status,
+        (await s.post("/v1/pairing/decline", { codeId: `unknown_code_${i}` }, { token: "phone", ip: CAFE })).status,
       );
     expect(statuses.slice(0, 5)).toEqual([404, 404, 404, 404, 404]);
     expect(statuses).toContain(429);
+  });
+
+  it("and per code, from any number of clients and networks", async () => {
+    const s = await setup();
+    const { codeId } = await s.ask(HOME);
+    const statuses: number[] = [];
+    const ips = ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4", "198.51.100.5"];
+    for (const [i, ip] of ips.entries())
+      statuses.push(
+        (await s.post("/v1/pairing/decline", { codeId }, { token: i % 2 ? "stranger" : "tablet", ip })).status,
+      );
+    expect(statuses).toEqual([403, 403, 403, 429, 429]);
+    expect(s.mem.codes.get(codeId)!.cancelled).toBe(false);
+  });
+});
+
+describe("the code id is a capability", () => {
+  it("the computer can't publish a guessable code id (under 128 bits)", async () => {
+    const s = await setup();
+    const r = await s.askWith("short_id_123");
+    expect(r).toMatchObject({ status: 400, json: { error: "weak_code_id" } });
+  });
+
+  it("unknown, claimed, declined and expired codes answer the same 404", async () => {
+    const s = await setup();
+    const claimed = await s.ask(HOME);
+    await s.post("/v1/pairing/claim", await s.claimBody(claimed.codeId), { token: "phone", ip: HOME });
+    const declined = await s.ask(HOME);
+    await s.post("/v1/pairing/handoff", { codeId: declined.codeId }, { token: "phone", ip: HOME });
+    await s.post("/v1/pairing/decline", { codeId: declined.codeId }, { token: "phone", ip: HOME });
+    const expired = await s.ask(HOME);
+    s.mem.codes.set(expired.codeId, { ...s.mem.codes.get(expired.codeId)!, expiresAt: NOW });
+    const bodies = [];
+    for (const codeId of ["A".repeat(22), claimed.codeId, declined.codeId, expired.codeId])
+      bodies.push(await s.post("/v1/pairing/handoff", { codeId }, { token: "tablet", ip: HOME }));
+    expect(new Set(bodies.map((b) => JSON.stringify(b)))).toEqual(new Set([JSON.stringify(bodies[0])]));
+    expect(bodies[0]).toMatchObject({ status: 404, json: { error: "not_found" } });
+  });
+
+  it("there is no route that lists codes, and the audit log never holds a code id", async () => {
+    const s = await setup();
+    const { codeId } = await s.ask(HOME);
+    for (const path of ["/v1/pairing/codes", "/v1/pairing", "/v1/pairing/handoff"]) {
+      const r = await s.get(path);
+      expect([404, 405], path).toContain(r.status);
+    }
+    await s.post("/v1/pairing/handoff", { codeId }, { token: "phone", ip: HOME });
+    await s.post("/v1/pairing/decline", { codeId }, { token: "phone", ip: HOME });
+    expect(JSON.stringify(s.audit.events)).not.toContain(codeId);
   });
 });
 

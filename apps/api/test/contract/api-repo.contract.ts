@@ -404,7 +404,13 @@ export const runApiRepoContract = (
         expect(await repo.cancelPairingCode(code.codeId)).toBe("not_found");
         await repo.createPairingCode(code, net);
         expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: false }, net });
+        expect(await repo.isPairingViewer(code.codeId, o, "dev_phone")).toBe(false);
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone");
+        await repo.recordPairingViewer(code.codeId, o, "dev_phone"); // idempotent
+        expect(await repo.isPairingViewer(code.codeId, o, "dev_phone")).toBe(true);
+        expect(await repo.isPairingViewer(code.codeId, o, "dev_tablet")).toBe(false);
         expect(await repo.cancelPairingCode(code.codeId)).toBe("cancelled");
+        expect(await repo.isPairingViewer(code.codeId, o, "dev_phone")).toBe(false); // dropped on decline
         expect(await repo.getPairingCode(code.codeId)).toEqual({ doc: { ...code, cancelled: true }, net: null });
         const claim = {
           owner: o,

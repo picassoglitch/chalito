@@ -10,6 +10,9 @@
 --     Server only: no grant to anon, authenticated (so not the pairing watch token, THREAT_MODEL
 --     §5) or service_role. Kept only while the code is open: dropped on claim or decline, with
 --     the code (cascade), and by a sweep at the code's expiry or 24 hours at most.
+--   * chalito_private.pairing_code_viewers: which signed-in clients opened an open code (hand-off
+--     link or typed short code). Only one of them may decline it, so knowing a code id isn't
+--     enough to cancel someone else's pairing. Server only, same lifetime as the network record.
 
 alter table chalito.pairing_codes add column cancelled boolean not null default false;
 
@@ -26,7 +29,18 @@ alter table chalito_private.pairing_code_networks enable row level security;
 revoke all on chalito_private.pairing_code_networks from public, anon, authenticated, service_role;
 grant select, insert, delete on chalito_private.pairing_code_networks to chalito_server;
 
--- Claimed or declined: the network record has done its job.
+create table chalito_private.pairing_code_viewers (
+  code_id chalito.id not null references chalito.pairing_codes (code_id) on delete cascade,
+  owner chalito.id not null,
+  device_id chalito.id not null,
+  viewed_at timestamptz not null default now(),
+  primary key (code_id, owner, device_id)
+);
+alter table chalito_private.pairing_code_viewers enable row level security;
+revoke all on chalito_private.pairing_code_viewers from public, anon, authenticated, service_role;
+grant select, insert, delete on chalito_private.pairing_code_viewers to chalito_server;
+
+-- Claimed or declined: the network record and the viewers have done their job.
 create or replace function chalito_private.drop_pairing_network()
 returns trigger
 language plpgsql
@@ -35,6 +49,7 @@ set search_path = ''
 as $$
 begin
   delete from chalito_private.pairing_code_networks where code_id = new.code_id;
+  delete from chalito_private.pairing_code_viewers where code_id = new.code_id;
   return null;
 end
 $$;
@@ -54,8 +69,13 @@ as $$
   with gone as (
     delete from chalito_private.pairing_code_networks
     where expires_at <= now() or created_at <= now() - interval '24 hours'
+    returning 1),
+  viewers as (
+    delete from chalito_private.pairing_code_viewers v
+    where v.viewed_at <= now() - interval '24 hours'
+       or not exists (select 1 from chalito.pairing_codes c where c.code_id = v.code_id and c.expires_at > now())
     returning 1)
-  select count(*)::int from gone
+  select (select count(*)::int from gone)
 $$;
 revoke execute on function chalito_private.purge_pairing_networks() from public;
 select cron.schedule('chalito-purge-pairing-networks', '*/5 * * * *',
