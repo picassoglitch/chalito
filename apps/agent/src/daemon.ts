@@ -723,6 +723,8 @@ const startDaemon = async (
       ]),
       // What git in the sessions reads: their HOME, XDG, PATH and GIT_CONFIG_* (git-hooks.ts fails
       // closed on the command-line ones).
+      // GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n go with GIT_CONFIG_COUNT.
+      ...Object.fromEntries(Object.entries(claudeEnv(env, "")).filter(([k]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k))),
       ...pickEnv(claudeEnv(env, ""), [
         "HOME",
         "PATH",

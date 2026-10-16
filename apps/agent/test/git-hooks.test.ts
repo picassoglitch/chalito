@@ -37,7 +37,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.js");
-const { clearHooksCache, parseGitConfig, resolveHooks, systemConfigs } = await import("../src/policy/git-hooks.js");
+const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, systemConfigs } =
+  await import("../src/policy/git-hooks.js");
 
 beforeEach(() => clearHooksCache());
 afterAll(() => expect(spawned).toEqual([]));
@@ -310,11 +311,57 @@ describe("system config, the environment, and values we can't resolve", () => {
     expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_GLOBAL: g } }).dir).toBe(join(ws, "env-global"));
   });
 
-  it.each(["GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG"])("%s in the environment fails closed", (k) => {
+  it("config given in the environment is parsed: GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT", () => {
     const home = root();
     const ws = repo(home);
-    expect(resolveHooks(ws, { home, env: { ...NOSYS, [k]: "1" } }).dir).toBe("unknown");
-    expect(write(ws, home, "hooks/x", { env: { ...NOSYS, [k]: "1" } }).tier).toBe("HIGH");
+    writeFileSync(join(ws, "inc.cfg"), "[core]\n\thooksPath = from-inc\n");
+    expect(envConfig({ GIT_CONFIG_PARAMETERS: "'core.hooksPath'='it'\\''s' 'user.name'='x'" })).toEqual([
+      { section: "core", sub: null, key: "hookspath", value: "it's" },
+      { section: "user", sub: null, key: "name", value: "x" },
+    ]);
+    expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_PARAMETERS: "'core.hooksPath'='p-hooks'" } }).dir).toBe(
+      join(ws, "p-hooks"),
+    );
+    clearHooksCache();
+    expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_PARAMETERS: "'include.path'='inc.cfg'" } }).dir).toBe(
+      join(ws, "from-inc"),
+    );
+    clearHooksCache();
+    const counted = {
+      ...NOSYS,
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "x",
+      GIT_CONFIG_KEY_1: "core.hooksPath",
+      GIT_CONFIG_VALUE_1: "count-hooks",
+    };
+    expect(resolveHooks(ws, { home, env: counted }).dir).toBe(join(ws, "count-hooks"));
+    expect(write(ws, home, "count-hooks/x", { env: counted }).tier).toBe("HIGH");
+    expect(write(ws, home, "src/hooks/useX.ts", { env: counted }).tier).toBe("MED");
+  });
+
+  it.each([
+    { GIT_CONFIG_COUNT: "1" },
+    { GIT_CONFIG_COUNT: "lots" },
+    { GIT_CONFIG_PARAMETERS: "core.hooksPath=unquoted" },
+    { GIT_CONFIG_PARAMETERS: "'core.hooksPath'='open" },
+  ])("unparseable environment config fails closed (narrowly): %o", (bad) => {
+    const home = root();
+    const ws = repo(home);
+    const env = { ...NOSYS, ...bad };
+    expect(resolveHooks(ws, { home, env }).dir).toBe("unknown");
+    expect(write(ws, home, "hooks/x", { env }).tier).toBe("HIGH");
+    expect(write(ws, home, ".githooks/x", { env }).tier).toBe("HIGH");
+    expect(write(ws, home, "src/hooks/useX.ts", { env }).tier).toBe("MED");
+  });
+
+  it("GIT_CONFIG names a config file, which is read too", () => {
+    const home = root();
+    const ws = repo(home);
+    writeFileSync(join(home, "extra.cfg"), "[core]\n\thooksPath = gc-hooks\n");
+    expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG: join(home, "extra.cfg") } }).dir).toBe(
+      join(ws, "gc-hooks"),
+    );
   });
 
   it("~user/… and %(prefix) in hooksPath or include paths fail closed", () => {
@@ -535,13 +582,29 @@ describe("per-repo resolution, the broad fallback, GIT_DIR, git executables", ()
     expect(resolveHooks(ws, { home, env: { ...env, GIT_COMMON_DIR: join(home, "nope") } }).dir).toBe("unknown");
   });
 
-  it("only git executables (files) are HIGH: not a folder named git, nor files inside one", () => {
+  it("a write named exactly like a git executable is HIGH whatever is on disk; files inside a git/ folder aren't", () => {
     const home = root();
     const ws = repo(home);
     mkdirSync(join(ws, "src", "git"), { recursive: true });
-    expect(write(ws, home, "src/git").tier).toBe("MED");
+    // No check of what's on disk (it could change between the check and the write).
+    expect(write(ws, home, "src/git").tier).toBe("HIGH");
     expect(write(ws, home, "src/git/client.ts").tier).toBe("MED");
+    expect(write(ws, home, "src/git/foo.ts").tier).toBe("MED");
     expect(write(ws, home, "bin/git").tier).toBe("HIGH");
     expect(write(ws, home, "tools/git.exe").tier).toBe("HIGH");
+  });
+});
+
+describe("every known repo's hooks folders protect every path", () => {
+  it("repo A's hooksPath pointing into repo B's tree is HIGH when written via B", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a", "[core]\n\thooksPath = ../b/from-a\n");
+    repo(ws, "b");
+    // Something in A was classified first, so A is known.
+    expect(write(ws, home, "a/src/x.ts").tier).toBe("MED");
+    expect(write(ws, home, "b/from-a/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, "b/src/y.ts").tier).toBe("MED");
   });
 });

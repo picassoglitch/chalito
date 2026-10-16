@@ -181,7 +181,79 @@ const expandHome = (p: string, home: string) => (p.startsWith("~/") ? join(home,
 const unsurePath = (v: string) => (v.startsWith("~") && !v.startsWith("~/")) || v.includes("%(");
 
 /** Environment variables that change which config git reads. */
+/** `section.key` or `section.sub.key` from a command-line config key. */
+const splitKey = (key: string): Entry | null => {
+  const first = key.indexOf(".");
+  const last = key.lastIndexOf(".");
+  if (first <= 0 || last === key.length - 1) return null;
+  const section = key.slice(0, first).toLowerCase();
+  const sub = first === last ? null : key.slice(first + 1, last);
+  return {
+    section,
+    sub: section === "includeif" ? sub : (sub?.toLowerCase() ?? null),
+    key: key.slice(last + 1).toLowerCase(),
+    value: true,
+  };
+};
+
+/** One of git's single-quoted words ('it'\''s'); returns the word and the rest, or throws. */
+const sqWord = (s: string): [string, string] => {
+  if (!s.startsWith("'")) throw new Unsure("GIT_CONFIG_PARAMETERS quoting");
+  let out = "";
+  let i = 1;
+  for (;;) {
+    const end = s.indexOf("'", i);
+    if (end === -1) throw new Unsure("GIT_CONFIG_PARAMETERS quoting");
+    out += s.slice(i, end);
+    if (s.startsWith("\\''", end + 1)) {
+      out += "'";
+      i = end + 4;
+    } else return [out, s.slice(end + 1)];
+  }
+};
+
+/**
+ * Config given in the environment, as entries: GIT_CONFIG_COUNT with GIT_CONFIG_KEY_n /
+ * GIT_CONFIG_VALUE_n, and GIT_CONFIG_PARAMETERS (`git -c`: 'key'='value' words, space-separated).
+ * Throws Unsure on anything it can't parse.
+ */
+export const envConfig = (env: GitEnv): Entry[] => {
+  const out: Entry[] = [];
+  const add = (key: string, value: string | true) => {
+    const e = splitKey(key);
+    if (!e) throw new Unsure(`config key ${key}`);
+    out.push({ ...e, value });
+  };
+  let params = (env.GIT_CONFIG_PARAMETERS ?? "").trim();
+  while (params) {
+    const [key, rest] = sqWord(params);
+    if (rest.startsWith("=")) {
+      const [value, after] = sqWord(rest.slice(1));
+      add(key, value);
+      params = after.trim();
+    } else {
+      // Older form: 'key=value' in one word.
+      const eq = key.indexOf("=");
+      add(eq === -1 ? key : key.slice(0, eq), eq === -1 ? true : key.slice(eq + 1));
+      params = rest.trim();
+    }
+  }
+  if (env.GIT_CONFIG_COUNT !== undefined) {
+    const n = Number(env.GIT_CONFIG_COUNT);
+    if (!Number.isInteger(n) || n < 0 || n > 1000) throw new Unsure("GIT_CONFIG_COUNT");
+    for (let i = 0; i < n; i++) {
+      const key = env[`GIT_CONFIG_KEY_${i}`];
+      const value = env[`GIT_CONFIG_VALUE_${i}`];
+      if (key === undefined || value === undefined) throw new Unsure(`GIT_CONFIG_KEY_${i}`);
+      add(key, value);
+    }
+  }
+  return out;
+};
+
 export interface GitEnv {
+  /** GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n and anything else passed through. */
+  [name: string]: string | undefined;
   GIT_CONFIG_GLOBAL?: string | undefined;
   GIT_CONFIG_SYSTEM?: string | undefined;
   GIT_CONFIG_NOSYSTEM?: string | undefined;
@@ -319,6 +391,10 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
       unsure = true;
       return;
     }
+    applyEntries(entries, file, depth, system, conditional);
+  };
+  /** What git does with a file's entries (also used for config given in the environment). */
+  function applyEntries(entries: Entry[], file: string, depth: number, system: boolean, conditional: boolean) {
     for (const e of entries) {
       if (e.section === "core" && e.sub === null && e.key === "hookspath") {
         if (e.value === true || unsurePath(e.value)) unsure = true;
@@ -356,10 +432,18 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
         }
       }
     }
-  };
+  }
 
-  // Config passed on the command line or through the environment can't be read from files.
-  if (env.GIT_CONFIG_COUNT || env.GIT_CONFIG_PARAMETERS || env.GIT_CONFIG) unsure = true;
+  // Config given in the environment (git -c, GIT_CONFIG_COUNT/KEY_n/VALUE_n): parsed like a file
+  // that comes last. Anything we can't parse fails closed.
+  let envEntries: Entry[] = [];
+  try {
+    envEntries = envConfig(env);
+  } catch {
+    unsure = true;
+  }
+  // GIT_CONFIG names a config file (only `git config` honours it): read it too.
+  if (env.GIT_CONFIG) readConfig(resolve(ws, env.GIT_CONFIG), 0);
   // git's order: system, global (XDG, then ~/.gitconfig), the repo's, the worktree's. The last value wins.
   const noSystem = !!env.GIT_CONFIG_NOSYSTEM && !/^(0|false|no|off)$/i.test(env.GIT_CONFIG_NOSYSTEM);
   const platform = o.platform ?? process.platform;
@@ -414,6 +498,7 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
     }
   readConfig(join(common, "config"), 0);
   readConfig(join(gitDir, "config.worktree"), 0);
+  applyEntries(envEntries, join(ws, "(environment)"), 0, false, false);
 
   const gitDirs = [...new Set([gitDir, common])];
   const extraDirs = [...extra].map((v) => resolve(ws, expandHome(v, home)));
@@ -423,7 +508,7 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   return { dir, extraDirs, gitDirs, chain, watched };
 };
 
-const cache = new Map<string, { stamp: string; info: HooksInfo }>();
+const cache = new Map<string, { stamp: string; info: HooksInfo; root: string }>();
 
 /** resolveHooks, cached per workspace until any watched file's mtime changes. */
 export const hooksFor = (ws: string, o: HooksOptions): HooksInfo => {
@@ -432,9 +517,13 @@ export const hooksFor = (ws: string, o: HooksOptions): HooksInfo => {
   const hit = cache.get(key);
   if (hit && hit.stamp === hit.info.watched.map((f) => fs.mtime(f)).join(",")) return hit.info;
   const info = resolveHooks(ws, o);
-  cache.set(key, { stamp: info.watched.map((f) => fs.mtime(f)).join(","), info });
+  cache.set(key, { stamp: info.watched.map((f) => fs.mtime(f)).join(","), info, root: ws });
   return info;
 };
+
+/** Every repo resolved so far (the classifier protects all their hooks folders, from any path). */
+export const resolvedRepos = (): { root: string; info: HooksInfo }[] =>
+  [...cache.values()].map((c) => ({ root: c.root, info: c.info }));
 
 /**
  * The repo a path belongs to: the nearest folder at or above it holding a `.git` (folder or
