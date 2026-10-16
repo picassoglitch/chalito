@@ -405,7 +405,7 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
       const g = await signGlyph(
         {
           ...glyph.body,
-          codeId: `code_x${Date.now()}`,
+          codeId: `code_x${Date.now()}_second_code`,
           issuerPubSign: other.pubSign,
           issuerPubBox: other.pubBox,
           nonce: await randomNonce(),
