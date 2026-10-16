@@ -689,3 +689,14 @@ describe("repos the index doesn't know are still covered", () => {
     }
   });
 });
+
+describe("one comparison key for the index and the classifier", () => {
+  it.each(["hooks-a.", "hooks-a ", "Hooks-A.."])("win32: a hooksPath written as %j still protects hooks-a", (hp) => {
+    const home = root();
+    const ws = repo(home, "app", `[core]\n\thooksPath = "${hp}"\n`);
+    const o = { platform: "win32" };
+    expect(write(ws, home, "hooks-a/pre-commit", o).tier).toBe("HIGH");
+    expect(write(ws, home, "HOOKS-A/pre-commit", o).tier).toBe("HIGH");
+    expect(write(ws, home, "src/a.ts", o).tier).toBe("MED");
+  });
+});

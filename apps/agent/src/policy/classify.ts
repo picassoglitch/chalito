@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
 import { type GitFs } from "./git-hooks.js";
-import { repoForPath, repoUnion } from "./repo-index.js";
+import { foldKey, repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
   AI_CONFIG_DIRS,
@@ -123,16 +123,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const platform = ctx.platform ?? process.platform;
   const fold = platform === "darwin" || platform === "win32";
   // Windows also ignores trailing dots and spaces in a name (`.envrc.` is `.envrc`).
-  const winTrim = (p: string) =>
-    p
-      .split(/([\\/])/)
-      .map((c) => (c === "." || c === ".." || c === "/" || c === "\\" ? c : c.replace(/[. ]+$/, "")))
-      .join("");
-  const k = (p: string) => {
-    if (!fold) return p;
-    const n = p.normalize("NFC").toLowerCase();
-    return platform === "win32" ? winTrim(n) : n;
-  };
+  // One comparison key everywhere (repo-index's union uses the same function).
+  const k = (p: string) => foldKey(p, platform);
   const within = (child: string, parent: string) => withinExact(k(child), k(parent));
   const same = (a: string, b: string) => k(a) === k(b);
   const real = ctx.realpath ?? defaultRealpath;

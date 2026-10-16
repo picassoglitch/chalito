@@ -87,8 +87,16 @@ export interface RepoUnion {
 }
 
 /** The comparison key the classifier uses: NFC and lower case where the file system ignores case. */
-export const foldKey = (p: string, platform: NodeJS.Platform) =>
-  platform === "darwin" || platform === "win32" ? p.normalize("NFC").toLowerCase() : p;
+export const foldKey = (p: string, platform: NodeJS.Platform): string => {
+  if (platform !== "darwin" && platform !== "win32") return p;
+  const n = p.normalize("NFC").toLowerCase();
+  if (platform !== "win32") return n;
+  // Windows also ignores trailing dots and spaces in a name (`.envrc.` is `.envrc`).
+  return n
+    .split(/([\\/])/)
+    .map((c) => (c === "." || c === ".." || c === "/" || c === "\\" ? c : c.replace(/[. ]+$/, "")))
+    .join("");
+};
 
 const indexes = new Map<string, WsIndex>();
 let version = 0;
