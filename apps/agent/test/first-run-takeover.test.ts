@@ -6,6 +6,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -182,7 +183,7 @@ describe('"Usar" and "se actualizó: confirmar" (local pin of what the panel sho
     expect(await checkClaudePin(pin)).toEqual({ ok: false, reason: "world_writable" });
     chmodSync(aider, 0o755);
     // Same size, same mtime, different bytes: a cache keyed on size+mtime would miss this; the check doesn't.
-    const { statSync, utimesSync } = await import("node:fs");
+    const { statSync } = await import("node:fs");
     const st = statSync(aider);
     writeFileSync(aider, readFileSync(aider, "utf8").replace("aider", "xxxxx"));
     utimesSync(aider, st.atime, st.mtime);
@@ -1008,5 +1009,54 @@ describe("follow-up 2: Windows names the checks can't trust fail closed", () => 
     expect(write("src/file~name.ts").tier).toBe("MED");
     // Other systems keep these as ordinary names.
     expect(write("notes.md.", { ...win, platform: "linux" }).tier).toBe("MED");
+  });
+});
+
+describe("follow-up 3: project files that run code, the repo's hooks folder, 8.3 shapes", () => {
+  const mk = () => {
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "chalito-fr3-")));
+    return ws;
+  };
+  const ctx = (ws: string, o: Partial<Parameters<typeof classifyToolCall>[2]> = {}) => ({
+    policy: { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: ws }] },
+    home: "/home/ana",
+    cwd: ws,
+    realpath: (x: string) => x,
+    ...o,
+  });
+  const write = (ws: string, f: string, o: Partial<Parameters<typeof classifyToolCall>[2]> = {}) =>
+    classifyToolCall("Write", { file_path: `${ws}/${f}`, content: "x" }, ctx(ws, o));
+
+  it("package-manager, toolchain and IDE run settings in a project are HIGH", () => {
+    const ws = mk();
+    for (const f of [
+      ".npmrc",
+      "packages/web/.npmrc",
+      ".yarnrc",
+      ".yarnrc.yml",
+      ".idea/runConfigurations/Dev.xml",
+      ".idea/workspace.xml",
+      ".mise.toml",
+      ".tool-versions",
+      ".githooks/pre-commit",
+    ])
+      expect(write(ws, f).tier, f).toBe("HIGH");
+    for (const f of [".idea/misc.xml", "src/tool-versions.ts", "docs/npmrc.md"])
+      expect(write(ws, f).tier, f).toBe("MED");
+  });
+
+  it("on Windows only 8.3-shaped names (≤8 before ~N, extension ≤3) count as short names", () => {
+    const ws = "/w";
+    const win = { platform: "win32" as const };
+    for (const f of ["PROGRA~1/x.ts", ".VSCOD~1/tasks.json", "src/NOTESV~1.MD", "src/A_B~12.TXT"])
+      expect(write(ws, f, win).reasons, f).toContain("ambiguous Windows path name");
+    for (const f of [
+      "src/meeting-notes~1.md",
+      "src/notes~1.backup",
+      "src/draft~v2.md",
+      "src/file~name.ts",
+      "src/a~1.json5",
+    ])
+      expect(write(ws, f, win).reasons, f).not.toContain("ambiguous Windows path name");
   });
 });

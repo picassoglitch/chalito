@@ -22,6 +22,7 @@ import {
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
+import { SCAN_MAX_AGE_MS, scanRepos } from "./policy/git-hooks.js";
 import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
@@ -467,12 +468,25 @@ const startDaemon = async (
   // Keychain rollback anchor for policy.lock and the Developer-mode chain; also this
   // process's high-water mark (it never moves backwards).
   const anchor = await new AnchorStore(secrets).load();
+  // The classifier knows every repo in each workspace (git-hooks.ts): scan at start, when the
+  // policy changes and every few minutes (new clones), never depending on what was touched first.
+  const scanWorkspaceRepos = (force = false) => {
+    for (const w of policyRef?.get().workspaces ?? [])
+      try {
+        scanRepos(w.path, { force });
+      } catch (err) {
+        log.warn("repos.scan_failed", { error: err instanceof Error ? err.message : "error" });
+      }
+  };
+  let policyRef: FilePolicyHolder | null = null;
   const policy = new FilePolicyHolder(dir, id.sign, {
     anchor,
     log,
     onTamper: ({ fileHash, inForceHash }) =>
       publish({ v: 1, type: "policy.tampered", deviceId: id.deviceId, fileHash, inForceHash, t: now() }),
     onChange: async (hash) => {
+      // New workspaces: find their repos now, not on the first classified write.
+      scanWorkspaceRepos(true);
       await computer?.onPolicyChange();
       await terminal?.onPolicyChange();
       await screen?.onPolicyChange();
@@ -697,6 +711,9 @@ const startDaemon = async (
 
   // The agent's own binaries and persistence files are hard-floor targets for the classifier.
   const agentBin = isInterpreter(process.execPath) ? which("chalito", env) : process.execPath;
+  const pickEnv = (e: Record<string, string | undefined>, keys: string[]) =>
+    Object.fromEntries(keys.flatMap((k) => (e[k] !== undefined ? [[k, e[k]]] : [])));
+
   const extrasFor = (c: PairedConfig, claude: string | null) => ({
     agentBinaries: [...new Set([process.execPath, agentBin].filter((p): p is string => !!p && !isInterpreter(p)))],
     protectedPaths: [
@@ -707,7 +724,33 @@ const startDaemon = async (
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
     // Windows folder redirection: the classifier checks AppData entries under the real roots too.
-    env: { APPDATA: env.APPDATA, LOCALAPPDATA: env.LOCALAPPDATA },
+    env: {
+      // Where things are installed on this computer: the daemon's own environment.
+      ...pickEnv(env, [
+        "APPDATA",
+        "LOCALAPPDATA",
+        "ProgramData",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_ARCHITEW6432",
+      ]),
+      // What git in the sessions reads: their HOME, XDG, PATH and GIT_CONFIG_* (git-hooks.ts fails
+      // closed on the command-line ones).
+      // GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n go with GIT_CONFIG_COUNT.
+      ...Object.fromEntries(Object.entries(claudeEnv(env, "")).filter(([k]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k))),
+      ...pickEnv(claudeEnv(env, ""), [
+        "HOME",
+        "PATH",
+        "XDG_CONFIG_HOME",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG",
+      ]),
+    },
   });
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {
@@ -1191,6 +1234,9 @@ const startDaemon = async (
     );
   }, PRESENCE_HEARTBEAT_MS);
   const endorsementSync = every(syncTrust, ENDORSEMENT_SYNC_MS);
+  policyRef = policy;
+  scanWorkspaceRepos();
+  const repoScan = every(() => scanWorkspaceRepos(true), SCAN_MAX_AGE_MS);
 
   // Engine: curated recipe updates from the api, used only when a compiled-in key verifies them.
   const catalogFetch: CatalogFetch | false =
@@ -1229,6 +1275,7 @@ const startDaemon = async (
     refresh.clear();
     heartbeat.clear();
     endorsementSync.clear();
+    repoScan.clear();
     catalogRefresh.clear();
     unwatchEndorsements();
     unwatchCommands();

@@ -35,6 +35,7 @@ import { DeviceRevokedError } from "../src/device-auth.js";
 import { MemorySecretStore, SECRET_NAMES } from "../src/secrets.js";
 import { MemoryStore } from "../src/store.js";
 import { TrustStore } from "../src/trust-store.js";
+import { SCAN_MAX_AGE_MS } from "../src/policy/git-hooks.js";
 import {
   TrustedClientList,
   generateBoxKeyPair,
@@ -249,7 +250,8 @@ describe("chalito run (daemon)", () => {
   it("refreshes the device token on a timer (~50 min)", async () => {
     const s = await setup();
     const d = await runDaemon(s.deps);
-    expect(s.refreshEvery).toEqual([4 * 60 * 1000, PRESENCE_HEARTBEAT_MS, ENDORSEMENT_SYNC_MS]);
+    // Token refresh, presence heartbeat, endorsement sync, and the workspace repo rescan (git-hooks.ts).
+    expect(s.refreshEvery).toEqual([4 * 60 * 1000, PRESENCE_HEARTBEAT_MS, ENDORSEMENT_SYNC_MS, SCAN_MAX_AGE_MS]);
     s.refreshers[0]!();
     await new Promise((r) => setTimeout(r, 10));
     expect(s.tokens).toEqual(["token-1", "token-2"]);

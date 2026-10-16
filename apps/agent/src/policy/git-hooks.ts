@@ -1,0 +1,623 @@
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
+
+/**
+ * Where git would run a workspace repo's hooks from, worked out WITHOUT running git (running a
+ * `git` found from a workspace could run a planted binary as the agent). We read what git reads:
+ * the `.git` file's `gitdir:`, the gitdir's `commondir`, then the user's and the repo's config
+ * files with their `include.path` / `includeIf` targets (depth ≤ 5, relative to the including
+ * file), and take the last `core.hooksPath`.
+ *
+ * The parser is deliberately small. Anything it can't read or understand with confidence (a
+ * continued line, an unknown construct, an `includeIf` condition it can't evaluate, an unreadable
+ * file) makes the answer "unknown", and the classifier then fails closed on every likely hooks
+ * folder.
+ */
+export interface HooksInfo {
+  /**
+   * The hooks folder; "unknown" when a file couldn't be read or parsed with confidence (fail
+   * closed: the repo's hooks/, .githooks/ and .husky/ count); null when this isn't a git repo.
+   */
+  dir: string | "unknown" | null;
+  /**
+   * Other folders git might use for hooks: core.hooksPath values in includeIf targets whose
+   * condition we can't evaluate (onbranch:, hasconfig:…), or in system configs that disagree.
+   */
+  extraDirs: string[];
+  /** The repo's git dir and common dir (a worktree's are different). */
+  gitDirs: string[];
+  /** Every config file in the resolution chain, read or not (a missing include can be created). */
+  chain: string[];
+  /** Everything whose change can change the answer: the chain plus the .git file and commondir. */
+  watched: string[];
+}
+
+export interface GitFs {
+  read(path: string): string;
+  /** mtime in ms, or -1 when the file doesn't exist. */
+  mtime(path: string): number;
+  isDir(path: string): boolean | null;
+  /** The OS realpath; throws when it can't resolve. */
+  realpath(path: string): string;
+  /** A folder's entries (no symlinks followed); throws when unreadable. Without it, scans fail. */
+  list?(dir: string): { name: string; dir: boolean }[];
+}
+
+const nodeFs: GitFs = {
+  read: (p) => readFileSync(p, "utf8"),
+  mtime: (p) => {
+    try {
+      return statSync(p).mtimeMs;
+    } catch {
+      return -1;
+    }
+  },
+  realpath: (p) => realpathSync.native(p),
+  list: (d) => readdirSync(d, { withFileTypes: true }).map((e) => ({ name: e.name, dir: e.isDirectory() })),
+  isDir: (p) => {
+    try {
+      return statSync(p).isDirectory();
+    } catch {
+      return null;
+    }
+  },
+};
+
+const MAX_DEPTH = 5;
+
+class Unsure extends Error {}
+
+interface Entry {
+  section: string;
+  sub: string | null;
+  key: string;
+  value: string | true;
+}
+
+/** One value: quotes, escapes, and `;`/`#` comments outside quotes. Throws Unsure on anything odd. */
+const parseValue = (raw: string): string => {
+  let out = "";
+  let quoted = false;
+  let pending = "";
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]!;
+    if (c === "\\") {
+      const n = raw[i + 1];
+      if (n === undefined) throw new Unsure("line continuation");
+      const map: Record<string, string> = { n: "\n", t: "\t", b: "\b", '"': '"', "\\": "\\" };
+      if (!(n in map)) throw new Unsure(`escape \\${n}`);
+      out += pending + map[n]!;
+      pending = "";
+      i++;
+    } else if (c === '"') {
+      out += pending;
+      pending = "";
+      quoted = !quoted;
+    } else if (!quoted && (c === ";" || c === "#")) {
+      break;
+    } else if (!quoted && (c === " " || c === "\t")) {
+      // Whitespace is kept between words, dropped at the ends.
+      pending += c;
+    } else {
+      out += (out ? pending : "") + c;
+      pending = "";
+    }
+  }
+  if (quoted) throw new Unsure("unterminated quote");
+  return out;
+};
+
+/** Parses a git config file into entries. Throws Unsure when it can't be sure. */
+export const parseGitConfig = (text: string): Entry[] => {
+  const entries: Entry[] = [];
+  let section: string | null = null;
+  let sub: string | null = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = rawLine.replace(/^\uFEFF/, "").trim();
+    if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    if (line.startsWith("[")) {
+      const m = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]/.exec(line);
+      if (!m) throw new Unsure("section header");
+      const name = m[1]!;
+      if (m[2] !== undefined) {
+        section = name.toLowerCase();
+        sub = m[2].replace(/\\(.)/g, (_, c: string) => c);
+      } else {
+        // Legacy [section.sub]: the subsection is lower-cased by git.
+        const dot = name.indexOf(".");
+        section = (dot === -1 ? name : name.slice(0, dot)).toLowerCase();
+        sub = dot === -1 ? null : name.slice(dot + 1).toLowerCase();
+      }
+      line = line.slice(m[0].length).trim();
+      if (!line || line.startsWith("#") || line.startsWith(";")) continue;
+    }
+    if (section === null) throw new Unsure("key before any section");
+    const kv = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line);
+    if (!kv) throw new Unsure("key line");
+    const value = kv[2] === undefined ? true : parseValue(kv[2]);
+    entries.push({ section, sub, key: kv[1]!.toLowerCase(), value });
+  }
+  return entries;
+};
+
+/** A `gitdir:` pattern as a regex (git's wildmatch with `**`). */
+const gitdirPattern = (pattern: string, fromFile: string, home: string, icase: boolean): RegExp => {
+  let p = pattern;
+  if (p.startsWith("~/")) p = join(home, p.slice(2));
+  else if (p.startsWith("./")) p = join(dirname(fromFile), p.slice(2));
+  else if (!isAbsolute(p)) p = `**/${p}`;
+  if (p.endsWith("/")) p += "**";
+  let re = "";
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i]!;
+    if (c === "*" && p[i + 1] === "*") {
+      if (p[i + 2] === "/") {
+        re += "(?:.*/)?";
+        i += 2;
+      } else {
+        re += ".*";
+        i += 1;
+      }
+    } else if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else if (c === "[") throw new Unsure("bracket in includeIf");
+    else re += c.replace(/[.+^${}()|\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`, icase ? "i" : "");
+};
+
+/** Whether git would follow an includeIf with this condition. Throws Unsure if we can't tell. */
+const includeIfApplies = (cond: string, gitDirs: string[], fromFile: string, home: string): boolean => {
+  const m = /^(gitdir|gitdir\/i):(.*)$/.exec(cond);
+  if (!m) throw new Unsure(`includeIf ${cond.split(":")[0]}`);
+  const re = gitdirPattern(m[2]!.replace(/\\/g, "/"), fromFile, home, m[1] === "gitdir/i");
+  // git matches the git dir as given and its realpath.
+  return gitDirs.some((g) => {
+    const dir = g.replace(/\\/g, "/").replace(/\/+$/, "");
+    return re.test(dir) || re.test(`${dir}/`);
+  });
+};
+
+const expandHome = (p: string, home: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
+
+/** A path value we can't resolve like git would: `~user/…`, or git's `%(prefix)` interpolation. */
+const unsurePath = (v: string) => (v.startsWith("~") && !v.startsWith("~/")) || v.includes("%(");
+
+/** Environment variables that change which config git reads. */
+/** `section.key` or `section.sub.key` from a command-line config key. */
+const splitKey = (key: string): Entry | null => {
+  const first = key.indexOf(".");
+  const last = key.lastIndexOf(".");
+  if (first <= 0 || last === key.length - 1) return null;
+  const section = key.slice(0, first).toLowerCase();
+  const sub = first === last ? null : key.slice(first + 1, last);
+  return {
+    section,
+    sub: section === "includeif" ? sub : (sub?.toLowerCase() ?? null),
+    key: key.slice(last + 1).toLowerCase(),
+    value: true,
+  };
+};
+
+/** One of git's single-quoted words ('it'\''s'); returns the word and the rest, or throws. */
+const sqWord = (s: string): [string, string] => {
+  if (!s.startsWith("'")) throw new Unsure("GIT_CONFIG_PARAMETERS quoting");
+  let out = "";
+  let i = 1;
+  for (;;) {
+    const end = s.indexOf("'", i);
+    if (end === -1) throw new Unsure("GIT_CONFIG_PARAMETERS quoting");
+    out += s.slice(i, end);
+    if (s.startsWith("\\''", end + 1)) {
+      out += "'";
+      i = end + 4;
+    } else return [out, s.slice(end + 1)];
+  }
+};
+
+/**
+ * Config given in the environment, as entries: GIT_CONFIG_COUNT with GIT_CONFIG_KEY_n /
+ * GIT_CONFIG_VALUE_n, and GIT_CONFIG_PARAMETERS (`git -c`: 'key'='value' words, space-separated).
+ * Throws Unsure on anything it can't parse.
+ */
+export const envConfig = (env: GitEnv): Entry[] => {
+  const out: Entry[] = [];
+  const add = (key: string, value: string | true) => {
+    const e = splitKey(key);
+    if (!e) throw new Unsure(`config key ${key}`);
+    out.push({ ...e, value });
+  };
+  let params = (env.GIT_CONFIG_PARAMETERS ?? "").trim();
+  while (params) {
+    const [key, rest] = sqWord(params);
+    if (rest.startsWith("=")) {
+      const [value, after] = sqWord(rest.slice(1));
+      add(key, value);
+      params = after.trim();
+    } else {
+      // Older form: 'key=value' in one word.
+      const eq = key.indexOf("=");
+      add(eq === -1 ? key : key.slice(0, eq), eq === -1 ? true : key.slice(eq + 1));
+      params = rest.trim();
+    }
+  }
+  if (env.GIT_CONFIG_COUNT !== undefined) {
+    const n = Number(env.GIT_CONFIG_COUNT);
+    if (!Number.isInteger(n) || n < 0 || n > 1000) throw new Unsure("GIT_CONFIG_COUNT");
+    for (let i = 0; i < n; i++) {
+      const key = env[`GIT_CONFIG_KEY_${i}`];
+      const value = env[`GIT_CONFIG_VALUE_${i}`];
+      if (key === undefined || value === undefined) throw new Unsure(`GIT_CONFIG_KEY_${i}`);
+      add(key, value);
+    }
+  }
+  return out;
+};
+
+export interface GitEnv {
+  /** GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n and anything else passed through. */
+  [name: string]: string | undefined;
+  GIT_CONFIG_GLOBAL?: string | undefined;
+  GIT_CONFIG_SYSTEM?: string | undefined;
+  GIT_CONFIG_NOSYSTEM?: string | undefined;
+  GIT_CONFIG_COUNT?: string | undefined;
+  GIT_CONFIG_PARAMETERS?: string | undefined;
+  GIT_CONFIG?: string | undefined;
+  /** A session-wide repo override: used when set (a missing folder fails closed). */
+  GIT_DIR?: string | undefined;
+  GIT_COMMON_DIR?: string | undefined;
+  ProgramData?: string | undefined;
+  ProgramFiles?: string | undefined;
+  "ProgramFiles(x86)"?: string | undefined;
+  LOCALAPPDATA?: string | undefined;
+  XDG_CONFIG_HOME?: string | undefined;
+  /** The sessions' HOME (git reads ~/.gitconfig from it). */
+  HOME?: string | undefined;
+  /** The sessions' PATH: a git found there may carry its own etc/gitconfig. */
+  PATH?: string | undefined;
+  PROCESSOR_ARCHITECTURE?: string | undefined;
+  PROCESSOR_ARCHITEW6432?: string | undefined;
+}
+
+/**
+ * The system config files git might read on this OS. Several installs can coexist, so all are read
+ * (and all are in the chain, so writing one is HIGH). We don't try to find the running git's own
+ * prefix from PATH: admin-owned system configs aren't writable by the agent anyway; the per-user
+ * installs (Homebrew on Linux, Git for Windows under LOCALAPPDATA) are listed explicitly.
+ * `unsure`: Windows variables we need are missing, so we can't know where they'd be.
+ */
+export const systemConfigs = (
+  platform: NodeJS.Platform,
+  env: GitEnv,
+  home: string,
+): { files: string[]; unsure: boolean } => {
+  if (platform === "win32") {
+    const pf86 = env["ProgramFiles(x86)"];
+    const files: string[] = [];
+    if (env.ProgramData) files.push(win32.join(env.ProgramData, "Git", "config"));
+    if (env.ProgramFiles) {
+      files.push(win32.join(env.ProgramFiles, "Git", "etc", "gitconfig"));
+      files.push(win32.join(env.ProgramFiles, "Git", "mingw64", "etc", "gitconfig"));
+    }
+    if (pf86) files.push(win32.join(pf86, "Git", "etc", "gitconfig"));
+    if (env.LOCALAPPDATA) files.push(win32.join(env.LOCALAPPDATA, "Programs", "Git", "etc", "gitconfig"));
+    const is64 = /64/.test(`${env.PROCESSOR_ARCHITECTURE ?? ""} ${env.PROCESSOR_ARCHITEW6432 ?? ""}`);
+    return { files, unsure: !env.ProgramData || !env.ProgramFiles || !env.LOCALAPPDATA || (is64 && !pf86) };
+  }
+  return {
+    files: [
+      "/etc/gitconfig",
+      "/opt/homebrew/etc/gitconfig",
+      "/usr/local/etc/gitconfig",
+      "/home/linuxbrew/.linuxbrew/etc/gitconfig",
+      join(home, ".linuxbrew", "etc", "gitconfig"),
+    ],
+    unsure: false,
+  };
+};
+
+export interface HooksOptions {
+  home: string;
+  xdgConfigHome?: string;
+  fs?: GitFs;
+  /** The environment sessions run with (GIT_CONFIG_*, ProgramData…). */
+  env?: GitEnv;
+  platform?: NodeJS.Platform;
+}
+
+export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
+  const env = o.env ?? {};
+  // The sessions' HOME: that's where their git looks for ~/.gitconfig and expands ~/.
+  const home = env.HOME || o.home;
+  const fs = o.fs ?? nodeFs;
+  const dotGit = join(ws, ".git");
+  const kind = fs.isDir(dotGit);
+  // Watch .git even when it's missing: creating one makes this a repo.
+  if (kind === null && !env.GIT_DIR) return { dir: null, extraDirs: [], gitDirs: [], chain: [], watched: [dotGit] };
+  const watched = [dotGit];
+  const chain: string[] = [];
+  let unsure = false;
+  const extra = new Set<string>();
+  let gitDir = dotGit;
+  if (env.GIT_DIR) {
+    // The sessions' git uses GIT_DIR instead of discovering .git.
+    gitDir = resolve(ws, env.GIT_DIR);
+    watched.push(gitDir);
+    if (fs.isDir(gitDir) !== true) return { dir: "unknown", extraDirs: [], gitDirs: [gitDir], chain, watched };
+  } else if (kind === false) {
+    try {
+      const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.read(dotGit));
+      if (!m) throw new Unsure("gitdir file");
+      gitDir = resolve(ws, m[1]!);
+    } catch {
+      return { dir: "unknown", extraDirs: [], gitDirs: [], chain, watched };
+    }
+  }
+  let common = gitDir;
+  const commondirFile = join(gitDir, "commondir");
+  watched.push(commondirFile);
+  if (env.GIT_COMMON_DIR) {
+    common = resolve(ws, env.GIT_COMMON_DIR);
+    if (fs.isDir(common) !== true) unsure = true;
+  } else if (fs.mtime(commondirFile) !== -1) {
+    try {
+      common = resolve(gitDir, fs.read(commondirFile).trim());
+    } catch {
+      unsure = true;
+    }
+  }
+
+  let hooksPath: string | null = null;
+  let realGitDir: string | null;
+  try {
+    realGitDir = fs.realpath(gitDir);
+  } catch {
+    realGitDir = null;
+  }
+  const systemValues = new Set<string>();
+  /**
+   * `conditional`: the file is behind an includeIf we can't evaluate. Its hooksPath values become
+   * extra hooks folders instead of the answer.
+   */
+  const readConfig = (file: string, depth: number, system = false, conditional = false) => {
+    chain.push(file);
+    watched.push(file);
+    if (depth > MAX_DEPTH) {
+      unsure = true;
+      return;
+    }
+    if (fs.mtime(file) === -1) return; // git ignores a missing config or include
+    let entries: Entry[];
+    try {
+      entries = parseGitConfig(fs.read(file));
+    } catch {
+      unsure = true;
+      return;
+    }
+    applyEntries(entries, file, depth, system, conditional);
+  };
+  /** What git does with a file's entries (also used for config given in the environment). */
+  function applyEntries(entries: Entry[], file: string, depth: number, system: boolean, conditional: boolean) {
+    for (const e of entries) {
+      if (e.section === "core" && e.sub === null && e.key === "hookspath") {
+        if (e.value === true || unsurePath(e.value)) unsure = true;
+        else if (conditional) extra.add(e.value);
+        else {
+          hooksPath = e.value;
+          if (system) systemValues.add(e.value);
+        }
+      } else if (e.section === "include" && e.sub === null && e.key === "path" && e.value !== true) {
+        if (unsurePath(e.value)) {
+          unsure = true;
+          continue;
+        }
+        readConfig(resolve(dirname(file), expandHome(e.value, home)), depth + 1, system, conditional);
+      } else if (e.section === "includeif" && e.sub !== null && e.key === "path" && e.value !== true) {
+        if (unsurePath(e.value)) {
+          unsure = true;
+          continue;
+        }
+        const target = resolve(dirname(file), expandHome(e.value, home));
+        let applies: boolean;
+        try {
+          if (realGitDir === null) throw new Unsure("realpath of the git dir");
+          applies = includeIfApplies(e.sub, [gitDir, realGitDir], file, home);
+        } catch {
+          // Can't evaluate (onbranch:, hasconfig:…): read it anyway, and any hooksPath in it
+          // counts as a hooks folder too.
+          readConfig(target, depth + 1, system, true);
+          continue;
+        }
+        if (applies) readConfig(target, depth + 1, system, conditional);
+        else {
+          chain.push(target);
+          watched.push(target);
+        }
+      }
+    }
+  }
+
+  // Config given in the environment (git -c, GIT_CONFIG_COUNT/KEY_n/VALUE_n): parsed like a file
+  // that comes last. Anything we can't parse fails closed.
+  let envEntries: Entry[] = [];
+  try {
+    envEntries = envConfig(env);
+  } catch {
+    unsure = true;
+  }
+  // GIT_CONFIG names a config file (only `git config` honours it): read it too.
+  if (env.GIT_CONFIG) readConfig(resolve(ws, env.GIT_CONFIG), 0);
+  // git's order: system, global (XDG, then ~/.gitconfig), the repo's, the worktree's. The last value wins.
+  const noSystem = !!env.GIT_CONFIG_NOSYSTEM && !/^(0|false|no|off)$/i.test(env.GIT_CONFIG_NOSYSTEM);
+  const platform = o.platform ?? process.platform;
+  const known = systemConfigs(platform, env, home);
+  // Each git on the sessions' PATH (checked by existence, never run) may read its own prefix's
+  // etc/gitconfig (Git for Windows also mingw64/mingw32).
+  const P = platform === "win32" ? win32 : { join, dirname };
+  for (const d of (env.PATH ?? "").split(platform === "win32" ? ";" : ":").filter(Boolean)) {
+    const bins = platform === "win32" ? ["git.exe", "git.cmd", "git"] : ["git"];
+    // A file (not a folder) named git there.
+    if (!bins.some((b) => fs.isDir(P.join(d, b)) === false)) continue;
+    const prefix = P.dirname(d);
+    known.files.push(P.join(prefix, "etc", "gitconfig"));
+    if (platform === "win32")
+      for (const m of ["mingw64", "mingw32"]) known.files.push(P.join(prefix, m, "etc", "gitconfig"));
+  }
+  known.files = [...new Set(known.files)];
+  if (!noSystem) {
+    if (env.GIT_CONFIG_SYSTEM) readConfig(env.GIT_CONFIG_SYSTEM, 0, true);
+    else {
+      if (known.unsure) unsure = true;
+      for (const f of known.files) readConfig(f, 0, true);
+    }
+  }
+  // Every known system config is in the chain (writing it is HIGH), read or not.
+  for (const f of known.files)
+    if (!chain.includes(f)) {
+      chain.push(f);
+      watched.push(f);
+    }
+  // Several system configs set it differently: we can't tell which install's git runs, so each
+  // of their values counts.
+  if (systemValues.size > 1) for (const v of systemValues) extra.add(v);
+  if (env.GIT_CONFIG_GLOBAL) readConfig(env.GIT_CONFIG_GLOBAL, 0);
+  else {
+    // git reads $XDG_CONFIG_HOME/git/config when set, else ~/.config/git/config; both are in the chain.
+    const xdgSet = o.xdgConfigHome ?? env.XDG_CONFIG_HOME;
+    const xdg = join(xdgSet ?? join(home, ".config"), "git", "config");
+    const homeXdg = join(home, ".config", "git", "config");
+    readConfig(xdg, 0);
+    if (xdg !== homeXdg && !chain.includes(homeXdg)) {
+      chain.push(homeXdg);
+      watched.push(homeXdg);
+    }
+    readConfig(join(home, ".gitconfig"), 0);
+  }
+  // The daemon's own home can differ from the sessions': its global files are watched and HIGH too.
+  for (const f of [join(o.home, ".gitconfig"), join(o.home, ".config", "git", "config")])
+    if (!chain.includes(f)) {
+      chain.push(f);
+      watched.push(f);
+    }
+  readConfig(join(common, "config"), 0);
+  readConfig(join(gitDir, "config.worktree"), 0);
+  // Order isn't modelled: every hooksPath (and include) given in the environment counts as a
+  // hooks folder, in addition to the files' answer.
+  applyEntries(envEntries, join(ws, "(environment)"), 0, false, true);
+
+  const gitDirs = [...new Set([gitDir, common])];
+  const extraDirs = [...extra].map((v) => resolve(ws, expandHome(v, home)));
+  if (unsure) return { dir: "unknown", extraDirs, gitDirs, chain, watched };
+  const hp = hooksPath as string | null;
+  const dir = hp ? resolve(ws, expandHome(hp, home)) : join(common, "hooks");
+  return { dir, extraDirs, gitDirs, chain, watched };
+};
+
+const cache = new Map<string, { stamp: string; info: HooksInfo }>();
+
+/** resolveHooks, cached per workspace until any watched file's mtime changes. */
+export const hooksFor = (ws: string, o: HooksOptions): HooksInfo => {
+  const fs = o.fs ?? nodeFs;
+  const key = `${ws}\0${o.home}\0${o.xdgConfigHome ?? ""}\0${JSON.stringify(o.env ?? {})}\0${o.platform ?? ""}`;
+  const hit = cache.get(key);
+  if (hit && hit.stamp === hit.info.watched.map((f) => fs.mtime(f)).join(",")) return hit.info;
+  const info = resolveHooks(ws, o);
+  cache.set(key, { stamp: info.watched.map((f) => fs.mtime(f)).join(","), info });
+  return info;
+};
+
+/**
+ * The repo a path belongs to: the nearest folder at or above it holding a `.git` (folder or
+ * gitdir file), or null. With GIT_DIR set, the sessions' git treats the folder it's run from as the
+ * repo, so `fallback` (the workspace) is used.
+ */
+export const repoRootOf = (path: string, o: { fs?: GitFs; env?: GitEnv; fallback: string }): string | null => {
+  const fs = o.fs ?? nodeFs;
+  if (o.env?.GIT_DIR) return o.fallback;
+  let cur = path;
+  for (;;) {
+    if (fs.isDir(join(cur, ".git")) !== null) return cur;
+    const up = dirname(cur);
+    if (up === cur) return null;
+    cur = up;
+  }
+};
+
+/** Folders a repo scan never enters: dependencies, build output, caches. */
+const SKIP = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "out",
+  "target",
+  "vendor",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".next",
+  ".nuxt",
+  ".cache",
+  ".turbo",
+  "Pods",
+  ".gradle",
+  ".terraform",
+]);
+export const SCAN_DEPTH = 4;
+export const SCAN_MAX_REPOS = 200;
+/** Workspaces are re-scanned at least this often (new clones show up). */
+export const SCAN_MAX_AGE_MS = 3 * 60 * 1000;
+
+export interface RepoScan {
+  /** Every folder holding a `.git` within the workspace (depth ≤ 4). */
+  roots: string[];
+  /** False when the cap was hit or a folder couldn't be read: unresolved repos get the narrow fallback. */
+  complete: boolean;
+  at: number;
+}
+
+const scans = new Map<string, RepoScan>();
+
+/** Finds the repos inside a workspace, so every one of them is known before anything is classified. */
+export const scanRepos = (
+  ws: string,
+  o: { fs?: GitFs; max?: number; now?: number; force?: boolean } = {},
+): RepoScan => {
+  const fs = o.fs ?? nodeFs;
+  const now = o.now ?? Date.now();
+  const max = o.max ?? SCAN_MAX_REPOS;
+  const key = `${ws}\0${max}`;
+  const hit = scans.get(key);
+  if (hit && !o.force && now - hit.at < SCAN_MAX_AGE_MS) return hit;
+  const roots: string[] = [];
+  let complete = !!fs.list;
+  const walk = (dir: string, depth: number) => {
+    if (!complete) return;
+    let entries: { name: string; dir: boolean }[];
+    try {
+      entries = fs.list!(dir);
+    } catch {
+      complete = false;
+      return;
+    }
+    if (entries.some((e) => e.name === ".git")) {
+      if (roots.length >= max) {
+        complete = false;
+        return;
+      }
+      roots.push(dir);
+    }
+    if (depth >= SCAN_DEPTH) return;
+    for (const e of entries) if (e.dir && !SKIP.has(e.name)) walk(join(dir, e.name), depth + 1);
+  };
+  if (fs.list) walk(ws, 0);
+  const scan = { roots, complete, at: now };
+  scans.set(key, scan);
+  return scan;
+};
+
+/** Tests: forget cached answers. */
+export const clearHooksCache = () => {
+  cache.clear();
+  scans.clear();
+};
