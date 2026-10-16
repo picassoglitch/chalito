@@ -28,6 +28,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.js");
 const { clearRepoIndex, refreshRepoIndex } = await import("../src/policy/repo-index.js");
+const { hooksOptionsFor } = await import("../src/policy/classify.js");
 
 describe("classification with 200 repos in the workspace", () => {
   it("stays under 1 ms per call after warm-up, without walking folders or statting each repo", async () => {
@@ -40,7 +41,7 @@ describe("classification with 200 repos in the workspace", () => {
     }
     clearRepoIndex();
     // The daemon's async scan (fs.promises), off the classify path.
-    await refreshRepoIndex([ws]);
+    // (the union is built there too, with the classification's options)
     const ctx = {
       policy: { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] },
       home,
@@ -49,6 +50,7 @@ describe("classification with 200 repos in the workspace", () => {
       env: { GIT_CONFIG_NOSYSTEM: "1" },
     };
     const write = (f: string) => classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, ctx);
+    await refreshRepoIndex([ws], { hooks: hooksOptionsFor(ctx) });
     // Warm-up: the first call builds the union (reads the 200 repos' configs once).
     expect(write("group3/repo13/hooks-13/pre-commit").tier).toBe("HIGH");
     expect(write("group4/repo14/hooks-14/pre-commit").tier).toBe("HIGH");

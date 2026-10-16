@@ -38,7 +38,9 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.js");
-const { clearRepoIndex, refreshRepoIndexSync, scanReposSync } = await import("../src/policy/repo-index.js");
+const { hooksOptionsFor } = await import("../src/policy/classify.js");
+const { clearRepoIndex, refreshRepoIndex, refreshRepoIndexSync, scanReposSync } =
+  await import("../src/policy/repo-index.js");
 const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, systemConfigs } =
   await import("../src/policy/git-hooks.js");
 
@@ -69,8 +71,10 @@ const ctx = (ws: string, home: string, o: Record<string, unknown> = {}) => ({
 /** Classifies a write after a (sync, test-only) repo scan: the classifier itself never scans. */
 const write = (ws: string, home: string, f: string, o: Record<string, unknown> = {}) => {
   const { repoScanLimit, ...rest } = o as { repoScanLimit?: number };
-  refreshRepoIndexSync([ws], repoScanLimit ? { max: repoScanLimit } : {});
-  return classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, ctx(ws, home, rest));
+  const c = ctx(ws, home, rest);
+  // The daemon's scan + union build (sync here, for tests), with the classification's options.
+  refreshRepoIndexSync([ws], { ...(repoScanLimit ? { max: repoScanLimit } : {}), hooks: hooksOptionsFor(c as never) });
+  return classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, c);
 };
 const bump = (f: string) => utimesSync(f, new Date(), new Date(Date.now() + 10_000));
 
@@ -698,5 +702,39 @@ describe("one comparison key for the index and the classifier", () => {
     expect(write(ws, home, "hooks-a/pre-commit", o).tier).toBe("HIGH");
     expect(write(ws, home, "HOOKS-A/pre-commit", o).tier).toBe("HIGH");
     expect(write(ws, home, "src/a.ts", o).tier).toBe("MED");
+  });
+});
+
+describe("before the first scan finishes", () => {
+  it("the narrow fallback applies on top of the per-path lookup, then the finished union takes over", async () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a", "[core]\n\thooksPath = ../b/from-a\n");
+    repo(ws, "b");
+    const c = ctx(ws, home);
+    const classify = (f: string) => classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, c);
+    // No scan yet: B's hooks/ and .githooks/ count; A's cross-repo hooksPath isn't known yet.
+    expect(classify("b/hooks/pre-commit").tier).toBe("HIGH");
+    expect(classify("b/.githooks/x").tier).toBe("HIGH");
+    expect(classify("b/src/hooks/useX.ts").tier).toBe("MED");
+    // The scan the classifier queued (async) finishes, then the union is built off the classify path.
+    await refreshRepoIndex([ws]);
+    await new Promise((r) => setImmediate(r));
+    expect(classify("b/from-a/pre-commit").tier).toBe("HIGH");
+    expect(classify("b/hooks/pre-commit").tier).toBe("MED");
+  });
+
+  it("a partial scan keeps the narrow fallback for that workspace", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a");
+    mkdirSync(join(ws, "x", "y"), { recursive: true });
+    const c = ctx(ws, home);
+    refreshRepoIndexSync([ws], { budget: 1, hooks: hooksOptionsFor(c as never) });
+    const classify = (f: string) => classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, c);
+    expect(classify("a/hooks/pre-commit").tier).toBe("HIGH");
+    expect(classify("a/src/a.ts").tier).toBe("MED");
   });
 });
