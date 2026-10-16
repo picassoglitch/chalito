@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 
 /**
@@ -39,6 +39,8 @@ export interface GitFs {
   isDir(path: string): boolean | null;
   /** The OS realpath; throws when it can't resolve. */
   realpath(path: string): string;
+  /** A folder's entries (no symlinks followed); throws when unreadable. Without it, scans fail. */
+  list?(dir: string): { name: string; dir: boolean }[];
 }
 
 const nodeFs: GitFs = {
@@ -51,6 +53,7 @@ const nodeFs: GitFs = {
     }
   },
   realpath: (p) => realpathSync.native(p),
+  list: (d) => readdirSync(d, { withFileTypes: true }).map((e) => ({ name: e.name, dir: e.isDirectory() })),
   isDir: (p) => {
     try {
       return statSync(p).isDirectory();
@@ -498,7 +501,9 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
     }
   readConfig(join(common, "config"), 0);
   readConfig(join(gitDir, "config.worktree"), 0);
-  applyEntries(envEntries, join(ws, "(environment)"), 0, false, false);
+  // Order isn't modelled: every hooksPath (and include) given in the environment counts as a
+  // hooks folder, in addition to the files' answer.
+  applyEntries(envEntries, join(ws, "(environment)"), 0, false, true);
 
   const gitDirs = [...new Set([gitDir, common])];
   const extraDirs = [...extra].map((v) => resolve(ws, expandHome(v, home)));
@@ -508,7 +513,7 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   return { dir, extraDirs, gitDirs, chain, watched };
 };
 
-const cache = new Map<string, { stamp: string; info: HooksInfo; root: string }>();
+const cache = new Map<string, { stamp: string; info: HooksInfo }>();
 
 /** resolveHooks, cached per workspace until any watched file's mtime changes. */
 export const hooksFor = (ws: string, o: HooksOptions): HooksInfo => {
@@ -517,13 +522,9 @@ export const hooksFor = (ws: string, o: HooksOptions): HooksInfo => {
   const hit = cache.get(key);
   if (hit && hit.stamp === hit.info.watched.map((f) => fs.mtime(f)).join(",")) return hit.info;
   const info = resolveHooks(ws, o);
-  cache.set(key, { stamp: info.watched.map((f) => fs.mtime(f)).join(","), info, root: ws });
+  cache.set(key, { stamp: info.watched.map((f) => fs.mtime(f)).join(","), info });
   return info;
 };
-
-/** Every repo resolved so far (the classifier protects all their hooks folders, from any path). */
-export const resolvedRepos = (): { root: string; info: HooksInfo }[] =>
-  [...cache.values()].map((c) => ({ root: c.root, info: c.info }));
 
 /**
  * The repo a path belongs to: the nearest folder at or above it holding a `.git` (folder or
@@ -542,5 +543,81 @@ export const repoRootOf = (path: string, o: { fs?: GitFs; env?: GitEnv; fallback
   }
 };
 
+/** Folders a repo scan never enters: dependencies, build output, caches. */
+const SKIP = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "out",
+  "target",
+  "vendor",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".next",
+  ".nuxt",
+  ".cache",
+  ".turbo",
+  "Pods",
+  ".gradle",
+  ".terraform",
+]);
+export const SCAN_DEPTH = 4;
+export const SCAN_MAX_REPOS = 200;
+/** Workspaces are re-scanned at least this often (new clones show up). */
+export const SCAN_MAX_AGE_MS = 3 * 60 * 1000;
+
+export interface RepoScan {
+  /** Every folder holding a `.git` within the workspace (depth ≤ 4). */
+  roots: string[];
+  /** False when the cap was hit or a folder couldn't be read: unresolved repos get the narrow fallback. */
+  complete: boolean;
+  at: number;
+}
+
+const scans = new Map<string, RepoScan>();
+
+/** Finds the repos inside a workspace, so every one of them is known before anything is classified. */
+export const scanRepos = (
+  ws: string,
+  o: { fs?: GitFs; max?: number; now?: number; force?: boolean } = {},
+): RepoScan => {
+  const fs = o.fs ?? nodeFs;
+  const now = o.now ?? Date.now();
+  const max = o.max ?? SCAN_MAX_REPOS;
+  const key = `${ws}\0${max}`;
+  const hit = scans.get(key);
+  if (hit && !o.force && now - hit.at < SCAN_MAX_AGE_MS) return hit;
+  const roots: string[] = [];
+  let complete = !!fs.list;
+  const walk = (dir: string, depth: number) => {
+    if (!complete) return;
+    let entries: { name: string; dir: boolean }[];
+    try {
+      entries = fs.list!(dir);
+    } catch {
+      complete = false;
+      return;
+    }
+    if (entries.some((e) => e.name === ".git")) {
+      if (roots.length >= max) {
+        complete = false;
+        return;
+      }
+      roots.push(dir);
+    }
+    if (depth >= SCAN_DEPTH) return;
+    for (const e of entries) if (e.dir && !SKIP.has(e.name)) walk(join(dir, e.name), depth + 1);
+  };
+  if (fs.list) walk(ws, 0);
+  const scan = { roots, complete, at: now };
+  scans.set(key, scan);
+  return scan;
+};
+
 /** Tests: forget cached answers. */
-export const clearHooksCache = () => cache.clear();
+export const clearHooksCache = () => {
+  cache.clear();
+  scans.clear();
+};

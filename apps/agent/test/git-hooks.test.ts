@@ -37,7 +37,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.js");
-const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, systemConfigs } =
+const { clearHooksCache, envConfig, parseGitConfig, resolveHooks, scanRepos, systemConfigs } =
   await import("../src/policy/git-hooks.js");
 
 beforeEach(() => clearHooksCache());
@@ -319,13 +319,14 @@ describe("system config, the environment, and values we can't resolve", () => {
       { section: "core", sub: null, key: "hookspath", value: "it's" },
       { section: "user", sub: null, key: "name", value: "x" },
     ]);
-    expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_PARAMETERS: "'core.hooksPath'='p-hooks'" } }).dir).toBe(
-      join(ws, "p-hooks"),
-    );
+    // Order isn't modelled: environment values are extra hooks folders, on top of the files' answer.
+    const p = resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_PARAMETERS: "'core.hooksPath'='p-hooks'" } });
+    expect(p.dir).toBe(join(ws, ".git", "hooks"));
+    expect(p.extraDirs).toEqual([join(ws, "p-hooks")]);
     clearHooksCache();
-    expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_PARAMETERS: "'include.path'='inc.cfg'" } }).dir).toBe(
-      join(ws, "from-inc"),
-    );
+    expect(
+      resolveHooks(ws, { home, env: { ...NOSYS, GIT_CONFIG_PARAMETERS: "'include.path'='inc.cfg'" } }).extraDirs,
+    ).toEqual([join(ws, "from-inc")]);
     clearHooksCache();
     const counted = {
       ...NOSYS,
@@ -335,7 +336,14 @@ describe("system config, the environment, and values we can't resolve", () => {
       GIT_CONFIG_KEY_1: "core.hooksPath",
       GIT_CONFIG_VALUE_1: "count-hooks",
     };
-    expect(resolveHooks(ws, { home, env: counted }).dir).toBe(join(ws, "count-hooks"));
+    expect(resolveHooks(ws, { home, env: counted }).extraDirs).toEqual([join(ws, "count-hooks")]);
+    // Several values: all of them count, whichever git would end up using.
+    clearHooksCache();
+    const both = { ...counted, GIT_CONFIG_PARAMETERS: "'core.hooksPath'='p-hooks'" };
+    expect(resolveHooks(ws, { home, env: both }).extraDirs.sort()).toEqual(
+      [join(ws, "count-hooks"), join(ws, "p-hooks")].sort(),
+    );
+    expect(write(ws, home, "p-hooks/x", { env: both }).tier).toBe("HIGH");
     expect(write(ws, home, "count-hooks/x", { env: counted }).tier).toBe("HIGH");
     expect(write(ws, home, "src/hooks/useX.ts", { env: counted }).tier).toBe("MED");
   });
@@ -595,16 +603,45 @@ describe("per-repo resolution, the broad fallback, GIT_DIR, git executables", ()
   });
 });
 
-describe("every known repo's hooks folders protect every path", () => {
-  it("repo A's hooksPath pointing into repo B's tree is HIGH when written via B", () => {
+describe("every repo in the workspace is known up front", () => {
+  it("a sibling repo's hooksPath into another repo is HIGH, even if the sibling was never touched", () => {
     const home = root();
     const ws = join(home, "ws");
     mkdirSync(ws);
     repo(ws, "a", "[core]\n\thooksPath = ../b/from-a\n");
     repo(ws, "b");
-    // Something in A was classified first, so A is known.
-    expect(write(ws, home, "a/src/x.ts").tier).toBe("MED");
+    // The very first write, straight into B: A is found by the workspace scan.
     expect(write(ws, home, "b/from-a/pre-commit").tier).toBe("HIGH");
     expect(write(ws, home, "b/src/y.ts").tier).toBe("MED");
+  });
+
+  it("the scan skips heavy folders, stops at depth 4 and at the cap", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a");
+    repo(join(ws, "node_modules"), "pkg");
+    mkdirSync(join(ws, "d1", "d2", "d3", "d4", "d5"), { recursive: true });
+    repo(join(ws, "d1", "d2", "d3"), "deep");
+    repo(join(ws, "d1", "d2", "d3", "d4", "d5"), "too-deep");
+    const scan = scanRepos(ws, { force: true });
+    expect(scan.roots.sort()).toEqual([join(ws, "a"), join(ws, "d1", "d2", "d3", "deep")].sort());
+    expect(scan.complete).toBe(true);
+    expect(scanRepos(ws, { force: true, max: 1 }).complete).toBe(false);
+  });
+
+  it("a scan cut short protects every repo's usual hooks folders (narrowly)", () => {
+    const home = root();
+    const ws = join(home, "ws");
+    mkdirSync(ws);
+    repo(ws, "a");
+    repo(ws, "b");
+    const o = { repoScanLimit: 1 };
+    expect(write(ws, home, "b/hooks/pre-commit", o).tier).toBe("HIGH");
+    expect(write(ws, home, "a/.githooks/x", o).tier).toBe("HIGH");
+    expect(write(ws, home, "b/src/hooks/useX.ts", o).tier).toBe("MED");
+    // A complete scan: no fallback.
+    clearHooksCache();
+    expect(write(ws, home, "b/hooks/pre-commit").tier).toBe("MED");
   });
 });
