@@ -235,5 +235,8 @@ export const ResolutionReason = z.enum([
   "expired_decision",
   "wrong_device",
   "missing_step_up",
+  // The account revoked this agent device while the approval waited (the revoke sweep denies it
+  // server side; the agent stops waiting and writes nothing more).
+  "agent_revoked",
 ]);
 export type ResolutionReason = z.infer<typeof ResolutionReason>;

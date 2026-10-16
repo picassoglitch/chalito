@@ -24,6 +24,7 @@ import { DEFAULT_POLICY, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { FileSessionRegistry, MemorySessionRegistry } from "../src/session-registry.js";
 import { MemoryStore } from "../src/store.js";
+import { SupabaseError } from "../src/supabase-store.js";
 
 const OWNER = "hub-user-1";
 const WS = "/home/aldo/code/chalito";
@@ -48,6 +49,8 @@ const clock = () => {
       timers.push(t);
       return { clear: () => void (t.dead = true) };
     },
+    /** Timers still armed (not fired, not cleared). */
+    armed: () => timers.filter((t) => !t.dead).length,
     advance: (ms: number) => {
       now += ms;
       const due = timers.filter((t) => !t.dead && t.at <= now);
@@ -365,5 +368,124 @@ describe("session lifecycle (M16 A)", () => {
     if (process.platform !== "win32") expect(statSync(reg.file).mode & 0o777).toBe(0o600);
     writeFileSync(reg.file, "{nope");
     expect(reg.load()).toEqual([]);
+  });
+});
+
+/**
+ * The account revoked this computer: from then on the database refuses its writes by RLS (42501),
+ * as Supabase does once the revoke sweep runs (seen in the beta rehearsal, "agent_revoked").
+ */
+class RevokingStore extends MemoryStore {
+  revoked = false;
+  /** Only the card write is refused (the state write just before it went through, as in CI). */
+  refuseCardsOnly = false;
+  refused: string[] = [];
+  #refuse(op: string) {
+    this.refused.push(op);
+    return new SupabaseError(op, "42501", 'new row violates row-level security policy for table "sessions"');
+  }
+  override async upsertSession(sid: string, data: Record<string, unknown>) {
+    if (this.revoked && (!this.refuseCardsOnly || "card" in data)) throw this.#refuse("merge session");
+    return super.upsertSession(sid, data);
+  }
+  override async writeEvent(e: AgentEvent) {
+    if (this.revoked && !this.refuseCardsOnly) throw this.#refuse("insert event");
+    return super.writeEvent(e);
+  }
+  override async resolveApproval(...a: Parameters<MemoryStore["resolveApproval"]>) {
+    if (this.revoked) throw this.#refuse("resolve approval");
+    return super.resolveApproval(...a);
+  }
+}
+
+describe("an agent revoked mid-approval (beta rehearsal f)", () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (err: unknown) => void unhandled.push(err);
+  const pendingApproval = async () => {
+    const store = new RevokingStore();
+    const h = await harness({ store, turns: [[{ tool: "Bash", input: { command: "git push origin main" } }]] });
+    const r = await h.start();
+    if (!r.ok) throw new Error(JSON.stringify(r));
+    await waitFor(() => store.pendingApprovals().length === 1);
+    return { h, store, sid: r.sid! };
+  };
+  const settle = () => new Promise((r) => setTimeout(r, 30));
+
+  it("an adapter event after the revoke publishes nothing more, and nothing goes unhandled", async () => {
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const store = new RevokingStore();
+      const h = await harness({ store, turns: [[{ say: "uno" }], [{ say: "dos" }]] });
+      const sid = (await h.start()).sid!;
+      await waitFor(() => h.states(sid).includes("idle"));
+      await settle();
+      // The phone revokes this computer; the next turn's "running" state is the first write after.
+      store.revoked = true;
+      await h.prompt(sid, "sigue");
+      await waitFor(() => h.core.revoked);
+      await settle();
+      expect(unhandled).toEqual([]);
+      expect(store.refused.length).toBeGreaterThan(0);
+      expect(h.logs.some((l) => l.includes('"agent.revoked"'))).toBe(true);
+      // Stopped: the session is closed (resumable) and no timer is left to fire.
+      expect(h.core.sessions.size).toBe(0);
+      expect(h.clock.armed()).toBe(0);
+      const refused = store.refused.length;
+      h.clock.advance(60 * MIN);
+      await settle();
+      expect(store.refused.length).toBe(refused);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("a card refused after the revoke (state written, card not) is handled the same way", async () => {
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const store = new RevokingStore();
+      store.refuseCardsOnly = true;
+      const h = await harness({ store, turns: [[{ say: "uno" }], [{ say: "dos" }]] });
+      const sid = (await h.start()).sid!;
+      await waitFor(() => h.states(sid).includes("idle"));
+      await settle();
+      store.revoked = true;
+      await h.prompt(sid, "sigue");
+      await waitFor(() => h.core.revoked);
+      await settle();
+      expect(unhandled).toEqual([]);
+      expect(store.refused).toContain("merge session");
+      expect(h.core.sessions.size).toBe(0);
+      expect(h.clock.armed()).toBe(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("a revoke first seen when the approval times out ends it as agent_revoked, unhandled-free", async () => {
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const { h, store } = await pendingApproval();
+      store.revoked = true;
+      h.clock.advance(10 * MIN + 1_000);
+      await waitFor(() => h.core.revoked);
+      await settle();
+      expect(unhandled).toEqual([]);
+      expect(h.core.sessions.size).toBe(0);
+      expect(h.clock.armed()).toBe(0);
+      // A later approval is denied without a write.
+      expect(
+        await h.core.approvals.request({
+          sid: "s",
+          risk: "HIGH",
+          stepUp: false,
+          origin: "local:tty",
+          details: { toolName: "Bash", input: {}, reasons: [] },
+        }),
+      ).toEqual({ allow: false, reason: "agent_revoked" });
+      expect(store.pendingApprovals()).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });

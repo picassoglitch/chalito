@@ -12,12 +12,14 @@ test("devices: presence, and revoking another client goes to the agent", async (
   await row.getByRole("button", { name: "Sí, retirar" }).click();
   await expect(row.getByTestId("presence")).toHaveText("Retirado");
   expect((await rows(page, "devices")).find((d) => d.device_id === other)?.revoked).toBe(true);
+  // The per-computer outcome renders only once the signed commands settled ("Retirado" shows as
+  // soon as the server row changes, before they're sent): check the order after it, not before.
+  await expect(page.getByTestId("revoke-result")).toContainText("ya no puede entrar a tu cuenta");
+  await expect(page.getByTestId("revoke-agent")).toHaveText("Laptop de Aldo: lo quitó de su lista.");
   // Review R-H5: the server first, then the signed command to each computer.
   const ops = (await clientWrites(page)).map((w) => (w.table === "api" ? w.op : w.table));
   expect(ops.indexOf("devices/revoke")).toBeGreaterThanOrEqual(0);
   expect(ops.indexOf("devices/revoke")).toBeLessThan(ops.lastIndexOf("commands"));
-  await expect(page.getByTestId("revoke-result")).toContainText("ya no puede entrar a tu cuenta");
-  await expect(page.getByTestId("revoke-agent")).toHaveText("Laptop de Aldo: lo quitó de su lista.");
   await expect.poll(() => dev(page, "agentDropped", other)).toBe(true);
 });
 
