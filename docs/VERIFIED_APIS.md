@@ -1280,3 +1280,20 @@ Notable findings:
 - `jpeg-js` 0.4.4 `encode({width, height, data: RGBA}, quality)`. Source: its `index.d.ts` (checked 2026-10-06).
 - Chrome/Edge/Chromium flags `--user-data-dir`, `--no-first-run`, `--no-default-browser-check`, `--app=<url>`: long-standing Chromium switches; not re-run on each OS here (UNVERIFIED). Branded Chrome ignores `--load-extension` since 137, so no extension-based origin lock is used.
 - `open -a` / `open -b` (macOS), `explorer.exe shell:AppsFolder\<AUMID>` (Windows): documented OS launch paths; the curated recipes' bundle ids and AUMIDs are the ENGINE builder's to verify.
+
+## A2A (Agent2Agent) v1.0: the Link format (ADR 0022 §2, checked 2026-10-15)
+- **Pinned:** spec **1.0** (a2a-protocol.org/latest/specification lists 1.0.0 as the latest release; compatibility is tracked by Major.Minor) and the official JS SDK **`@a2a-js/sdk` 1.3.0** (npm `latest`, published 2026-09-29; `A2A_PROTOCOL_VERSION = "1.0"`, legacy `"0.3"` under `compat/v0_3`). The SDK is a `devDependency` of `packages/protocol` (exact version) and is used only by tests.
+- **Source:** the SDK's generated `lf.a2a.v1` types (`dist/a2a-*.d.ts`) and its ProtoJSON `toJSON` codecs (`dist/index.js`), read from the npm tarball.
+  - `Task`: `id`, `contextId`, `status`, `artifacts`, `history`, `metadata`.
+  - `TaskStatus`: `state`, `message`, `timestamp` (ISO 8601).
+  - `TaskState` JSON names: `TASK_STATE_SUBMITTED | WORKING | INPUT_REQUIRED | AUTH_REQUIRED | COMPLETED | FAILED | CANCELED | REJECTED` (plus `UNSPECIFIED`, which we refuse).
+  - `Message`: `messageId`, `contextId`, `taskId`, `role` (`ROLE_USER | ROLE_AGENT`), `parts`, `metadata`, `extensions`, `referenceTaskIds`.
+  - `Part`: one of `text | raw | url | data`, plus `metadata`, `filename` and `mediaType`. There is no `kind` discriminator: v1.0 removed it (spec appendix A.2.1).
+  - `Artifact`: `artifactId`, `name`, `description`, `parts`, `metadata`, `extensions`.
+  - `TaskStatusUpdateEvent`: `taskId`, `contextId`, `status`, `metadata`.
+  - `TaskArtifactUpdateEvent`: `taskId`, `contextId`, `artifact`, `append`, `lastChunk`, `metadata`.
+  - `StreamResponse`: one of `task | message | statusUpdate | artifactUpdate`.
+  - `AgentCard`: `name`, `description`, `supportedInterfaces` (`url`, `protocolBinding` JSONRPC/GRPC/HTTP+JSON, `tenant`, `protocolVersion`), `provider` (`url`, `organization`), `version`, `documentationUrl`, `capabilities` (`streaming`, `pushNotifications`, `extensions`, `extendedAgentCard`), `securitySchemes` (a map of one-of `apiKeySecurityScheme | httpAuthSecurityScheme | oauth2SecurityScheme | openIdConnectSecurityScheme | mtlsSecurityScheme`), `securityRequirements` (`schemes` → `{list}`), `defaultInputModes`, `defaultOutputModes`, `skills` (`id`, `name`, `description`, `tags`, `examples`, `inputModes`, `outputModes`, `securityRequirements`), `signatures` (JWS), `iconUrl`.
+  - ProtoJSON omits empty lists and `false`/empty defaults.
+- **Test:** `packages/protocol/test/link.test.ts` round-trips our task, message, card and every `StreamResponse` kind (plus the card of every curated recipe) through the SDK's `fromJSON` → `toJSON` and expects exactly the same JSON back.
+- **UNVERIFIED:** the spec's JSON-RPC and HTTP+JSON bindings, the method names and the Agent Card well-known path. Phase D (`m16d-connect`) needs them, with a conformance test against the SDK.
