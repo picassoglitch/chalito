@@ -1,4 +1,6 @@
 /**
+ * Shared path lists (home-relative, with `/`).
+ *
  * Places where a file runs later, outside the approval gate: shell startup files, login/autostart
  * and service folders, and the per-user folders that sit on PATH. Shared by the classifier (a write
  * there is CRITICAL, even inside a workspace) and by workspaces.ts (none of them, nor a folder
@@ -23,10 +25,30 @@ export const STARTUP_FILES = [
   ".xinitrc",
 ];
 
-/** Autostart, login-item and service folders, and the per-user bin folders usually on PATH. */
-export const STARTUP_DIRS = [
+/**
+ * Per-user folders where the official installers put commands (npm, Homebrew on Linux, the
+ * vendors' own installers, WinGet, the Microsoft Store). The agent looks for CLIs there
+ * (apps/manager.ts `knownBinDirs`), and a file written there runs as a command later, even when
+ * the folder isn't on PATH right now.
+ */
+export const USER_BIN_DIRS = [
   ".local/bin",
+  ".claude/local",
+  ".npm-global/bin",
+  ".bun/bin",
+  ".volta/bin",
+  ".cargo/bin",
+  ".linuxbrew/bin",
+  "AppData/Roaming/npm",
+  "AppData/Local/Microsoft/WinGet/Links",
+  "AppData/Local/Microsoft/WindowsApps",
+  "AppData/Local/Programs/cursor/resources/app/bin",
+];
+
+/** Autostart, login-item and service folders, and the per-user bin folders. */
+export const STARTUP_DIRS = [
   "bin",
+  "go/bin",
   ".config/systemd/user",
   ".config/autostart",
   ".config/fish/conf.d",
@@ -35,10 +57,33 @@ export const STARTUP_DIRS = [
   "Documents/PowerShell",
   "Documents/WindowsPowerShell",
   "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup",
-  ".claude/local",
-  ".npm-global/bin",
-  ".bun/bin",
-  ".volta/bin",
-  ".cargo/bin",
-  "go/bin",
+  ...USER_BIN_DIRS,
+];
+
+/**
+ * Credentials in the home folder: reading or writing them is CRITICAL in the classifier, and none
+ * of them (nor a folder above them) can be a workspace.
+ */
+export const SENSITIVE_DIRS = [
+  ".ssh",
+  ".aws",
+  ".azure",
+  ".config/gcloud",
+  ".kube",
+  ".gnupg",
+  ".password-store",
+  ".config/gh",
+  ".docker",
+  ".local/share/keyrings",
+  "Library/Keychains",
+  ".codex",
+  "AppData/Roaming/Microsoft/Credentials",
+];
+export const SENSITIVE_FILES = [
+  ".netrc",
+  ".npmrc",
+  ".pypirc",
+  ".git-credentials",
+  ".claude/.credentials.json",
+  ".claude.json",
 ];

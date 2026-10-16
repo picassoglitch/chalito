@@ -2,7 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import type { OsAuth } from "./devmode.js";
-import { STARTUP_DIRS, STARTUP_FILES } from "./policy/persistence.js";
+import { SENSITIVE_DIRS, SENSITIVE_FILES, STARTUP_DIRS, STARTUP_FILES } from "./policy/persistence.js";
 import type { Policy } from "./policy/index.js";
 
 /**
@@ -88,21 +88,6 @@ const WIN_DENY = [
 ];
 const WIN_HOMES = ["Users"];
 
-/** Folders inside the home folder that hold credentials: refused, and so is any folder above them. */
-const SENSITIVE = [
-  ".ssh",
-  ".gnupg",
-  ".aws",
-  ".azure",
-  ".kube",
-  ".docker",
-  ".config/gcloud",
-  ".config/gh",
-  ".netrc",
-  "Library/Keychains",
-  "AppData/Roaming/Microsoft/Credentials",
-];
-
 interface Paths {
   P: typeof posix;
   /** The comparison key: NFC, and lower case where the file system ignores case. */
@@ -128,7 +113,17 @@ const pathsFor = (platform: NodeJS.Platform): Paths => {
 /** Why `dir` (already resolved by the OS) can't be a workspace, or null. */
 export const workspaceProblem = (
   dir: string,
-  o: { home: string; chalitoDir: string; platform: NodeJS.Platform; pathDirs?: string[] },
+  o: {
+    home: string;
+    chalitoDir: string;
+    platform: NodeJS.Platform;
+    pathDirs?: string[];
+    /**
+     * The OS realpath: a credentials or startup folder that is a symlink (a dotfiles manager's
+     * ~/.ssh → ~/dotfiles/ssh) also blocks its target and everything above it.
+     */
+    resolve?: (p: string) => string;
+  },
 ): WorkspaceProblem | null => {
   const { P, key, within } = pathsFor(o.platform);
   const root = P.parse(dir).root;
@@ -136,18 +131,24 @@ export const workspaceProblem = (
   // The whole home folder (or anything above it) holds ~/.chalito, keys and every other app's data.
   if (within(o.home, dir)) return "too_broad";
   if (within(dir, o.chalitoDir) || within(o.chalitoDir, dir)) return "chalito_folder";
-  for (const s of SENSITIVE) {
-    const abs = P.join(o.home, ...s.split("/"));
-    if (within(dir, abs) || within(abs, dir)) return "sensitive";
-  }
-  // Startup, autostart and PATH folders (the classifier's list), and the folders of startup files.
-  const startup = [
-    ...STARTUP_DIRS.map((s) => P.join(o.home, ...s.split("/"))),
-    // A startup file's folder, other than the home folder itself (refused above as too broad).
-    ...STARTUP_FILES.filter((f) => f.includes("/")).map((f) => P.dirname(P.join(o.home, ...f.split("/")))),
-    ...(o.pathDirs ?? []).filter((p) => P.isAbsolute(p)),
-  ];
-  for (const abs of startup) if (within(dir, abs) || within(abs, dir)) return "startup";
+  const inHome = (rel: string) => P.join(o.home, ...rel.split("/"));
+  // A file's folder, other than the home folder itself (refused above as too broad).
+  const folderOf = (files: string[]) => files.filter((f) => f.includes("/")).map((f) => P.dirname(inHome(f)));
+  // Each entry as written and as the OS resolves it.
+  const both = (paths: string[]) => paths.flatMap((p) => (o.resolve ? [p, o.resolve(p)] : [p]));
+  const hits = (paths: string[]) => both(paths).some((abs) => within(dir, abs) || within(abs, dir));
+  // A credentials file's folder can't be a workspace, nor anything above it (its other subfolders can).
+  const above = (paths: string[]) => both(paths).some((abs) => within(abs, dir));
+  if (hits(SENSITIVE_DIRS.map(inHome)) || above(folderOf(SENSITIVE_FILES))) return "sensitive";
+  // Startup, autostart and bin folders (shared with the classifier), startup files' folders, PATH.
+  if (
+    hits([
+      ...STARTUP_DIRS.map(inHome),
+      ...folderOf(STARTUP_FILES),
+      ...(o.pathDirs ?? []).filter((p) => P.isAbsolute(p)),
+    ])
+  )
+    return "startup";
   if (within(dir, o.home)) return null;
 
   if (o.platform === "win32") {
@@ -195,7 +196,7 @@ export const addWorkspace = async (d: WorkspaceDeps, rawPath: string): Promise<A
   const pathDirs = (d.pathDirs ?? (process.env.PATH ?? "").split(platform === "win32" ? ";" : ":"))
     .filter((p) => p && P.isAbsolute(p))
     .map(resolved);
-  const problem = workspaceProblem(dir, { home, chalitoDir, platform, pathDirs });
+  const problem = workspaceProblem(dir, { home, chalitoDir, platform, pathDirs, resolve: resolved });
   if (problem) return { ok: false, reason: problem };
 
   const policy = d.policy.get();

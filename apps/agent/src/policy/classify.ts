@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
-import { STARTUP_DIRS, STARTUP_FILES } from "./persistence.js";
+import { SENSITIVE_DIRS, SENSITIVE_FILES, STARTUP_DIRS, STARTUP_FILES } from "./persistence.js";
 
 /**
  * Risk classification of a single tool call (ADR 0008):
@@ -98,28 +98,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const workspaces = ctx.policy.workspaces.map((w) => real(resolve(expand(w.path))));
   const h = (rel: string) => real(join(ctx.home, rel));
   const chalito = h(".chalito");
-  const sensitiveDirs = [
-    ".ssh",
-    ".aws",
-    ".azure",
-    ".config/gcloud",
-    ".kube",
-    ".gnupg",
-    ".password-store",
-    ".config/gh",
-    ".docker",
-    ".local/share/keyrings",
-    "Library/Keychains",
-    ".codex",
-  ].map(h);
-  const sensitiveFiles = [
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    ".git-credentials",
-    ".claude/.credentials.json",
-    ".claude.json",
-  ].map(h);
+  const sensitiveDirs = SENSITIVE_DIRS.map(h);
+  const sensitiveFiles = SENSITIVE_FILES.map(h);
   const systemSecrets = ["/etc/shadow", "/etc/sudoers", "/etc/sudoers.d"];
   const inWorkspace = (abs: string) => workspaces.some((w) => within(abs, w));
   const protectedPaths = (ctx.protectedPaths ?? []).map((p) => real(resolve(expand(p))));

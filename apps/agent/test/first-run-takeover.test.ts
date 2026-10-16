@@ -17,6 +17,7 @@ import { BUILTIN_CATALOG, type CatalogEntry } from "../src/apps/catalog.js";
 import { AppManager, knownBinDirs } from "../src/apps/manager.js";
 import { ipcHandlers } from "../src/ipc-handlers.js";
 import { DEFAULT_POLICY, classifyToolCall, type Policy } from "../src/policy/index.js";
+import { SENSITIVE_FILES, USER_BIN_DIRS } from "../src/policy/persistence.js";
 import { createLogger } from "../src/redact.js";
 import { MemorySecretStore } from "../src/secrets.js";
 import { addWorkspace, labelFor, removeWorkspace, workspaceProblem } from "../src/workspaces.js";
@@ -485,7 +486,6 @@ describe("startup, autostart and PATH folders: never a workspace, and CRITICAL e
   it("refuses the classifier's startup and PATH folders, and any folder above them", () => {
     for (const p of [
       ".local/bin",
-      ".local",
       "bin",
       ".config/systemd/user",
       ".config/systemd",
@@ -494,7 +494,6 @@ describe("startup, autostart and PATH folders: never a workspace, and CRITICAL e
       ".cargo/bin",
       ".cargo",
       ".claude/local",
-      ".claude",
       "go",
     ])
       expect(workspaceProblem(`/home/ana/${p}`, linux), p).toBe("startup");
@@ -566,5 +565,90 @@ describe("startup, autostart and PATH folders: never a workspace, and CRITICAL e
     expect(write(`${HOME}/tools/bin/node`, c).tier).toBe("CRITICAL");
     const project = withWorkspaces([`${HOME}/code/app`], [`${HOME}/code/app/node_modules/.bin`]);
     expect(write(`${HOME}/code/app/node_modules/.bin/tool`, project).tier).not.toBe("CRITICAL");
+  });
+});
+
+describe("follow-up: one shared list, resolved like the folder being added", () => {
+  const linux = { home: "/home/ana", chalitoDir: "/home/ana/.chalito", platform: "linux" as const };
+  const win = { home: "C:\\Users\\ana", chalitoDir: "C:\\Users\\ana\\.chalito", platform: "win32" as const };
+
+  const dotfiles = () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "chalito-dotfiles-")));
+    mkdirSync(join(home, ".chalito"));
+    mkdirSync(join(home, "dotfiles", "ssh"), { recursive: true });
+    mkdirSync(join(home, "dotfiles", "fish"), { recursive: true });
+    mkdirSync(join(home, ".config"));
+    symlinkSync(join(home, "dotfiles", "ssh"), join(home, ".ssh"));
+    symlinkSync(join(home, "dotfiles", "fish"), join(home, ".config", "fish"));
+    mkdirSync(join(home, "code", "app"), { recursive: true });
+    const d = {
+      policy: { get: () => ({ ...DEFAULT_POLICY }), set: async () => undefined },
+      osAuth: { verify: async () => true },
+      locale: "es" as const,
+      chalitoDir: join(home, ".chalito"),
+      home,
+      platform: "linux" as const,
+      pathDirs: [],
+      emit: () => undefined,
+    };
+    return { home, d };
+  };
+
+  it("a symlinked ~/.ssh (dotfiles manager) blocks its target and every folder above it", async () => {
+    const { home, d } = dotfiles();
+    expect(await addWorkspace(d as never, join(home, "dotfiles", "ssh"))).toEqual({ ok: false, reason: "sensitive" });
+    expect(await addWorkspace(d as never, join(home, "dotfiles"))).toEqual({ ok: false, reason: "sensitive" });
+    expect(await addWorkspace(d as never, join(home, "code", "app"))).toMatchObject({ ok: true });
+  });
+
+  it("a symlinked ~/.config/fish blocks its target too", async () => {
+    const { home, d } = dotfiles();
+    rmSync(join(home, ".ssh"));
+    expect(await addWorkspace(d as never, join(home, "dotfiles", "fish"))).toEqual({ ok: false, reason: "startup" });
+    expect(await addWorkspace(d as never, join(home, "dotfiles"))).toEqual({ ok: false, reason: "startup" });
+  });
+
+  it("the classifier's credential list is the workspaces' list", () => {
+    for (const p of [".password-store", ".local/share/keyrings", ".local", ".codex", ".config/gh", ".claude"])
+      expect(workspaceProblem(`/home/ana/${p}`, linux), p).toBe("sensitive");
+    for (const f of [".npmrc", ".pypirc", ".git-credentials", ".claude/.credentials.json"]) {
+      const c = classifyToolCall(
+        "Read",
+        { file_path: `/home/ana/${f}` },
+        {
+          policy: { ...DEFAULT_POLICY, workspaces: [] },
+          home: "/home/ana",
+          cwd: "/home/ana",
+          realpath: (x: string) => x,
+        },
+      );
+      expect(c.tier, f).toBe("CRITICAL");
+    }
+    for (const f of SENSITIVE_FILES.filter((x) => x.includes("/")))
+      expect(workspaceProblem(`/home/ana/${f.split("/")[0]}`, linux), f).toBe("sensitive");
+  });
+
+  it("every installer bin folder is refused, on PATH or not, and the agent looks in all of them", () => {
+    for (const p of [
+      "AppData\\Roaming\\npm",
+      "AppData\\Local\\Microsoft\\WinGet\\Links",
+      "AppData\\Local\\Microsoft\\WindowsApps",
+      "AppData\\Local",
+    ])
+      expect(workspaceProblem(`C:\\Users\\ana\\${p}`, win), p).toBe("startup");
+    expect(workspaceProblem("/home/ana/.linuxbrew/bin", linux)).toBe("startup");
+    expect(workspaceProblem("/home/ana/.linuxbrew", linux)).toBe("startup");
+    const env = {
+      HOME: "/h",
+      USERPROFILE: "C:\\U\\a",
+      APPDATA: "C:\\U\\a\\AppData\\Roaming",
+      LOCALAPPDATA: "C:\\U\\a\\AppData\\Local",
+    };
+    expect(knownBinDirs("win32", env)).toEqual(
+      expect.arrayContaining(["C:\\U\\a\\AppData\\Local\\Microsoft\\WindowsApps", "C:\\U\\a\\.cargo\\bin"]),
+    );
+    expect(knownBinDirs("linux", env)).toEqual(expect.arrayContaining(["/h/.linuxbrew/bin", "/h/.volta/bin"]));
+    for (const d of USER_BIN_DIRS.filter((x) => !x.startsWith("AppData/")))
+      expect(knownBinDirs("linux", env), d).toContain(`/h/${d}`);
   });
 });
