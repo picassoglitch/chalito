@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 import { checkClaudePin, pinClaude, sha256Fd, type ClaudePin } from "../claude-pin.js";
 import { officialLink, parseVersion, type ProviderProcs } from "../provider-cli.js";
+import { USER_BIN_DIRS } from "../policy/persistence.js";
 import type { Logger } from "../redact.js";
 import { which } from "../runner.js";
 import { SECRET_NAMES, type SecretStore } from "../secrets.js";
@@ -186,28 +187,21 @@ export const knownBinDirs = (platform: NodeJS.Platform, env: Record<string, stri
   const home = homeOf(env);
   if (platform === "win32") {
     const v = (name: string) => env[name] ?? env[name.toUpperCase()];
-    const under = (base: string | undefined, ...rest: string[]) => (base ? [[base, ...rest].join("\\")] : []);
-    return [
-      ...under(v("APPDATA"), "npm"),
-      ...under(v("LOCALAPPDATA"), "Microsoft", "WinGet", "Links"),
-      ...under(v("LOCALAPPDATA"), "Programs", "cursor", "resources", "app", "bin"),
-      ...under(v("ProgramFiles"), "nodejs"),
-      ...under(v("ProgramFiles"), "GitHub CLI"),
-      ...under(v("USERPROFILE") ?? home, ".local", "bin"),
-      ...under(v("USERPROFILE") ?? home, ".bun", "bin"),
-    ];
+    const under = (base: string | undefined, rest: string) => (base ? [[base, ...rest.split("/")].join("\\")] : []);
+    // The shared list is home-relative; on Windows the AppData parts follow the profile's own variables.
+    const user = USER_BIN_DIRS.flatMap((d) =>
+      d.startsWith("AppData/Roaming/")
+        ? under(v("APPDATA"), d.slice("AppData/Roaming/".length))
+        : d.startsWith("AppData/Local/")
+          ? under(v("LOCALAPPDATA"), d.slice("AppData/Local/".length))
+          : under(v("USERPROFILE") ?? home, d),
+    );
+    return [...user, ...under(v("ProgramFiles"), "nodejs"), ...under(v("ProgramFiles"), "GitHub CLI")];
   }
-  const user = [
-    join(home, ".local", "bin"),
-    join(home, ".claude", "local"),
-    join(home, ".npm-global", "bin"),
-    join(home, ".bun", "bin"),
-    join(home, ".volta", "bin"),
-    join(home, ".cargo", "bin"),
-  ];
+  const user = USER_BIN_DIRS.filter((d) => !d.startsWith("AppData/")).map((d) => join(home, ...d.split("/")));
   return platform === "darwin"
     ? ["/opt/homebrew/bin", "/usr/local/bin", ...user]
-    : ["/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin", join(home, ".linuxbrew", "bin"), ...user];
+    : ["/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin", ...user];
 };
 
 /**

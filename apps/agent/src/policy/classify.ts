@@ -3,7 +3,14 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
-import { STARTUP_DIRS, STARTUP_FILES } from "./persistence.js";
+import {
+  AI_CONFIG_DIRS,
+  AI_CONFIG_PREFIXES,
+  SENSITIVE_DIRS,
+  SENSITIVE_FILES,
+  STARTUP_DIRS,
+  STARTUP_FILES,
+} from "./persistence.js";
 
 /**
  * Risk classification of a single tool call (ADR 0008):
@@ -45,6 +52,13 @@ export interface ClassifyContext {
   protectedPaths?: string[];
   /** Directories on the session's PATH. Writing into them (outside workspaces) is CRITICAL: it replaces what later commands run. */
   pathDirs?: string[];
+  /** The OS (default: this one). macOS and Windows compare paths case-insensitively. */
+  platform?: NodeJS.Platform;
+  /**
+   * The agent's environment, for Windows' real APPDATA / LOCALAPPDATA (roaming profiles, folder
+   * redirection): the AppData entries of the shared lists are checked under them too.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 const RANK: Record<RiskTier, number> = { LOW: 0, MED: 1, HIGH: 2, CRITICAL: 3 };
@@ -66,7 +80,7 @@ export const defaultRealpath = (p: string): string => {
   }
 };
 
-const within = (child: string, parent: string) =>
+const withinExact = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
 /** What a glob or unresolved prefix could reach: the hard floor, credentials, a persistence path, or neither. */
@@ -92,41 +106,40 @@ interface Paths {
 }
 
 const pathsFor = (ctx: ClassifyContext): Paths => {
+  // macOS and Windows file systems ignore case (and macOS stores names decomposed): compare there
+  // on NFC, lower-cased paths, like workspaces.ts, so `~/.CLAUDE` is `~/.claude`.
+  const platform = ctx.platform ?? process.platform;
+  const fold = platform === "darwin" || platform === "win32";
+  const k = (p: string) => (fold ? p.normalize("NFC").toLowerCase() : p);
+  const within = (child: string, parent: string) => withinExact(k(child), k(parent));
+  const same = (a: string, b: string) => k(a) === k(b);
   const real = ctx.realpath ?? defaultRealpath;
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
   const res = (p: string, cwd = ctx.cwd) => real(resolve(cwd, expand(p)));
   const workspaces = ctx.policy.workspaces.map((w) => real(resolve(expand(w.path))));
   const h = (rel: string) => real(join(ctx.home, rel));
+  // A home-relative entry, plus (Windows) its AppData part under the real %APPDATA% / %LOCALAPPDATA%.
+  const env = ctx.env ?? {};
+  const appDataRoots: [string, string | undefined][] = [
+    ["AppData/Roaming/", env.APPDATA ?? env.appdata],
+    ["AppData/Local/", env.LOCALAPPDATA ?? env.localappdata],
+  ];
+  const places = (rel: string): string[] => {
+    const out = [h(rel)];
+    for (const [prefix, root] of appDataRoots)
+      if (root && rel.startsWith(prefix)) out.push(real(join(root, ...rel.slice(prefix.length).split("/"))));
+    return out;
+  };
   const chalito = h(".chalito");
-  const sensitiveDirs = [
-    ".ssh",
-    ".aws",
-    ".azure",
-    ".config/gcloud",
-    ".kube",
-    ".gnupg",
-    ".password-store",
-    ".config/gh",
-    ".docker",
-    ".local/share/keyrings",
-    "Library/Keychains",
-    ".codex",
-  ].map(h);
-  const sensitiveFiles = [
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    ".git-credentials",
-    ".claude/.credentials.json",
-    ".claude.json",
-  ].map(h);
+  const sensitiveDirs = SENSITIVE_DIRS.flatMap(places);
+  const sensitiveFiles = SENSITIVE_FILES.flatMap(places);
   const systemSecrets = ["/etc/shadow", "/etc/sudoers", "/etc/sudoers.d"];
   const inWorkspace = (abs: string) => workspaces.some((w) => within(abs, w));
   const protectedPaths = (ctx.protectedPaths ?? []).map((p) => real(resolve(expand(p))));
   const agentBinaries = (ctx.agentBinaries ?? []).map((p) => real(resolve(expand(p))));
   const floor = [chalito, ...protectedPaths, ...agentBinaries];
   const startupFiles = STARTUP_FILES.map(h);
-  const startupDirs = STARTUP_DIRS.map(h);
+  const startupDirs = STARTUP_DIRS.flatMap(places);
   // A project's own PATH entries (node_modules/.bin, ./scripts) stay workspace paths. A PATH entry
   // in a workspace that is the home folder or above (only reachable by a hand edit of the policy)
   // stays a PATH dir: a write there still replaces what later commands run.
@@ -136,18 +149,31 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     .filter((d) => isAbsolute(d) || d.startsWith("~"))
     .map((d) => real(resolve(expand(d))))
     .filter((d) => !projectPath(d) && d !== sep);
-  const persistDirs = [...startupDirs, ...pathDirs];
+  const homeRoot = h("");
+  // ~/.aider.conf.yml, ~/.aider/…: anything in the home folder whose name starts with ".aider".
+  const aiPrefixed = (abs: string) => {
+    if (!within(abs, homeRoot) || same(abs, homeRoot)) return false;
+    const first = k(
+      abs
+        .slice(homeRoot.length)
+        .replace(/^[\\/]+/, "")
+        .split(/[\\/]/)[0] ?? "",
+    );
+    return AI_CONFIG_PREFIXES.some((p) => first.startsWith(k(p)));
+  };
+  const persistDirs = [...startupDirs, ...AI_CONFIG_DIRS.flatMap(places), ...pathDirs];
   return {
     home: ctx.home,
     resolve: res,
     inWorkspace,
     hardFloor: (abs) => floor.some((f) => within(abs, f)),
     floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
-    persistence: (abs) => startupFiles.includes(abs) || persistDirs.some((d) => within(abs, d)),
+    persistence: (abs) =>
+      startupFiles.some((f) => same(f, abs)) || persistDirs.some((d) => within(abs, d)) || aiPrefixed(abs),
     agentBinaries,
     sensitive: (abs) =>
       sensitiveDirs.some((d) => within(abs, d)) ||
-      sensitiveFiles.includes(abs) ||
+      sensitiveFiles.some((f) => same(f, abs)) ||
       abs === "/etc/shadow" ||
       abs === "/etc/sudoers" ||
       within(abs, "/etc/sudoers.d"),
@@ -192,12 +218,16 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       const dotSafe = partial === "" && "*?[".includes(next);
       const reaches = (target: string) => {
         if (within(abs.endsWith(sep) ? abs.slice(0, -1) || sep : abs, target)) return true;
-        if (!target.startsWith(abs)) return false;
+        if (!k(target).startsWith(k(abs))) return false;
         return !(dotSafe && target.slice(abs.length).startsWith("."));
       };
       if (floor.some(reaches)) return "hard_floor";
       if ([...sensitiveDirs, ...sensitiveFiles, ...systemSecrets].some(reaches)) return "credentials";
-      if ([...startupFiles, ...persistDirs].some(reaches)) return "persistence";
+      // `~/.aider*` has no fixed name: a prefix that can expand to "~/.aider…" (`~/.ai*`, `~/.aider$X`,
+      // braces) reaches it, and so does a computed path already in it.
+      if ([...startupFiles, ...persistDirs, ...AI_CONFIG_PREFIXES.map((p) => join(homeRoot, p))].some(reaches))
+        return "persistence";
+      if (aiPrefixed(abs)) return "persistence";
       return null;
     },
   };

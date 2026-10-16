@@ -135,7 +135,13 @@ export interface AgentCoreDeps {
   log: Logger;
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
   /** Host facts for the classifier's hard floor (agent binaries, service files, the session's PATH dirs). */
-  classifyExtras?: () => { agentBinaries: string[]; protectedPaths: string[]; pathDirs: string[] };
+  classifyExtras?: () => {
+    agentBinaries: string[];
+    protectedPaths: string[];
+    pathDirs: string[];
+    /** APPDATA / LOCALAPPDATA for the classifier's Windows folder-redirection checks. */
+    env?: Record<string, string | undefined>;
+  };
   /** Computer control (computer/control.ts); absent = never attached. */
   computer?: ComputerControl;
   /** Remote terminal (terminal/control.ts); absent = terminal.* refused. */

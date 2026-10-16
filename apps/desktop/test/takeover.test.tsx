@@ -250,6 +250,7 @@ describe("Esta computadora: start with the computer and the folders", () => {
       ["chalito_folder", /carpeta interna de Chalito/],
       ["sensitive", /guarda llaves o contraseñas/],
       ["startup", /puede ejecutarse solo/],
+      ["ai_config", /configuración de una IA/],
     ] as const) {
       const refusing = ipcWith({
         workspaces: async () => ({ workspaces: [] }),
