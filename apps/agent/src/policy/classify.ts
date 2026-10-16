@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { hooksDirFor, type GitRunner } from "./git-hooks.js";
+import { hooksFor, type GitFs } from "./git-hooks.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
   AI_CONFIG_DIRS,
@@ -53,8 +53,8 @@ export interface ClassifyContext {
   protectedPaths?: string[];
   /** Directories on the session's PATH. Writing into them (outside workspaces) is CRITICAL: it replaces what later commands run. */
   pathDirs?: string[];
-  /** Runs git to find each workspace repo's hooks folder (tests inject it). */
-  git?: GitRunner;
+  /** How git config files are read (tests inject it). git itself is never run. */
+  gitFs?: GitFs;
   /** The OS (default: this one). macOS and Windows compare paths case-insensitively. */
   platform?: NodeJS.Platform;
   /**
@@ -138,11 +138,24 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
   const res = (p: string, cwd = ctx.cwd) => real(resolve(cwd, expand(p)));
   const workspaces = ctx.policy.workspaces.map((w) => real(resolve(expand(w.path))));
-  // Each workspace repo's hooks folder, as git resolves it (cached per workspace). "unknown":
-  // git failed on a repo, so every likely hooks folder there is HIGH (fail closed).
-  const hooks = workspaces.map((w) => ({ w, dir: hooksDirFor(w, ctx.home, ctx.git) }));
-  const hooksDirs = hooks.flatMap((h) => (typeof h.dir === "string" && h.dir !== "unknown" ? [real(h.dir)] : []));
-  const hooksUnknownIn = hooks.filter((h) => h.dir === "unknown").map((h) => h.w);
+  // Each workspace repo's hooks folder, worked out by reading git's own files (never by running
+  // git). "unknown": something couldn't be read with confidence, so every likely hooks folder there
+  // is HIGH (fail closed).
+  const hooks = workspaces.map((w) => ({
+    w,
+    info: hooksFor(w, {
+      home: ctx.home,
+      ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
+      ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
+    }),
+  }));
+  const hooksDirs = hooks.flatMap((h) =>
+    typeof h.info.dir === "string" && h.info.dir !== "unknown" ? [real(h.info.dir)] : [],
+  );
+  const hooksUnknownIn = hooks.filter((h) => h.info.dir === "unknown").map((h) => h.w);
+  // The repos' git dirs and every config file git would read: writing there changes what runs.
+  const gitDirs = hooks.flatMap((h) => h.info.gitDirs.map((d) => real(d)));
+  const gitChain = hooks.flatMap((h) => h.info.chain.map((f) => real(f)));
   const h = (rel: string) => real(join(ctx.home, rel));
   // A home-relative entry, plus (Windows) its AppData part under the real %APPDATA% / %LOCALAPPDATA%.
   const env = ctx.env ?? {};
@@ -246,9 +259,15 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
         (has(".idea") && (dirs.includes(k("runConfigurations")) || named("workspace.xml"))) ||
         has(".githooks") ||
         hooksDirs.some((d) => within(abs, d)) ||
-        // .git/config can redirect core.hooksPath: always HIGH.
-        (has(".git") && named("config")) ||
-        (hooksUnknownIn.some((w) => within(abs, w)) && (has(".git") || has("hooks") || has(".husky")))
+        // git's own files: any `.git` (folder contents or a gitdir file), the repos' git and common
+        // dirs, every config file git reads for them (includes too), anything named like a git
+        // config, and a `git` binary planted in a workspace.
+        has(".git") ||
+        named(".git", "git", "git.exe", "git.com", "git.cmd") ||
+        base.includes("gitconfig") ||
+        gitDirs.some((d) => within(abs, d)) ||
+        gitChain.some((f) => same(f, abs)) ||
+        (hooksUnknownIn.some((w) => within(abs, w)) && (has("hooks") || has(".husky")))
       );
     },
     buildOrTest: (abs) => {

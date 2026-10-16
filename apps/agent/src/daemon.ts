@@ -707,7 +707,7 @@ const startDaemon = async (
     ],
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
     // Windows folder redirection: the classifier checks AppData entries under the real roots too.
-    env: { APPDATA: env.APPDATA, LOCALAPPDATA: env.LOCALAPPDATA },
+    env: { APPDATA: env.APPDATA, LOCALAPPDATA: env.LOCALAPPDATA, XDG_CONFIG_HOME: env.XDG_CONFIG_HOME },
   });
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {
