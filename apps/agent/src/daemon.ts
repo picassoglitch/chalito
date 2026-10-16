@@ -711,17 +711,22 @@ const startDaemon = async (
     pathDirs: (claudeEnv(env, "").PATH ?? "").split(delimiter).filter(Boolean),
     // Windows folder redirection: the classifier checks AppData entries under the real roots too.
     env: {
-      // Where things live on this computer: the daemon's own environment.
+      // Where things are installed on this computer: the daemon's own environment.
       ...pickEnv(env, [
         "APPDATA",
         "LOCALAPPDATA",
-        "XDG_CONFIG_HOME",
         "ProgramData",
         "ProgramFiles",
         "ProgramFiles(x86)",
+        "PROCESSOR_ARCHITECTURE",
+        "PROCESSOR_ARCHITEW6432",
       ]),
-      // Which git config the sessions see (git-hooks.ts fails closed on the command-line ones).
+      // What git in the sessions reads: their HOME, XDG, PATH and GIT_CONFIG_* (git-hooks.ts fails
+      // closed on the command-line ones).
       ...pickEnv(claudeEnv(env, ""), [
+        "HOME",
+        "PATH",
+        "XDG_CONFIG_HOME",
         "GIT_CONFIG_GLOBAL",
         "GIT_CONFIG_SYSTEM",
         "GIT_CONFIG_NOSYSTEM",

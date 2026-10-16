@@ -359,3 +359,100 @@ describe("system config, the environment, and values we can't resolve", () => {
     expect(resolveHooks(ws, { home, env: NOSYS, fs: failing }).dir).toBe("unknown");
   });
 });
+
+describe("the sessions' HOME, XDG and PATH", () => {
+  it("global config comes from the sessions' HOME and XDG; both XDG paths are in the chain", () => {
+    const agentHome = root();
+    const sessionHome = root();
+    const ws = repo(agentHome);
+    writeFileSync(join(sessionHome, ".gitconfig"), "[core]\n\thooksPath = session-hooks\n");
+    writeFileSync(join(agentHome, ".gitconfig"), "[core]\n\thooksPath = agent-hooks\n");
+    const xdg = join(sessionHome, "xdg");
+    const info = resolveHooks(ws, { home: agentHome, env: { ...NOSYS, HOME: sessionHome, XDG_CONFIG_HOME: xdg } });
+    expect(info.dir).toBe(join(ws, "session-hooks"));
+    expect(info.chain).toEqual(
+      expect.arrayContaining([join(xdg, "git", "config"), join(sessionHome, ".config", "git", "config")]),
+    );
+    expect(write(ws, agentHome, "session-hooks/x", { env: { ...NOSYS, HOME: sessionHome } }).tier).toBe("HIGH");
+  });
+
+  it("a git on the sessions' PATH brings its prefix's etc/gitconfig (existence only, never run)", () => {
+    const home = root();
+    const ws = repo(home);
+    const prefix = join(home, "opt", "git");
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    mkdirSync(join(prefix, "etc"));
+    writeFileSync(join(prefix, "bin", "git"), "#!/bin/sh\nexit 99\n");
+    writeFileSync(join(prefix, "etc", "gitconfig"), "[core]\n\thooksPath = prefix-hooks\n");
+    const onlyHome = {
+      read: (p: string) => readFileSync(p, "utf8"),
+      mtime: (p: string) => {
+        if (!p.startsWith(home)) return -1;
+        try {
+          return statSync(p).mtimeMs;
+        } catch {
+          return -1;
+        }
+      },
+      isDir: (p: string) => {
+        try {
+          return statSync(p).isDirectory();
+        } catch {
+          return null;
+        }
+      },
+      realpath: (p: string) => realpathSync(p),
+    };
+    const info = resolveHooks(ws, {
+      home,
+      platform: "linux",
+      fs: onlyHome,
+      env: { PATH: `/nope:${join(prefix, "bin")}` },
+    });
+    expect(info.dir).toBe(join(ws, "prefix-hooks"));
+    expect(info.chain).toContain(join(prefix, "etc", "gitconfig"));
+    // A PATH dir without git adds nothing.
+    clearHooksCache();
+    expect(
+      resolveHooks(ws, { home, platform: "linux", fs: onlyHome, env: { PATH: join(home, "opt") } }).chain,
+    ).not.toContain(join(home, "etc", "gitconfig"));
+  });
+
+  it("Windows: git's mingw64/mingw32 etc too; 64-bit without ProgramFiles(x86) fails closed", () => {
+    const files: Record<string, string> = {
+      "D:\\Tools\\Git\\cmd\\git.exe": "",
+      "D:\\Tools\\Git\\mingw64\\etc\\gitconfig": "[core]\n\thooksPath = mingw-hooks\n",
+      // The repo side is joined with the host's path module (this test runs on Linux too).
+      [join("W:\\app", ".git", "config")]: "",
+    };
+    const fs = {
+      read: (p: string) => {
+        if (!(p in files)) throw new Error("ENOENT");
+        return files[p]!;
+      },
+      mtime: (p: string) => (p in files ? 1 : -1),
+      isDir: (p: string) => (p === join("W:\\app", ".git") ? true : p in files ? false : null),
+      realpath: (p: string) => p,
+    };
+    const base = {
+      ProgramData: "C:\\ProgramData",
+      ProgramFiles: "C:\\Program Files",
+      "ProgramFiles(x86)": "C:\\Program Files (x86)",
+      LOCALAPPDATA: "C:\\Users\\ana\\AppData\\Local",
+      PATH: "C:\\Windows;D:\\Tools\\Git\\cmd",
+      PROCESSOR_ARCHITECTURE: "AMD64",
+    };
+    const info = resolveHooks("W:\\app", { home: "C:\\Users\\ana", platform: "win32", fs, env: base });
+    expect(info.chain).toEqual(
+      expect.arrayContaining([
+        "D:\\Tools\\Git\\etc\\gitconfig",
+        "D:\\Tools\\Git\\mingw64\\etc\\gitconfig",
+        "D:\\Tools\\Git\\mingw32\\etc\\gitconfig",
+      ]),
+    );
+    expect(info.dir).not.toBe("unknown");
+    clearHooksCache();
+    const { "ProgramFiles(x86)": _drop, ...no86 } = base;
+    expect(resolveHooks("W:\\app", { home: "C:\\Users\\ana", platform: "win32", fs, env: no86 }).dir).toBe("unknown");
+  });
+});

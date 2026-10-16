@@ -185,6 +185,12 @@ export interface GitEnv {
   "ProgramFiles(x86)"?: string | undefined;
   LOCALAPPDATA?: string | undefined;
   XDG_CONFIG_HOME?: string | undefined;
+  /** The sessions' HOME (git reads ~/.gitconfig from it). */
+  HOME?: string | undefined;
+  /** The sessions' PATH: a git found there may carry its own etc/gitconfig. */
+  PATH?: string | undefined;
+  PROCESSOR_ARCHITECTURE?: string | undefined;
+  PROCESSOR_ARCHITEW6432?: string | undefined;
 }
 
 /**
@@ -209,7 +215,8 @@ export const systemConfigs = (
     }
     if (pf86) files.push(win32.join(pf86, "Git", "etc", "gitconfig"));
     if (env.LOCALAPPDATA) files.push(win32.join(env.LOCALAPPDATA, "Programs", "Git", "etc", "gitconfig"));
-    return { files, unsure: !env.ProgramData || !env.ProgramFiles || !env.LOCALAPPDATA };
+    const is64 = /64/.test(`${env.PROCESSOR_ARCHITECTURE ?? ""} ${env.PROCESSOR_ARCHITEW6432 ?? ""}`);
+    return { files, unsure: !env.ProgramData || !env.ProgramFiles || !env.LOCALAPPDATA || (is64 && !pf86) };
   }
   return {
     files: [
@@ -233,6 +240,9 @@ export interface HooksOptions {
 }
 
 export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
+  const env = o.env ?? {};
+  // The sessions' HOME: that's where their git looks for ~/.gitconfig and expands ~/.
+  const home = env.HOME || o.home;
   const fs = o.fs ?? nodeFs;
   const dotGit = join(ws, ".git");
   const kind = fs.isDir(dotGit);
@@ -297,17 +307,17 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
           unsure = true;
           continue;
         }
-        readConfig(resolve(dirname(file), expandHome(e.value, o.home)), depth + 1, system);
+        readConfig(resolve(dirname(file), expandHome(e.value, home)), depth + 1, system);
       } else if (e.section === "includeif" && e.sub !== null && e.key === "path" && e.value !== true) {
         if (unsurePath(e.value)) {
           unsure = true;
           continue;
         }
-        const target = resolve(dirname(file), expandHome(e.value, o.home));
+        const target = resolve(dirname(file), expandHome(e.value, home));
         let applies: boolean;
         try {
           if (realGitDir === null) throw new Unsure("realpath of the git dir");
-          applies = includeIfApplies(e.sub, [gitDir, realGitDir], file, o.home);
+          applies = includeIfApplies(e.sub, [gitDir, realGitDir], file, home);
         } catch {
           // Can't evaluate: watch the file, and fail closed.
           chain.push(target);
@@ -324,12 +334,25 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
     }
   };
 
-  const env = o.env ?? {};
   // Config passed on the command line or through the environment can't be read from files.
   if (env.GIT_CONFIG_COUNT || env.GIT_CONFIG_PARAMETERS || env.GIT_CONFIG) unsure = true;
   // git's order: system, global (XDG, then ~/.gitconfig), the repo's, the worktree's. The last value wins.
   const noSystem = !!env.GIT_CONFIG_NOSYSTEM && !/^(0|false|no|off)$/i.test(env.GIT_CONFIG_NOSYSTEM);
-  const known = systemConfigs(o.platform ?? process.platform, env, o.home);
+  const platform = o.platform ?? process.platform;
+  const known = systemConfigs(platform, env, home);
+  // Each git on the sessions' PATH (checked by existence, never run) may read its own prefix's
+  // etc/gitconfig (Git for Windows also mingw64/mingw32).
+  const P = platform === "win32" ? win32 : { join, dirname };
+  for (const d of (env.PATH ?? "").split(platform === "win32" ? ";" : ":").filter(Boolean)) {
+    const bins = platform === "win32" ? ["git.exe", "git.cmd", "git"] : ["git"];
+    // A file (not a folder) named git there.
+    if (!bins.some((b) => fs.isDir(P.join(d, b)) === false)) continue;
+    const prefix = P.dirname(d);
+    known.files.push(P.join(prefix, "etc", "gitconfig"));
+    if (platform === "win32")
+      for (const m of ["mingw64", "mingw32"]) known.files.push(P.join(prefix, m, "etc", "gitconfig"));
+  }
+  known.files = [...new Set(known.files)];
   if (!noSystem) {
     if (env.GIT_CONFIG_SYSTEM) readConfig(env.GIT_CONFIG_SYSTEM, 0, true);
     else {
@@ -347,8 +370,16 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   if (systemValues.size > 1) unsure = true;
   if (env.GIT_CONFIG_GLOBAL) readConfig(env.GIT_CONFIG_GLOBAL, 0);
   else {
-    readConfig(join(o.xdgConfigHome ?? env.XDG_CONFIG_HOME ?? join(o.home, ".config"), "git", "config"), 0);
-    readConfig(join(o.home, ".gitconfig"), 0);
+    // git reads $XDG_CONFIG_HOME/git/config when set, else ~/.config/git/config; both are in the chain.
+    const xdgSet = o.xdgConfigHome ?? env.XDG_CONFIG_HOME;
+    const xdg = join(xdgSet ?? join(home, ".config"), "git", "config");
+    const homeXdg = join(home, ".config", "git", "config");
+    readConfig(xdg, 0);
+    if (xdg !== homeXdg && !chain.includes(homeXdg)) {
+      chain.push(homeXdg);
+      watched.push(homeXdg);
+    }
+    readConfig(join(home, ".gitconfig"), 0);
   }
   readConfig(join(common, "config"), 0);
   readConfig(join(gitDir, "config.worktree"), 0);
@@ -356,7 +387,7 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   const gitDirs = [...new Set([gitDir, common])];
   if (unsure) return { dir: "unknown", gitDirs, chain, watched };
   const hp = hooksPath as string | null;
-  const dir = hp ? resolve(ws, expandHome(hp, o.home)) : join(common, "hooks");
+  const dir = hp ? resolve(ws, expandHome(hp, home)) : join(common, "hooks");
   return { dir, gitDirs, chain, watched };
 };
 
