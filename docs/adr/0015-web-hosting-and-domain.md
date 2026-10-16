@@ -24,3 +24,16 @@
 ## Consequences
 - Firebase Hosting and a global ALB are no longer needed for beta.
 - The PWA on Vercel talks to Firestore directly (Firebase JS SDK) and to `api.` for commands. CORS is pinned to `chalito.chalyb.com` (+ `/en`).
+
+## Update (2026-10-05)
+
+The owner decided that Chalito lives **inside the Chalyb hub**. This replaces the web and domain parts of the decision above; the region, Cloud Run, Firestore and Vertex parts stand.
+- **Web:** Chalito's screens are `https://www.chalyb.com/app/chalito`, part of the hub's own Next.js app on the hub's Vercel project. There's no separate Vercel project for `apps/web` (GO_LIVE Phase 6 doesn't apply).
+- **No subdomains:** no `chalito.chalyb.com`, no `api.chalito.chalyb.com`, no `mcp.chalito.chalyb.com`, and no Cloud Run domain mappings. The services keep their run.app URLs: the api (`chalito`) is the engine's `admin_api_base`, and webhooks and MCP clients use the notifier's and the gateway's run.app URLs.
+- **Engine row:** Chalyb migration `supabase/migrations/0067_chalito_inside_the_hub.sql` sets `external_url = https://www.chalyb.com/app/chalito` and `admin_api_base` to the api's run.app URL. The launch token is still minted against `external_url`, and the hub's `/api/tools/chalito/sso` hands it to the in-app screen.
+- **Vercel plan:** the hub's Vercel project is on the **Hobby** plan, which is for non-commercial use only. The owner chose to keep it there for now (owner decision); moving to Pro before anything is sold through the hub is the owner's call. This replaces "Vercel commercial use needs a Pro team" above.
+- **Health checks:** Cloud Run reserves paths ending in `z`, so `/healthz` on a run.app URL gets Google's 404 and never reaches the service. Probes use `GET /health`, which every service serves.
+
+### Consequences of the update
+- The screens' origin is the hub's, so the api's web and WebAuthn origins are `https://www.chalyb.com` (RP ID `chalyb.com`), not `chalito.chalyb.com` (deployed env, checked 2026-10-15).
+- An own Chalito domain (decision #22) can still come later; the `domain` variable keeps hosts configurable.

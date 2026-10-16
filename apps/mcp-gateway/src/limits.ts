@@ -11,6 +11,7 @@ export const gatewayRoutes = (resource: string, a2aResource?: string): RouteTabl
   const metadata = { capacity: 120, refillPerSec: 5, bodyBytes: 0 };
   return {
     "GET /healthz": { capacity: 120, refillPerSec: 10, bodyBytes: 0 },
+    "GET /health": { capacity: 120, refillPerSec: 10, bodyBytes: 0 },
     "GET /.well-known/oauth-protected-resource": metadata,
     [`GET /.well-known/oauth-protected-resource${path}`]: metadata,
     // MCP over streamable HTTP: one request per tool call; prompts are capped at 8000 chars.

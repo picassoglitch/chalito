@@ -59,6 +59,8 @@ export const createApp = (deps: Deps) => {
   const origins = deps.config.corsOrigins ?? [];
   if (origins.length > 0) for (const path of CORS_PATHS) app.use(path, apiCors(origins));
   app.get("/healthz", (c) => c.json({ ok: true }));
+  // Cloud Run reserves paths ending in "z" (its frontend 404s /healthz on run.app); probe /health there.
+  app.get("/health", (c) => c.json({ ok: true }));
   // Chalyb engine contract: {admin_api_base}/tenants…, plus the SSO exchange.
   app.route("/", hubRoutes(deps));
   app.route("/v1/devices", deviceRoutes(deps));

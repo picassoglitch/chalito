@@ -9,6 +9,7 @@ const KB = 1024;
  */
 export const ORCHESTRATOR_ROUTES: RouteTable = {
   "GET /healthz": { capacity: 120, refillPerSec: 10, bodyBytes: 0 },
+  "GET /health": { capacity: 120, refillPerSec: 10, bodyBytes: 0 },
   // Cloud Scheduler (OIDC), once a minute.
   "POST /tasks/sweep-decisions": { capacity: 30, refillPerSec: 0.5, bodyBytes: 4 * KB },
   "POST /v1/mesas": { capacity: 10, refillPerSec: 0.1, bodyBytes: 32 * KB },

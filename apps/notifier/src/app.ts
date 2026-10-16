@@ -166,6 +166,8 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
   app.use("*", guard(NOTIFIER_ROUTES, { now: deps.now, trustedProxies: cfg.trustedProxies ?? 0 }));
 
   app.get("/healthz", (c) => c.json({ ok: true }));
+  // Cloud Run reserves paths ending in "z" (its frontend 404s /healthz on run.app); probe /health there.
+  app.get("/health", (c) => c.json({ ok: true }));
 
   // ---- Pub/Sub push (OIDC) ----------------------------------------------------------
   // 2xx acks the message; malformed messages are acked too (retrying can't fix them).

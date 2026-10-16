@@ -63,13 +63,13 @@ const get = (u: string, init: RequestInit = {}) => fetch(u, { ...init, signal: A
 
 // ---- 1. health --------------------------------------------------------------------
 const health = async (name: string, base: string) => {
-  if (!base) return record(`${name} /healthz`, "SKIP", "no URL given");
+  if (!base) return record(`${name} /health`, "SKIP", "no URL given");
   try {
-    const { v: res, ms } = await timed(() => get(`${base}/healthz`));
+    const { v: res, ms } = await timed(() => get(`${base}/health`));
     const body = (await res.json().catch(() => null)) as { ok?: boolean } | null;
-    record(`${name} /healthz`, res.ok && body?.ok === true ? "PASS" : "FAIL", `HTTP ${res.status}`, ms);
+    record(`${name} /health`, res.ok && body?.ok === true ? "PASS" : "FAIL", `HTTP ${res.status}`, ms);
   } catch (err) {
-    record(`${name} /healthz`, "FAIL", err instanceof Error ? err.message : "error");
+    record(`${name} /health`, "FAIL", err instanceof Error ? err.message : "error");
   }
 };
 

@@ -4,7 +4,8 @@ Procedures for running Chalito in production. Every command assumes the Chalyb G
 
 **Where things run:**
 - Chalito's Cloud Run services and the notifier's webhooks live in Chalyb's GCP project (ADR 0016). The api is deployed by Chalyb's engine module.
-- The web app is on Vercel (`chalito.chalyb.com`).
+- Chalito's screens are inside the Chalyb hub at `https://www.chalyb.com/app/chalito`, deployed with the hub's own Next.js app on the hub's Vercel project (owner, 2026-10-05; Chalyb migration 0067). There's no `chalito.chalyb.com` and no `api.`/`mcp.` subdomain: the services are reached on their run.app URLs (`docs/GO_LIVE.md`, "Where Chalito lives").
+- **Health:** probe `GET /health`. Never `/healthz` on run.app: Cloud Run reserves paths ending in `z`, and Google's frontend returns its own 404 before the request reaches the service. `/health` ships with the first image after `0b3beed`; on `0b3beed` itself, check the revision's Ready condition and its logs.
 - Data is in the hub's Supabase (ADR 0017), in schemas `chalito` and `chalito_private`.
 
 **Owner's go required:**
@@ -30,7 +31,7 @@ Procedures for running Chalito in production. Every command assumes the Chalyb G
 | `chalito-orchestrator` | Cloud Run | `module "orchestrator"` | Mesa and companion turns. See `apps/orchestrator/README.md`. |
 | `chalito-mcp-gateway` | Cloud Run | `module "mcp_gateway"` | Public by design (ADR 0009). See `apps/mcp-gateway/README.md`. |
 | `avatar-jobs` | Cloud Run **job** | not yet in Terraform | One upload per execution (`AVATAR_BUCKET`, `UPLOAD_PATH`); custom companions also need `GEMINI_API_KEY` and `DATABASE_URL`, and a 600 s timeout. See `apps/avatar-jobs/README.md`. |
-| web | Vercel | Vercel project (`apps/web`) | PWA. |
+| web | Vercel (the hub's project) | Chalyb's Next.js app, `/app/chalito` | Ships with the hub; no separate Chalito Vercel project. |
 | database | hub Supabase | `supabase/migrations/` | Migrations are forward-only. |
 
 ---
@@ -68,7 +69,7 @@ Images go to the Artifact Registry repo created by `module "artifact_registry"`.
 2. Deploy without traffic, then check the new revision:
    ```sh
    gcloud run deploy chalito-<service> --image …:<sha> --region us-central1 --no-traffic --tag canary
-   curl -fsS https://canary---chalito-<service>-<hash>-uc.a.run.app/healthz
+   curl -fsS https://canary---chalito-<service>-<hash>-uc.a.run.app/health
    ```
 3. Shift traffic:
    ```sh
@@ -102,14 +103,15 @@ Images go to the Artifact Registry repo created by `module "artifact_registry"`.
    gcloud run jobs execute chalito-avatar-jobs --update-env-vars UPLOAD_PATH=uploads/<owner>/<asset>/original
    ```
 
-### 1.4 Web (Vercel)
+### 1.4 Web (the hub)
 
-1. Push to a branch for a preview deployment, and check the preview.
+Chalito's screens deploy with the Chalyb hub (its Vercel project, through Chalyb's pipeline), not from this repo.
+1. Push to a branch in `picassoglitch/chalyb` for a preview deployment, and check `/app/chalito` on the preview.
 2. Promote:
    ```sh
    vercel promote <preview-url> --scope <team>
    ```
-   Production is `chalito.chalyb.com`.
+   Production is `https://www.chalyb.com/app/chalito`.
 
 ### 1.5 Scheduled jobs
 
@@ -132,10 +134,11 @@ Images go to the Artifact Registry repo created by `module "artifact_registry"`.
    ```sh
    gcloud run services update-traffic chalito-<service> --to-revisions <good-revision>=100
    ```
-3. Confirm `/healthz` and the error rate. Then open an issue with the bad revision's SHA.
+3. Confirm `/health` and the error rate. Then open an issue with the bad revision's SHA.
 
 ### 2.2 Web
 
+The screens are part of the hub, so this rolls back the whole hub (Chalyb's Vercel project).
 1. Promote the previous production deployment:
    ```sh
    vercel rollback <previous-deployment-url>

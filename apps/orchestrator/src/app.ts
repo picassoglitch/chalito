@@ -153,6 +153,8 @@ export const createOrchestrator = (deps: AppDeps) => {
   // Before auth: a preflight carries no Authorization header.
   if (deps.webOrigin) app.use("/v1/*", webCors(deps.webOrigin));
   app.get("/healthz", (c) => c.json({ ok: true }));
+  // Cloud Run reserves paths ending in "z" (its frontend 404s /healthz on run.app); probe /health there.
+  app.get("/health", (c) => c.json({ ok: true }));
 
   // Signed answers already rejected (audited once; never resolve anything later either).
   const rejected = new Set<string>();

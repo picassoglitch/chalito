@@ -30,6 +30,7 @@ const user = (capacity: number, perSec: number, bodyBytes = SMALL): Limit => ({
  */
 export const API_ROUTES: RouteTable = {
   "GET /healthz": health,
+  "GET /health": health,
 
   // Chalyb hub (engine contract + SSO)
   "POST /tenants": s2s(),
