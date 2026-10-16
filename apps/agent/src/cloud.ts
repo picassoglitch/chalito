@@ -5,6 +5,7 @@ import type { AgentConfig, PairedConfig } from "./config.js";
 import type { Identity } from "./identity.js";
 import type { Logger } from "./redact.js";
 import type { AgentStore } from "./store.js";
+import { supabaseLanCloud, type LanCloud } from "./lan/cloud.js";
 import { SupabaseStore, pairingTopic, type SupaClient } from "./supabase-store.js";
 
 export type FetchFn = (
@@ -73,6 +74,8 @@ export interface Cloud {
   refresh(): Promise<void>;
   readonly refreshIntervalMs: number;
   store(owner: string, deviceId: string): AgentStore;
+  /** LAN pairing tokens and the owner's agent directory (lan/, ADR 0022 §5); absent = no LAN path. */
+  lan?(): LanCloud;
   close(): Promise<void>;
 }
 
@@ -162,6 +165,7 @@ export const supabaseCloud = (
       stores.push(s);
       return s;
     },
+    lan: () => supabaseLanCloud(client),
     close: async () => {
       for (const s of stores) await s.close().catch(() => undefined);
       await client.removeAllChannels().catch(() => undefined);

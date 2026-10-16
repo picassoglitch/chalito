@@ -17,3 +17,4 @@ export * from "./billing.js";
 export * from "./api.js";
 export * from "./endorse.js";
 export * from "./screen.js";
+export * from "./lan.js";

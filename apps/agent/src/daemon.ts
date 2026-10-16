@@ -56,6 +56,7 @@ import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
 import type { AgentStore } from "./store.js";
+import { lanPath, lanTee, type LanService } from "./lan/index.js";
 import { TrustStore } from "./trust-store.js";
 
 export const CLAUDE_MISSING = {
@@ -434,6 +435,7 @@ const startDaemon = async (
       await computer?.onPolicyChange();
       await terminal?.onPolicyChange();
       await screen?.onPolicyChange();
+      await lan?.onPolicyChange();
       if (!store) return;
       await store.updateDevice({ policyHash: hash });
       await store.publishDeviceEvent({
@@ -450,6 +452,8 @@ const startDaemon = async (
   let computer: ComputerControl | null = null;
   let terminal: TerminalControl | null = null;
   let screen: ScreenManager | null = null;
+  // LAN direct path (lan/, ADR 0022 §5): null without a LAN-capable cloud; off until local policy.
+  let lan: LanService | null = null;
 
   const devStore = new DevModeStore(dir, id.sign, id.deviceId, anchor);
   const devModeBase = {
@@ -647,7 +651,8 @@ const startDaemon = async (
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {
     classifyExtras: () => extras,
-    store: signedInStore,
+    // Events also go live to the owner's other agents over the LAN; the cloud write is unchanged.
+    store: lanTee(signedInStore, () => lan),
     adapters: (deps.adapters ?? defaultAdapters)({
       apiKey,
       claudePath,
@@ -854,6 +859,15 @@ const startDaemon = async (
     coreDeps.screen = screen;
   }
   const core = new AgentCore(coreDeps);
+  lan = lanPath({
+    cloud,
+    self: { deviceId: id.deviceId, sign: id.sign },
+    policy: () => policy.get().lan,
+    handleCommand: (cid, doc) => core.handleCommand(cid, doc),
+    log,
+    now,
+  });
+  await lan?.onPolicyChange();
   if (computer) {
     const control = computer;
     try {
@@ -1114,6 +1128,7 @@ const startDaemon = async (
     }
     await broker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
+    await lan?.stop("agent_stop").catch(() => undefined);
     await cloud.close().catch(() => undefined);
     releaseLock();
     resolveDone();

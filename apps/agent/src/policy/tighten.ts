@@ -24,7 +24,12 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   computerTighterOrEqual(next.computer, cur.computer) &&
   appsTighterOrEqual(next.apps, cur.apps) &&
   remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
-  screenTighterOrEqual(next.screen, cur.screen);
+  screenTighterOrEqual(next.screen, cur.screen) &&
+  lanTighterOrEqual(next.lan, cur.lan);
+
+/** LAN direct path: can only be turned off remotely, and its port can't be moved while on. */
+export const lanTighterOrEqual = (next: Policy["lan"], cur: Policy["lan"]): boolean =>
+  !next?.enabled || (!!cur?.enabled && next.port === cur.port);
 
 /**
  * Engine: an app's sessions can only be turned off (an id without an entry is off, so a `true` is
