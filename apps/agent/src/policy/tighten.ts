@@ -30,7 +30,26 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   appsTighterOrEqual(next.apps, cur.apps) &&
   remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
   screenTighterOrEqual(next.screen, cur.screen) &&
-  lanTighterOrEqual(next.lan, cur.lan);
+  lanTighterOrEqual(next.lan, cur.lan) &&
+  exposedTighterOrEqual(next.exposed, cur.exposed);
+
+/** Exposed agents (outside hand-off tasks): an entry, or a path for it, can only be removed. */
+export const exposedTighterOrEqual = (next: Policy["exposed"], cur: Policy["exposed"]): boolean =>
+  (next ?? []).every((e) =>
+    (cur ?? []).some(
+      (c) => c.appId === e.appId && c.workspaceLabel === e.workspaceLabel && e.via.every((v) => c.via.includes(v)),
+    ),
+  );
+
+/** Whether local policy lets an outside caller (`mcp:` / `a2a:`) start `appId` in `workspaceLabel`. */
+export const exposedFor = (policy: Policy, origin: string, appId: string | undefined, workspaceLabel: string) => {
+  const via = origin.startsWith("mcp:") ? "mcp" : origin.startsWith("a2a:") ? "a2a" : null;
+  return (
+    via !== null &&
+    appId !== undefined &&
+    (policy.exposed ?? []).some((e) => e.appId === appId && e.workspaceLabel === workspaceLabel && e.via.includes(via))
+  );
+};
 
 /** LAN direct path: can only be turned off remotely, and its port can't be moved while on. */
 export const lanTighterOrEqual = (next: Policy["lan"], cur: Policy["lan"]): boolean =>
@@ -122,14 +141,16 @@ export const presetPolicy = (preset: z.infer<typeof PolicyPreset>, cur: Policy):
       return {
         ...cur,
         remote: { maxPermissionMode: "acceptEdits", maxCodexSandbox: "workspace-write" },
-        origins: { local: true, client: true, mcp: true, call: true },
+        // `agent` and `a2a` stay as the person set them locally (no preset turns either on).
+        origins: { ...cur.origins, local: true, client: true, mcp: true, call: true },
         egress: { ...cur.egress, mcpCards: false },
       };
     case "relajado":
       return {
         ...cur,
         remote: { maxPermissionMode: "acceptEdits", maxCodexSandbox: "workspace-write" },
-        origins: { local: true, client: true, mcp: true, call: true },
+        // `agent` and `a2a` stay as the person set them locally (no preset turns either on).
+        origins: { ...cur.origins, local: true, client: true, mcp: true, call: true },
       };
   }
 };

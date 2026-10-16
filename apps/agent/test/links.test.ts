@@ -407,6 +407,18 @@ describe("making links", () => {
     expect(a.links.list()).toHaveLength(0);
   });
 
+  it("a remote enable attempt from an agent: or a2a: origin is reported with that origin", async () => {
+    const { a } = await oneDevice();
+    for (const origin of ["agent:s1", "a2a:con_abc"]) {
+      const body = { v: 1, cid: "x1", uid: OWNER, targetDeviceId: a.self.id, origin, payload: { type: "devmode.on" } };
+      expect(await a.core.handleCommand("x1", { env: { relayedBy: "agent-link", body } })).toEqual({
+        ok: false,
+        reason: "remote_enable_rejected",
+      });
+      expect(a.store.deviceEvents.filter((e) => e.type === "remote_enable.rejected").at(-1)).toMatchObject({ origin });
+    }
+  });
+
   it("a share link from the phone needs its passkey step-up", async () => {
     const { a } = await oneDevice();
     const spec = baseLink({ sender: { deviceId: a.self.id }, receiver: { deviceId: a.self.id }, mode: "share" });

@@ -336,6 +336,8 @@ export const CommandRejectReason = z.enum([
   "links_disabled",
   /** A hand-off link can be made only on the device itself (desktop panel or `chalito link add`). */
   "link_local_only",
+  /** An outside hand-off task (MCP create_task, A2A) for an agent local policy doesn't expose (D-071). */
+  "not_exposed",
   /** No such link on this device, or it was revoked or expired. */
   "unknown_link",
   /** This device is neither end of the link. */

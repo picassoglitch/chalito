@@ -52,6 +52,7 @@ import {
   classifyToolCall,
   decide,
   originAllowed,
+  exposedFor,
   policyHash,
   presetPolicy,
   type ClassifyContext,
@@ -301,7 +302,7 @@ export class AgentCore {
           deviceId: this.d.self.deviceId,
           attempted: redact(attempted).slice(0, 64),
           origin:
-            typeof body.origin === "string" && /^(local|client:|mcp:|call:)/.test(body.origin)
+            typeof body.origin === "string" && /^(local|client:|mcp:|call:|agent:|a2a:)/.test(body.origin)
               ? (body.origin as Origin)
               : "local",
           t: this.d.now(),
@@ -335,6 +336,17 @@ export class AgentCore {
     if (body.expiresAt <= now || body.issuedAt > now + 60_000) return this.#reject(id, "expired");
     if (!(await this.d.nonces.claim(body.nonce, body.expiresAt, now))) return this.#reject(id, "replayed_nonce");
     if (!originAllowed(this.d.policy.get().origins, body.origin)) return this.#reject(id, "origin_disabled");
+    // An outside hand-off task (MCP create_task, A2A SendMessage): the cloud's LinkAuthorizer
+    // isn't enough; local policy must expose that agent in that workspace over that path.
+    if (
+      "relayedBy" in envelope &&
+      (envelope.relayedBy === "mcp-gateway" || envelope.relayedBy === "a2a-server") &&
+      body.payload.type === "session.start" &&
+      !exposedFor(this.d.policy.get(), body.origin, body.payload.appId, body.payload.workspaceLabel)
+    ) {
+      this.#audit("link.task_not_exposed", { id, origin: body.origin, appId: body.payload.appId ?? null });
+      return this.#reject(id, "not_exposed");
+    }
 
     const r = await this.#dispatch(body.cid, body.payload, body.origin, body);
     const sid = (body.payload as { sid?: unknown }).sid;

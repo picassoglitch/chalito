@@ -131,6 +131,26 @@ export const Policy = z.object({
    * the cloud as fallback. Absent = off (older policies keep their hash). Turned on only by a
    * local edit (`chalito policy edit`: confirmation plus OS auth); remote surfaces can only turn it off.
    */
+  /**
+   * Agents an outside caller may start here (ADR 0022 §4, D-071): a hand-off task relayed by the
+   * MCP gateway (`create_task`, `mcp:*`) or the A2A server (`SendMessage`, `a2a:*`) arrives as a
+   * `session.start`, and the device runs it only for an app and workspace listed here, over a
+   * listed path. The cloud's LinkAuthorizer saying yes is not enough on its own. Absent or empty =
+   * every such start is refused. Added only by a local edit (`chalito policy edit`: confirmation
+   * plus OS authentication), like links (D-070); remote surfaces can only remove entries.
+   */
+  exposed: z
+    .array(
+      z
+        .object({
+          appId: AppId,
+          workspaceLabel: z.string().min(1).max(60),
+          via: z.array(z.enum(["mcp", "a2a"])).min(1),
+        })
+        .strict(),
+    )
+    .max(50)
+    .optional(),
   lan: z
     .object({
       enabled: z.boolean(),

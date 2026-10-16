@@ -40,7 +40,7 @@ import { DEFAULT_ICE_SERVERS } from "../src/screen/peer.js";
 import { fakeDriver, fakePeers, manualTimers } from "./screen-fakes.js";
 import { publicReason } from "../src/command-result.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
-import { DEFAULT_POLICY, policyHash, type Policy } from "../src/policy/index.js";
+import { DEFAULT_POLICY, applyRemoteTighten, policyHash, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
 import { MemoryStore } from "../src/store.js";
 import { syncEndorsements } from "../src/endorsement-sync.js";
@@ -266,7 +266,7 @@ const harness = async (
     o: {
       origin?: string;
       signer?: Device;
-      relayed?: "mcp-gateway" | "notifier";
+      relayed?: "mcp-gateway" | "notifier" | "a2a-server";
       target?: string;
       expiresAt?: number;
     } = {},
@@ -1792,6 +1792,53 @@ describe("remote terminal over signed commands and sealed events", () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe("outside hand-off tasks (relayed session.start, D-071)", () => {
+  const start = async (
+    h: Awaited<ReturnType<typeof harness>>,
+    origin: string,
+    relayed: "mcp-gateway" | "a2a-server",
+    k = 1,
+  ) =>
+    h.command(
+      {
+        type: "session.start",
+        appId: "claude-code",
+        workspaceLabel: "chalito",
+        promptCt: await h.sealed(k, "revisa el PR"),
+        permissionMode: "default",
+      },
+      { origin, relayed },
+    );
+
+  it("is refused unless local policy exposes that agent and workspace over that path", async () => {
+    const none = await harness({ policy: { origins: { ...DEFAULT_POLICY.origins, a2a: true } } });
+    expect(await start(none, "mcp:claude", "mcp-gateway")).toEqual({ ok: false, reason: "not_exposed" });
+    expect(await start(none, "a2a:con_abc", "a2a-server")).toEqual({ ok: false, reason: "not_exposed" });
+    expect(none.fake.run.options).toBeUndefined();
+
+    const a2aOnly = await harness({
+      policy: {
+        origins: { ...DEFAULT_POLICY.origins, a2a: true },
+        exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a"] }],
+      },
+    });
+    expect(await start(a2aOnly, "mcp:claude", "mcp-gateway")).toEqual({ ok: false, reason: "not_exposed" });
+    expect(await start(a2aOnly, "a2a:con_abc", "a2a-server", 2)).toMatchObject({ ok: true });
+  });
+
+  it("a remote tighten can only remove exposures, never add one", () => {
+    const cur = {
+      ...DEFAULT_POLICY,
+      exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a" as const] }],
+    };
+    expect(applyRemoteTighten(cur, { exposed: [] })).toMatchObject({ ok: true });
+    expect(
+      applyRemoteTighten(cur, { exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a", "mcp"] }] }),
+    ).toMatchObject({ ok: false, reason: "would_loosen" });
+    expect(applyRemoteTighten(DEFAULT_POLICY, { exposed: cur.exposed })).toMatchObject({ ok: false });
   });
 });
 

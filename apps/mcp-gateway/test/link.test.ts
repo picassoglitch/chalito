@@ -156,8 +156,7 @@ describe("MCP gateway: list_agents and create_task", () => {
         fromAgent: "mcp:chatgpt",
         toAgent: "claude-code",
         targetDeviceId: AGENT,
-        cwd: "chalito",
-        hop: 0,
+        hop: 1,
         chain: ["mcp:chatgpt"],
       },
     ]);
@@ -322,7 +321,8 @@ describe("A2A server", () => {
       origin: `a2a:${grant.cid}`,
       toAgent: "claude-code",
       targetDeviceId: AGENT,
-      hop: 0,
+      hop: 1,
+      chain: [`a2a:${grant.cid}`],
     });
     const env = RelayedCommand.parse(g.mcp.commands[0]!.env);
     expect(env).toMatchObject({
@@ -347,7 +347,12 @@ describe("a relayed A2A task on the real AgentCore", () => {
     }
   };
 
-  const core = async (owner: string, box: Awaited<ReturnType<typeof generateBoxKeyPair>>, a2aOn: boolean) => {
+  const core = async (
+    owner: string,
+    box: Awaited<ReturnType<typeof generateBoxKeyPair>>,
+    a2aOn: boolean,
+    exposed = a2aOn,
+  ) => {
     const sign = await generateSigningKeyPair();
     const store = new MemoryStore();
     const liability = loadLiabilityText("es");
@@ -383,6 +388,8 @@ describe("a relayed A2A task on the real AgentCore", () => {
       ...DEFAULT_POLICY,
       workspaces: [{ label: "chalito", path: WS }],
       origins: { ...DEFAULT_POLICY.origins, ...(a2aOn ? { a2a: true } : {}) },
+      // The device's own opt-in for this agent (D-071): the cloud's yes alone isn't enough.
+      ...(exposed ? { exposed: [{ appId: "claude-code", workspaceLabel: "chalito", via: ["a2a" as const] }] } : {}),
     };
     const c = new AgentCore({
       store,
@@ -425,6 +432,16 @@ describe("a relayed A2A task on the real AgentCore", () => {
     expect(await a.core.handleCommand(q.id, { env: q.env, fromDeviceId: "a2a-server" })).toEqual({
       ok: false,
       reason: "origin_disabled",
+    });
+    expect(a.fake.run.ran).toHaveLength(0);
+  });
+
+  it("is refused with a2a: on but the agent not exposed in local policy", async () => {
+    const { g, box, q } = await relayed();
+    const a = await core(g.o, box, true, false);
+    expect(await a.core.handleCommand(q.id, { env: q.env, fromDeviceId: "a2a-server" })).toEqual({
+      ok: false,
+      reason: "not_exposed",
     });
     expect(a.fake.run.ran).toHaveLength(0);
   });
