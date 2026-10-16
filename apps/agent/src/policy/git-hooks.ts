@@ -14,8 +14,16 @@ import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
  * folder.
  */
 export interface HooksInfo {
-  /** The hooks folder, "unknown" (fail closed), or null when the workspace isn't a git repo. */
+  /**
+   * The hooks folder; "unknown" when a file couldn't be read or parsed with confidence (fail
+   * closed: the repo's hooks/, .githooks/ and .husky/ count); null when this isn't a git repo.
+   */
   dir: string | "unknown" | null;
+  /**
+   * Other folders git might use for hooks: core.hooksPath values in includeIf targets whose
+   * condition we can't evaluate (onbranch:, hasconfig:…), or in system configs that disagree.
+   */
+  extraDirs: string[];
   /** The repo's git dir and common dir (a worktree's are different). */
   gitDirs: string[];
   /** Every config file in the resolution chain, read or not (a missing include can be created). */
@@ -180,6 +188,9 @@ export interface GitEnv {
   GIT_CONFIG_COUNT?: string | undefined;
   GIT_CONFIG_PARAMETERS?: string | undefined;
   GIT_CONFIG?: string | undefined;
+  /** A session-wide repo override: used when set (a missing folder fails closed). */
+  GIT_DIR?: string | undefined;
+  GIT_COMMON_DIR?: string | undefined;
   ProgramData?: string | undefined;
   ProgramFiles?: string | undefined;
   "ProgramFiles(x86)"?: string | undefined;
@@ -247,24 +258,33 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   const dotGit = join(ws, ".git");
   const kind = fs.isDir(dotGit);
   // Watch .git even when it's missing: creating one makes this a repo.
-  if (kind === null) return { dir: null, gitDirs: [], chain: [], watched: [dotGit] };
+  if (kind === null && !env.GIT_DIR) return { dir: null, extraDirs: [], gitDirs: [], chain: [], watched: [dotGit] };
   const watched = [dotGit];
   const chain: string[] = [];
   let unsure = false;
+  const extra = new Set<string>();
   let gitDir = dotGit;
-  if (kind === false) {
+  if (env.GIT_DIR) {
+    // The sessions' git uses GIT_DIR instead of discovering .git.
+    gitDir = resolve(ws, env.GIT_DIR);
+    watched.push(gitDir);
+    if (fs.isDir(gitDir) !== true) return { dir: "unknown", extraDirs: [], gitDirs: [gitDir], chain, watched };
+  } else if (kind === false) {
     try {
       const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.read(dotGit));
       if (!m) throw new Unsure("gitdir file");
       gitDir = resolve(ws, m[1]!);
     } catch {
-      return { dir: "unknown", gitDirs: [], chain, watched };
+      return { dir: "unknown", extraDirs: [], gitDirs: [], chain, watched };
     }
   }
   let common = gitDir;
   const commondirFile = join(gitDir, "commondir");
   watched.push(commondirFile);
-  if (fs.mtime(commondirFile) !== -1) {
+  if (env.GIT_COMMON_DIR) {
+    common = resolve(ws, env.GIT_COMMON_DIR);
+    if (fs.isDir(common) !== true) unsure = true;
+  } else if (fs.mtime(commondirFile) !== -1) {
     try {
       common = resolve(gitDir, fs.read(commondirFile).trim());
     } catch {
@@ -280,7 +300,11 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
     realGitDir = null;
   }
   const systemValues = new Set<string>();
-  const readConfig = (file: string, depth: number, system = false) => {
+  /**
+   * `conditional`: the file is behind an includeIf we can't evaluate. Its hooksPath values become
+   * extra hooks folders instead of the answer.
+   */
+  const readConfig = (file: string, depth: number, system = false, conditional = false) => {
     chain.push(file);
     watched.push(file);
     if (depth > MAX_DEPTH) {
@@ -298,6 +322,7 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
     for (const e of entries) {
       if (e.section === "core" && e.sub === null && e.key === "hookspath") {
         if (e.value === true || unsurePath(e.value)) unsure = true;
+        else if (conditional) extra.add(e.value);
         else {
           hooksPath = e.value;
           if (system) systemValues.add(e.value);
@@ -307,7 +332,7 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
           unsure = true;
           continue;
         }
-        readConfig(resolve(dirname(file), expandHome(e.value, home)), depth + 1, system);
+        readConfig(resolve(dirname(file), expandHome(e.value, home)), depth + 1, system, conditional);
       } else if (e.section === "includeif" && e.sub !== null && e.key === "path" && e.value !== true) {
         if (unsurePath(e.value)) {
           unsure = true;
@@ -319,13 +344,12 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
           if (realGitDir === null) throw new Unsure("realpath of the git dir");
           applies = includeIfApplies(e.sub, [gitDir, realGitDir], file, home);
         } catch {
-          // Can't evaluate: watch the file, and fail closed.
-          chain.push(target);
-          watched.push(target);
-          unsure = true;
+          // Can't evaluate (onbranch:, hasconfig:…): read it anyway, and any hooksPath in it
+          // counts as a hooks folder too.
+          readConfig(target, depth + 1, system, true);
           continue;
         }
-        if (applies) readConfig(target, depth + 1, system);
+        if (applies) readConfig(target, depth + 1, system, conditional);
         else {
           chain.push(target);
           watched.push(target);
@@ -366,8 +390,9 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
       chain.push(f);
       watched.push(f);
     }
-  // Several system configs set it differently: we can't tell which install's git runs.
-  if (systemValues.size > 1) unsure = true;
+  // Several system configs set it differently: we can't tell which install's git runs, so each
+  // of their values counts.
+  if (systemValues.size > 1) for (const v of systemValues) extra.add(v);
   if (env.GIT_CONFIG_GLOBAL) readConfig(env.GIT_CONFIG_GLOBAL, 0);
   else {
     // git reads $XDG_CONFIG_HOME/git/config when set, else ~/.config/git/config; both are in the chain.
@@ -391,10 +416,11 @@ export const resolveHooks = (ws: string, o: HooksOptions): HooksInfo => {
   readConfig(join(gitDir, "config.worktree"), 0);
 
   const gitDirs = [...new Set([gitDir, common])];
-  if (unsure) return { dir: "unknown", gitDirs, chain, watched };
+  const extraDirs = [...extra].map((v) => resolve(ws, expandHome(v, home)));
+  if (unsure) return { dir: "unknown", extraDirs, gitDirs, chain, watched };
   const hp = hooksPath as string | null;
   const dir = hp ? resolve(ws, expandHome(hp, home)) : join(common, "hooks");
-  return { dir, gitDirs, chain, watched };
+  return { dir, extraDirs, gitDirs, chain, watched };
 };
 
 const cache = new Map<string, { stamp: string; info: HooksInfo }>();
@@ -408,6 +434,23 @@ export const hooksFor = (ws: string, o: HooksOptions): HooksInfo => {
   const info = resolveHooks(ws, o);
   cache.set(key, { stamp: info.watched.map((f) => fs.mtime(f)).join(","), info });
   return info;
+};
+
+/**
+ * The repo a path belongs to: the nearest folder at or above it holding a `.git` (folder or
+ * gitdir file), or null. With GIT_DIR set, the sessions' git treats the folder it's run from as the
+ * repo, so `fallback` (the workspace) is used.
+ */
+export const repoRootOf = (path: string, o: { fs?: GitFs; env?: GitEnv; fallback: string }): string | null => {
+  const fs = o.fs ?? nodeFs;
+  if (o.env?.GIT_DIR) return o.fallback;
+  let cur = path;
+  for (;;) {
+    if (fs.isDir(join(cur, ".git")) !== null) return cur;
+    const up = dirname(cur);
+    if (up === cur) return null;
+    cur = up;
+  }
 };
 
 /** Tests: forget cached answers. */

@@ -152,11 +152,18 @@ describe("hooks folder resolution, without running git", () => {
     expect(resolveHooks(ws, { home, env: NOSYS }).dir).toBe(join(ws, "if-hooks"));
 
     clearHooksCache();
-    const ws2 = repo(home, "app2", `[includeIf "onbranch:main"]\n\tpath = x.cfg\n`);
-    expect(resolveHooks(ws2, { home, env: NOSYS }).dir).toBe("unknown");
-    expect(write(ws2, home, "hooks/pre-commit").tier).toBe("HIGH");
+    // onbranch: can't be evaluated: its target is read anyway and its hooksPath counts too.
+    const ws2 = repo(home, "app2", `[includeIf "onbranch:main"]\n\tpath = branch.cfg\n`);
+    writeFileSync(join(ws2, ".git", "branch.cfg"), "[core]\n\thooksPath = ci-hooks\n");
+    const info = resolveHooks(ws2, { home, env: NOSYS });
+    expect(info.dir).toBe(join(ws2, ".git", "hooks"));
+    expect(info.extraDirs).toEqual([join(ws2, "ci-hooks")]);
+    expect(write(ws2, home, "ci-hooks/pre-commit").tier).toBe("HIGH");
     expect(write(ws2, home, ".githooks/x").tier).toBe("HIGH");
     expect(write(ws2, home, ".husky/pre-push").tier).toBe("HIGH");
+    // No broad "hooks" rule: React hooks stay ordinary source.
+    expect(write(ws2, home, "src/hooks/useThing.ts").tier).toBe("MED");
+    expect(write(ws2, home, "hooks/pre-commit").tier).toBe("MED");
     expect(write(ws2, home, "src/a.ts").tier).toBe("MED");
   });
 
@@ -356,7 +363,10 @@ describe("system config, the environment, and values we can't resolve", () => {
         throw new Error("EACCES");
       },
     };
-    expect(resolveHooks(ws, { home, env: NOSYS, fs: failing }).dir).toBe("unknown");
+    // Can't evaluate the condition: the target is read anyway, its hooksPath counts as well.
+    const info = resolveHooks(ws, { home, env: NOSYS, fs: failing });
+    expect(info.dir).not.toBe("unknown");
+    expect(info.extraDirs).toEqual([join(ws, "via-real")]);
   });
 });
 
@@ -467,5 +477,71 @@ describe("the sessions' HOME, XDG and PATH", () => {
     clearHooksCache();
     const { "ProgramFiles(x86)": _drop, ...no86 } = base;
     expect(resolveHooks("W:\\app", { home: "C:\\Users\\ana", platform: "win32", fs, env: no86 }).dir).toBe("unknown");
+  });
+});
+
+describe("per-repo resolution, the broad fallback, GIT_DIR, git executables", () => {
+  it("an unparseable config: only the repo's hooks/ and .githooks/ (and .husky/) count; src/hooks stays MED", () => {
+    const home = root();
+    const ws = repo(home, "app", "[core]\n\thooksPath = a\\\n\tb\n");
+    expect(resolveHooks(ws, { home, env: NOSYS }).dir).toBe("unknown");
+    expect(write(ws, home, "hooks/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, ".githooks/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, ".husky/pre-push").tier).toBe("HIGH");
+    expect(write(ws, home, "src/hooks/useAuth.ts").tier).toBe("MED");
+    expect(write(ws, home, "packages/web/hooks/x.ts").tier).toBe("MED");
+  });
+
+  it("a workspace holding several repos resolves each one", () => {
+    const home = root();
+    const ws = join(home, "monorepo-of-repos");
+    mkdirSync(ws);
+    repo(ws, "a", "[core]\n\thooksPath = ha\n");
+    repo(ws, "b", "[core]\n\thooksPath = hb\n");
+    expect(write(ws, home, "a/ha/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, "b/hb/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, "a/hb/x.ts").tier).toBe("MED");
+    expect(write(ws, home, "b/.git/config").tier).toBe("HIGH");
+  });
+
+  it("a workspace inside a repo uses that repo's config", () => {
+    const home = root();
+    const outer = repo(home, "big", "[core]\n\thooksPath = packages/app/hooks2\n");
+    const ws = join(outer, "packages", "app");
+    mkdirSync(ws, { recursive: true });
+    expect(write(ws, home, "hooks2/pre-commit").tier).toBe("HIGH");
+    expect(write(ws, home, "src/a.ts").tier).toBe("MED");
+  });
+
+  it("GIT_DIR / GIT_COMMON_DIR from the sessions' environment are used; a missing one fails closed", () => {
+    const home = root();
+    const ws = join(home, "plain");
+    mkdirSync(ws);
+    const gd = join(home, "elsewhere.git");
+    mkdirSync(gd);
+    writeFileSync(join(gd, "config"), "[core]\n\thooksPath = env-hooks\n");
+    const env = { ...NOSYS, GIT_DIR: gd };
+    expect(resolveHooks(ws, { home, env }).dir).toBe(join(ws, "env-hooks"));
+    expect(write(ws, home, "env-hooks/x", { env }).tier).toBe("HIGH");
+    expect(write(ws, home, "src/a.ts", { env }).tier).toBe("MED");
+    clearHooksCache();
+    expect(resolveHooks(ws, { home, env: { ...NOSYS, GIT_DIR: join(home, "missing") } }).dir).toBe("unknown");
+    clearHooksCache();
+    const common = join(home, "common.git");
+    mkdirSync(common);
+    writeFileSync(join(common, "config"), "[core]\n\thooksPath = common-hooks\n");
+    expect(resolveHooks(ws, { home, env: { ...env, GIT_COMMON_DIR: common } }).dir).toBe(join(ws, "common-hooks"));
+    clearHooksCache();
+    expect(resolveHooks(ws, { home, env: { ...env, GIT_COMMON_DIR: join(home, "nope") } }).dir).toBe("unknown");
+  });
+
+  it("only git executables (files) are HIGH: not a folder named git, nor files inside one", () => {
+    const home = root();
+    const ws = repo(home);
+    mkdirSync(join(ws, "src", "git"), { recursive: true });
+    expect(write(ws, home, "src/git").tier).toBe("MED");
+    expect(write(ws, home, "src/git/client.ts").tier).toBe("MED");
+    expect(write(ws, home, "bin/git").tier).toBe("HIGH");
+    expect(write(ws, home, "tools/git.exe").tier).toBe("HIGH");
   });
 });

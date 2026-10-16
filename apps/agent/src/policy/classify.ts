@@ -1,8 +1,8 @@
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { hooksFor, type GitFs } from "./git-hooks.js";
+import { hooksFor, repoRootOf, type GitFs } from "./git-hooks.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
   AI_CONFIG_DIRS,
@@ -138,26 +138,55 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
   const res = (p: string, cwd = ctx.cwd) => real(resolve(cwd, expand(p)));
   const workspaces = ctx.policy.workspaces.map((w) => real(resolve(expand(w.path))));
-  // Each workspace repo's hooks folder, worked out by reading git's own files (never by running
-  // git). "unknown": something couldn't be read with confidence, so every likely hooks folder there
-  // is HIGH (fail closed).
-  const hooks = workspaces.map((w) => ({
-    w,
-    info: hooksFor(w, {
-      home: ctx.home,
-      ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
+  // git hooks, worked out per repo by reading git's own files (never by running git): the repo a
+  // written path belongs to is its nearest `.git` at or above it (a workspace can hold many repos,
+  // or sit inside one), each resolved once and cached until its config files change.
+  const hooksOpts = {
+    home: ctx.home,
+    ...(ctx.env?.XDG_CONFIG_HOME ? { xdgConfigHome: ctx.env.XDG_CONFIG_HOME } : {}),
+    ...(ctx.env ? { env: ctx.env } : {}),
+    platform,
+    ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
+  };
+  const repoOf = (abs: string, fallback: string) => {
+    const root = repoRootOf(dirname(abs), {
+      fallback,
       ...(ctx.env ? { env: ctx.env } : {}),
-      platform,
       ...(ctx.gitFs ? { fs: ctx.gitFs } : {}),
-    }),
-  }));
-  const hooksDirs = hooks.flatMap((h) =>
-    typeof h.info.dir === "string" && h.info.dir !== "unknown" ? [real(h.info.dir)] : [],
-  );
-  const hooksUnknownIn = hooks.filter((h) => h.info.dir === "unknown").map((h) => h.w);
-  // The repos' git dirs and every config file git would read: writing there changes what runs.
-  const gitDirs = hooks.flatMap((h) => h.info.gitDirs.map((d) => real(d)));
-  const gitChain = hooks.flatMap((h) => h.info.chain.map((f) => real(f)));
+    });
+    return root ? { root, info: hooksFor(root, hooksOpts) } : null;
+  };
+  // The workspaces' own repos: their config chains count for any path (an include can live anywhere).
+  const workspaceRepos = workspaces.flatMap((w) => {
+    const r = repoOf(join(w, "x"), w);
+    return r ? [r] : [];
+  });
+  /** Whether `abs` is part of how git runs hooks for its repo (or a workspace's repo). */
+  const gitRuns = (abs: string): boolean => {
+    const r = repoOf(abs, workspaces.find((w) => within(abs, w)) ?? dirname(abs));
+    const repos = r ? [r, ...workspaceRepos] : workspaceRepos;
+    for (const { info } of repos) {
+      if (info.gitDirs.some((d) => within(abs, real(d)))) return true;
+      if (info.chain.some((f) => same(real(f), abs))) return true;
+    }
+    if (!r) return false;
+    const { root, info } = r;
+    if (typeof info.dir === "string" && info.dir !== "unknown" && within(abs, real(info.dir))) return true;
+    if (info.extraDirs.some((d) => within(abs, real(d)))) return true;
+    // Couldn't read the config with confidence: the repo's usual hooks folders count.
+    if (info.dir === "unknown") return [join(root, "hooks"), join(root, ".githooks")].some((d) => within(abs, real(d)));
+    return false;
+  };
+  const gitFs = ctx.gitFs;
+  /** An existing folder (not a file) at this path. */
+  const isFolder = (p: string) => {
+    if (gitFs) return gitFs.isDir(p) === true;
+    try {
+      return statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  };
   const h = (rel: string) => real(join(ctx.home, rel));
   // A home-relative entry, plus (Windows) its AppData part under the real %APPDATA% / %LOCALAPPDATA%.
   const env = ctx.env ?? {};
@@ -260,16 +289,15 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
         /^\.yarnrc/.test(base) ||
         (has(".idea") && (dirs.includes(k("runConfigurations")) || named("workspace.xml"))) ||
         has(".githooks") ||
-        hooksDirs.some((d) => within(abs, d)) ||
-        // git's own files: any `.git` (folder contents or a gitdir file), the repos' git and common
-        // dirs, every config file git reads for them (includes too), anything named like a git
-        // config, and a `git` binary planted in a workspace.
+        // git's own files: any `.git` (folder contents or a gitdir file), anything named like a git
+        // config, a `git` executable planted in a workspace (a file, not a folder named git), and
+        // for the path's repo: its git and common dirs, every config file git reads (includes
+        // too) and its hooks folder(s).
         has(".git") ||
-        named(".git", "git", "git.exe", "git.com", "git.cmd") ||
+        named(".git") ||
+        (named("git", "git.exe", "git.com", "git.cmd") && !isFolder(abs)) ||
         base.includes("gitconfig") ||
-        gitDirs.some((d) => within(abs, d)) ||
-        gitChain.some((f) => same(f, abs)) ||
-        (hooksUnknownIn.some((w) => within(abs, w)) && (has("hooks") || has(".husky")))
+        gitRuns(abs)
       );
     },
     buildOrTest: (abs) => {
