@@ -21,7 +21,7 @@ describe("protected resource (RFC 9728)", () => {
     expect(prm).toEqual({
       resource: RESOURCE,
       authorization_servers: [ISSUER],
-      scopes_supported: ["mcp:read", "mesa:post", "approval:recommend", "session:prompt"],
+      scopes_supported: ["mcp:read", "mesa:post", "approval:recommend", "session:prompt", "link:handoff"],
       bearer_methods_supported: ["header"],
       resource_name: "Chalito",
     });
@@ -61,7 +61,11 @@ describe("scopes decide the tools", () => {
   it("mcp:read only: read tools, nothing that writes or prompts", async () => {
     const g = await gatewayHarness();
     const c = await g.mcpClient((await g.connect(["mcp:read"])).access_token);
-    expect((await c.listTools()).tools.map((t) => t.name).sort()).toEqual(["get_session_card", "list_pending"]);
+    expect((await c.listTools()).tools.map((t) => t.name).sort()).toEqual([
+      "get_session_card",
+      "list_agents",
+      "list_pending",
+    ]);
     await expect(c.callTool({ name: "prompt_session", arguments: { sid: "s_1", prompt: "rm -rf" } })).rejects.toThrow(
       /not found/,
     );
@@ -74,6 +78,7 @@ describe("scopes decide the tools", () => {
     const c = await g.mcpClient(t.access_token);
     expect((await c.listTools()).tools.map((x) => x.name).sort()).toEqual([
       "get_session_card",
+      "list_agents",
       "list_pending",
       "post_to_mesa",
       "recommend_decision",
@@ -89,7 +94,14 @@ describe("scopes decide the tools", () => {
     const g = await gatewayHarness();
     const t = await g.connect(["mcp:read", "mesa:post", "approval:recommend", "session:prompt"]);
     const names = (await (await g.mcpClient(t.access_token)).listTools()).tools.map((x) => x.name).sort();
-    expect(names).toEqual(["get_session_card", "list_pending", "post_to_mesa", "prompt_session", "recommend_decision"]);
+    expect(names).toEqual([
+      "get_session_card",
+      "list_agents",
+      "list_pending",
+      "post_to_mesa",
+      "prompt_session",
+      "recommend_decision",
+    ]);
   });
 });
 

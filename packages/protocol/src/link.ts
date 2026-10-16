@@ -223,7 +223,8 @@ export type LinkSecurityScheme = z.infer<typeof LinkSecurityScheme>;
 
 /** A2A `SecurityRequirement`: scheme name → required scopes. */
 export const LinkSecurityRequirement = z.object({
-  schemes: z.record(z.string().min(1).max(100), z.object({ list: z.array(z.string().max(200)).max(32) })),
+  // ProtoJSON omits an empty list, so `{ "schemes": { "key": {} } }` is "key, no scopes".
+  schemes: z.record(z.string().min(1).max(100), z.object({ list: z.array(z.string().max(200)).max(32).optional() })),
 });
 export type LinkSecurityRequirement = z.infer<typeof LinkSecurityRequirement>;
 
@@ -301,10 +302,27 @@ export type AgentCard = z.infer<typeof AgentCard>;
  * Recipe kinds whose driver takes a prompt and runs it as a task (an agent protocol session).
  * Terminal, desktop-app and web-app drivers are screens or shells, not task-taking agents.
  */
-export const LINKABLE_KINDS = ["claude-sdk", "codex", "acp"] as const satisfies readonly RecipeKind[];
+export const LINKABLE_KINDS = [
+  "claude-sdk",
+  "codex",
+  "acp",
+  "chat-api",
+  "a2a",
+] as const satisfies readonly RecipeKind[];
 
-export const isLinkableRecipe = (r: Pick<Recipe, "kinds" | "capabilities">): boolean =>
-  r.capabilities.includes("sessions") && r.kinds.some((k) => (LINKABLE_KINDS as readonly RecipeKind[]).includes(k));
+export const isLinkableRecipe = (r: Pick<Recipe, "kinds" | "capabilities"> & { notConnectable?: unknown }): boolean =>
+  !r.notConnectable &&
+  r.capabilities.includes("sessions") &&
+  r.kinds.some((k) => (LINKABLE_KINDS as readonly RecipeKind[]).includes(k));
+
+/** Which of the linkable drivers runs the recipe's agent (the first linkable kind). */
+const agentKind = (r: Pick<Recipe, "kinds">) =>
+  r.kinds.find((k) => (LINKABLE_KINDS as readonly RecipeKind[]).includes(k)) as (typeof LINKABLE_KINDS)[number];
+
+/** The skill id of a chat-api recipe's card (text in, text out; no tools of its own). */
+export const CHAT_SKILL = "chat" as const;
+/** The skill id of an a2a recipe's card (the remote agent's own card lists its real skills). */
+export const REMOTE_AGENT_SKILL = "remote-agent" as const;
 
 export interface AgentCardOptions {
   /** Where the agent is reachable (Phase D). Default: none (a card used only inside Chalito). */
@@ -326,9 +344,37 @@ export const CODING_SESSION_SKILL = "coding-session" as const;
 export const agentCardFromRecipe = (recipe: Recipe, opts: AgentCardOptions = {}): AgentCard | null => {
   if (!isLinkableRecipe(recipe)) return null;
   const id = AppId.parse(recipe.id);
+  const kind = agentKind(recipe);
+  const skill =
+    kind === "chat-api"
+      ? {
+          id: CHAT_SKILL,
+          name: "Chat",
+          description: `Answers in text with ${recipe.name}, on the owner's own account. It has no tools unless the owner turns on Chalito's gated computer control, and then every risky action asks the owner.`,
+          tags: ["chat", id],
+        }
+      : kind === "a2a"
+        ? {
+            id: REMOTE_AGENT_SKILL,
+            name: "Remote agent",
+            description: `Hands the task to ${recipe.name}, a remote A2A agent the owner connected. It runs on ${recipe.vendor}'s side, not on the owner's computer.`,
+            tags: ["a2a", id],
+          }
+        : {
+            id: CODING_SESSION_SKILL,
+            name: "Coding session",
+            description: `Works on a task in a repository with ${recipe.name}: reads and edits code and runs tools, with every risky tool gated by the owner's approval.`,
+            tags: ["coding", id],
+          };
+  const description =
+    kind === "chat-api"
+      ? `${recipe.name} (${recipe.vendor}), a chat model Chalito reaches through its OpenAI-compatible API with the owner's own key.`
+      : kind === "a2a"
+        ? `${recipe.name} (${recipe.vendor}), a remote A2A agent connected through Chalito.`
+        : `${recipe.name} (${recipe.vendor}), a coding agent run by Chalito on the owner's computer.`;
   return AgentCard.parse({
     name: recipe.name,
-    description: `${recipe.name} (${recipe.vendor}), a coding agent run by Chalito on the owner's computer.`,
+    description,
     ...(opts.supportedInterfaces?.length ? { supportedInterfaces: opts.supportedInterfaces } : {}),
     provider: { url: recipe.homepage, organization: recipe.vendor },
     version: opts.version ?? "1",
@@ -338,13 +384,6 @@ export const agentCardFromRecipe = (recipe: Recipe, opts: AgentCardOptions = {})
     ...(opts.securityRequirements ? { securityRequirements: opts.securityRequirements } : {}),
     defaultInputModes: ["text/plain"],
     defaultOutputModes: ["text/plain", "application/json"],
-    skills: [
-      {
-        id: CODING_SESSION_SKILL,
-        name: "Coding session",
-        description: `Works on a task in a repository with ${recipe.name}: reads and edits code and runs tools, with every risky tool gated by the owner's approval.`,
-        tags: ["coding", id],
-      },
-    ],
+    skills: [skill],
   });
 };

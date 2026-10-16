@@ -205,24 +205,45 @@ export const SignedCommand = signed("chalito.command.v1", CommandBody);
 export type SignedCommand = z.infer<typeof SignedCommand>;
 
 /**
- * A command relayed by the cloud on behalf of an unsigned origin (`mcp:*`, `call:*`).
+ * A command relayed by the cloud on behalf of an unsigned origin (`mcp:*`, `call:*`, `a2a:*`).
  * Restricted to prompting/answering; the agent applies its origin policy and never
  * Developer-mode auto-approve to the resulting turn.
  */
 export const RelayedCommand = z
   .object({
-    relayedBy: z.enum(["mcp-gateway", "notifier"]),
+    relayedBy: z.enum(["mcp-gateway", "notifier", "a2a-server"]),
     body: CommandBody,
   })
   // Each relay carries only its own origin (review R-L2): the MCP gateway relays `mcp:*` prompts,
   // the notifier relays `call:*` prompts (a spoken answer becomes a prompt). Nothing relays a
   // session.answer, and an unsigned relay can't carry a step-up.
+  //
+  // ADR 0022 §4 (M16 D, D-071): a hand-off task (`create_task` on the MCP gateway, an A2A
+  // `SendMessage` on the A2A server) is a `session.start`, relayed only after a LinkAuthorizer
+  // allowed it. A relayed start never asks for more than the default permission mode (no
+  // acceptEdits, no Codex sandbox): the device's ceiling and gate still apply on top.
   .refine(
-    ({ relayedBy, body }) =>
-      (relayedBy === "mcp-gateway" ? body.origin.startsWith("mcp:") : body.origin.startsWith("call:")) &&
-      body.payload.type === "session.prompt" &&
-      body.stepUp === undefined,
-    { message: "relays carry only session.prompt from their own origin (mcp-gateway: mcp:*, notifier: call:*)" },
+    ({ relayedBy, body }) => {
+      const own =
+        relayedBy === "mcp-gateway"
+          ? body.origin.startsWith("mcp:")
+          : relayedBy === "a2a-server"
+            ? body.origin.startsWith("a2a:")
+            : body.origin.startsWith("call:");
+      const p = body.payload;
+      const kind =
+        relayedBy === "a2a-server"
+          ? p.type === "session.start"
+          : relayedBy === "mcp-gateway"
+            ? p.type === "session.prompt" || p.type === "session.start"
+            : p.type === "session.prompt";
+      const tame = p.type !== "session.start" || (p.permissionMode !== "acceptEdits" && p.codexSandbox === undefined);
+      return own && kind && tame && body.stepUp === undefined;
+    },
+    {
+      message:
+        "relays carry only their own origin (mcp-gateway: mcp:*, notifier: call:*, a2a-server: a2a:*): session.prompt, or a default/plan session.start for hand-offs",
+    },
   );
 export type RelayedCommand = z.infer<typeof RelayedCommand>;
 

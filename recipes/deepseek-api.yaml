@@ -1,0 +1,26 @@
+v: 1
+id: deepseek-api
+name: DeepSeek API
+vendor: DeepSeek
+homepage: https://platform.deepseek.com/
+termsUrl: https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html
+kinds: [chat-api]
+platforms: {}
+signin:
+  via: api-key
+  planSignin: "off"
+apiKey:
+  env: DEEPSEEK_API_KEY
+  label: DeepSeek API key
+  docsUrl: https://api-docs.deepseek.com/
+driver:
+  chatApi: { baseUrl: "https://api.deepseek.com", model: deepseek-flash, tools: true, streamUsage: true }
+capabilities: [sessions]
+verification:
+  checked: "2026-10-15"
+  sources:
+    - "https://api-docs.deepseek.com/ (base URL https://api.deepseek.com, POST /chat/completions, Authorization: Bearer; models deepseek-flash, deepseek-v4-pro)"
+    - "https://api-docs.deepseek.com/api/create-chat-completion (tools: functions only; stream_options.include_usage with stream: true; usage prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens, prompt_tokens_details.cached_tokens)"
+  unverified:
+    - field: homepage
+      note: "platform.deepseek.com not opened."

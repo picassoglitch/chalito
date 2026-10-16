@@ -166,6 +166,19 @@ Mitigations:
 | AI opens arbitrary programs or sites | `launch_app` / `open_web_app` take recipe ids only (curated or the person's own local recipes); URLs must be on the recipe's `allowedOrigins`; each app needs its own `app_control` approval (HIGH, passkey) in the session, on top of every computer-control gate. |
 | Web-app credentials leave the device | Each AI website runs in the system browser with its own profile (`~/.chalito/browsers/<appId>`, 0700). Chalito never reads that profile; the person signs in on the real site. Not mitigated: the person can browse anywhere inside that window (no per-profile URL lock in Chrome). |
 
+### 4.8d Connect everything: chat APIs, remote A2A agents, Chalito as an A2A server (ADR 0022 §4)
+`packages/adapters/src/chat-api`, `packages/adapters/src/a2a`, `apps/mcp-gateway/src/a2a.ts`, `apps/api` (`/v1/gateway/link-tasks`, `/v1/a2a/exposures`).
+
+| Threat | Mitigation |
+|---|---|
+| A chat model acts on the computer | Text only by default. Tools only when the recipe says the provider does tool calls AND the session was given Chalito's computer-control MCP server; every call reaches the gate as `mcp__<server>__<tool>` first. A tool name the model invents is never run. Tool rounds are capped per prompt. |
+| The person's provider key leaks | Keychain only; sent only as a bearer token to the recipe's own base URL (https, or http on loopback only; no credentials or query in the URL; recipe headers can't be auth headers). |
+| A remote A2A agent's card redirects the key | The card is fetched from the recipe's URL and checked against the AgentCard schema; only interfaces on the recipe's own https origin are used, and the transport refuses any other origin. |
+| An outside A2A caller creates work | Off by default (not mounted). Only exposed agents have a card (opaque ids; revoked = 404). A token for the A2A resource (RFC 8707) with `link:handoff` only, granted by the same owner on their phone with a passkey. Then the LinkAuthorizer (deny-all by default), then a RelayedCommand capped at the default permission mode. On the device `a2a:` is off unless turned on locally, and as an unsigned origin it never gets Developer-mode auto-approve, LOW auto-allow or computer control. |
+| Tokens cross surfaces | MCP and A2A tokens have different audiences; each server checks its own on every call (tests). |
+| Prompt injection from a remote agent's reply | The reply is shown as session text; a remote agent gets no local tool, so nothing in it can run here. Phase C's quoted-results rule applies to link results. |
+| Browser automation of chat websites | Not built, ever: such recipes say `notConnectable` with the reason (catalog test). |
+
 ### 4.9 Rooms
 | Threat | Mitigation |
 |---|---|

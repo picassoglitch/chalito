@@ -183,7 +183,12 @@ describe("agentCardFromRecipe", () => {
       expect(c).toMatchObject({
         name: r.name,
         provider: { organization: r.vendor, url: r.homepage },
-        skills: [{ id: CODING_SESSION_SKILL, tags: ["coding", r.id] }],
+        // M16 D: chat-api recipes offer a chat skill (a2a recipes, a remote-agent one).
+        skills: r.kinds.includes("chat-api")
+          ? [{ id: "chat", tags: ["chat", r.id] }]
+          : r.kinds.includes("a2a")
+            ? [{ id: "remote-agent", tags: ["a2a", r.id] }]
+            : [{ id: CODING_SESSION_SKILL, tags: ["coding", r.id] }],
       });
       expect(c!.supportedInterfaces).toBeUndefined();
     }

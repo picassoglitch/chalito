@@ -1,0 +1,23 @@
+v: 1
+id: ollama-api
+name: Ollama (local models)
+vendor: Ollama
+homepage: https://ollama.com/
+termsUrl: https://ollama.com/terms
+kinds: [chat-api]
+platforms: {}
+signin:
+  via: none
+  planSignin: "off"
+driver:
+  chatApi: { baseUrl: "http://localhost:11434/v1", tools: true, streamUsage: true }
+capabilities: [sessions]
+verification:
+  checked: "2026-10-15"
+  sources:
+    - "https://docs.ollama.com/api/openai-compatibility (base_url http://localhost:11434/v1/; /v1/chat/completions and /v1/models; stream_options include_usage and tools supported on chat completions; local server ignores the API key)"
+  unverified:
+    - field: driver.chatApi.model
+      note: "Left out on purpose: the driver uses the first model GET /v1/models lists (the ones the person pulled)."
+    - field: termsUrl
+      note: "Same as the ollama recipe; not re-opened."

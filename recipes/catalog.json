@@ -1,6 +1,6 @@
 {
   "v": 1,
-  "issuedAt": 1791271724830,
+  "issuedAt": 1792121710573,
   "recipes": [
     {
       "v": 1,
@@ -100,7 +100,10 @@
       },
       "capabilities": [
         "terminal"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "Speaks no ACP, MCP, A2A or chat API (no ACP mode, checked 2026-10-06). It runs only as a terminal session."
+      }
     },
     {
       "v": 1,
@@ -163,7 +166,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "The desktop app has no agent protocol Chalito can drive. It reaches Chalito as an MCP client (the Chalito gateway); to run an OpenAI agent, use the codex recipe."
+      }
     },
     {
       "v": 1,
@@ -193,7 +199,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites. ChatGPT reaches Chalito the other way, as an MCP client (Developer mode → the Chalito gateway); to run an OpenAI agent, use the codex recipe."
+      }
     },
     {
       "v": 1,
@@ -370,7 +379,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "The desktop app has no agent protocol Chalito can drive. It reaches Chalito as an MCP client (custom connector → the Chalito gateway); to run Claude as an agent, use the claude-code recipe."
+      }
     },
     {
       "v": 1,
@@ -399,7 +411,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites. Claude reaches Chalito the other way, as an MCP client (Settings → Connectors → the Chalito gateway); to run Claude as an agent, use the claude-code recipe."
+      }
     },
     {
       "v": 1,
@@ -624,7 +639,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites. For GitHub Copilot as an agent, use the copilot-cli recipe (ACP)."
+      }
     },
     {
       "v": 1,
@@ -833,6 +851,41 @@
       "capabilities": [
         "remote-view",
         "ai-control"
+      ],
+      "notConnectable": {
+        "reason": "The desktop editor has no agent protocol Chalito can drive; use the cursor-cli recipe (ACP)."
+      }
+    },
+    {
+      "v": 1,
+      "id": "deepseek-api",
+      "name": "DeepSeek API",
+      "vendor": "DeepSeek",
+      "homepage": "https://platform.deepseek.com/",
+      "termsUrl": "https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html",
+      "kinds": [
+        "chat-api"
+      ],
+      "platforms": {},
+      "signin": {
+        "via": "api-key",
+        "planSignin": "off"
+      },
+      "apiKey": {
+        "env": "DEEPSEEK_API_KEY",
+        "label": "DeepSeek API key",
+        "docsUrl": "https://api-docs.deepseek.com/"
+      },
+      "driver": {
+        "chatApi": {
+          "baseUrl": "https://api.deepseek.com",
+          "model": "deepseek-flash",
+          "tools": true,
+          "streamUsage": true
+        }
+      },
+      "capabilities": [
+        "sessions"
       ]
     },
     {
@@ -862,7 +915,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites. Use the deepseek-api recipe (OpenAI-compatible API, your own key)."
+      }
     },
     {
       "v": 1,
@@ -892,7 +948,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites. Use the gemini recipe (Gemini CLI over ACP)."
+      }
     },
     {
       "v": 1,
@@ -1115,7 +1174,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites. Use the grok recipe (Grok Build over ACP) or xai-api (your own key)."
+      }
     },
     {
       "v": 1,
@@ -1211,6 +1273,62 @@
     },
     {
       "v": 1,
+      "id": "groq",
+      "name": "Groq",
+      "vendor": "Groq",
+      "homepage": "https://console.groq.com/",
+      "termsUrl": "https://groq.com/terms-of-use",
+      "kinds": [
+        "chat-api"
+      ],
+      "platforms": {},
+      "signin": {
+        "via": "api-key",
+        "planSignin": "off"
+      },
+      "apiKey": {
+        "env": "GROQ_API_KEY",
+        "label": "Groq API key",
+        "docsUrl": "https://console.groq.com/docs/openai"
+      },
+      "driver": {
+        "chatApi": {
+          "baseUrl": "https://api.groq.com/openai/v1",
+          "model": "llama-3.3-70b-versatile",
+          "tools": true
+        }
+      },
+      "capabilities": [
+        "sessions"
+      ]
+    },
+    {
+      "v": 1,
+      "id": "lm-studio-api",
+      "name": "LM Studio (local server)",
+      "vendor": "Element Labs",
+      "homepage": "https://lmstudio.ai/",
+      "termsUrl": "https://lmstudio.ai/app-terms",
+      "kinds": [
+        "chat-api"
+      ],
+      "platforms": {},
+      "signin": {
+        "via": "none",
+        "planSignin": "off"
+      },
+      "driver": {
+        "chatApi": {
+          "baseUrl": "http://localhost:1234/v1",
+          "tools": true
+        }
+      },
+      "capabilities": [
+        "sessions"
+      ]
+    },
+    {
+      "v": 1,
       "id": "lm-studio",
       "name": "LM Studio",
       "vendor": "Element Labs",
@@ -1299,6 +1417,40 @@
         "terminal",
         "remote-view",
         "ai-control"
+      ],
+      "notConnectable": {
+        "reason": "The desktop app itself isn't an agent; its local server is: use the lm-studio-api recipe."
+      }
+    },
+    {
+      "v": 1,
+      "id": "mistral-api",
+      "name": "Mistral API",
+      "vendor": "Mistral AI",
+      "homepage": "https://console.mistral.ai/",
+      "termsUrl": "https://mistral.ai/terms",
+      "kinds": [
+        "chat-api"
+      ],
+      "platforms": {},
+      "signin": {
+        "via": "api-key",
+        "planSignin": "off"
+      },
+      "apiKey": {
+        "env": "MISTRAL_API_KEY",
+        "label": "Mistral API key",
+        "docsUrl": "https://docs.mistral.ai/api/"
+      },
+      "driver": {
+        "chatApi": {
+          "baseUrl": "https://api.mistral.ai/v1",
+          "model": "mistral-medium-latest",
+          "tools": true
+        }
+      },
+      "capabilities": [
+        "sessions"
       ]
     },
     {
@@ -1329,7 +1481,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites. Use mistral-vibe (ACP) or mistral-api (your own key)."
+      }
     },
     {
       "v": 1,
@@ -1441,6 +1596,32 @@
     },
     {
       "v": 1,
+      "id": "ollama-api",
+      "name": "Ollama (local models)",
+      "vendor": "Ollama",
+      "homepage": "https://ollama.com/",
+      "termsUrl": "https://ollama.com/terms",
+      "kinds": [
+        "chat-api"
+      ],
+      "platforms": {},
+      "signin": {
+        "via": "none",
+        "planSignin": "off"
+      },
+      "driver": {
+        "chatApi": {
+          "baseUrl": "http://localhost:11434/v1",
+          "tools": true,
+          "streamUsage": true
+        }
+      },
+      "capabilities": [
+        "sessions"
+      ]
+    },
+    {
+      "v": 1,
       "id": "ollama",
       "name": "Ollama",
       "vendor": "Ollama",
@@ -1543,7 +1724,10 @@
         "terminal",
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "The app itself isn't an agent; its local server is: use the ollama-api recipe."
+      }
     },
     {
       "v": 1,
@@ -1650,6 +1834,40 @@
     },
     {
       "v": 1,
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "vendor": "OpenRouter",
+      "homepage": "https://openrouter.ai/",
+      "termsUrl": "https://openrouter.ai/terms",
+      "kinds": [
+        "chat-api"
+      ],
+      "platforms": {},
+      "signin": {
+        "via": "api-key",
+        "planSignin": "off"
+      },
+      "apiKey": {
+        "env": "OPENROUTER_API_KEY",
+        "label": "OpenRouter API key",
+        "docsUrl": "https://openrouter.ai/docs/quickstart"
+      },
+      "driver": {
+        "chatApi": {
+          "baseUrl": "https://openrouter.ai/api/v1",
+          "model": "~openai/gpt-sol-latest",
+          "tools": true,
+          "headers": {
+            "X-OpenRouter-Title": "Chalito"
+          }
+        }
+      },
+      "capabilities": [
+        "sessions"
+      ]
+    },
+    {
+      "v": 1,
       "id": "perplexity",
       "name": "Perplexity",
       "vendor": "Perplexity AI",
@@ -1675,7 +1893,10 @@
       "capabilities": [
         "remote-view",
         "ai-control"
-      ]
+      ],
+      "notConnectable": {
+        "reason": "A chat website: Chalito never drives chat websites, and no Perplexity API recipe is in the catalog yet."
+      }
     },
     {
       "v": 1,
@@ -1866,6 +2087,39 @@
       "capabilities": [
         "remote-view",
         "ai-control"
+      ],
+      "notConnectable": {
+        "reason": "No ACP, MCP-server, A2A or chat API mode is documented for the desktop app, so Chalito can only open and show it."
+      }
+    },
+    {
+      "v": 1,
+      "id": "xai-api",
+      "name": "xAI API (Grok)",
+      "vendor": "xAI",
+      "homepage": "https://x.ai/api",
+      "termsUrl": "https://x.ai/legal/terms-of-service",
+      "kinds": [
+        "chat-api"
+      ],
+      "platforms": {},
+      "signin": {
+        "via": "api-key",
+        "planSignin": "off"
+      },
+      "apiKey": {
+        "env": "XAI_API_KEY",
+        "label": "xAI API key",
+        "docsUrl": "https://docs.x.ai/developers/quickstart"
+      },
+      "driver": {
+        "chatApi": {
+          "baseUrl": "https://api.x.ai/v1",
+          "model": "grok-4.7"
+        }
+      },
+      "capabilities": [
+        "sessions"
       ]
     }
   ]

@@ -1471,7 +1471,8 @@ describe("session.start by app id (connect engine)", () => {
     expect(res.ok).toBe(true);
     await waitFor(() => goose.run.options !== undefined);
     expect(h.fake.run.options).toBeUndefined();
-    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "acp", appId: "goose", kind: "agent" });
+    // The card names the kind of the adapter that runs it (an ACP recipe's is "acp"; this stand-in's is claude-code).
+    expect(h.store.sessions.get(res.sid!)).toMatchObject({ adapter: "claude-code", appId: "goose", kind: "agent" });
 
     // A disabled custom recipe, an unknown app, or one the policy turned off never starts.
     expect(

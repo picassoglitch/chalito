@@ -70,9 +70,13 @@ export const decide = ({
   }
 };
 
-/** Whether the policy allows prompts from this origin at all. */
+/**
+ * Whether the policy allows prompts from this origin at all. `a2a:*` (an outside A2A client,
+ * ADR 0022 §4) is off unless the person turned it on locally (`origins.a2a: true`); a missing
+ * field is off, and no preset turns it on.
+ */
 export const originAllowed = (
-  origins: { local: boolean; client: boolean; mcp: boolean; call: boolean },
+  origins: { local: boolean; client: boolean; mcp: boolean; call: boolean; a2a?: boolean | undefined },
   origin: Origin,
 ) =>
   origin === "local"
@@ -81,4 +85,8 @@ export const originAllowed = (
       ? origins.client
       : origin.startsWith("mcp:")
         ? origins.mcp
-        : origins.call;
+        : origin.startsWith("a2a:")
+          ? origins.a2a === true
+          : origin.startsWith("call:")
+            ? origins.call
+            : false;

@@ -101,7 +101,7 @@ export const OAuthConsent = () => {
           <label
             key={s.scope}
             data-scope={s.scope}
-            className={`flex items-start gap-2 ${s.scope === "session:prompt" ? "rounded-lg bg-amber-50 p-2" : ""}`}
+            className={`flex items-start gap-2 ${s.scope === "session:prompt" || s.scope === "link:handoff" ? "rounded-lg bg-amber-50 p-2" : ""}`}
           >
             <input
               type="checkbox"

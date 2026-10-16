@@ -82,7 +82,7 @@ export const DeviceKind = z.enum(["desktop", "laptop", "phone", "web"]);
  * one ACP adapter (D-022). "acp" was the placeholder for that adapter before it had profiles; it
  * stays so stored cards and events still parse, and no device starts an "acp" session.
  */
-export const AdapterKind = z.enum(["claude-code", "codex", "acp", "grok", "gemini"]);
+export const AdapterKind = z.enum(["claude-code", "codex", "acp", "grok", "gemini", "chat-api", "a2a"]);
 export type AdapterKind = z.infer<typeof AdapterKind>;
 
 /** The AI providers a person can connect on a device (Claude Code, Codex, Grok Build, Gemini CLI). */
@@ -91,14 +91,17 @@ export type Provider = z.infer<typeof Provider>;
 
 /**
  * Where a session prompt came from. The agent's local policy can disable each origin.
- * Only `local` and `client:<id>` are signed by a trusted key; `mcp:*` and `call:*` are
+ * Only `local` and `client:<id>` are signed by a trusted key; `mcp:*`, `call:*` and `a2a:*` are
  * relayed by the cloud and are therefore never eligible for Developer-mode auto-approve.
+ * `a2a:<grantId>` (ADR 0022 §4, D-071) is an outside A2A client the owner granted through Chalito's
+ * OAuth server; the id is the grant (connector) id, since OAuth client ids are URLs.
  */
 export const Origin = z.union([
   z.literal("local"),
   z.string().regex(/^client:[A-Za-z0-9_-]{1,128}$/),
   z.string().regex(/^mcp:(chatgpt|claude)$/),
   z.string().regex(/^call:CA[0-9a-f]{32}$/),
+  z.string().regex(/^a2a:[A-Za-z0-9_-]{1,128}$/),
 ]);
 // There is deliberately no `room:*` origin: room content can never start or steer a session.
 // A human acting on a room notice does so from their own app, which is a `client:<id>` origin.

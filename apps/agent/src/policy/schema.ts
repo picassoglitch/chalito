@@ -32,7 +32,14 @@ export const Policy = z.object({
     maxCodexSandbox: RemoteCodexSandbox,
   }),
   /** Prompt origins; each can be turned off. */
-  origins: z.object({ local: z.boolean(), client: z.boolean(), mcp: z.boolean(), call: z.boolean() }),
+  origins: z.object({
+    local: z.boolean(),
+    client: z.boolean(),
+    mcp: z.boolean(),
+    call: z.boolean(),
+    /** Outside A2A clients (ADR 0022 §4). Optional: missing = off; only a local edit turns it on. */
+    a2a: z.boolean().optional(),
+  }),
   approvals: z.object({ ttlSeconds: z.number().int().min(30).max(600) }),
   /** Plaintext egress exceptions (opt-in). */
   egress: z.object({ callLines: z.boolean(), mcpCards: z.boolean() }),

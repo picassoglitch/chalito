@@ -1,0 +1,28 @@
+v: 1
+id: groq
+name: Groq
+vendor: Groq
+homepage: https://console.groq.com/
+termsUrl: https://groq.com/terms-of-use
+kinds: [chat-api]
+platforms: {}
+signin:
+  via: api-key
+  planSignin: "off"
+apiKey:
+  env: GROQ_API_KEY
+  label: Groq API key
+  docsUrl: https://console.groq.com/docs/openai
+driver:
+  chatApi: { baseUrl: "https://api.groq.com/openai/v1", model: llama-3.3-70b-versatile, tools: true }
+capabilities: [sessions]
+verification:
+  checked: "2026-10-15"
+  sources:
+    - "https://console.groq.com/docs/openai (base_url https://api.groq.com/openai/v1; logprobs, logit_bias, top_logprobs, messages[].name and n != 1 are rejected with 400)"
+    - "https://console.groq.com/docs/tool-use (tools parameter; 'All models hosted on Groq support tool use'; llama-3.3-70b-versatile listed)"
+  unverified:
+    - field: driver.chatApi.streamUsage
+      note: "stream_options isn't documented; the driver reads usage from a chunk's usage or x_groq.usage (the latter from Groq's SDKs, not from the pages read)."
+    - field: termsUrl
+      note: "Not opened."
