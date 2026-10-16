@@ -109,6 +109,9 @@ export class LinkProjector {
         return [];
       case "assistant_text":
         return this.#reply(e.text);
+      case "assistant_delta":
+        // M16 A: live-only partial text; the final assistant_text that follows carries it whole.
+        return [];
       case "tool_started":
         return this.#move("TASK_STATE_WORKING", [
           { data: { tool: { toolUseId: e.toolUseId, toolName: e.toolName, status: "started" } } },

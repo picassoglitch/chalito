@@ -26,14 +26,20 @@ import {
   openJson,
   toB64url,
 } from "@chalito/crypto";
-import { AgentCard, RelayedCommand, agentCardFromRecipe, type Recipe } from "@chalito/protocol";
+import {
+  AgentCard,
+  RelayedCommand,
+  agentCardFromRecipe,
+  type LinkAuthorizeRequest,
+  type LinkAuthorizer,
+  type Recipe,
+} from "@chalito/protocol";
 import { AgentCore } from "../../agent/src/agent-core.js";
 import { BUILTIN_CATALOG } from "../../agent/src/apps/catalog.js";
 import { DevMode, DevModeStore } from "../../agent/src/devmode.js";
 import { DEFAULT_POLICY } from "../../agent/src/policy/index.js";
 import { createLogger } from "../../agent/src/redact.js";
 import { MemoryStore } from "../../agent/src/store.js";
-import type { LinkAuthorizeRequest, LinkAuthorizer } from "../../api/src/link/authorizer.js";
 import { A2A_RESOURCE, CHATGPT_CLIENT, RESOURCE } from "../../api/test/oauth-harness.js";
 import { gatewayHarness } from "./harness.js";
 

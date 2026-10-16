@@ -1,13 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
-import type { DeviceDoc } from "@chalito/protocol";
+import type { DeviceDoc, LinkAuthorizer } from "@chalito/protocol";
 import { MemoryAudit, type Deps } from "../src/deps.js";
 import { MemoryMcpStore } from "../src/oauth/memory-store.js";
 import type { McpStore } from "../src/oauth/model.js";
 import type { ApiRepo, StoredWebAuthnCredential, WebAuthnChallenge } from "../src/repo.js";
 import { oauthRoutes, type OAuthConfig } from "../src/routes/oauth.js";
-import type { LinkAuthorizer } from "../src/link/authorizer.js";
 import { MemoryA2aStore } from "../src/link/exposures.js";
 import { webauthnRoutes } from "../src/routes/webauthn.js";
 import { device, owner } from "./contract/fixtures.js";

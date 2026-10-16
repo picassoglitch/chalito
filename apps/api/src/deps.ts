@@ -1,4 +1,4 @@
-import type { LinkAuthorizer } from "./link/authorizer.js";
+import type { LinkAuthorizer } from "@chalito/protocol";
 import type { A2aStore } from "./link/exposures.js";
 import type { BucketStore } from "@chalito/guard";
 import type { PhoneDeps } from "./phone/routes.js";
@@ -54,8 +54,8 @@ export interface Deps {
   /** Agents the owner exposes on the A2A server (ADR 0022 §4); the exposure routes answer 503 without it. */
   a2a?: A2aStore;
   /**
-   * Decides every hand-off task from outside (create_task, A2A SendMessage). Unset: deny-all.
-   * TODO(m16c): Phase C's LinkAuthorizer.
+   * Decides every hand-off task from outside (create_task, A2A SendMessage), with Phase C's
+   * `LinkAuthorizer` interface (@chalito/protocol agent-link). Unset: deny-all.
    */
   linkAuthorizer?: LinkAuthorizer;
   /** Rooms (M11); routes answer 503 without it. */

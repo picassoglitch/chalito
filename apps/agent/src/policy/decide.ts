@@ -77,7 +77,14 @@ export const decide = ({
  * field is off, and no preset turns it on.
  */
 export const originAllowed = (
-  origins: { local: boolean; client: boolean; mcp: boolean; call: boolean; agent?: boolean | undefined; a2a?: boolean | undefined },
+  origins: {
+    local: boolean;
+    client: boolean;
+    mcp: boolean;
+    call: boolean;
+    agent?: boolean | undefined;
+    a2a?: boolean | undefined;
+  },
   origin: Origin,
 ) =>
   origin === "local"

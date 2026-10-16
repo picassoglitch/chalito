@@ -668,7 +668,15 @@ export class AgentCore {
       },
       event: async (sid, partial) => {
         const s = this.sessions.get(sid);
-        if (s) await this.#event(s, partial);
+        if (s) return this.#event(s, partial);
+        // A hand-off's progress or result can arrive after the session idle-closed (M16 A): it is
+        // still that session's timeline, numbered after its last event.
+        const d = this.#dormant.get(sid);
+        if (!d) return;
+        const seq = d.record.seq;
+        d.record = { ...d.record, seq: seq + 1 };
+        this.#persist();
+        await this.#event({ sid, seq } as Session, partial, { seq });
       },
       confirm: async (sid, input) => {
         const s = this.sessions.get(sid);

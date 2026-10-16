@@ -2,7 +2,16 @@ import { randomUUID } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from "@simplewebauthn/server";
 import { fromB64url, randomNonce } from "@chalito/crypto";
-import { AgentCard, AppId, CommandBody, RelayedCommand, SealedEnvelope, type Origin } from "@chalito/protocol";
+import {
+  AgentCard,
+  AppId,
+  CommandBody,
+  denyAllLinkAuthorizer,
+  RelayedCommand,
+  SealedEnvelope,
+  type LinkAuthorizer,
+  type Origin,
+} from "@chalito/protocol";
 import { MemoryBuckets } from "@chalito/guard";
 import { z } from "zod";
 import type { Deps } from "../deps.js";
@@ -21,7 +30,6 @@ import {
 } from "../oauth/model.js";
 import { newSecret, pkceS256Ok, sameResource, sha256hex } from "../oauth/tokens.js";
 import { webauthnConfigFromEnv, type WebAuthnConfig } from "./webauthn.js";
-import { denyAllLinkAuthorizer, type LinkAuthorizer } from "../link/authorizer.js";
 import { newExposureId, type A2aStore } from "../link/exposures.js";
 
 /**

@@ -3,7 +3,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { GatewayApi } from "../src/api-client.js";
 import { createGateway } from "../src/app.js";
 import type { AgentSummary, GatewayReader, McpScope, PendingApproval, SessionMeta } from "../src/reader.js";
-import type { LinkAuthorizer } from "../../api/src/link/authorizer.js";
+import type { LinkAuthorizer } from "@chalito/protocol";
 import { A2A_RESOURCE, GATEWAY_TOKEN, ISSUER, RESOURCE, oauthHarness } from "../../api/test/oauth-harness.js";
 
 /**

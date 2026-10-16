@@ -89,7 +89,8 @@ class FakeAdapter implements SessionAdapter {
       interrupt: async () => opts.onEvent({ type: "state", state: "interrupted" }),
       setPermissionMode: async () => undefined,
       close: () => undefined,
-      done: Promise.resolve(),
+      // A live process: its end would retire the session (M16 A idle-close/resume).
+      done: new Promise<void>(() => undefined),
     };
   }
   run(sid: string): Run {
@@ -734,6 +735,32 @@ describe("loops: at most 2 hops, never back through the chain", () => {
       { reason: "cycle" },
     );
     expect(a.adapter.run(A).prompts).toHaveLength(1);
+  });
+
+  it("a pinned receiver that idle-closed (M16 A) is reopened by the hand-off, not refused", async () => {
+    const { a } = await oneDevice();
+    const A = await a.ownSession();
+    const B = await a.ownSession();
+    const ab = await sameDeviceHandoff(a, {
+      confirm: false,
+      sender: { deviceId: a.self.id, sessionId: A },
+      receiver: { deviceId: a.self.id, sessionId: B },
+    });
+    await a.core.suspendAll(); // both processes closed, both resumable
+    expect(a.core.sessions.size).toBe(0);
+    expect(await a.links.handoff({ fromSid: A, linkId: ab.id, text: "a→b dormido" })).toMatchObject({ ok: true });
+    await waitFor(() => a.adapter.runs.length === 3);
+    const revived = a.adapter.runs[2]!;
+    expect(revived.opts.sid).toBe(B);
+    expect(revived.opts.origin).toBe(`agent:${A}`);
+    expect(revived.opts.prompt).toContain("a→b dormido");
+    // The sender is still dormant; its timeline still gets the hand-off's progress.
+    expect(a.core.sessions.has(A)).toBe(false);
+    expect(
+      a.store.events.some(
+        (e) => e.type === "link.handoff" && e.sid === A && e.direction === "out" && e.stage === "sent",
+      ),
+    ).toBe(true);
   });
 
   it("the receiver enforces it too: a forged hop count or chain is refused there", async () => {
