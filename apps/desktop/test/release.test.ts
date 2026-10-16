@@ -8,6 +8,9 @@ import { ready } from "@chalito/crypto";
 import { collectArtifacts, mergeManifest } from "../scripts/release/collect.js";
 import {
   LINUX_GPG,
+  checkCsp,
+  checkOverlay,
+  connectSrc,
   MACOS_CERT,
   MACOS_NOTARY,
   WINDOWS_SIGNING,
@@ -17,11 +20,15 @@ import {
 } from "../scripts/release/plan.js";
 import { sidecarPlan } from "../scripts/release/sidecar.js";
 
+const CONF = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+  app: { security: { csp: string } };
+};
 const BASE = {
-  version: "1.2.0",
-  channel: "stable" as const,
+  version: "1.2.0-beta.1",
+  channel: "beta" as const,
   apiBase: "https://api.chalito.chalyb.com",
   updaterKey: "test" as const,
+  csp: CONF.app.security.csp,
 };
 const PUB = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk="; // shape only for plan tests
 const all = (keys: readonly string[]) => Object.fromEntries(keys.map((k) => [k, `value-of-${k}`]));
@@ -89,7 +96,7 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
   it("the overlay sets targets, sidecar, updater artifacts, key and the api endpoint", () => {
     const p = releasePlan({ ...BASE, os: "macos", channel: "beta", env: {}, updaterPubkey: `${PUB}\n` });
     expect(p.overlay).toMatchObject({
-      version: "1.2.0",
+      version: "1.2.0-beta.1",
       bundle: { targets: ["app", "dmg"], createUpdaterArtifacts: true, externalBin: ["binaries/chalito-agent"] },
       plugins: { updater: { pubkey: PUB, endpoints: ["https://api.chalito.chalyb.com/releases/beta/latest.json"] } },
     });
@@ -97,6 +104,50 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
       (releasePlan({ ...BASE, os: "linux", env: {}, updaterPubkey: PUB }).overlay.bundle as { targets: string[] })
         .targets,
     ).toEqual(["appimage", "deb", "rpm"]);
+  });
+
+  it("the stable channel refuses an unsigned Windows or macOS build; beta allows it, labelled", () => {
+    const stable = { ...BASE, version: "1.2.0", channel: "stable" as const, updaterPubkey: PUB };
+    expect(() => releasePlan({ ...stable, os: "windows", env: {} })).toThrow(/stable channel needs a signed build/);
+    expect(() => releasePlan({ ...stable, os: "macos", env: {} })).toThrow(/stable channel needs a signed build/);
+    expect(releasePlan({ ...stable, os: "windows", env: all(WINDOWS_SIGNING) }).label).toBe("signed");
+    // Linux AppImage GPG is optional even on stable (deb/rpm are never signed in beta).
+    expect(releasePlan({ ...stable, os: "linux", env: {} }).label).toBe("unsigned");
+    expect(releasePlan({ ...BASE, os: "windows", env: {}, updaterPubkey: PUB }).label).toBe("unsigned");
+  });
+
+  it("refuses a build whose CSP doesn't allow its api, or allows another api", () => {
+    const csp = "default-src 'self'; connect-src 'self' https://api.chalito.chalyb.com https://*.supabase.co";
+    expect(() => checkCsp(csp, "https://api.chalito.chalyb.com/")).not.toThrow();
+    expect(() => checkCsp(csp, "https://chalito-x.a.run.app")).toThrow(/doesn't allow/);
+    expect(() => checkCsp(`${csp} https://api.other.example`, "https://api.chalito.chalyb.com")).toThrow(/another api/);
+    expect(() =>
+      releasePlan({ ...BASE, os: "linux", env: {}, updaterPubkey: PUB, apiBase: "https://elsewhere.example" }),
+    ).toThrow(/CSP/);
+  });
+
+  it.each(["linux", "windows", "macos"] as const)(
+    "%s release overlay: the updater endpoint is on the api origin and the build's CSP allows it",
+    (os) => {
+      const env = os === "windows" ? all(WINDOWS_SIGNING) : {};
+      const { overlay } = releasePlan({ ...BASE, os, env, updaterPubkey: PUB });
+      const endpoints = (overlay.plugins as { updater: { endpoints: string[] } }).updater.endpoints;
+      expect(endpoints).toEqual(["https://api.chalito.chalyb.com/releases/beta/latest.json"]);
+      const csp = (overlay.app as { security?: { csp?: string } } | undefined)?.security?.csp ?? BASE.csp;
+      for (const e of endpoints) expect(connectSrc(csp)).toContain(new URL(e).origin);
+    },
+  );
+
+  it("checkOverlay refuses an updater endpoint off the api, a missing one, or an overlay CSP without the api", () => {
+    const api = "https://api.chalito.chalyb.com";
+    const up = (endpoints: string[]) => ({ plugins: { updater: { pubkey: PUB, endpoints } } });
+    expect(() => checkOverlay(BASE.csp, up([`${api}/releases/beta/latest.json`]), api)).not.toThrow();
+    expect(() => checkOverlay(BASE.csp, up(["https://chalito-x.a.run.app/releases/beta/latest.json"]), api)).toThrow(
+      /updater endpoint not on/,
+    );
+    expect(() => checkOverlay(BASE.csp, up([]), api)).toThrow(/no updater endpoint/);
+    const overlayCsp = { ...up([`${api}/r.json`]), app: { security: { csp: "connect-src 'self'" } } };
+    expect(() => checkOverlay(BASE.csp, overlayCsp, api)).toThrow(/doesn't allow/);
   });
 
   it("refuses a bad version, a missing key or a non-https api", () => {

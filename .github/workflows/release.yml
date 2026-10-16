@@ -33,8 +33,12 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+# The ONE api address for the desktop build (ADR 0028 §A): the plan derives the updater endpoint
+# from it and refuses a build whose tauri.conf.json CSP doesn't allow exactly this origin.
 env:
   CHALITO_API_BASE: https://api.chalito.chalyb.com
+  # Where the panel's "Iniciar sesión" opens the system browser: the hub's desktop sign-in page.
+  CHALITO_SSO_START_URL: https://www.chalyb.com/app/chalito/auth/desktop
 
 jobs:
   meta:
@@ -300,10 +304,12 @@ jobs:
           [ -n "$W_SUPABASE_URL" ] || missing="$missing vars.SUPABASE_URL"
           [ -n "$W_SUPABASE_PUBLISHABLE_KEY" ] || missing="$missing vars.SUPABASE_PUBLISHABLE_KEY"
           [ -n "$CHALITO_API_BASE" ] || missing="$missing env.CHALITO_API_BASE"
+          [ -n "$CHALITO_SSO_START_URL" ] || missing="$missing env.CHALITO_SSO_START_URL"
           if [ -z "$missing" ]; then
             { echo "VITE_SUPABASE_URL=$W_SUPABASE_URL"
               echo "VITE_SUPABASE_PUBLISHABLE_KEY=$W_SUPABASE_PUBLISHABLE_KEY"
-              echo "VITE_CHALITO_API_BASE=$CHALITO_API_BASE"; } >> "$GITHUB_ENV"
+              echo "VITE_CHALITO_API_BASE=$CHALITO_API_BASE"
+              echo "VITE_SSO_START_URL=$CHALITO_SSO_START_URL"; } >> "$GITHUB_ENV"
             echo "wired=true" >> "$GITHUB_OUTPUT"
           elif [ "$DRY_RUN" = true ]; then
             echo "::warning::Unwired dry run (no sign-in, rooms or voice): missing$missing"

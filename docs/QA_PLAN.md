@@ -403,6 +403,28 @@ Crear la sala e invitar no tiene interfaz (G-8): el operador crea la sala y te d
   - Esperado: se borran los usuarios de dispositivo, tus archivos y tus datos de Chalito. Tu cuenta y tu saldo del hub **no** se tocan.
   - Automático: `account.test.ts` "when due: …"; pgTAP `34_push_subs_revoked` "deleting the account drops every subscription".
 
+
+#### 13. Instaladores en las tres plataformas (First Run A, ADR 0028)
+Usa la beta del borrador de release (o el artefacto de un dry run de `release.yml`). Anota versión, sistema y si el archivo dice `UNSIGNED_`.
+- [ ] **I-1 macOS (.dmg universal)** · BLOQUEADO hasta los secretos de Apple
+  - Pasos: en `/descargar` desde una Mac, toca el botón principal. Abre el .dmg, arrastra Chalito a Aplicaciones y ábrelo. Prueba en Apple Silicon y en Intel si puedes.
+  - Esperado: firmado y notarizado, abre sin aviso de Gatekeeper. Sin secretos (dry run), el build es ad-hoc: Gatekeeper lo bloquea y hay que abrirlo con clic derecho → Abrir; eso es un fallo para una release.
+- [ ] **I-2 Windows (instalador NSIS .exe)** · LISTO en beta (sin firmar)
+  - Pasos: en `/descargar` desde Windows, descarga `UNSIGNED_Chalito_…_x64-setup.exe` y ejecútalo.
+  - Esperado: SmartScreen muestra "Windows protegió tu PC"; "Más información" → "Ejecutar de todos modos" instala. La página de descarga explica ese paso. El canal estable se niega a compilar sin firma.
+- [ ] **I-3 Linux (AppImage y .deb)** · LISTO
+  - Pasos: AppImage: `chmod +x` y ábrelo. .deb: instálalo con `sudo apt install ./Chalito_….deb`.
+  - Esperado: abren la mascota y el panel; aparece el ícono de la bandeja (en GNOME necesita la extensión AppIndicator).
+- [ ] **I-4 Conecta con la api correcta** · LISTO
+  - Pasos: en cada sistema, toca "Iniciar sesión" en el panel.
+  - Esperado: el navegador abre el inicio de sesión del hub y el panel recibe la sesión. Ningún error de red en el panel (la CSP y la api son `https://api.chalito.chalyb.com`).
+  - Automático: `apps/desktop/test/release.test.ts` "refuses a build whose CSP doesn't allow its api"; `release-workflow.test.ts` "CHALITO_API_BASE is set once…".
+- [ ] **I-5 Actualizaciones** · BLOQUEADO hasta la llave del updater y `releases.tf`
+  - Pasos: instala la versión N, publica N+1 en el mismo canal, abre Ajustes → Actualizaciones.
+  - Esperado: encuentra N+1 en `https://api.chalito.chalyb.com/releases/<canal>/latest.json`, la descarga y reinicia.
+- [ ] **I-6 Página de descarga** · LISTO
+  - Esperado: `/descargar` detecta tu sistema y muestra un botón principal con los otros abajo, y las sumas SHA-256. Sin release publicada dice "Muy pronto", nunca texto roto.
+
 ---
 
 ## English
@@ -799,3 +821,24 @@ Creating a room and inviting have no UI (G-8): the operator creates the room and
 - [ ] **X-3 Deletion when due** · BLOCKED (G-2; run hourly by `/tasks/account-deletions`)
   - Expected: device users, your files and your Chalito data are deleted. Your hub account and balance are **not** touched.
   - Automated: `account.test.ts` "when due: …"; pgTAP `34_push_subs_revoked` "deleting the account drops every subscription".
+
+#### 13. Installers on all three OSes (First Run A, ADR 0028)
+Use the beta from the draft release (or a `release.yml` dry-run artifact). Note the version, the OS and whether the file says `UNSIGNED_`.
+- [ ] **I-1 macOS (universal .dmg)** · BLOCKED until the Apple secrets
+  - Steps: on `/descargar` from a Mac, tap the main button. Open the .dmg, drag Chalito to Applications and open it. Try Apple Silicon and Intel if you can.
+  - Expected: signed and notarized, opens with no Gatekeeper warning. Without secrets (dry run) the build is ad-hoc: Gatekeeper blocks it and it needs right-click → Open; that's a failure for a release.
+- [ ] **I-2 Windows (NSIS .exe installer)** · READY for beta (unsigned)
+  - Steps: on `/descargar` from Windows, download `UNSIGNED_Chalito_…_x64-setup.exe` and run it.
+  - Expected: SmartScreen shows "Windows protected your PC"; "More info" → "Run anyway" installs. The download page explains that step. The stable channel refuses to build unsigned.
+- [ ] **I-3 Linux (AppImage and .deb)** · READY
+  - Steps: AppImage: `chmod +x` and open it. .deb: install with `sudo apt install ./Chalito_….deb`.
+  - Expected: the pet and panel open; the tray icon appears (GNOME needs the AppIndicator extension).
+- [ ] **I-4 Reaches the right api** · READY
+  - Steps: on each OS, tap "Iniciar sesión" in the panel.
+  - Expected: the browser opens the hub sign-in and the panel gets the session. No network errors in the panel (the CSP and the api are `https://api.chalito.chalyb.com`).
+  - Automated: `apps/desktop/test/release.test.ts` "refuses a build whose CSP doesn't allow its api"; `release-workflow.test.ts` "CHALITO_API_BASE is set once…".
+- [ ] **I-5 Updates** · BLOCKED until the updater key and `releases.tf`
+  - Steps: install version N, publish N+1 on the same channel, open Ajustes → Actualizaciones.
+  - Expected: it finds N+1 at `https://api.chalito.chalyb.com/releases/<channel>/latest.json`, downloads it and restarts.
+- [ ] **I-6 Download page** · READY
+  - Expected: `/descargar` detects your OS and shows one main button with the others below, plus the SHA-256 sums. With no published release it says "Muy pronto", never broken text.
