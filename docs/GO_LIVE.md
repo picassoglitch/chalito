@@ -151,7 +151,7 @@ Not applicable since 2026-10-05: Chalito's screens are part of the hub's Next.js
 
 | # | Status | Step | Command | Verify | Rollback |
 |---|---|---|---|---|---|
-| 7.1 | Not verified | Read-mostly smoke against the deployment. Pass the run.app URLs. The script still probes `/healthz`, so its health rows fail on run.app until it moves to `/health` | `CHALITO_SMOKE_TARGET=staging CHALITO_SMOKE_CONFIRM=yes CHALITO_API_URL=… CHALITO_NOTIFIER_URL=… CHALITO_ORCHESTRATOR_URL=… CHALITO_MCP_URL=… SUPABASE_URL=… SUPABASE_PUBLISHABLE_KEY=… pnpm tsx scripts/staging-smoke.ts` (optional: `CHALITO_SMOKE_HUB_TOKEN` for the SSO round trip, `CHALITO_SMOKE_DRAIN_BEARER` for the drain dry run) | the pass/fail table is all PASS or SKIP | nothing to undo: it mints one pairing code, which expires in 5 minutes |
+| 7.1 | Not verified | Read-mostly smoke against the deployment. Pass the run.app URLs. It probes `/health`, so its health rows pass only on an image that serves it (after `0b3beed`) | `CHALITO_SMOKE_TARGET=staging CHALITO_SMOKE_CONFIRM=yes CHALITO_API_URL=… CHALITO_NOTIFIER_URL=… CHALITO_ORCHESTRATOR_URL=… CHALITO_MCP_URL=… SUPABASE_URL=… SUPABASE_PUBLISHABLE_KEY=… pnpm tsx scripts/staging-smoke.ts` (optional: `CHALITO_SMOKE_HUB_TOKEN` for the SSO round trip, `CHALITO_SMOKE_DRAIN_BEARER` for the drain dry run) | the pass/fail table is all PASS or SKIP | nothing to undo: it mints one pairing code, which expires in 5 minutes |
 
 ## Phase 8: Turn it on for the beta (Owner) [visible]
 
