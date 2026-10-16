@@ -123,4 +123,17 @@ describe("release workflow", () => {
     // …and the build runs with the overlay the plan checked (it carries the updater endpoint).
     expect(code).toMatch(/pnpm tauri build --config src-tauri\/tauri\.release\.conf\.json/);
   });
+
+  it("CHALITO_SSO_START_URL is set once, is the hub's desktop sign-in page, and the app defaults to it", async () => {
+    const urls = [...yml.matchAll(/^\s*CHALITO_SSO_START_URL:\s*(\S+)\s*$/gm)].map((m) => m[1]!);
+    expect(urls).toEqual(["https://www.chalyb.com/app/chalito/auth/desktop"]);
+    expect(code).toContain('echo "VITE_SSO_START_URL=$CHALITO_SSO_START_URL"');
+    const { DEFAULT_SSO_START_URL } = await import("../src/lib/session.js");
+    expect(DEFAULT_SSO_START_URL).toBe(urls[0]);
+    // Opened in the system browser (SsoFlow → openUrl), never fetched: the CSP doesn't need it.
+    const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+      app: { security: { csp: string } };
+    };
+    expect(conf.app.security.csp).not.toContain("www.chalyb.com");
+  });
 });
