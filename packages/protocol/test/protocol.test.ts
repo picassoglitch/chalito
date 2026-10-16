@@ -58,13 +58,13 @@ describe("plans.yaml", () => {
 
   it("hub tier caps only lower the ladder tier's inclusions", () => {
     const cfg = PlansConfig.parse(loadPlans());
-    expect(resolveInclusions(cfg, "free")).toMatchObject({ devices: 1, rooms: 1, membersPerRoom: 4, whatsapp: 0 });
+    expect(resolveInclusions(cfg, "free")).toBeNull(); // Pro/VIP only (owner decision #53)
     expect(resolveInclusions(cfg, "lite")).toMatchObject({ devices: 2, whatsapp: 100 });
     expect(resolveInclusions(cfg, "pro")).toMatchObject({ devices: 5, rooms: 5 });
     expect(resolveInclusions(cfg, "bundle_40")).toEqual(resolveInclusions(cfg, "standard"));
     expect(resolveInclusions(cfg, "nope")).toBeNull();
     const raised = loadPlans();
-    raised.hubTiers.free.limits = { devices: 3 };
+    raised.hubTiers.free = { access: "lite", limits: { devices: 3 } };
     expect(PlansConfig.safeParse(raised).success).toBe(false);
     const noTier = loadPlans();
     noTier.hubTiers.free = { access: "none", limits: { devices: 1 } };

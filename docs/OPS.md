@@ -13,7 +13,7 @@ The details are in `docs/integrations/CHALYB_ENGINE.md`. These changes go in `pi
 | | What | Why / blocks | Reference |
 |---|---|---|---|
 | [ ] | Engine definition `chalito` in `src/lib/engines/integrations/definitions.ts` | SSO and launch from the hub (M2) | `docs/integrations/CHALYB_ENGINE.md` §1 |
-| [ ] | `register_chalito_engine` migration (ships `coming_soon`) | Engine row on the hub | CHALYB_ENGINE.md §2 |
+| [x] | `register_chalito_engine` migration. Verified 2026-10-16: the hub's `public.engines` row `chalito` is `status='active'`, `tier_required='PRO'`, `integration_mode=external_sso_redirect` (Pro and VIP only, owner decision #53) | Engine row on the hub | CHALYB_ENGINE.md §2 |
 | [x] | tfvars `engines` entry (2026-10-15, verified). No domain override: Chalito lives inside the hub at `www.chalyb.com/app/chalito`, and the api keeps its run.app URL as `admin_api_base` (owner, 2026-10-05; Chalyb migration 0067) | Infra (M2) | CHALYB_ENGINE.md §3, ADR 0015, `docs/GO_LIVE.md` "Where Chalito lives" |
 | [ ] | Secrets `chalito-sso-secret`, `chalito-admin-token`, plus read access to the admin token for the `orchestrator` and `notifier` service accounts | SSO, tenants, usage reporting | CHALYB_ENGINE.md §4 |
 | [ ] | Meter kinds accepted: `llm.tokens`, `voice.seconds`, `call.seconds`, `whatsapp.messages`, `sms.segments`, `compute.seconds`, and **`store.purchase` billed as already a price** (`ceil(cost_usd_micros / 4)`, like `boost.fee`) | Usage reporting (M12); paid cosmetics (M8), D-030 | CHALYB_ENGINE.md §5, `DEVIATIONS.md` D-030, decision #32 |
