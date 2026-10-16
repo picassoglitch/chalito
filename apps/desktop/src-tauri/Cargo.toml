@@ -22,7 +22,11 @@ tauri-plugin-global-shortcut = "2.3"
 tauri-plugin-opener = "2.7"
 tauri-plugin-process = "2.4"
 tauri-plugin-single-instance = { version = "2.5", features = ["deep-link"] }
-tauri-plugin-updater = "2.13"
+# Default features minus `zip`: every zip 4.x release (the updater's requirement) is yanked.
+# `zip` only adds installing v1-style .zip (Windows) / .tar.gz AppImage (Linux) payloads; our
+# release sets createUpdaterArtifacts: true, which ships the raw installers, so nothing changes.
+# macOS .app.tar.gz extraction does not depend on it.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 getrandom = "0.2"
 
 [target.'cfg(unix)'.dependencies]
