@@ -30,6 +30,7 @@ create table chalito_private.pairing_code_networks (
 alter table chalito_private.pairing_code_networks enable row level security;
 revoke all on chalito_private.pairing_code_networks from public, anon, authenticated, service_role;
 grant select, insert, delete on chalito_private.pairing_code_networks to chalito_server;
+create policy server_all on chalito_private.pairing_code_networks for all to chalito_server using (true) with check (true);
 
 create table chalito_private.pairing_code_viewers (
   code_id chalito.id not null references chalito.pairing_codes (code_id) on delete cascade,
@@ -45,6 +46,7 @@ create table chalito_private.pairing_code_viewers (
 alter table chalito_private.pairing_code_viewers enable row level security;
 revoke all on chalito_private.pairing_code_viewers from public, anon, authenticated, service_role;
 grant select, insert, update, delete on chalito_private.pairing_code_viewers to chalito_server;
+create policy server_all on chalito_private.pairing_code_viewers for all to chalito_server using (true) with check (true);
 
 -- Claimed or declined: the network record and the viewers have done their job.
 create or replace function chalito_private.drop_pairing_network()

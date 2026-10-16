@@ -113,9 +113,9 @@ select extensions.ok(not exists (select 1 from chalito_private.pairing_code_netw
   'deleting the code (its expiry purge) drops the record with it');
 update chalito_private.pairing_code_networks set expires_at = now() - interval '1 second' where code_id = 'ho_late1';
 select extensions.is(chalito_private.purge_pairing_networks(), 2, 'the sweep removes the expired and the over-24-hour records');
-select extensions.is((select array_agg(code_id order by code_id) from chalito_private.pairing_code_networks where code_id like 'ho_%'),
+select extensions.is((select array_agg(code_id::text order by code_id) from chalito_private.pairing_code_networks where code_id like 'ho_%'),
   array['ho_open1']::text[], 'an open code''s record is kept');
-select extensions.is((select array_agg(code_id order by code_id) from chalito_private.pairing_code_viewers where code_id like 'ho_%'),
+select extensions.is((select array_agg(code_id::text order by code_id) from chalito_private.pairing_code_viewers where code_id like 'ho_%'),
   array['ho_open1']::text[], 'the sweep keeps only an open code''s viewers (24 h at most)');
 select extensions.is((select schedule from cron.job where jobname = 'chalito-purge-pairing-networks'), '*/5 * * * *',
   'the sweep runs every five minutes under pg_cron');
