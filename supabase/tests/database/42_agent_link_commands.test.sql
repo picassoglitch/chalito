@@ -3,7 +3,7 @@
 -- link_handoff approval kind (MED, one tap); link.* in its own audit category.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(14);
+select plan(16);
 
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language plpgsql as $$
 begin
@@ -93,6 +93,8 @@ select lives_ok(
     values ('al-user', 'al_ap2', 'al_b', 'al_s1', 'r2', 'remote_view', 'HIGH', 'client:p', true, '{}', now() + interval '10 minutes')$$,
   'earlier kinds are kept');
 select is(chalito.audit_category('link.handoff.delivered'), 'links', 'link.* has its own category');
+select is(chalito.audit_category('lan.link_up'), 'lan', 'lan.* has its own category');
+select has_view('chalito', 'audit_lan', 'and its own view');
 select is(chalito.audit_category('screen.ended'), 'screen', 'screen.* unchanged');
 
 select * from finish();
