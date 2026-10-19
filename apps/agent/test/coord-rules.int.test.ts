@@ -56,7 +56,7 @@ describe.skipIf(!LOCAL)("remembered coordinator rules (local stack, real RLS)", 
     const match = createHash("sha256")
       .update(
         ruleMatchText(
-          rememberMatchFor({ toolName: "Bash", input: { command: "supabase db push" }, workspaceLabel: "taquito" })!,
+          rememberMatchFor({ toolName: "Bash", input: { command: "pnpm format" }, workspaceLabel: "taquito" })!,
         )!,
       )
       .digest("hex");

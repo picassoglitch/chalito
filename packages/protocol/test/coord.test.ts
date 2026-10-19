@@ -67,16 +67,12 @@ describe("rememberMatchFor", () => {
   const bash = (command: string) => rememberMatchFor({ toolName: "Bash", input: { command }, workspaceLabel: w });
 
   it("reads a simple command as its exact words", () => {
-    expect(bash("gh pr create --fill")).toEqual({
+    expect(bash("git commit -m wip")).toEqual({
       kind: "command",
       workspaceLabel: w,
-      argv: ["gh", "pr", "create", "--fill"],
+      argv: ["git", "commit", "-m", "wip"],
     });
-    expect(bash("  curl https://api.example.com/x  ")).toEqual({
-      kind: "command",
-      workspaceLabel: w,
-      argv: ["curl", "https://api.example.com/x"],
-    });
+    expect(bash("  pnpm test  ")).toEqual({ kind: "command", workspaceLabel: w, argv: ["pnpm", "test"] });
   });
 
   it("never remembers a compound, quoted, expanded or redirected command", () => {
@@ -251,12 +247,11 @@ describe("security review: a remembered command is exactly that command", () => 
   const m = (command: string) => rememberMatchFor({ toolName: "Bash", input: { command }, workspaceLabel: w });
 
   it("binds every word, options included", () => {
-    expect(m("supabase db push")).toEqual({ kind: "command", workspaceLabel: w, argv: ["supabase", "db", "push"] });
-    expect(m("psql -c x")).toEqual({ kind: "command", workspaceLabel: w, argv: ["psql", "-c", "x"] });
+    expect(m("pnpm test")).toEqual({ kind: "command", workspaceLabel: w, argv: ["pnpm", "test"] });
     const text = (c: string) => ruleMatchText(m(c)!);
-    expect(text("supabase db push")).not.toBe(text("supabase db push --force"));
-    expect(text("supabase db push")).not.toBe(text("supabase db reset"));
-    expect(text("cp a b")).not.toBe(text("cp a b c"));
+    expect(text("pnpm test")).not.toBe(text("pnpm test --filter api"));
+    expect(text("git log")).not.toBe(text("git log -5"));
+    expect(text("eslint src")).not.toBe(text("eslint src --fix"));
   });
 
   it("never remembers a command run through a wrapper or a path", () => {
@@ -293,5 +288,63 @@ describe("security review: a remembered command is exactly that command", () => 
     expect(ruleMatchText({ kind: "command", workspaceLabel: w, argv: ["a b"] })).not.toBe(
       ruleMatchText({ kind: "command", workspaceLabel: w, argv: ["a", "b"] }),
     );
+  });
+});
+
+describe("security review: only known-safe programs can be remembered (allowlist)", () => {
+  const w = "taquito";
+  const m = (command: string) => rememberMatchFor({ toolName: "Bash", input: { command }, workspaceLabel: w });
+
+  it("test runners by their explicit forms, linters, formatters and read/commit git", () => {
+    for (const c of [
+      "pnpm test",
+      "pnpm test --filter api",
+      "npm test",
+      "npm run lint",
+      "yarn lint",
+      "pytest -q tests/api",
+      "cargo test",
+      "go test ./...",
+      "eslint src",
+      "prettier --check .",
+      "ruff check .",
+      "tsc --noEmit",
+      "git status",
+      "git diff --stat",
+      "git log -5",
+      "git add src/a.ts",
+      "git commit -m wip",
+    ])
+      expect(m(c), c).not.toBeNull();
+  });
+
+  it("everything else asks every time, however it's spelled", () => {
+    for (const c of [
+      "python3.12 -c 1",
+      "NODE -e 1",
+      "Npx foo",
+      "pnpm dev",
+      "pnpm deploy",
+      "npm run deploy",
+      "yarn start",
+      "make deploy",
+      "just release",
+      "rake db:migrate",
+      "task build",
+      "git -c core.pager=x status",
+      "git --exec-path=/tmp status",
+      "git push origin main",
+      "git reset --hard",
+      "supabase db push",
+      "psql -c x",
+      "curl https://x.com",
+      "./eslint src",
+      "node_modules/.bin/eslint src",
+    ])
+      expect(m(c), c).toBeNull();
+  });
+
+  it("normalizes the program's case", () => {
+    expect(m("ESLint src")).toEqual({ kind: "command", workspaceLabel: w, argv: ["eslint", "src"] });
   });
 });
