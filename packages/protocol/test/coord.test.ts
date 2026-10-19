@@ -41,17 +41,17 @@ describe("coordinator rules (ADR 0025 §6)", () => {
   });
 
   it("builds one canonical text per match, lowercasing domains", () => {
-    expect(ruleMatchText({ kind: "command", workspaceLabel: "taquito", program: "psql", sub: "" })).toBe(
-      "chalito.coordrule.match.v1\ncommand\ntaquito\npsql\n",
+    expect(ruleMatchText({ kind: "command", workspaceLabel: "taquito", argv: ["psql", "-c", "x"] })).toBe(
+      "chalito.coordrule.match.v2\ncommand\ntaquito\n3\npsql\n-c\nx",
     );
     expect(ruleMatchText({ kind: "web", workspaceLabel: "taquito", domain: "API.Stripe.com" })).toBe(
-      "chalito.coordrule.match.v1\nweb\ntaquito\napi.stripe.com",
+      "chalito.coordrule.match.v2\nweb\ntaquito\napi.stripe.com",
     );
   });
 
   it("refuses a value with a newline, so two matches can't hash the same", () => {
-    expect(ruleMatchText({ kind: "command", workspaceLabel: "a\ncommand", program: "x", sub: "" })).toBeNull();
-    expect(ruleMatchText({ kind: "command", workspaceLabel: "a", program: "x\ty", sub: "" })).toBeNull();
+    expect(ruleMatchText({ kind: "command", workspaceLabel: "a\ncommand", argv: ["x"] })).toBeNull();
+    expect(ruleMatchText({ kind: "command", workspaceLabel: "a", argv: ["x\ty"] })).toBeNull();
   });
 });
 
@@ -59,26 +59,16 @@ describe("rememberMatchFor", () => {
   const w = "taquito";
   const bash = (command: string) => rememberMatchFor({ toolName: "Bash", input: { command }, workspaceLabel: w });
 
-  it("reads a simple command as program + subcommand", () => {
-    expect(bash("supabase db push")).toEqual({
-      kind: "command",
-      workspaceLabel: w,
-      program: "supabase",
-      sub: "db push",
-    });
-    expect(bash("psql -c x")).toEqual({ kind: "command", workspaceLabel: w, program: "psql", sub: "" });
+  it("reads a simple command as its exact words", () => {
     expect(bash("gh pr create --fill")).toEqual({
       kind: "command",
       workspaceLabel: w,
-      program: "gh",
-      sub: "pr create",
+      argv: ["gh", "pr", "create", "--fill"],
     });
-    expect(bash("cp a b c")).toEqual({ kind: "command", workspaceLabel: w, program: "cp", sub: "a b" });
     expect(bash("  curl https://api.example.com/x  ")).toEqual({
       kind: "command",
       workspaceLabel: w,
-      program: "curl",
-      sub: "https://api.example.com/x",
+      argv: ["curl", "https://api.example.com/x"],
     });
   });
 
@@ -125,5 +115,55 @@ describe("rule withdrawals", () => {
     expect(CoordRuleRevoke.safeParse(env).success).toBe(true);
     expect(CoordRuleRevoke.safeParse({ ...env, ctx: "chalito.coordrule.v1" }).success).toBe(false);
     expect(CoordRuleRevoke.safeParse({ ...env, body: { ...env.body, extra: 1 } }).success).toBe(false);
+  });
+});
+
+describe("security review: a remembered command is exactly that command", () => {
+  const w = "taquito";
+  const m = (command: string) => rememberMatchFor({ toolName: "Bash", input: { command }, workspaceLabel: w });
+
+  it("binds every word, options included", () => {
+    expect(m("supabase db push")).toEqual({ kind: "command", workspaceLabel: w, argv: ["supabase", "db", "push"] });
+    expect(m("psql -c x")).toEqual({ kind: "command", workspaceLabel: w, argv: ["psql", "-c", "x"] });
+    const text = (c: string) => ruleMatchText(m(c)!);
+    expect(text("supabase db push")).not.toBe(text("supabase db push --force"));
+    expect(text("supabase db push")).not.toBe(text("supabase db reset"));
+    expect(text("cp a b")).not.toBe(text("cp a b c"));
+  });
+
+  it("never remembers a command run through a wrapper or a path", () => {
+    for (const c of [
+      "npx foo --x",
+      "pnpm exec foo",
+      "pnpm dlx foo",
+      "npm exec foo",
+      "npm x foo",
+      "yarn dlx foo",
+      "bunx foo",
+      "bun x foo",
+      "uvx foo",
+      "uv run foo",
+      "pipx run foo",
+      "sh -c ls",
+      "bash -c ls",
+      "env FOO=1 ls",
+      "node -e 1",
+      "python -c 1",
+      "python3 script.py",
+      "xargs rm",
+      "sudo ls",
+      "timeout 5 ls",
+      "nohup ls",
+      "./deploy.sh",
+      "/usr/bin/psql -c x",
+      "scripts/run",
+    ])
+      expect(m(c), c).toBeNull();
+  });
+
+  it("the match text can't be confused between word lists", () => {
+    expect(ruleMatchText({ kind: "command", workspaceLabel: w, argv: ["a b"] })).not.toBe(
+      ruleMatchText({ kind: "command", workspaceLabel: w, argv: ["a", "b"] }),
+    );
   });
 });
