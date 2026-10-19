@@ -22,7 +22,8 @@ import {
   compedFrom,
   parseReserveBasis,
 } from "@chalito/billing";
-import { loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
+import { checkRole, loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
+import type { Sql } from "postgres";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
 import { twilioPhoneVerifier } from "./phone/twilio.js";
@@ -71,6 +72,7 @@ const backend = (): {
   rateBuckets: PostgresBuckets;
   serverAudit: PostgresAuditSink;
   account?: AccountDeps;
+  sql: Sql;
 } => {
   const kind = process.env.CHALITO_DATA_BACKEND ?? "supabase";
   if (kind !== "supabase")
@@ -78,10 +80,11 @@ const backend = (): {
   const supabase = createClient(env("SUPABASE_URL"), env("SUPABASE_SECRET_KEY"), {
     auth: { autoRefreshToken: false, persistSession: false },
   });
-  // DATABASE_ROLE: `chalito_server` when the login only holds it with SET (local, tests);
-  // unset when the login is a member that inherits it (deploy).
+  // DATABASE_ROLE: `chalito_server`, checked at start. Through the transaction pooler the login's
+  // default role provides it; elsewhere a login that holds it with SET (see pgOptions).
   const sql = chalitoSql(env("DATABASE_URL"), process.env.DATABASE_ROLE ? { role: process.env.DATABASE_ROLE } : {});
   return {
+    sql,
     repo: new PostgresRepo(sql, { authUserId: chalitoAuthUserId }),
     identity: new SupabaseIssuer(supabase.auth),
     mcp: new PostgresMcpStore(sql),
@@ -190,7 +193,8 @@ const streamAudit: AuditSink = {
   },
 };
 
-const { serverAudit, ...data } = backend();
+const { serverAudit, sql, ...data } = backend();
+await checkRole(sql, process.env.DATABASE_ROLE);
 // Every event goes to the stream; owner-scoped ones also to chalito.server_audit (the audit views).
 const audit = teeAudit(streamAudit, serverAudit);
 

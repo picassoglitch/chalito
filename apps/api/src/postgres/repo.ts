@@ -1,4 +1,5 @@
 import postgres, { type Sql, type TransactionSql } from "postgres";
+import { pgOptions } from "@chalito/config";
 import type { DeviceDoc, DeviceRegistration, Endorsement, PairingCodeDoc } from "@chalito/protocol";
 import type { PairingNet } from "../lib/pairing-network.js";
 import type {
@@ -29,11 +30,7 @@ export interface PostgresRepoOptions {
 
 /** A connection that acts as `chalito_server` (or the role given), e.g. from a postgres login granted that role. */
 export const chalitoSql = (url: string, opts: { role?: string; max?: number } = {}): Sql =>
-  postgres(url, {
-    max: opts.max ?? 10,
-    onnotice: () => {},
-    ...(opts.role ? { connection: { role: opts.role } } : {}),
-  });
+  postgres(url, pgOptions(url, { role: opts.role, max: opts.max ?? 10 }));
 
 export class PostgresRepo implements ApiRepo {
   constructor(

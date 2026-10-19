@@ -353,6 +353,9 @@ importers:
       '@a2a-js/sdk':
         specifier: 1.3.0
         version: 1.3.0(@grpc/grpc-js@1.14.5)(express@5.2.1)
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@chalito/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
@@ -390,9 +393,6 @@ importers:
       '@chalito/client-keys':
         specifier: workspace:*
         version: link:../../packages/client-keys
-      '@chalito/config':
-        specifier: workspace:*
-        version: link:../../packages/config
       '@modelcontextprotocol/client':
         specifier: 2.3.0
         version: 2.3.0

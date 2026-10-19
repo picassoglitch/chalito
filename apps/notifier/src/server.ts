@@ -13,7 +13,7 @@ import {
   enqueueUsage,
   parseReserveBasis,
 } from "@chalito/billing";
-import { loadEscalation, loadModels, loadPlans, loadPrices } from "@chalito/config";
+import { checkRole, loadEscalation, loadModels, loadPlans, loadPrices, pgOptions } from "@chalito/config";
 import { createApp } from "./app.js";
 import { hubCommsBilling } from "./billing.js";
 import type { Logger } from "./executor.js";
@@ -42,12 +42,9 @@ const log: Logger = {
 
 const base = env("PUBLIC_BASE_URL").replace(/\/$/, "");
 const config = loadEscalation();
-const sql = postgres(env("DATABASE_URL"), {
-  max: 10,
-  onnotice: () => {},
-  // Least privilege (security review S2): act as chalito_server when the login holds it with SET.
-  ...(process.env.DATABASE_ROLE ? { connection: { role: process.env.DATABASE_ROLE } } : {}),
-});
+// Least privilege (security review S2): act as chalito_server (see pgOptions for the pooler).
+const sql = postgres(env("DATABASE_URL"), pgOptions(env("DATABASE_URL"), { role: process.env.DATABASE_ROLE, max: 10 }));
+await checkRole(sql, process.env.DATABASE_ROLE);
 // What est_tokens means at the hub; an unknown value stops the service here, not at the first admit.
 const reserveBasis = parseReserveBasis(process.env.HUB_RESERVE_BASIS);
 const hub = new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") });

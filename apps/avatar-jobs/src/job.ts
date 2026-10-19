@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { errorMessage, installConsoleRedaction } from "@chalito/redact";
 import { Storage } from "@google-cloud/storage";
 import postgres from "postgres";
-import { loadModels, loadPrices } from "@chalito/config";
+import { checkRole, loadModels, loadPrices, pgOptions } from "@chalito/config";
 import { processCreation } from "./creation.js";
 import { PostgresCreationStore } from "./creations.js";
 import { geminiImageModel } from "./gemini.js";
@@ -60,12 +60,9 @@ const runCreation = async (store: GcsBlobStore, path: string) => {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is required with GEMINI_API_KEY");
   // DATABASE_ROLE: `chalito_server` when the login only holds it with SET (as in apps/api).
-  const sql = postgres(url, {
-    max: 2,
-    onnotice: () => {},
-    ...(process.env.DATABASE_ROLE ? { connection: { role: process.env.DATABASE_ROLE } } : {}),
-  });
+  const sql = postgres(url, pgOptions(url, { role: process.env.DATABASE_ROLE, max: 2 }));
   try {
+    await checkRole(sql, process.env.DATABASE_ROLE);
     const modelRef = loadModels().images.avatar;
     const r = await processCreation(
       {

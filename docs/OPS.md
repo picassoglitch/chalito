@@ -69,6 +69,11 @@ Nothing here is committed. Each value goes into Secret Manager in Chalyb's proje
 - `chalito-vapid-private-key`, `chalito-openai-webhook-secret`, `chalito-voice-ref-secret`;
 - the Twilio, Meta, OpenAI, Anthropic and xAI ones, and `chalito-owner-uids`.
 
+**Database URLs (transaction pooler, 2026-10-19):** both point at Supavisor's transaction pooler (port 6543), each with its own login whose default role is the service role, so no startup `role` parameter is needed (`packages/config/src/database.ts`; the services check `current_user` at start and refuse to serve as anyone else):
+- `chalito-database-url`: `chalito_server_login.<project-ref>`, `noinherit in role chalito_server`, `alter role chalito_server_login set role = 'chalito_server'`;
+- `chalito-gateway-database-url`: `chalito_gateway_login.<project-ref>`, the same with `chalito_gateway`.
+A URL on another port keeps the session behaviour (startup `role`, prepared statements); `DATABASE_POOL_MODE=transaction|session` overrides the port.
+
 **api (Chalyb's engine module) also needs:**
 - `ACCOUNT_EXPORT_BUCKET`: the records bucket (CMEK) is the suggested home for `exports/<owner>/`;
 - `AVATAR_BUCKET`: the assets bucket (also turns on `/v1/avatar`, custom companions, with `CHALYB_BASE_URL`); the api signs upload URLs as itself, so its account needs Token Creator on itself (`api_self_sign` in Terraform); it also deletes a card's every object version when the person deletes their character ("Eliminar mi personaje", `docs/RUNBOOK.md` 6.8), which `roles/storage.objectAdmin` on the bucket (`api_objects`) covers;
