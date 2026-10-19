@@ -28,7 +28,7 @@ export class KeyringUnavailableError extends Error {
   constructor(cause?: unknown) {
     super(
       `This Chalito build can't use your system's keychain: its keychain component for ${process.platform}-${process.arch} is missing. ` +
-        "Chalito won't store its keys anywhere else. Reinstall Chalito from https://chalito.chalyb.com/descargar.",
+        "Chalito won't store its keys anywhere else. Reinstall Chalito from https://www.chalyb.com/app/chalito/descargar.",
       { cause },
     );
   }

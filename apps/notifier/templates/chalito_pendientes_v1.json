@@ -6,7 +6,7 @@
     "es_MX": {
       "body": "Chalito: tienes {{1}} pendientes en tu cuenta ({{2}}). Urgencia: {{3}}. Ábrelos en la app.",
       "buttons": [
-        { "type": "URL", "text": "Abrir", "url": "https://chalito.chalyb.com/n/{{1}}", "example": ["n_4f2a9c"] },
+        { "type": "URL", "text": "Abrir", "url": "https://www.chalyb.com/app/chalito/n/{{1}}", "example": ["n_4f2a9c"] },
         { "type": "QUICK_REPLY", "text": "Dejar de recibir" }
       ],
       "example": ["3", "aprobaciones", "alta"]
@@ -14,7 +14,7 @@
     "en_US": {
       "body": "Chalito: you have {{1}} pending items in your account ({{2}}). Urgency: {{3}}. Open them in the app.",
       "buttons": [
-        { "type": "URL", "text": "Open", "url": "https://chalito.chalyb.com/n/{{1}}", "example": ["n_4f2a9c"] },
+        { "type": "URL", "text": "Open", "url": "https://www.chalyb.com/app/chalito/n/{{1}}", "example": ["n_4f2a9c"] },
         { "type": "QUICK_REPLY", "text": "Stop receiving" }
       ],
       "example": ["3", "approvals", "high"]
