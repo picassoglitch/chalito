@@ -219,7 +219,8 @@ describe("a plan from goal to merge (real git)", () => {
     await waitFor(() => t.last().status === "ready_to_merge");
     // Helpers worked inside the workspace, each in its own worktree, as coordinator helpers.
     const helpers = t.started.filter((s) => s.role === "helper");
-    expect(helpers.map((s) => s.cwd)).toEqual([
+    // The two start concurrently: any order.
+    expect(helpers.map((s) => s.cwd).sort()).toEqual([
       join(root, ".chalito-coord", planId, "a"),
       join(root, ".chalito-coord", planId, "b"),
     ]);
