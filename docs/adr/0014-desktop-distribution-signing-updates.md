@@ -1,6 +1,6 @@
 # ADR 0014: Desktop distribution, signing and updates
 
-- Status: Proposed (M0); built in M14
+- Status: Proposed (M0); built in M14; signing choices updated 2026-10-16 (M17, see the end)
 
 ## Verified context (2026-10-03)
 - Tauri **2.12.1**. Bundle targets: `appimage`, `deb`, `rpm`, `nsis`, `msi`, `app`, `dmg`.
@@ -27,3 +27,34 @@
 ## Consequences
 - Linux Wayland: click-through polling needs `cursorPosition()`, which returns (0,0) on native Wayland. The app sets `GDK_BACKEND=x11` (XWayland) for the pet window, and native Wayland is best effort (D-006).
 - First Windows downloads will show SmartScreen warnings until reputation accrues. This is documented on `/descargar`.
+
+## Update 2026-10-16 (M17): what the owner decided
+Owner decisions: **full macOS signing** (the owner has an Apple Developer account), **no paid Windows signing**. This resolves decision #24 (Windows signing: none for now) and replaces the Azure Artifact Signing default above.
+
+| OS | Artifacts | Signing | What the user sees |
+|---|---|---|---|
+| macOS | universal `.dmg` (+ updater `.app.tar.gz`) | **Developer ID Application** + hardened runtime (JIT entitlements for the bun sidecar, `entitlements.plist`) + **notarization** with an App Store Connect API key (`notarytool`, run by the Tauri bundler) + stapled ticket | Opens normally, no Gatekeeper warning |
+| Windows | NSIS `-setup.exe` (+ updater `.nsis.zip`) | **No Authenticode.** Updates are still verified with the Tauri updater key, which can't be turned off | SmartScreen "Windows protected your PC" on first run: *More info* → *Run anyway*. `/descargar` shows the two steps with screenshots and the SHA-256 |
+| Linux | AppImage + `.deb` (+ `.rpm` as built today) | AppImage GPG signature (optional, free) + published checksums | No warning; `chmod +x` for the AppImage |
+
+### macOS: exactly what the owner creates in the Apple portal
+The release workflow (`.github/workflows/release.yml`) and `apps/desktop/scripts/release/plan.ts` already read these. A certificate without the notarization key is refused (never half-signed).
+
+| # | Create | Where | Becomes the GitHub **secret** |
+|---|---|---|---|
+| 1 | Note the **Team ID** (10 characters) | developer.apple.com → Account → Membership details | Part of `APPLE_SIGNING_IDENTITY`; no separate secret (the workflow doesn't read `APPLE_TEAM_ID`) |
+| 2 | A **Developer ID Application** certificate (not "Installer", not "Apple Distribution"). Needs the **Account Holder** role. Make a CSR in Keychain Access on a Mac, upload it, download the `.cer`, install it, then export the certificate **with its private key** as a `.p12` with a strong password. Apple allows at most 5 | Certificates, Identifiers & Profiles → Certificates → + → Developer ID Application | `APPLE_CERTIFICATE` = `base64 -i cert.p12`; `APPLE_CERTIFICATE_PASSWORD` = the .p12 password; `APPLE_SIGNING_IDENTITY` = `Developer ID Application: <Name> (<TEAMID>)` exactly as Keychain shows it |
+| 3 | An **App Store Connect API key** (Team key) with the **Developer** role, for `notarytool`. The `.p8` can be downloaded **once** | App Store Connect → Users and Access → Integrations → App Store Connect API → Team Keys | `APPLE_API_ISSUER` = Issuer ID; `APPLE_API_KEY` = Key ID; `APPLE_API_PRIVATE_KEY` = the full text of `AuthKey_<KeyID>.p8` (CI writes it to a file and sets `APPLE_API_KEY_PATH`) |
+| 4 | Accept the latest Program License Agreement | developer.apple.com → Account | — (notarization fails with an agreement error otherwise) |
+
+Not needed: an App ID or provisioning profile (no restricted entitlements), a Developer ID Installer certificate (we ship a DMG, not a `.pkg`), an app-specific password (we use the API key, D-011). The bundle identifier is `com.chalyb.chalito` (`tauri.conf.json`).
+
+Back up the `.p12`, its password and the `.p8` offline, next to the updater key. If a certificate is ever revoked, Gatekeeper can refuse the builds signed with it, so rotate by creating a new certificate, updating the three secrets and cutting a new release.
+
+### Windows: unsigned, on purpose
+- Azure Artifact Signing (`AZURE_*`, `ARTIFACT_SIGNING_*`) stays supported in `plan.ts` and is simply left unset. If the owner changes their mind, adding those secrets signs the next build with no code change.
+- The Windows build is labelled `unsigned` today (`UNSIGNED_` file names). M17 phase B changes the release tooling so that **Windows unsigned is an accepted state for publishing** (label `unsigned-authenticode`, still updater-signed), while an unsigned macOS build or a test updater key still blocks publishing.
+- SmartScreen reputation never builds without a certificate, so the warning stays. That is documented, not hidden.
+
+### Linux
+- AppImage and `.deb` are the documented downloads; `.rpm` keeps building. GPG for the AppImage is optional and free (`APPIMAGE_GPG_PRIVATE_KEY`, `APPIMAGE_SIGN_KEY`, `APPIMAGETOOL_SIGN_PASSPHRASE`).
