@@ -161,16 +161,16 @@ export const buildEndorsedEnrolment = async (
 export const enrollEndorsed = (api: ApiClient, req: ReturnType<typeof EnrollEndorsedClientRequest.parse>) =>
   api.post<{ customToken: string; deviceId: string }>("/v1/devices/endorsed", req);
 
-/**
- * Owner decision 2026-10-19 ("sign-in alone"): the person's own session enrols this device, no
- * endorsement. `user` route; 404 from an api that predates it.
- */
 /** This device's own verification code (its key fingerprint), as other devices compute it. */
 export const deviceFingerprint = (keys: DeviceKeys): Promise<string> => fingerprint(keys.sign.publicKey);
 
 /** A device's verification code from its base64url signing key (e.g. a directory row). */
 export const keyFingerprint = async (pubSign: string): Promise<string> => fingerprint(await fromB64url(pubSign));
 
+/**
+ * Owner decision 2026-10-19 ("sign-in alone"): the person's own session enrols this device, no
+ * endorsement. `user` route; 404 from an api that predates it.
+ */
 export const enrollSignedIn = (api: ApiClient, req: { registration: DeviceRegistration }) =>
   api.post<{ customToken: string; deviceId: string }>("/v1/devices/signin", req);
 
