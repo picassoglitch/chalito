@@ -213,4 +213,31 @@ describe.skipIf(!LOCAL)("browser client ⇄ agent on the local stack", () => {
     const p = env.body.payload as Extract<CommandPayload, { type: "session.prompt" }>;
     expect(await openJson(p.promptCt, agent.deviceId, agent.box, `command:${cid}`)).toBe("y ahora los tests");
   });
+
+  it("Siempre así over real RLS: the phone stores, lists and withdraws a rule the agent can read and verify", async () => {
+    const ruleId = await client.coordRules.remember({
+      toolName: "Bash",
+      input: { command: "supabase db push" },
+      workspaceLabel: "taquito",
+      risk: "MED",
+    });
+    expect(await client.coordRules.list()).toMatchObject([{ ruleId, label: "supabase db push · taquito", mine: true }]);
+    // The agent reads it with its own session and verifies it against the browser it trusts.
+    const { data } = await agentDb.from("coord_rules").select("rule").eq("rule_id", ruleId);
+    const trust = new TrustedClientList(agent.deviceId);
+    await trust.addConfirmed(
+      { deviceId: browser.deviceId, pubSign: browser.pubSign, pubBox: browser.pubBox },
+      Date.now(),
+    );
+    expect((await trust.verifySigned((data as { rule: never }[])[0]!.rule, "chalito.coordrule.v1")).ok).toBe(true);
+    // An agent can't remove it; the phone withdraws it (signed) and it's gone.
+    await agentDb.from("coord_rules").delete().eq("rule_id", ruleId);
+    expect(await client.coordRules.list()).toHaveLength(1);
+    await client.coordRules.forget(ruleId);
+    expect(await client.coordRules.list()).toHaveLength(0);
+    const rev = await agentDb.from("coord_rule_revocations").select("revoke").eq("rule_id", ruleId);
+    expect(
+      (await trust.verifySigned((rev.data as { revoke: never }[])[0]!.revoke, "chalito.coordrule-revoke.v1")).ok,
+    ).toBe(true);
+  });
 });

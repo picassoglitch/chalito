@@ -1,6 +1,7 @@
 import { canonicalize, fromB64url, sha256, utf8, verifyEnvelope } from "@chalito/crypto";
 import {
   AgentEvent,
+  CoordPlanState,
   DeviceSetup,
   LiveBroadcast,
   SealedApprovalPayload,
@@ -104,6 +105,13 @@ export interface SessionView {
   updatedAt: number;
   /** The latest Session Card, opened (AAD card:<sid>), or null. */
   card: SessionCard | null;
+  /** The workspace label the session runs in (what "Siempre así" rules are bound to). */
+  workspaceLabel?: string;
+  /**
+   * Coordinator mode (ADR 0025 §6): the plan this session coordinates, opened (AAD coord:<sid>)
+   * and checked against the schema, or null. Text in it comes from agents: show it as data.
+   */
+  coord: CoordPlanState | null;
   rev: number;
 }
 
@@ -584,6 +592,9 @@ export class LiveStore {
     const sid = String(r.sid);
     const doc = (r.doc ?? {}) as Row;
     const card = await this.#open<SessionCard>((doc.card as Row | undefined)?.ct, `card:${sid}`);
+    const coordDoc = doc.coord as Row | undefined;
+    const plan = CoordPlanState.safeParse(await this.#open<unknown>(coordDoc?.ct, `coord:${sid}`));
+    const coord = plan.success && plan.data.planId === coordDoc?.planId ? plan.data : null;
     return {
       sid,
       agentDeviceId: String(r.device_id),
@@ -593,6 +604,8 @@ export class LiveStore {
       permissionMode: doc.permissionMode as string | undefined,
       updatedAt: ms(r.updated_at ?? doc.updatedAt),
       card,
+      ...(typeof doc.cwdLabel === "string" ? { workspaceLabel: doc.cwdLabel } : {}),
+      coord,
       rev: num(r.rev),
     };
   }
