@@ -760,6 +760,9 @@ export class AgentCore {
       workspace: (label) => this.d.policy.get().workspaces.find((w) => w.label === label),
       helpersAllowed: () => PERMISSION_RANK[this.d.policy.get().remote.maxPermissionMode] >= PERMISSION_RANK.default,
       startSession: async (input) => {
+        // The same ceiling as any remote start (security review): never above this computer's.
+        if (PERMISSION_RANK[input.permissionMode] > PERMISSION_RANK[this.d.policy.get().remote.maxPermissionMode])
+          return { ok: false, reason: "permission_mode_above_ceiling" };
         const target = await this.#sessionTarget(undefined, input.appId);
         if (!target.ok) return target;
         if (!(await this.#makeRoom())) return { ok: false, reason: "session_limit" };
@@ -798,6 +801,11 @@ export class AgentCore {
         return () => {
           if (this.#observers.get(sid) === fn) this.#observers.delete(sid);
         };
+      },
+      endHelper: (sid) => {
+        this.#coordOf.delete(sid);
+        const s = this.sessions.get(sid);
+        if (s) delete s.coord;
       },
       publish: async (sid, state) => {
         if (this.#revoked) return;

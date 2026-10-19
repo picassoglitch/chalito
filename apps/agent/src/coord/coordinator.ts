@@ -50,6 +50,8 @@ export interface CoordHost {
   observe(sid: string, fn: (e: AdapterEvent) => void): () => void;
   /** Seals the state to the owner's clients on the plan's session (doc.coord). */
   publish(sid: string, state: CoordPlanState): Promise<void>;
+  /** The session stops being a helper: no more answers for it, now or after a revive. */
+  endHelper(sid: string): void;
 }
 
 export interface GitResult {
@@ -349,6 +351,7 @@ export class Coordinator {
     const plan = this.#plans.get(planId);
     if (!plan) return { ok: false, reason: "unknown_plan" };
     if (plan.state.status !== "awaiting_approval") return { ok: false, reason: "plan_not_waiting" };
+    if (!this.d.host.helpersAllowed()) return { ok: false, reason: "permission_mode_above_ceiling" };
     plan.state.status = "running";
     plan.state.startedAt = this.d.now();
     plan.timer = (this.d.setTimer ?? defaultTimer)(
@@ -581,8 +584,12 @@ export class Coordinator {
     const ref = `refs/heads/${branch}`;
     const count = await this.#pgit(plan, plan.root, ["rev-list", "--count", `${plan.baseSha}..${ref}`]);
     if (count.code !== 0 || Number(count.out.trim()) === 0) return "Nothing was committed on the branch.";
+    // No rename detection (security review): a renamed file's old path is a deletion too.
     const deleted = await this.#pgit(plan, plan.root, [
+      "-c",
+      "diff.renames=false",
       "diff",
+      "--no-renames",
       "--no-ext-diff",
       "--no-textconv",
       "--diff-filter=D",
@@ -714,7 +721,8 @@ export class Coordinator {
         planId: plan.state.planId,
         taskId: o.taskId,
         branchPrefix: `coord/${plan.state.planId}/`,
-        active: () => !plan.stopped && plan.state.status !== "merged" && plan.state.status !== "failed",
+        // Only while the plan runs (security review): never while it waits, nor once it ended.
+        active: () => !plan.stopped && (plan.state.status === "running" || plan.state.status === "integrating"),
       },
     });
     if (!r.ok) this.#release(sid);
@@ -759,6 +767,7 @@ export class Coordinator {
   }
 
   #release(sid: string): void {
+    this.d.host.endHelper(sid);
     const entry = this.#turns.get(sid);
     if (!entry) return;
     entry.unobserve();

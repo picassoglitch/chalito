@@ -84,7 +84,7 @@ const harness = async (o: { coordinator?: boolean; queryFn?: (root: string) => Q
     { deviceId: phone.id, pubSign: phone.pubSign, pubBox: phone.pubBox, webauthn: passkeyRef },
     Date.now(),
   );
-  const policy: Policy = {
+  let policy: Policy = {
     ...DEFAULT_POLICY,
     workspaces: [{ label: "proj", path: root }],
     ...(o.coordinator === false ? {} : { coordinator: { enabled: true } }),
@@ -178,7 +178,8 @@ const harness = async (o: { coordinator?: boolean; queryFn?: (root: string) => Q
     };
     store.attachDecision(pending.aid, await signEnvelope("chalito.decision.v1", body, phone.id, phone.sign.secretKey));
   };
-  return { core, store, command, goal, planOf, root, fake, decide };
+  const setPolicy = (p: Partial<Policy>) => void (policy = { ...policy, ...p });
+  return { core, store, command, goal, planOf, root, fake, decide, setPolicy };
 };
 
 describe("coord.* commands", () => {
@@ -306,5 +307,49 @@ describe("coord.* commands", () => {
     expect((await h.planOf(started.sid))!.status).toBe("merged");
     expect(readFileSync(join(h.root, "feature.ts"), "utf8")).toContain("feature = 1");
     expect(sh(h.root, "log", "--oneline", "-3")).toMatch(/feat: feature/);
+  });
+
+  it("security review: when the plan stops, no session keeps the helper marker", async () => {
+    const h = await harness();
+    const started = (await h.command({ type: "coord.start", workspaceLabel: "proj", goalCt: await h.goal("x") })) as {
+      sid: string;
+    };
+    await waitFor(async () => (await h.planOf(started.sid))?.status === "awaiting_approval");
+    const { planId } = (await h.planOf(started.sid))!;
+    await h.command({ type: "coord.approve", planId }, { stepUp: true });
+    await waitFor(() => [...h.core.sessions.values()].length >= 2);
+    expect([...h.core.sessions.values()].some((s) => (s as { coord?: unknown }).coord)).toBe(true);
+    await h.command({ type: "coord.stop", planId });
+    expect([...h.core.sessions.values()].filter((s) => (s as { coord?: unknown }).coord)).toHaveLength(0);
+  });
+
+  it("security review: a helper never starts above this computer's permission ceiling", async () => {
+    const h = await harness();
+    const started = (await h.command({ type: "coord.start", workspaceLabel: "proj", goalCt: await h.goal("x") })) as {
+      sid: string;
+    };
+    await waitFor(async () => (await h.planOf(started.sid))?.status === "awaiting_approval");
+    const { planId } = (await h.planOf(started.sid))!;
+    h.setPolicy({ remote: { maxPermissionMode: "plan", maxCodexSandbox: "read-only" } });
+    expect(await h.command({ type: "coord.approve", planId }, { stepUp: true })).toEqual({
+      ok: false,
+      reason: "permission_mode_above_ceiling",
+    });
+    // And the host itself refuses, whatever the coordinator asks for.
+    const host = (
+      h.core as unknown as { coordinator: { d: { host: { startSession: (i: object) => Promise<unknown> } } } }
+    ).coordinator.d.host;
+    expect(
+      await host.startSession({
+        sid: "11111111-1111-4111-8111-111111111111",
+        appId: "claude-code",
+        cwd: h.root,
+        workspaceLabel: "proj",
+        prompt: "x",
+        origin: "agent:coord_pabcdefgh",
+        permissionMode: "default",
+        coord: { planId: "pabcdefgh", taskId: "a", branchPrefix: "coord/pabcdefgh/", active: () => true },
+      }),
+    ).toEqual({ ok: false, reason: "permission_mode_above_ceiling" });
   });
 });

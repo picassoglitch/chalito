@@ -70,6 +70,7 @@ const host = (root: string, script: Partial<Record<Role, (s: Started, turn: numb
   const started: Started[] = [];
   const published: CoordPlanState[] = [];
   const interrupted: string[] = [];
+  const ended: string[] = [];
   const turns = new Map<string, number>();
   const roleOf = (taskId: string, mode: RemotePermissionMode): Role =>
     taskId === "planner" ? "planner" : taskId === "integration" ? "integration" : mode === "plan" ? "review" : "helper";
@@ -115,8 +116,9 @@ const host = (root: string, script: Partial<Record<Role, (s: Started, turn: numb
       return () => observers.delete(sid);
     },
     publish: async (_sid, state) => void published.push(structuredClone(state)),
+    endHelper: (sid) => void ended.push(sid),
   };
-  return { h, started, published, interrupted };
+  return { h, started, published, interrupted, ended };
 };
 
 const plan = (tasks: object[]) => "Here is the plan.\n```json\n" + JSON.stringify({ tasks }) + "\n```";
@@ -221,7 +223,9 @@ describe("a plan from goal to merge (real git)", () => {
       join(root, ".chalito-coord", planId, "a"),
       join(root, ".chalito-coord", planId, "b"),
     ]);
-    expect(helpers.every((s) => s.coord.branchPrefix === `coord/${planId}/` && s.coord.active())).toBe(true);
+    expect(helpers.every((s) => s.coord.branchPrefix === `coord/${planId}/`)).toBe(true);
+    // Waiting for the merge tap, nothing is answered for the owner any more.
+    expect(helpers.every((s) => !s.coord.active())).toBe(true);
     expect(t.started.filter((s) => s.role === "review").every((s) => s.permissionMode === "plan")).toBe(true);
     // The main checkout is untouched until the tap, and the worktrees don't show in its status.
     expect(existsSync(join(root, "a.ts"))).toBe(false);
@@ -329,6 +333,35 @@ describe("a plan from goal to merge (real git)", () => {
     await waitFor(() => t.last().status === "ready_to_merge");
     const helper = t.started.find((s) => s.role === "helper")!;
     expect(helper.prompts[1]).toMatch(/README\.md/);
+  });
+
+  it("security review: a rename hides no deletion (the source path counts as deleted)", async () => {
+    const { root } = repo();
+    const t = make(root, {
+      planner: () => plan([task("a")]),
+      helper: (s, n) => {
+        if (n > 0) return "DONE: kept";
+        sh(s.cwd, "mv", "README.md", "docs.md");
+        return commitHelper(s);
+      },
+      review: () => "APPROVE",
+      integration: integrator,
+    });
+    const r = (await start(t.c)) as { planId: string };
+    await waitFor(() => t.last().status === "awaiting_approval");
+    await t.c.approve(r.planId);
+    await waitFor(() => (t.started.find((s) => s.role === "helper")?.prompts.length ?? 0) > 1);
+    expect(t.started.find((s) => s.role === "helper")!.prompts[1]).toMatch(/README\.md/);
+  });
+
+  it("security review: approve checks the permission ceiling again", async () => {
+    const { root } = repo();
+    const t = make(root, { planner: () => plan([task("a")]) });
+    const r = (await start(t.c)) as { planId: string };
+    await waitFor(() => t.last().status === "awaiting_approval");
+    t.h.helpersAllowed = () => false;
+    expect(await t.c.approve(r.planId)).toEqual({ ok: false, reason: "permission_mode_above_ceiling" });
+    expect(t.last().status).toBe("awaiting_approval");
   });
 
   it("hands conflicting branches to the integration helper", async () => {
