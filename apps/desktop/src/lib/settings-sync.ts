@@ -1,5 +1,5 @@
 import { SettingsError, type SettingsStore } from "@chalito/client/settings";
-import type { SettingsValues } from "@chalito/ui";
+import { DEFAULT_SETTINGS, type SettingsValues } from "@chalito/ui";
 import { loadSettings, saveSettings } from "./settings-local.js";
 
 export type SaveError = "rejected" | "failed" | null;
@@ -11,12 +11,18 @@ export interface SettingsView {
 
 type Server = Pick<SettingsStore, "load" | "save" | "saveCompanion">;
 
+/** What the pet window reads from the device copy (pet/scene.ts): the only account fields kept there. */
+type PetFields = Pick<SettingsValues, "avatar" | "renderQuality">;
+const petFields = (v: SettingsValues): PetFields => ({ avatar: v.avatar, renderQuality: v.renderQuality });
+
 /**
  * The panel's settings, framework-free (the PWA's useSettings, for the desktop): server-backed
  * (get/update_my_settings via @chalito/client's SettingsStore) once signed in, else this
  * device. Changes apply optimistically, then the server's view is re-read, so a refused
  * change (calls without a verified phone) snaps back with `rejected`. Companion edits are
- * debounced (no RPC per keystroke). An unreachable server falls back to the device copy.
+ * debounced (no RPC per keystroke). An unreachable server falls back to the device copy. Signed
+ * in, only the pet's fields (companion avatar, render quality) are mirrored to the device copy:
+ * the pet window draws from it (pet/scene.ts, via the storage event).
  */
 export class DesktopSettings {
   #view: SettingsView = { values: null, error: null, persisted: "device" };
@@ -58,6 +64,7 @@ export class DesktopSettings {
     this.#set({ values: next, error: null });
     const server = this.#server;
     if (!server) return this.local.save(next);
+    this.#mirror(next);
     if (k === "avatar" || k === "companionName") {
       if (this.#companionTimer) clearTimeout(this.#companionTimer);
       this.#companionTimer = setTimeout(() => {
@@ -75,6 +82,14 @@ export class DesktopSettings {
       .finally(() => void this.#reload().catch(() => undefined));
   }
 
+  /**
+   * This device was revoked (R-L14) or signed out: the account's companion leaves the device
+   * copy, alongside the room window dropping its keys and decrypted events.
+   */
+  forgetAccount(): void {
+    this.local.save({ ...this.local.load(), ...petFields(DEFAULT_SETTINGS) });
+  }
+
   dispose(): void {
     if (this.#companionTimer) clearTimeout(this.#companionTimer);
     this.#listeners.clear();
@@ -82,7 +97,13 @@ export class DesktopSettings {
 
   async #reload(): Promise<void> {
     const r = await this.#server!.load();
+    this.#mirror(r.values);
     this.#set({ values: r.values, persisted: "server" });
+  }
+
+  /** Only the pet's fields, merged over this device's copy: nothing else of the account is stored. */
+  #mirror(v: SettingsValues): void {
+    this.local.save({ ...this.local.load(), ...petFields(v) });
   }
 
   #set(p: Partial<SettingsView>): void {

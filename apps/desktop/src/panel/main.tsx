@@ -9,6 +9,7 @@ import { petContext } from "../lib/pet-context.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
+import { panelOnLaunch } from "../lib/launch.js";
 import { relayRevoked } from "../lib/revoked-relay.js";
 import { localAgent } from "../lib/local-agent.js";
 import { thisComputer } from "../lib/this-computer.js";
@@ -44,9 +45,8 @@ const loadDnd = () => {
  * The panel window owns the account connection and the agent IPC; the pet window only
  * renders. Every few seconds it recomputes the pet's context and the presence signals.
  * Until signed in (hub SSO in the system browser → chalito:// deep link → endorsement by
- * a trusted client), the inbox shows the sign-in flow and settings stay on this device.
- * Server-backed settings (SettingsStore) switch on with the session (follow-up, with
- * picassoglitch-37's settings move).
+ * a trusted client), the panel opens at launch on the sign-in flow and settings stay on this
+ * device; once connected, settings (and the pet's companion) come from the account.
  */
 const App = ({ ipc }: { ipc: AgentIpc }) => {
   const sh = useMemo(shell, []);
@@ -54,34 +54,53 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const [controller, setController] = useState<SignInController | null>(null);
   useEffect(() => {
     const env = readEnv();
-    if (!env) return;
+    if (!env) {
+      if (panelOnLaunch({ configured: false, connected: false })) void sh.showWindow("panel").catch(() => undefined);
+      return;
+    }
     let dispose: (() => void) | null = null;
     let alive = true;
-    void createSession(env, (c) => alive && setConn(c)).then((s) => {
+    let connected = false;
+    void createSession(env, (c) => {
+      connected = true;
+      if (alive) setConn(c);
+    }).then((s) => {
       if (!alive) return s.dispose();
       dispose = s.dispose;
       setController(s.controller);
+      // createSession has already tried this device's saved sign-in: not connected means setup.
+      if (panelOnLaunch({ configured: true, connected })) void sh.showWindow("panel").catch(() => undefined);
     });
     return () => {
       alive = false;
       dispose?.();
     };
-  }, []);
+  }, [sh]);
   const client = conn?.client ?? null;
   const ptt = useMemo(() => new PushToTalk(conn?.voice ?? unavailableVoice), [conn]);
-  // R-L14: this device was revoked. The room window drops its keys and decrypted events now.
-  useEffect(() => (client ? relayRevoked(client.live, () => sh.sendDeviceRevoked()) : undefined), [client, sh]);
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
   const agentApi = useMemo(localAgent, []);
   const computerApi = useMemo(thisComputer, []);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);
-  // Server-backed once the desktop has a session (new SettingsStore(supabase, owner)).
-  const store = useMemo(() => new DesktopSettings(null), []);
+  // Server-backed once the desktop has a session; this device's copy until then.
+  const store = useMemo(() => new DesktopSettings(conn?.settings ?? null), [conn]);
   useEffect(() => {
     void store.start();
     return () => store.dispose();
   }, [store]);
+  // R-L14: this device was revoked. The room window drops its keys and decrypted events now,
+  // and the account's companion leaves the device copy.
+  useEffect(
+    () =>
+      client
+        ? relayRevoked(client.live, async () => {
+            store.forgetAccount();
+            await sh.sendDeviceRevoked();
+          })
+        : undefined,
+    [client, sh, store],
+  );
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);

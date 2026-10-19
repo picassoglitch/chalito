@@ -318,7 +318,8 @@
       "state_mismatch": "Enlace no válido.",
       "duplicate_param": "Enlace no válido."
     },
-    "glyph": "Código para escanear con tu teléfono"
+    "glyph": "Código para escanear con tu teléfono",
+    "petHint": "Para volver a abrir este panel, toca a tu compañero en la pantalla."
   },
   "updates": {
     "title": "Actualizaciones",
