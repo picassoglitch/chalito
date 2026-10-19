@@ -257,6 +257,16 @@ describe("coordAnswer", () => {
     expect(answer("Bash", { command: "supabase db push" }, { rules: [other] })).toBeNull();
   });
 
+  it("security review: a remembered command covers only exactly that command, never a wrapper", () => {
+    const m = rememberMatchFor({ toolName: "Bash", input: { command: "supabase db push" }, workspaceLabel: "proj" })!;
+    const rule = sha(ruleMatchText(m)!);
+    expect(answer("Bash", { command: "supabase db push --force" }, { rules: [rule] })).toBeNull();
+    expect(answer("Bash", { command: "supabase db push --db-url x" }, { rules: [rule] })).toBeNull();
+    expect(
+      rememberMatchFor({ toolName: "Bash", input: { command: "npx foo --x" }, workspaceLabel: "proj" }),
+    ).toBeNull();
+  });
+
   it("a remembered rule never covers a HIGH or CRITICAL prompt", () => {
     const m = rememberMatchFor({ toolName: "Bash", input: { command: "rm build" }, workspaceLabel: "proj" })!;
     expect(answer("Bash", { command: "rm build" }, { rules: [sha(ruleMatchText(m)!)] })).toBeNull();

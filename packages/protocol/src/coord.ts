@@ -32,8 +32,8 @@ export const DEFAULT_AUTO_KINDS: readonly AutoKind[] = AutoKind.options;
 /**
  * "Siempre así" (ADR 0025 §6): a remembered answer. It matches the same kind of request, in the
  * same workspace label, on any of the owner's computers:
- * - `command`: one simple shell command with the same program and subcommand (up to two words
- *   after the program, before any option: `supabase db push` is "db push"; "" when there is none);
+ * - `command`: exactly the same simple shell command: every word, options included (security
+ *   review: `supabase db push` never covers `supabase db push --force`);
  * - `web`: a fetch from the same domain.
  * Only MED prompts can be remembered; HIGH and CRITICAL always ask.
  */
@@ -42,8 +42,8 @@ export const RuleMatch = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("command"),
       workspaceLabel: z.string().min(1).max(80),
-      program: z.string().min(1).max(64),
-      sub: z.string().max(129),
+      /** The exact words of the command, in order. */
+      argv: z.array(z.string().min(1).max(256)).min(1).max(32),
     })
     .strict(),
   z
@@ -66,10 +66,11 @@ const hasControl = (s: string) => [...s].some((c) => c.charCodeAt(0) < 0x20 || c
  * cover, not secrecy).
  */
 export const ruleMatchText = (m: RuleMatch): string | null => {
+  // The word count goes first, so ["a b"] and ["a", "b"] never read the same.
   const parts =
     m.kind === "command"
-      ? ["chalito.coordrule.match.v1", "command", m.workspaceLabel, m.program, m.sub]
-      : ["chalito.coordrule.match.v1", "web", m.workspaceLabel, m.domain.toLowerCase()];
+      ? ["chalito.coordrule.match.v2", "command", m.workspaceLabel, String(m.argv.length), ...m.argv]
+      : ["chalito.coordrule.match.v2", "web", m.workspaceLabel, m.domain.toLowerCase()];
   return parts.some(hasControl) ? null : parts.join("\n");
 };
 
@@ -117,6 +118,78 @@ export type CoordRuleRevoke = z.infer<typeof CoordRuleRevoke>;
 const PLAIN_WORD = /^[A-Za-z0-9._/@%+=:,-]+$/;
 
 /**
+ * Programs that run another program or code given in their arguments: a rule for them would cover
+ * whatever they run, so they are never remembered (security review).
+ */
+const WRAPPERS = new Set([
+  "npx",
+  "pnpx",
+  "bunx",
+  "uvx",
+  "pipx",
+  "env",
+  "xargs",
+  "sudo",
+  "doas",
+  "su",
+  "pkexec",
+  "time",
+  "nice",
+  "nohup",
+  "timeout",
+  "watch",
+  "stdbuf",
+  "unbuffer",
+  "setsid",
+  "script",
+  "expect",
+  "exec",
+  "eval",
+  "command",
+  "builtin",
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "fish",
+  "csh",
+  "tcsh",
+  "pwsh",
+  "powershell",
+  "cmd",
+  "node",
+  "nodejs",
+  "deno",
+  "bun",
+  "tsx",
+  "ts-node",
+  "python",
+  "python3",
+  "python2",
+  "ruby",
+  "perl",
+  "php",
+  "lua",
+  "osascript",
+  "ssh",
+  "chalito",
+  "chalito-agent",
+]);
+/** `<tool> <sub>` pairs that run another program. */
+const WRAPPER_SUBS: Record<string, ReadonlySet<string>> = {
+  npm: new Set(["exec", "x", "run", "run-script", "explore"]),
+  pnpm: new Set(["exec", "dlx", "run", "x"]),
+  yarn: new Set(["dlx", "exec", "run", "node"]),
+  uv: new Set(["run", "tool"]),
+  cargo: new Set(["run", "x"]),
+  go: new Set(["run"]),
+  docker: new Set(["run", "exec"]),
+  kubectl: new Set(["exec", "run"]),
+  git: new Set(["-c", "submodule"]),
+};
+
+/**
  * The remembered-rule match for a prompt, or null when it can't be remembered. Shared by the hub
  * (to sign "Siempre así") and the agent (to check a rule), so both read a request the same way:
  * - `Bash`: one simple command of plain words (anything with quotes, `$`, globs, pipes, `;`, `&&`,
@@ -129,13 +202,12 @@ export const rememberMatchFor = (a: { toolName: string; input: unknown; workspac
   let m: RuleMatch | null = null;
   if (a.toolName === "Bash" && typeof input.command === "string") {
     const words = input.command.trim().split(/[ \t]+/);
-    const [program, ...args] = words;
+    const [program, first] = words;
     if (!program || !words.every((w) => PLAIN_WORD.test(w)) || program.includes("=")) return null;
-    // Up to two leading words that aren't options ("db push", "pr create"), so `supabase db push`
-    // and `supabase db reset` are different rules.
-    const firstOption = args.findIndex((w) => w.startsWith("-"));
-    const sub = (firstOption === -1 ? args : args.slice(0, firstOption)).slice(0, 2).join(" ");
-    m = { kind: "command", workspaceLabel: a.workspaceLabel, program, sub };
+    // A path (`./deploy.sh`, `/usr/bin/x`) runs whatever that file holds then; a wrapper runs
+    // whatever its arguments say: neither is ever remembered.
+    if (program.includes("/") || WRAPPERS.has(program) || (first && WRAPPER_SUBS[program]?.has(first))) return null;
+    m = { kind: "command", workspaceLabel: a.workspaceLabel, argv: words };
   } else if (a.toolName === "WebFetch" && typeof input.url === "string") {
     let host: string;
     try {
