@@ -283,6 +283,11 @@ export class AgentCore {
   readonly #observers = new Map<string, (e: AdapterEvent) => void>();
   /** Coordinator helpers by session: their marker and worktree, kept for a revive. */
   readonly #coordOf = new Map<string, { coord: SessionCoord; cwd: string }>();
+  /**
+   * Helpers whose work is over (task done, plan ended): no longer answered for. Their helper
+   * identity stays for the session's whole life (no computer control, their worktree on a revive).
+   */
+  readonly #coordEnded = new Set<string>();
   #revoked = false;
 
   constructor(private readonly d: AgentCoreDeps) {
@@ -802,11 +807,7 @@ export class AgentCore {
           if (this.#observers.get(sid) === fn) this.#observers.delete(sid);
         };
       },
-      endHelper: (sid) => {
-        this.#coordOf.delete(sid);
-        const s = this.sessions.get(sid);
-        if (s) delete s.coord;
-      },
+      endHelper: (sid) => void this.#coordEnded.add(sid),
       publish: async (sid, state) => {
         if (this.#revoked) return;
         await this.d.store.upsertSession(sid, {
@@ -1652,7 +1653,13 @@ export class AgentCore {
       // owner's remembered rules; anything else still asks below.
       // Only while the plan runs, and only for the coordinator's own turns (security review): a
       // prompt the owner sent into a helper, or anything after the plan ended, asks as usual.
-      if (s.coord && !linkTool && s.coord.active() && call.origin === `agent:coord_${s.coord.planId}`) {
+      if (
+        s.coord &&
+        !linkTool &&
+        s.coord.active() &&
+        !this.#coordEnded.has(s.sid) &&
+        call.origin === `agent:coord_${s.coord.planId}`
+      ) {
         const answer = coordAnswer({
           classification,
           toolName: call.toolName,
@@ -1689,7 +1696,13 @@ export class AgentCore {
       });
       // A helper's prompt that times out never becomes a yes, nor a no while the plan runs: the
       // owner is asked again (owner, 2026-10-19).
-      while (outcome.reason === "timeout_deny" && s.coord?.active() && !s.closing && !this.#revoked) {
+      while (
+        outcome.reason === "timeout_deny" &&
+        s.coord?.active() &&
+        !this.#coordEnded.has(s.sid) &&
+        !s.closing &&
+        !this.#revoked
+      ) {
         outcome = await this.#approve(s, {
           risk: classification.tier,
           stepUp: decision.stepUp,

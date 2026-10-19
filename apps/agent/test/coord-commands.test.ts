@@ -27,6 +27,7 @@ import {
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import type { CommandBody, CoordPlanState, SealedEnvelope } from "@chalito/protocol";
 import { AgentCore } from "../src/agent-core.js";
+import { COMPUTER_TOOL_PREFIX } from "../src/computer/tools.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
@@ -309,18 +310,71 @@ describe("coord.* commands", () => {
     expect(sh(h.root, "log", "--oneline", "-3")).toMatch(/feat: feature/);
   });
 
-  it("security review: when the plan stops, no session keeps the helper marker", async () => {
-    const h = await harness();
-    const started = (await h.command({ type: "coord.start", workspaceLabel: "proj", goalCt: await h.goal("x") })) as {
-      sid: string;
-    };
-    await waitFor(async () => (await h.planOf(started.sid))?.status === "awaiting_approval");
-    const { planId } = (await h.planOf(started.sid))!;
-    await h.command({ type: "coord.approve", planId }, { stepUp: true });
-    await waitFor(() => [...h.core.sessions.values()].length >= 2);
-    expect([...h.core.sessions.values()].some((s) => (s as { coord?: unknown }).coord)).toBe(true);
-    await h.command({ type: "coord.stop", planId });
-    expect([...h.core.sessions.values()].filter((s) => (s as { coord?: unknown }).coord)).toHaveLength(0);
+  it("security review: an ended helper keeps its identity (no computer control, its worktree) but isn't answered for", async () => {
+    let lastCwd = "";
+    const turns: FakeStep[][] = [
+      [{ say: "ready" }],
+      [
+        { tool: "Bash", input: { command: "pnpm add zod" } },
+        { tool: `${COMPUTER_TOOL_PREFIX}screenshot`, input: {} },
+        { say: "done" },
+      ],
+    ];
+    const run: FakeRun = { ran: [], refused: [], modes: [], interrupted: 0 };
+    const fake = fakeClaudeCode(turns, run);
+    const h = await harness({
+      queryFn: () => (args) => {
+        lastCwd = String(args.options.cwd);
+        return fake.queryFn(args);
+      },
+    });
+    const dir = join(h.root, ".chalito-coord", "pabcdefgh", "a");
+    sh(h.root, "worktree", "add", "-q", "-b", "coord/pabcdefgh/a", dir);
+    const host = (
+      h.core as unknown as {
+        coordinator: {
+          d: {
+            host: {
+              startSession: (i: object) => Promise<unknown>;
+              prompt: (sid: string, text: string, origin: string) => Promise<void>;
+              endHelper: (sid: string) => void;
+            };
+          };
+        };
+      }
+    ).coordinator.d.host;
+    const sid = "22222222-2222-4222-8222-222222222222";
+    const origin = "agent:coord_pabcdefgh";
+    expect(
+      await host.startSession({
+        sid,
+        appId: "claude-code",
+        cwd: dir,
+        workspaceLabel: "proj",
+        prompt: "go",
+        origin,
+        permissionMode: "default",
+        coord: { planId: "pabcdefgh", taskId: "a", branchPrefix: "coord/pabcdefgh/", active: () => true },
+      }),
+    ).toEqual({ ok: true });
+    await waitFor(() => (h.store.sessions.get(sid) as { state?: string } | undefined)?.state === "idle");
+    host.endHelper(sid);
+
+    // Not answered for any more: the install reaches the phone.
+    await host.prompt(sid, "next", origin);
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    expect(h.store.audits.filter((a) => a.type === "coordinator.auto_allow")).toHaveLength(0);
+    await h.decide(false);
+    // Still a helper: computer control is refused as one.
+    await waitFor(() => run.refused.some((r) => r.tool.startsWith(COMPUTER_TOOL_PREFIX)));
+    expect(run.refused.find((r) => r.tool.startsWith(COMPUTER_TOOL_PREFIX))!.reason).toMatch(/coordinator_no_computer/);
+
+    // And it comes back in its own worktree after a restart.
+    await h.core.suspendAll();
+    lastCwd = "";
+    await host.prompt(sid, "again", origin);
+    await waitFor(() => lastCwd !== "");
+    expect(lastCwd).toBe(dir);
   });
 
   it("security review: a helper never starts above this computer's permission ceiling", async () => {
