@@ -245,33 +245,34 @@ describe("coordAnswer", () => {
   });
 
   it("uses a remembered rule for a MED prompt of the same kind in the same workspace", () => {
-    const m = rememberMatchFor({ toolName: "Bash", input: { command: "supabase db push" }, workspaceLabel: "proj" })!;
+    const m = rememberMatchFor({ toolName: "Bash", input: { command: "pnpm format" }, workspaceLabel: "proj" })!;
     const rule = sha(ruleMatchText(m)!);
-    expect(answer("Bash", { command: "supabase db push" }, { rules: [rule] })).toEqual({
+    expect(answer("Bash", { command: "pnpm format" }, { rules: [rule] })).toEqual({
       via: "remembered_rule",
       match: rule,
     });
     // Another subcommand, another workspace: no match.
-    expect(answer("Bash", { command: "supabase db reset" }, { rules: [rule] })).toBeNull();
+    expect(answer("Bash", { command: "pnpm lint --fix" }, { rules: [rule] })).toBeNull();
     const other = sha(ruleMatchText({ ...m, workspaceLabel: "elsewhere" })!);
-    expect(answer("Bash", { command: "supabase db push" }, { rules: [other] })).toBeNull();
+    expect(answer("Bash", { command: "pnpm format" }, { rules: [other] })).toBeNull();
   });
 
   it("security review: a remembered command covers only exactly that command, never a wrapper", () => {
-    const m = rememberMatchFor({ toolName: "Bash", input: { command: "supabase db push" }, workspaceLabel: "proj" })!;
+    const m = rememberMatchFor({ toolName: "Bash", input: { command: "pnpm format" }, workspaceLabel: "proj" })!;
     const rule = sha(ruleMatchText(m)!);
-    expect(answer("Bash", { command: "supabase db push --force" }, { rules: [rule] })).toBeNull();
-    expect(answer("Bash", { command: "supabase db push --db-url x" }, { rules: [rule] })).toBeNull();
+    expect(answer("Bash", { command: "pnpm format --write-all" }, { rules: [rule] })).toBeNull();
+    expect(answer("Bash", { command: "pnpm format src" }, { rules: [rule] })).toBeNull();
     expect(
       rememberMatchFor({ toolName: "Bash", input: { command: "npx foo --x" }, workspaceLabel: "proj" }),
     ).toBeNull();
   });
 
   it("a remembered rule never covers a HIGH or CRITICAL prompt", () => {
-    const m = rememberMatchFor({ toolName: "Bash", input: { command: "rm build" }, workspaceLabel: "proj" })!;
-    expect(answer("Bash", { command: "rm build" }, { rules: [sha(ruleMatchText(m)!)] })).toBeNull();
-    const v = rememberMatchFor({ toolName: "Bash", input: { command: "vercel deploy" }, workspaceLabel: "proj" })!;
-    expect(answer("Bash", { command: "vercel deploy" }, { rules: [sha(ruleMatchText(v)!)] })).toBeNull();
+    // Not rememberable at all; and a hand-made rule for them (an older client) still never applies.
+    expect(rememberMatchFor({ toolName: "Bash", input: { command: "rm build" }, workspaceLabel: "proj" })).toBeNull();
+    const forged = (argv: string[]) => sha(ruleMatchText({ kind: "command", workspaceLabel: "proj", argv })!);
+    expect(answer("Bash", { command: "rm build" }, { rules: [forged(["rm", "build"])] })).toBeNull();
+    expect(answer("Bash", { command: "vercel deploy" }, { rules: [forged(["vercel", "deploy"])] })).toBeNull();
   });
 
   it("remembered rules work with the ceiling off: they are the owner's own answers", () => {

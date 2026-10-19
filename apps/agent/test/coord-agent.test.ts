@@ -188,16 +188,16 @@ describe("coordinator helper sessions", () => {
   });
 
   it("a remembered rule answers a MED prompt the owner said 'Siempre así' to", async () => {
-    const h = await harness([[bash("supabase db push"), { say: "ok" }]]);
-    await h.remember("supabase db push");
+    const h = await harness([[bash("pnpm format"), { say: "ok" }]]);
+    await h.remember("pnpm format");
     await h.start();
     await waitFor(() => h.fake.run.ran.length === 1);
     expect(h.autoAllows()[0]!.meta.via).toBe("remembered_rule");
   });
 
   it("with coordinator mode off on this computer, nothing is answered for the owner, rules included", async () => {
-    const h = await harness([[bash("supabase db push"), { say: "ok" }]], { coordinator: { enabled: false } });
-    await h.remember("supabase db push");
+    const h = await harness([[bash("pnpm format"), { say: "ok" }]], { coordinator: { enabled: false } });
+    await h.remember("pnpm format");
     await h.start();
     await waitFor(() => h.store.pendingApprovals().length === 1);
     expect(h.autoAllows()).toHaveLength(0);
@@ -224,7 +224,7 @@ describe("coordinator helper sessions", () => {
   });
 
   it("a timeout never becomes a yes: the owner's later allow on the new prompt is what runs it", async () => {
-    const h = await harness([[bash("supabase db push"), { say: "ok" }]]);
+    const h = await harness([[bash("pnpm format"), { say: "ok" }]]);
     await h.start();
     await waitFor(() => h.store.pendingApprovals().length === 1);
     h.timers.shift()!();
