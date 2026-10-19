@@ -197,6 +197,24 @@ export const storedAccessToken = (storage: AuthStorage) => async (): Promise<str
 };
 
 /**
+ * A throwaway client for a scoped sign-in (the endorsement watcher's magic link). It keeps its
+ * session in memory only and never shares the person's storage key: supabase-js announces sign-ins
+ * to every client with the same key (BroadcastChannel), and the person's client would take the
+ * watcher's session as its own and sign the person out.
+ */
+export const createWatchSupabase = (url: string, publishableKey: string): BrowserSupabase =>
+  createClient(url, publishableKey, {
+    db: { schema: "chalito" },
+    auth: {
+      storage: memoryStorage(),
+      storageKey: `chalito-watch-${Math.random().toString(36).slice(2)}`,
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }) as unknown as BrowserSupabase;
+
+/**
  * A second client on the same device session that never signs in or refreshes: it borrows the
  * token the owning context refreshes (two clients refreshing one rotating refresh token race and
  * can sign the device out). For secondary windows such as the desktop room window.

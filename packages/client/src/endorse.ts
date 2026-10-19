@@ -4,7 +4,7 @@ import {
   type DeviceRegistration,
   type Endorsement,
 } from "@chalito/protocol";
-import { createBrowserSupabase, memoryStorage, type BrowserSupabase } from "./auth.js";
+import { createWatchSupabase, type BrowserSupabase } from "./auth.js";
 
 /**
  * The NEW device's side of the endorsement handoff (/v1/endorse, ADR 0006): a browser or the
@@ -87,14 +87,14 @@ export type EndorseWatch = (codeId: string, watchToken: string, onPointer: () =>
 export const endorseTopic = (codeId: string) => `chalito:pairing:${codeId}`;
 
 /**
- * Realtime watch with the scoped watch token: its own short-lived client (memory storage, never
- * the person's session), magic-link exchange, setAuth BEFORE joining (realtime-js 2.117).
+ * Realtime watch with the scoped watch token: its own short-lived client (createWatchSupabase:
+ * memory only, never the person's session or storage key), magic-link exchange, setAuth BEFORE joining (realtime-js 2.117).
  */
 export const supabaseEndorseWatch =
   (
     url: string,
     publishableKey: string,
-    create: (url: string, key: string) => BrowserSupabase = (u, k) => createBrowserSupabase(u, k, memoryStorage()),
+    create: (url: string, key: string) => BrowserSupabase = createWatchSupabase,
   ): EndorseWatch =>
   async (codeId, watchToken, onPointer) => {
     const sb = create(url, publishableKey);

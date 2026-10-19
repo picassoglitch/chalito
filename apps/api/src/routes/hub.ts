@@ -5,6 +5,7 @@ import type { Deps } from "../deps.js";
 import { fail } from "../lib/errors.js";
 import { tenantApiToken, verifySsoToken } from "../hub/sso.js";
 import { dropLapsedSkins } from "../store/included.js";
+import { endDeviceVoice } from "../voice/routes.js";
 
 const bearerOk = (header: string | undefined, token: string) => {
   const given = Buffer.from(header?.startsWith("Bearer ") ? header.slice(7) : "");
@@ -49,6 +50,27 @@ export const hubRoutes = (deps: Deps) => {
     if (!(await deps.repo.setTenantStatus(c.req.param("id"), body.data.status, deps.now()))) fail(404, "not_found");
     await deps.audit.record({ action: `tenant.${body.data.status}`, owner: c.req.param("id"), actor: "hub" });
     return c.body(null, 204);
+  });
+
+  /**
+   * "Empezar de cero": the hub checked the person's email code and asks to retire every device of
+   * the account (phones, browsers and computers), so a browser that has none of them can activate as
+   * the first device. Old end-to-end encrypted history stays with the retired keys. Idempotent.
+   */
+  app.post("/tenants/:id/reset-devices", async (c) => {
+    const owner = c.req.param("id");
+    const now = deps.now();
+    const revoked = await deps.repo.revokeAllDevices(owner, now, "reset");
+    const banFailed: string[] = [];
+    for (const id of revoked) {
+      if (!(await deps.identity.disableDevice(id))) banFailed.push(id);
+      if (deps.voice) await endDeviceVoice(deps, deps.voice, owner, id);
+      await deps.audit.record({ action: "device.revoked", owner, actor: "hub", target: id, meta: { via: "reset" } });
+    }
+    // Agent-to-agent links go too (ADR 0022 §3): every computer is retired anyway.
+    await deps.repo.revokeAgentLinks?.(owner, "reset");
+    await deps.audit.record({ action: "devices.reset", owner, actor: "hub", meta: { revoked: revoked.length } });
+    return c.json(banFailed.length ? { revoked: revoked.length, banFailed } : { revoked: revoked.length });
   });
 
   /** Web (`/auth/sso` on chalito.chalyb.com) forwards the hub's launch token here. */
