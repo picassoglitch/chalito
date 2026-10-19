@@ -70,6 +70,8 @@ export const SigningContext = z.enum([
   "chalito.coordrule.v1",
   /** ADR 0025 §6: a trusted client withdraws a remembered rule; devices keep it so the rule can't come back. */
   "chalito.coordrule-revoke.v1",
+  /** ADR 0025 §6: the coordinator's plan state, signed by the agent before it is sealed. */
+  "chalito.coordplan.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 

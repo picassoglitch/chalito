@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import type { AdapterEvent } from "@chalito/adapters";
-import { CoordTaskSpec, type CoordPlanState, type Origin, type RemotePermissionMode } from "@chalito/protocol";
+import { canonicalize, sha256, utf8 } from "@chalito/crypto";
+import {
+  CoordTaskSpec,
+  planDigestInput,
+  type CoordPlanState,
+  type Origin,
+  type RemotePermissionMode,
+} from "@chalito/protocol";
 import { z } from "zod";
 import type { SessionCoord } from "../agent-core.js";
 
@@ -323,7 +330,7 @@ export class Coordinator {
         maxMinutes: input.maxMinutes,
         startedAt: null,
         tasks: [],
-        integration: { branch: `coord/${planId}/integration`, sid: null, note: null },
+        integration: { branch: `coord/${planId}/integration`, sid: null, note: null, head: null },
         note: null,
         updatedAt: this.d.now(),
       },
@@ -347,10 +354,12 @@ export class Coordinator {
     return { ok: true, planId, sid };
   }
 
-  async approve(planId: string): Promise<CoordResult> {
+  async approve(planId: string, digest: string): Promise<CoordResult> {
     const plan = this.#plans.get(planId);
     if (!plan) return { ok: false, reason: "unknown_plan" };
     if (plan.state.status !== "awaiting_approval") return { ok: false, reason: "plan_not_waiting" };
+    // The tap is for exactly the plan the owner saw (security review).
+    if (digest !== (await planDigest(plan.state, "approve"))) return { ok: false, reason: "plan_changed" };
     if (!this.d.host.helpersAllowed()) return { ok: false, reason: "permission_mode_above_ceiling" };
     plan.state.status = "running";
     plan.state.startedAt = this.d.now();
@@ -391,15 +400,22 @@ export class Coordinator {
   }
 
   /** The owner's merge tap: the base fast-forwards to the integration branch, then is pushed. */
-  async merge(planId: string): Promise<CoordResult> {
+  async merge(planId: string, digest: string): Promise<CoordResult> {
     const plan = this.#plans.get(planId);
     if (!plan) return { ok: false, reason: "unknown_plan" };
     if (plan.state.status !== "ready_to_merge") return { ok: false, reason: "plan_not_ready" };
+    if (digest !== (await planDigest(plan.state, "merge"))) return { ok: false, reason: "plan_changed" };
     const { base, integration } = { base: plan.state.base, integration: plan.state.integration.branch };
     const git = (args: string[], cwd = plan.root) => this.#pgit(plan, cwd, args);
     const target = (await git(["rev-parse", "--verify", "--quiet", `refs/heads/${integration}^{commit}`])).out.trim();
     const old = (await git(["rev-parse", "--verify", "--quiet", `refs/heads/${base}^{commit}`])).out.trim();
     if (!target || !old) return { ok: false, reason: "branch_missing" };
+    // The integration branch must still be the commit the owner was shown (nothing committed since).
+    if (target !== plan.state.integration.head) {
+      plan.state.note = "La integración cambió desde que estuvo lista; revisa otra vez.";
+      await this.#publish(plan);
+      return { ok: false, reason: "plan_changed" };
+    }
     if ((await git(["merge-base", "--is-ancestor", old, target])).code !== 0) {
       plan.state.note = `${base} cambió desde que empezó el plan; hay que integrar otra vez.`;
       await this.#publish(plan);
@@ -689,6 +705,14 @@ export class Coordinator {
         ),
       );
     }
+    const head = await this.#pgit(plan, plan.root, [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `refs/heads/${integration}^{commit}`,
+    ]);
+    if (head.code !== 0) return this.#fail(plan, new Error("No se encontró la rama de integración."));
+    plan.state.integration.head = head.out.trim();
     plan.timer?.clear();
     plan.state.status = "ready_to_merge";
     plan.state.note = "Listo para fusionar: revisa y toca Fusionar.";
@@ -881,6 +905,12 @@ export class Coordinator {
     return false;
   }
 }
+
+/** SHA-256 (hex) of the canonical digest input: what a tap on the phone is about. */
+export const planDigest = async (p: CoordPlanState, kind: "approve" | "merge"): Promise<string> =>
+  [...(await sha256(utf8(canonicalize(planDigestInput(p, kind)))))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 
 const defaultTimer = (fn: () => void, ms: number) => {
   const t = setTimeout(fn, ms);

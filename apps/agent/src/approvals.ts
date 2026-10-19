@@ -114,7 +114,7 @@ export class ApprovalManager {
       "tool" | "computer_control" | "terminal" | "app_control" | "remote_view" | "remote_control" | "link_handoff"
     >;
     /** The summary is built here (R-M10: no format/control characters, explicit truncation). */
-    details: { toolName: string; input: unknown; reasons: string[] };
+    details: { toolName: string; input: unknown; reasons: string[]; workspaceLabel?: string };
     onRequested?: (aid: string, expiresAt: number) => void;
     /** Ends the wait as a no (revoke-all cancelling a pending outside task, M16 F). */
     signal?: AbortSignal;
@@ -138,6 +138,7 @@ export class ApprovalManager {
       input: input.details.input,
       reasons: input.details.reasons,
       origin: input.origin,
+      ...(input.details.workspaceLabel ? { workspaceLabel: input.details.workspaceLabel } : {}),
     });
     const detailsHash = createHash("sha256").update(canonicalize(details)).digest("hex");
     const request = await signEnvelope(

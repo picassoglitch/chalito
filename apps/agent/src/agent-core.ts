@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   openJson,
   revokeBundleChallenge,
+  signEnvelope,
   revokeBundleId,
   stepUpBodyHash,
   stepUpChallenge,
@@ -724,7 +725,7 @@ export class AgentCore {
         // (security review, 2026-10-19), like the merge tap.
         const failure = await this.#passkeyFailure(origin.startsWith("client:") ? origin.slice(7) : null, body);
         if (failure) return this.#reject(cid, failure);
-        const r = await this.coordinator.approve(p.planId);
+        const r = await this.coordinator.approve(p.planId, p.digest);
         return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
       }
       case "coord.stop": {
@@ -740,7 +741,7 @@ export class AgentCore {
         // The owner's merge tap moves (and pushes) the base: their passkey, always.
         const failure = await this.#passkeyFailure(origin.startsWith("client:") ? origin.slice(7) : null, body);
         if (failure) return this.#reject(cid, failure);
-        const r = await this.coordinator.merge(p.planId);
+        const r = await this.coordinator.merge(p.planId, p.digest);
         return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
       }
       case "link.handoff":
@@ -810,8 +811,15 @@ export class AgentCore {
       endHelper: (sid) => void this.#coordEnded.add(sid),
       publish: async (sid, state) => {
         if (this.#revoked) return;
+        // Signed by this agent, then sealed: clients verify it against the key they trust (security review).
+        const signed = await signEnvelope(
+          "chalito.coordplan.v1",
+          state,
+          this.d.self.deviceId,
+          this.d.self.sign.secretKey,
+        );
         await this.d.store.upsertSession(sid, {
-          coord: { planId: state.planId, ct: await this.sealer.seal(state, `coord:${sid}`) },
+          coord: { planId: state.planId, ct: await this.sealer.seal(signed, `coord:${sid}`) },
           updatedAt: this.d.now(),
         });
       },
@@ -1688,11 +1696,19 @@ export class AgentCore {
           return allowed();
         }
       }
+      // A helper's prompt carries its workspace label inside what the agent signs, so a "Siempre
+      // así" rule is bound to it (security review), never to a plaintext column.
+      const askDetails = {
+        toolName: call.toolName,
+        input: call.input,
+        reasons: classification.reasons,
+        ...(s.coord ? { workspaceLabel: s.workspaceLabel } : {}),
+      };
       let outcome = await this.#approve(s, {
         risk: classification.tier,
         stepUp: decision.stepUp,
         origin: call.origin,
-        details: { toolName: call.toolName, input: call.input, reasons: classification.reasons },
+        details: askDetails,
       });
       // A helper's prompt that times out never becomes a yes, nor a no while the plan runs: the
       // owner is asked again (owner, 2026-10-19).
@@ -1707,7 +1723,7 @@ export class AgentCore {
           risk: classification.tier,
           stepUp: decision.stepUp,
           origin: call.origin,
-          details: { toolName: call.toolName, input: call.input, reasons: classification.reasons },
+          details: askDetails,
         });
       }
       if (outcome.allow) s.card.action(summary);
@@ -1727,7 +1743,7 @@ export class AgentCore {
       stepUp: boolean;
       origin: Origin;
       kind?: "tool" | "computer_control" | "app_control" | "link_handoff";
-      details: { toolName: string; input: unknown; reasons: string[] };
+      details: { toolName: string; input: unknown; reasons: string[]; workspaceLabel?: string };
     },
   ): Promise<ComputerApprovalOutcome> {
     let aid: string | undefined;

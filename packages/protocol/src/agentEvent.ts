@@ -362,6 +362,8 @@ export const CommandRejectReason = z.enum([
   "not_a_git_repo",
   "detached_head",
   "unknown_base",
+  /** A coord.approve / coord.merge for a plan that changed since the owner saw it (digest mismatch). */
+  "plan_changed",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
 

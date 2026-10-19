@@ -23,11 +23,13 @@ import {
   signEnvelope,
   stepUpChallenge,
   toB64url,
+  verifyEnvelope,
 } from "@chalito/crypto";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
-import type { CommandBody, CoordPlanState, SealedEnvelope } from "@chalito/protocol";
+import { SignedCoordPlan, type CommandBody, type CoordPlanState, type SealedEnvelope } from "@chalito/protocol";
 import { AgentCore } from "../src/agent-core.js";
 import { COMPUTER_TOOL_PREFIX } from "../src/computer/tools.js";
+import { planDigest } from "../src/coord/coordinator.js";
 import { DevMode, DevModeStore } from "../src/devmode.js";
 import { DEFAULT_POLICY, type Policy } from "../src/policy/index.js";
 import { createLogger } from "../src/redact.js";
@@ -154,7 +156,12 @@ const harness = async (o: { coordinator?: boolean; queryFn?: (root: string) => Q
   /** The plan as the phone opens it from the session doc. */
   const planOf = async (sid: string): Promise<CoordPlanState | null> => {
     const ct = (store.sessions.get(sid) as { coord?: { ct?: SealedEnvelope } } | undefined)?.coord?.ct;
-    return ct ? openJson<CoordPlanState>(ct, phone.id, phone.box, `coord:${sid}`) : null;
+    if (!ct) return null;
+    // Security review: the plan is signed by the agent; the phone checks it against the key it trusts.
+    const env = SignedCoordPlan.parse(await openJson(ct, phone.id, phone.box, `coord:${sid}`));
+    const ok = await verifyEnvelope(env, "chalito.coordplan.v1", new Map([[agent.id, agent.sign.publicKey]]));
+    if (!ok.ok) throw new Error(`plan signature: ${ok.reason}`);
+    return env.body;
   };
   /** The phone's signed answer to the newest pending approval (no step-up: MED, or a deny). */
   const decide = async (allow: boolean) => {
@@ -180,7 +187,19 @@ const harness = async (o: { coordinator?: boolean; queryFn?: (root: string) => Q
     store.attachDecision(pending.aid, await signEnvelope("chalito.decision.v1", body, phone.id, phone.sign.secretKey));
   };
   const setPolicy = (p: Partial<Policy>) => void (policy = { ...policy, ...p });
-  return { core, store, command, goal, planOf, root, fake, decide, setPolicy };
+  /** The pending approval's details as the phone opens them (agent-sealed, hash-bound). */
+  const pendingDetails = async () => {
+    const pending = store.pendingApprovals().at(-1)!;
+    return (
+      await openJson<{ details: Record<string, unknown> }>(
+        pending.detailsCt,
+        phone.id,
+        phone.box,
+        `approval:${pending.aid}`,
+      )
+    ).details;
+  };
+  return { core, store, command, goal, planOf, root, fake, decide, setPolicy, pendingDetails };
 };
 
 describe("coord.* commands", () => {
@@ -194,12 +213,19 @@ describe("coord.* commands", () => {
     expect(plan.tasks.map((t) => t.id)).toEqual(["a"]);
 
     // Security review: approving without the passkey is refused.
-    expect(await h.command({ type: "coord.approve", planId: plan.planId })).toEqual({
+    expect(
+      await h.command({ type: "coord.approve", planId: plan.planId, digest: await planDigest(plan, "approve") }),
+    ).toEqual({
       ok: false,
       reason: "step_up_required",
     });
     expect((await h.planOf(sid))!.status).toBe("awaiting_approval");
-    expect(await h.command({ type: "coord.approve", planId: plan.planId }, { stepUp: true })).toMatchObject({
+    expect(
+      await h.command(
+        { type: "coord.approve", planId: plan.planId, digest: await planDigest(plan, "approve") },
+        { stepUp: true },
+      ),
+    ).toMatchObject({
       ok: true,
     });
     await waitFor(async () => (await h.planOf(sid))!.status === "running");
@@ -216,9 +242,20 @@ describe("coord.* commands", () => {
     };
     await waitFor(async () => (await h.planOf(started.sid))?.status === "awaiting_approval");
     const { planId } = (await h.planOf(started.sid))!;
-    expect(await h.command({ type: "coord.merge", planId })).toEqual({ ok: false, reason: "step_up_required" });
+    expect(
+      await h.command({
+        type: "coord.merge",
+        planId,
+        digest: await planDigest((await h.planOf(started.sid))!, "merge"),
+      }),
+    ).toEqual({ ok: false, reason: "step_up_required" });
     // With the passkey it reaches the coordinator, which refuses a plan that isn't ready.
-    expect(await h.command({ type: "coord.merge", planId }, { stepUp: true })).toEqual({
+    expect(
+      await h.command(
+        { type: "coord.merge", planId, digest: await planDigest((await h.planOf(started.sid))!, "merge") },
+        { stepUp: true },
+      ),
+    ).toEqual({
       ok: false,
       reason: "plan_not_ready",
     });
@@ -228,9 +265,9 @@ describe("coord.* commands", () => {
     const h = await harness();
     for (const payload of [
       { type: "coord.start", workspaceLabel: "proj", goalCt: await h.goal("x") },
-      { type: "coord.approve", planId: "pabcdefgh" },
+      { type: "coord.approve", planId: "pabcdefgh", digest: "a".repeat(64) },
       { type: "coord.stop", planId: "pabcdefgh" },
-      { type: "coord.merge", planId: "pabcdefgh" },
+      { type: "coord.merge", planId: "pabcdefgh", digest: "a".repeat(64) },
     ])
       expect(await h.command(payload, { relayed: "mcp-gateway" })).toEqual({ ok: false, reason: "invalid" });
   });
@@ -293,10 +330,17 @@ describe("coord.* commands", () => {
     })) as { sid: string };
     await waitFor(async () => (await h.planOf(started.sid))?.status === "awaiting_approval");
     const { planId } = (await h.planOf(started.sid))!;
-    expect(await h.command({ type: "coord.approve", planId }, { stepUp: true })).toMatchObject({ ok: true });
+    expect(
+      await h.command(
+        { type: "coord.approve", planId, digest: await planDigest((await h.planOf(started.sid))!, "approve") },
+        { stepUp: true },
+      ),
+    ).toMatchObject({ ok: true });
 
     // The helper's write, add and commit were answered by Chalito; the push to main reaches the phone.
     await waitFor(() => h.store.pendingApprovals().length === 1);
+    // Security review: the helper's workspace label rides inside what the agent signed.
+    expect(await h.pendingDetails()).toMatchObject({ workspaceLabel: "proj", toolName: "Bash" });
     const auto = h.store.audits.filter((a) => a.type === "coordinator.auto_allow").map((a) => a.meta.kind);
     expect(auto).toEqual(["workspace_edit", "git_local", "git_local"]);
     await h.decide(false);
@@ -304,7 +348,12 @@ describe("coord.* commands", () => {
 
     await waitFor(async () => (await h.planOf(started.sid))!.status === "ready_to_merge", 20_000);
     expect(existsSync(join(h.root, "feature.ts"))).toBe(false);
-    expect(await h.command({ type: "coord.merge", planId }, { stepUp: true })).toMatchObject({ ok: true });
+    expect(
+      await h.command(
+        { type: "coord.merge", planId, digest: await planDigest((await h.planOf(started.sid))!, "merge") },
+        { stepUp: true },
+      ),
+    ).toMatchObject({ ok: true });
     expect((await h.planOf(started.sid))!.status).toBe("merged");
     expect(readFileSync(join(h.root, "feature.ts"), "utf8")).toContain("feature = 1");
     expect(sh(h.root, "log", "--oneline", "-3")).toMatch(/feat: feature/);
@@ -385,7 +434,12 @@ describe("coord.* commands", () => {
     await waitFor(async () => (await h.planOf(started.sid))?.status === "awaiting_approval");
     const { planId } = (await h.planOf(started.sid))!;
     h.setPolicy({ remote: { maxPermissionMode: "plan", maxCodexSandbox: "read-only" } });
-    expect(await h.command({ type: "coord.approve", planId }, { stepUp: true })).toEqual({
+    expect(
+      await h.command(
+        { type: "coord.approve", planId, digest: await planDigest((await h.planOf(started.sid))!, "approve") },
+        { stepUp: true },
+      ),
+    ).toEqual({
       ok: false,
       reason: "permission_mode_above_ceiling",
     });
