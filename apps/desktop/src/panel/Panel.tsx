@@ -10,7 +10,7 @@ import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
 import { Rooms } from "./Rooms.js";
-import { ConnectComputer } from "./ConnectComputer.js";
+import { ConnectComputer, type AutoPair } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
 import { Apps } from "./Apps.js";
 import { Security } from "./Security.js";
@@ -30,6 +30,10 @@ export interface PanelProps {
   canStepUp?: boolean;
   /** Shown instead of the "not connected" note while signed out (the sign-in flow). */
   signIn?: ReactNode;
+  /** Starts the sign-in (opens the hub in the browser): the checklist's "Sign in". */
+  startSignIn?: () => void;
+  /** Signed in: connects this computer by itself (owner decision 2026-10-19). */
+  autoPair?: AutoPair | null;
   ipc: AgentIpc;
   ptt: PushToTalk;
   /** null while loading. */
@@ -72,13 +76,20 @@ export const Panel = (p: PanelProps) => {
         </label>
       </header>
       {p.localAgent && p.openUrl && (
-        <ConnectComputer ipc={p.ipc} openUrl={p.openUrl} agentStatus={() => p.localAgent!.status()} />
+        <ConnectComputer
+          ipc={p.ipc}
+          openUrl={p.openUrl}
+          agentStatus={() => p.localAgent!.status()}
+          auto={p.client ? (p.autoPair ?? null) : null}
+          signedIn={p.client !== null}
+        />
       )}
       <SetupChecklist
         client={p.client}
         ipc={p.ipc}
         {...(p.localAgent ? { agentStatus: () => p.localAgent!.status() } : {})}
         openTab={setTab}
+        {...(p.startSignIn ? { startSignIn: p.startSignIn } : {})}
         {...(p.firstTaskUrl ? { firstTaskUrl: p.firstTaskUrl } : {})}
         {...(p.openUrl ? { openUrl: p.openUrl } : {})}
       />

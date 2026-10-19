@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { endorsementChannel, type EndorseDisplay } from "@chalito/client";
 import {
+  ApiError,
   DeviceClientKeys,
   EndorseError,
   approveEndorsement,
@@ -16,6 +17,7 @@ import {
   httpApi,
   publicKeys,
   resolveForEndorsement,
+  type ApiClient,
   type DeviceKeys,
 } from "@chalito/client-keys";
 import { fingerprint, randomNonce } from "@chalito/crypto";
@@ -121,7 +123,18 @@ const world = async () => {
       token: async () => token,
       fetch: ((input: URL | string, init?: RequestInit) => app.request(String(input), init)) as typeof fetch,
     });
-  return { app, devices, saved, codes, pointers, phoneKeys, api, audit: deps.audit as MemoryAudit };
+  /** The same api as it was before /v1/devices/signin: the endorsement is the only way in. */
+  const legacyApi = (token: string): ApiClient => {
+    const inner = api(token);
+    return {
+      ...inner,
+      post: async <T>(path: string, body: unknown) => {
+        if (path === "/v1/devices/signin") throw new ApiError(404, "not_found");
+        return inner.post<T>(path, body);
+      },
+    };
+  };
+  return { app, devices, saved, codes, pointers, phoneKeys, api, legacyApi, audit: deps.audit as MemoryAudit };
 };
 
 const desktopRun = async (
@@ -143,7 +156,7 @@ const desktopRun = async (
       glyphFor: (c) => endorseGlyph(desktopKeys, c, { label: "Chalito (desktop)", now: Date.now() }),
       pollMs: 60_000,
     }),
-    userApi: w.api("person"),
+    userApi: w.legacyApi("person"),
     deviceApi: async () => w.api("person"),
     signer: (k) => DeviceClientKeys.create(k),
     platformAuthenticator: async () => false,
@@ -310,5 +323,58 @@ describe("desktop endorsement, end to end", () => {
       });
       expect(desktop.trustedAgentBoxKey(laptop.deviceId)).toBeNull();
     });
+  });
+});
+
+describe("desktop sign-in alone, end to end (owner decision 2026-10-19)", () => {
+  it("the person's sign-in enrols the panel through the real api: no code, no phone", async () => {
+    const w = await world();
+    const desktopKeys = await generateDeviceKeys();
+    let shown = false;
+    const r = await enrollDesktop({
+      owner: OWNER,
+      name: "Chalito (desktop)",
+      keys: { load: async () => desktopKeys, save: async () => undefined },
+      channel: { open: async () => ((shown = true), Promise.reject(new Error("no endorsement expected"))) },
+      userApi: w.api("person"),
+      deviceApi: async () => w.api("person"),
+      signer: (k) => DeviceClientKeys.create(k),
+      platformAuthenticator: async () => false,
+      onDisplay: () => (shown = true),
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      deviceId: desktopKeys.deviceId,
+      customToken: `device-hash-${desktopKeys.deviceId}`,
+    });
+    expect(shown).toBe(false);
+    expect(w.devices.find((d) => d.deviceId === desktopKeys.deviceId)).toMatchObject({
+      role: "client",
+      kind: "web",
+      enrolledVia: "sign_in",
+      endorsedBy: null,
+      revoked: false,
+    });
+    expect(w.saved).toHaveLength(0);
+    expect(w.audit.events.map((e) => [e.action, e.meta])).toContainEqual(["device.enrolled", { via: "sign_in" }]);
+  });
+
+  it("a second computer signs in the same way while the first is still active", async () => {
+    const w = await world();
+    for (let i = 0; i < 2; i++) {
+      const k = await generateDeviceKeys();
+      const r = await enrollDesktop({
+        owner: OWNER,
+        name: "Chalito (desktop)",
+        keys: { load: async () => k, save: async () => undefined },
+        channel: { open: async () => Promise.reject(new Error("no endorsement expected")) },
+        userApi: w.api("person"),
+        deviceApi: async () => w.api("person"),
+        signer: (key) => DeviceClientKeys.create(key),
+        platformAuthenticator: async () => false,
+      });
+      expect(r.ok).toBe(true);
+    }
+    expect(w.devices.filter((d) => d.enrolledVia === "sign_in")).toHaveLength(2);
   });
 });

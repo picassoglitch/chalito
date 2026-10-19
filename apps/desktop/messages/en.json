@@ -305,7 +305,7 @@
     "reopen": "Open again",
     "cancel": "Cancel",
     "exchanging": "Checking…",
-    "endorsing": "Open Chalito on a trusted device (your phone) and approve this computer.",
+    "endorsing": "Open Chalito on a trusted device (your phone) and approve this computer with this code.",
     "ready": "Done: this computer is now trusted.",
     "noPasskey": "This computer has no passkey: HIGH or CRITICAL actions are approved from your phone.",
     "retry": "Try again",
@@ -331,7 +331,8 @@
       "duplicate_param": "Invalid link."
     },
     "glyph": "Code to scan with your phone",
-    "petHint": "To open this panel again, tap your companion on the screen."
+    "petHint": "To open this panel again, tap your companion on the screen.",
+    "enrolling": "Signing this computer in…"
   },
   "updates": {
     "title": "Updates",
@@ -405,7 +406,7 @@
   },
   "connect": {
     "title": "Connect this computer",
-    "intro": "Connect this computer to your account so Chalito can work here. No terminal needed: you approve it in your browser.",
+    "intro": "Connect this computer to your account so Chalito can work here. Once you're signed in, it connects by itself.",
     "start": "Connect this computer",
     "starting": "Starting this computer's agent…",
     "preparing": "Asking for a code…",
@@ -435,9 +436,12 @@
       "declined": "Someone chose “I'm not in front of that computer” in the browser. Nothing was connected.",
       "cancelled": "You cancelled. Nothing was connected.",
       "rejected": "Nothing was connected. If you don't recognise that device, check Devices from an approved one.",
-      "failed": "Couldn't verify it's you on this computer. Try again."
+      "failed": "This computer didn't confirm it was you: its password prompt was cancelled or didn't open. Try again."
     },
-    "error": "Something failed ({code}). Try again."
+    "error": "Something failed ({code}). Try again.",
+    "auto": "Connecting this computer to your account…",
+    "needsSignIn": "Sign in first (in the Inbox below): then this computer connects by itself.",
+    "autoFailed": "I couldn't connect it by myself ({code}). Tap “Connect this computer” to try again."
   },
   "computer": {
     "title": "This computer",
@@ -480,18 +484,19 @@
       "firstTask": "Your first task"
     },
     "hint": {
-      "account": "Sign in with your Chalyb account in the Inbox.",
-      "browser": "Sign in with your Chalyb account in the Inbox to approve this app.",
-      "computer": "Tap “Connect this computer” above and approve it in your browser.",
+      "account": "Sign in with your Chalyb account.",
+      "browser": "Sign in with your Chalyb account to approve this app.",
+      "computer": "Once you're signed in, this computer connects by itself (see “Connect this computer” above).",
       "ai": "In “Connected AI”, tap “Use” next to an AI you already have installed.",
       "folder": "In Settings → This computer, add a project folder.",
       "firstTask": "Ask your AI to summarize your project. It only reads; it changes nothing."
     },
     "action": {
-      "signIn": "Go to the Inbox",
+      "signIn": "Sign in with Chalyb",
       "ai": "Go to Connected AI",
       "folder": "Choose a folder",
       "firstTask": "Try the first task"
-    }
+    },
+    "signingIn": "Finish signing in in the browser that opened."
   }
 }

@@ -14,8 +14,21 @@ import {
   type StepUpProvider,
 } from "@chalito/client";
 import { SettingsStore, apiPhone, type SettingsDb } from "@chalito/client/settings";
-import { DeviceClientKeys, KeyVault, deviceLogin, endorseGlyph, httpApi, passkeyStepUp } from "@chalito/client-keys";
-import { enrollDesktop } from "./enrollment.js";
+import {
+  DeviceClientKeys,
+  KeyVault,
+  accountAgents,
+  deviceFingerprint,
+  deviceLogin,
+  keyFingerprint,
+  endorseGlyph,
+  httpApi,
+  passkeyStepUp,
+  type DirectoryDevice,
+} from "@chalito/client-keys";
+import { claimOwnComputer } from "./auto-pair.js";
+import { SIGN_IN_INTRODUCER, enrollDesktop } from "./enrollment.js";
+import type { AutoPair } from "../panel/ConnectComputer.js";
 import { SignInController } from "./sign-in.js";
 import { SsoFlow, exchange } from "./sso.js";
 import { platformAuthenticatorAvailable } from "./stepup.js";
@@ -94,6 +107,8 @@ export interface Connected {
   rooms: RoomsSource;
   /** The account's settings and companion (get_my_settings works for an active client too). */
   settings: SettingsStore;
+  /** Signed in: connects this computer by itself (owner decision 2026-10-19). */
+  autoPair: AutoPair;
 }
 
 /**
@@ -110,8 +125,9 @@ export const createSession = async (
   const vault = await KeyVault.open("chalito-desktop-keys");
   const token = async () => (await sb.auth.getSession()).data.session?.access_token ?? null;
   const api = httpApi({ baseUrl: env.apiBase, token });
-  // /v1/endorse: publish the registration, show the code and the glyph signed by this device's
-  // key, wait on chalito:pairing:<code> with the scoped watch token.
+  // /v1/endorse (fallback only, for an api without /v1/devices/signin): publish the registration,
+  // show the code and the glyph signed by this device's key, wait on chalito:pairing:<code> with
+  // the scoped watch token.
   const channel = endorsementChannel({
     api,
     watch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseKey),
@@ -120,6 +136,20 @@ export const createSession = async (
       return k ? endorseGlyph(k, code, { label: "Chalito (desktop)", now: Date.now() }) : null;
     },
   });
+
+  const directory = async (owner: string): Promise<DirectoryDevice[]> => {
+    const rows = await must<{ device_id: string; role: string; revoked: boolean; pub_sign: string; pub_box: string }[]>(
+      "devices directory",
+      sb.from("devices").select("device_id, role, revoked, pub_sign, pub_box").eq("owner", owner),
+    );
+    return (rows ?? []).map((r) => ({
+      deviceId: r.device_id,
+      role: r.role === "agent" ? ("agent" as const) : ("client" as const),
+      revoked: r.revoked,
+      pubSign: r.pub_sign,
+      pubBox: r.pub_box,
+    }));
+  };
 
   const connectAs = async (owner: string, passkey: Stored["passkey"]) => {
     const stored = await vault.load();
@@ -140,7 +170,24 @@ export const createSession = async (
       },
       stepUp: passkeyStepUp(passkey) as StepUpProvider,
     });
+    // Sign-in alone: the account's computers, from the directory (new ones since last time too).
+    // Best effort: an unreadable directory only means waiting for the next launch.
+    await directory(owner)
+      .then(accountAgents)
+      .then((agents) => keys.trustIntroducedAgents(agents, SIGN_IN_INTRODUCER, Date.now()))
+      .catch(() => undefined);
+    const ownFingerprint = await deviceFingerprint(stored);
     onConnected({
+      autoPair: {
+        ownFingerprint,
+        claim: (p) => claimOwnComputer(api, keys, p, { owner, now: Date.now() }),
+        isAccountClient: async (fp) => {
+          for (const d of await directory(owner))
+            if (d.role === "client" && !d.revoked && (await keyFingerprint(d.pubSign).catch(() => null)) === fp)
+              return true;
+          return false;
+        },
+      },
       client,
       canStepUp: passkey !== null,
       settings: new SettingsStore(sb as unknown as SettingsDb, owner, apiPhone(env.apiBase, token).channels),
@@ -190,21 +237,7 @@ export const createSession = async (
         platformAuthenticator: () => platformAuthenticatorAvailable(),
         // ADR 0018: the computers the endorsing client trusts, where the directory agrees.
         introduce: {
-          directory: async () => {
-            const rows = await must<
-              { device_id: string; role: string; revoked: boolean; pub_sign: string; pub_box: string }[]
-            >(
-              "devices directory",
-              sb.from("devices").select("device_id, role, revoked, pub_sign, pub_box").eq("owner", owner),
-            );
-            return (rows ?? []).map((r) => ({
-              deviceId: r.device_id,
-              role: r.role === "agent" ? ("agent" as const) : ("client" as const),
-              revoked: r.revoked,
-              pubSign: r.pub_sign,
-              pubBox: r.pub_box,
-            }));
-          },
+          directory: () => directory(owner),
           trust: async (k, agents, endorsedBy) =>
             (await DeviceClientKeys.create(k, vault)).trustIntroducedAgents(agents, endorsedBy, Date.now()),
         },

@@ -305,7 +305,7 @@
     "reopen": "Abrir de nuevo",
     "cancel": "Cancelar",
     "exchanging": "Verificando…",
-    "endorsing": "Abre Chalito en un dispositivo de confianza (tu teléfono) y aprueba este equipo.",
+    "endorsing": "Abre Chalito en un dispositivo de confianza (tu teléfono) y aprueba este equipo con este código.",
     "ready": "Listo: este equipo ya es de confianza.",
     "noPasskey": "Este equipo no tiene llave de acceso: las acciones de riesgo ALTO o CRÍTICO se aprueban desde tu teléfono.",
     "retry": "Intentar de nuevo",
@@ -331,7 +331,8 @@
       "duplicate_param": "Enlace no válido."
     },
     "glyph": "Código para escanear con tu teléfono",
-    "petHint": "Para volver a abrir este panel, toca a tu compañero en la pantalla."
+    "petHint": "Para volver a abrir este panel, toca a tu compañero en la pantalla.",
+    "enrolling": "Entrando con este equipo…"
   },
   "updates": {
     "title": "Actualizaciones",
@@ -405,7 +406,7 @@
   },
   "connect": {
     "title": "Conectar esta computadora",
-    "intro": "Conecta esta computadora a tu cuenta para que Chalito pueda trabajar aquí. No necesitas la terminal: lo apruebas en tu navegador.",
+    "intro": "Conecta esta computadora a tu cuenta para que Chalito pueda trabajar aquí. En cuanto inicies sesión, se conecta sola.",
     "start": "Conectar esta computadora",
     "starting": "Preparando el agente de esta computadora…",
     "preparing": "Pidiendo un código…",
@@ -435,9 +436,12 @@
       "declined": "Alguien eligió «No estoy frente a esa computadora» en el navegador. No se conectó nada.",
       "cancelled": "Cancelaste la conexión. No se conectó nada.",
       "rejected": "No se conectó nada. Si no reconoces ese dispositivo, revisa Dispositivos desde uno aprobado.",
-      "failed": "No se pudo verificar que eres tú en esta computadora. Inténtalo otra vez."
+      "failed": "Esta computadora no confirmó que eras tú: su ventana de contraseña se canceló o no se abrió. Inténtalo otra vez."
     },
-    "error": "Algo falló ({code}). Inténtalo otra vez."
+    "error": "Algo falló ({code}). Inténtalo otra vez.",
+    "auto": "Conectando esta computadora a tu cuenta…",
+    "needsSignIn": "Primero inicia sesión (en la Bandeja, abajo): luego esta computadora se conecta sola.",
+    "autoFailed": "No pude conectarla sola ({code}). Toca «Conectar esta computadora» para intentarlo otra vez."
   },
   "computer": {
     "title": "Esta computadora",
@@ -480,18 +484,19 @@
       "firstTask": "Tu primera tarea"
     },
     "hint": {
-      "account": "Entra con tu cuenta de Chalyb en la Bandeja.",
-      "browser": "Entra con tu cuenta de Chalyb en la Bandeja para aprobar esta app.",
-      "computer": "Toca «Conectar esta computadora» aquí arriba y aprueba en tu navegador.",
+      "account": "Inicia sesión con tu cuenta de Chalyb.",
+      "browser": "Inicia sesión con tu cuenta de Chalyb para aprobar esta app.",
+      "computer": "En cuanto inicies sesión, esta computadora se conecta sola (mira «Conectar esta computadora» arriba).",
       "ai": "En «IA conectadas», toca «Usar» junto a una IA que ya tengas instalada.",
       "folder": "En Ajustes → Esta computadora, agrega la carpeta de un proyecto.",
       "firstTask": "Pídele a tu IA que resuma tu proyecto. Solo lee; no cambia nada."
     },
     "action": {
-      "signIn": "Ir a la Bandeja",
+      "signIn": "Iniciar sesión con Chalyb",
       "ai": "Ir a IA conectadas",
       "folder": "Elegir una carpeta",
       "firstTask": "Probar la primera tarea"
-    }
+    },
+    "signingIn": "Termina de iniciar sesión en el navegador que se abrió."
   }
 }

@@ -242,3 +242,23 @@ export const introducedAgents = async (
   }
   return { ok: true, agents, dropped };
 };
+
+/**
+ * Owner decision 2026-10-19 ("sign-in alone"): the account's active computers, as its devices
+ * directory lists them, for a client the person signed in on. Each id must derive from its key and
+ * the fingerprint is computed here, never taken from the listing.
+ */
+export const accountAgents = async (directory: readonly DirectoryDevice[]): Promise<IntroducedAgent[]> => {
+  const agents: IntroducedAgent[] = [];
+  for (const d of directory) {
+    if (d.role !== "agent" || d.revoked || !d.pubBox) continue;
+    try {
+      const pub = await fromB64url(d.pubSign);
+      if ((await deriveDeviceId(pub)) !== d.deviceId) continue;
+      agents.push({ deviceId: d.deviceId, pubSign: d.pubSign, pubBox: d.pubBox, fingerprint: await fingerprint(pub) });
+    } catch {
+      // A malformed key is just not trusted.
+    }
+  }
+  return agents;
+};

@@ -49,7 +49,7 @@ Each is written with `deps.audit.record({ action, owner, actor, target?, meta? }
 
 | Type | Category | Emitter | actor | target | meta |
 |---|---|---|---|---|---|
-| `device.enrolled` | devices | `apps/api/src/routes/devices.ts` (first client; endorsed) | device user uid | new device id | `{via: "first_client"}` or `{via: "endorsement", by}` |
+| `device.enrolled` | devices | `apps/api/src/routes/devices.ts` (first client; endorsed; sign-in alone, `POST /v1/devices/signin`) | device user uid | new device id | `{via: "first_client"}`, `{via: "endorsement", by}` or `{via: "sign_in"}` |
 | `device.revoked` | devices | `apps/api/src/routes/devices.ts` (`POST /v1/devices/revoke`) | uid | revoked device id | — |
 | `device.revoked_all` | devices | `apps/api/src/routes/devices.ts` (`POST /v1/devices/revoke-all`, passkey step-up) | uid | the calling client | `{clients, commandsQueued, banFailed}` (plus one `device.revoked` per client, `{via: "revoke_all"}`) |
 | `devices.reset` | devices | `apps/api/src/routes/hub.ts` (`POST /tenants/:id/reset-devices`, "Empezar de cero" after the hub checked an email code) | `hub` | — | `{revoked}` (plus one `device.revoked` per device, `{via: "reset"}`) |

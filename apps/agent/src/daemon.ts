@@ -57,7 +57,7 @@ import { createLogger, redactDeep, type Logger } from "./redact.js";
 import { SESSION_KINDS, deviceSetup, setupReporter } from "./setup-report.js";
 import { acpDriver } from "./drivers/index.js";
 import { spawnRunner, which } from "./runner.js";
-import { syncEndorsements, syncRevocations } from "./endorsement-sync.js";
+import { syncEndorsements, syncRevocations, syncSignIns } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
 import { servicePlan } from "./service.js";
@@ -1190,6 +1190,29 @@ const startDaemon = async (
       )
       .catch((err: unknown) =>
         log.warn("trust.endorsement_sync_failed", { error: err instanceof Error ? err.message : "error" }),
+      )
+      .then(() =>
+        syncSignIns({
+          store: signedInStore,
+          trust: () => trust,
+          saveTrust: () => trustStore.save(trust),
+          now,
+          onAdded: (clientDeviceId) => {
+            log.info("trust.client_signed_in", { clientDeviceId });
+            void signedInStore
+              .audit({
+                eid: randomUUID(),
+                t: now(),
+                type: "trust.client_signed_in",
+                meta: { clientDeviceId },
+                source: "agent",
+              })
+              .catch(() => undefined);
+          },
+        }),
+      )
+      .catch((err: unknown) =>
+        log.warn("trust.signin_sync_failed", { error: err instanceof Error ? err.message : "error" }),
       )
       .finally(() => {
         syncing = false;

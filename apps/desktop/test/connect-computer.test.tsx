@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { TextProviders } from "../src/lib/i18n.js";
 import { IpcUnavailableError, unavailableIpc, type AgentIpc, type PendingPairing } from "../src/lib/ipc.js";
 import type { AgentStatus } from "../src/lib/local-agent.js";
-import { ConnectComputer } from "../src/panel/ConnectComputer.js";
+import { ConnectComputer, type AutoPair } from "../src/panel/ConnectComputer.js";
 
 afterEach(cleanup);
 
@@ -48,7 +48,7 @@ const fakeAgent = () => {
 
 const renderConnect = (
   ipc: AgentIpc,
-  opts: { status?: AgentStatus["state"]; locale?: "es" | "en"; opened?: string[] } = {},
+  opts: { status?: AgentStatus["state"]; locale?: "es" | "en"; opened?: string[]; auto?: AutoPair | null } = {},
 ) =>
   render(
     <TextProviders locale={opts.locale ?? "es"}>
@@ -57,6 +57,7 @@ const renderConnect = (
         openUrl={async (u) => void opts.opened?.push(u)}
         agentStatus={async () => ({ state: opts.status ?? "not_paired" }) as AgentStatus}
         pollMs={20}
+        auto={opts.auto ?? null}
       />
     </TextProviders>,
   );
@@ -129,5 +130,74 @@ describe("Conectar esta computadora", () => {
   it("while the agent starts, it says so instead of erroring", async () => {
     renderConnect({ ...unavailableIpc, pendingPairing: () => Promise.reject(new IpcUnavailableError()) });
     expect(await screen.findByText(/Preparando el agente/)).toBeTruthy();
+  });
+});
+
+describe("Conectar esta computadora, signed in (sign-in alone)", () => {
+  const OWN = "11aa 22bb 33cc";
+  /** The claim moves the agent to the reverse check with this panel's own key as the approver. */
+  const autoFor = (a: ReturnType<typeof fakeAgent>, claimer = OWN) => {
+    const claims: PendingPairing[] = [];
+    const auto: AutoPair = {
+      ownFingerprint: OWN,
+      claim: async (p) => {
+        claims.push(p);
+        a.set(view({ state: "claimed", claimer: { fingerprint: claimer, passkeyId: null } }));
+        return { ok: true };
+      },
+    };
+    return { auto, claims };
+  };
+
+  it("connects by itself: starts, claims as this panel, says yes for its own key; no browser, nothing to tap", async () => {
+    const a = fakeAgent();
+    const { auto, claims } = autoFor(a);
+    const opened: string[] = [];
+    renderConnect(a.ipc, { auto, opened });
+    await waitFor(() => expect(a.calls).toContainEqual(["confirmPairing", "p1", true]));
+    expect(a.calls.filter((c) => c[0] === "startPairing")).toHaveLength(1);
+    expect(claims).toHaveLength(1);
+    expect(opened).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Sí, fui yo" })).toBeNull();
+    expect(screen.getByText("Conectando esta computadora a tu cuenta…")).toBeTruthy();
+    a.set(view({ state: "paired" }));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(a.calls.filter((c) => c[0] === "confirmPairing")).toHaveLength(1);
+  });
+
+  it("an approver that isn't one of the account's devices is never confirmed by itself: the person answers", async () => {
+    const a = fakeAgent();
+    const { auto } = autoFor(a, "99aa 88bb");
+    renderConnect(a.ipc, { auto: { ...auto, isAccountClient: async () => false } });
+    expect(await screen.findByRole("button", { name: "Sí, fui yo" })).toBeTruthy();
+    expect(a.calls.some((c) => c[0] === "confirmPairing")).toBe(false);
+  });
+
+  it("another device the person signed in on (the hub's approval page) is confirmed by itself", async () => {
+    const a = fakeAgent();
+    const { auto } = autoFor(a, "99aa 88bb");
+    const asked: string[] = [];
+    renderConnect(a.ipc, {
+      auto: { ...auto, isAccountClient: async (fp) => (asked.push(fp), fp === "99aa 88bb") },
+    });
+    await waitFor(() => expect(a.calls).toContainEqual(["confirmPairing", "p1", true]));
+    expect(asked).toEqual(["99aa 88bb"]);
+    expect(screen.queryByRole("button", { name: "Sí, fui yo" })).toBeNull();
+  });
+
+  it("if claiming fails it says why and falls back to the approval page", async () => {
+    const a = fakeAgent();
+    const opened: string[] = [];
+    const auto: AutoPair = { ownFingerprint: OWN, claim: async () => ({ ok: false, reason: "device_limit" }) };
+    renderConnect(a.ipc, { auto, opened });
+    expect(await screen.findByText(/No pude conectarla sola \(device_limit\)/)).toBeTruthy();
+    await waitFor(() => expect(opened).toEqual([URL]));
+  });
+
+  it("signed out, it says that signing in is what connects this computer", async () => {
+    const a = fakeAgent();
+    renderConnect(a.ipc, { locale: "en" });
+    expect(await screen.findByText(/Sign in first/)).toBeTruthy();
+    expect(a.calls).toEqual([]);
   });
 });

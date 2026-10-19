@@ -95,3 +95,43 @@ export const syncRevocations = async (d: RevocationSyncDeps): Promise<string[]> 
   }
   return removed;
 };
+
+export interface SignInSyncDeps {
+  store: Pick<AgentStore, "signInClients">;
+  trust: () => TrustedClientList;
+  saveTrust: () => Promise<void>;
+  now: () => number;
+  /** Local audit of every client added this way. */
+  onAdded: (deviceId: string) => void;
+}
+
+/**
+ * Owner decision 2026-10-19 ("sign-in alone"): signing in with the account on a device approves
+ * it, so this agent trusts the account's active clients enrolled by sign-in, as the directory
+ * lists them. Run after `syncRevocations`; a client removed here (tombstone) never comes back
+ * this way. A passkey the client registered later is picked up on the next run.
+ * Returns the device ids added.
+ */
+export const syncSignIns = async (d: SignInSyncDeps): Promise<string[]> => {
+  const rows = await d.store.signInClients();
+  const list = d.trust();
+  const added: string[] = [];
+  let changed = false;
+  for (const row of rows) {
+    const binding = row.webauthnBinding ? WebAuthnBinding.safeParse(row.webauthnBinding) : null;
+    if (list.has(row.deviceId)) {
+      // Trusted already: record a passkey it registered since (verified against the key held here).
+      if (binding?.success && !list.webauthnFor(row.deviceId) && (await list.attachWebAuthnBinding(binding.data)).ok)
+        changed = true;
+      continue;
+    }
+    const r = await list.addSignedIn(row, d.now(), { webauthnBinding: binding?.success ? binding.data : null });
+    if (r.ok) {
+      added.push(row.deviceId);
+      changed = true;
+      d.onAdded(row.deviceId);
+    }
+  }
+  if (changed) await d.saveTrust();
+  return added;
+};

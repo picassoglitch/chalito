@@ -45,8 +45,8 @@ const loadDnd = () => {
 /**
  * The panel window owns the account connection and the agent IPC; the pet window only
  * renders. Every few seconds it recomputes the pet's context and the presence signals.
- * Until signed in (hub SSO in the system browser → chalito:// deep link → endorsement by
- * a trusted client), the panel opens at launch on the sign-in flow and settings stay on this
+ * Until signed in (hub SSO in the system browser → chalito:// deep link → that sign-in enrols
+ * this computer, which then connects itself), the panel opens at launch on the sign-in flow and settings stay on this
  * device; once connected, settings (and the pet's companion) come from the account.
  */
 const App = ({ ipc }: { ipc: AgentIpc }) => {
@@ -142,6 +142,8 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       client={client}
       canStepUp={conn?.canStepUp ?? false}
       signIn={<SignIn controller={controller} />}
+      autoPair={conn?.autoPair ?? null}
+      {...(controller ? { startSignIn: () => void controller.start() } : {})}
       ipc={ipc}
       rooms={conn?.rooms ?? null}
       ptt={ptt}

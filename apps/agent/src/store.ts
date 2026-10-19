@@ -65,6 +65,11 @@ export interface AgentStore {
   listEndorsements(): Promise<EndorsementRow[]>;
   /** Of these client device ids, the ones the account's directory has revoked (review R-H5). */
   revokedClients(deviceIds: string[]): Promise<string[]>;
+  /**
+   * Owner decision 2026-10-19 ("sign-in alone"): the account's active clients enrolled by the
+   * person's sign-in (enrolled_via "sign_in"), with their keys and passkey binding.
+   */
+  signInClients(): Promise<SignInClientRow[]>;
   /** Called when an endorsement is stored (pointer) and after every resync. */
   watchEndorsements(onChange: () => void): () => void;
 
@@ -100,6 +105,14 @@ export interface EndorsementRow {
   endorsement: unknown;
   /** The endorsed device is revoked in the directory (or missing). */
   revoked: boolean;
+  /** Its passkey binding (signed by its own key), if it enrolled one. */
+  webauthnBinding: unknown;
+}
+
+export interface SignInClientRow {
+  deviceId: string;
+  pubSign: string;
+  pubBox: string;
   /** Its passkey binding (signed by its own key), if it enrolled one. */
   webauthnBinding: unknown;
 }
@@ -150,6 +163,16 @@ export class MemoryStore implements AgentStore {
   revokedDevices = new Set<string>();
   async revokedClients(deviceIds: string[]) {
     return deviceIds.filter((id) => this.revokedDevices.has(id));
+  }
+  /** Clients the person signed in on (test hook: push one with `pushSignIn`). */
+  signIns: SignInClientRow[] = [];
+  async signInClients() {
+    return this.signIns.filter((c) => !this.revokedDevices.has(c.deviceId)).map((c) => ({ ...c }));
+  }
+  /** Test hook: the person signs in on a new device and the devices table points the agent at it. */
+  pushSignIn(row: SignInClientRow) {
+    this.signIns.push(row);
+    this.#endorsementWatcher?.();
   }
   /** Test hook: the account revokes a device and points the agent at the devices table. */
   revokeInDirectory(deviceId: string) {
