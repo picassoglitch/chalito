@@ -1,4 +1,5 @@
 import postgres, { type Sql } from "postgres";
+import { pgOptions } from "@chalito/config";
 import type {
   AgentSummary,
   ExposureRow,
@@ -11,11 +12,7 @@ import type {
 
 /** A connection that acts as chalito_gateway (read-only; see migration 20261004001800). */
 export const gatewaySql = (url: string, opts: { role?: string; max?: number } = {}): Sql =>
-  postgres(url, {
-    max: opts.max ?? 5,
-    onnotice: () => {},
-    ...(opts.role ? { connection: { role: opts.role } } : {}),
-  });
+  postgres(url, pgOptions(url, { role: opts.role, max: opts.max ?? 5 }));
 
 const ms = (d: Date | null) => (d ? d.getTime() : null);
 

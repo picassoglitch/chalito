@@ -3,7 +3,7 @@ import { serve } from "@hono/node-server";
 import { createClient } from "@supabase/supabase-js";
 import postgres from "postgres";
 import { HubClient, compedFrom, parseReserveBasis } from "@chalito/billing";
-import { loadModels, loadPlans, loadPrices } from "@chalito/config";
+import { checkRole, loadModels, loadPlans, loadPrices, pgOptions } from "@chalito/config";
 import { createOrchestrator } from "./app.js";
 import { SupabaseAuthn } from "./auth.js";
 import { AnthropicBrain } from "./brains/anthropic.js";
@@ -25,11 +25,8 @@ const env = (name: string): string => {
 };
 
 // DATABASE_ROLE=chalito_server when the login only holds it with SET (local); unset on deploy.
-const sql = postgres(env("DATABASE_URL"), {
-  max: 10,
-  onnotice: () => {},
-  ...(process.env.DATABASE_ROLE ? { connection: { role: process.env.DATABASE_ROLE } } : {}),
-});
+const sql = postgres(env("DATABASE_URL"), pgOptions(env("DATABASE_URL"), { role: process.env.DATABASE_ROLE, max: 10 }));
+await checkRole(sql, process.env.DATABASE_ROLE);
 const supabase = createClient(env("SUPABASE_URL"), env("SUPABASE_SECRET_KEY"), {
   auth: { autoRefreshToken: false, persistSession: false },
 });

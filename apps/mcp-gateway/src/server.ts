@@ -1,4 +1,5 @@
 import { installConsoleRedaction } from "@chalito/redact";
+import { checkRole } from "@chalito/config";
 import { serve } from "@hono/node-server";
 import { GatewayApi } from "./api-client.js";
 import { createGateway } from "./app.js";
@@ -12,11 +13,11 @@ const env = (name: string): string => {
   return v;
 };
 
-// DATABASE_URL: a login that holds chalito_gateway (read-only). DATABASE_ROLE=chalito_gateway when the
-// login only has it with SET (local); unset when the login inherits it (deploy).
-const sql = gatewaySql(env("DATABASE_URL"), {
-  role: process.env.DATABASE_ROLE ?? "chalito_gateway",
-});
+// DATABASE_URL: a login that acts as chalito_gateway (read-only): through the transaction pooler a
+// login member whose default role is chalito_gateway; elsewhere one that holds it with SET.
+const role = process.env.DATABASE_ROLE ?? "chalito_gateway";
+const sql = gatewaySql(env("DATABASE_URL"), { role });
+await checkRole(sql, role);
 
 const app = createGateway({
   reader: new PostgresGatewayReader(sql),
