@@ -194,6 +194,19 @@ export interface ComputerAnswers {
 export type ComputerEnableResult =
   { ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" | "already_on" | "unavailable" };
 
+/** Coordinator mode (apps/agent/src/coord/toggle.ts): what Chalito answers for the owner here. */
+export interface CoordinatorStatus {
+  /** Empty while off. */
+  kinds: string[];
+}
+/** What the agent shows before turning it on (`COORDINATOR_COPY`). */
+export interface CoordinatorChallenge {
+  answers: string[];
+  asks: string[];
+}
+export type CoordinatorEnableResult =
+  { ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" | "already_on" | "unavailable" };
+
 /** macOS privacy permissions as the app has them (src-tauri/src/computer.rs); null elsewhere. */
 export interface ComputerPermissions {
   platform: "macos" | "windows" | "linux";
@@ -302,6 +315,11 @@ export interface AgentIpc {
    * native side sends that); enabling asks the OS in the agent and re-checks the answers.
    */
   computerStatus(): Promise<ComputerStatus>;
+  /** Coordinator mode: turned on only here (the agent asks the OS, then the person's yes). */
+  coordinatorStatus(): Promise<CoordinatorStatus>;
+  coordinatorChallenge(): Promise<CoordinatorChallenge>;
+  enableCoordinator(answers: { confirm: boolean }): Promise<CoordinatorEnableResult>;
+  disableCoordinator(): Promise<void>;
   computerChallenge(): Promise<ComputerChallenge>;
   enableComputer(answers: ComputerAnswers): Promise<ComputerEnableResult>;
   disableComputer(): Promise<void>;
@@ -368,6 +386,10 @@ export const unavailableIpc: AgentIpc = {
   enableAppSessions: unavailable,
   disableAppSessions: unavailable,
   computerStatus: unavailable,
+  coordinatorStatus: unavailable,
+  coordinatorChallenge: unavailable,
+  enableCoordinator: unavailable,
+  disableCoordinator: unavailable,
   computerChallenge: unavailable,
   enableComputer: unavailable,
   disableComputer: unavailable,
@@ -438,6 +460,10 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     // No `indicatorShown`: only the native poller's report counts as the indicator's heartbeat.
     computerStatus: () => call("computerStatus"),
     computerChallenge: () => call("computerChallenge"),
+    coordinatorStatus: () => call("coordinatorStatus"),
+    coordinatorChallenge: () => call("coordinatorChallenge"),
+    enableCoordinator: (answers) => call("enableCoordinator", { answers }),
+    disableCoordinator: async () => void (await call("disableCoordinator")),
     enableComputer: (answers) => call("enableComputer", { answers }),
     disableComputer: () => call("disableComputer"),
     stopComputer: () => invoke("computer_stop", {}),

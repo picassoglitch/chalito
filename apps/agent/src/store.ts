@@ -91,6 +91,13 @@ export interface AgentStore {
    * `provider` column holds the app id (recipe id) since the connect engine.
    */
   upsertConnection(appId: string, doc: AppConnectionDoc): Promise<void>;
+  /**
+   * Coordinator mode (ADR 0025 §6): the owner's remembered rules, as stored (signed envelopes).
+   * Cloud data: the caller verifies every one against the local trusted list.
+   */
+  listCoordRules(): Promise<unknown[]>;
+  /** The owner's signed rule withdrawals (`chalito.coordrule-revoke.v1`), as stored. Cloud data. */
+  listCoordRuleRevocations(): Promise<unknown[]>;
 }
 
 export interface EndorsementRow {
@@ -139,6 +146,15 @@ export class MemoryStore implements AgentStore {
   #commandWatcher: ((id: string, doc: Record<string, unknown>) => void) | null = null;
   endorsements: EndorsementRow[] = [];
   #endorsementWatcher: (() => void) | null = null;
+
+  coordRules: unknown[] = [];
+  coordRuleRevocations: unknown[] = [];
+  async listCoordRules() {
+    return [...this.coordRules];
+  }
+  async listCoordRuleRevocations() {
+    return [...this.coordRuleRevocations];
+  }
 
   async listEndorsements() {
     return this.endorsements.map((e) => ({ ...e }));

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { CardItem, CardSpec } from "@chalito/avatar-three";
+import { parseRig, rigFiles, type CardItem, type CardRig, type CardSpec } from "@chalito/avatar-three";
 import { anchorFor, placeOnCard, type CardAnchors } from "@chalito/roster";
 import { isSkinId } from "@chalito/avatar-three";
 import { isSceneSkin, type SceneCosmetic } from "./room-scene.js";
@@ -13,6 +13,7 @@ interface CardJson {
   emotions?: { src: Record<string, string> };
   shadow?: CardSpec["shadow"];
   anchors?: CardAnchors;
+  rig?: unknown;
 }
 
 export interface CardLoaders {
@@ -59,13 +60,32 @@ export const loadCardAssets = async (
     const card = (files.manifest ?? (await retry(() => fetchJson(fileUrl("card.json"))))) as CardJson;
     if (!card || !(card.width > 0) || !(card.height > 0) || !(card.emotions?.src.neutral ?? card.layers?.[0]?.src))
       throw new Error("bad card");
-    const textures = await loadDrawings(card, (src) => retry(() => loadTexture(fileUrl(src))));
-    return finish(base, card, textures, cosmetics, loadTexture);
+    const load = (src: string) => retry(() => loadTexture(fileUrl(src)));
+    const [textures, rig] = await Promise.all([loadDrawings(card, load), loadRig(card, load)]);
+    return finish(base, card, textures, cosmetics, loadTexture, rig);
   }
   if (!/^[a-z0-9_-]+$/.test(avatar)) throw new Error("bad avatar id");
   const dir = `${base}assets/${avatar}/`;
   const card = (await fetchJson(`${dir}card.json`)) as CardJson;
-  return finish(base, card, await loadDrawings(card, (src) => loadTexture(dir + src)), cosmetics, loadTexture);
+  const load = (src: string) => loadTexture(dir + src);
+  const [drawings, rig] = await Promise.all([loadDrawings(card, load), loadRig(card, load)]);
+  return finish(base, card, drawings, cosmetics, loadTexture, rig);
+};
+
+/**
+ * The card's cutout rig with its part images, or null: no rig, a malformed one, or any part that
+ * won't load (the card then moves as one piece rather than with a part missing).
+ */
+const loadRig = async (card: CardJson, load: (src: string) => Promise<THREE.Texture>): Promise<CardRig | null> => {
+  const spec = parseRig(card.rig);
+  if (!spec) return null;
+  try {
+    const files = rigFiles(spec);
+    const textures = await Promise.all(files.map((f) => load(f)));
+    return { spec, textures: Object.fromEntries(files.map((f, i) => [f, textures[i]!])) };
+  } catch {
+    return null;
+  }
 };
 
 /** The card's drawings, loaded in parallel and kept in card.json order (the first is what a new card shows). */
@@ -86,6 +106,7 @@ const finish = async (
   drawings: Record<string, THREE.Texture>,
   cosmetics: readonly SceneCosmetic[],
   loadTexture: (url: string) => Promise<THREE.Texture>,
+  rig: CardRig | null = null,
 ): Promise<ActorAssets> => {
   const items: CardItem[] = [];
   let skin: ActorAssets["skin"] = null;
@@ -102,7 +123,9 @@ const finish = async (
     const texture = await loadTexture(base + c.art);
     const img = texture.image as { width?: number; height?: number } | undefined;
     const aspect = img?.width && img.height ? img.height / img.width : 1;
-    items.push({ placed: placeOnCard(anchor, c.card, aspect, card.height / card.width), texture });
+    const placed = placeOnCard(anchor, c.card, aspect, card.height / card.width);
+    // Hats and glasses ride on a rigged head.
+    items.push(c.slot === "head" || c.slot === "face" ? { placed, texture, part: "head" } : { placed, texture });
   }
-  return { spec: { width: card.width, height: card.height, shadow: card.shadow }, drawings, items, skin };
+  return { spec: { width: card.width, height: card.height, shadow: card.shadow }, drawings, items, skin, rig };
 };

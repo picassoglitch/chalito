@@ -11,6 +11,7 @@ import {
 import type { LiabilityText } from "@chalito/config";
 import type { ComputerControl } from "./computer/control.js";
 import { COMPUTER_COPY, disableComputer, enableComputer } from "./computer/toggle.js";
+import { COORDINATOR_COPY, coordinatorCeiling, disableCoordinator, enableCoordinator } from "./coord/toggle.js";
 import { DevMode, RISK_COPY, type DevModeDeps, type OsAuth } from "./devmode.js";
 import { IpcError, type IpcHandlers } from "./ipc-server.js";
 import { addWorkspace, removeWorkspace } from "./workspaces.js";
@@ -56,6 +57,7 @@ const ComputerKill = z.object({ via: z.enum(["hotkey", "tray", "panel", "indicat
 const ComputerEnable = z.object({
   answers: z.object({ first: z.boolean(), second: z.boolean(), typed: z.string().max(200) }),
 });
+const CoordinatorEnable = z.object({ answers: z.object({ confirm: z.boolean() }) });
 const TerminalEnable = z.object({
   answers: z.object({
     first: z.boolean(),
@@ -380,6 +382,30 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
 
   disableComputer: async () => ({
     changed: await disableComputer(
+      { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
+      "panel",
+    ),
+  }),
+
+  // Coordinator mode (ADR 0025 §6): the panel's switch. Same rules as the CLI: local only, the
+  // agent asks the OS itself, then the person's answer to the list of what Chalito answers.
+  coordinatorStatus: async () => ({ kinds: [...coordinatorCeiling(d.policy.get())] }),
+
+  coordinatorChallenge: async () => COORDINATOR_COPY[d.locale()],
+
+  enableCoordinator: async (params) => {
+    const { answers } = parse(CoordinatorEnable, params);
+    return enableCoordinator({
+      policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) },
+      osAuth: d.osAuth(),
+      prompter: { confirm: async () => answers.confirm },
+      locale: d.locale(),
+      emit: (type, meta) => d.audit(type, { ...meta, via: "panel" }),
+    });
+  },
+
+  disableCoordinator: async () => ({
+    changed: await disableCoordinator(
       { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
       "panel",
     ),

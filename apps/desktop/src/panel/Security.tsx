@@ -9,6 +9,8 @@ import {
   type ComputerChallenge,
   type ComputerPermissions,
   type ComputerStatus,
+  type CoordinatorChallenge,
+  type CoordinatorStatus,
   type DevModeChallenge,
   type DevModeState,
   type PolicyView,
@@ -419,6 +421,82 @@ const RemoteScreen = ({ ipc }: { ipc: AgentIpc }) => {
   );
 };
 
+/**
+ * Coordinator mode (ADR 0025 §6): whether Chalito may answer this computer's helper agents for the
+ * owner. Turned on here only: the agent asks the OS, then the owner says yes to the two lists.
+ */
+const Coordinator = ({ ipc }: { ipc: AgentIpc }) => {
+  const t = useT();
+  const fetch = useCallback(() => ipc.coordinatorStatus(), [ipc]);
+  const [s, reload] = useAgent<CoordinatorStatus>(fetch);
+  const [challenge, setChallenge] = useState<CoordinatorChallenge | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const on = s.state === "ok" && s.value.kinds.length > 0;
+  return (
+    <section aria-labelledby="sec-coordinator" data-section="coordinator">
+      <h2 id="sec-coordinator">{t("security.coordinator.title")}</h2>
+      <p className="muted">{t("security.coordinator.intro")}</p>
+      {s.state === "unavailable" && <Unavailable />}
+      {s.state === "error" && <p role="alert">{s.error}</p>}
+      {failure && <p role="alert">{t("security.coordinator.failed", { reason: failure })}</p>}
+      {s.state === "ok" &&
+        (challenge ? (
+          <div className="card" data-step="confirm">
+            <p>{t("security.coordinator.answers")}</p>
+            <ul>
+              {challenge.answers.map((a) => (
+                <li key={a}>{a}</li>
+              ))}
+            </ul>
+            <p>{t("security.coordinator.asks")}</p>
+            <ul>
+              {challenge.asks.map((a) => (
+                <li key={a}>{a}</li>
+              ))}
+            </ul>
+            <div className="row">
+              <button
+                onClick={() =>
+                  void ipc.enableCoordinator({ confirm: true }).then(
+                    (r) => {
+                      setChallenge(null);
+                      setFailure(r.ok ? null : r.reason);
+                      reload();
+                    },
+                    (e: unknown) => {
+                      setChallenge(null);
+                      setFailure(String(e));
+                    },
+                  )
+                }
+              >
+                {t("security.coordinator.confirm")}
+              </button>
+              <button onClick={() => setChallenge(null)}>{t("security.devmode.cancel")}</button>
+            </div>
+          </div>
+        ) : (
+          <div className="row" data-coordinator={on ? "on" : "off"}>
+            <span>{t(on ? "security.coordinator.on" : "security.coordinator.off")}</span>
+            {on ? (
+              <button onClick={() => void ipc.disableCoordinator().finally(reload)}>
+                {t("security.coordinator.disable")}
+              </button>
+            ) : (
+              <button
+                onClick={() =>
+                  void ipc.coordinatorChallenge().then(setChallenge, (e: unknown) => setFailure(String(e)))
+                }
+              >
+                {t("security.coordinator.enable")}
+              </button>
+            )}
+          </div>
+        ))}
+    </section>
+  );
+};
+
 export const Security = ({ ipc }: { ipc: AgentIpc }) => {
   const t = useT();
   return (
@@ -426,6 +504,7 @@ export const Security = ({ ipc }: { ipc: AgentIpc }) => {
       <p className="muted">{t("security.localOnly")}</p>
       <Policy ipc={ipc} />
       <DevMode ipc={ipc} />
+      <Coordinator ipc={ipc} />
       <Computer ipc={ipc} />
       <RemoteTerminal ipc={ipc} />
       <RemoteScreen ipc={ipc} />

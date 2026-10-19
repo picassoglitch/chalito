@@ -2,7 +2,7 @@
   "v": 1,
   "generator": "scripts/render-showcase.ts",
   "renderer": "chromium (headless) + SwiftShader, three r186",
-  "source": "15b89b155e14771bbc05d6d2eb2b99bca75fdedb",
+  "source": "8186dac0c623a78861079b8962755f9ca63cd734",
   "assets": [
     {
       "id": "hero-chalito",
@@ -14,8 +14,8 @@
       "fps": 10,
       "frames": 40,
       "seed": 11,
-      "sha256": "d1c1296eb47ddf475ef725f8013c326cfc30ef0f5088f6ca13a879319b610224",
-      "posterSha256": "78317481162c62cb34cc02da4f220ed9c81e0ee75409bbd144ae9e12e58d4835",
+      "sha256": "130e562bffd5bbffbfa332c2f69fc004d566e890760e98b88a0ce0c70024d73c",
+      "posterSha256": "e66fa6f7e35473afe3924130460d325771985aa2620019e1aded38b65a78d4b0",
       "alt": {
         "es": "Chalito respira, saluda y sonríe",
         "en": "Chalito breathes, waves and smiles"
@@ -34,7 +34,7 @@
       "w": 300,
       "h": 420,
       "seed": 100,
-      "sha256": "ec8ecc0b7904ddcaf85a08e9c4fb9a4731291b5bd386c4e3c1bfb9a87375611e",
+      "sha256": "52a88615aa413475099c48a4fb3c89288dd124af1d2bf7ec2017c327e4bc69a7",
       "alt": {
         "es": "Chalito: Tu compañero de siempre.",
         "en": "Chalito: Your everyday companion."
@@ -53,7 +53,7 @@
       "w": 300,
       "h": 420,
       "seed": 101,
-      "sha256": "4cc5485089887d5dfd4020ed5c0e36787170a4b1e7f02c0d313a7f1131d85526",
+      "sha256": "e728efb28409458a927705227a1ac76b67234526386bf9ed6ff7c49cc8ca8cad",
       "alt": {
         "es": "Bruno: Un osito tranquilo y paciente.",
         "en": "Bruno: A calm, patient bear."
@@ -72,7 +72,7 @@
       "w": 300,
       "h": 420,
       "seed": 102,
-      "sha256": "75db788bd00117d666e14ce4085de14d6d7cd3e9b977f891d3bd82ce0ace2e7c",
+      "sha256": "ffd2b2099782b9997027289ae1fe2ff0a1e016d5ecc11c88e3ff11fe9ca5ee83",
       "alt": {
         "es": "Luna: Una gatita curiosa.",
         "en": "Luna: A curious kitten."
@@ -91,7 +91,7 @@
       "w": 300,
       "h": 420,
       "seed": 103,
-      "sha256": "481053fc7af39494cc1e03d2798f47f713659c09c8f4acca18e4a3d3b15d3667",
+      "sha256": "c7bff06034cceb02f02ef4b77d50d8645057699ebdd3de87394541da8afb7d88",
       "alt": {
         "es": "Tito: Un búho atento a todo.",
         "en": "Tito: An owl who notices everything."
@@ -110,7 +110,7 @@
       "w": 300,
       "h": 420,
       "seed": 104,
-      "sha256": "42ed8fcc2b73926271260f52b8fbb61974d50a2c739cc7eac05193f6b70e8345",
+      "sha256": "421bccf90e16d1e7f435551fdd682497e7fd22c5a32aca670cec7b1654bfa284",
       "alt": {
         "es": "Canela: Una zorrita lista y rápida.",
         "en": "Canela: A quick, clever fox."
@@ -129,7 +129,7 @@
       "w": 300,
       "h": 420,
       "seed": 105,
-      "sha256": "b8015571d881542360f714ba84037d54163d7dcef2defa6dd503c034fdb72ab7",
+      "sha256": "f1bce2e48d4b42f5b2c4e0be3573813e289e00cdfeeeb7341f4866066d58836d",
       "alt": {
         "es": "Nube: Una conejita suave y alegre.",
         "en": "Nube: A soft, cheerful bunny."
@@ -151,8 +151,8 @@
       "fps": 10,
       "frames": 30,
       "seed": 21,
-      "sha256": "e75baf1ab117d2f4921aca35da31437f49b19316f975bdc558fcd5ae3709261a",
-      "posterSha256": "08038a3a9d7cb5317a3153fb58a7a8f41047337adbbdeb21137b1a07aa7bc75b",
+      "sha256": "dec3ed8fe2bc0eff1e42322554662dddc4834c988ecf0a05955835f916b49167",
+      "posterSha256": "d95b3dacf6defd927b6db020faf9cbef52ebc33c04eaafd76d1f304b8799fc81",
       "alt": {
         "es": "Chalito con el casco vikingo",
         "en": "Chalito wearing the Viking helmet"
@@ -173,7 +173,7 @@
       "w": 300,
       "h": 420,
       "seed": 22,
-      "sha256": "59140363539d46f21dab58042925872a9be9b468511fb79b473eb79d7b35ecb4",
+      "sha256": "a847bd2e8beacfb4cae17262dc16cea16cc59c4b03034ebfac395c85134acb4a",
       "alt": {
         "es": "Luna con corona de flores y lentes redondos",
         "en": "Luna with a flower crown and round glasses"
@@ -195,7 +195,7 @@
       "w": 300,
       "h": 420,
       "seed": 23,
-      "sha256": "dac14f170006fb9d63492b091eebc4ae5cf9d63b07a245d1e751a460e719c4a0",
+      "sha256": "563e87665a6da4f610b31b0434201ebbb7c304b47adb7347729251a269c8c8f1",
       "alt": {
         "es": "Bruno con la capa de estrellas",
         "en": "Bruno wearing the star cape"
@@ -219,8 +219,8 @@
       "fps": 10,
       "frames": 36,
       "seed": 31,
-      "sha256": "5143e8d3e9e2115c6ef697e9c7eeae358dec7b0f1286d14b515626e4650e03dc",
-      "posterSha256": "14994edfa2ed20f255f9ce95b474cf0fbbe16606e81f290fc33aecf936513d73",
+      "sha256": "c0320b46b02a0d808ae51f05e5876ad52de1cfef4149bb916fca4e4e284a4193",
+      "posterSha256": "2fc75cfbb56f5d07b3f46a6a75bbfc795eec19bc17cff94083cb484602d08710",
       "alt": {
         "es": "Chalito se queda sin energía y bosteza",
         "en": "Chalito runs out of energy and yawns"
@@ -242,8 +242,8 @@
       "fps": 10,
       "frames": 70,
       "seed": 0,
-      "sha256": "db040bf88f069ac4f803b984f014e19832e0de3b2076239ead1b03b986c45880",
-      "posterSha256": "3877eee269a5fa37f5841bafb444b5d51559d89990f44ae4add1d70ee7c38dae",
+      "sha256": "93f365abfd4161cca966ea8ecb8093a761f10a9c4ac52b7fef713043e8c6e636",
+      "posterSha256": "9cd31a2299c9991a098fac290864bf9eb78511153d483308733feedd05995daf",
       "alt": {
         "es": "Luna llega a la sala por el portal y Chalito va a saludarla",
         "en": "Luna arrives in the room through the portal and Chalito walks over to greet her"

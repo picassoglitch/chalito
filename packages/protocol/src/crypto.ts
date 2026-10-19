@@ -66,6 +66,12 @@ export const SigningContext = z.enum([
   "chalito.links-file.v1",
   /** LAN direct path (lan.ts, ADR 0022 §5): each side's signature over the handshake transcript. */
   "chalito.lan-handshake.v1",
+  /** ADR 0025 §6: a remembered coordinator answer ("Siempre así"), signed by a trusted client. */
+  "chalito.coordrule.v1",
+  /** ADR 0025 §6: a trusted client withdraws a remembered rule; devices keep it so the rule can't come back. */
+  "chalito.coordrule-revoke.v1",
+  /** ADR 0025 §6: the coordinator's plan state, signed by the agent before it is sealed. */
+  "chalito.coordplan.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 

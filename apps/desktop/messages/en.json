@@ -109,6 +109,18 @@
       "title": "Security notices",
       "missingStepUp": "“{computer}” refused a new device: the device that approved it didn't use its passkey. Approve it again from your phone with your passkey.",
       "refused": "“{computer}” refused a new device because its approval couldn't be verified. Approve it again from a trusted device."
+    },
+    "coordinator": {
+      "title": "Coordinator mode",
+      "intro": "Let Chalito answer the agents of your plans on this computer for you. The rest reaches your phone.",
+      "answers": "Chalito approves only this:",
+      "asks": "And it always asks you first before:",
+      "confirm": "Turn on coordinator mode",
+      "on": "On: Chalito answers the listed prompts for you.",
+      "off": "Off: everything asks you.",
+      "enable": "Turn on…",
+      "disable": "Turn off",
+      "failed": "Not turned on ({reason})."
     }
   },
   "voice": {

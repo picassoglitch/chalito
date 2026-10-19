@@ -19,6 +19,7 @@ const frame = {
     tilt: [0, 0, 8] as [number, number, number],
     lookAtWeight: 1,
   },
+  rig: { armL: 0, armR: 0, head: 0, headDrop: 0, lids: 0, mouth: 0 },
 };
 
 describe("pet render quality (render.yaml, same slider as the room)", () => {

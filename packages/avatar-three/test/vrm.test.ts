@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Bone } from "@chalito/avatar";
+import { RIG_REST, type Bone } from "@chalito/avatar";
 import { AvatarDriver } from "../src/driver.js";
 import { VrmBinding, capsOf, REST_POSE, type VrmLike } from "../src/vrm.js";
 
@@ -51,6 +51,7 @@ describe("VrmBinding (mocked three-vrm)", () => {
         bones: { head: [10, 0, 0], rightUpperArm: [0, 0, 75] },
         gaze: { yaw: 12, pitch: -3 },
         creature: { scale: [1, 1, 1], offsetY: 0, tilt: [0, 0, 0], lookAtWeight: 1 },
+        rig: RIG_REST,
       },
       1 / 30,
     );

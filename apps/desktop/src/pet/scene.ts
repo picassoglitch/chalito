@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { BehaviourMachine, type BehaviourOutput } from "@chalito/avatar";
+import { BehaviourMachine, activityActions, type Activity, type BehaviourOutput } from "@chalito/avatar";
 import { AvatarDriver, CreatureBinding, FrameLoop, createPlaceholder } from "@chalito/avatar-three";
 import type { EmotionTag } from "@chalito/protocol";
 import { RENDER_DEFAULTS, loadCardAssets, type QualityLevel, type SceneCosmetic } from "@chalito/scene";
@@ -95,6 +95,14 @@ export const startPet = (
     driver.setEmotion({ tag, intensity }, now);
     look?.setEmotion(tag);
   };
+  /** A short-lived face for an action (happy after a finish, sad after a failure), then back. */
+  let faceUntil = 0;
+  const flash = (tag: EmotionTag, now: number, ms: number) => {
+    emotion(tag, 0.9, now);
+    faceUntil = now + ms;
+  };
+  /** Says hello once, when its card first shows. */
+  let greeted = false;
 
   /** What this device drew last time: a returning pet shows its roster avatar without waiting. */
   let last = loadLastDrawn();
@@ -134,6 +142,10 @@ export const startPet = (
         look = next;
         scene.add(next.root);
         pet = next.root;
+        if (!greeted) {
+          greeted = true;
+          driver.playGesture("wave", performance.now());
+        }
       },
       () => undefined, // no art: keep what's drawn
     );
@@ -155,6 +167,7 @@ export const startPet = (
   let ctx: PetContext = { level: null, fullscreen: false, dnd: false, quietHours: false, lowEnergy: false };
   let acked = false;
   let out: BehaviourOutput | null = null;
+  let lastActivity: Activity | null = null;
   let sentBox: Rect | null = null;
   let geometry = { innerX: 0, innerY: 0, scale: 1 };
 
@@ -171,13 +184,30 @@ export const startPet = (
   const tick = (now: number) => {
     const o = machine.update({ ...ctx, acked }, now);
     acked = false;
+    const act = ctx.activity ?? null;
     if (o.state !== out?.state) {
       driver.setSleepy(o.state === "sleepy");
       if (o.gesture === "wave" || o.gesture === "yawn") driver.playGesture(o.gesture, now);
+      // An escalation calls once with a hop; it doesn't keep jumping (owner decision 2026-10-19).
+      if (o.state === "hop" || o.state === "knock") driver.playAction("hop", now);
       if (o.state === "knock" || o.state === "hop") emotion("excited", o.state === "knock" ? 1 : 0.7, now);
       else if (o.state === "glance") emotion("surprised", 0.4, now);
       else if (o.state === "sleepy") emotion("tired", 1, now);
-      else emotion("neutral", 1, now);
+      else if (now >= faceUntil) emotion("neutral", 1, now);
+    }
+    // Busy while an AI works, leaning in while something waits for the person.
+    const waiting = o.state === "hop" || o.state === "knock" || o.state === "wave";
+    driver.setMode(waiting || act?.mode === "needs_you" ? "needs_you" : act?.mode === "working" ? "working" : "rest");
+    if (act) {
+      for (const a of activityActions(lastActivity, act)) {
+        driver.playAction(a, now);
+        flash(a === "hop" ? "happy" : "sad", now, a === "hop" ? 2500 : 3500);
+      }
+      lastActivity = act;
+    }
+    if (faceUntil && now >= faceUntil) {
+      faceUntil = 0;
+      emotion(o.state === "sleepy" ? "tired" : "neutral", 1, now);
     }
     if (o.requestFocus && !out?.requestFocus) void sh.focusPet("L4").catch(() => undefined);
     out = o;

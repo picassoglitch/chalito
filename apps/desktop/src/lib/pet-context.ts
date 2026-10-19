@@ -1,10 +1,13 @@
-import type { BehaviourContext } from "@chalito/avatar";
+import type { Activity, BehaviourContext } from "@chalito/avatar";
 import type { NotificationView, Snapshot } from "@chalito/client";
 import type { Level } from "@chalito/protocol";
 import type { SettingsValues } from "@chalito/ui";
 
-/** What the panel (which holds the live connection) tells the pet window. */
-export type PetContext = Omit<BehaviourContext, "acked">;
+/**
+ * What the panel (which holds the live connection) tells the pet window: the escalation context,
+ * and what the person's AI sessions are doing (busy, waiting on them, finishes and failures).
+ */
+export type PetContext = Omit<BehaviourContext, "acked"> & { activity?: Activity };
 
 const RANK: Record<Level, number> = { L0: 0, L1: 1, L2: 2, L3: 3, L4: 4 };
 const isLevel = (l: string): l is Level => l in RANK;
@@ -43,8 +46,14 @@ export const petContext = (
   settings: Pick<SettingsValues, "quietHours">,
   local: { dnd: boolean; fullscreen: boolean; lowEnergy: boolean },
   at: Date,
+  activity?: Activity,
 ): PetContext => ({
   level: pendingLevel(snap.notifications),
   quietHours: inQuietHours(settings.quietHours, at),
   ...local,
+  ...(activity ? { activity } : {}),
 });
+
+/** Answers the person still owes (approvals waiting on them). */
+export const pendingAnswers = (snap: Pick<Snapshot, "approvals">): number =>
+  snap.approvals.filter((a) => a.status === "pending").length;
