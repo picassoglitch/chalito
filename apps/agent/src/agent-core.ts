@@ -39,6 +39,7 @@ import { outsideTaskSid } from "@chalito/crypto";
 import { ApprovalManager, type ApprovalOutcome } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
+import { Coordinator, nodeGit, type CoordHost, type GitRun } from "./coord/coordinator.js";
 import { coordAnswer } from "./coord/gate.js";
 import { CoordRules, type CoordTombstones } from "./coord/rules.js";
 import { coordinatorCeiling } from "./coord/toggle.js";
@@ -120,6 +121,8 @@ export interface AgentCoreDeps {
   store: AgentStore;
   /** Withdrawn remembered rules this device refuses (ADR 0025 §6); in memory when absent. */
   coordTombstones?: CoordTombstones;
+  /** git for the coordinator (tests pass their own); hooks off by default. */
+  git?: GitRun;
   adapters: Partial<Record<AdapterKind, SessionAdapter>>;
   /**
    * Engine: session adapters for apps beyond the four built-in ones, by app id, from the drivers
@@ -271,6 +274,12 @@ export class AgentCore {
   pendingPreset: "estricto" | "estandar" | "relajado" | null = null;
   /** The owner's remembered answers ("Siempre así"), verified here (ADR 0025 §6). */
   readonly coordRules: CoordRules;
+  /** Coordinator mode on this computer (ADR 0025, M17 G2). */
+  readonly coordinator: Coordinator;
+  /** Adapter events for the coordinator, per session. */
+  readonly #observers = new Map<string, (e: AdapterEvent) => void>();
+  /** Coordinator helpers by session: their marker and worktree, kept for a revive. */
+  readonly #coordOf = new Map<string, { coord: SessionCoord; cwd: string }>();
   #revoked = false;
 
   constructor(private readonly d: AgentCoreDeps) {
@@ -303,6 +312,14 @@ export class AgentCore {
       owner: d.owner,
       now: d.now,
       log: (msg, meta) => d.log.warn(msg, meta),
+    });
+    this.coordinator = new Coordinator({
+      host: this.#coordHost(),
+      git: d.git ?? nodeGit(),
+      now: d.now,
+      audit: (type, meta) => this.#audit(type, meta),
+      log: (msg, meta) => d.log.warn(msg, meta),
+      ...(d.setTimer ? { setTimer: d.setTimer } : {}),
     });
     d.links?.attach(this.#linkHost());
   }
@@ -674,6 +691,50 @@ export class AgentCore {
         if (!this.d.links) return this.#reject(cid, "links_disabled");
         await this.d.links.publish();
         return { ok: true };
+      // ---- coordinator mode (ADR 0025 §6): client-signed only (no relay carries these) ----
+      case "coord.start": {
+        if (!policy.coordinator?.enabled) return this.#reject(cid, "coordinator_off");
+        if (!isSignedOrigin(origin)) return this.#reject(cid, "origin_mismatch");
+        const target = await this.#sessionTarget(undefined, p.appId ?? "claude-code");
+        if (!target.ok) return this.#reject(cid, target.reason);
+        const goal = await open<string>(p.goalCt);
+        if (typeof goal !== "string" || !goal.trim()) return this.#reject(cid, "invalid");
+        const r = await this.coordinator.start({
+          goal: goal.slice(0, 4000),
+          workspaceLabel: p.workspaceLabel,
+          appId: p.appId ?? "claude-code",
+          maxAgents: p.maxAgents ?? 3,
+          maxMinutes: p.maxMinutes ?? 120,
+          ...(p.base ? { base: p.base } : {}),
+        });
+        return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
+      }
+      case "coord.approve": {
+        if (!policy.coordinator?.enabled) return this.#reject(cid, "coordinator_off");
+        if (!isSignedOrigin(origin)) return this.#reject(cid, "origin_mismatch");
+        // Approving a plan lets Chalito answer its helpers' prompts: the owner's passkey, always
+        // (security review, 2026-10-19), like the merge tap.
+        const failure = await this.#passkeyFailure(origin.startsWith("client:") ? origin.slice(7) : null, body);
+        if (failure) return this.#reject(cid, failure);
+        const r = await this.coordinator.approve(p.planId);
+        return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
+      }
+      case "coord.stop": {
+        // The kill switch: cheap (no passkey) and works even with coordinator mode turned off
+        // since, but only from a trusted client's signature.
+        if (!isSignedOrigin(origin)) return this.#reject(cid, "origin_mismatch");
+        const r = await this.coordinator.stop(p.planId, "owner");
+        return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
+      }
+      case "coord.merge": {
+        if (!policy.coordinator?.enabled) return this.#reject(cid, "coordinator_off");
+        if (!isSignedOrigin(origin)) return this.#reject(cid, "origin_mismatch");
+        // The owner's merge tap moves (and pushes) the base: their passkey, always.
+        const failure = await this.#passkeyFailure(origin.startsWith("client:") ? origin.slice(7) : null, body);
+        if (failure) return this.#reject(cid, failure);
+        const r = await this.coordinator.merge(p.planId);
+        return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
+      }
       case "link.handoff":
       case "link.share":
       case "link.result": {
@@ -691,6 +752,60 @@ export class AgentCore {
   }
 
   /** What the link manager may do here: the same session, event and approval paths as commands. */
+  #coordHost(): CoordHost {
+    return {
+      workspace: (label) => this.d.policy.get().workspaces.find((w) => w.label === label),
+      helpersAllowed: () => PERMISSION_RANK[this.d.policy.get().remote.maxPermissionMode] >= PERMISSION_RANK.default,
+      startSession: async (input) => {
+        const target = await this.#sessionTarget(undefined, input.appId);
+        if (!target.ok) return target;
+        if (!(await this.#makeRoom())) return { ok: false, reason: "session_limit" };
+        try {
+          await this.startSession({
+            sid: input.sid,
+            adapter: target.adapter,
+            ...(target.appId ? { appId: target.appId } : {}),
+            ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
+            workspace: { label: input.workspaceLabel, path: input.cwd },
+            prompt: input.prompt,
+            origin: input.origin,
+            permissionMode: input.permissionMode,
+            coord: input.coord,
+          });
+          return { ok: true };
+        } catch (err) {
+          this.d.log.error("coord.start_failed", { error: err instanceof Error ? err.message : "error" });
+          return { ok: false, reason: "start_failed" };
+        }
+      },
+      prompt: async (sid, text, origin) => {
+        const s = this.sessions.get(sid);
+        if (!s) {
+          if (this.#dormant.has(sid)) await this.#revive(`coord-${sid}-${this.d.now()}`, sid, text, origin);
+          return;
+        }
+        await this.#event(s, { type: "message.user", origin, ct: await this.sealer.seal({ text }, `event:${sid}`) });
+        this.#prompt(s, text, origin);
+      },
+      interrupt: async (sid) => {
+        await this.sessions.get(sid)?.handle?.interrupt();
+      },
+      observe: (sid, fn) => {
+        this.#observers.set(sid, fn);
+        return () => {
+          if (this.#observers.get(sid) === fn) this.#observers.delete(sid);
+        };
+      },
+      publish: async (sid, state) => {
+        if (this.#revoked) return;
+        await this.d.store.upsertSession(sid, {
+          coord: { planId: state.planId, ct: await this.sealer.seal(state, `coord:${sid}`) },
+          updatedAt: this.d.now(),
+        });
+      },
+    };
+  }
+
   #linkHost(): LinkHost {
     const info = (s: Session) => ({
       sid: s.sid,
@@ -903,8 +1018,11 @@ export class AgentCore {
       lastActiveAt: this.d.now(),
       turnOrigin: input.origin,
       liveChain: Promise.resolve(),
-      ...(input.coord ? { coord: input.coord } : {}),
+      ...((input.coord ?? this.#coordOf.get(sid)?.coord)
+        ? { coord: (input.coord ?? this.#coordOf.get(sid)?.coord)! }
+        : {}),
     };
+    if (input.coord) this.#coordOf.set(sid, { coord: input.coord, cwd: input.workspace.path });
     this.sessions.set(sid, session);
     this.#dormant.delete(sid);
     try {
@@ -1304,6 +1422,8 @@ export class AgentCore {
       return this.#reject(cid, "permission_mode_above_ceiling");
     const target = await this.#sessionTarget(r.appId ? undefined : r.adapter, r.appId);
     if (!target.ok) return this.#reject(cid, target.reason);
+    // A coordinator helper comes back in its own worktree, still a helper.
+    const helper = this.#coordOf.get(sid);
     // Never learned a provider session (it failed at start): a prompt starts afresh in the same sid.
     if (!r.providerSessionId && !prompt) return { ok: true, sid };
     if (!(await this.#makeRoom())) return this.#reject(cid, "session_limit");
@@ -1312,7 +1432,7 @@ export class AgentCore {
         adapter: target.adapter,
         ...(target.appId ? { appId: target.appId } : {}),
         ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
-        workspace: ws,
+        workspace: helper ? { label: ws.label, path: helper.cwd } : ws,
         prompt,
         origin,
         permissionMode: r.permissionMode,
@@ -1424,12 +1544,15 @@ export class AgentCore {
       ...(err instanceof Error ? { error: err.message } : {}),
     });
     this.approvals.revokeAll();
+    void this.coordinator.stopAll("revoked");
     this.d.links?.close();
     for (const s of [...this.sessions.values()]) this.#suspend(s, "agent_revoked");
   }
 
   /** Agent shutdown: interrupt busy sessions, close every process, keep all of them resumable. */
   async suspendAll(): Promise<void> {
+    // Plans live in memory: the agent stopping ends them (worktrees and branches stay).
+    await this.coordinator.stopAll("restart").catch(() => undefined);
     for (const s of [...this.sessions.values()]) {
       if (BUSY.has(s.state)) await s.handle?.interrupt().catch(() => undefined);
       this.#suspend(s, "agent_stop");
@@ -1678,6 +1801,7 @@ export class AgentCore {
     // An idle-closed (or replaced) session's last words, e.g. "completed" after close().
     if (s.closing || this.#revoked || this.sessions.get(s.sid) !== s) return;
     s.lastActiveAt = this.d.now();
+    this.#observers.get(s.sid)?.(e);
     // Hand-off tasks (links/manager.ts): projection, budget, the result back to the sender.
     if (this.d.links)
       void this.d.links
@@ -1837,6 +1961,26 @@ export class AgentCore {
     } catch (err) {
       this.d.log.warn("card.share_failed", { sid: s.sid, error: err instanceof Error ? err.message : "error" });
     }
+  }
+
+  /** A passkey step-up over this command by its signer; unlike a revoke, required even with no passkey enrolled. */
+  async #passkeyFailure(signer: string | null, body: CommandBody | undefined): Promise<string | null> {
+    const trust = this.d.trust();
+    const credential = signer ? trust.webauthnFor(signer) : undefined;
+    if (!credential) return "step_up_required";
+    const step = body?.stepUp;
+    if (!body || !step || step.method !== "webauthn" || !step.assertion || step.bundle) return "step_up_required";
+    const res = await verifyWebAuthnAssertion({
+      assertion: step.assertion,
+      credential,
+      expectedChallenge: await stepUpChallenge(body),
+      rpId: credential.rpId,
+      origin: [`https://${credential.rpId}`],
+    });
+    if (!res.ok) return `step_up_${res.reason}`;
+    if (!trust.acceptSignCount(signer!, res.signCount)) return "step_up_replayed";
+    await this.d.saveTrust();
+    return null;
   }
 
   async #revokeStepUpFailure(signer: string | null, body: CommandBody | undefined): Promise<string | null> {

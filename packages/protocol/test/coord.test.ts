@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   COORD_RULE_TTL_MS,
+  CommandBody,
+  CoordPlanState,
+  CoordTaskSpec,
+  RelayedCommand,
   CoordRule,
   CoordRuleBody,
   CoordRuleRevoke,
@@ -125,5 +129,65 @@ describe("rule withdrawals", () => {
     expect(CoordRuleRevoke.safeParse(env).success).toBe(true);
     expect(CoordRuleRevoke.safeParse({ ...env, ctx: "chalito.coordrule.v1" }).success).toBe(false);
     expect(CoordRuleRevoke.safeParse({ ...env, body: { ...env.body, extra: 1 } }).success).toBe(false);
+  });
+});
+
+describe("coordinator commands and plan state (G2)", () => {
+  const body = (payload: unknown, origin = "client:dev_p") => ({
+    v: 1,
+    cid: "c1",
+    uid: "u1",
+    targetDeviceId: "dev_a",
+    origin,
+    nonce: "A".repeat(22),
+    issuedAt: 1,
+    expiresAt: 2,
+    payload,
+  });
+  const goalCt = {
+    alg: "xchacha20poly1305+sealedbox",
+    nonce: "A".repeat(32),
+    ct: "AAAA",
+    keys: { dev_a: "A".repeat(107) },
+  };
+
+  it("parses the four commands with no defaults filled in (the signature covers the parsed body)", () => {
+    const start = CommandBody.safeParse(body({ type: "coord.start", workspaceLabel: "p", goalCt }));
+    expect(start.success).toBe(true);
+    expect(start.data!.payload).not.toHaveProperty("maxAgents");
+    expect(start.data!.payload).not.toHaveProperty("maxMinutes");
+    for (const p of [
+      { type: "coord.approve", planId: "pabcdef12" },
+      { type: "coord.stop", planId: "pabcdef12" },
+      { type: "coord.merge", planId: "pabcdef12" },
+    ])
+      expect(CommandBody.safeParse(body(p)).success, p.type).toBe(true);
+    expect(CommandBody.safeParse(body({ type: "coord.approve", planId: "../x" })).success).toBe(false);
+    expect(
+      CommandBody.safeParse(body({ type: "coord.start", workspaceLabel: "p", goalCt, base: "--upload-pack=x" }))
+        .success,
+    ).toBe(false);
+    expect(
+      CommandBody.safeParse(body({ type: "coord.start", workspaceLabel: "p", goalCt, base: "a..b" })).success,
+    ).toBe(false);
+  });
+
+  it("no relay carries a coord.* command", () => {
+    for (const [relayedBy, origin] of [
+      ["mcp-gateway", "mcp:claude"],
+      ["notifier", `call:CA${"a".repeat(32)}`],
+      ["a2a-server", "a2a:x"],
+    ] as const)
+      expect(
+        RelayedCommand.safeParse({ relayedBy, body: body({ type: "coord.stop", planId: "pabcdef12" }, origin) })
+          .success,
+      ).toBe(false);
+  });
+
+  it("validates a planner's task and the sealed plan state", () => {
+    expect(CoordTaskSpec.safeParse({ id: "a", title: "A", brief: "b", acceptance: ["x"] }).success).toBe(true);
+    expect(CoordTaskSpec.safeParse({ id: "A B", title: "A", brief: "b", acceptance: ["x"] }).success).toBe(false);
+    expect(CoordTaskSpec.safeParse({ id: "a", title: "A", brief: "b", acceptance: [] }).success).toBe(false);
+    expect(CoordPlanState.safeParse({ v: 1 }).success).toBe(false);
   });
 });
