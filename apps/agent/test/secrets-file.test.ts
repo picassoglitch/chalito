@@ -115,7 +115,7 @@ describe("keychain addon missing (broken build): fail closed", () => {
     const s = new KeyringStore(missing);
     await expect(s.get("device.sign")).rejects.toBeInstanceOf(KeyringUnavailableError);
     await expect(s.set("device.sign", "secret")).rejects.toThrow(
-      /Reinstall Chalito from https:\/\/chalito\.chalyb\.com\/descargar/,
+      /Reinstall Chalito from https:\/\/www\.chalyb\.com\/app\/chalito\/descargar/,
     );
     await expect(s.delete("device.sign")).rejects.toBeInstanceOf(KeyringUnavailableError);
   });
