@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   COORD_RULE_TTL_MS,
+  CommandBody,
+  CoordPlanState,
+  CoordTaskSpec,
+  ApprovalDetails,
+  SignedCoordPlan,
+  planDigestInput,
+  RelayedCommand,
   CoordRule,
   CoordRuleBody,
   CoordRuleRevoke,
@@ -111,6 +118,127 @@ describe("rule withdrawals", () => {
     expect(CoordRuleRevoke.safeParse(env).success).toBe(true);
     expect(CoordRuleRevoke.safeParse({ ...env, ctx: "chalito.coordrule.v1" }).success).toBe(false);
     expect(CoordRuleRevoke.safeParse({ ...env, body: { ...env.body, extra: 1 } }).success).toBe(false);
+  });
+});
+
+describe("coordinator commands and plan state (G2)", () => {
+  const body = (payload: unknown, origin = "client:dev_p") => ({
+    v: 1,
+    cid: "c1",
+    uid: "u1",
+    targetDeviceId: "dev_a",
+    origin,
+    nonce: "A".repeat(22),
+    issuedAt: 1,
+    expiresAt: 2,
+    payload,
+  });
+  const goalCt = {
+    alg: "xchacha20poly1305+sealedbox",
+    nonce: "A".repeat(32),
+    ct: "AAAA",
+    keys: { dev_a: "A".repeat(107) },
+  };
+
+  it("parses the four commands with no defaults filled in (the signature covers the parsed body)", () => {
+    const start = CommandBody.safeParse(body({ type: "coord.start", workspaceLabel: "p", goalCt }));
+    expect(start.success).toBe(true);
+    expect(start.data!.payload).not.toHaveProperty("maxAgents");
+    expect(start.data!.payload).not.toHaveProperty("maxMinutes");
+    const digest = "a".repeat(64);
+    for (const p of [
+      { type: "coord.approve", planId: "pabcdef12", digest },
+      { type: "coord.stop", planId: "pabcdef12" },
+      { type: "coord.merge", planId: "pabcdef12", digest },
+    ])
+      expect(CommandBody.safeParse(body(p)).success, p.type).toBe(true);
+    expect(CommandBody.safeParse(body({ type: "coord.approve", planId: "../x", digest })).success).toBe(false);
+    // Security review: approve and merge name the exact plan they're about.
+    expect(CommandBody.safeParse(body({ type: "coord.approve", planId: "pabcdef12" })).success).toBe(false);
+    expect(CommandBody.safeParse(body({ type: "coord.merge", planId: "pabcdef12", digest: "xyz" })).success).toBe(
+      false,
+    );
+    expect(
+      CommandBody.safeParse(body({ type: "coord.start", workspaceLabel: "p", goalCt, base: "--upload-pack=x" }))
+        .success,
+    ).toBe(false);
+    expect(
+      CommandBody.safeParse(body({ type: "coord.start", workspaceLabel: "p", goalCt, base: "a..b" })).success,
+    ).toBe(false);
+  });
+
+  it("no relay carries a coord.* command", () => {
+    for (const [relayedBy, origin] of [
+      ["mcp-gateway", "mcp:claude"],
+      ["notifier", `call:CA${"a".repeat(32)}`],
+      ["a2a-server", "a2a:x"],
+    ] as const)
+      expect(
+        RelayedCommand.safeParse({ relayedBy, body: body({ type: "coord.stop", planId: "pabcdef12" }, origin) })
+          .success,
+      ).toBe(false);
+  });
+
+  it("validates a planner's task and the sealed plan state", () => {
+    expect(CoordTaskSpec.safeParse({ id: "a", title: "A", brief: "b", acceptance: ["x"] }).success).toBe(true);
+    expect(CoordTaskSpec.safeParse({ id: "A B", title: "A", brief: "b", acceptance: ["x"] }).success).toBe(false);
+    expect(CoordTaskSpec.safeParse({ id: "a", title: "A", brief: "b", acceptance: [] }).success).toBe(false);
+    expect(CoordPlanState.safeParse({ v: 1 }).success).toBe(false);
+  });
+});
+
+describe("signed plans and tap digests (security review)", () => {
+  const state = {
+    v: 1,
+    planId: "pabcdef12",
+    goal: "g",
+    workspaceLabel: "w",
+    base: "main",
+    status: "awaiting_approval",
+    maxAgents: 3,
+    maxMinutes: 120,
+    startedAt: null,
+    tasks: [
+      {
+        id: "a",
+        title: "A",
+        acceptance: ["x"],
+        dependsOn: [],
+        status: "pending",
+        branch: "coord/pabcdef12/a",
+        sid: null,
+        note: "agent text",
+        reviewRounds: 0,
+      },
+    ],
+    integration: { branch: "coord/pabcdef12/integration", sid: null, note: null, head: null },
+    note: null,
+    updatedAt: 1,
+  } as const;
+
+  it("the plan travels signed by the agent", () => {
+    expect(SigningContext.options).toContain("chalito.coordplan.v1");
+    const env = { ctx: "chalito.coordplan.v1", body: state, signerDeviceId: "dev_a", sig: "A".repeat(86) };
+    expect(SignedCoordPlan.safeParse(env).success).toBe(true);
+    expect(SignedCoordPlan.safeParse({ ...env, ctx: "chalito.coordrule.v1" }).success).toBe(false);
+  });
+
+  it("the approve digest covers what the owner approves, not progress; merge adds the integration commit", () => {
+    const p = CoordPlanState.parse(state);
+    const a = planDigestInput(p, "approve");
+    expect(a).not.toHaveProperty("integration");
+    expect(JSON.stringify(a)).not.toContain("agent text");
+    expect(planDigestInput({ ...p, updatedAt: 99, status: "running" }, "approve")).toEqual(a);
+    expect(planDigestInput({ ...p, goal: "other" }, "approve")).not.toEqual(a);
+    const m = planDigestInput({ ...p, integration: { ...p.integration, head: "b".repeat(40) } }, "merge");
+    expect(m).toMatchObject({ kind: "merge", integration: { head: "b".repeat(40) } });
+  });
+
+  it("approval details may carry the helper's workspace label", () => {
+    const d = { v: 1, summary: "x", origin: "agent:coord_pabcdef12", workspaceLabel: "taquito" };
+    expect(ApprovalDetails.parse(d).workspaceLabel).toBe("taquito");
+    const { workspaceLabel: _w, ...plain } = d;
+    expect(ApprovalDetails.parse(plain)).not.toHaveProperty("workspaceLabel");
   });
 });
 

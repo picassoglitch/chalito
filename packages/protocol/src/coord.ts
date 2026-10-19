@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EpochMs, Uid } from "./common.js";
-import { signed } from "./crypto.js";
+import { SealedEnvelope, signed } from "./crypto.js";
+import { AppId } from "./recipe.js";
 
 /**
  * Coordinator mode (ADR 0025 §6, owner amendments of 2026-10-19).
@@ -184,3 +185,161 @@ export const rememberMatchFor = (a: { toolName: string; input: unknown; workspac
   const parsed = RuleMatch.safeParse(m);
   return parsed.success && ruleMatchText(parsed.data) !== null ? parsed.data : null;
 };
+
+// ---- G2: the coordinator itself (ADR 0025 §1, §6) --------------------------------------------
+
+export const PlanId = z.string().regex(/^p[a-z0-9]{6,12}$/);
+export const CoordTaskId = z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/);
+/** A git branch name the coordinator accepts as the base (no options, no ranges, no `..`). */
+export const BranchName = z
+  .string()
+  .max(120)
+  // Starts with a letter or digit (never an option), plain path segments, no `..` (a range).
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/)
+  .refine((b) => !b.includes("..") && !b.split("/").some((p) => p.endsWith(".lock") || p.endsWith(".")), {
+    message: "not a plain branch name",
+  });
+
+/** One task of a plan, as the planner proposes it (and the owner sees it before the one tap). */
+export const CoordTaskSpec = z
+  .object({
+    id: CoordTaskId,
+    title: z.string().min(1).max(120),
+    /** What the helper is asked to do. */
+    brief: z.string().min(1).max(4000),
+    acceptance: z.array(z.string().min(1).max(300)).min(1).max(10),
+    /** Files the task expects to touch; a deletion outside these blocks review (ADR 0025 §3). */
+    files: z.array(z.string().min(1).max(300)).max(50).default([]),
+    dependsOn: z.array(CoordTaskId).max(6).default([]),
+  })
+  .strict();
+export type CoordTaskSpec = z.infer<typeof CoordTaskSpec>;
+
+export const CoordTaskStatus = z.enum([
+  "pending",
+  "running",
+  "reviewing",
+  "changes_requested",
+  "approved",
+  "failed",
+  "stopped",
+]);
+export const CoordPlanStatus = z.enum([
+  "planning",
+  "awaiting_approval",
+  "running",
+  "integrating",
+  "ready_to_merge",
+  "merged",
+  "stopped",
+  "failed",
+]);
+
+/**
+ * What the phone shows for a plan: sealed to the owner's clients in the coordinator session's doc
+ * (`doc.coord.ct`, aad `coord:<sid>`). Text fields come from agents: shown as data, never acted on.
+ */
+export const CoordPlanState = z
+  .object({
+    v: z.literal(1),
+    planId: PlanId,
+    goal: z.string().max(4000),
+    workspaceLabel: z.string().max(80),
+    base: z.string().max(120),
+    status: CoordPlanStatus,
+    maxAgents: z.number().int().min(1).max(6),
+    maxMinutes: z.number().int().min(5).max(720),
+    startedAt: z.number().int().nullable(),
+    tasks: z
+      .array(
+        z.object({
+          id: CoordTaskId,
+          title: z.string().max(120),
+          acceptance: z.array(z.string().max(300)).max(10),
+          dependsOn: z.array(CoordTaskId).max(6),
+          status: CoordTaskStatus,
+          branch: z.string().max(200),
+          sid: z.string().max(128).nullable(),
+          /** The helper's or reviewer's last word on it (truncated). */
+          note: z.string().max(500).nullable(),
+          reviewRounds: z.number().int().min(0).max(10),
+        }),
+      )
+      .max(12),
+    integration: z.object({
+      branch: z.string().max(200),
+      sid: z.string().max(128).nullable(),
+      note: z.string().max(500).nullable(),
+      /** The integration branch's commit once ready to merge: what the merge tap moves the base to. */
+      head: z
+        .string()
+        .regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/)
+        .nullable(),
+    }),
+    /** Why the plan stopped or failed, or what the merge did. */
+    note: z.string().max(500).nullable(),
+    updatedAt: z.number().int(),
+  })
+  .strict();
+export type CoordPlanState = z.infer<typeof CoordPlanState>;
+
+/**
+ * The plan as the agent publishes it: signed with its device key (security review, 2026-10-19),
+ * then sealed to the owner's clients. A client shows a plan, and taps on it, only once the
+ * signature verifies against the agent key it trusts.
+ */
+export const SignedCoordPlan = signed("chalito.coordplan.v1", CoordPlanState);
+export type SignedCoordPlan = z.infer<typeof SignedCoordPlan>;
+
+const Hex64 = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * What a tap is about (security review): `coord.approve` covers the goal, limits and tasks the
+ * owner saw; `coord.merge` also the integration commit. Both sides hash
+ * SHA-256(JCS(planDigestInput(plan, kind))) (hex); the agent refuses a tap whose digest isn't the
+ * one of its current plan.
+ */
+export const planDigestInput = (p: CoordPlanState, kind: "approve" | "merge") => ({
+  v: 1,
+  kind,
+  planId: p.planId,
+  goal: p.goal,
+  workspaceLabel: p.workspaceLabel,
+  base: p.base,
+  maxAgents: p.maxAgents,
+  maxMinutes: p.maxMinutes,
+  tasks: p.tasks.map((t) => ({
+    id: t.id,
+    title: t.title,
+    acceptance: t.acceptance,
+    dependsOn: t.dependsOn,
+    branch: t.branch,
+  })),
+  ...(kind === "merge" ? { integration: { branch: p.integration.branch, head: p.integration.head } } : {}),
+});
+
+/** Coordinator commands: signed by a trusted client only (no relay carries them). */
+export const CoordCommands = [
+  /** A goal for one of this computer's workspaces; the planner proposes tasks and waits for the tap. */
+  z
+    .object({
+      type: z.literal("coord.start"),
+      workspaceLabel: z.string().min(1).max(80),
+      goalCt: SealedEnvelope,
+      /** The coding agent for the planner, helpers and reviewer (default Claude Code). */
+      appId: AppId.optional(),
+      // Optional, never `.default()`: the agent verifies the signature over the parsed body, so a
+      // default filled in here would break it. The agent applies 3 agents and 120 minutes.
+      maxAgents: z.number().int().min(1).max(6).optional(),
+      maxMinutes: z.number().int().min(5).max(720).optional(),
+      /** The branch the plan starts from and merges into (default: the checked-out branch). */
+      base: BranchName.optional(),
+    })
+    .strict(),
+  /** The owner's one tap: run the proposed tasks. */
+  z.object({ type: z.literal("coord.approve"), planId: PlanId, digest: Hex64 }).strict(),
+  /** The kill switch: interrupts every helper, reviewer and the planner; keeps worktrees and branches. */
+  z.object({ type: z.literal("coord.stop"), planId: PlanId }).strict(),
+  /** The owner's merge tap (passkey step-up over the command): integration into the base, then push. */
+  z.object({ type: z.literal("coord.merge"), planId: PlanId, digest: Hex64 }).strict(),
+] as const;
