@@ -4,3 +4,6 @@ export * from "./idle.js";
 export * from "./behaviour.js";
 export * from "./gestures.js";
 export * from "./visemes.js";
+export * from "./actions.js";
+export * from "./rig.js";
+export * from "./activity.js";

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { CreatureBinding, createCardAvatar, type AvatarFrame, type CardAvatar } from "@chalito/avatar-three";
+import { CreatureBinding, RIG_REST, createCardAvatar, type AvatarFrame, type CardAvatar } from "@chalito/avatar-three";
 import { EMOTION_DRAWING } from "@chalito/roster";
 import type { EmotionTag } from "@chalito/protocol";
 import {
@@ -60,8 +60,9 @@ export class QualityResolver {
 
 /**
  * The pet's companion card at a render level: bajo is the flat card impostor (no gesture rig, no
- * contact shadow), medio and alto run the avatar driver (bob, squash, lean, gestures), alto adds
- * the contact shadow. The driver keeps running either way so the pet's state stays in step.
+ * contact shadow), medio and alto run the avatar driver (breathing, lean, the actions, and the
+ * cutout rig's arms, head, blinks and mouth when the card has one), alto adds the contact shadow.
+ * The driver keeps running either way so the pet's state stays in step.
  */
 export class PetLook {
   readonly root = new THREE.Group();
@@ -71,7 +72,7 @@ export class PetLook {
   #emotion: EmotionTag | null = null;
 
   constructor(assets: ActorAssets, level: LevelSettings) {
-    this.card = createCardAvatar(assets.spec, assets.drawings, assets.items, 1);
+    this.card = createCardAvatar(assets.spec, assets.drawings, assets.items, 1, assets.rig ?? null);
     // The equipped skin (store), drawn over the card whatever the emotion drawing.
     this.card.setSkin(assets.skin ?? null);
     this.root.add(this.card.root);
@@ -87,6 +88,7 @@ export class PetLook {
     if (level.impostors) {
       this.card.root.scale.set(1, 1, 1);
       this.card.root.rotation.set(0, 0, 0);
+      this.card.applyRig(RIG_REST);
     }
   }
 
@@ -104,6 +106,7 @@ export class PetLook {
       return;
     }
     this.#binding.apply(frame);
+    this.card.applyRig(frame.rig);
   }
 
   dispose(): void {
