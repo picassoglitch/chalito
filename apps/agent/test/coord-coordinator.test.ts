@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 // Real git in temp folders: a plan runs dozens of git commands.
 vi.setConfig({ testTimeout: 60_000 });
 import type { SessionCoord } from "../src/agent-core.js";
-import { Coordinator, extractJson, nodeGit, validTasks, type CoordHost } from "../src/coord/coordinator.js";
+import { Coordinator, extractJson, nodeGit, planDigest, validTasks, type CoordHost } from "../src/coord/coordinator.js";
 
 const ENV_KEYS = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"] as const;
 const saved: Record<string, string | undefined> = {};
@@ -215,7 +215,7 @@ describe("a plan from goal to merge (real git)", () => {
     expect(t.started.map((s) => [s.role, s.permissionMode])).toEqual([["planner", "plan"]]);
     expect(t.last().tasks.map((x) => x.branch)).toEqual([`coord/${planId}/a`, `coord/${planId}/b`]);
 
-    expect(await t.c.approve(planId)).toMatchObject({ ok: true });
+    expect(await t.c.approve(planId, await planDigest(t.last(), "approve"))).toMatchObject({ ok: true });
     await waitFor(() => t.last().status === "ready_to_merge");
     // Helpers worked inside the workspace, each in its own worktree, as coordinator helpers.
     const helpers = t.started.filter((s) => s.role === "helper");
@@ -232,7 +232,7 @@ describe("a plan from goal to merge (real git)", () => {
     expect(existsSync(join(root, "a.ts"))).toBe(false);
     expect(sh(root, "status", "--porcelain")).toBe("");
 
-    expect(await t.c.merge(planId)).toMatchObject({ ok: true });
+    expect(await t.c.merge(planId, await planDigest(t.last(), "merge"))).toMatchObject({ ok: true });
     expect(t.last().status).toBe("merged");
     expect(readFileSync(join(root, "a.ts"), "utf8")).toContain("a = true");
     expect(readFileSync(join(root, "b.ts"), "utf8")).toContain("b = true");
@@ -247,8 +247,14 @@ describe("a plan from goal to merge (real git)", () => {
     const t = make(root, { planner: () => plan([task("a")]) });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    expect(await t.c.merge(r.planId)).toEqual({ ok: false, reason: "plan_not_ready" });
-    expect(await t.c.approve("pnope0000")).toEqual({ ok: false, reason: "unknown_plan" });
+    expect(await t.c.merge(r.planId, await planDigest(t.last(), "merge"))).toEqual({
+      ok: false,
+      reason: "plan_not_ready",
+    });
+    expect(await t.c.approve("pnope0000", await planDigest(t.last(), "approve"))).toEqual({
+      ok: false,
+      reason: "unknown_plan",
+    });
   });
 
   it("runs at most maxAgents helpers at once and a dependent task after (and on top of) what it needs", async () => {
@@ -270,7 +276,7 @@ describe("a plan from goal to merge (real git)", () => {
     });
     const r = (await start(t.c, { maxAgents: 1 })) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "ready_to_merge");
     expect(peak).toBe(1);
     const order = t.started.filter((s) => s.role === "helper").map((s) => s.taskId);
@@ -287,7 +293,7 @@ describe("a plan from goal to merge (real git)", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "ready_to_merge");
     const helper = t.started.find((s) => s.role === "helper")!;
     expect(helper.prompts[1]).toMatch(/add a test/);
@@ -307,7 +313,7 @@ describe("a plan from goal to merge (real git)", () => {
     );
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "failed");
     expect(t.last().tasks[0]!.status).toBe("failed");
   });
@@ -330,7 +336,7 @@ describe("a plan from goal to merge (real git)", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "ready_to_merge");
     const helper = t.started.find((s) => s.role === "helper")!;
     expect(helper.prompts[1]).toMatch(/README\.md/);
@@ -350,7 +356,7 @@ describe("a plan from goal to merge (real git)", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => (t.started.find((s) => s.role === "helper")?.prompts.length ?? 0) > 1);
     expect(t.started.find((s) => s.role === "helper")!.prompts[1]).toMatch(/README\.md/);
   });
@@ -361,7 +367,10 @@ describe("a plan from goal to merge (real git)", () => {
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
     t.h.helpersAllowed = () => false;
-    expect(await t.c.approve(r.planId)).toEqual({ ok: false, reason: "permission_mode_above_ceiling" });
+    expect(await t.c.approve(r.planId, await planDigest(t.last(), "approve"))).toEqual({
+      ok: false,
+      reason: "permission_mode_above_ceiling",
+    });
     expect(t.last().status).toBe("awaiting_approval");
   });
 
@@ -379,7 +388,7 @@ describe("a plan from goal to merge (real git)", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "ready_to_merge");
     const integ = t.started.find((s) => s.role === "integration")!;
     expect(integ.prompt).toMatch(new RegExp(`in this order with git merge --no-ff[^:]*: coord/${r.planId}/b`));
@@ -395,7 +404,7 @@ describe("a plan from goal to merge (real git)", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "failed");
     expect(t.last().note).toMatch(/tests broke/);
   });
@@ -418,14 +427,17 @@ describe("the kill switch, the budget and the merge tap's checks", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.started.some((s) => s.role === "helper"));
     expect(await t.c.stop(r.planId)).toMatchObject({ ok: true });
     expect(t.last().status).toBe("stopped");
     expect(t.interrupted).toContain(t.started.find((s) => s.role === "helper")!.sid);
     expect(sh(root, "branch", "--list", `coord/${r.planId}/a`)).toContain(`coord/${r.planId}/a`);
     expect(t.started.every((s) => !s.coord.active())).toBe(true);
-    expect(await t.c.approve(r.planId)).toEqual({ ok: false, reason: "plan_not_waiting" });
+    expect(await t.c.approve(r.planId, await planDigest(t.last(), "approve"))).toEqual({
+      ok: false,
+      reason: "plan_not_waiting",
+    });
   });
 
   it("the budget stops the plan when it runs out", async () => {
@@ -433,7 +445,7 @@ describe("the kill switch, the budget and the merge tap's checks", () => {
     const t = make(root, { planner: () => plan([task("a")]), helper: () => "" });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     t.timers.forEach((fire) => fire());
     await waitFor(() => t.last().status === "stopped");
     expect(t.last().note).toMatch(/tiempo/);
@@ -449,12 +461,12 @@ describe("the kill switch, the budget and the merge tap's checks", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "ready_to_merge");
     writeFileSync(join(root, "app.ts"), "export const a = 99;\n");
-    expect(await t.c.merge(r.planId)).toEqual({ ok: false, reason: "base_dirty" });
+    expect(await t.c.merge(r.planId, await planDigest(t.last(), "merge"))).toEqual({ ok: false, reason: "base_dirty" });
     sh(root, "commit", "-q", "-am", "someone else");
-    expect(await t.c.merge(r.planId)).toEqual({ ok: false, reason: "base_moved" });
+    expect(await t.c.merge(r.planId, await planDigest(t.last(), "merge"))).toEqual({ ok: false, reason: "base_moved" });
     expect(t.last().status).toBe("ready_to_merge");
   });
 
@@ -480,9 +492,9 @@ describe("the kill switch, the budget and the merge tap's checks", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "ready_to_merge");
-    await t.c.merge(r.planId);
+    await t.c.merge(r.planId, await planDigest(t.last(), "merge"));
     expect(t.last().status).toBe("merged");
     expect(existsSync(marker)).toBe(false);
   });
@@ -506,7 +518,7 @@ describe("the kill switch, the budget and the merge tap's checks", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(() => t.last().status === "failed");
     expect(existsSync(marker)).toBe(false);
     expect(t.last().note).toMatch(/configuración de git/);
@@ -534,11 +546,38 @@ describe("the kill switch, the budget and the merge tap's checks", () => {
     });
     const r = (await start(t.c)) as { planId: string };
     await waitFor(() => t.last().status === "awaiting_approval");
-    await t.c.approve(r.planId);
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
     await waitFor(
       () => ["failed", "ready_to_merge"].includes(t.last().status) || t.last().tasks[0]!.status === "changes_requested",
     );
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it("security review: a tap is for exactly the plan the owner saw", async () => {
+    const { root } = repo();
+    const t = make(root, {
+      planner: () => plan([task("a")]),
+      helper: commitHelper,
+      review: () => "APPROVE",
+      integration: integrator,
+    });
+    const r = (await start(t.c)) as { planId: string };
+    await waitFor(() => t.last().status === "awaiting_approval");
+    // A digest of something else (another goal) is refused.
+    const other = await planDigest({ ...t.last(), goal: "something else" }, "approve");
+    expect(await t.c.approve(r.planId, other)).toEqual({ ok: false, reason: "plan_changed" });
+    expect(t.last().status).toBe("awaiting_approval");
+    await t.c.approve(r.planId, await planDigest(t.last(), "approve"));
+    await waitFor(() => t.last().status === "ready_to_merge");
+    expect(t.last().integration.head).toMatch(/^[0-9a-f]{40}$/);
+    // Something lands on the integration branch after it was shown as ready: the old tap is refused.
+    const shown = await planDigest(t.last(), "merge");
+    const wt = join(root, ".chalito-coord", r.planId, "integration");
+    writeFileSync(join(wt, "late.ts"), "x\n");
+    sh(wt, "add", "-A");
+    sh(wt, "commit", "-q", "-m", "late");
+    expect(await t.c.merge(r.planId, shown)).toEqual({ ok: false, reason: "plan_changed" });
+    expect(existsSync(join(root, "late.ts"))).toBe(false);
   });
 
   it("refuses a workspace that isn't a git repo or a base that doesn't exist", async () => {

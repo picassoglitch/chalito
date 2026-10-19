@@ -235,6 +235,11 @@ export const CoordPlanState = z
       branch: z.string().max(200),
       sid: z.string().max(128).nullable(),
       note: z.string().max(500).nullable(),
+      /** The integration branch's commit once ready to merge: what the merge tap moves the base to. */
+      head: z
+        .string()
+        .regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/)
+        .nullable(),
     }),
     /** Why the plan stopped or failed, or what the merge did. */
     note: z.string().max(500).nullable(),
@@ -242,6 +247,41 @@ export const CoordPlanState = z
   })
   .strict();
 export type CoordPlanState = z.infer<typeof CoordPlanState>;
+
+/**
+ * The plan as the agent publishes it: signed with its device key (security review, 2026-10-19),
+ * then sealed to the owner's clients. A client shows a plan, and taps on it, only once the
+ * signature verifies against the agent key it trusts.
+ */
+export const SignedCoordPlan = signed("chalito.coordplan.v1", CoordPlanState);
+export type SignedCoordPlan = z.infer<typeof SignedCoordPlan>;
+
+const Hex64 = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * What a tap is about (security review): `coord.approve` covers the goal, limits and tasks the
+ * owner saw; `coord.merge` also the integration commit. Both sides hash
+ * SHA-256(JCS(planDigestInput(plan, kind))) (hex); the agent refuses a tap whose digest isn't the
+ * one of its current plan.
+ */
+export const planDigestInput = (p: CoordPlanState, kind: "approve" | "merge") => ({
+  v: 1,
+  kind,
+  planId: p.planId,
+  goal: p.goal,
+  workspaceLabel: p.workspaceLabel,
+  base: p.base,
+  maxAgents: p.maxAgents,
+  maxMinutes: p.maxMinutes,
+  tasks: p.tasks.map((t) => ({
+    id: t.id,
+    title: t.title,
+    acceptance: t.acceptance,
+    dependsOn: t.dependsOn,
+    branch: t.branch,
+  })),
+  ...(kind === "merge" ? { integration: { branch: p.integration.branch, head: p.integration.head } } : {}),
+});
 
 /** Coordinator commands: signed by a trusted client only (no relay carries them). */
 export const CoordCommands = [
@@ -262,9 +302,9 @@ export const CoordCommands = [
     })
     .strict(),
   /** The owner's one tap: run the proposed tasks. */
-  z.object({ type: z.literal("coord.approve"), planId: PlanId }).strict(),
+  z.object({ type: z.literal("coord.approve"), planId: PlanId, digest: Hex64 }).strict(),
   /** The kill switch: interrupts every helper, reviewer and the planner; keeps worktrees and branches. */
   z.object({ type: z.literal("coord.stop"), planId: PlanId }).strict(),
   /** The owner's merge tap (passkey step-up over the command): integration into the base, then push. */
-  z.object({ type: z.literal("coord.merge"), planId: PlanId }).strict(),
+  z.object({ type: z.literal("coord.merge"), planId: PlanId, digest: Hex64 }).strict(),
 ] as const;

@@ -81,6 +81,12 @@ export const ApprovalDetails = z.object({
   input: z.unknown().optional(),
   reasons: z.array(z.string().max(200)).max(10).default([]),
   origin: Origin,
+  /**
+   * Coordinator helpers only (ADR 0025 §6): the workspace label the session runs in, so a
+   * "Siempre así" rule is bound to what the agent signed, not to a plaintext column. Absent on every
+   * other approval, so their hash is unchanged for older clients.
+   */
+  workspaceLabel: z.string().min(1).max(80).optional(),
   /** For kind=decision (Mesa). */
   question: z.string().max(500).optional(),
   options: z.array(z.string().max(120)).max(6).optional(),
