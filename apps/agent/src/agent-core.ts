@@ -206,7 +206,10 @@ export interface SessionCoord {
   taskId: string;
   /** `coord/<plan>/`: the only branches the helper may push on its own. */
   branchPrefix: string;
-  /** Whether the plan still runs (stopped or finished: a timed-out prompt is a no). */
+  /**
+   * Whether the plan is running (or integrating). False once it stopped, failed or merged: then
+   * nothing is answered for the owner and a timed-out prompt is a no.
+   */
   active: () => boolean;
 }
 
@@ -1516,7 +1519,9 @@ export class AgentCore {
       }
       // Coordinator mode: Chalito answers for the owner within this computer's ceiling and the
       // owner's remembered rules; anything else still asks below.
-      if (s.coord && !linkTool) {
+      // Only while the plan runs, and only for the coordinator's own turns (security review): a
+      // prompt the owner sent into a helper, or anything after the plan ended, asks as usual.
+      if (s.coord && !linkTool && s.coord.active() && call.origin === `agent:coord_${s.coord.planId}`) {
         const answer = coordAnswer({
           classification,
           toolName: call.toolName,
