@@ -13,6 +13,7 @@ import {
   type ChalitoClient,
   type StepUpProvider,
 } from "@chalito/client";
+import { SettingsStore, apiPhone, type SettingsDb } from "@chalito/client/settings";
 import { DeviceClientKeys, KeyVault, deviceLogin, endorseGlyph, httpApi, passkeyStepUp } from "@chalito/client-keys";
 import { enrollDesktop } from "./enrollment.js";
 import { SignInController } from "./sign-in.js";
@@ -91,6 +92,8 @@ export interface Connected {
   voice: VoiceProvider;
   /** Salas: this companion's rooms; each opens in the room window. */
   rooms: RoomsSource;
+  /** The account's settings and companion (get_my_settings works for an active client too). */
+  settings: SettingsStore;
 }
 
 /**
@@ -140,6 +143,7 @@ export const createSession = async (
     onConnected({
       client,
       canStepUp: passkey !== null,
+      settings: new SettingsStore(sb as unknown as SettingsDb, owner, apiPhone(env.apiBase, token).channels),
       rooms: roomsSource({
         db: sb as unknown as RoomsDb,
         api,

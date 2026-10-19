@@ -54,6 +54,17 @@ describe("desktop settings (server-backed, PWA semantics)", () => {
     expect(server.load).toHaveBeenCalledTimes(2);
   });
 
+  it("signed in: mirrors the account's companion to this device, so the pet window draws it", async () => {
+    const l = local();
+    const server = fakeServer({ ...DEFAULT_SETTINGS, avatar: "luna" as SettingsValues["avatar"] });
+    const s = new DesktopSettings(server, l);
+    await s.start();
+    expect(l.save).toHaveBeenLastCalledWith(expect.objectContaining({ avatar: "luna" }));
+    s.set("avatar", "chalito" as SettingsValues["avatar"]);
+    // Right away, not after the debounce: the pet follows the pick at once.
+    expect(l.save).toHaveBeenLastCalledWith(expect.objectContaining({ avatar: "chalito" }));
+  });
+
   it("a refused change snaps back and reports `rejected`", async () => {
     const s = new DesktopSettings(fakeServer(), local());
     await s.start();

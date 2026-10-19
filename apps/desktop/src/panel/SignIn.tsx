@@ -51,6 +51,7 @@ export const SignIn = ({ controller }: { controller: SignInController | null }) 
         <div className="card" data-sign-in="ready">
           <p>{t("signIn.ready")}</p>
           {s.passkey !== "enrolled" && <p className="muted">{t("signIn.noPasskey")}</p>}
+          <p className="muted">{t("signIn.petHint")}</p>
         </div>
       );
     case "error":

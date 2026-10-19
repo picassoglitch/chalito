@@ -16,7 +16,9 @@ type Server = Pick<SettingsStore, "load" | "save" | "saveCompanion">;
  * (get/update_my_settings via @chalito/client's SettingsStore) once signed in, else this
  * device. Changes apply optimistically, then the server's view is re-read, so a refused
  * change (calls without a verified phone) snaps back with `rejected`. Companion edits are
- * debounced (no RPC per keystroke). An unreachable server falls back to the device copy.
+ * debounced (no RPC per keystroke). An unreachable server falls back to the device copy. Signed
+ * in, the server's view is mirrored to the device copy too: the pet window draws the companion
+ * from it (pet/scene.ts, via the storage event).
  */
 export class DesktopSettings {
   #view: SettingsView = { values: null, error: null, persisted: "device" };
@@ -57,7 +59,9 @@ export class DesktopSettings {
     const next = { ...cur, [k]: v };
     this.#set({ values: next, error: null });
     const server = this.#server;
-    if (!server) return this.local.save(next);
+    // The device copy is what the pet window reads: kept in step with the account too.
+    this.local.save(next);
+    if (!server) return;
     if (k === "avatar" || k === "companionName") {
       if (this.#companionTimer) clearTimeout(this.#companionTimer);
       this.#companionTimer = setTimeout(() => {
@@ -82,6 +86,7 @@ export class DesktopSettings {
 
   async #reload(): Promise<void> {
     const r = await this.#server!.load();
+    this.local.save(r.values);
     this.#set({ values: r.values, persisted: "server" });
   }
 
