@@ -39,6 +39,14 @@ HEADS = ["neutral", "happy", "sad", "tired"]  # surprised holds its face with bo
 HEAD_SIDES_Y = 420
 CHIN_X = (150, 420)
 OVERLAP = 25  # the body keeps this band under the head so a tilt never shows a gap
+# The sad drawing has pointed ears; its head takes the round ones (and the hair around them) from
+# the tired drawing, which lines up with it.
+HEAD_PATCHES = {
+    "sad": [
+        ("tired", [(58, 345), (128, 345), (128, 418), (58, 418)]),
+        ("tired", [(372, 326), (486, 326), (486, 402), (372, 402)]),
+    ],
+}
 
 
 def load(name):
@@ -209,7 +217,10 @@ def main():
     files["rig-body.webp"] = body
 
     for name in HEADS:
-        files[f"rig-head-{name}.webp"] = cut(load(name), head_mask(name))
+        src = load(name)
+        for other, poly in HEAD_PATCHES.get(name, []):
+            src.paste(load(other), (0, 0), poly_mask(poly, blur=1.5))
+        files[f"rig-head-{name}.webp"] = cut(src, head_mask(name))
     files["rig-lids.webp"] = lids(neutral)
     files["rig-mouth.webp"] = mouth()
 
