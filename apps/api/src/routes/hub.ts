@@ -5,7 +5,6 @@ import type { Deps } from "../deps.js";
 import { fail } from "../lib/errors.js";
 import { tenantApiToken, verifySsoToken } from "../hub/sso.js";
 import { dropLapsedSkins } from "../store/included.js";
-import { endDeviceVoice } from "../voice/routes.js";
 
 const bearerOk = (header: string | undefined, token: string) => {
   const given = Buffer.from(header?.startsWith("Bearer ") ? header.slice(7) : "");
@@ -64,7 +63,11 @@ export const hubRoutes = (deps: Deps) => {
     const banFailed: string[] = [];
     for (const id of revoked) {
       if (!(await deps.identity.disableDevice(id))) banFailed.push(id);
-      if (deps.voice) await endDeviceVoice(deps, deps.voice, owner, id);
+      if (deps.voice) {
+        // Loaded here: the voice module pulls server-only code the web tests can't import.
+        const { endDeviceVoice } = await import("../voice/routes.js");
+        await endDeviceVoice(deps, deps.voice, owner, id);
+      }
       await deps.audit.record({ action: "device.revoked", owner, actor: "hub", target: id, meta: { via: "reset" } });
     }
     // Agent-to-agent links go too (ADR 0022 §3): every computer is retired anyway.
