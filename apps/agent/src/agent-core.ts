@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   openJson,
   revokeBundleChallenge,
@@ -39,6 +39,9 @@ import { outsideTaskSid } from "@chalito/crypto";
 import { ApprovalManager, type ApprovalOutcome } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
+import { coordAnswer } from "./coord/gate.js";
+import { CoordRules } from "./coord/rules.js";
+import { coordinatorCeiling } from "./coord/toggle.js";
 import { publicReason } from "./command-result.js";
 import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
 import { COMPUTER_TOOL_PREFIX, ToolArgs, isToolName } from "./computer/tools.js";
@@ -183,10 +186,26 @@ interface Session {
   idleTimer?: { clear(): void };
   /** Being idle-closed or shut down: what the adapter reports from now on is ignored. */
   closing?: boolean;
+  /**
+   * Coordinator mode (ADR 0025 §6): this session is a helper of the owner's plan. Chalito answers
+   * its prompts within this computer's ceiling and the owner's remembered rules; it never gets
+   * computer control; a prompt that times out is asked again while the plan runs.
+   */
+  coord?: SessionCoord;
   /** The assistant message being streamed (`message.assistant.delta`), until its final text. */
   draft?: { mid: string; n: number; throttle: DeltaThrottle };
   /** Deltas are sealed and sent in order. */
   liveChain: Promise<void>;
+}
+
+/** A coordinator helper's place in its plan (ADR 0025 §6). */
+export interface SessionCoord {
+  planId: string;
+  taskId: string;
+  /** `coord/<plan>/`: the only branches the helper may push on its own. */
+  branchPrefix: string;
+  /** Whether the plan still runs (stopped or finished: a timed-out prompt is a no). */
+  active: () => boolean;
 }
 
 /** A session with no process (idle-closed, ended, or from before a restart) that can be resumed. */
@@ -248,6 +267,8 @@ export class AgentCore {
   readonly callLines: CallLinePublisher;
   readonly sealer: Sealer;
   pendingPreset: "estricto" | "estandar" | "relajado" | null = null;
+  /** The owner's remembered answers ("Siempre así"), verified here (ADR 0025 §6). */
+  readonly coordRules: CoordRules;
   #revoked = false;
 
   constructor(private readonly d: AgentCoreDeps) {
@@ -271,6 +292,13 @@ export class AgentCore {
       policyAllows: () => d.policy.get().egress.callLines,
       locale: d.locale,
       now: d.now,
+    });
+    this.coordRules = new CoordRules({
+      list: () => d.store.listCoordRules(),
+      trust: d.trust,
+      owner: d.owner,
+      now: d.now,
+      log: (msg, meta) => d.log.warn(msg, meta),
     });
     d.links?.attach(this.#linkHost());
   }
@@ -841,6 +869,8 @@ export class AgentCore {
      * its provider session. `prompt` may then be empty (reopened idle, no turn).
      */
     resume?: { providerSessionId?: string; seq: number; startedBy: Origin; card?: CardBuilder };
+    /** Coordinator mode: the helper's plan and task (set only by the local coordinator). */
+    coord?: SessionCoord;
   }): Promise<string> {
     const sid = input.sid ?? randomUUID();
     const resume = input.resume;
@@ -869,6 +899,7 @@ export class AgentCore {
       lastActiveAt: this.d.now(),
       turnOrigin: input.origin,
       liveChain: Promise.resolve(),
+      ...(input.coord ? { coord: input.coord } : {}),
     };
     this.sessions.set(sid, session);
     this.#dormant.delete(sid);
@@ -1408,7 +1439,10 @@ export class AgentCore {
       // audit); here they're refused outright when control is off, ended or denied, or the turn
       // comes from an unsigned origin. Not on the card: inputs can be typed text.
       if (call.toolName.startsWith(COMPUTER_TOOL_PREFIX)) {
-        const r = this.d.computer?.gate(s.sid, call.origin) ?? { allow: false as const, reason: "computer_disabled" };
+        // Coordinator helpers never get computer control (owner, 2026-10-19).
+        const r = s.coord
+          ? { allow: false as const, reason: "coordinator_no_computer" }
+          : (this.d.computer?.gate(s.sid, call.origin) ?? { allow: false as const, reason: "computer_disabled" });
         if (!r.allow) {
           s.card.blocker(`Control del equipo bloqueado (${r.reason})`);
           await this.#publishCard(s);
@@ -1476,12 +1510,53 @@ export class AgentCore {
         await this.#publishCard(s);
         return { allow: false, reason: decision.reason };
       }
-      const outcome = await this.#approve(s, {
+      // Coordinator mode: Chalito answers for the owner within this computer's ceiling and the
+      // owner's remembered rules; anything else still asks below.
+      if (s.coord && !linkTool) {
+        const answer = coordAnswer({
+          classification,
+          toolName: call.toolName,
+          input: call.input,
+          workspaceLabel: s.workspaceLabel,
+          branchPrefix: s.coord.branchPrefix,
+          ceiling: coordinatorCeiling(policy),
+          // No rules on any failure: the owner is asked, never answered for.
+          rules: policy.coordinator?.enabled
+            ? await this.coordRules.matches().catch(() => new Set<string>())
+            : new Set<string>(),
+          hash: (t) => createHash("sha256").update(t).digest("hex"),
+        });
+        if (answer) {
+          this.#audit("coordinator.auto_allow", {
+            sid: s.sid,
+            planId: s.coord.planId,
+            taskId: s.coord.taskId,
+            toolName: call.toolName,
+            tier: classification.tier,
+            via: answer.via,
+            ...(answer.via === "coordinator_auto" ? { kind: answer.kind } : { rule: answer.match.slice(0, 12) }),
+          });
+          s.card.action(summary);
+          if (classification.workspaceEdit) s.card.fileTouched(String(call.input.file_path ?? ""));
+          return allowed();
+        }
+      }
+      let outcome = await this.#approve(s, {
         risk: classification.tier,
         stepUp: decision.stepUp,
         origin: call.origin,
         details: { toolName: call.toolName, input: call.input, reasons: classification.reasons },
       });
+      // A helper's prompt that times out never becomes a yes, nor a no while the plan runs: the
+      // owner is asked again (owner, 2026-10-19).
+      while (outcome.reason === "timeout_deny" && s.coord?.active() && !s.closing && !this.#revoked) {
+        outcome = await this.#approve(s, {
+          risk: classification.tier,
+          stepUp: decision.stepUp,
+          origin: call.origin,
+          details: { toolName: call.toolName, input: call.input, reasons: classification.reasons },
+        });
+      }
       if (outcome.allow) s.card.action(summary);
       await this.#publishCard(s);
       return outcome.allow ? allowed() : { allow: false, reason: outcome.reason };

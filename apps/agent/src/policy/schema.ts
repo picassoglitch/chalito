@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AppId, RemoteCodexSandbox, RemotePermissionMode } from "@chalito/protocol";
+import { AppId, AutoKind, RemoteCodexSandbox, RemotePermissionMode } from "@chalito/protocol";
 
 /**
  * ~/.chalito/policy.yaml: the device's ceiling (ADR 0008). Remote surfaces can only
@@ -150,6 +150,20 @@ export const Policy = z.object({
         .strict(),
     )
     .max(50)
+    .optional(),
+  /**
+   * Coordinator mode (ADR 0025 §6): what Chalito may answer for the owner on a coordinator
+   * helper's prompts here. Absent = off (older policies keep their hash and the signed lock).
+   * Turned on only by `chalito coordinator enable` or the desktop panel (OS auth + confirmation);
+   * `chalito policy edit` and remote surfaces can only turn it off or drop kinds.
+   */
+  coordinator: z
+    .object({
+      enabled: z.boolean(),
+      /** Missing = every kind (the owner's list of 2026-10-19). */
+      autoApprove: z.array(AutoKind).max(AutoKind.options.length).optional(),
+    })
+    .strict()
     .optional(),
   lan: z
     .object({

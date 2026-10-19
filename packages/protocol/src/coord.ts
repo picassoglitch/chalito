@@ -1,0 +1,139 @@
+import { z } from "zod";
+import { EpochMs, Uid } from "./common.js";
+import { signed } from "./crypto.js";
+
+/**
+ * Coordinator mode (ADR 0025 §6, owner amendments of 2026-10-19).
+ *
+ * `AutoKind`: the kinds of helper prompts Chalito may answer for the owner on a computer where the
+ * owner turned coordinator mode on locally (the ceiling lives in that computer's signed policy).
+ * Everything else asks the owner.
+ */
+export const AutoKind = z.enum([
+  /** Reads and searches. */
+  "read",
+  /** The repo's allowlisted test, lint and build commands. */
+  "tests",
+  /** File edits and new files inside the session's workspace. */
+  "workspace_edit",
+  /** Local git writes: add, commit, branch, checkout, merge, stash. */
+  "git_local",
+  /** Project package installs (npm/pnpm/yarn/bun add or install, uv add, cargo add, go get); never global. */
+  "package_install",
+  /** `git push <remote> coord/<plan>/<task>`: the plan's own branches, explicit refspec, no force. */
+  "coord_branch_push",
+]);
+export type AutoKind = z.infer<typeof AutoKind>;
+
+/** What coordinator mode answers on its own when the owner turns it on and picks nothing else. */
+export const DEFAULT_AUTO_KINDS: readonly AutoKind[] = AutoKind.options;
+
+/**
+ * "Siempre así" (ADR 0025 §6): a remembered answer. It matches the same kind of request, in the
+ * same workspace label, on any of the owner's computers:
+ * - `command`: one simple shell command with the same program and subcommand (up to two words
+ *   after the program, before any option: `supabase db push` is "db push"; "" when there is none);
+ * - `web`: a fetch from the same domain.
+ * Only MED prompts can be remembered; HIGH and CRITICAL always ask.
+ */
+export const RuleMatch = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("command"),
+      workspaceLabel: z.string().min(1).max(80),
+      program: z.string().min(1).max(64),
+      sub: z.string().max(129),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("web"),
+      workspaceLabel: z.string().min(1).max(80),
+      domain: z.string().min(1).max(253),
+    })
+    .strict(),
+]);
+export type RuleMatch = z.infer<typeof RuleMatch>;
+
+/** No newline or other control character may sit in a match value: the canonical string joins on "\n". */
+const hasControl = (s: string) => [...s].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f);
+
+/**
+ * The exact text both sides hash (SHA-256, lowercase hex) into `CoordRuleBody.match`. The rule row
+ * carries only the hash; what it means is shown from the sealed label, so the server sees neither
+ * the program nor the workspace label in plaintext (they are low-entropy, so this is only a light
+ * cover, not secrecy).
+ */
+export const ruleMatchText = (m: RuleMatch): string | null => {
+  const parts =
+    m.kind === "command"
+      ? ["chalito.coordrule.match.v1", "command", m.workspaceLabel, m.program, m.sub]
+      : ["chalito.coordrule.match.v1", "web", m.workspaceLabel, m.domain.toLowerCase()];
+  return parts.some(hasControl) ? null : parts.join("\n");
+};
+
+/** A remembered rule lives at most this long; the owner renews it by answering "Siempre así" again. */
+export const COORD_RULE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+export const CoordRuleId = z.string().regex(/^cr_[A-Za-z0-9_-]{8,64}$/);
+
+export const CoordRuleBody = z
+  .object({
+    v: z.literal(1),
+    ruleId: CoordRuleId,
+    uid: Uid,
+    /** SHA-256 hex of `ruleMatchText(match)`. */
+    match: z.string().regex(/^[0-9a-f]{64}$/),
+    createdAt: EpochMs,
+    expiresAt: EpochMs,
+  })
+  .strict()
+  .refine((b) => b.expiresAt > b.createdAt && b.expiresAt - b.createdAt <= COORD_RULE_TTL_MS, {
+    message: "a remembered rule expires within 90 days of being made",
+  });
+export type CoordRuleBody = z.infer<typeof CoordRuleBody>;
+
+/**
+ * Signed by one of the owner's trusted clients. Each device verifies it against its LOCAL trusted
+ * list, so the cloud can drop a rule but can't make or widen one.
+ */
+export const CoordRule = signed("chalito.coordrule.v1", CoordRuleBody);
+export type CoordRule = z.infer<typeof CoordRule>;
+
+/** A plain shell word: no quotes, expansions, globs, redirections or separators. */
+const PLAIN_WORD = /^[A-Za-z0-9._/@%+=:,-]+$/;
+
+/**
+ * The remembered-rule match for a prompt, or null when it can't be remembered. Shared by the hub
+ * (to sign "Siempre así") and the agent (to check a rule), so both read a request the same way:
+ * - `Bash`: one simple command of plain words (anything with quotes, `$`, globs, pipes, `;`, `&&`,
+ *   redirections or a leading `VAR=` is never remembered);
+ * - `WebFetch`: the URL's host.
+ * The agent applies a rule only to a MED prompt; this function doesn't know the risk.
+ */
+export const rememberMatchFor = (a: { toolName: string; input: unknown; workspaceLabel: string }): RuleMatch | null => {
+  const input = (a.input && typeof a.input === "object" ? a.input : {}) as Record<string, unknown>;
+  let m: RuleMatch | null = null;
+  if (a.toolName === "Bash" && typeof input.command === "string") {
+    const words = input.command.trim().split(/[ \t]+/);
+    const [program, ...args] = words;
+    if (!program || !words.every((w) => PLAIN_WORD.test(w)) || program.includes("=")) return null;
+    // Up to two leading words that aren't options ("db push", "pr create"), so `supabase db push`
+    // and `supabase db reset` are different rules.
+    const firstOption = args.findIndex((w) => w.startsWith("-"));
+    const sub = (firstOption === -1 ? args : args.slice(0, firstOption)).slice(0, 2).join(" ");
+    m = { kind: "command", workspaceLabel: a.workspaceLabel, program, sub };
+  } else if (a.toolName === "WebFetch" && typeof input.url === "string") {
+    let host: string;
+    try {
+      host = new URL(input.url).hostname.toLowerCase();
+    } catch {
+      return null;
+    }
+    if (!host) return null;
+    m = { kind: "web", workspaceLabel: a.workspaceLabel, domain: host };
+  }
+  if (!m) return null;
+  const parsed = RuleMatch.safeParse(m);
+  return parsed.success && ruleMatchText(parsed.data) !== null ? parsed.data : null;
+};

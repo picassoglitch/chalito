@@ -215,6 +215,15 @@ The link is a **transport, not a trust root**. A `cmd` frame goes into the same 
 | **History split** | Durable records still go to the cloud: the event tee writes every event to the cloud as before, and command results are audited there. The LAN copy is live-only. |
 | Screen sharing behind strict NATs | Not this path. A TURN relay (ADR 0021) costs money and waits for the owner's go (decision #37). Not built. |
 
+### 4.8i Coordinator mode: Chalito answers helper prompts for the owner (ADR 0025 §6, G1)
+| Threat | STRIDE | Mitigation | Status |
+|---|---|---|---|
+| A helper (or a prompt injection in a file it reads) uses the auto-approved kinds to run code the owner never saw: edit a test or a manifest, then run the tests or an install script | E | Accepted by the owner (2026-10-19, D-072): helpers write and test code on their own. Bounded by the local ceiling (`policy.coordinator`, turned on only on the device with OS auth), the workspace (outside it asks), the hard floor (`~/.chalito`, credentials, the agent's binaries), and the kinds: deletes, other pushes, deploys, outside services, database commands and global installs still ask. Config, CI and `.env` edits still ask. A helper never gets computer control | Implemented (G1) |
+| A command that looks like an allowed kind hides another action (`git add -A && rm -rf x`, `git push origin coord/p1/x:main`, a URL remote, `git checkout .`) | E | Every classifier reason must map to an allowed kind and every git or installer segment is re-read: only `add/commit/branch/checkout -b/switch/merge/stash` without deleting options, project installs without global flags, and `git push [-u] <named remote> coord/<plan>/<branch>` with nothing else. Tested with each of these | Implemented (G1) |
+| The cloud forges, widens or replays a remembered rule | S/T | Rules are signed by a client in the device's LOCAL trusted list (`chalito.coordrule.v1`), bound to the owner, expiring within 90 days; the row holds a hash of the match, and a widened body fails the signature. Removing a client drops its rules. Residual: a cloud that hides a deletion can keep a deleted rule alive until it expires | Implemented (G1) |
+| A remembered rule covers more than the owner meant | E | MED only (HIGH and CRITICAL always ask); the match is the program plus up to two subcommand words (or the web host) in one workspace label, and only for a single plain command (no quotes, expansions, pipes, separators or redirections) | Implemented (G1) |
+| A timed-out prompt turns into an action | E | A timeout is never a yes: for a helper whose plan still runs the prompt is asked again; otherwise it's a no | Implemented (G1) |
+
 ### 4.9 Rooms
 | Threat | Mitigation |
 |---|---|

@@ -13,6 +13,7 @@ import { runMcpServer } from "./computer/mcp-server.js";
 import { LINKS_INSTRUCTIONS, LINKS_SERVER, linkMcpTools } from "./links/tools.js";
 import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/native.js";
 import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
+import { coordinatorCeiling, disableCoordinator, enableCoordinator } from "./coord/toggle.js";
 import { appsCli } from "./apps/cli.js";
 import {
   disableRawShell,
@@ -41,7 +42,7 @@ import { osAuthFor, type StatFn } from "./os-auth.js";
 import { runPair } from "./pair.js";
 import { runPairingHost } from "./pairing-host.js";
 import { FilePolicyHolder, parsePolicyYaml, policyToYaml } from "./policy-file.js";
-import { appsTighterOrEqual, isTighterOrEqual, policyHash } from "./policy/index.js";
+import { appsTighterOrEqual, coordinatorTighterOrEqual, isTighterOrEqual, policyHash } from "./policy/index.js";
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
 import { openSecretStore, passphraseFileProblem } from "./secret-choice.js";
 import { KeyringUnavailableError, SECRET_NAMES, type SecretStore } from "./secrets.js";
@@ -84,6 +85,8 @@ export const USAGE = `chalito <command>
   devmode reset                        archive a broken Developer-mode log and start over (OS auth)
   computer enable|disable|status       computer control: let approved sessions use this screen,
                                        mouse and keyboard (enable: local only, OS auth + confirmations)
+  coordinator enable|disable|status    coordinator mode: let Chalito answer your helper agents'
+                                       routine prompts here (enable: local only, OS auth + confirmation)
   apps list                            the AI apps this computer knows (curated and your own)
   apps custom list|enable <id>|disable <id>
                                        your own recipes (~/.chalito/recipes); enable: local only,
@@ -149,6 +152,19 @@ const T = {
         : "Control del equipo: desactivado.\n",
     computerNotInPolicyEdit:
       "El control del equipo no se activa editando la política. Usa `chalito computer enable`.\n",
+    coordinatorTitle:
+      "\n¿Dejar que Chalito responda por ti en esta computadora?\nCuando un agente de tu plan pregunte, Chalito aprueba solo esto:\n",
+    coordinatorAsks: "Y siempre te pregunta a ti antes de:\n",
+    coordinatorContinue: "¿Activar el modo coordinador? [s/N] ",
+    coordinatorOn:
+      "Modo coordinador activado. Chalito responde por ti lo de la lista; lo demás te llega al teléfono.\n",
+    coordinatorAlready: "El modo coordinador ya está activado.\n",
+    coordinatorOff: "Modo coordinador desactivado. Todo vuelve a preguntarte.\n",
+    coordinatorWasOff: "El modo coordinador ya estaba desactivado.\n",
+    coordinatorStatus: (kinds: string[]) =>
+      kinds.length ? `Modo coordinador: activado (${kinds.join(", ")}).\n` : "Modo coordinador: desactivado.\n",
+    coordinatorNotInPolicyEdit:
+      "El modo coordinador no se activa editando la política. Usa `chalito coordinator enable`.\n",
     customNotInPolicyEdit:
       "Una receta personalizada no se activa editando la política. Usa `chalito apps custom enable <id>`.\n",
     appSessionsNotInPolicyEdit:
@@ -255,6 +271,18 @@ const T = {
     computerStatus: (on: boolean, n: number) =>
       on ? `Computer control: on (up to ${n} actions a minute per session).\n` : "Computer control: off.\n",
     computerNotInPolicyEdit: "Computer control isn't turned on by editing the policy. Use `chalito computer enable`.\n",
+    coordinatorTitle:
+      "\nLet Chalito answer for you on this computer?\nWhen an agent in your plan asks, Chalito approves only this:\n",
+    coordinatorAsks: "And it always asks you first before:\n",
+    coordinatorContinue: "Turn on coordinator mode? [y/N] ",
+    coordinatorOn: "Coordinator mode on. Chalito answers the listed prompts for you; the rest reaches your phone.\n",
+    coordinatorAlready: "Coordinator mode is already on.\n",
+    coordinatorOff: "Coordinator mode off. Everything asks you again.\n",
+    coordinatorWasOff: "Coordinator mode was already off.\n",
+    coordinatorStatus: (kinds: string[]) =>
+      kinds.length ? `Coordinator mode: on (${kinds.join(", ")}).\n` : "Coordinator mode: off.\n",
+    coordinatorNotInPolicyEdit:
+      "Coordinator mode isn't turned on by editing the policy. Use `chalito coordinator enable`.\n",
     customNotInPolicyEdit:
       "A custom recipe isn't turned on by editing the policy. Use `chalito apps custom enable <id>`.\n",
     appSessionsNotInPolicyEdit:
@@ -487,6 +515,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     ["pair", "keys", "service", "devmode", "claude", "codex", "grok", "gemini"].includes(cmd) ||
     (cmd === "policy" && sub === "edit") ||
     (cmd === "computer" && sub !== "status") ||
+    (cmd === "coordinator" && sub !== "status") ||
     (cmd === "terminal" && sub !== "status") ||
     (cmd === "screen" && sub !== "status");
   if (mutating) {
@@ -601,6 +630,9 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 
       case "computer":
         return await computer(io, dir, locale, sub);
+
+      case "coordinator":
+        return await coordinator(io, dir, locale, sub);
 
       case "apps":
         return await appsCli(io, dir, locale, positional.slice(1));
@@ -906,6 +938,56 @@ const computer = async (io: CliIo, dir: string, locale: "es" | "en", sub?: strin
   }
 };
 
+const coordinator = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string) => {
+  const t = T[locale];
+  const id = await loadOrCreateIdentity(io.secrets!);
+  const holder = new FilePolicyHolder(dir, id.sign, { anchor: await new AnchorStore(io.secrets!).load() });
+  // The running daemon sees the policy change and reports it.
+  const emit = () => undefined;
+  if (sub === "status") {
+    io.out(t.coordinatorStatus([...coordinatorCeiling(holder.get())]));
+    return 0;
+  }
+  if (sub === "disable") {
+    io.out((await disableCoordinator({ policy: holder, emit }, "cli")) ? t.coordinatorOff : t.coordinatorWasOff);
+    return 0;
+  }
+  if (sub !== "enable") {
+    io.err(USAGE);
+    return 1;
+  }
+  const reader = new LineReader(io.tty);
+  try {
+    const res = await enableCoordinator({
+      policy: holder,
+      osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+      prompter: {
+        confirm: async (answers, asks) => {
+          io.out(`${t.coordinatorTitle}${answers.map((a) => `  - ${a}\n`).join("")}`);
+          io.out(`${t.coordinatorAsks}${asks.map((a) => `  - ${a}\n`).join("")}`);
+          return isYes(await reader.ask(t.coordinatorContinue));
+        },
+      },
+      locale,
+      emit,
+    });
+    if (!res.ok) {
+      io.err(
+        res.reason === "already_on"
+          ? t.coordinatorAlready
+          : res.reason === "os_auth_failed"
+            ? t.authFailed
+            : t.cancelled,
+      );
+      return res.reason === "already_on" ? 0 : 1;
+    }
+    io.out(t.coordinatorOn);
+    return 0;
+  } finally {
+    reader.close();
+  }
+};
+
 const terminal = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string, arg?: string) => {
   const t = T[locale];
   const id = await loadOrCreateIdentity(io.secrets!);
@@ -1085,6 +1167,11 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
     // Only `chalito computer enable` turns computer control on (its own confirmations).
     if (parsed.policy.computer?.enabled && !holder.get().computer?.enabled) {
       io.err(t.computerNotInPolicyEdit);
+      return 1;
+    }
+    // Only `chalito coordinator enable` turns coordinator mode on or widens what it answers.
+    if (!coordinatorTighterOrEqual(parsed.policy.coordinator, holder.get().coordinator)) {
+      io.err(t.coordinatorNotInPolicyEdit);
       return 1;
     }
     // Only `chalito apps custom enable` turns a custom recipe on (OS auth + review of what it runs).
