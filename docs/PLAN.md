@@ -443,7 +443,7 @@ This is the build plan for the Chalito beta. It is the milestone list from the b
 | D | `m17d-checkpoints` | 0027 §1 | Snapshot before each writing turn, `session.undo` from phone and desktop, warnings for outside effects | — |
 | E | `m17e-memory` | 0024 | Sealed per-project memory, proposals and policy, quoted injection frame, budget and compaction, token-savings A/B | memory defaults (#43) |
 | F | `m17f-templates` | 0027 §2 | Task templates and skills (signed, shareable, never looser than policy) | — |
-| G | `m17g-coordinator` | 0025 | Plan → parallel worktrees via hand-off links, ledger for numbers, merge-base squash and deletion checks, reviewer agent, integration step, one-tap merge, budgets, kill switch | limits (#44) |
+| G | `m17g-coordinator` (built first, decision #54: G1 rules, G2 coordinator on one computer, G3 hub screens, G4 helpers on other computers) | 0025 | Plan → parallel worktrees via hand-off links, ledger for numbers, merge-base squash and deletion checks, reviewer agent, integration step, one-tap merge, budgets, kill switch | limits (#44) |
 | H | `m17h-routines` | 0027 §3 | Scheduled and event-triggered template runs on an online device, budgets, read ceiling by default | night escalation (#45) |
 | I | `m17i-byo-lines` | 0026 (b) | Bring your own Twilio (restricted API key) and WhatsApp Business number (Embedded Signup v4 as a Tech Provider) | Meta Tech Provider (#40) |
 | J | `m17j-routing` | 0027 §4 | Suggest agent and model per task from `usage_events` and outcomes; the owner confirms with one tap | — |
@@ -550,3 +550,8 @@ See the end of the M0 hand-off message. The same list is mirrored here for the r
 | 51 | **New (2026-10-16):** pairing on a network mismatch | **Owner: allowed if the user types the short code** (enforced by `/claim`). Residual risk accepted: the attacker can send the code too; mitigations are the plain warning, the decline button and alerts to all devices. Block on mismatch was rejected (ADR 0028 §4) |
 | 52 | **New (2026-10-16):** what proves "same computer" for one-tap pairing | **Owner: the agent's loopback proof only** (127.0.0.1, hub origin, the api's single-use nonce for that browser, ADR 0028 §4). A public IP isn't proof (CGNAT, offices, cafés): it stays as warning text only. Without the proof the user types the short code |
 | 53 | **New (2026-10-16):** which hub plans include Chalito | **Owner: Pro and VIP only.** Gratis has no Chalito (`packages/config/plans.yaml` `hubTiers.free.access: none`), matching the hub engine row (`tier_required` PRO). Gratis sees "Chalito viene en Pro" with the trial or the plans. Supersedes the 2026-10-06 "Gratis gets every feature on Lite" decision |
+| 54 | **New (2026-10-19):** coordinator first | **Owner: go.** Coordinator mode (ADR 0025 §6) is built before the other M17 phases, as G1–G4 |
+| 55 | **New (2026-10-19):** what Chalito approves on its own | **Owner:** reads, tests, edits in the worktree, local git, package installs, the plan's own branches. Asks first: deletes, other pushes (main), deploys, database changes, anything that costs money, anything outside the project |
+| 56 | **New (2026-10-19):** "based on me" | **Owner: yes.** Chalito reuses the owner's earlier answers ("Siempre así"), MED only; editable and removable in Ajustes |
+| 57 | **New (2026-10-19):** how Chalito asks | **Owner:** a pop-up in the phone chat (approve, deny, reply); a timeout never approves, the helper keeps waiting |
+| 58 | **New (2026-10-19):** computer control in coordinator mode | **Owner: off.** Helpers never get computer control |

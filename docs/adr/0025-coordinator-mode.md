@@ -1,6 +1,6 @@
 # ADR 0025: Coordinator mode (one goal, several agents in parallel worktrees)
 
-- Status: Proposed (M17 docs, 2026-10-16). Nothing is built until the owner's "go".
+- Status: Accepted with the owner's amendments of 2026-10-19 (§6); built first in M17 as phases G1–G4. Earlier: Proposed (M17 docs, 2026-10-16).
 - Builds on: hand-off links (ADR 0022 §3), the `LinkTask` format (ADR 0022 §2), connectors (ADR 0023, for GitHub), shared project memory (ADR 0024), budgets and hub admit/settle (ADR 0016), revoke-all (ADR 0020).
 - Protocol: `v` stays 1. New schemas `CoordPlan`, `CoordTask`, `CoordLedger`; new commands `coord.*`.
 
@@ -49,6 +49,22 @@ Lessons from doing that by hand (M14 to M16):
 ### 5. Owner view
 - One card per plan: tasks, status, PR links, budget used, open questions, findings, and the merge button.
 - Notifications use the escalation ladder; a finished plan is an L2 push, a blocked one L3.
+
+## 6. Owner amendments (2026-10-19)
+The owner wants Chalito to replace them sitting at the computers: from the phone they give a goal, Chalito runs the agents on every paired computer and answers their prompts for them, and only asks when it must.
+
+- **No computer control.** Helpers are coding-agent sessions only; computer control stays off for every coordinator session (the gate refuses `computer_*` tools for them).
+- **Chalito answers for the owner (amends §4's "every MED+ tool still asks").** On a computer where the owner turned coordinator mode on *locally* (the ceiling, like any loosening, ADR 0008), a helper's prompt is auto-approved when its kind is one of:
+  - reads and searches; the repo's test, lint and build commands (the allowlist);
+  - file edits and new files inside the plan's worktree;
+  - local git writes (add, commit, branch, checkout, merge, stash);
+  - package installs;
+  - pushing the plan's own `coord/<plan>/*` branches (an explicit refspec; no force, delete, mirror or bare `git push`).
+- **Always asks the owner first:** deleting files or data, pushing to any other branch (main included), deploys and anything that writes to an outside service, database changes, anything that costs money, anything outside the workspace, and every kind not listed above. The hard floor and policy blocks still deny.
+- **"Based on me": remembered answers.** When the owner approves a MED prompt they can tap "Siempre así". That creates a rule (`chalito.coordrule.v1`), signed by their trusted client and stored sealed in the cloud. Every device verifies the rule against its local trusted list before using it, so the cloud can delete a rule but can't forge or widen one. A rule matches the same kind of request: the same program and subcommand, or the same web domain, in the same workspace. HIGH and CRITICAL prompts are never remembered. The rules are listed and removable in Ajustes.
+- **How Chalito asks:** a pop-up in the hub chat on the phone (plus the web push the notifier already sends), with *Aprobar*, *Rechazar* and *Responder*. On approve, the signed decision goes to the agent, which continues. A HIGH prompt still needs the passkey.
+- **Timeouts never approve.** A coordinator helper whose prompt expires keeps waiting: the agent asks again while the plan runs, instead of denying and failing the task.
+- **Where it runs:** the coordinator runs on one of the owner's paired computers, started by one signed `coord.start` from the phone. The planner and the helpers use the owner's own coding agents (BYO; no hub balance). Helpers on other computers use the owner's hand-off links (ADR 0022 §3) in phase G4.
 
 ## Consequences
 - The owner's manual coordinator routine becomes a product feature, with the mistakes that burned time made impossible by design (ledger, merge-base squash, deletion check, integration step).
