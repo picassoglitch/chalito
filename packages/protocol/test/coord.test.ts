@@ -344,7 +344,8 @@ describe("security review: only known-safe programs can be remembered (allowlist
       expect(m(c), c).toBeNull();
   });
 
-  it("normalizes the program's case", () => {
-    expect(m("ESLint src")).toEqual({ kind: "command", workspaceLabel: w, argv: ["eslint", "src"] });
+  it("never case-folds the program: another spelling asks (it may be another binary)", () => {
+    for (const c of ["ESLint src", "PYTEST", "Git status", "pnpm Test"]) expect(m(c), c).toBeNull();
+    expect(m("eslint src")).toEqual({ kind: "command", workspaceLabel: w, argv: ["eslint", "src"] });
   });
 });
