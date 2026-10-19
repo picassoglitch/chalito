@@ -2,9 +2,11 @@ import * as THREE from "three";
 import {
   AvatarDriver,
   CreatureBinding,
+  RIG_REST,
   createCardAvatar,
   type CardAvatar,
   type CardItem,
+  type CardRig,
   type CardSpec,
   type SkinId,
 } from "@chalito/avatar-three";
@@ -21,6 +23,8 @@ export interface ActorAssets {
   items: CardItem[];
   /** The skin worn over the card, if any. */
   skin?: SkinId | null;
+  /** The card's cutout rig (arms, head, eyelids, mouth), when it has one. */
+  rig?: CardRig | null;
 }
 
 interface Actor {
@@ -115,7 +119,7 @@ export class RoomWorld {
   /** Adds (or replaces) a companion's card once its art is loaded. */
   addActor(id: string, assets: ActorAssets): void {
     this.removeActor(id);
-    const card = createCardAvatar(assets.spec, assets.drawings, assets.items, CARD_HEIGHT);
+    const card = createCardAvatar(assets.spec, assets.drawings, assets.items, CARD_HEIGHT, assets.rig ?? null);
     card.setSkin(assets.skin ?? null);
     const holder = new THREE.Group();
     holder.name = `actor:${id}`;
@@ -157,6 +161,7 @@ export class RoomWorld {
       a.card.root.scale.set(1, 1, 1);
       a.card.root.position.set(0, 0, 0);
       a.card.root.rotation.set(0, 0, 0);
+      a.card.applyRig(RIG_REST);
     } else if (!a.driver) {
       a.driver = new AvatarDriver({ seed: hashString(id) });
       a.binding = new CreatureBinding(a.card.root);
@@ -207,8 +212,11 @@ export class RoomWorld {
       a.driver?.playGesture(s.gesture, local(s.gestureAt));
       a.gestureAt = s.gestureAt;
     }
-    if (a.driver && a.binding) a.binding.apply(a.driver.frame(local(t)));
-    else a.card.root.position.y = Math.sin((t / 1000) * 2.2 + a.phase * 6) * 0.012;
+    if (a.driver && a.binding) {
+      const f = a.driver.frame(local(t));
+      a.binding.apply(f);
+      a.card.applyRig(f.rig);
+    } else a.card.root.position.y = Math.sin((t / 1000) * 2.2 + a.phase * 6) * 0.012;
   }
 
   dispose(): void {

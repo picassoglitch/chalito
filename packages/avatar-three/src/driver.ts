@@ -1,4 +1,5 @@
 import {
+  ACTION_MS,
   BlinkScheduler,
   EMOTIONS,
   EmotionBlender,
@@ -12,12 +13,19 @@ import {
   emotionGesture,
   frameShape,
   sampleGesture,
+  actionLayer,
+  composeCreature,
+  modeLayer,
+  rigPose,
   type AudioFrame,
   type Bone,
+  type CreatureAction,
+  type CreatureMode,
   type CreaturePose,
   type EmotionGesture,
   type Gaze,
   type ModelCaps,
+  type RigPose,
   type Rot,
   type VisemeWeights,
 } from "@chalito/avatar";
@@ -33,6 +41,8 @@ export interface AvatarFrame {
   gaze: Gaze;
   /** For non-humanoid presets (animals, image cards). */
   creature: CreaturePose;
+  /** For cards with a cutout rig: arms, head, eyelids and mouth. */
+  rig: RigPose;
 }
 
 export interface DriverOptions {
@@ -60,6 +70,8 @@ export class AvatarDriver {
   #target: Gaze = { yaw: 0, pitch: 0 };
   #visemes: VisemeWeights = { ...ZERO_VISEMES };
   #sleepy = false;
+  #mode: CreatureMode = "rest";
+  #action: { name: CreatureAction; start: number } | null = null;
   #last: number | null = null;
 
   constructor(readonly opts: DriverOptions) {
@@ -78,6 +90,24 @@ export class AvatarDriver {
 
   playGesture(name: EmotionGesture, now: number, weight = 1): void {
     this.#gesture = { name, start: now, weight };
+    // Cards show the hello and the cheer with their arms too.
+    if (name === "wave") this.playAction("wave", now);
+    else if (name === "celebrate") this.playAction("cheer", now);
+    else if (name === "nod") this.playAction("nod", now);
+  }
+
+  /** What it's busy with while it lasts: rest, working (an AI is busy) or needs_you (an answer waits). */
+  setMode(mode: CreatureMode): void {
+    this.#mode = mode;
+  }
+
+  get mode(): CreatureMode {
+    return this.#mode;
+  }
+
+  /** A one-off movement that shows something happened (a finished task, an error, hello). */
+  playAction(name: CreatureAction, now: number): void {
+    this.#action = { name, start: now };
   }
 
   stopGesture(): void {
@@ -133,6 +163,27 @@ export class AvatarDriver {
     const smooth = this.#look.step(this.#target, dt);
     const gaze = { yaw: smooth.yaw + saccade.yaw, pitch: smooth.pitch + saccade.pitch };
 
-    return { expressions, bones, gaze, creature: creaturePose(this.#emotion, now) };
+    if (this.#action && now - this.#action.start >= ACTION_MS[this.#action.name]) this.#action = null;
+    const action = this.#action ? { name: this.#action.name, elapsedMs: now - this.#action.start } : null;
+    const layers = [modeLayer(this.#mode, now)];
+    if (action) layers.push(actionLayer(action.name, action.elapsedMs));
+    const creature = composeCreature(creaturePose(this.#emotion, now), layers);
+    const mouth = Math.max(
+      expressions.aa ?? 0,
+      expressions.oh ?? 0,
+      (expressions.ou ?? 0) * 0.7,
+      expressions.ih ?? 0,
+      expressions.ee ?? 0,
+    );
+    const rig = rigPose({
+      tMs: now,
+      mode: this.#mode,
+      action,
+      blink: expressions.blink ?? 0,
+      mouth,
+      gaze,
+      sleepy: this.#sleepy,
+    });
+    return { expressions, bones, gaze, creature, rig };
   }
 }

@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import { rigSrcFor, type RigPartId, type RigPose, type RigSpec } from "@chalito/avatar";
+
+// What a card loader needs to read a rig, without depending on @chalito/avatar itself.
+export { RIG_REST, parseRig, rigFiles, type RigPose, type RigSpec } from "@chalito/avatar";
 import { createSkinMaterial, isSkinId, type SkinId, type SkinMaterial } from "./skin.js";
 
 /**
@@ -19,6 +23,14 @@ export interface CardSpec {
 export interface CardItem {
   placed: { left: number; top: number; width: number; height: number; z: number };
   texture: THREE.Texture;
+  /** Moves with this rig part (hats and glasses ride on the head). */
+  part?: "head";
+}
+
+/** A card's cutout rig (card.json `rig`) with its part images loaded, by file name. */
+export interface CardRig {
+  spec: RigSpec;
+  textures: Record<string, THREE.Texture>;
 }
 
 export interface CardAvatar {
@@ -29,6 +41,10 @@ export interface CardAvatar {
   readonly skin: SkinId | null;
   /** Animates the skin: `seconds` is any steadily increasing clock (epoch seconds are fine). */
   tick(seconds: number): void;
+  /** Drawn as rig parts now (a skin draws the flat card instead). */
+  readonly rigged: boolean;
+  /** Moves the rig's arms, head, eyelids and mouth; nothing without a rig. */
+  applyRig(pose: RigPose): void;
   dispose(): void;
 }
 
@@ -43,6 +59,7 @@ export const createCardAvatar = (
   items: readonly CardItem[] = [],
   /** The card's height in world units; its feet stand at y = 0. */
   height = 1,
+  rig: CardRig | null = null,
 ): CardAvatar => {
   const width = (height * spec.width) / spec.height;
   // Card space (u right, v down, 0..1) → local space (x centred, y up from the feet).
@@ -85,8 +102,75 @@ export const createCardAvatar = (
   root.add(body);
   const plain = body.material as THREE.MeshBasicMaterial;
   let current: THREE.Texture | null = first;
+  let currentName = Object.keys(drawings)[0] ?? "neutral";
   let skin: SkinId | null = null;
   let skinned: SkinMaterial | null = null;
+
+  // The rig: each part a full-card plane inside a group at its pivot, so turning the group turns
+  // the part about its pivot. Children (eyelids, mouth) sit in their parent's group.
+  /** `base`: the pivot in card-root space; `local`: the group's resting position in its parent. */
+  const parts = new Map<
+    RigPartId,
+    { group: THREE.Group; mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial; base: THREE.Vector3; local: THREE.Vector3 }
+  >();
+  const rigRoot = new THREE.Group();
+  rigRoot.name = "rig";
+  if (rig) {
+    const ordered = [...rig.spec.parts].sort((a, b) => a.z - b.z);
+    for (const part of ordered) {
+      const pivot = at(part.pivot[0], part.pivot[1]);
+      const group = new THREE.Group();
+      group.name = `rig-${part.id}`;
+      const parent = part.parent ? parts.get(part.parent) : undefined;
+      const parentPivot = parent ? parent.base : new THREE.Vector3();
+      group.position.copy(pivot).sub(parentPivot);
+      const mesh = plane(width, height, null, ORDER.body + part.z * 0.2);
+      mesh.name = `rig-${part.id}-image`;
+      mesh.position.copy(at(0.5, 0.5)).sub(pivot);
+      group.add(mesh);
+      (parent?.group ?? rigRoot).add(group);
+      parts.set(part.id, {
+        group,
+        mesh,
+        mat: mesh.material as THREE.MeshBasicMaterial,
+        base: pivot.clone(),
+        local: group.position.clone(),
+      });
+    }
+    root.add(rigRoot);
+  }
+  let rigOn = false;
+  const showRigFor = (name: string) => {
+    if (!rig) return;
+    for (const part of rig.spec.parts) {
+      const p = parts.get(part.id)!;
+      const src = rigSrcFor(part, name);
+      const map = src ? rig.textures[src] : undefined;
+      p.mesh.visible = rigOn && !!map;
+      if (map) {
+        map.colorSpace = THREE.SRGBColorSpace;
+        if (p.mat.map !== map) {
+          p.mat.map = map;
+          p.mat.needsUpdate = true;
+        }
+      }
+    }
+  };
+  /** Rigged unless a skin is on (skins shade the one flat drawing). */
+  const setRigged = (on: boolean) => {
+    rigOn = on;
+    body.visible = !on;
+    showRigFor(currentName);
+    if (!on)
+      for (const p of parts.values()) {
+        // Back to the drawing's own pose, so items riding on the head sit where the flat card has it.
+        p.group.rotation.set(0, 0, 0);
+        p.group.scale.set(1, 1, 1);
+        p.group.position.copy(p.local);
+      }
+  };
+  if (rig) setRigged(true);
+  const DEG = Math.PI / 180;
 
   for (const [i, it] of items.entries()) {
     const p = it.placed;
@@ -98,7 +182,11 @@ export const createCardAvatar = (
     );
     mesh.name = `item-${i}`;
     mesh.position.copy(at(p.left + p.width / 2, p.top + p.height / 2)).setZ(p.z * 0.001);
-    root.add(mesh);
+    const head = it.part === "head" ? parts.get("head") : undefined;
+    if (head) {
+      mesh.position.sub(head.base);
+      head.group.add(mesh);
+    } else root.add(mesh);
   }
 
   return {
@@ -106,11 +194,37 @@ export const createCardAvatar = (
     get skin() {
       return skin;
     },
+    get rigged() {
+      return rigOn;
+    },
+    applyRig(pose) {
+      if (!rigOn) return;
+      const g = (id: RigPartId) => parts.get(id);
+      const armL = g("armL");
+      const armR = g("armR");
+      const head = g("head");
+      // The card's left arm rises clockwise as seen, its right arm anticlockwise.
+      if (armL) armL.group.rotation.z = -pose.armL * DEG;
+      if (armR) armR.group.rotation.z = pose.armR * DEG;
+      if (head) {
+        head.group.rotation.z = pose.head * DEG;
+        head.group.position.y = head.local.y - pose.headDrop * height;
+      }
+      const lids = g("lids");
+      if (lids) lids.group.visible = pose.lids > 0.5;
+      const mouth = g("mouth");
+      if (mouth) {
+        mouth.group.visible = pose.mouth > 0.08;
+        mouth.group.scale.set(0.8 + 0.2 * pose.mouth, 0.3 + 0.7 * pose.mouth, 1);
+      }
+    },
     setDrawing(name) {
       const map = drawings[name];
       if (!map) return;
       map.colorSpace = THREE.SRGBColorSpace;
       current = map;
+      currentName = name;
+      showRigFor(name);
       if (plain.map !== map) {
         plain.map = map;
         plain.needsUpdate = true;
@@ -126,6 +240,7 @@ export const createCardAvatar = (
       if (skinned) skinned.uniforms.uTime.value = time;
       skin = want;
       (body as THREE.Mesh<THREE.BufferGeometry, THREE.Material>).material = skinned ?? plain;
+      if (rig) setRigged(!want);
     },
     tick(seconds) {
       // Wrapped: the shader's float32 can't hold epoch seconds (a skin loops once an hour).

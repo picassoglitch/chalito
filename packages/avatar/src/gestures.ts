@@ -173,25 +173,29 @@ export interface CreaturePose {
 
 /**
  * Animals and other non-humanoid avatars (and the 2.5D image "card", M8): the same emotion
- * API drives procedural squash-and-stretch, a bob and look-at instead of bones and blend
- * shapes. Pure in t.
+ * API drives a calm, living rest pose instead of bones and blend shapes: slow breathing (a gentle
+ * stretch that keeps volume), a slow side sway, a sag when sad or tired and a tilt when thinking.
+ * It never hops at rest (owner decision 2026-10-19: movement is for showing what's happening,
+ * see actions.ts). Pure in t.
  */
 export const creaturePose = (e: Emotion, tMs: number): CreaturePose => {
   const pose = EMOTIONS[e.tag];
   const i = clamp(e.intensity);
   const energy = 0.5 + (pose.energy - 0.5) * i;
   const t = tMs / 1000;
-  const hz = 0.6 + energy * 1.8;
-  const bob = Math.abs(Math.sin(Math.PI * hz * t));
-  // Stretch on the way up, squash on landing; excited bounces more, tired barely moves.
-  const amount = 0.02 + energy * 0.1;
-  const sy = 1 + amount * (bob - 0.5) * 2;
+  // ~12–18 breaths a minute, quicker when excited; inhale shorter than exhale.
+  const bpm = 12 + energy * 6;
+  const ph = (2 * Math.PI * t * bpm) / 60;
+  const breath = 0.5 + 0.5 * Math.sin(ph + 0.6 * Math.sin(ph));
+  const sy = 1 + (0.008 + energy * 0.006) * (breath - 0.5) * 2;
   const sxz = 1 / Math.sqrt(sy);
   const sadSag = e.tag === "sad" || e.tag === "tired" ? 0.06 * i : 0;
+  // A slow, irregular sway (incommensurate sines), smaller when tired.
+  const sway = (Math.sin(t * 0.7) * 0.6 + Math.sin(t * 0.31 + 1.3) * 0.4) * (e.tag === "tired" ? 0.6 : 1.4);
   return {
     scale: [sxz, sy * (1 - sadSag), sxz],
-    offsetY: bob * (0.01 + energy * 0.05),
-    tilt: [pose.headPitch * i * 0.6, 0, e.tag === "thinking" || e.tag === "worried" ? 8 * i : 0],
+    offsetY: breath * 0.004,
+    tilt: [pose.headPitch * i * 0.6, 0, sway + (e.tag === "thinking" || e.tag === "worried" ? 8 * i : 0)],
     lookAtWeight: e.tag === "tired" ? 0.2 : 0.6 + 0.4 * energy,
   };
 };

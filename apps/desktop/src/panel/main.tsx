@@ -5,7 +5,8 @@ import type { Snapshot } from "@chalito/client";
 import type { PhoneVerifier } from "@chalito/ui";
 import { TextProviders, detectLocale } from "../lib/i18n.js";
 import { agentIpc, type AgentIpc } from "../lib/ipc.js";
-import { petContext } from "../lib/pet-context.js";
+import { ActivityTracker } from "@chalito/avatar";
+import { pendingAnswers, petContext } from "../lib/pet-context.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
@@ -104,13 +105,19 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);
-  const live = useRef<Pick<Snapshot, "notifications">>({ notifications: [] });
+  const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions">>({
+    notifications: [],
+    approvals: [],
+    sessions: [],
+  });
+  const activity = useRef(new ActivityTracker());
 
   useEffect(() => {
     const reporter = new PresenceReporter((p) => ipc.reportPresence(p), { onError: () => undefined });
     const tick = async () => {
       if (client) live.current = client.live.getSnapshot();
-      const ctx = petContext(live.current, settings, { dnd, fullscreen: false, lowEnergy: false }, new Date());
+      const act = activity.current.update(live.current.sessions, pendingAnswers(live.current));
+      const ctx = petContext(live.current, settings, { dnd, fullscreen: false, lowEnergy: false }, new Date(), act);
       await sh.sendPetContext(ctx).catch(() => undefined);
       const idle = await sh.idleMs().catch(() => 0);
       reporter.update({ active: idle < IDLE_AFTER_MS, locked: false, fullscreen: false, dnd });

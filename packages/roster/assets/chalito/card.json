@@ -68,5 +68,55 @@
   "thumbs": {
     "128": "thumb-128.webp",
     "256": "thumb-256.webp"
+  },
+  "rig": {
+    "v": 1,
+    "parts": [
+      {
+        "id": "body",
+        "src": "rig-body.webp",
+        "pivot": [0.5, 0.97],
+        "z": 0
+      },
+      {
+        "id": "armL",
+        "src": "rig-arm-l.webp",
+        "pivot": [0.2968, 0.5462],
+        "z": 1
+      },
+      {
+        "id": "armR",
+        "src": "rig-arm-r.webp",
+        "pivot": [0.6219, 0.5462],
+        "z": 1
+      },
+      {
+        "id": "head",
+        "src": {
+          "neutral": "rig-head-neutral.webp",
+          "happy": "rig-head-happy.webp",
+          "sad": "rig-head-sad.webp",
+          "tired": "rig-head-tired.webp"
+        },
+        "pivot": [0.5, 0.4779],
+        "z": 2
+      },
+      {
+        "id": "lids",
+        "src": "rig-lids.webp",
+        "parent": "head",
+        "pivot": [0.5, 0.4779],
+        "z": 3,
+        "only": ["neutral"]
+      },
+      {
+        "id": "mouth",
+        "src": "rig-mouth.webp",
+        "parent": "head",
+        "pivot": [0.4293, 0.4202],
+        "z": 3,
+        "only": ["neutral"]
+      }
+    ]
   }
 }

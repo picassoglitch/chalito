@@ -45,13 +45,29 @@ describe("non-humanoid preset (squash-and-stretch + bob + look-at)", () => {
       }
   });
 
-  it("excited bounces more than tired; thinking tilts", () => {
-    const amp = (tag: "excited" | "tired") => {
-      let max = 0;
-      for (let t = 0; t < 3000; t += 10) max = Math.max(max, creaturePose({ tag, intensity: 1 }, t).offsetY);
-      return max;
+  it("at rest it only breathes: never hops, whatever the emotion (owner decision 2026-10-19)", () => {
+    for (const tag of EmotionTag.options)
+      for (let t = 0; t < 10_000; t += 13) {
+        const p = creaturePose({ tag, intensity: 1 }, t);
+        expect(p.offsetY).toBeLessThan(0.005);
+        expect(Math.abs(p.scale[1] - 1)).toBeLessThan(0.07);
+      }
+  });
+
+  it("excited breathes quicker than tired; thinking tilts", () => {
+    // Count breaths (upward zero crossings of the stretch) over a minute.
+    const breaths = (tag: "excited" | "tired") => {
+      let n = 0;
+      let prev = creaturePose({ tag, intensity: 1 }, 0).scale[1];
+      for (let t = 20; t < 60_000; t += 20) {
+        const v = creaturePose({ tag, intensity: 1 }, t).scale[1];
+        const mid = tag === "tired" ? 1 - 0.06 : 1;
+        if (prev < mid && v >= mid) n++;
+        prev = v;
+      }
+      return n;
     };
-    expect(amp("excited")).toBeGreaterThan(amp("tired") * 3);
+    expect(breaths("excited")).toBeGreaterThan(breaths("tired"));
     expect(creaturePose({ tag: "thinking", intensity: 1 }, 0).tilt[2]).toBeGreaterThan(0);
   });
 });
