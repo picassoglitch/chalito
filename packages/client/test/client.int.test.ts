@@ -217,11 +217,11 @@ describe.skipIf(!LOCAL)("browser client ⇄ agent on the local stack", () => {
   it("Siempre así over real RLS: the phone stores, lists and withdraws a rule the agent can read and verify", async () => {
     const ruleId = await client.coordRules.remember({
       toolName: "Bash",
-      input: { command: "supabase db push" },
+      input: { command: "pnpm format" },
       workspaceLabel: "taquito",
       risk: "MED",
     });
-    expect(await client.coordRules.list()).toMatchObject([{ ruleId, label: "supabase db push · taquito", mine: true }]);
+    expect(await client.coordRules.list()).toMatchObject([{ ruleId, label: "pnpm format · taquito", mine: true }]);
     // The agent reads it with its own session and verifies it against the browser it trusts.
     const { data } = await agentDb.from("coord_rules").select("rule").eq("rule_id", ruleId);
     const trust = new TrustedClientList(agent.deviceId);
