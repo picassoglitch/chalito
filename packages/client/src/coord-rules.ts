@@ -31,7 +31,10 @@ export class CoordRuleError extends Error {
 export interface RememberInput {
   toolName: string;
   input: unknown;
-  /** The workspace label of the helper's session. */
+  /**
+   * The helper's workspace label from the approval's details: sealed and hash-bound by the agent
+   * (security review). Never from a plaintext column.
+   */
   workspaceLabel: string;
   /** The risk the agent SIGNED on the approval: only MED can be remembered. */
   risk: string;

@@ -3,6 +3,8 @@ import {
   COMMAND_TTL_MS,
   CommandBody,
   DecisionBody,
+  planDigestInput,
+  type CoordPlanState,
   type AdapterKind,
   type Channel,
   type CommandPayload,
@@ -10,10 +12,16 @@ import {
   type RemoteCodexSandbox,
   type RemotePermissionMode,
 } from "@chalito/protocol";
-import { REVOKE_BUNDLE_CTX, revokeAllServerEntry, stepUpBodyHash } from "@chalito/crypto";
+import { REVOKE_BUNDLE_CTX, canonicalize, revokeAllServerEntry, sha256, stepUpBodyHash, utf8 } from "@chalito/crypto";
 import type { ClientKeys, StepUpProvider } from "./keys.js";
 import type { LiveStore } from "./live.js";
 import { writeWithRetry, type RetryOptions, type SupaClient } from "./supa.js";
+
+/** SHA-256 (hex) of what a coordinator tap is about (`planDigestInput`), as the agent computes it. */
+export const coordDigest = async (plan: CoordPlanState, kind: "approve" | "merge"): Promise<string> =>
+  [...(await sha256(utf8(canonicalize(planDigestInput(plan, kind)))))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 
 export class ActionError extends Error {
   override name = "ActionError";
@@ -406,12 +414,16 @@ export class ClientActions {
     }));
   }
 
-  /** The owner's one tap that runs a plan: Chalito answers its helpers from now on (passkey). */
-  async coordApprove(agentDeviceId: string, planId: string): Promise<string> {
+  /**
+   * The owner's one tap that runs a plan: Chalito answers its helpers from now on (passkey). The
+   * command names the exact plan shown (its digest); the agent refuses it if the plan changed.
+   */
+  async coordApprove(agentDeviceId: string, plan: CoordPlanState): Promise<string> {
+    const digest = await coordDigest(plan, "approve");
     return this.#command(
       agentDeviceId,
-      async () => ({ type: "coord.approve", planId }),
-      this.#passkey(agentDeviceId, `coord-approve:${planId}`),
+      async () => ({ type: "coord.approve", planId: plan.planId, digest }),
+      this.#passkey(agentDeviceId, `coord-approve:${plan.planId}:${digest.slice(0, 16)}`),
     );
   }
 
@@ -420,12 +432,13 @@ export class ClientActions {
     return this.#command(agentDeviceId, async () => ({ type: "coord.stop", planId }));
   }
 
-  /** The merge tap: the base moves to the plan's integration branch and is pushed (passkey). */
-  async coordMerge(agentDeviceId: string, planId: string): Promise<string> {
+  /** The merge tap: the base moves to the integration commit shown, and is pushed (passkey). */
+  async coordMerge(agentDeviceId: string, plan: CoordPlanState): Promise<string> {
+    const digest = await coordDigest(plan, "merge");
     return this.#command(
       agentDeviceId,
-      async () => ({ type: "coord.merge", planId }),
-      this.#passkey(agentDeviceId, `coord-merge:${planId}`),
+      async () => ({ type: "coord.merge", planId: plan.planId, digest }),
+      this.#passkey(agentDeviceId, `coord-merge:${plan.planId}:${digest.slice(0, 16)}`),
     );
   }
 
