@@ -41,6 +41,7 @@ export const API_ROUTES: RouteTable = {
   // Devices, pairing, endorsement, recovery, passkeys
   "POST /v1/devices/first": sensitive(10, 2, MEDIUM),
   "POST /v1/devices/endorsed": sensitive(10, 2, MEDIUM),
+  "POST /v1/devices/signin": sensitive(10, 2, MEDIUM),
   "POST /v1/devices/token": user(30, 0.5),
   "POST /v1/devices/revoke": user(20, 0.2),
   "POST /v1/devices/revoke-all": sensitive(5, 1, 256 * KB),

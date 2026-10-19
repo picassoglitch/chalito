@@ -6,7 +6,7 @@ import { GlyphView } from "./GlyphView.js";
 const shortCode = (d: unknown): string | null =>
   typeof (d as { shortCode?: unknown } | null)?.shortCode === "string" ? (d as { shortCode: string }).shortCode : null;
 
-/** Signed out: sign in with the hub (system browser), then get endorsed by a trusted client. */
+/** Signed out: sign in with the hub (system browser); that sign-in enrols this computer. */
 export const SignIn = ({ controller }: { controller: SignInController | null }) => {
   const t = useT();
   const noop = () => () => undefined;
@@ -34,6 +34,13 @@ export const SignIn = ({ controller }: { controller: SignInController | null }) 
     case "exchanging":
       return <p className="muted">{t("signIn.exchanging")}</p>;
     case "endorsing": {
+      // Signing in enrols this computer right away; a code only appears on the endorsement fallback.
+      if (s.display === null)
+        return (
+          <p className="muted" data-sign-in="enrolling">
+            {t("signIn.enrolling")}
+          </p>
+        );
       const code = shortCode(s.display);
       return (
         <div className="card" data-sign-in="endorsing">

@@ -130,6 +130,36 @@ describe("endorsement channel (new device)", () => {
     expect(await s.endorsement).toEqual(E);
   });
 
+  it("shows the code even when the watch never joins (a hanging websocket)", async () => {
+    const a = fakeApi();
+    const s = await endorsementChannel({
+      api: a.api,
+      watch: () => new Promise<() => void>(() => undefined),
+      pollMs: 1000,
+    }).open(REG);
+    expect((s.display as { shortCode: string }).shortCode).toBe(CODE.shortCode);
+    a.endorse();
+    vi.advanceTimersByTime(1000);
+    expect(await s.endorsement).toEqual(E);
+  });
+
+  it("stops a watch that joins after the endorsement already came", async () => {
+    const a = fakeApi();
+    const off = vi.fn();
+    let join!: (f: () => void) => void;
+    const s = await endorsementChannel({
+      api: a.api,
+      watch: () => new Promise<() => void>((r) => (join = r)),
+      pollMs: 1000,
+    }).open(REG);
+    a.endorse();
+    vi.advanceTimersByTime(1000);
+    expect(await s.endorsement).toEqual(E);
+    join(off);
+    await flush();
+    expect(off).toHaveBeenCalled();
+  });
+
   it("expires with the code", async () => {
     const a = fakeApi();
     const w = fakeWatch();

@@ -162,6 +162,19 @@ export const enrollEndorsed = (api: ApiClient, req: ReturnType<typeof EnrollEndo
   api.post<{ customToken: string; deviceId: string }>("/v1/devices/endorsed", req);
 
 /**
+ * Owner decision 2026-10-19 ("sign-in alone"): the person's own session enrols this device, no
+ * endorsement. `user` route; 404 from an api that predates it.
+ */
+/** This device's own verification code (its key fingerprint), as other devices compute it. */
+export const deviceFingerprint = (keys: DeviceKeys): Promise<string> => fingerprint(keys.sign.publicKey);
+
+/** A device's verification code from its base64url signing key (e.g. a directory row). */
+export const keyFingerprint = async (pubSign: string): Promise<string> => fingerprint(await fromB64url(pubSign));
+
+export const enrollSignedIn = (api: ApiClient, req: { registration: DeviceRegistration }) =>
+  api.post<{ customToken: string; deviceId: string }>("/v1/devices/signin", req);
+
+/**
  * Revoke a device: the server directory flips `revoked` (cuts its credential and listeners), and
  * each agent gets a signed `device.revokeClient` so it drops the key from its LOCAL trust list,
  * which is what actually stops the device's approvals (ADR 0006).

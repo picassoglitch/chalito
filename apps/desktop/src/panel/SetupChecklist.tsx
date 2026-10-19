@@ -27,6 +27,7 @@ export const SetupChecklist = ({
   ipc,
   agentStatus,
   openTab,
+  startSignIn,
   firstTaskUrl,
   openUrl,
   pollMs = SETUP_POLL_MS,
@@ -35,6 +36,8 @@ export const SetupChecklist = ({
   ipc: AgentIpc;
   agentStatus?: () => Promise<AgentStatus>;
   openTab: (tab: "inbox" | "ai" | "settings") => void;
+  /** Opens the hub sign-in in the browser. Without it, the button only shows the Inbox's sign-in. */
+  startSignIn?: () => void;
   /** The hub's New Session with the ready-made first task. */
   firstTaskUrl?: string;
   openUrl?: (url: string) => Promise<void>;
@@ -44,6 +47,7 @@ export const SetupChecklist = ({
   const [paired, setPaired] = useState(false);
   const [adapters, setAdapters] = useState<string[]>([]);
   const [folders, setFolders] = useState(0);
+  const [signingIn, setSigningIn] = useState(false);
   const live = useSyncExternalStore(
     client?.live.subscribe ?? noop,
     client ? client.live.getSnapshot : () => NO_SESSIONS,
@@ -80,7 +84,18 @@ export const SetupChecklist = ({
     switch (id) {
       case "account":
       case "browser":
-        return { label: t("setup.action.signIn"), run: () => openTab("inbox") };
+        // Starts the sign-in itself: only switching to the Inbox did nothing visible when the
+        // Inbox (and its sign-in) was already open.
+        return {
+          label: t("setup.action.signIn"),
+          run: () => {
+            openTab("inbox");
+            if (startSignIn) {
+              startSignIn();
+              setSigningIn(true);
+            }
+          },
+        };
       case "computer":
         return null; // The "Conectar esta computadora" card is right above.
       case "ai":
@@ -106,6 +121,11 @@ export const SetupChecklist = ({
             <li key={id} data-step={id} data-done={done} aria-current={current ? "step" : undefined}>
               <span aria-hidden>{done ? "✓" : current ? "→" : "○"}</span> {t(`setup.step.${id}`)}
               {current ? <p className="muted">{t(`setup.hint.${id}`)}</p> : null}
+              {current && signingIn && (id === "account" || id === "browser") ? (
+                <p role="status" data-testid="setup-signing-in">
+                  {t("setup.signingIn")}
+                </p>
+              ) : null}
               {a ? (
                 <button type="button" onClick={a.run} data-testid={`setup-go-${id}`}>
                   {a.label}

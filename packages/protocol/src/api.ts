@@ -38,6 +38,14 @@ export const EnrollFirstClientRequest = z.object({
   recoveryCode: RecoveryCode,
 });
 
+/**
+ * Any client, enrolled by the person's sign-in alone (owner decision 2026-10-19: signing in on a
+ * device approves it, no second device). Agents trust it from the devices directory.
+ */
+export const EnrollSignInClientRequest = z.object({
+  registration: DeviceRegistration,
+});
+
 /** Additional client, endorsed by an already-trusted client. Agents re-verify locally. */
 export const EnrollEndorsedClientRequest = z.object({
   registration: DeviceRegistration,
@@ -205,7 +213,7 @@ export const DeviceDoc = z.object({
   pubSign: PubSign,
   pubBox: PubBox,
   fingerprint: Fingerprint,
-  enrolledVia: z.enum(["first_client", "endorsement", "pairing", "recovery"]),
+  enrolledVia: z.enum(["first_client", "endorsement", "pairing", "recovery", "sign_in"]),
   endorsedBy: DeviceId.nullable(),
   revoked: z.boolean(),
   revokedAt: EpochMs.nullable(),

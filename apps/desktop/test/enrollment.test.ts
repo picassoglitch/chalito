@@ -3,6 +3,7 @@ import {
   ApiError,
   DeviceClientKeys,
   generateDeviceKeys,
+  publicKeys,
   signEndorsement,
   type ApiClient,
   type DeviceKeys,
@@ -10,6 +11,7 @@ import {
 import type { DeviceRegistration, Endorsement } from "@chalito/protocol";
 import {
   EndorsementUnavailableError,
+  SIGN_IN_INTRODUCER,
   enrollDesktop,
   unavailableEndorsement,
   type EndorsementChannel,
@@ -52,11 +54,20 @@ const memoryKeys = (initial: DeviceKeys | null = null) => {
   return { load: async () => k, save: vi.fn(async (n: DeviceKeys) => void (k = n)) };
 };
 
-const userApi = (impl?: (path: string, body: unknown) => unknown): ApiClient & { calls: [string, unknown][] } => {
+/** An api without /v1/devices/signin (404), unless `signIn` answers it: the endorsement fallback. */
+const userApi = (
+  impl?: (path: string, body: unknown) => unknown,
+  signIn?: (body: unknown) => unknown,
+): ApiClient & { calls: [string, unknown][] } => {
   const calls: [string, unknown][] = [];
   return {
     calls,
     post: async <T>(path: string, body: unknown) => {
+      if (path === "/v1/devices/signin") {
+        if (!signIn) throw new ApiError(404, "not_found");
+        calls.push([path, body]);
+        return signIn(body) as T;
+      }
       calls.push([path, body]);
       if (impl) return impl(path, body) as T;
       const b = body as { registration: DeviceRegistration };
@@ -81,7 +92,84 @@ const base = async (over: Partial<EnrollDeps> = {}): Promise<EnrollDeps> => {
   };
 };
 
-describe("desktop enrolment (endorsed new client)", () => {
+const enrolled = (body: unknown) => ({
+  customToken: "device-hash",
+  deviceId: (body as { registration: DeviceRegistration }).registration.body.deviceId,
+});
+
+describe("desktop enrolment by sign-in alone (owner decision 2026-10-19)", () => {
+  it("the person's sign-in enrols this panel: no code, no second device", async () => {
+    const keys = memoryKeys();
+    const api = userApi(undefined, enrolled);
+    const open = vi.fn();
+    const display = vi.fn();
+    const r = await enrollDesktop({ ...(await base({ keys, userApi: api, channel: { open } })), onDisplay: display });
+    expect(r).toMatchObject({ ok: true, customToken: "device-hash", passkey: "unavailable" });
+    expect(api.calls.map((c) => c[0])).toEqual(["/v1/devices/signin"]);
+    const reg = (api.calls[0]![1] as { registration: DeviceRegistration }).registration;
+    expect(reg.body).toMatchObject({ owner: OWNER, kind: "web", platform: "web", name: "Chalito (escritorio)" });
+    expect(reg.signerDeviceId).toBe(reg.body.deviceId);
+    expect(r.ok && r.deviceId).toBe(reg.body.deviceId);
+    expect(open).not.toHaveBeenCalled();
+    expect(display).not.toHaveBeenCalled();
+  });
+
+  it("trusts the account's computers from the directory, and only ones whose id matches the key", async () => {
+    const laptop = await generateDeviceKeys();
+    const pub = await publicKeys(laptop);
+    const forged = await generateDeviceKeys();
+    const trust = vi.fn(async (_k: DeviceKeys, agents: { deviceId: string }[], by: string) => {
+      expect(by).toBe(SIGN_IN_INTRODUCER);
+      return agents.map((a) => a.deviceId);
+    });
+    const r = await enrollDesktop(
+      await base({
+        userApi: userApi(undefined, enrolled),
+        introduce: {
+          directory: async () => [
+            { ...pub, deviceId: laptop.deviceId, role: "agent", revoked: false },
+            // Another id over the laptop's key: a directory swap, never trusted.
+            { ...pub, deviceId: forged.deviceId, role: "agent", revoked: false },
+            { ...pub, deviceId: laptop.deviceId, role: "client", revoked: false },
+            { ...pub, deviceId: "gone", role: "agent", revoked: true },
+          ],
+          trust,
+        },
+      }),
+    );
+    expect(r).toMatchObject({ ok: true, agents: [laptop.deviceId] });
+  });
+
+  it("keys left from an earlier attempt (taken or revoked) are replaced, once", async () => {
+    const old = await generateDeviceKeys();
+    const keys = memoryKeys(old);
+    let n = 0;
+    const api = userApi(undefined, (body) => {
+      if (n++ === 0) throw new ApiError(409, "device_exists");
+      return enrolled(body);
+    });
+    const r = await enrollDesktop(await base({ keys, userApi: api }));
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.deviceId).not.toBe(old.deviceId);
+    expect(keys.save).toHaveBeenCalledTimes(1);
+    expect(api.calls).toHaveLength(2);
+  });
+
+  it.each([
+    [new ApiError(403, "owner_mismatch"), "rejected"],
+    [new ApiError(503, "unavailable"), "failed"],
+    [new Error("network"), "failed"],
+  ] as const)("a refusal %s → %s (no endorsement fallback)", async (err, reason) => {
+    const open = vi.fn();
+    const api = userApi(undefined, () => {
+      throw err;
+    });
+    expect(await enrollDesktop(await base({ userApi: api, channel: { open } }))).toEqual({ ok: false, reason });
+    expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("desktop enrolment (endorsed new client, the fallback for an api without /v1/devices/signin)", () => {
   it("generates and stores keys, signs its registration, posts it with the endorsement", async () => {
     const keys = memoryKeys();
     const api = userApi();

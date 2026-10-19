@@ -11,7 +11,7 @@ import {
 } from "@chalito/protocol";
 import type { Logger } from "./redact.js";
 import { redactDeep, sanitizeDeviceEvent } from "./redact.js";
-import type { AgentStore, AuditEntry, EndorsementRow } from "./store.js";
+import type { AgentStore, AuditEntry, EndorsementRow, SignInClientRow } from "./store.js";
 
 /**
  * The slice of supabase-js the agent uses (schema `chalito`). Narrow on purpose: unit tests
@@ -514,6 +514,25 @@ export class SupabaseStore implements AgentStore {
         .in("device_id", deviceIds),
     );
     return (rows ?? []).map((r) => r.device_id);
+  }
+
+  async signInClients(): Promise<SignInClientRow[]> {
+    const rows = await must<{ device_id: string; pub_sign: string; pub_box: string; webauthn_binding: unknown }[]>(
+      "sign-in clients",
+      this.db
+        .from("devices")
+        .select("device_id, pub_sign, pub_box, webauthn_binding")
+        .eq("owner", this.owner)
+        .eq("role", "client")
+        .eq("enrolled_via", "sign_in")
+        .eq("revoked", false),
+    );
+    return (rows ?? []).map((r) => ({
+      deviceId: r.device_id,
+      pubSign: r.pub_sign,
+      pubBox: r.pub_box,
+      webauthnBinding: r.webauthn_binding ?? null,
+    }));
   }
 
   async listEndorsements(): Promise<EndorsementRow[]> {

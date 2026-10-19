@@ -62,6 +62,16 @@ describe("desktop setup checklist", () => {
     expect(openTab).toHaveBeenCalledWith("inbox");
   });
 
+  it("signed out with a sign-in: its button starts the sign-in itself and says so (never a silent tap)", () => {
+    const startSignIn = vi.fn();
+    const { openTab } = show({ ipc: ipcWith([], 0), startSignIn });
+    expect(screen.getByTestId("setup-go-account").textContent).toBe("Iniciar sesión con Chalyb");
+    fireEvent.click(screen.getByTestId("setup-go-account"));
+    expect(startSignIn).toHaveBeenCalledTimes(1);
+    expect(openTab).toHaveBeenCalledWith("inbox");
+    expect(screen.getByTestId("setup-signing-in").textContent).toMatch(/navegador/);
+  });
+
   it("paired with no AI yet: the next step goes to the AI tab", async () => {
     const { openTab } = show({
       client: live(0),

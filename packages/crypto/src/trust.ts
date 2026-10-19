@@ -1,5 +1,6 @@
 import type { Endorsement, WebAuthnBinding } from "@chalito/protocol";
 import { fromB64url } from "./encoding.js";
+import { deriveDeviceId } from "./fingerprint.js";
 import type { NonceStore } from "./nonce.js";
 import { verifyDetached, verifyEnvelope, type SignedEnvelope } from "./sign.js";
 import { stepUpChallenge, verifyWebAuthnAssertion, type WebAuthnCredentialRef } from "./webauthn.js";
@@ -8,8 +9,11 @@ export interface TrustedClient {
   deviceId: string;
   pubSign: string;
   pubBox: string;
-  /** How the device learned to trust this key. Never "server". */
-  via: "local_confirmation" | "endorsement";
+  /**
+   * How the device learned to trust this key. "sign_in": the account's devices directory says the
+   * person signed in on that device (owner decision 2026-10-19, "sign-in alone").
+   */
+  via: "local_confirmation" | "endorsement" | "sign_in";
   addedAt: number;
   /** For `via: "endorsement"`: the trusted client that signed it. */
   endorsedBy?: string;
@@ -72,8 +76,9 @@ interface DecisionLike {
 /**
  * The device agent's LOCAL list of trusted client keys (ADR 0006). It is the only
  * authority for approvals: keys appear here through local confirmation on the desktop
- * (reverse check) or an endorsement signed by a key already here. Nothing the cloud
- * says can add a key. The agent persists `toJSON()` under ~/.chalito, signed (M3).
+ * (reverse check), an endorsement signed by a key already here, or (owner decision 2026-10-19,
+ * "sign-in alone") a client the account's directory lists as enrolled by the person's sign-in.
+ * The agent persists `toJSON()` under ~/.chalito, signed (M3).
  */
 export type EndorseCheck =
   | { ok: true; passkey: boolean }
@@ -239,6 +244,36 @@ export class TrustedClientList {
       via: "endorsement",
       addedAt: now,
       endorsedBy: e.signerDeviceId,
+      ...(webauthn ? { webauthn } : {}),
+    });
+    return { ok: true, passkey: webauthn !== undefined };
+  }
+
+  /**
+   * Owner decision 2026-10-19 ("sign-in alone"): a client the person signed in on, as the account's
+   * devices directory lists it. Its id must derive from its key; a client removed here (tombstone)
+   * never comes back this way. Its passkey binding, signed by that same key, is recorded too.
+   */
+  async addSignedIn(
+    c: { deviceId: string; pubSign: string; pubBox: string },
+    now: number,
+    opts: { webauthnBinding?: WebAuthnBinding | null } = {},
+  ): Promise<{ ok: true; passkey: boolean } | { ok: false; reason: "removed" | "already_trusted" | "bad_key" }> {
+    if (this.#removed.has(c.deviceId)) return { ok: false, reason: "removed" };
+    if (this.#clients.has(c.deviceId)) return { ok: false, reason: "already_trusted" };
+    if (!c.pubBox || (await deriveDeviceId(await fromB64url(c.pubSign)).catch(() => null)) !== c.deviceId)
+      return { ok: false, reason: "bad_key" };
+    let webauthn: WebAuthnCredentialRef | undefined;
+    if (opts.webauthnBinding) {
+      const check = await verifyWebAuthnBinding(opts.webauthnBinding, { deviceId: c.deviceId, pubSign: c.pubSign });
+      if (check.ok) webauthn = check.credential;
+    }
+    await this.#put({
+      deviceId: c.deviceId,
+      pubSign: c.pubSign,
+      pubBox: c.pubBox,
+      via: "sign_in",
+      addedAt: now,
       ...(webauthn ? { webauthn } : {}),
     });
     return { ok: true, passkey: webauthn !== undefined };

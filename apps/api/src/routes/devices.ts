@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   EnrollEndorsedClientRequest,
   EnrollFirstClientRequest,
+  EnrollSignInClientRequest,
   RefreshChallenge,
   RevokeDeviceRequest,
   SignedCommand,
@@ -77,6 +78,69 @@ export const deviceRoutes = (deps: Deps, wa: WebAuthnConfig = webauthnConfigFrom
       target: doc.deviceId,
       meta: { via: "first_client" },
     });
+    return c.json(
+      { customToken: await mintDeviceToken(deps, p.owner, doc.deviceId, "client"), deviceId: doc.deviceId },
+      201,
+    );
+  });
+
+  /**
+   * Owner decision 2026-10-19 ("sign-in alone"): signing in with the Chalyb account on a device
+   * approves it. Any number of clients, first or not, no endorsement and no code. The keys are
+   * still the device's own (self-signed registration, id derived from the key); agents trust it
+   * from the devices directory (enrolledVia "sign_in"), and every device of the account hears
+   * about it with revoke one tap away.
+   */
+  app.post("/signin", requireAuth(deps, ["user"]), async (c) => {
+    const p = principal(c);
+    const body = EnrollSignInClientRequest.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(400, "bad_request");
+    const reg = body.data.registration;
+    await checkRegistration(deps, reg, p.owner, [...CLIENT_KINDS]);
+    const doc = await buildDeviceDoc(deps, {
+      owner: p.owner,
+      deviceId: reg.body.deviceId,
+      kind: reg.body.kind,
+      platform: reg.body.platform,
+      name: reg.body.name,
+      role: "client",
+      pubSign: reg.body.pubSign,
+      pubBox: reg.body.pubBox,
+      enrolledVia: "sign_in",
+      endorsedBy: null,
+    });
+    if ((await deps.repo.createDevice(p.owner, doc)) === "exists") return fail(409, "device_exists");
+    await deps.audit.record({
+      action: "device.enrolled",
+      owner: p.owner,
+      actor: p.uid,
+      target: doc.deviceId,
+      meta: { via: "sign_in" },
+    });
+    const nid = `signin_${doc.deviceId}_${deps.now()}`;
+    try {
+      await deps.repo.createNotification(p.owner, nid, {
+        v: 1,
+        nid,
+        uid: p.owner,
+        level: "L2",
+        source: "security",
+        urgency: "high",
+        counts: { approvals: 0, questions: 0, messages: 0, mesas: 0 },
+        deepLink: "/dispositivos",
+        coalesceKey: `security:signin:${doc.deviceId}`,
+        state: "pending",
+        step: 0,
+        nextAt: null,
+        channels: ["desktop", "push"],
+        createdAt: deps.now(),
+        ackedAt: null,
+        ackedVia: null,
+      });
+    } catch (err) {
+      // The device is enrolled: a failed alert must not turn it into an error for the person.
+      console.error("[api] sign-in alert failed", err instanceof Error ? err.message : "error");
+    }
     return c.json(
       { customToken: await mintDeviceToken(deps, p.owner, doc.deviceId, "client"), deviceId: doc.deviceId },
       201,

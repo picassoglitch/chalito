@@ -195,13 +195,18 @@ export const endorsementChannel = (o: EndorsementChannelOptions): EndorsementCha
 
     const expiry = t.setTimeout(() => fail(new EndorseCodeExpiredError()), Math.max(0, code.expiresAt - now()));
     const poll = t.setInterval(() => void tryTake(), o.pollMs ?? 4000);
-    try {
-      const off = await o.watch(code.codeId, code.watchToken, () => void tryTake());
-      if (settled) off();
-      else unwatch = off;
-    } catch {
-      // No realtime (blocked websocket, proxy): the poll still gets there.
-    }
+    // Not awaited: the code must show right away. A watch that never joins (a websocket that
+    // hangs instead of failing) used to hold the display back, so the screen had no code at all.
+    void o
+      .watch(code.codeId, code.watchToken, () => void tryTake())
+      .then(
+        (off) => {
+          if (settled) off();
+          else unwatch = off;
+        },
+        // No realtime (blocked websocket, proxy): the poll still gets there.
+        () => undefined,
+      );
 
     return {
       display,

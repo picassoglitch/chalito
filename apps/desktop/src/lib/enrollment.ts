@@ -8,14 +8,16 @@ import type {
 } from "@chalito/client-keys";
 import {
   ApiError,
+  accountAgents,
   enrollEndorsed,
+  enrollSignedIn,
   generateDeviceKeys,
   introducedAgents,
   registerPasskey,
   signDeviceRegistration,
 } from "@chalito/client-keys";
 import { EndorsementUnavailableError, endorsementMatches, type EndorsementChannel } from "@chalito/client";
-import type { Endorsement, IntroducedAgent } from "@chalito/protocol";
+import type { DeviceRegistration, Endorsement, IntroducedAgent } from "@chalito/protocol";
 
 export {
   EndorsementUnavailableError,
@@ -25,8 +27,10 @@ export {
 } from "@chalito/client";
 
 /**
- * Making this desktop panel a trusted client (decision: no special path; ADR 0006). It is a
- * browser client like any other:
+ * Making this desktop panel a trusted client. Owner decision 2026-10-19 ("sign-in alone"): the
+ * person's hub sign-in enrols it (/v1/devices/signin) and it trusts the account's computers from
+ * the directory. The endorsement steps below are only the fallback for an api without that route.
+ * It is a browser client like any other:
  *   1. the person is signed in (hub SSO → their own session: `user` routes);
  *   2. the panel has device keys (client-keys: libsodium in IndexedDB, wrapped by a
  *      non-extractable WebCrypto key) and signs its own registration;
@@ -37,6 +41,9 @@ export {
  *   5. a passkey is enrolled right after, where the platform allows it (never required).
  * Never through the agent's IPC: the agent must not mint client trust for itself.
  */
+
+/** `endorsedBy` recorded for computers a sign-in client trusts from the account's directory. */
+export const SIGN_IN_INTRODUCER = "sign_in";
 
 export type EnrollError =
   | "channel_unavailable"
@@ -110,14 +117,32 @@ export const enrollDesktop = async (d: EnrollDeps): Promise<EnrollResult> => {
     keys = await generateDeviceKeys();
     await d.keys.save(keys);
   }
-  const registration = await signDeviceRegistration(keys, {
-    owner: d.owner,
-    // The protocol's client kinds are phone | web: the panel is a web client in a webview.
-    kind: "web",
-    platform: "web",
-    name: d.name,
-    now: now(),
-  });
+  const register = (k: DeviceKeys) =>
+    signDeviceRegistration(k, {
+      owner: d.owner,
+      // The protocol's client kinds are phone | web: the panel is a web client in a webview.
+      kind: "web",
+      platform: "web",
+      name: d.name,
+      now: now(),
+    });
+  let registration = await register(keys);
+
+  // Owner decision 2026-10-19 ("sign-in alone"): the person's sign-in approves this computer's
+  // panel. Only an api without /v1/devices/signin (404) falls back to the endorsement below.
+  const bySignIn = await enrollBySignIn(d, keys, registration);
+  if (bySignIn.kind === "fresh_keys") {
+    // Keys left from an earlier attempt are taken (or were revoked): start over with new ones.
+    keys = await generateDeviceKeys();
+    await d.keys.save(keys);
+    registration = await register(keys);
+    const retry = await enrollBySignIn(d, keys, registration);
+    if (retry.kind !== "enrolled")
+      return { ok: false, reason: retry.kind === "error" ? retry.reason : "device_exists" };
+    return finish(d, keys, retry.enrolled, null, registration, now);
+  }
+  if (bySignIn.kind === "error") return { ok: false, reason: bySignIn.reason };
+  if (bySignIn.kind === "enrolled") return finish(d, keys, bySignIn.enrolled, null, registration, now);
 
   let session: Awaited<ReturnType<EndorsementChannel["open"]>>;
   try {
@@ -147,22 +172,69 @@ export const enrollDesktop = async (d: EnrollDeps): Promise<EnrollResult> => {
       return { ok: false, reason: API_REASONS[err.code] ?? (err.status < 500 ? "rejected" : "failed") };
     return { ok: false, reason: "failed" };
   }
+  return finish(d, keys, enrolled, endorsement, registration, now);
+};
+
+type SignInAttempt =
+  | { kind: "enrolled"; enrolled: { customToken: string; deviceId: string } }
+  | { kind: "unsupported" }
+  | { kind: "fresh_keys" }
+  | { kind: "error"; reason: EnrollError };
+
+const enrollBySignIn = async (
+  d: EnrollDeps,
+  keys: DeviceKeys,
+  registration: DeviceRegistration,
+): Promise<SignInAttempt> => {
+  try {
+    const enrolled = await enrollSignedIn(d.userApi, { registration });
+    if (enrolled.deviceId !== keys.deviceId) return { kind: "error", reason: "failed" };
+    return { kind: "enrolled", enrolled };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return { kind: "unsupported" };
+    if (err instanceof ApiError && err.code === "device_exists") return { kind: "fresh_keys" };
+    if (err instanceof ApiError) return { kind: "error", reason: err.status < 500 ? "rejected" : "failed" };
+    return { kind: "error", reason: "failed" };
+  }
+};
+
+/** After enrolment: the computers to trust, then a passkey where the platform allows it. */
+const finish = async (
+  d: EnrollDeps,
+  keys: DeviceKeys,
+  enrolled: { customToken: string; deviceId: string },
+  /** The endorsement it came with; null when the person's sign-in enrolled it. */
+  endorsement: Endorsement | null,
+  registration: DeviceRegistration,
+  now: () => number,
+): Promise<EnrollResult> => {
   if (enrolled.deviceId !== keys.deviceId) return { ok: false, reason: "failed" };
 
-  // ADR 0018: the computers the endorser trusts, where the directory agrees. Best effort: a
-  // failure here only means pairing each computer by glyph later.
+  // ADR 0018: the computers the endorser trusts, where the directory agrees; by sign-in, the
+  // account's computers from the directory. Best effort: a failure here only means pairing each
+  // computer by glyph later.
   let agents: string[] = [];
   let droppedAgents: DroppedAgent[] = [];
   if (d.introduce) {
     try {
-      const check = await introducedAgents(
-        endorsement,
-        { uid: d.owner, deviceId: keys.deviceId, pubSign: registration.body.pubSign, pubBox: registration.body.pubBox },
-        await d.introduce.directory(),
-      );
-      if (check.ok) {
-        droppedAgents = check.dropped;
-        if (check.agents.length) agents = await d.introduce.trust(keys, check.agents, endorsement.signerDeviceId);
+      if (endorsement) {
+        const check = await introducedAgents(
+          endorsement,
+          {
+            uid: d.owner,
+            deviceId: keys.deviceId,
+            pubSign: registration.body.pubSign,
+            pubBox: registration.body.pubBox,
+          },
+          await d.introduce.directory(),
+        );
+        if (check.ok) {
+          droppedAgents = check.dropped;
+          if (check.agents.length) agents = await d.introduce.trust(keys, check.agents, endorsement.signerDeviceId);
+        }
+      } else {
+        const found = await accountAgents(await d.introduce.directory());
+        if (found.length) agents = await d.introduce.trust(keys, found, SIGN_IN_INTRODUCER);
       }
     } catch {
       agents = [];
