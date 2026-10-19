@@ -267,6 +267,16 @@ describe("coordAnswer", () => {
     ).toBeNull();
   });
 
+  it("security review: a rule for `pytest` never answers `PYTEST` (no case folding)", () => {
+    const m = rememberMatchFor({ toolName: "Bash", input: { command: "pytest -x" }, workspaceLabel: "proj" })!;
+    const rule = sha(ruleMatchText(m)!);
+    expect(answer("Bash", { command: "pytest -x" }, { rules: [rule] })).toEqual({
+      via: "remembered_rule",
+      match: rule,
+    });
+    expect(answer("Bash", { command: "PYTEST -x" }, { rules: [rule] })).toBeNull();
+  });
+
   it("a remembered rule never covers a HIGH or CRITICAL prompt", () => {
     // Not rememberable at all; and a hand-made rule for them (an older client) still never applies.
     expect(rememberMatchFor({ toolName: "Bash", input: { command: "rm build" }, workspaceLabel: "proj" })).toBeNull();

@@ -166,10 +166,10 @@ export const rememberMatchFor = (a: { toolName: string; input: unknown; workspac
     const words = input.command.trim().split(/[ \t]+/);
     const [program] = words;
     if (!program || !words.every((w) => PLAIN_WORD.test(w))) return null;
-    // Programs by name only (a path runs whatever that file holds), compared without case.
-    const argv = [program.toLowerCase(), ...words.slice(1)];
-    if (/[/\\]/.test(program) || !rememberable(argv)) return null;
-    m = { kind: "command", workspaceLabel: a.workspaceLabel, argv };
+    // Programs by name only (a path runs whatever that file holds), and exactly as listed: never
+    // case-folded (`PYTEST` may be another binary on a case-sensitive disk), so other cases ask.
+    if (/[/\\]/.test(program) || program !== program.toLowerCase() || !rememberable(words)) return null;
+    m = { kind: "command", workspaceLabel: a.workspaceLabel, argv: words };
   } else if (a.toolName === "WebFetch" && typeof input.url === "string") {
     let host: string;
     try {
