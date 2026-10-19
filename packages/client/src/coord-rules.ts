@@ -59,11 +59,9 @@ const ruleId = () => {
   return `cr_${btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
 };
 
-/** A short readable description of a match (shown on the approval and in Ajustes). */
+/** The exact command (or web host) a rule matches, as the confirmation shows it (security review). */
 export const describeRule = (m: RuleMatch): string =>
-  m.kind === "command"
-    ? `${[m.program, m.sub].filter(Boolean).join(" ")} · ${m.workspaceLabel}`
-    : `${m.domain} · ${m.workspaceLabel}`;
+  m.kind === "command" ? `${m.argv.join(" ")} · ${m.workspaceLabel}` : `${m.domain} · ${m.workspaceLabel}`;
 
 export class CoordRulesClient {
   constructor(

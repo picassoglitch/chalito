@@ -25,9 +25,10 @@ describe("Siempre así (ADR 0025 §6)", () => {
     expect(rules.matchFor(psql)).toEqual({
       kind: "command",
       workspaceLabel: "taquito",
-      program: "supabase",
-      sub: "db push",
+      argv: ["supabase", "db", "push"],
     });
+    // Security review: a wrapper is never remembered.
+    expect(rules.matchFor({ ...psql, input: { command: "npx foo --x" } })).toBeNull();
     expect(rules.matchFor({ ...psql, risk: "HIGH" })).toBeNull();
     expect(rules.matchFor({ ...psql, input: { command: "git add -A && rm -rf x" } })).toBeNull();
     await expect(rules.remember({ ...psql, risk: "CRITICAL" })).rejects.toBeInstanceOf(CoordRuleError);
@@ -67,5 +68,9 @@ describe("Siempre así (ADR 0025 §6)", () => {
 
   it("describes a match briefly", () => {
     expect(describeRule({ kind: "web", workspaceLabel: "w", domain: "api.x.com" })).toBe("api.x.com · w");
+    // The confirmation shows the exact command it will cover, options included.
+    expect(describeRule({ kind: "command", workspaceLabel: "w", argv: ["supabase", "db", "push", "--linked"] })).toBe(
+      "supabase db push --linked · w",
+    );
   });
 });
