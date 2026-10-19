@@ -94,12 +94,15 @@ const harness = async (turns: FakeStep[][], policyOver: Partial<Policy> = {}) =>
   });
   let active = true;
   const coord: SessionCoord = { planId: "p1", taskId: "t1", branchPrefix: "coord/p1/", active: () => active };
-  const start = (withCoord = true) =>
+  const start = (
+    withCoord = true,
+    origin: "agent:coord_p1" | "client:dev_phone" | "agent:coord_p2" = "agent:coord_p1",
+  ) =>
     core.startSession({
       adapter: "claude-code",
       workspace: { label: "taquito", path: WS },
       prompt: "haz la tarea",
-      origin: "agent:coord_p1",
+      origin,
       permissionMode: "default",
       ...(withCoord ? { coord } : {}),
     });
@@ -229,5 +232,22 @@ describe("coordinator helper sessions", () => {
     expect(h.fake.run.ran).toHaveLength(0);
     await h.decide(true);
     await waitFor(() => h.fake.run.ran.length === 1);
+  });
+
+  it("security review: once the plan stopped, nothing more is answered for the owner", async () => {
+    const h = await harness([[bash("pnpm add zod"), { say: "ok" }]]);
+    h.stop();
+    await h.start();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    expect(h.autoAllows()).toHaveLength(0);
+  });
+
+  it("security review: only the coordinator's own turns are answered (not the owner's, not another plan's)", async () => {
+    for (const origin of ["client:dev_phone", "agent:coord_p2"] as const) {
+      const h = await harness([[bash("pnpm add zod"), { say: "ok" }]]);
+      await h.start(true, origin);
+      await waitFor(() => h.store.pendingApprovals().length === 1);
+      expect(h.autoAllows(), origin).toHaveLength(0);
+    }
   });
 });
