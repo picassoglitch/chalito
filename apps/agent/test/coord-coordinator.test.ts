@@ -117,6 +117,11 @@ const host = (root: string, script: Partial<Record<Role, (s: Started, turn: numb
     },
     publish: async (_sid, state) => void published.push(structuredClone(state)),
     endHelper: (sid) => void ended.push(sid),
+    deviceId: () => "dev_here",
+    coordinatorOn: () => true,
+    linkTo: () => null,
+    sendCoordTask: async () => ({ ok: false, reason: "no_links_in_this_test" }),
+    onCoordResult: () => undefined,
   };
   return { h, started, published, interrupted, ended };
 };

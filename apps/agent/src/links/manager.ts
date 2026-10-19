@@ -17,6 +17,8 @@ import {
   LinkMessage,
   LinkResult,
   RelayedCommand,
+  CoordRemoteResult,
+  CoordRemoteTask,
   isTerminalLinkState,
   type AgentLinkSummary,
   type CommandBody,
@@ -94,6 +96,18 @@ export interface LinkHost {
   /** This agent's own command path (a same-device link goes through the same checks). */
   handleCommand(cid: string, doc: Record<string, unknown>): Promise<unknown>;
   sealForClients(value: unknown, aad: string): Promise<SealedEnvelope>;
+  /**
+   * Coordinator mode on another computer (ADR 0025 §6, G4): a hand-off whose only part is a
+   * `CoordRemoteTask` runs here as a helper of the sender's plan, within THIS computer's own
+   * coordinator ceiling; its result goes back over the link. Absent: such a hand-off is refused.
+   */
+  coordTask?(input: {
+    sid: string;
+    workspaceLabel: string;
+    appId: string | undefined;
+    ceiling: RemotePermissionMode;
+    task: CoordRemoteTask;
+  }): Promise<CoordRemoteResult>;
 }
 
 export interface LinkManagerDeps {
@@ -128,6 +142,8 @@ interface Inbound {
   done: boolean;
   /** Held for this hand-off while the phone is asked: the session counts as busy, nothing is tracked yet. */
   reserved: boolean;
+  /** A coordinator task (G4): the coordinator reports its result, not the session projector. */
+  coord?: boolean;
 }
 
 /** A hand-off this device sent and waits on. */
@@ -611,7 +627,13 @@ export class LinkManager implements LinkAuthorizer {
   // ---- sending ------------------------------------------------------------------------------
 
   /** `fromSid` hands work over `linkId` (started on this device: the desktop panel, CLI, or a session tool). */
-  async handoff(input: { fromSid: string; linkId: string; text: string }): Promise<LinkResultOf<{ taskId: string }>> {
+  async handoff(input: {
+    fromSid: string;
+    linkId: string;
+    text?: string;
+    /** Instead of text: structured parts (a coordinator task, G4). */
+    parts?: LinkPart[];
+  }): Promise<LinkResultOf<{ taskId: string }>> {
     const link = this.get(input.linkId);
     if (!link || link.mode !== "handoff") return { ok: false, reason: "unknown_link" };
     if (link.sender.deviceId !== this.d.deviceId) return { ok: false, reason: "link_wrong_endpoint" };
@@ -646,7 +668,7 @@ export class LinkManager implements LinkAuthorizer {
       contextId: input.fromSid,
       taskId,
       role: "ROLE_USER",
-      parts: [{ text: input.text }],
+      parts: input.parts ?? [{ text: input.text ?? "" }],
     });
     this.#outbound.set(taskId, {
       linkId: link.id,
@@ -848,6 +870,40 @@ export class LinkManager implements LinkAuthorizer {
       if (cloud) return void (await back(cloud));
     }
     inbound.reserved = false;
+    // A coordinator task (G4): this computer's coordinator runs it, never a plain prompt.
+    const coordTask = coordTaskOf(message);
+    if (coordTask) {
+      if (!this.#h.coordTask) return void (await back("start_failed"));
+      inbound.coord = true;
+      this.d.audit("link.handoff.delivered", {
+        linkId: link.id,
+        taskId: p.taskId,
+        hop: p.hop,
+        sid,
+        from: fromSid,
+        confirmed: link.confirm,
+        coord: coordTask.action,
+      });
+      const failed = (note: string): CoordRemoteResult => ({
+        v: 1,
+        kind: "chalito.coord.result.v1",
+        planId: coordTask.planId,
+        taskId: coordTask.taskId,
+        status: "failed",
+        note,
+      });
+      void this.#h
+        .coordTask({
+          sid,
+          workspaceLabel: link.workspaceLabel,
+          appId: link.receiver.appId,
+          ceiling: o.ceiling,
+          task: coordTask,
+        })
+        .catch((err: unknown) => failed(err instanceof Error ? err.message.slice(0, 200) : "error"))
+        .then((r) => this.#finishCoord(sid, inbound, link, r));
+      return;
+    }
     inbound.projector.prompt(message.parts.find((x) => x.text !== undefined)?.text ?? "", {
       messageId: message.messageId,
     });
@@ -936,11 +992,26 @@ export class LinkManager implements LinkAuthorizer {
     return { ok: true, sid: target.sid };
   }
 
+  readonly #resultListeners = new Set<(r: { linkId: string; taskId: string; result: LinkResult }) => boolean>();
+
+  /**
+   * Results of hand-offs this device sent, for the coordinator (G4). A listener that returns true
+   * took the result: it isn't queued for the sending session's next prompt.
+   */
+  onResult(fn: (r: { linkId: string; taskId: string; result: LinkResult }) => boolean): () => void {
+    this.#resultListeners.add(fn);
+    return () => void this.#resultListeners.delete(fn);
+  }
+
   async #receiveResult(linkId: string, taskId: string, result: LinkResult): Promise<LinkResultOf<{ sid?: string }>> {
     const out = this.#outbound.get(taskId);
     if (!out || out.linkId !== linkId || result.taskId !== taskId) return { ok: false, reason: "unknown_link" };
     const link = out.link;
     this.#outbound.delete(taskId);
+    if ([...this.#resultListeners].some((fn) => fn({ linkId, taskId, result }))) {
+      this.d.audit("link.handoff.result", { linkId, taskId, state: result.state, coord: true });
+      return { ok: true, sid: out.fromSid };
+    }
     const content = artifactsAsData(result.artifacts);
     this.#queue(
       out.fromSid,
@@ -1005,7 +1076,7 @@ export class LinkManager implements LinkAuthorizer {
   /** Every adapter event of every session (agent-core); only hand-off tasks are tracked. */
   async onAdapterEvent(sid: string, e: AdapterEvent): Promise<void> {
     const t = this.#inbound.get(sid);
-    if (!t || t.done || t.reserved) return;
+    if (!t || t.done || t.reserved || t.coord) return;
     t.projector.push(e);
     if (e.type === "usage") {
       const spent = this.#spend(t.linkId, e.tokIn + e.tokOut);
@@ -1061,6 +1132,23 @@ export class LinkManager implements LinkAuthorizer {
     );
   }
 
+  /** A coordinator task's result back to the plan's computer, as the one data part of its artifact. */
+  async #finishCoord(sid: string, t: Inbound, link: AgentLink, r: CoordRemoteResult): Promise<void> {
+    if (t.done) return;
+    t.done = true;
+    if (this.#inbound.get(sid) === t) this.#inbound.delete(sid);
+    const state: LinkTaskState = r.status === "done" ? "TASK_STATE_COMPLETED" : "TASK_STATE_FAILED";
+    this.d.audit("link.handoff.finished", { linkId: link.id, taskId: t.taskId, state, coord: r.status });
+    if (!this.get(link.id)) return; // revoked meanwhile: nothing goes back over it
+    await this.#sendResult(
+      link,
+      t.fromSid,
+      t.taskId,
+      { v: 1, taskId: t.taskId, state, artifacts: [{ artifactId: randomUUID(), parts: [{ data: r }] }] },
+      sid,
+    );
+  }
+
   /** Drops a hand-off's hold on its session (declined, expired, revoked, failed to start). */
   #release(sid: string, t: Inbound): void {
     if (this.#inbound.get(sid) === t) this.#inbound.delete(sid);
@@ -1110,3 +1198,18 @@ export class LinkManager implements LinkAuthorizer {
       );
   }
 }
+
+/** The coordinator task a hand-off carries (its only part, schema-checked), or null. */
+export const coordTaskOf = (m: LinkMessage): CoordRemoteTask | null => {
+  if (m.parts.length !== 1) return null;
+  const p = CoordRemoteTask.safeParse(m.parts[0]!.data);
+  return p.success ? p.data : null;
+};
+
+/** The coordinator result a hand-off's result carries (one artifact, one data part), or null. */
+export const coordResultOf = (r: LinkResult): CoordRemoteResult | null => {
+  const parts = r.artifacts.length === 1 ? r.artifacts[0]!.parts : [];
+  if (parts.length !== 1) return null;
+  const p = CoordRemoteResult.safeParse(parts[0]!.data);
+  return p.success ? p.data : null;
+};

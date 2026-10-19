@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { EpochMs, Uid } from "./common.js";
+import { DeviceId, EpochMs, Uid } from "./common.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 import { AppId } from "./recipe.js";
 
@@ -259,6 +259,8 @@ export const CoordPlanState = z
           dependsOn: z.array(CoordTaskId).max(6),
           status: CoordTaskStatus,
           branch: z.string().max(200),
+          /** The computer the helper runs on (G4: one of the owner's other computers, over a link). */
+          deviceId: z.string().max(128),
           sid: z.string().max(128).nullable(),
           /** The helper's or reviewer's last word on it (truncated). */
           note: z.string().max(500).nullable(),
@@ -314,6 +316,7 @@ export const planDigestInput = (p: CoordPlanState, kind: "approve" | "merge") =>
     acceptance: t.acceptance,
     dependsOn: t.dependsOn,
     branch: t.branch,
+    deviceId: t.deviceId,
   })),
   ...(kind === "merge" ? { integration: { branch: p.integration.branch, head: p.integration.head } } : {}),
 });
@@ -334,6 +337,11 @@ export const CoordCommands = [
       maxMinutes: z.number().int().min(5).max(720).optional(),
       /** The branch the plan starts from and merges into (default: the checked-out branch). */
       base: BranchName.optional(),
+      /**
+       * G4: other computers of the owner that take tasks too, each over a hand-off link the owner
+       * made locally from this computer to it. Never filled in: absent means this computer only.
+       */
+      helpers: z.array(DeviceId).min(1).max(5).optional(),
     })
     .strict(),
   /** The owner's one tap: run the proposed tasks. */
@@ -343,3 +351,55 @@ export const CoordCommands = [
   /** The owner's merge tap (passkey step-up over the command): integration into the base, then push. */
   z.object({ type: z.literal("coord.merge"), planId: PlanId, digest: Hex64 }).strict(),
 ] as const;
+
+// ---- G4: tasks on the owner's other computers (over hand-off links) --------------------------
+
+/** A full git object id (SHA-1 or SHA-256). */
+const ObjectId = z.string().regex(/^[0-9a-f]{40}([0-9a-f]{24})?$/);
+
+/**
+ * What the plan's computer sends a helper computer, as the one data part of a hand-off over a link
+ * the owner made locally on both ends (ADR 0022 §3: relays are signed by the sender's device key and
+ * verified against the key recorded for the link). The helper computer runs it only within its OWN
+ * coordinator ceiling, in its own worktree, from `baseSha` fetched from `origin`, and pushes exactly
+ * `branch`. Text fields come from the planner and the owner's goal: data for the helper's prompt.
+ */
+export const CoordRemoteTask = z
+  .object({
+    v: z.literal(1),
+    kind: z.literal("chalito.coord.task.v1"),
+    action: z.enum(["run", "revise", "stop"]),
+    planId: PlanId,
+    taskId: CoordTaskId,
+    base: BranchName,
+    baseSha: ObjectId,
+    /** Always `coord/<planId>/<taskId>`: the only branch the helper computer pushes. */
+    branch: z.string().max(200),
+    goal: z.string().max(4000),
+    task: CoordTaskSpec,
+    appId: AppId,
+    maxMinutes: z.number().int().min(5).max(720),
+    /** `revise`: the review's findings for the helper. */
+    feedback: z.string().max(4000).optional(),
+  })
+  .strict()
+  .refine((t) => t.branch === `coord/${t.planId}/${t.taskId}` && t.task.id === t.taskId, {
+    message: "the branch is the plan's own branch for this task",
+  });
+export type CoordRemoteTask = z.infer<typeof CoordRemoteTask>;
+
+/** What a helper computer sends back (the one data part of the hand-off's result artifact). */
+export const CoordRemoteResult = z
+  .object({
+    v: z.literal(1),
+    kind: z.literal("chalito.coord.result.v1"),
+    planId: PlanId,
+    taskId: CoordTaskId,
+    status: z.enum(["done", "blocked", "failed", "stopped"]),
+    /** `done`: the commit pushed to `origin` as the task's branch. */
+    head: ObjectId.optional(),
+    note: z.string().max(500),
+  })
+  .strict()
+  .refine((r) => r.status !== "done" || r.head !== undefined, { message: "a done task names its commit" });
+export type CoordRemoteResult = z.infer<typeof CoordRemoteResult>;
