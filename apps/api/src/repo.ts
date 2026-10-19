@@ -41,6 +41,8 @@ export interface ApiRepo {
   ): Promise<"revoked" | "already_revoked" | "not_found">;
   /** Revokes every active client of the owner except `keep`, in one statement; returns their ids. */
   revokeOtherClients(owner: string, keep: string, at: number): Promise<string[]>;
+  /** "Empezar de cero": revokes every active device of the owner (any role), in one statement; returns their ids. */
+  revokeAllDevices(owner: string, at: number, by: string): Promise<string[]>;
   /**
    * ADR 0022 §3 / 0020: marks every agent link of the account revoked in the cloud mirror
    * (chalito.agent_links). Agents check the mark before each delivery and drop the link. Returns

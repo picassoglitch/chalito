@@ -35,6 +35,7 @@ export const API_ROUTES: RouteTable = {
   // Chalyb hub (engine contract + SSO)
   "POST /tenants": s2s(),
   "POST /tenants/:id/status": s2s(),
+  "POST /tenants/:id/reset-devices": s2s(),
   "POST /sso/exchange": sensitive(30, 30),
 
   // Devices, pairing, endorsement, recovery, passkeys

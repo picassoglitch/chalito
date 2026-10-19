@@ -56,4 +56,31 @@ if (!url) {
     expect(await repo.queueCommand(o, cmd)).toBe(true);
     expect(await repo.queueCommand(o, cmd)).toBe(false);
   });
+
+  it("reset: revokes every active device of the owner (clients and agents), only theirs, once", async () => {
+    const o = `rs-${randomUUID()}`;
+    const other = `rs-${randomUUID()}`;
+    for (const x of [o, other]) {
+      await admin`insert into chalito.tenants (id) values (${x})`;
+      await admin`insert into chalito.users (id, tenant_id) values (${x}, ${x})`;
+    }
+    const id = (p: string) => `${p}_${randomUUID().slice(0, 8)}`;
+    const [c1, a1, gone, theirs] = [id("c1"), id("a1"), id("gone"), id("theirs")];
+    for (const [owner, d, r, revoked] of [
+      [o, c1, "client", false],
+      [o, a1, "agent", false],
+      [o, gone, "client", true],
+      [other, theirs, "client", false],
+    ] as const)
+      await admin`insert into chalito.devices (owner, device_id, role, kind, platform, name, pub_sign, pub_box, fingerprint, enrolled_via, auth_user_id, revoked)
+                  values (${owner}, ${d}, ${r}, ${r === "agent" ? "desktop" : "phone"}, 'linux', 'd', 'p', 'p', 'f', 'pairing', ${randomUUID()}, ${revoked})`;
+    expect(await repo.revokeAllDevices(o, Date.now(), "reset")).toEqual([a1, c1].sort());
+    expect(await repo.revokeAllDevices(o, Date.now(), "reset")).toEqual([]);
+    const [mine] = await admin`select count(*)::int as n from chalito.devices where owner = ${o} and revoked = false`;
+    expect(mine!.n).toBe(0);
+    const [row] = await admin`select revoked_by from chalito.devices where device_id = ${c1}`;
+    expect(row!.revoked_by).toBe("reset");
+    const [still] = await admin`select revoked from chalito.devices where device_id = ${theirs}`;
+    expect(still!.revoked).toBe(false);
+  });
 }

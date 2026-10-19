@@ -138,6 +138,14 @@ export class PostgresRepo implements ApiRepo {
     return rows.map((r) => r.device_id).sort();
   }
 
+  async revokeAllDevices(owner: string, at: number, by: string) {
+    const rows = await this.sql<{ device_id: string }[]>`
+      update chalito.devices set revoked = true, revoked_at = ${ts(at)}, revoked_by = ${by}
+      where owner = ${owner} and revoked = false
+      returning device_id`;
+    return rows.map((r) => r.device_id).sort();
+  }
+
   async revokeAgentLinks(owner: string, by: string) {
     const [row] = await this.sql<{ n: number }[]>`select chalito_private.revoke_agent_links(${owner}, ${by}) as n`;
     return Number(row?.n ?? 0);

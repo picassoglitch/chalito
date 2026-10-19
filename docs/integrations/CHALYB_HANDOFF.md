@@ -118,6 +118,7 @@ The hub is the source of truth for tier, trial and balance (ADR 0013/0016). Chal
   - A duplicate returns `409` with the same body, and the hub treats that as success.
   - `api_token` is derived (HMAC of the tenant id), so nothing secret is stored.
 - `POST /tenants/{id}/status {active|paused}` returns `204`.
+- `POST /tenants/{id}/reset-devices` ("Empezar de cero", called by the hub only after it checked the person's one-time email code) revokes every active device of the account and returns `200 {revoked}` (`banFailed` lists device logins that could not be disabled). Idempotent.
   - Paused stops managed features only.
   - Sign-in, approvals, revocation, Developer-mode off and export never pause.
 - `admin_api_base` = `https://api.chalito.chalyb.com`; `external_url` = `https://chalito.chalyb.com`.
