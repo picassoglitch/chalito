@@ -34,6 +34,7 @@ import {
   APP_ADAPTER,
   PROVIDER_APP,
   isLegacyApp,
+  type CoordRemoteResult,
 } from "@chalito/protocol";
 import { SESSIONS_DEFAULTS, type SessionsConfig } from "@chalito/config";
 import { outsideTaskSid } from "@chalito/crypto";
@@ -49,7 +50,7 @@ import type { ComputerApprovalOutcome, ComputerControl } from "./computer/contro
 import { COMPUTER_TOOL_PREFIX, ToolArgs, isToolName } from "./computer/tools.js";
 import type { DevMode } from "./devmode.js";
 import { DeltaThrottle } from "./live/deltas.js";
-import type { LinkHost, LinkManager } from "./links/manager.js";
+import { coordResultOf, type LinkHost, type LinkManager } from "./links/manager.js";
 import { partsAsData } from "./links/frame.js";
 import type { LinkTools } from "./links/tool-server.js";
 import { LINKS_TOOL_PREFIX, LinkToolArgs, isLinkToolName } from "./links/tools.js";
@@ -289,6 +290,8 @@ export class AgentCore {
    * identity stays for the session's whole life (no computer control, their worktree on a revive).
    */
   readonly #coordEnded = new Set<string>();
+  /** The coordinator's listener for results of tasks it sent to other computers (G4). */
+  #coordResult: ((taskId: string, r: CoordRemoteResult | null) => boolean) | null = null;
   #revoked = false;
 
   constructor(private readonly d: AgentCoreDeps) {
@@ -331,6 +334,7 @@ export class AgentCore {
       ...(d.setTimer ? { setTimer: d.setTimer } : {}),
     });
     d.links?.attach(this.#linkHost());
+    d.links?.onResult(({ taskId, result }) => this.#coordResult?.(taskId, coordResultOf(result)) ?? false);
   }
 
   // ---- commands ---------------------------------------------------------------
@@ -715,6 +719,7 @@ export class AgentCore {
           maxAgents: p.maxAgents ?? 3,
           maxMinutes: p.maxMinutes ?? 120,
           ...(p.base ? { base: p.base } : {}),
+          ...(p.helpers ? { helpers: p.helpers } : {}),
         });
         return r.ok ? { ok: true, ...(r.sid ? { sid: r.sid } : {}) } : this.#reject(cid, r.reason);
       }
@@ -809,6 +814,32 @@ export class AgentCore {
         };
       },
       endHelper: (sid) => void this.#coordEnded.add(sid),
+      deviceId: () => this.d.self.deviceId,
+      coordinatorOn: () => this.d.policy.get().coordinator?.enabled === true,
+      // A hand-off link the owner made here to that computer, starting new sessions there; one
+      // that doesn't ask the phone each time wins.
+      linkTo: (deviceId, appId) => {
+        const now = this.d.now();
+        const usable = (this.d.links?.list() ?? []).filter(
+          (l) =>
+            l.mode === "handoff" &&
+            l.sender.deviceId === this.d.self.deviceId &&
+            l.receiver.deviceId === deviceId &&
+            l.sender.sessionId === undefined &&
+            l.receiver.sessionId === undefined &&
+            (l.sender.appId === undefined || l.sender.appId === appId) &&
+            l.expiresAt > now,
+        );
+        const l = usable.find((x) => !x.confirm) ?? usable[0];
+        return l ? { linkId: l.id } : null;
+      },
+      sendCoordTask: async (linkId, fromSid, task) => {
+        if (!this.d.links) return { ok: false, reason: "links_disabled" };
+        return this.d.links.handoff({ fromSid, linkId, parts: [{ data: task }] });
+      },
+      onCoordResult: (fn) => {
+        this.#coordResult = fn;
+      },
       publish: async (sid, state) => {
         if (this.#revoked) return;
         // Signed by this agent, then sealed: clients verify it against the key they trust (security review).
@@ -852,6 +883,7 @@ export class AgentCore {
           : undefined;
       },
       sessions: () => [...this.sessions.values()].map(info),
+      coordTask: (input) => this.coordinator.runRemote(input),
       startSession: async (input) => {
         const policy = this.d.policy.get();
         const ws = policy.workspaces.find((w) => w.label === input.workspaceLabel);

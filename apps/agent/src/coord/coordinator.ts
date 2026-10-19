@@ -6,8 +6,10 @@ import { execFile } from "node:child_process";
 import type { AdapterEvent } from "@chalito/adapters";
 import { canonicalize, sha256, utf8 } from "@chalito/crypto";
 import {
+  CoordRemoteTask,
   CoordTaskSpec,
   planDigestInput,
+  type CoordRemoteResult,
   type CoordPlanState,
   type Origin,
   type RemotePermissionMode,
@@ -59,6 +61,21 @@ export interface CoordHost {
   publish(sid: string, state: CoordPlanState): Promise<void>;
   /** The session stops being a helper: no more answers for it, now or after a revive. */
   endHelper(sid: string): void;
+  // ---- G4: helpers on the owner's other computers -----------------------------------------
+  /** This computer's device id. */
+  deviceId(): string;
+  /** Whether coordinator mode is on here (tasks from another computer run only then). */
+  coordinatorOn(): boolean;
+  /** A hand-off link from this computer to `deviceId` a plan can use (new sessions), or null. */
+  linkTo(deviceId: string, appId: string): { linkId: string } | null;
+  /** Sends a coordinator task over that link; its result arrives through `onCoordResult`. */
+  sendCoordTask(
+    linkId: string,
+    fromSid: string,
+    task: CoordRemoteTask,
+  ): Promise<{ ok: true; taskId: string } | { ok: false; reason: string }>;
+  /** The coordinator's listener for its tasks' results (true: it was one of them). */
+  onCoordResult(fn: (taskId: string, r: CoordRemoteResult | null) => boolean): void;
 }
 
 export interface GitResult {
@@ -145,11 +162,28 @@ interface Turn {
   ok: boolean;
 }
 
-interface Plan {
+/** What the coordinator's hardened git needs (a plan here, or a task from another computer). */
+interface GitCtx {
+  root: string;
+  /** The repo's git dir, as read at the start (before any helper ran). */
+  commonDir: string;
+  /** Each worktree's own git dir, found by the coordinator right after creating it. */
+  gitDirs: Map<string, string>;
+  /** `DANGEROUS_CONFIG` lines at the start. */
+  config: string;
+  /** The repo's code-running config changed: stop everything (nothing more runs). */
+  onTamper: (err: Error) => void;
+}
+
+interface Plan extends GitCtx {
   state: CoordPlanState;
   sid: string;
   appId: string;
   root: string;
+  /** G4: the other computers taking tasks, each with the link to it. */
+  links: Map<string, string>;
+  /** Hand-offs waiting for their result (link task ids). */
+  waits: Set<string>;
   /** The repo's git dir, as read at the start (before any helper ran). */
   commonDir: string;
   /** Each worktree's own git dir, found by the coordinator right after creating it. */
@@ -162,6 +196,21 @@ interface Plan {
   running: Set<string>;
   stopped: boolean;
   timer: { clear(): void } | null;
+}
+
+/** A task this computer runs for a plan on another computer (G4). */
+interface RemoteRun extends GitCtx {
+  key: string;
+  sid: string;
+  task: CoordRemoteTask;
+  dir: string;
+  stopped: boolean;
+  /** A turn (or a revision) is in progress. */
+  busy: boolean;
+  timer: { clear(): void } | null;
+  /** Fix-up prompts used on the coordinator's own checks. */
+  fixes: number;
+  tampered?: string;
 }
 
 const clip = (s: string, n = 500) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -267,7 +316,30 @@ export class Coordinator {
     { text: string; waiting: ((t: Turn) => void)[]; ended: Turn[]; unobserve: () => void }
   >();
 
-  constructor(private readonly d: CoordinatorDeps) {}
+  /** Hand-offs to other computers waiting for their result, by link task id. */
+  readonly #remoteWaits = new Map<string, (r: CoordRemoteResult | null) => void>();
+  /** Tasks this computer runs for a plan on another computer (G4), by `<plan>/<task>`. */
+  readonly #remote = new Map<string, RemoteRun>();
+  /** Results that arrived before their wait (see the constructor). */
+  readonly #early = new Map<string, CoordRemoteResult>();
+
+  constructor(private readonly d: CoordinatorDeps) {
+    d.host.onCoordResult((taskId, r) => {
+      const w = this.#remoteWaits.get(taskId);
+      if (w) {
+        this.#remoteWaits.delete(taskId);
+        w(r);
+        return true;
+      }
+      // A result can arrive before its wait is registered (a link on this same computer answers
+      // at once): kept for the plan that sent it.
+      if (r && this.#plans.has(r.planId)) {
+        this.#early.set(taskId, r);
+        return true;
+      }
+      return false;
+    });
+  }
 
   plans(): CoordPlanState[] {
     return [...this.#plans.values()].map((p) => p.state);
@@ -282,8 +354,19 @@ export class Coordinator {
     maxAgents: number;
     maxMinutes: number;
     base?: string;
+    /** G4: other computers that take tasks too. */
+    helpers?: string[];
   }): Promise<CoordResult> {
     const ws = this.d.host.workspace(input.workspaceLabel);
+    // Each helper computer needs a hand-off link the owner made here, to it.
+    const self = this.d.host.deviceId();
+    const links = new Map<string, string>();
+    for (const dev of new Set(input.helpers ?? [])) {
+      if (dev === self) continue;
+      const l = this.d.host.linkTo(dev, input.appId);
+      if (!l) return { ok: false, reason: "no_link" };
+      links.set(dev, l.linkId);
+    }
     if (!ws) return { ok: false, reason: "unknown_workspace" };
     if (!this.d.host.helpersAllowed()) return { ok: false, reason: "permission_mode_above_ceiling" };
     const top = await this.#git(ws.path, ["rev-parse", "--show-toplevel"]);
@@ -303,6 +386,9 @@ export class Coordinator {
     const config = await this.#configOf(["--git-dir", commonDir, "--work-tree", root], root);
     if (config === null) return { ok: false, reason: "not_a_git_repo" };
     await this.#excludeWorktrees(commonDir);
+    // Helper computers start from the base on `origin` and push their branch there.
+    if (links.size && (await this.#git(root, ["remote", "get-url", "origin"])).code !== 0)
+      return { ok: false, reason: "no_origin" };
 
     const planId = `p${randomBytes(6).toString("hex").slice(0, 8)}`;
     const sid = randomUUID();
@@ -313,6 +399,9 @@ export class Coordinator {
       commonDir,
       gitDirs: new Map(),
       config,
+      onTamper: (err) => void this.#fail(plan, err),
+      links,
+      waits: new Set(),
       baseSha: sha.out.trim(),
       specs: new Map(),
       sessions: new Set([sid]),
@@ -389,6 +478,7 @@ export class Coordinator {
     }[by];
     await Promise.all([...plan.sessions].map((sid) => this.d.host.interrupt(sid).catch(() => undefined)));
     for (const sid of plan.sessions) this.#release(sid);
+    this.#stopRemote(plan);
     this.d.audit("coord.stopped", { planId, by });
     await this.#publish(plan);
     return { ok: true, planId, sid: plan.sid };
@@ -445,12 +535,12 @@ export class Coordinator {
     }
     let note = `${base} ahora incluye el plan.`;
     if ((await git(["remote", "get-url", "origin"])).code === 0) {
-      // Only the owner's own (global) credential helpers, never one from the repo's config.
-      const helpers = (await this.d.git(plan.root, ["config", "--global", "--get-all", "credential.helper"])).out
-        .split("\n")
-        .filter(Boolean);
-      const cred = ["credential.helper=", ...helpers.map((h) => `credential.helper=${h}`)].flatMap((c) => ["-c", c]);
-      const push = await git([...cred, "push", "origin", `refs/heads/${base}:refs/heads/${base}`]);
+      const push = await git([
+        ...(await this.#credArgs(plan.root)),
+        "push",
+        "origin",
+        `refs/heads/${base}:refs/heads/${base}`,
+      ]);
       note =
         push.code === 0
           ? `${base} incluye el plan y se subió a origin.`
@@ -482,6 +572,11 @@ export class Coordinator {
     if (plan.stopped) return;
     if (!tasks) return this.#fail(plan, new Error("El planificador no propuso un plan válido."));
     for (const t of tasks) plan.specs.set(t.id, t);
+    // This computer first, then the helper computers in turn. A task that builds on others stays
+    // here, where their branches are; a helper computer always starts from the plan's base.
+    const devices = [this.d.host.deviceId(), ...plan.links.keys()];
+    let next = 0;
+    const deviceFor = (t: CoordTaskSpec) => (t.dependsOn.length ? devices[0]! : devices[next++ % devices.length]!);
     plan.state.tasks = tasks.map((t) => ({
       id: t.id,
       title: t.title,
@@ -489,6 +584,7 @@ export class Coordinator {
       dependsOn: t.dependsOn,
       status: "pending" as const,
       branch: `coord/${plan.state.planId}/${t.id}`,
+      deviceId: deviceFor(t),
       sid: null,
       note: null,
       reviewRounds: 0,
@@ -531,6 +627,7 @@ export class Coordinator {
   async #runTask(plan: Plan, taskId: string): Promise<void> {
     const t = plan.state.tasks.find((x) => x.id === taskId)!;
     const spec = plan.specs.get(taskId)!;
+    if (t.deviceId !== this.d.host.deviceId()) return this.#runRemoteTask(plan, t, spec);
     const dir = join(plan.root, WT_DIR, plan.state.planId, taskId);
     const add = await this.#pgit(plan, plan.root, ["worktree", "add", "-b", t.branch, dir, plan.baseSha]);
     if (add.code !== 0) return this.#taskFailed(plan, taskId, `worktree: ${clip(add.err.trim(), 200)}`);
@@ -596,9 +693,14 @@ export class Coordinator {
     const status = await this.#pgit(plan, dir, ["status", "--porcelain"]);
     if (status.code !== 0) return "The worktree couldn't be read: restore it and commit your work.";
     if (status.out.trim()) return "There are uncommitted changes: commit all your work.";
+    return this.#checkBranch(plan, plan.baseSha, branch, spec);
+  }
+
+  /** The branch, read from the repo: it has commits and deletes only files the task lists. */
+  async #checkBranch(plan: GitCtx, baseSha: string, branch: string, spec: CoordTaskSpec): Promise<string | null> {
     // What gets reviewed and integrated is the branch, read from the repo itself.
     const ref = `refs/heads/${branch}`;
-    const count = await this.#pgit(plan, plan.root, ["rev-list", "--count", `${plan.baseSha}..${ref}`]);
+    const count = await this.#pgit(plan, plan.root, ["rev-list", "--count", `${baseSha}..${ref}`]);
     if (count.code !== 0 || Number(count.out.trim()) === 0) return "Nothing was committed on the branch.";
     // No rename detection (security review): a renamed file's old path is a deletion too.
     const deleted = await this.#pgit(plan, plan.root, [
@@ -610,7 +712,7 @@ export class Coordinator {
       "--no-textconv",
       "--diff-filter=D",
       "--name-only",
-      plan.baseSha,
+      baseSha,
       ref,
     ]);
     const unlisted = deleted.out
@@ -720,6 +822,294 @@ export class Coordinator {
     await this.#publish(plan);
   }
 
+  // ---- G4: tasks on the owner's other computers -----------------------------------------------
+
+  /** Only the owner's own (global) credential helpers, never one from the repo's config. */
+  async #credArgs(root: string): Promise<string[]> {
+    const helpers = (await this.d.git(root, ["config", "--global", "--get-all", "credential.helper"])).out
+      .split("\n")
+      .filter(Boolean);
+    return ["credential.helper=", ...helpers.map((h) => `credential.helper=${h}`)].flatMap((c) => ["-c", c]);
+  }
+
+  #remoteTask(plan: Plan, spec: CoordTaskSpec, action: "run" | "revise" | "stop", feedback?: string): CoordRemoteTask {
+    return CoordRemoteTask.parse({
+      v: 1,
+      kind: "chalito.coord.task.v1",
+      action,
+      planId: plan.state.planId,
+      taskId: spec.id,
+      base: plan.state.base,
+      baseSha: plan.baseSha,
+      branch: `coord/${plan.state.planId}/${spec.id}`,
+      goal: plan.state.goal,
+      task: spec,
+      appId: plan.appId,
+      maxMinutes: plan.state.maxMinutes,
+      ...(feedback ? { feedback: clip(feedback, 4000) } : {}),
+    });
+  }
+
+  /** Sends a task to a helper computer and waits for its result (null: never arrived, or stopped). */
+  async #sendRemote(plan: Plan, deviceId: string, task: CoordRemoteTask): Promise<CoordRemoteResult | null> {
+    const linkId = plan.links.get(deviceId);
+    if (!linkId || plan.stopped) return null;
+    const sent = await this.d.host.sendCoordTask(linkId, plan.sid, task);
+    if (!sent.ok) return null;
+    const early = this.#early.get(sent.taskId);
+    if (early) {
+      this.#early.delete(sent.taskId);
+      return early.planId === task.planId && early.taskId === task.taskId ? early : null;
+    }
+    plan.waits.add(sent.taskId);
+    return new Promise((resolve) =>
+      this.#remoteWaits.set(sent.taskId, (r) => {
+        plan.waits.delete(sent.taskId);
+        resolve(r && r.planId === task.planId && r.taskId === task.taskId ? r : null);
+      }),
+    );
+  }
+
+  /** The kill switch reaches helper computers too, and ends every wait. */
+  #stopRemote(plan: Plan): void {
+    for (const t of plan.state.tasks) {
+      const spec = plan.specs.get(t.id);
+      if (!spec || t.deviceId === this.d.host.deviceId() || t.status === "approved" || t.status === "failed") continue;
+      const linkId = plan.links.get(t.deviceId);
+      if (linkId)
+        void this.d.host.sendCoordTask(linkId, plan.sid, this.#remoteTask(plan, spec, "stop")).catch(() => undefined);
+    }
+    for (const id of plan.waits) {
+      const w = this.#remoteWaits.get(id);
+      this.#remoteWaits.delete(id);
+      w?.(null);
+    }
+    plan.waits.clear();
+  }
+
+  /**
+   * A task on a helper computer: it works in its own worktree under its own ceiling and pushes the
+   * plan's branch; here the branch is fetched, must be the commit it reported, gets the same checks
+   * and the same read-only review, and findings go back as a revision.
+   */
+  async #runRemoteTask(plan: Plan, t: CoordPlanState["tasks"][number], spec: CoordTaskSpec): Promise<void> {
+    t.status = "running";
+    await this.#publish(plan);
+    const rounds = this.d.maxReviewRounds ?? 2;
+    let r = await this.#sendRemote(plan, t.deviceId, this.#remoteTask(plan, spec, "run"));
+    for (;;) {
+      if (plan.stopped) return;
+      if (!r) return this.#taskFailed(plan, t.id, "La otra computadora no respondió.");
+      t.note = clip(r.note);
+      if (r.status !== "done") return this.#taskFailed(plan, t.id, clip(r.note || r.status));
+      const ref = `refs/heads/${t.branch}`;
+      const fetched = await this.#pgit(plan, plan.root, [
+        ...(await this.#credArgs(plan.root)),
+        "fetch",
+        "--no-tags",
+        "origin",
+        `+${ref}:${ref}`,
+      ]);
+      if (fetched.code !== 0)
+        return this.#taskFailed(plan, t.id, `No se pudo traer la rama: ${clip(fetched.err.trim(), 200)}`);
+      const head = (
+        await this.#pgit(plan, plan.root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`])
+      ).out.trim();
+      if (head !== r.head)
+        return this.#taskFailed(plan, t.id, "La rama en origin no es la que informó la otra computadora.");
+      let changes = await this.#checkBranch(plan, plan.baseSha, t.branch, spec);
+      if (!changes) {
+        // A read-only copy here for the reviewer, at exactly the reported commit.
+        const dir = join(plan.root, WT_DIR, plan.state.planId, t.id);
+        if (!plan.gitDirs.has(dir)) {
+          const add = await this.#pgit(plan, plan.root, ["worktree", "add", "--detach", dir, head]);
+          if (add.code !== 0 || !(await this.#registerWorktree(plan, dir)))
+            return this.#taskFailed(plan, t.id, "worktree: no se pudo preparar la revisión.");
+        } else if ((await this.#pgit(plan, dir, ["reset", "--hard", head])).code !== 0)
+          return this.#taskFailed(plan, t.id, "worktree: no se pudo preparar la revisión.");
+        t.status = "reviewing";
+        await this.#publish(plan);
+        changes = await this.#review(plan, spec, t.branch, dir);
+        if (plan.stopped) return;
+      }
+      if (changes === null) {
+        t.status = "approved";
+        await this.#publish(plan);
+        return;
+      }
+      if (t.reviewRounds >= rounds) return this.#taskFailed(plan, t.id, clip(`Revisión sin aprobar: ${changes}`));
+      t.reviewRounds++;
+      t.status = "changes_requested";
+      t.note = clip(changes);
+      await this.#publish(plan);
+      r = await this.#sendRemote(plan, t.deviceId, this.#remoteTask(plan, spec, "revise", changes));
+      t.status = "running";
+    }
+  }
+
+  /**
+   * A task from a plan on another of the owner's computers, delivered over a hand-off link the
+   * owner made locally (the relay is signed by that computer). It runs only if coordinator mode is
+   * on HERE and the link lets sessions edit; in a worktree of this computer's copy of the project,
+   * from the plan's base fetched from `origin`; as a helper under this computer's own ceiling. Then
+   * the coordinator here checks it and pushes exactly the plan's branch.
+   */
+  async runRemote(i: {
+    sid: string;
+    workspaceLabel: string;
+    appId: string | undefined;
+    ceiling: RemotePermissionMode;
+    task: CoordRemoteTask;
+  }): Promise<CoordRemoteResult> {
+    const t = i.task;
+    const key = `${t.planId}/${t.taskId}`;
+    const res = (status: CoordRemoteResult["status"], note: string, head?: string): CoordRemoteResult => ({
+      v: 1,
+      kind: "chalito.coord.result.v1",
+      planId: t.planId,
+      taskId: t.taskId,
+      status,
+      note: clip(note),
+      ...(head ? { head } : {}),
+    });
+    const run = this.#remote.get(key);
+    if (t.action === "stop") {
+      if (run) await this.#endRun(run, "stopped");
+      return res("stopped", "Detenido.");
+    }
+    if (!this.d.host.coordinatorOn()) return res("failed", "El modo coordinador está apagado en esta computadora.");
+    if (t.action === "revise") {
+      if (!run || run.stopped || run.busy) return res("failed", "Esta computadora no tiene esa tarea en curso.");
+      run.busy = true;
+      try {
+        await this.d.host.prompt(
+          run.sid,
+          `The review asks for changes. Fix them, commit, and reply DONE: or BLOCKED: again.\n\n${t.feedback ?? ""}`,
+          `agent:coord_${t.planId}`,
+        );
+        return await this.#finishRun(run, await this.#turn(run.sid), res);
+      } finally {
+        run.busy = false;
+      }
+    }
+    if (run && !run.stopped) return res("failed", "Esa tarea ya corre en esta computadora.");
+    if (i.ceiling === "plan" || !this.d.host.helpersAllowed())
+      return res("failed", "El enlace o esta computadora no dejan editar.");
+    const ws = this.d.host.workspace(i.workspaceLabel);
+    if (!ws) return res("failed", "El enlace apunta a un proyecto que esta computadora no tiene.");
+    const top = await this.#git(ws.path, ["rev-parse", "--show-toplevel"]);
+    if (top.code !== 0) return res("failed", "El proyecto no es un repositorio git.");
+    const root = top.out.trim();
+    const common = await this.#git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const commonDir = common.out.trim();
+    const config = await this.#configOf(["--git-dir", commonDir, "--work-tree", root], root);
+    if (common.code !== 0 || config === null) return res("failed", "El proyecto no es un repositorio git.");
+    await this.#excludeWorktrees(commonDir);
+    const r: RemoteRun = {
+      key,
+      sid: i.sid,
+      root,
+      commonDir,
+      gitDirs: new Map(),
+      config,
+      onTamper: () => void this.#endRun(r, "tampered"),
+      task: t,
+      dir: join(root, WT_DIR, t.planId, t.taskId),
+      stopped: false,
+      busy: true,
+      timer: null,
+      fixes: 0,
+    };
+    this.#remote.set(key, r);
+    const fetched = await this.#pgit(r, root, [
+      ...(await this.#credArgs(root)),
+      "fetch",
+      "--no-tags",
+      "origin",
+      `+refs/heads/${t.base}:refs/remotes/origin/${t.base}`,
+    ]);
+    if (fetched.code !== 0) return this.#abortRun(r, res("failed", `No se pudo traer ${t.base} de origin.`));
+    if ((await this.#pgit(r, root, ["cat-file", "-e", `${t.baseSha}^{commit}`])).code !== 0)
+      return this.#abortRun(r, res("failed", `El punto de partida no está en origin/${t.base}: súbelo primero.`));
+    if ((await this.#pgit(r, root, ["rev-parse", "--verify", "--quiet", `refs/heads/${t.branch}`])).code === 0)
+      return this.#abortRun(r, res("failed", "La rama de la tarea ya existe en esta computadora."));
+    const add = await this.#pgit(r, root, ["worktree", "add", "-b", t.branch, r.dir, t.baseSha]);
+    if (add.code !== 0 || !(await this.#registerWorktree(r, r.dir)))
+      return this.#abortRun(r, res("failed", "No se pudo preparar la copia de trabajo."));
+    r.timer = (this.d.setTimer ?? defaultTimer)(() => void this.#endRun(r, "stopped"), t.maxMinutes * 60 * 1000);
+    this.#watch(i.sid);
+    const started = await this.d.host.startSession({
+      sid: i.sid,
+      appId: i.appId ?? t.appId,
+      cwd: r.dir,
+      workspaceLabel: ws.label,
+      prompt: helperPrompt(t.goal, t.task, t.branch),
+      origin: `agent:coord_${t.planId}`,
+      permissionMode: "default",
+      coord: {
+        planId: t.planId,
+        taskId: t.taskId,
+        branchPrefix: `coord/${t.planId}/`,
+        active: () => !r.stopped,
+      },
+    });
+    if (!started.ok) return this.#abortRun(r, res("failed", `No arrancó el agente (${started.reason}).`));
+    this.d.audit("coord.remote_started", { planId: t.planId, taskId: t.taskId, sid: i.sid });
+    try {
+      return await this.#finishRun(r, await this.#turn(i.sid), res);
+    } finally {
+      r.busy = false;
+    }
+  }
+
+  /** A remote task's turn ended: checks (one fix-up round), then push exactly the plan's branch. */
+  async #finishRun(
+    r: RemoteRun,
+    turn: Turn,
+    res: (status: CoordRemoteResult["status"], note: string, head?: string) => CoordRemoteResult,
+  ): Promise<CoordRemoteResult> {
+    const t = r.task;
+    for (;;) {
+      if (r.stopped) return res("stopped", r.tampered ?? "Detenido.");
+      if (!turn.ok) return res("failed", "El agente se detuvo.");
+      const last = lastLine(turn.text);
+      if (/^BLOCKED:/i.test(last)) return res("blocked", last);
+      const status = await this.#pgit(r, r.dir, ["status", "--porcelain"]);
+      const finding =
+        status.code !== 0 || status.out.trim()
+          ? "There are uncommitted changes: commit all your work."
+          : await this.#checkBranch(r, t.baseSha, t.branch, t.task);
+      if (r.stopped) return res("stopped", r.tampered ?? "Detenido.");
+      if (!finding) break;
+      if (r.fixes >= 2) return res("blocked", finding);
+      r.fixes++;
+      await this.d.host.prompt(r.sid, `${finding}\nFix it, commit, and reply DONE: again.`, `agent:coord_${t.planId}`);
+      turn = await this.#turn(r.sid);
+    }
+    const ref = `refs/heads/${t.branch}`;
+    const push = await this.#pgit(r, r.root, [...(await this.#credArgs(r.root)), "push", "origin", `${ref}:${ref}`]);
+    if (push.code !== 0) return res("failed", `No se pudo subir la rama: ${clip(push.err.trim(), 200)}`);
+    const head = (await this.#pgit(r, r.root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`])).out.trim();
+    this.d.audit("coord.remote_pushed", { planId: t.planId, taskId: t.taskId });
+    return res("done", lastLine(turn.text), head);
+  }
+
+  async #abortRun(r: RemoteRun, result: CoordRemoteResult): Promise<CoordRemoteResult> {
+    await this.#endRun(r, "stopped");
+    return result;
+  }
+
+  async #endRun(r: RemoteRun, why: "stopped" | "tampered"): Promise<void> {
+    if (r.stopped) return;
+    r.stopped = true;
+    if (why === "tampered")
+      r.tampered = "La configuración de git del repo cambió durante la tarea; Chalito no ejecutó nada más.";
+    r.timer?.clear();
+    await this.d.host.interrupt(r.sid).catch(() => undefined);
+    this.d.host.endHelper(r.sid);
+    this.#release(r.sid);
+  }
+
   // ---- helpers -----------------------------------------------------------------------------------
 
   #origin(plan: Plan): Origin {
@@ -818,6 +1208,7 @@ export class Coordinator {
     for (const t of plan.state.tasks) if (t.status === "running" || t.status === "reviewing") t.status = "stopped";
     await Promise.all([...plan.sessions].map((sid) => this.d.host.interrupt(sid).catch(() => undefined)));
     for (const sid of plan.sessions) this.#release(sid);
+    this.#stopRemote(plan);
     this.d.audit("coord.failed", { planId: plan.state.planId });
     await this.#publish(plan);
   }
@@ -869,7 +1260,7 @@ export class Coordinator {
    * it computed itself (never the worktree's `.git` file, which a helper can rewrite), and only
    * while the code-running settings are the ones from the plan's start.
    */
-  async #pgit(plan: Plan, cwd: string, args: string[]): Promise<GitResult> {
+  async #pgit(plan: GitCtx, cwd: string, args: string[]): Promise<GitResult> {
     const dirArgs =
       cwd === plan.root
         ? ["--git-dir", plan.commonDir, "--work-tree", plan.root]
@@ -880,14 +1271,14 @@ export class Coordinator {
     const now = await this.#configOf(dirArgs, cwd);
     if (now !== plan.config) {
       const err = "La configuración de git del repo cambió durante el plan; Chalito no ejecutó nada más.";
-      void this.#fail(plan, new Error(err));
+      plan.onTamper(new Error(err));
       return { code: 128, out: "", err };
     }
     return this.d.git(cwd, [...dirArgs, ...args]);
   }
 
   /** Right after `worktree add`: the admin dir whose `gitdir` file points back at this worktree. */
-  async #registerWorktree(plan: Plan, dir: string): Promise<boolean> {
+  async #registerWorktree(plan: GitCtx, dir: string): Promise<boolean> {
     const { readdirSync, readFileSync } = await import("node:fs");
     const { resolve } = await import("node:path");
     const admin = join(plan.commonDir, "worktrees");

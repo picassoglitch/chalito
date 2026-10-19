@@ -402,6 +402,8 @@ export class ClientActions {
     maxAgents?: number;
     maxMinutes?: number;
     base?: string;
+    /** G4: the owner's other computers that take tasks too (each needs a hand-off link to it there). */
+    helpers?: string[];
   }): Promise<string> {
     return this.#command(input.agentDeviceId, async (cid) => ({
       type: "coord.start",
@@ -411,6 +413,7 @@ export class ClientActions {
       ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
       ...(input.maxMinutes !== undefined ? { maxMinutes: input.maxMinutes } : {}),
       ...(input.base ? { base: input.base } : {}),
+      ...(input.helpers?.length ? { helpers: input.helpers } : {}),
     }));
   }
 

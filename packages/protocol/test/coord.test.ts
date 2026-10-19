@@ -4,6 +4,8 @@ import {
   CommandBody,
   CoordPlanState,
   CoordTaskSpec,
+  CoordRemoteResult,
+  CoordRemoteTask,
   ApprovalDetails,
   SignedCoordPlan,
   planDigestInput,
@@ -206,6 +208,7 @@ describe("signed plans and tap digests (security review)", () => {
         dependsOn: [],
         status: "pending",
         branch: "coord/pabcdef12/a",
+        deviceId: "dev_a",
         sid: null,
         note: "agent text",
         reviewRounds: 0,
@@ -347,5 +350,73 @@ describe("security review: only known-safe programs can be remembered (allowlist
   it("never case-folds the program: another spelling asks (it may be another binary)", () => {
     for (const c of ["ESLint src", "PYTEST", "Git status", "pnpm Test"]) expect(m(c), c).toBeNull();
     expect(m("eslint src")).toEqual({ kind: "command", workspaceLabel: w, argv: ["eslint", "src"] });
+  });
+});
+
+describe("G4: tasks on the owner's other computers", () => {
+  const task = { id: "api", title: "API", brief: "do it", acceptance: ["ok"], files: [], dependsOn: [] };
+  const remote = {
+    v: 1,
+    kind: "chalito.coord.task.v1",
+    action: "run",
+    planId: "pabcdef12",
+    taskId: "api",
+    base: "main",
+    baseSha: "a".repeat(40),
+    branch: "coord/pabcdef12/api",
+    goal: "g",
+    task,
+    appId: "claude-code",
+    maxMinutes: 60,
+  };
+
+  it("a task names exactly the plan's own branch for it", () => {
+    expect(CoordRemoteTask.safeParse(remote).success).toBe(true);
+    expect(CoordRemoteTask.safeParse({ ...remote, branch: "main" }).success).toBe(false);
+    expect(CoordRemoteTask.safeParse({ ...remote, branch: "coord/pabcdef12/other" }).success).toBe(false);
+    expect(CoordRemoteTask.safeParse({ ...remote, task: { ...task, id: "other" } }).success).toBe(false);
+    expect(CoordRemoteTask.safeParse({ ...remote, base: "--upload-pack=x" }).success).toBe(false);
+    expect(CoordRemoteTask.safeParse({ ...remote, baseSha: "HEAD" }).success).toBe(false);
+    expect(CoordRemoteTask.safeParse({ ...remote, extra: 1 }).success).toBe(false);
+  });
+
+  it("a done result names its commit", () => {
+    const r = { v: 1, kind: "chalito.coord.result.v1", planId: "pabcdef12", taskId: "api", status: "done", note: "ok" };
+    expect(CoordRemoteResult.safeParse(r).success).toBe(false);
+    expect(CoordRemoteResult.safeParse({ ...r, head: "b".repeat(40) }).success).toBe(true);
+    expect(CoordRemoteResult.safeParse({ ...r, status: "blocked" }).success).toBe(true);
+  });
+
+  it("which computer runs a task is part of what the owner approves", () => {
+    const p = CoordPlanState.parse({
+      v: 1,
+      planId: "pabcdef12",
+      goal: "g",
+      workspaceLabel: "w",
+      base: "main",
+      status: "awaiting_approval",
+      maxAgents: 3,
+      maxMinutes: 60,
+      startedAt: null,
+      tasks: [
+        {
+          id: "a",
+          title: "A",
+          acceptance: ["x"],
+          dependsOn: [],
+          status: "pending",
+          branch: "coord/pabcdef12/a",
+          deviceId: "dev_a",
+          sid: null,
+          note: null,
+          reviewRounds: 0,
+        },
+      ],
+      integration: { branch: "coord/pabcdef12/integration", sid: null, note: null, head: null },
+      note: null,
+      updatedAt: 1,
+    });
+    const moved = { ...p, tasks: [{ ...p.tasks[0]!, deviceId: "dev_b" }] };
+    expect(planDigestInput(moved, "approve")).not.toEqual(planDigestInput(p, "approve"));
   });
 });

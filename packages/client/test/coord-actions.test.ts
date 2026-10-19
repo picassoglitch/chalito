@@ -58,6 +58,7 @@ const plan = (planId: string): CoordPlanState => ({
       dependsOn: [],
       status: "pending",
       branch: `coord/${planId}/api`,
+      deviceId: "dev_agent",
       sid: null,
       note: null,
       reviewRounds: 0,
@@ -96,6 +97,15 @@ describe("coordinator commands from the phone (ADR 0025 §6)", () => {
       base: "develop",
     });
     expect((await h.sent()).payload).toMatchObject({ maxAgents: 2, maxMinutes: 30, base: "develop" });
+    await h.actions.coordStart({
+      agentDeviceId: h.agent.deviceId,
+      workspaceLabel: "taquito",
+      goal: "x",
+      helpers: ["dev_mac", "dev_win"],
+    });
+    expect((await h.sent()).payload).toMatchObject({ helpers: ["dev_mac", "dev_win"] });
+    await h.actions.coordStart({ agentDeviceId: h.agent.deviceId, workspaceLabel: "taquito", goal: "x", helpers: [] });
+    expect((await h.sent()).payload).not.toHaveProperty("helpers");
     expect(h.asked).toHaveLength(0);
   });
 

@@ -686,6 +686,58 @@ describe("hand-off: delivery, confirm, the frame and the gate", () => {
   });
 });
 
+describe("G4: a coordinator task over a hand-off link", () => {
+  const task = (planId = "pabcdefgh") => ({
+    v: 1,
+    kind: "chalito.coord.task.v1",
+    action: "run",
+    planId,
+    taskId: "api",
+    base: "main",
+    baseSha: "a".repeat(40),
+    branch: `coord/${planId}/api`,
+    goal: "g",
+    task: { id: "api", title: "API", brief: "b", acceptance: ["ok"], files: [], dependsOn: [] },
+    appId: "claude-code",
+    maxMinutes: 60,
+  });
+
+  it("goes to this computer's coordinator, never a plain session; with coordinator mode off it is refused", async () => {
+    const { a } = await oneDevice();
+    const link = await sameDeviceHandoff(a, { confirm: false });
+    const from = await a.ownSession();
+    expect(await a.links.handoff({ fromSid: from, linkId: link.id, parts: [{ data: task() }] })).toMatchObject({
+      ok: true,
+    });
+    await waitFor(() => a.links.pending(from).length === 1);
+    expect(a.adapter.runs).toHaveLength(1); // no session was started for it
+    expect(a.links.pending(from)[0]).toContain("modo coordinador");
+    expect(a.audits.some((x) => x.type === "link.handoff.delivered" && x.meta.coord === "run")).toBe(true);
+  });
+
+  it("a malformed coordinator task (wrong branch) is just data in a normal hand-off frame, never run as one", async () => {
+    const { a } = await oneDevice();
+    const link = await sameDeviceHandoff(a, { confirm: false });
+    const from = await a.ownSession();
+    await a.links.handoff({ fromSid: from, linkId: link.id, parts: [{ data: { ...task(), branch: "main" } }] });
+    await waitFor(() => a.adapter.runs.length === 2);
+    expect(a.adapter.runs[1]!.opts.prompt).toContain("[Chalito link: hand-off]");
+    expect(a.audits.some((x) => x.type === "link.handoff.delivered" && x.meta.coord)).toBe(false);
+  });
+
+  it("a result the coordinator takes isn't queued for the sending session", async () => {
+    const { a } = await oneDevice();
+    const taken: string[] = [];
+    a.links.onResult(({ taskId }) => (taken.push(taskId), true));
+    const link = await sameDeviceHandoff(a, { confirm: false });
+    const from = await a.ownSession();
+    const sent = await a.links.handoff({ fromSid: from, linkId: link.id, parts: [{ data: task() }] });
+    await waitFor(() => taken.length === 1);
+    expect(taken).toEqual([(sent as { taskId: string }).taskId]);
+    expect(a.links.pending(from)).toHaveLength(0);
+  });
+});
+
 /** Seals a prompt to the agent itself, for a phone command (AAD command:<cid>). */
 const sealFor = async (a: Agent, value: unknown, aad: string) => {
   const { sealJson, fromB64url } = await import("@chalito/crypto");

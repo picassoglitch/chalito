@@ -364,6 +364,10 @@ export const CommandRejectReason = z.enum([
   "unknown_base",
   /** A coord.approve / coord.merge for a plan that changed since the owner saw it (digest mismatch). */
   "plan_changed",
+  /** G4: a helper computer named in coord.start has no hand-off link from this computer to it. */
+  "no_link",
+  /** G4: helper computers need the project's `origin` remote. */
+  "no_origin",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
 
