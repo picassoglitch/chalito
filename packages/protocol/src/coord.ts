@@ -118,82 +118,45 @@ export type CoordRuleRevoke = z.infer<typeof CoordRuleRevoke>;
 const PLAIN_WORD = /^[A-Za-z0-9._/@%+=:,-]+$/;
 
 /**
- * Programs that run another program or code given in their arguments: a rule for them would cover
- * whatever they run, so they are never remembered (security review).
+ * "Siempre así" for commands is an ALLOWLIST (security review): only these programs, and for each
+ * only these leading words, can be remembered; everything else always asks. Package-manager
+ * scripts only by their explicit test/lint/build/typecheck/format names (never `pnpm <script>`
+ * shorthands, `exec`, `dlx` or `run <anything>`), git only to read or commit. The rule still binds
+ * the exact words, options included.
  */
-const WRAPPERS = new Set([
-  "npx",
-  "pnpx",
-  "bunx",
-  "uvx",
-  "pipx",
-  "env",
-  "xargs",
-  "sudo",
-  "doas",
-  "su",
-  "pkexec",
-  "time",
-  "nice",
-  "nohup",
-  "timeout",
-  "watch",
-  "stdbuf",
-  "unbuffer",
-  "setsid",
-  "script",
-  "expect",
-  "exec",
-  "eval",
-  "command",
-  "builtin",
-  "sh",
-  "bash",
-  "zsh",
-  "dash",
-  "ksh",
-  "fish",
-  "csh",
-  "tcsh",
-  "pwsh",
-  "powershell",
-  "cmd",
-  "node",
-  "nodejs",
-  "deno",
-  "bun",
-  "tsx",
-  "ts-node",
-  "python",
-  "python3",
-  "python2",
-  "ruby",
-  "perl",
-  "php",
-  "lua",
-  "osascript",
-  "ssh",
-  "chalito",
-  "chalito-agent",
-]);
-/** `<tool> <sub>` pairs that run another program. */
-const WRAPPER_SUBS: Record<string, ReadonlySet<string>> = {
-  npm: new Set(["exec", "x", "run", "run-script", "explore"]),
-  pnpm: new Set(["exec", "dlx", "run", "x"]),
-  yarn: new Set(["dlx", "exec", "run", "node"]),
-  uv: new Set(["run", "tool"]),
-  cargo: new Set(["run", "x"]),
-  go: new Set(["run"]),
-  docker: new Set(["run", "exec"]),
-  kubectl: new Set(["exec", "run"]),
-  git: new Set(["-c", "submodule"]),
+const SCRIPTS = ["test", "lint", "build", "typecheck", "format"];
+const REMEMBERABLE: Record<string, readonly (readonly string[])[]> = {
+  npm: [["test"], ...SCRIPTS.map((x) => ["run", x])],
+  pnpm: [...SCRIPTS.map((x) => [x]), ...SCRIPTS.map((x) => ["run", x])],
+  yarn: [...SCRIPTS.map((x) => [x]), ...SCRIPTS.map((x) => ["run", x])],
+  pytest: [[]],
+  cargo: [["test"], ["check"], ["clippy"], ["fmt"], ["build"]],
+  go: [["test"], ["vet"], ["build"], ["fmt"]],
+  eslint: [[]],
+  prettier: [[]],
+  stylelint: [[]],
+  biome: [["check"], ["lint"], ["format"]],
+  tsc: [[]],
+  vitest: [["run"]],
+  jest: [[]],
+  ruff: [["check"], ["format"]],
+  black: [[]],
+  mypy: [[]],
+  rustfmt: [[]],
+  gofmt: [[]],
+  git: [["status"], ["diff"], ["log"], ["show"], ["add"], ["commit"]],
+};
+
+const rememberable = (argv: readonly string[]): boolean => {
+  const prefixes = REMEMBERABLE[argv[0]!];
+  return !!prefixes?.some((pre) => pre.every((w, i) => argv[i + 1] === w));
 };
 
 /**
  * The remembered-rule match for a prompt, or null when it can't be remembered. Shared by the hub
  * (to sign "Siempre así") and the agent (to check a rule), so both read a request the same way:
- * - `Bash`: one simple command of plain words (anything with quotes, `$`, globs, pipes, `;`, `&&`,
- *   redirections or a leading `VAR=` is never remembered);
+ * - `Bash`: one simple command of plain words, from the allowlist above (anything with quotes, `$`,
+ *   globs, pipes, `;`, `&&`, redirections, a path or a program not listed is never remembered);
  * - `WebFetch`: the URL's host.
  * The agent applies a rule only to a MED prompt; this function doesn't know the risk.
  */
@@ -202,12 +165,12 @@ export const rememberMatchFor = (a: { toolName: string; input: unknown; workspac
   let m: RuleMatch | null = null;
   if (a.toolName === "Bash" && typeof input.command === "string") {
     const words = input.command.trim().split(/[ \t]+/);
-    const [program, first] = words;
-    if (!program || !words.every((w) => PLAIN_WORD.test(w)) || program.includes("=")) return null;
-    // A path (`./deploy.sh`, `/usr/bin/x`) runs whatever that file holds then; a wrapper runs
-    // whatever its arguments say: neither is ever remembered.
-    if (program.includes("/") || WRAPPERS.has(program) || (first && WRAPPER_SUBS[program]?.has(first))) return null;
-    m = { kind: "command", workspaceLabel: a.workspaceLabel, argv: words };
+    const [program] = words;
+    if (!program || !words.every((w) => PLAIN_WORD.test(w))) return null;
+    // Programs by name only (a path runs whatever that file holds), compared without case.
+    const argv = [program.toLowerCase(), ...words.slice(1)];
+    if (/[/\\]/.test(program) || !rememberable(argv)) return null;
+    m = { kind: "command", workspaceLabel: a.workspaceLabel, argv };
   } else if (a.toolName === "WebFetch" && typeof input.url === "string") {
     let host: string;
     try {
