@@ -78,8 +78,6 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   }, [sh]);
   const client = conn?.client ?? null;
   const ptt = useMemo(() => new PushToTalk(conn?.voice ?? unavailableVoice), [conn]);
-  // R-L14: this device was revoked. The room window drops its keys and decrypted events now.
-  useEffect(() => (client ? relayRevoked(client.live, () => sh.sendDeviceRevoked()) : undefined), [client, sh]);
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
   const agentApi = useMemo(localAgent, []);
   const computerApi = useMemo(thisComputer, []);
@@ -91,6 +89,18 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     void store.start();
     return () => store.dispose();
   }, [store]);
+  // R-L14: this device was revoked. The room window drops its keys and decrypted events now,
+  // and the account's companion leaves the device copy.
+  useEffect(
+    () =>
+      client
+        ? relayRevoked(client.live, async () => {
+            store.forgetAccount();
+            await sh.sendDeviceRevoked();
+          })
+        : undefined,
+    [client, sh, store],
+  );
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);

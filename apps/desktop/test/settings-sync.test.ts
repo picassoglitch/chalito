@@ -65,6 +65,37 @@ describe("desktop settings (server-backed, PWA semantics)", () => {
     expect(l.save).toHaveBeenLastCalledWith(expect.objectContaining({ avatar: "chalito" }));
   });
 
+  it("signed in: no other account setting reaches the device copy", async () => {
+    const l = local();
+    const account: SettingsValues = {
+      ...DEFAULT_SETTINGS,
+      avatar: "luna" as SettingsValues["avatar"],
+      renderQuality: "alto",
+      whatsapp: true,
+      calls: true,
+      companionName: { name: "Secreto", isRenamed: true },
+    };
+    const s = new DesktopSettings(fakeServer(account), l);
+    await s.start();
+    s.set("whatsapp", false);
+    for (const [saved] of l.save.mock.calls) {
+      expect(saved).toEqual({ ...DEFAULT_SETTINGS, avatar: "luna", renderQuality: "alto" });
+    }
+  });
+
+  it("revoked or signed out: the account's companion leaves the device copy, local choices stay", async () => {
+    const l = local();
+    l.save({ ...DEFAULT_SETTINGS, whatsapp: true });
+    const s = new DesktopSettings(
+      fakeServer({ ...DEFAULT_SETTINGS, avatar: "luna" as SettingsValues["avatar"], renderQuality: "alto" }),
+      l,
+    );
+    await s.start();
+    expect(l.load()).toMatchObject({ avatar: "luna", whatsapp: true });
+    s.forgetAccount();
+    expect(l.load()).toEqual({ ...DEFAULT_SETTINGS, whatsapp: true });
+  });
+
   it("a refused change snaps back and reports `rejected`", async () => {
     const s = new DesktopSettings(fakeServer(), local());
     await s.start();
