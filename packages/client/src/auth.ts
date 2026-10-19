@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { CoordRulesClient } from "./coord-rules.js";
 import { ClientActions, type ClientActionsOptions } from "./actions.js";
 import type { ClientKeys } from "./keys.js";
 import { LiveStore, type LiveStoreOptions } from "./live.js";
@@ -248,6 +249,8 @@ export interface ConnectOptions {
 export interface ChalitoClient {
   live: LiveStore;
   actions: ClientActions;
+  /** "Siempre así": the owner's remembered answers to coordinator helpers (ADR 0025 §6). */
+  coordRules: CoordRulesClient;
   close(): Promise<void>;
 }
 
@@ -267,10 +270,12 @@ export const connect = async (o: ConnectOptions): Promise<ChalitoClient> => {
   }).data.subscription;
   const live = new LiveStore(sb, o.keys, o.owner, o.live);
   const actions = new ClientActions(sb, o.keys, live, { ...o.actions, stepUp: o.stepUp });
+  const coordRules = new CoordRulesClient({ db: sb, keys: o.keys, owner: o.owner });
   live.start();
   return {
     live,
     actions,
+    coordRules,
     close: async () => {
       sub.unsubscribe();
       await live.stop();

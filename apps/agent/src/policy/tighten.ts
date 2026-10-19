@@ -31,7 +31,19 @@ export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
   remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
   screenTighterOrEqual(next.screen, cur.screen) &&
   lanTighterOrEqual(next.lan, cur.lan) &&
-  exposedTighterOrEqual(next.exposed, cur.exposed);
+  exposedTighterOrEqual(next.exposed, cur.exposed) &&
+  coordinatorTighterOrEqual(next.coordinator, cur.coordinator);
+
+/**
+ * Coordinator mode can only be turned off or answer fewer kinds; never on, and never more kinds
+ * (that's `chalito coordinator enable`). Missing `autoApprove` means every kind.
+ */
+export const coordinatorTighterOrEqual = (next: Policy["coordinator"], cur: Policy["coordinator"]): boolean => {
+  if (!next?.enabled) return true;
+  if (!cur?.enabled) return false;
+  if (!cur.autoApprove) return true;
+  return next.autoApprove !== undefined && subsetOf(next.autoApprove, cur.autoApprove);
+};
 
 /** Exposed agents (outside hand-off tasks): an entry, or a path for it, can only be removed. */
 export const exposedTighterOrEqual = (next: Policy["exposed"], cur: Policy["exposed"]): boolean =>

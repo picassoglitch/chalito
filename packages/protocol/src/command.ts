@@ -14,6 +14,7 @@ import {
   Uid,
 } from "./common.js";
 import { LINK_RELAY_TYPES, LinkCommands, LinkId, LinkRelayCommands } from "./agent-link.js";
+import { CoordCommands } from "./coord.js";
 import { StepUp } from "./approval.js";
 import { SealedEnvelope, signed } from "./crypto.js";
 import { ProviderConnectMethod } from "./provider.js";
@@ -183,6 +184,12 @@ export const CommandPayload = z.discriminatedUnion("type", [
   ...LinkCommands,
   ...LinkRelayCommands,
   // ---- end LINKS ------------------------------------------------------------------------------
+
+  // ---- COORDINATOR (ADR 0025 §6; coord/coordinator.ts) ---------------------------------------
+  // Client-signed only: no relay carries a coord.* payload (RelayedCommand below), and
+  // `coord.merge` also needs the signer's passkey step-up over this command (the agent checks).
+  ...CoordCommands,
+  // ---- end COORDINATOR ------------------------------------------------------------------------
 ]);
 export type CommandPayload = z.infer<typeof CommandPayload>;
 

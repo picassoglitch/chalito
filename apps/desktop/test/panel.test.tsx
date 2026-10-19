@@ -82,6 +82,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     pending: [],
   };
   let terminal: TerminalStatus = { enabled: false, rawShell: false, active: [], pending: [] };
+  let coordinatorKinds: string[] = [];
   let scr: ScreenStatus = {
     view: false,
     control: false,
@@ -155,6 +156,20 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     enableAppSessions: async (...a) => (calls.push(["enableAppSessions", ...a]), { ok: true as const }),
     disableAppSessions: async (...a) => void calls.push(["disableAppSessions", ...a]),
     computerStatus: async () => computer,
+    coordinatorStatus: async () => ({ kinds: coordinatorKinds }),
+    coordinatorChallenge: async () => ({
+      answers: ["Editar y crear archivos dentro del proyecto"],
+      asks: ["Subir a main o a cualquier otra rama"],
+    }),
+    enableCoordinator: async (answers) => {
+      calls.push(["enableCoordinator", answers]);
+      coordinatorKinds = ["read", "tests"];
+      return { ok: true };
+    },
+    disableCoordinator: async () => {
+      calls.push(["disableCoordinator"]);
+      coordinatorKinds = [];
+    },
     computerChallenge: async () => ({
       examples: ["Ver todo lo que hay en tu pantalla"],
       risk: "Cada sesión pedirá tu aprobación.",
@@ -238,7 +253,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(5));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(6));
   });
 
   it("policy view shows the chain head and rules", async () => {
@@ -300,6 +315,26 @@ describe("panel: local-only security screens", () => {
     fireEvent.click(confirm);
     await waitFor(() => expect(container.querySelector('[data-computer="on"]')).not.toBeNull());
     expect(ipc.calls).toContainEqual(["enableComputer", { first: true, second: true, typed: "CONTROLAR MI EQUIPO" }]);
+  });
+
+  it("coordinator mode: turned on here after both lists are shown, and off with one click", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    const off = await waitFor(() => {
+      const el = container.querySelector('[data-coordinator="off"] button');
+      if (!el) throw new Error("not yet");
+      return el;
+    });
+    fireEvent.click(off);
+    expect(await screen.findByText("Editar y crear archivos dentro del proyecto")).toBeTruthy();
+    expect(screen.getByText("Subir a main o a cualquier otra rama")).toBeTruthy();
+    expect(ipc.calls).not.toContainEqual(["enableCoordinator", { confirm: true }]);
+    fireEvent.click(screen.getByText("Turn on coordinator mode"));
+    await waitFor(() => expect(container.querySelector('[data-coordinator="on"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["enableCoordinator", { confirm: true }]);
+    fireEvent.click(container.querySelector('[data-coordinator="on"] button')!);
+    await waitFor(() => expect(container.querySelector('[data-coordinator="off"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["disableCoordinator"]);
   });
 
   it("remote terminal: local enable with the phrase; the raw shell needs a fourth step", async () => {

@@ -19,6 +19,7 @@ import {
   type RecipeKind,
   type SignedScreenSignal,
 } from "@chalito/protocol";
+import { fileTombstones } from "./coord/rules.js";
 import { AgentCore, type AgentCoreDeps } from "./agent-core.js";
 import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
@@ -771,6 +772,7 @@ const startDaemon = async (
   });
   let extras = extrasFor(cfg, claudePath);
   const coreDeps: AgentCoreDeps = {
+    coordTombstones: fileTombstones(join(dir, "coord-revoked.json")),
     classifyExtras: () => extras,
     // Events also go live to the owner's other agents over the LAN; the cloud write is unchanged.
     store: lanTee(signedInStore, () => lan),

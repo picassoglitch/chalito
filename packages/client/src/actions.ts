@@ -3,6 +3,8 @@ import {
   COMMAND_TTL_MS,
   CommandBody,
   DecisionBody,
+  planDigestInput,
+  type CoordPlanState,
   type AdapterKind,
   type Channel,
   type CommandPayload,
@@ -10,10 +12,16 @@ import {
   type RemoteCodexSandbox,
   type RemotePermissionMode,
 } from "@chalito/protocol";
-import { REVOKE_BUNDLE_CTX, revokeAllServerEntry, stepUpBodyHash } from "@chalito/crypto";
+import { REVOKE_BUNDLE_CTX, canonicalize, revokeAllServerEntry, sha256, stepUpBodyHash, utf8 } from "@chalito/crypto";
 import type { ClientKeys, StepUpProvider } from "./keys.js";
 import type { LiveStore } from "./live.js";
 import { writeWithRetry, type RetryOptions, type SupaClient } from "./supa.js";
+
+/** SHA-256 (hex) of what a coordinator tap is about (`planDigestInput`), as the agent computes it. */
+export const coordDigest = async (plan: CoordPlanState, kind: "approve" | "merge"): Promise<string> =>
+  [...(await sha256(utf8(canonicalize(planDigestInput(plan, kind)))))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 
 export class ActionError extends Error {
   override name = "ActionError";
@@ -58,6 +66,11 @@ const CLIENT_COMMANDS = new Set<CommandPayload["type"]>([
   "link.revoke",
   "link.revokeAll",
   "link.list",
+  // Coordinator mode (ADR 0025 §6): approve and merge always carry this device's passkey.
+  "coord.start",
+  "coord.approve",
+  "coord.stop",
+  "coord.merge",
 ]);
 
 const b64Nonce = (): string => {
@@ -373,6 +386,72 @@ export class ClientActions {
     const s = this.live.session(sid);
     if (!s) throw new ActionError("unknown_session");
     return s.agentDeviceId;
+  }
+
+  // ---- coordinator mode (ADR 0025 §6) -------------------------------------------------
+
+  /**
+   * A goal for one of a computer's workspaces. Optional limits are sent only when set: the agent
+   * verifies the signature over the parsed body, so nothing may be filled in for it.
+   */
+  async coordStart(input: {
+    agentDeviceId: string;
+    workspaceLabel: string;
+    goal: string;
+    appId?: string;
+    maxAgents?: number;
+    maxMinutes?: number;
+    base?: string;
+    /** G4: the owner's other computers that take tasks too (each needs a hand-off link to it there). */
+    helpers?: string[];
+  }): Promise<string> {
+    return this.#command(input.agentDeviceId, async (cid) => ({
+      type: "coord.start",
+      workspaceLabel: input.workspaceLabel,
+      goalCt: await this.#sealFor(input.agentDeviceId, input.goal, cid),
+      ...(input.appId ? { appId: input.appId } : {}),
+      ...(input.maxAgents !== undefined ? { maxAgents: input.maxAgents } : {}),
+      ...(input.maxMinutes !== undefined ? { maxMinutes: input.maxMinutes } : {}),
+      ...(input.base ? { base: input.base } : {}),
+      ...(input.helpers?.length ? { helpers: input.helpers } : {}),
+    }));
+  }
+
+  /**
+   * The owner's one tap that runs a plan: Chalito answers its helpers from now on (passkey). The
+   * command names the exact plan shown (its digest); the agent refuses it if the plan changed.
+   */
+  async coordApprove(agentDeviceId: string, plan: CoordPlanState): Promise<string> {
+    const digest = await coordDigest(plan, "approve");
+    return this.#command(
+      agentDeviceId,
+      async () => ({ type: "coord.approve", planId: plan.planId, digest }),
+      this.#passkey(agentDeviceId, `coord-approve:${plan.planId}:${digest.slice(0, 16)}`),
+    );
+  }
+
+  /** The kill switch: no passkey, so it is always one tap away. */
+  async coordStop(agentDeviceId: string, planId: string): Promise<string> {
+    return this.#command(agentDeviceId, async () => ({ type: "coord.stop", planId }));
+  }
+
+  /** The merge tap: the base moves to the integration commit shown, and is pushed (passkey). */
+  async coordMerge(agentDeviceId: string, plan: CoordPlanState): Promise<string> {
+    const digest = await coordDigest(plan, "merge");
+    return this.#command(
+      agentDeviceId,
+      async () => ({ type: "coord.merge", planId: plan.planId, digest }),
+      this.#passkey(agentDeviceId, `coord-merge:${plan.planId}:${digest.slice(0, 16)}`),
+    );
+  }
+
+  /** A required passkey step-up over the final command body. */
+  #passkey(agentDeviceId: string, aid: string) {
+    return async (unsigned: Record<string, unknown>) => {
+      const stepUp = await this.opts.stepUp({ aid, risk: "HIGH", agentDeviceId }, unsigned);
+      if (!stepUp) throw new ActionError("passkey_required");
+      return stepUp;
+    };
   }
 
   /** Sealed to the agent's LOCALLY trusted key (and this device, to show its own history). */

@@ -109,6 +109,18 @@
       "title": "Avisos de seguridad",
       "missingStepUp": "«{computer}» rechazó un dispositivo nuevo: el dispositivo que lo aprobó no usó su llave de acceso. Vuelve a aprobarlo desde tu teléfono con la llave de acceso.",
       "refused": "«{computer}» rechazó un dispositivo nuevo porque su aprobación no se pudo verificar. Vuelve a aprobarlo desde un dispositivo de confianza."
+    },
+    "coordinator": {
+      "title": "Modo coordinador",
+      "intro": "Deja que Chalito responda por ti a los agentes de tus planes en esta computadora. Lo demás te llega al teléfono.",
+      "answers": "Chalito aprueba solo esto:",
+      "asks": "Y siempre te pregunta antes de:",
+      "confirm": "Activar el modo coordinador",
+      "on": "Activado: Chalito responde por ti lo de la lista.",
+      "off": "Desactivado: todo te pregunta a ti.",
+      "enable": "Activar…",
+      "disable": "Desactivar",
+      "failed": "No se activó ({reason})."
     }
   },
   "voice": {

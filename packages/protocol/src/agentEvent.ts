@@ -348,6 +348,26 @@ export const CommandRejectReason = z.enum([
   "link_refused",
   // ---- end LINKS ----
   "internal",
+  /** Coordinator mode (ADR 0025 §6): off on this computer (`chalito coordinator enable`). */
+  "coordinator_off",
+  "unknown_plan",
+  /** `coord.approve` for a plan that isn't waiting for the owner's tap. */
+  "plan_not_waiting",
+  /** `coord.merge` before the plan is ready (or after it merged). */
+  "plan_not_ready",
+  /** The base branch moved since the plan started: it has to be integrated again. */
+  "base_moved",
+  /** The base branch's checkout has uncommitted changes. */
+  "base_dirty",
+  "not_a_git_repo",
+  "detached_head",
+  "unknown_base",
+  /** A coord.approve / coord.merge for a plan that changed since the owner saw it (digest mismatch). */
+  "plan_changed",
+  /** G4: a helper computer named in coord.start has no hand-off link from this computer to it. */
+  "no_link",
+  /** G4: helper computers need the project's `origin` remote. */
+  "no_origin",
 ]);
 export type CommandRejectReason = z.infer<typeof CommandRejectReason>;
 

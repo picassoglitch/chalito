@@ -337,6 +337,48 @@ describe("chalito CLI", () => {
     });
   });
 
+  describe("coordinator", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("enable: OS auth and one confirmation listing what Chalito answers and what still asks", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["coordinator", "status"])).toBe(0);
+      expect(c.out()).toMatch(/Coordinator mode: off/);
+      expect(await c.run(["coordinator", "enable"], ["y"])).toBe(0);
+      expect(c.runs).toEqual([{ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true }]);
+      expect(c.out()).toMatch(/Pushing to main or any other branch/);
+      expect((await policyOf(c)).coordinator?.enabled).toBe(true);
+      expect(await c.run(["coordinator", "disable"])).toBe(0);
+      expect((await policyOf(c)).coordinator?.enabled).toBe(false);
+    });
+
+    it("enable: failed OS auth or a no change nothing", async () => {
+      for (const [o, lines] of [
+        [{ runner: () => 126 }, ["y"]],
+        [{}, ["n"]],
+      ] as const) {
+        const c = cli({ tty: true, ...o });
+        expect(await c.run(["coordinator", "enable"], [...lines])).toBe(1);
+        expect((await policyOf(c)).coordinator).toBeUndefined();
+      }
+    });
+
+    it("never from inside an agent session", async () => {
+      const c = cli({ tty: true, env: { CHALITO_SESSION: "1" } });
+      expect(await c.run(["coordinator", "enable"], ["y"])).toBe(1);
+      expect((await policyOf(c)).coordinator).toBeUndefined();
+    });
+
+    it("policy edit can't turn it on", async () => {
+      const on = policyToYaml({ ...DEFAULT_POLICY, coordinator: { enabled: true } });
+      const c = cli({ runner: (r) => (writeFileSync(r.args.at(-1)!, on), 0) });
+      expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito coordinator enable/);
+      expect((await policyOf(c)).coordinator).toBeUndefined();
+    });
+  });
+
   describe("terminal", () => {
     const policyOf = async (c: ReturnType<typeof cli>) =>
       new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();

@@ -516,6 +516,22 @@ export class SupabaseStore implements AgentStore {
     return (rows ?? []).map((r) => r.device_id);
   }
 
+  async listCoordRules(): Promise<unknown[]> {
+    const rows = await must<{ rule: unknown }[]>(
+      "list coordinator rules",
+      this.db.from("coord_rules").select("rule").eq("owner", this.owner),
+    );
+    return (rows ?? []).map((r) => r.rule);
+  }
+
+  async listCoordRuleRevocations(): Promise<unknown[]> {
+    const rows = await must<{ revoke: unknown }[]>(
+      "list coordinator rule revocations",
+      this.db.from("coord_rule_revocations").select("revoke").eq("owner", this.owner),
+    );
+    return (rows ?? []).map((r) => r.revoke);
+  }
+
   async listEndorsements(): Promise<EndorsementRow[]> {
     const rows = await must<{ device_id: string; endorsement: unknown }[]>(
       "list endorsements",
