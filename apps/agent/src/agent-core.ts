@@ -40,7 +40,7 @@ import { ApprovalManager, type ApprovalOutcome } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
 import { coordAnswer } from "./coord/gate.js";
-import { CoordRules } from "./coord/rules.js";
+import { CoordRules, type CoordTombstones } from "./coord/rules.js";
 import { coordinatorCeiling } from "./coord/toggle.js";
 import { publicReason } from "./command-result.js";
 import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
@@ -118,6 +118,8 @@ export interface AppCommands {
 
 export interface AgentCoreDeps {
   store: AgentStore;
+  /** Withdrawn remembered rules this device refuses (ADR 0025 §6); in memory when absent. */
+  coordTombstones?: CoordTombstones;
   adapters: Partial<Record<AdapterKind, SessionAdapter>>;
   /**
    * Engine: session adapters for apps beyond the four built-in ones, by app id, from the drivers
@@ -295,6 +297,8 @@ export class AgentCore {
     });
     this.coordRules = new CoordRules({
       list: () => d.store.listCoordRules(),
+      listRevocations: () => d.store.listCoordRuleRevocations(),
+      ...(d.coordTombstones ? { tombstones: d.coordTombstones } : {}),
       trust: d.trust,
       owner: d.owner,
       now: d.now,

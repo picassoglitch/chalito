@@ -11,51 +11,6 @@ import { splitShell, type Classification } from "../policy/classify.js";
  * or `curl` carries an unmapped reason and asks the owner.
  */
 
-/** Local git subcommands Chalito may run for the owner (the owner's "commits and branches"). */
-const GIT_LOCAL = new Set(["add", "commit", "branch", "checkout", "switch", "merge", "stash"]);
-/** Options that make those subcommands delete something: always the owner's call. */
-const GIT_DELETING: Record<string, RegExp> = {
-  branch: /^(-d|-D|--delete|-m|-M|--move|-c|-C|--copy|-f|--force)$/,
-  stash: /^(drop|clear)$/,
-  switch: /^(-f|--force|--discard-changes|-C|--force-create)$/,
-  merge: /^(--abort|--quit)$/,
-};
-
-/**
- * Installs that change only the project (its manifest, lockfile and local packages). Global
- * installs and installers that write into the system or the user's home ask (owner: "anything
- * outside the project folder").
- */
-const PROJECT_INSTALLS: [string, RegExp][] = [
-  ["npm", /^(i|install|add|ci)$/],
-  ["pnpm", /^(i|install|add)$/],
-  ["yarn", /^(add|install)$/],
-  ["bun", /^(add|install|i)$/],
-  ["uv", /^add$/],
-  ["cargo", /^add$/],
-  ["go", /^get$/],
-];
-/** Every install the classifier calls "package install" (policy/classify.ts INSTALLERS). */
-const ANY_INSTALL: [string, RegExp][] = [
-  ["npm", /^(i|install|add|ci|update|upgrade)$/],
-  ["pnpm", /^(i|install|add|update|up)$/],
-  ["yarn", /^(add|install|upgrade)$/],
-  ["bun", /^(add|install|i)$/],
-  ["pip", /^install$/],
-  ["pip3", /^install$/],
-  ["uv", /^(add|pip)$/],
-  ["brew", /^install$/],
-  ["cargo", /^(add|install)$/],
-  ["go", /^(get|install)$/],
-  ["gem", /^install$/],
-];
-const isInstall = (w: string[]): boolean => ANY_INSTALL.some(([tool, re]) => w[0] === tool && re.test(w[1] ?? ""));
-const GLOBAL_FLAG = /^(-g|--global|--location=global|--prefix(=.*)?|--target(=.*)?|--root(=.*)?|--user)$/;
-
-/** A named remote (never a URL or path) and a branch under the plan's prefix, nothing else. */
-const REMOTE_NAME = /^[A-Za-z0-9._-]+$/;
-const BRANCH_REST = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
-
 type Words = string[];
 
 /** The plain words of each segment, or null when any segment has redirections or expansions. */
@@ -72,40 +27,137 @@ const plainSegments = (command: string): Words[] | null => {
   return out;
 };
 
+/** `git <sub> …`; global options (`-C`, `-c`, `--git-dir`, …) are the owner's call. */
 const gitSub = (w: Words): { sub: string; rest: Words } | null => {
-  if (w[0] !== "git") return null;
-  // Global options (`-C`, `-c`, `--git-dir`, …) are the owner's call.
-  if (w[1]?.startsWith("-")) return null;
-  return { sub: w[1] ?? "", rest: w.slice(2) };
+  if (w[0] !== "git" || !w[1] || w[1].startsWith("-")) return null;
+  return { sub: w[1], rest: w.slice(2) };
 };
 
+/**
+ * Every check below is an allowlist of exact shapes (security review, 2026-10-19): an option word
+ * not listed (unknown, abbreviated `--del`, bundled `-Df`, or one that changes the target folder)
+ * means the owner answers.
+ */
+
+/** A plain name (branch, path, package) that can't be read as an option. */
+const NOT_OPTION = (a: string) => a.length > 0 && !a.startsWith("-");
+/** A branch or start point: plain name, no `..`, no `:` or `+` refspec syntax. */
+const REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
+const isRef = (a: string | undefined): a is string => !!a && REF.test(a) && !a.includes("..");
+/** A path inside the worktree: relative, no `..`. */
+const isRelPath = (a: string) =>
+  NOT_OPTION(a) && !a.startsWith("/") && !a.startsWith("~") && !a.split("/").includes("..");
+
+/**
+ * Local git writes the owner allowed ("commits and branches"), exact shapes only:
+ * - `add` (`-A` / `--all` / `-u` / `--update`) with relative paths;
+ * - `commit [-a] -m <message>` (no `--amend`, no bundled `-am`);
+ * - `checkout -b <new> [<start>]` (never `-B`, never a path);
+ * - `switch <branch>` or `switch -c <new> [<start>]`;
+ * - `branch <new> [<start>]`;
+ * - `merge [--no-ff|--ff-only|--no-edit] <branch>` and `merge ... -m <message>`;
+ * - `stash`, `stash push [-m <message>]`, `stash pop|apply|list`.
+ */
 const isLocalGit = (w: Words): boolean => {
   const g = gitSub(w);
-  if (!g || !GIT_LOCAL.has(g.sub)) return false;
-  // `git checkout <path>` throws work away and looks just like `git checkout <branch>`: only the
-  // new-branch form is Chalito's call (switching branches is `git switch`).
-  if (g.sub === "checkout")
-    return (
-      /^-[bB]$/.test(g.rest[0] ?? "") &&
-      g.rest.length >= 2 &&
-      g.rest.length <= 3 &&
-      g.rest.slice(1).every((a) => !a.startsWith("-") && a !== ".")
-    );
-  const deleting = GIT_DELETING[g.sub];
-  return !deleting || !g.rest.some((a) => deleting.test(a));
+  if (!g) return false;
+  const a = g.rest;
+  switch (g.sub) {
+    case "add":
+      return a.length > 0 && a.every((x) => ["-A", "--all", "-u", "--update"].includes(x) || isRelPath(x));
+    case "commit": {
+      const rest = a[0] === "-a" ? a.slice(1) : a;
+      return rest.length === 2 && rest[0] === "-m";
+    }
+    case "checkout":
+      return a[0] === "-b" && (a.length === 2 || a.length === 3) && a.slice(1).every(isRef);
+    case "switch":
+      return (
+        (a.length === 1 && isRef(a[0])) ||
+        (a[0] === "-c" && (a.length === 2 || a.length === 3) && a.slice(1).every(isRef))
+      );
+    case "branch":
+      return (a.length === 1 || a.length === 2) && a.every(isRef);
+    case "merge": {
+      let i = 0;
+      while (["--no-ff", "--ff-only", "--no-edit"].includes(a[i] ?? "")) i++;
+      if (a[i] === "-m") i += 2;
+      return i === a.length - 1 && isRef(a[i]);
+    }
+    case "stash":
+      return (
+        a.length === 0 ||
+        (a.length === 1 && ["push", "pop", "apply", "list"].includes(a[0]!)) ||
+        (a.length === 3 && a[0] === "push" && a[1] === "-m")
+      );
+    default:
+      return false;
+  }
 };
 
-const isProjectInstall = (w: Words): boolean =>
-  PROJECT_INSTALLS.some(([tool, re]) => w[0] === tool && re.test(w[1] ?? "")) && !w.some((a) => GLOBAL_FLAG.test(a));
+/**
+ * A package as a registry name with an optional version: never a path, URL, `file:`/`git:` spec
+ * or anything else that reaches outside the project.
+ */
+const PACKAGE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(@[A-Za-z0-9.^~<>=*_+-]+)?$/i;
+const GO_MODULE = /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(\/[A-Za-z0-9._~-]+)*(@[A-Za-z0-9.+_-]+)?$/;
 
-/** `git push [-u|--set-upstream] <remote> <prefix>…`, with nothing else. */
+/**
+ * Project installs, per tool: the verbs and the only option words allowed. Global installs and
+ * anything that moves the target folder (`--prefix`, `--dir`, `-C`, `--cwd`, `--global-dir`,
+ * `--location`, `-g`, …) aren't listed, so they ask.
+ */
+const PROJECT_INSTALLS: Record<string, { verbs: RegExp; flags: string[]; pkg: RegExp }> = {
+  npm: {
+    verbs: /^(i|install|add|ci)$/,
+    flags: ["-D", "--save-dev", "-E", "--save-exact", "-O", "--save-optional"],
+    pkg: PACKAGE,
+  },
+  pnpm: {
+    verbs: /^(i|install|add)$/,
+    flags: ["-D", "--save-dev", "-E", "--save-exact", "-O", "--save-optional", "--frozen-lockfile"],
+    pkg: PACKAGE,
+  },
+  yarn: { verbs: /^(add|install)$/, flags: ["-D", "--dev", "-E", "--exact", "--frozen-lockfile"], pkg: PACKAGE },
+  bun: { verbs: /^(add|install|i)$/, flags: ["-d", "--dev", "-E", "--exact"], pkg: PACKAGE },
+  uv: { verbs: /^add$/, flags: ["--dev"], pkg: PACKAGE },
+  cargo: { verbs: /^add$/, flags: ["--dev", "--build"], pkg: PACKAGE },
+  go: { verbs: /^get$/, flags: ["-u", "-t"], pkg: GO_MODULE },
+};
+/** Every install the classifier calls "package install" (policy/classify.ts INSTALLERS). */
+const ANY_INSTALL: [string, RegExp][] = [
+  ["npm", /^(i|install|add|ci|update|upgrade)$/],
+  ["pnpm", /^(i|install|add|update|up)$/],
+  ["yarn", /^(add|install|upgrade)$/],
+  ["bun", /^(add|install|i)$/],
+  ["pip", /^install$/],
+  ["pip3", /^install$/],
+  ["uv", /^(add|pip)$/],
+  ["brew", /^install$/],
+  ["cargo", /^(add|install)$/],
+  ["go", /^(get|install)$/],
+  ["gem", /^install$/],
+];
+const isInstall = (w: string[]): boolean => ANY_INSTALL.some(([tool, re]) => w[0] === tool && re.test(w[1] ?? ""));
+
+const isProjectInstall = (w: Words): boolean => {
+  const spec = PROJECT_INSTALLS[w[0] ?? ""];
+  if (!spec || !spec.verbs.test(w[1] ?? "")) return false;
+  return w.slice(2).every((a) => (a.startsWith("-") ? spec.flags.includes(a) : spec.pkg.test(a)));
+};
+
+/** A remote name: starts with a letter or digit (never an option), no path or URL characters. */
+const REMOTE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const BRANCH_REST = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
+
+/** Exactly `git push [-u|--set-upstream] <remote> <prefix>…`: no other word, no other option. */
 const isPlanBranchPush = (w: Words, prefix: string): boolean => {
   const g = gitSub(w);
   if (!g || g.sub !== "push") return false;
-  const args = g.rest.filter((a) => a !== "-u" && a !== "--set-upstream");
-  if (args.length !== 2) return false;
-  const [remote, ref] = args as [string, string];
-  if (!REMOTE_NAME.test(remote) || !ref.startsWith(prefix)) return false;
+  const a = g.rest[0] === "-u" || g.rest[0] === "--set-upstream" ? g.rest.slice(1) : g.rest;
+  if (a.length !== 2) return false;
+  const [remote, ref] = a as [string, string];
+  if (!REMOTE_NAME.test(remote) || !NOT_OPTION(ref) || !ref.startsWith(prefix)) return false;
   const rest = ref.slice(prefix.length);
   return BRANCH_REST.test(rest) && !rest.split("/").some((p) => p === "." || p === "..");
 };

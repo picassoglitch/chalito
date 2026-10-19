@@ -100,6 +100,18 @@ export type CoordRuleBody = z.infer<typeof CoordRuleBody>;
 export const CoordRule = signed("chalito.coordrule.v1", CoordRuleBody);
 export type CoordRule = z.infer<typeof CoordRule>;
 
+/**
+ * Withdrawing a remembered rule (security review, 2026-10-19): signed by any of the owner's trusted
+ * clients and stored next to the rules. A device that sees it (or sees a rule it had verified
+ * disappear) keeps the rule id locally until the rule would have expired, so the same signed rule
+ * re-inserted later is refused.
+ */
+export const CoordRuleRevokeBody = z
+  .object({ v: z.literal(1), uid: Uid, ruleId: CoordRuleId, revokedAt: EpochMs })
+  .strict();
+export const CoordRuleRevoke = signed("chalito.coordrule-revoke.v1", CoordRuleRevokeBody);
+export type CoordRuleRevoke = z.infer<typeof CoordRuleRevoke>;
+
 /** A plain shell word: no quotes, expansions, globs, redirections or separators. */
 const PLAIN_WORD = /^[A-Za-z0-9._/@%+=:,-]+$/;
 

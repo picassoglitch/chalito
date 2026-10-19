@@ -68,6 +68,8 @@ export const SigningContext = z.enum([
   "chalito.lan-handshake.v1",
   /** ADR 0025 §6: a remembered coordinator answer ("Siempre así"), signed by a trusted client. */
   "chalito.coordrule.v1",
+  /** ADR 0025 §6: a trusted client withdraws a remembered rule; devices keep it so the rule can't come back. */
+  "chalito.coordrule-revoke.v1",
 ]);
 export type SigningContext = z.infer<typeof SigningContext>;
 

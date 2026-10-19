@@ -3,7 +3,7 @@
 -- updates; the envelope must agree with its row; at most 200 per owner.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(15);
+select plan(22);
 
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language plpgsql as $$
 begin
@@ -83,6 +83,28 @@ select throws_ok($$insert into chalito.coord_rules (owner, rule_id, signer_devic
   values ('cr-a', 'cr_rule0201', 'cr_a_phone', pg_temp.rule('cr-a', 'cr_a_phone', 'cr_rule0201'), now() + interval '1 day')$$,
   '54000', null, 'at most 200 rules per owner');
 select throws_ok($$select chalito_private.coord_rules_cap()$$, '42501', null, 'the cap trigger isn''t callable');
+
+-- ================================================================ withdrawals
+create function pg_temp.rev(owner text, signer text, id text) returns jsonb language sql as $$
+  select jsonb_build_object('ctx', 'chalito.coordrule-revoke.v1', 'signerDeviceId', signer, 'sig', repeat('A', 86),
+    'body', jsonb_build_object('v', 1, 'uid', owner, 'ruleId', id, 'revokedAt', 1))
+$$;
+select pg_temp.as_device('cr-a', 'cr_a_web', 'client');
+select lives_ok($$insert into chalito.coord_rule_revocations (owner, rule_id, signer_device_id, revoke)
+  values ('cr-a', 'cr_rule0001', 'cr_a_web', pg_temp.rev('cr-a', 'cr_a_web', 'cr_rule0001'))$$,
+  'an active client withdraws a rule as itself');
+select throws_ok($$insert into chalito.coord_rule_revocations (owner, rule_id, signer_device_id, revoke)
+  values ('cr-a', 'cr_rule0009', 'cr_a_phone', pg_temp.rev('cr-a', 'cr_a_phone', 'cr_rule0009'))$$,
+  '42501', null, 'not as another client');
+select throws_ok($$delete from chalito.coord_rule_revocations$$, '42501', null, 'a client can''t delete a withdrawal');
+select pg_temp.as_device('cr-a', 'cr_a_desk', 'agent');
+select is((select count(*)::int from chalito.coord_rule_revocations), 1, 'the owner''s agent reads it');
+select throws_ok($$insert into chalito.coord_rule_revocations (owner, rule_id, signer_device_id, revoke)
+  values ('cr-a', 'cr_rule0010', 'cr_a_desk', pg_temp.rev('cr-a', 'cr_a_desk', 'cr_rule0010'))$$,
+  '42501', null, 'an agent never writes one');
+select throws_ok($$update chalito.coord_rule_revocations set revoke = revoke$$, '42501', null, 'never updated');
+select pg_temp.as_device('cr-b', 'cr_b_phone', 'client');
+select is((select count(*)::int from chalito.coord_rule_revocations), 0, 'another owner sees none');
 
 select * from finish();
 rollback;

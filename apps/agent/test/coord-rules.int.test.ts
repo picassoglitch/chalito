@@ -3,6 +3,7 @@
  * signed rule as itself through real RLS, the agent reads it with its own device session and only
  * keeps it once it verifies against its local trusted list. Run by the `supabase` CI job.
  */
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -17,7 +18,7 @@ import { rememberMatchFor, ruleMatchText } from "@chalito/protocol";
 import { CoordRules } from "../src/coord/rules.js";
 import { createLogger } from "../src/redact.js";
 import { SupabaseStore, type SupaClient } from "../src/supabase-store.js";
-import { LOCAL, createDeviceUser, deviceDb, gotrue, seedOwner, type Db } from "./supabase-local.js";
+import { LOCAL, createDeviceUser, deviceDb, gotrue, q, seedOwner, type Db } from "./supabase-local.js";
 
 const run = randomUUID().replace(/-/g, "").slice(0, 10);
 const OWNER = `coord-int-${run}`;
@@ -78,16 +79,13 @@ describe.skipIf(!LOCAL)("remembered coordinator rules (local stack, real RLS)", 
 
     // Another owner's client can't write into this owner's rules.
     const strangerDb = await deviceDb(admin, strangerId);
-    const bad = await strangerDb
-
-      .from("coord_rules")
-      .insert({
-        owner: OWNER,
-        rule_id: `cr_x${run}`,
-        signer_device_id: strangerId,
-        rule: env,
-        expires_at: new Date(now + 1000).toISOString(),
-      });
+    const bad = await strangerDb.from("coord_rules").insert({
+      owner: OWNER,
+      rule_id: `cr_x${run}`,
+      signer_device_id: strangerId,
+      rule: env,
+      expires_at: new Date(now + 1000).toISOString(),
+    });
     expect(bad.error).not.toBeNull();
 
     const agentDb = await deviceDb(admin, agentId);
@@ -100,6 +98,8 @@ describe.skipIf(!LOCAL)("remembered coordinator rules (local stack, real RLS)", 
     await trust.addConfirmed({ deviceId: phoneId, pubSign: await toB64url(phoneSign.publicKey), pubBox }, now);
     const rules = new CoordRules({
       list: () => store.listCoordRules(),
+      listRevocations: () => store.listCoordRuleRevocations(),
+      refreshMs: 0,
       trust: () => trust,
       owner: OWNER,
       now: Date.now,
@@ -109,15 +109,44 @@ describe.skipIf(!LOCAL)("remembered coordinator rules (local stack, real RLS)", 
     // The same row is worth nothing to an agent that doesn't trust the phone.
     const untrusting = new CoordRules({
       list: () => store.listCoordRules(),
+      listRevocations: () => store.listCoordRuleRevocations(),
       trust: () => new TrustedClientList(agentId),
       owner: OWNER,
       now: Date.now,
     });
     expect((await untrusting.matches()).size).toBe(0);
 
-    // The owner removes it from the phone; the agent's next read has nothing.
+    // The owner removes it from the phone and signs the withdrawal.
     const del = await phoneDb.from("coord_rules").delete().eq("rule_id", `cr_${run}`);
     expect(del.error).toBeNull();
+    const rev = await phoneDb.from("coord_rule_revocations").insert({
+      owner: OWNER,
+      rule_id: `cr_${run}`,
+      signer_device_id: phoneId,
+      revoke: await signEnvelope(
+        "chalito.coordrule-revoke.v1",
+        { v: 1, uid: OWNER, ruleId: `cr_${run}`, revokedAt: Date.now() },
+        phoneId,
+        phoneSign.secretKey,
+      ),
+    });
+    expect(rev.error).toBeNull();
     expect(await store.listCoordRules()).toHaveLength(0);
+    expect((await rules.matches()).size).toBe(0);
+    // Nobody deletes a withdrawal: not the agent, not the phone.
+    await agentDb.from("coord_rule_revocations").delete().eq("rule_id", `cr_${run}`);
+    await phoneDb.from("coord_rule_revocations").delete().eq("rule_id", `cr_${run}`);
+    expect(await store.listCoordRuleRevocations()).toHaveLength(1);
+
+    // The server re-inserts the same signed rule (a replay): still refused.
+    // As the database owner: a compromised server, not anything the API may do.
+    execFileSync("supabase", [
+      "db",
+      "query",
+      "--local",
+      `insert into chalito.coord_rules (owner, rule_id, signer_device_id, rule, expires_at) values (${q(OWNER)}, ${q(`cr_${run}`)}, ${q(phoneId)}, ${q(JSON.stringify(env))}::jsonb, now() + interval '1 day')`,
+    ]);
+    expect(await store.listCoordRules()).toHaveLength(1);
+    expect((await rules.matches()).size).toBe(0);
   });
 });

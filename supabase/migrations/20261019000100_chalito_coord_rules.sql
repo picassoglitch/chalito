@@ -63,3 +63,54 @@ create policy coord_rules_delete on chalito.coord_rules for delete to authentica
   using (owner = (select chalito.jwt_owner()) and (select chalito_private.active_client()));
 revoke all on chalito.coord_rules from public, anon, authenticated;
 grant select, insert, delete on chalito.coord_rules to authenticated;
+
+-- Withdrawn rules (security review, 2026-10-19): a trusted client's signed `chalito.coordrule-revoke.v1`.
+-- Devices keep a withdrawal they've seen as a local tombstone, so a rule re-inserted later (a replay
+-- by a compromised server) is still refused. Insert-only for the owner's active clients, as
+-- themselves; nobody deletes one (it cascades with the account). At most 2000 per owner.
+create table chalito.coord_rule_revocations (
+  owner chalito.id not null references chalito.users (id) on delete cascade,
+  rule_id text not null check (rule_id ~ '^cr_[A-Za-z0-9_-]{8,64}$'),
+  signer_device_id chalito.id not null,
+  revoke jsonb not null check (
+    jsonb_typeof(revoke) = 'object'
+    and octet_length(revoke::text) <= 1024
+    and revoke ->> 'ctx' = 'chalito.coordrule-revoke.v1'
+    and revoke ->> 'signerDeviceId' = signer_device_id
+    and revoke -> 'body' ->> 'ruleId' = rule_id
+    and revoke -> 'body' ->> 'uid' = owner
+  ),
+  created_at timestamptz not null default now(),
+  primary key (owner, rule_id),
+  foreign key (owner, signer_device_id) references chalito.devices (owner, device_id) on delete cascade
+);
+
+create or replace function chalito_private.coord_rule_revocations_cap()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform pg_advisory_xact_lock(hashtext('coord_rule_revocations:' || new.owner));
+  if (select count(*) from chalito.coord_rule_revocations where owner = new.owner) >= 2000 then
+    raise exception 'too many rule withdrawals' using errcode = '54000';
+  end if;
+  return new;
+end
+$$;
+revoke all on function chalito_private.coord_rule_revocations_cap() from public, anon, authenticated;
+create trigger coord_rule_revocations_cap before insert on chalito.coord_rule_revocations
+  for each row execute function chalito_private.coord_rule_revocations_cap();
+
+alter table chalito.coord_rule_revocations enable row level security;
+create policy coord_rule_revocations_read on chalito.coord_rule_revocations for select to authenticated
+  using (owner = (select chalito.jwt_owner()) and (select chalito_private.device_ok()));
+create policy coord_rule_revocations_insert on chalito.coord_rule_revocations for insert to authenticated
+  with check (
+    owner = (select chalito.jwt_owner())
+    and signer_device_id = (select chalito.jwt_device_id())
+    and (select chalito_private.active_client())
+  );
+revoke all on chalito.coord_rule_revocations from public, anon, authenticated;
+grant select, insert on chalito.coord_rule_revocations to authenticated;

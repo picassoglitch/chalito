@@ -91,6 +91,8 @@ export interface AgentStore {
    * Cloud data: the caller verifies every one against the local trusted list.
    */
   listCoordRules(): Promise<unknown[]>;
+  /** The owner's signed rule withdrawals (`chalito.coordrule-revoke.v1`), as stored. Cloud data. */
+  listCoordRuleRevocations(): Promise<unknown[]>;
 }
 
 export interface EndorsementRow {
@@ -133,8 +135,12 @@ export class MemoryStore implements AgentStore {
   #endorsementWatcher: (() => void) | null = null;
 
   coordRules: unknown[] = [];
+  coordRuleRevocations: unknown[] = [];
   async listCoordRules() {
     return [...this.coordRules];
+  }
+  async listCoordRuleRevocations() {
+    return [...this.coordRuleRevocations];
   }
 
   async listEndorsements() {

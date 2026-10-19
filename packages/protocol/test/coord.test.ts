@@ -3,6 +3,7 @@ import {
   COORD_RULE_TTL_MS,
   CoordRule,
   CoordRuleBody,
+  CoordRuleRevoke,
   SigningContext,
   rememberMatchFor,
   ruleMatchText,
@@ -109,5 +110,20 @@ describe("rememberMatchFor", () => {
     expect(rememberMatchFor({ toolName: "Edit", input: { file_path: "/x" }, workspaceLabel: w })).toBeNull();
     expect(rememberMatchFor({ toolName: "mcp__x__y", input: {}, workspaceLabel: w })).toBeNull();
     expect(rememberMatchFor({ toolName: "Bash", input: null, workspaceLabel: w })).toBeNull();
+  });
+});
+
+describe("rule withdrawals", () => {
+  it("has its own signing context and a strict body", () => {
+    expect(SigningContext.options).toContain("chalito.coordrule-revoke.v1");
+    const env = {
+      ctx: "chalito.coordrule-revoke.v1",
+      body: { v: 1, uid: "u1", ruleId: "cr_abcdefgh", revokedAt: 5 },
+      signerDeviceId: "dev_p",
+      sig: "A".repeat(86),
+    };
+    expect(CoordRuleRevoke.safeParse(env).success).toBe(true);
+    expect(CoordRuleRevoke.safeParse({ ...env, ctx: "chalito.coordrule.v1" }).success).toBe(false);
+    expect(CoordRuleRevoke.safeParse({ ...env, body: { ...env.body, extra: 1 } }).success).toBe(false);
   });
 });

