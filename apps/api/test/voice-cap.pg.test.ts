@@ -45,5 +45,12 @@ if (!url) {
         await admin`select count(*)::int as n from chalito.notifications where owner = ${u} and coalesce_key = 'cap:voice'`,
       ).toEqual([{ n: 1 }]);
     });
+    it('reads the tier the way the store does: a hub tier sent as " Pro " is pro, not 0 minutes', async () => {
+      const u = `cap-${randomUUID()}`;
+      await admin`insert into chalito.tenants (id) values (${u})`;
+      await admin`insert into chalito.users (id, tenant_id, tier, tz) values (${u}, ${u}, ' Pro ', 'America/Mexico_City')`;
+      const cap = pgVoiceCap(sql, loadPlans(), () => false);
+      expect(await cap.status(u, Date.now())).toEqual({ limitSeconds: 120 * 60, usedSeconds: 0 });
+    });
   });
 }
