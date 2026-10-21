@@ -126,6 +126,10 @@ export const runDueDeletions = async (deps: Deps, account: AccountDeps) => {
   const failed: string[] = [];
   for (const owner of await account.store.due(deps.now())) {
     try {
+      // Re-read right before the irreversible steps: a cancel that landed after `due` (while an
+      // earlier owner's files were being deleted) must win.
+      const s = await account.store.status(owner);
+      if (s?.status !== "scheduled" || s.dueAt > deps.now()) continue;
       for (const id of await account.store.deviceIds(owner)) await deps.identity.deleteDevice(id);
       const files = await account.files.deleteOwner(owner);
       // Recorded before the rows go (server_audit cascades with the user); the stream keeps it.
