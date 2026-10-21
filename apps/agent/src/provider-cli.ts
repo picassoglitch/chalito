@@ -46,12 +46,8 @@ const opener = (platform: NodeJS.Platform, url: string): [string, string[]] =>
       ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
       : ["xdg-open", [url]];
 
-/**
- * Windows `.cmd`/`.bat` launchers (npm, the CLIs' shims) only run through cmd.exe, and Node then
- * joins the command and its args into one unquoted command line. So: quote what has spaces (a
- * path under "Program Files"), and refuse anything cmd.exe would interpret (`&`, `|`, `%VAR%`…)
- * rather than run it. Everything else spawns without a shell, unchanged.
- */
+// Windows .cmd/.bat run through cmd.exe, which gets one unquoted line: quote paths with spaces
+// and refuse cmd.exe metacharacters (`&`, `|`, `%VAR%`). Everything else spawns without a shell.
 const CMD_META = /[&|<>^%"\r\n]/;
 export const viaShell = (
   platform: NodeJS.Platform,
