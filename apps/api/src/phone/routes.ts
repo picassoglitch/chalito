@@ -6,7 +6,7 @@ import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
 import { rateLimit } from "../lib/rate-limit.js";
 import type { PhoneStore } from "./store.js";
-import type { PhoneVerifier } from "./twilio.js";
+import { VerifierError, type PhoneVerifier } from "./twilio.js";
 
 export interface PhoneDeps {
   store: PhoneStore;
@@ -27,6 +27,22 @@ const Channels = z
   .partial()
   .refine((c) => Object.keys(c).length > 0);
 
+/**
+ * A Twilio failure is the provider's answer, never a 500: too many attempts (429), a refused
+ * number or channel (400), anything else (5xx, network) is 503 and the person can try again.
+ */
+const viaTwilio = async <T>(run: () => Promise<T>): Promise<T> => {
+  try {
+    return await run();
+  } catch (err) {
+    if (!(err instanceof VerifierError)) throw err;
+    console.error("[phone] verifier failed", err.status ?? "network");
+    if (err.status === 429) return fail(429, "too_many_attempts");
+    if (err.status === 400) return fail(400, "verify_refused");
+    return fail(503, "verify_unavailable");
+  }
+};
+
 const countryOf = (e164: string) => {
   const p = parsePhoneNumberFromString(e164);
   return p?.isPossible() && p.country ? p.country : null;
@@ -46,7 +62,7 @@ export const phoneRoutes = (deps: Deps, phone: PhoneDeps) => {
     const body = Start.safeParse(raw);
     if (!body.success) return fail(400, raw?.chargesNoticeAck !== true ? "charges_notice_required" : "bad_request");
     if (!countryOf(body.data.e164)) return fail(400, "invalid_phone");
-    await phone.verifier.start(body.data.e164, body.data.channel, body.data.locale);
+    await viaTwilio(() => phone.verifier.start(body.data.e164, body.data.channel, body.data.locale));
     await deps.audit.record({ action: "phone.verify_started", owner: principal(c).owner, actor: principal(c).uid });
     return c.json({ ok: true }, 202);
   });
@@ -57,7 +73,7 @@ export const phoneRoutes = (deps: Deps, phone: PhoneDeps) => {
     if (!body.success) return fail(400, "bad_request");
     const country = countryOf(body.data.e164);
     if (!country) return fail(400, "invalid_phone");
-    if (!(await phone.verifier.check(body.data.e164, body.data.code))) return fail(400, "bad_code");
+    if (!(await viaTwilio(() => phone.verifier.check(body.data.e164, body.data.code)))) return fail(400, "bad_code");
     // The acknowledgement was required to start; it is recorded with the verification, at server time.
     if ((await phone.store.setVerified(p.owner, { e164: body.data.e164, country, at: deps.now() })) === "in_use")
       return fail(409, "phone_in_use");
@@ -74,7 +90,7 @@ export const phoneRoutes = (deps: Deps, phone: PhoneDeps) => {
       const s = await phone.store.get(p.owner);
       if (!s?.verifiedAt || !s.e164) return fail(409, "phone_not_verified");
       if (!s.chargesNoticeAckAt) return fail(409, "charges_notice_required");
-      if (body.data.calls === true && !(await phone.verifier.callsAllowed(s.country ?? "")))
+      if (body.data.calls === true && !(await viaTwilio(() => phone.verifier.callsAllowed(s.country ?? ""))))
         return fail(422, "country_not_supported", "Calls to this country aren't available.");
     }
     await phone.store.setChannels(p.owner, body.data);
