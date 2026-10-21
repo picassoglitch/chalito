@@ -48,9 +48,12 @@ export const localMonthKey = (now: number, tz: string) => {
   return `${d.getUTCFullYear()}_${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
-/** The hub tier as the SSO token reported it (users.tier), or null if it isn't one we know. */
+/**
+ * The hub tier as the SSO token reported it (users.tier), or null if it isn't one we know.
+ * users.tier is stored as sent (any string); plans.yaml ids are lowercase, so case and spaces are dropped.
+ */
 export const hubTierOf = (tier: string | null | undefined) => {
-  const r = HubTierId.safeParse((tier ?? "").toLowerCase());
+  const r = HubTierId.safeParse((tier ?? "").trim().toLowerCase());
   return r.success ? r.data : null;
 };
 

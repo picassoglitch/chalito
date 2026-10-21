@@ -88,7 +88,8 @@ export const Credits = () => {
     let alive = true;
     void settings
       .load()
-      .then((r) => alive && setTier(r.values.planCredits.tier))
+      // users.tier is the hub's tier as sent; the names below are lowercase (plans.yaml hubTiers).
+      .then((r) => alive && setTier(r.values.planCredits.tier?.trim().toLowerCase() || null))
       .catch(() => alive && setTier(null));
     return () => {
       alive = false;

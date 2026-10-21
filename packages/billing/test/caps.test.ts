@@ -30,4 +30,16 @@ describe("monthly caps", () => {
     expect(monthlyLimit(plans, { ...at, hubTier: null, comped: true }, "call")).toBe(300);
     expect([hubTierOf("Pro"), hubTierOf("nope"), hubTierOf(null)]).toEqual(["pro", null, null]);
   });
+  it("reads the hub tier like the api's limits: spaces around it don't fail it closed (audit 2026-10-08)", () => {
+    expect(["free", "pro", "vip", "PRO", " Pro ", "VIP\n"].map(hubTierOf)).toEqual([
+      "free",
+      "pro",
+      "vip",
+      "pro",
+      "pro",
+      "vip",
+    ]);
+    expect([hubTierOf("  "), hubTierOf(""), hubTierOf("p ro")]).toEqual([null, null, null]);
+    expect(monthlyLimit(plans, { uid: "u1", comped: false, now: 1, hubTier: " Pro " }, "voice")).toBe(120);
+  });
 });
