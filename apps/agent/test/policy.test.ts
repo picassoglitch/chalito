@@ -308,6 +308,25 @@ describe("policy changes", () => {
     });
   });
 
+  it("a remote tighten can't add a workspace that doesn't exist yet (it could become a symlink later)", () => {
+    const ws = mkdtempSync(join(tmpdir(), "chalito-ws-"));
+    const future = join(ws, "future");
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    expect(applyRemoteTighten(cur, { workspaces: [{ label: "future", path: future }] })).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    // What the check prevents: accepted, the classifier would realpath this to `/` from now on.
+    symlinkSync("/", future);
+    expect(applyRemoteTighten(cur, { workspaces: [{ label: "future", path: future }] })).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    // A workspace the local policy already lists passes even if its folder is gone.
+    const gone = { ...DEFAULT_POLICY, workspaces: [{ label: "old", path: join(ws, "deleted") }] };
+    expect(applyRemoteTighten(gone, { approvals: { ttlSeconds: 60 } }).ok).toBe(true);
+  });
+
   it("remote tightening applies; remote loosening is rejected", () => {
     expect(applyRemoteTighten(policy, { origins: { mcp: false } })).toMatchObject({ ok: true });
     expect(applyRemoteTighten(policy, { remote: { maxPermissionMode: "default" } })).toMatchObject({ ok: true });

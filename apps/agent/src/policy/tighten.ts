@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { PolicyPreset } from "@chalito/protocol";
@@ -11,12 +12,17 @@ const subsetOf = (a: string[], b: string[]) => a.every((x) => b.includes(x));
 const flagsOnlyOff = <T extends Record<string, boolean | undefined>>(next: T, cur: T) =>
   Object.keys(next).every((k) => !next[k] || cur[k]);
 
-/**
- * A workspace path as the classifier sees it: `~` expanded and symlinks resolved. Comparing raw
- * strings let a remote patch add `<ws>/link` (a symlink to `/`) as a "narrower" workspace.
- */
-const realWorkspace = (p: string, home: string, real: (p: string) => string) =>
-  real(resolve(p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p));
+const expandHome = (p: string, home: string) =>
+  resolve(p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p);
+
+/** Strict realpath: a path that doesn't exist can't be checked (a symlink made there later could point anywhere). */
+const strictReal = (p: string, real: (p: string) => string): string | null => {
+  try {
+    return real(p);
+  } catch {
+    return null;
+  }
+};
 
 /** True when `next` grants nothing that `cur` doesn't: the only kind of change a remote surface may make. */
 export const isTighterOrEqual = (
@@ -25,12 +31,16 @@ export const isTighterOrEqual = (
   fs: { home?: string; realpath?: (p: string) => string } = {},
 ): boolean => {
   const home = fs.home ?? homedir();
-  const real = fs.realpath ?? defaultRealpath;
-  const curWs = cur.workspaces.map((c) => realWorkspace(c.path, home, real));
+  const real = fs.realpath ?? realpathSync.native;
+  // Compared as the classifier sees them (`~` expanded, symlinks resolved), so `<ws>/link -> /` isn't narrower.
+  const curLexical = new Set(cur.workspaces.map((c) => expandHome(c.path, home)));
+  const curWs = cur.workspaces.map((c) => defaultRealpath(expandHome(c.path, home)));
   return (
     next.workspaces.every((w) => {
-      const r = realWorkspace(w.path, home, real);
-      return curWs.some((c) => within(r, c));
+      const lexical = expandHome(w.path, home);
+      if (curLexical.has(lexical)) return true;
+      const r = strictReal(lexical, real);
+      return r !== null && curWs.some((c) => within(r, c));
     }) &&
     flagsOnlyOff(next.adapters, cur.adapters) &&
     PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
