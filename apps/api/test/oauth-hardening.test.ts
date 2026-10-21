@@ -80,6 +80,7 @@ describe("R-M4: CIMD fetch can't reach internal addresses", () => {
     "2002:7f00:1::",
     "2001:0:7f00:1::",
     "fec0::1",
+    "64:ff9b:1::a00:1",
   ])("%s is refused", (ip) => expect(publicAddress(ip)).toBe(false));
   it.each(["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"])("%s is allowed", (ip) =>
     expect(publicAddress(ip)).toBe(true),

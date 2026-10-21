@@ -36,6 +36,8 @@ for (const [net, bits] of [
   // Deprecated site-local.
   ["fec0::", 10],
   ["64:ff9b::", 96],
+  // Local-use NAT64 (RFC 8215): the translator may map it to a private IPv4.
+  ["64:ff9b:1::", 48],
   ["100::", 64],
   ["2001:db8::", 32],
   ["fc00::", 7],
