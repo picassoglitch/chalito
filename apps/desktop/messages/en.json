@@ -131,7 +131,7 @@
         "handoff": "Hand-off",
         "share": "Share information"
       },
-      "facts": "Folder {workspace} · expires {expires} · {confirm} · highest permission {ceiling}",
+      "facts": "Folder {workspace} · expires {expires} · {confirm} · {ceiling}",
       "askEachTime": "Ask me each time",
       "automatic": "Automatic",
       "pendingPublish": "Pending publish: carries nothing yet",
@@ -152,7 +152,7 @@
       "goal": "What the link is for",
       "days": "Days it lasts (30 at most)",
       "budget": "Tokens per day",
-      "rate": "Hand-offs per hour",
+      "rate": "Deliveries per hour (hand-offs or shares)",
       "ceiling": "Highest permission for the receiving session",
       "ceilings": {
         "plan": "Plan only",
@@ -179,8 +179,31 @@
         "noWorkspace": "Choose the folder.",
         "noGoal": "Write what the link is for.",
         "badLinkCode": "The link code isn't valid or has expired.",
-        "notForHere": "That link isn't for this computer."
-      }
+        "notForHere": "That link isn't for this computer.",
+        "badDays": "Days go from 1 to 30.",
+        "badBudget": "Tokens per day must be a whole number above 0.",
+        "badRate": "Deliveries per hour go from 1 to 60.",
+        "pinnedHere": "That link pins an app or session on this computer; make it from here."
+      },
+      "peerKeys": "Verification code of {device}: {sign} · encryption {box}",
+      "pinApp": "{app} only",
+      "pinSession": "session {sid} only",
+      "limits": "Up to {budget} tokens per day · {rate} deliveries per hour",
+      "noIdentity": "The agent didn't give this computer's keys; links can't be made.",
+      "revokeFailed": "Not revoked ({reason}). Check the list.",
+      "showCode": "Show the code for the other computer",
+      "workspacesFailed": "This computer's folders couldn't be read.",
+      "reasons": {
+        "os_auth_failed": "the computer's password wasn't confirmed",
+        "cancelled": "cancelled",
+        "link_out_of_scope": "that folder isn't on this computer",
+        "link_wrong_endpoint": "neither end is this computer",
+        "invalid": "invalid or already used link",
+        "link_local_only": "a hand-off is made only on the computer",
+        "unavailable": "the agent isn't answering",
+        "not_found": "that link no longer exists"
+      },
+      "shareCeiling": "no hand-offs"
     }
   },
   "voice": {

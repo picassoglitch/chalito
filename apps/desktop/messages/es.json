@@ -131,7 +131,7 @@
         "handoff": "Encargo",
         "share": "Compartir información"
       },
-      "facts": "Carpeta {workspace} · vence el {expires} · {confirm} · permiso máximo {ceiling}",
+      "facts": "Carpeta {workspace} · vence el {expires} · {confirm} · {ceiling}",
       "askEachTime": "Preguntarme cada vez",
       "automatic": "Automático",
       "pendingPublish": "Pendiente de publicar: aún no lleva nada",
@@ -152,7 +152,7 @@
       "goal": "Para qué es el enlace",
       "days": "Días que dura (máximo 30)",
       "budget": "Tokens por día",
-      "rate": "Encargos por hora",
+      "rate": "Entregas por hora (encargos o envíos)",
       "ceiling": "Permiso máximo de la sesión que recibe",
       "ceilings": {
         "plan": "Solo planear",
@@ -179,8 +179,31 @@
         "noWorkspace": "Elige la carpeta.",
         "noGoal": "Escribe para qué es el enlace.",
         "badLinkCode": "El código del enlace no es válido o ya venció.",
-        "notForHere": "Ese enlace no es para esta computadora."
-      }
+        "notForHere": "Ese enlace no es para esta computadora.",
+        "badDays": "Los días van de 1 a 30.",
+        "badBudget": "Los tokens por día deben ser un número entero mayor que 0.",
+        "badRate": "Las entregas por hora van de 1 a 60.",
+        "pinnedHere": "Ese enlace fija una app o sesión en esta computadora; créalo desde aquí."
+      },
+      "peerKeys": "Código de verificación de {device}: {sign} · cifrado {box}",
+      "pinApp": "solo {app}",
+      "pinSession": "solo la sesión {sid}",
+      "limits": "Hasta {budget} tokens por día · {rate} entregas por hora",
+      "noIdentity": "El agente no dio las llaves de esta computadora; no se pueden crear enlaces.",
+      "revokeFailed": "No se revocó ({reason}). Revisa la lista.",
+      "showCode": "Ver código para la otra computadora",
+      "workspacesFailed": "No se pudieron leer las carpetas de esta computadora.",
+      "reasons": {
+        "os_auth_failed": "no se confirmó la contraseña de la computadora",
+        "cancelled": "cancelado",
+        "link_out_of_scope": "esa carpeta no está en esta computadora",
+        "link_wrong_endpoint": "ninguno de los dos extremos es esta computadora",
+        "invalid": "enlace no válido o ya usado",
+        "link_local_only": "un encargo solo se crea en la computadora",
+        "unavailable": "el agente no responde",
+        "not_found": "ese enlace ya no existe"
+      },
+      "shareCeiling": "sin encargos"
     }
   },
   "voice": {

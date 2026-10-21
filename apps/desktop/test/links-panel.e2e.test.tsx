@@ -3,13 +3,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { generateBoxKeyPair, generateSigningKeyPair, toB64url } from "@chalito/crypto";
+import { keyFingerprint } from "@chalito/client-keys";
 import type { Locale } from "@chalito/protocol";
 import { ipcHandlers } from "../../agent/src/ipc-handlers.js";
 import { LINK_COPY, LinkManager, MemoryLinkCloud, MemoryLinkStorage } from "../../agent/src/links/index.js";
 import { DEFAULT_POLICY, type Policy } from "../../agent/src/policy/index.js";
 import { createLogger } from "../../agent/src/redact.js";
 import { TextProviders } from "../src/lib/i18n.js";
-import { invokeIpc, unavailableIpc, type AgentIpc } from "../src/lib/ipc.js";
+import { invokeIpc, unavailableIpc, type AgentIpc, type LinkSpec } from "../src/lib/ipc.js";
 import { deviceCode, linkCode, parseLinkCode } from "../src/lib/link-codes.js";
 import { Links } from "../src/panel/Links.js";
 
@@ -210,7 +211,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     renderLinks(a.ipc);
     await fillNew({ workspace: "chalito", goal: "x" });
     await passChallenge();
-    await screen.findByText("No se creó el enlace (os_auth_failed).");
+    await screen.findByText("No se creó el enlace (no se confirmó la contraseña de la computadora).");
     expect(a.links.list()).toHaveLength(0);
 
     a.auth.ok = true;
@@ -325,5 +326,153 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     renderLinks(unavailableIpc, "en");
     await screen.findByText(/local agent isn't answering/);
     expect(screen.queryByRole("button", { name: "New link…" })).toBeNull();
+  });
+
+  type Computer = Awaited<ReturnType<typeof computer>>;
+  const keysOf = (c: Computer) => ({ deviceId: c.id, pubSign: c.pubSign, pubBox: c.pubBox });
+  /** A link B made toward A, as B's panel would put it in a code. */
+  const fromB = (a: Computer, b: Computer, over: Partial<LinkSpec> = {}): LinkSpec => ({
+    id: "lnk_fromb12345678",
+    mode: "handoff",
+    sender: keysOf(b),
+    receiver: keysOf(a),
+    workspaceLabel: "chalito",
+    goal: "Ñandú: revisar el código 🚀",
+    expiresAt: Date.now() + 86_400_000,
+    dailyTokenBudget: 9_999_999,
+    ratePerHour: 59,
+    confirm: false,
+    permissionCeiling: "acceptEdits",
+    ...over,
+  });
+  const paste = async (code: string) => {
+    fireEvent.click(await screen.findByRole("button", { name: "Pegar un enlace de otra computadora…" }));
+    fireEvent.change(screen.getByLabelText("Código del enlace"), { target: { value: code } });
+    fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
+  };
+
+  it("before approving a pasted link the owner sees every grant: budget, rate, ceiling, pins and the peer's keys", async () => {
+    const a = await computer("dev_a1");
+    const b = await computer("dev_b1");
+    renderLinks(a.ipc);
+    await paste(linkCode(fromB(a, b, { sender: { ...keysOf(b), appId: "codex" } })));
+    const card = section().querySelector('[data-form="paste"]') as HTMLElement;
+    await within(card).findByText(/Hasta 9999999 tokens por día · 59 entregas por hora/);
+    within(card).getByText(/Automático · Puede editar archivos/);
+    within(card).getByText(/dev_b1 \(solo codex\) → Esta computadora/);
+    within(card).getByText("Ñandú: revisar el código 🚀");
+    const [sign, box] = [await keyFingerprint(b.pubSign), await keyFingerprint(b.pubBox)];
+    await within(card).findByText(`Código de verificación de dev_b1: ${sign} · cifrado ${box}`);
+    // The same verification code shows next to B's own code in B's panel, for the owner to compare.
+    cleanup();
+    renderLinks(b.ipc);
+    await screen.findByText(`Código de verificación de dev_b1: ${sign} · cifrado ${box}`);
+  });
+
+  it("a pasted link that pins an app or a session on this computer's end is refused", async () => {
+    const a = await computer("dev_a1");
+    const b = await computer("dev_b1");
+    renderLinks(a.ipc);
+    await paste(linkCode(fromB(a, b, { receiver: { ...keysOf(a), sessionId: "s_pinned1" } })));
+    await screen.findByText(/fija una app o sesión en esta computadora/);
+    fireEvent.change(screen.getByLabelText("Código del enlace"), {
+      target: { value: linkCode(fromB(a, b, { receiver: { ...keysOf(a), appId: "claude-code" } })) },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
+    await screen.findAllByText(/fija una app o sesión en esta computadora/);
+    expect(screen.queryByText("Continuar")).toBeNull();
+    expect(a.links.list()).toHaveLength(0);
+  });
+
+  it("an expired link code is refused; an accented goal survives the code both ways", async () => {
+    const a = await computer("dev_a1");
+    const b = await computer("dev_b1");
+    expect(parseLinkCode(linkCode(fromB(a, b)), Date.now())?.goal).toBe("Ñandú: revisar el código 🚀");
+    renderLinks(a.ipc);
+    await paste(linkCode(fromB(a, b, { expiresAt: Date.now() - 1 })));
+    await screen.findByText(/no es válido o ya venció/);
+    fireEvent.change(screen.getByLabelText("Código del enlace"), { target: { value: linkCode(fromB(a, b)) } });
+    fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continuar" }));
+    await passChallenge();
+    await screen.findByText("Enlace creado.");
+    expect(a.links.list()[0]).toMatchObject({ goal: "Ñandú: revisar el código 🚀", dailyTokenBudget: 9_999_999 });
+  });
+
+  it("a failed revoke says so instead of looking done", async () => {
+    const a = await computer("dev_a1");
+    const ipc: AgentIpc = {
+      ...a.ipc,
+      revokeLink: async () => {
+        throw new Error("internal");
+      },
+      revokeAllLinks: async () => {
+        throw new Error("unavailable");
+      },
+    };
+    renderLinks(ipc);
+    await fillNew({ workspace: "chalito", goal: "x" });
+    await passChallenge();
+    await screen.findByText("Enlace creado.");
+    fireEvent.click(await screen.findByRole("button", { name: "Revocar" }));
+    await screen.findByText("No se revocó (internal). Revisa la lista.");
+    fireEvent.click(screen.getByRole("button", { name: "Revocar todos" }));
+    await screen.findByText("No se revocó (el agente no responde). Revisa la lista.");
+    expect(a.links.list()).toHaveLength(1);
+    // A link already gone (revoked elsewhere) answers revoked:false.
+    cleanup();
+    renderLinks({ ...a.ipc, revokeLink: async () => ({ revoked: false }) });
+    fireEvent.click(await screen.findByRole("button", { name: "Revocar" }));
+    await screen.findByText("No se revocó (ese enlace ya no existe). Revisa la lista.");
+  });
+
+  it("one click makes one link: Confirm and Cancel lock while the agent answers", async () => {
+    const a = await computer("dev_a1");
+    let adds = 0;
+    renderLinks({ ...a.ipc, addLink: (l, x) => (adds++, a.ipc.addLink(l, x)) });
+    await fillNew({ workspace: "chalito", goal: "x" });
+    await passChallenge();
+    const confirm = screen.queryByRole("button", { name: "Crear el enlace" }) as HTMLButtonElement | null;
+    if (confirm) {
+      expect(confirm.disabled).toBe(true);
+      fireEvent.click(confirm);
+    }
+    await screen.findByText("Enlace creado.");
+    expect(adds).toBe(1);
+    expect(screen.queryByText(/No se creó/)).toBeNull();
+  });
+
+  it("out-of-range numbers are refused, not changed; a cross-device code can be shown again", async () => {
+    const a = await computer("dev_a1");
+    const b = await computer("dev_b1");
+    renderLinks(a.ipc);
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo enlace…" }));
+    await waitFor(() => within(screen.getByLabelText("Carpeta donde se trabaja")).getByText("chalito"));
+    fireEvent.change(screen.getByLabelText("Carpeta donde se trabaja"), { target: { value: "chalito" } });
+    fireEvent.change(screen.getByLabelText("Para qué es el enlace"), { target: { value: "x" } });
+    const days = screen.getByLabelText("Días que dura (máximo 30)");
+    for (const bad of ["0", "50", ""]) {
+      fireEvent.change(days, { target: { value: bad } });
+      fireEvent.click(screen.getByRole("button", { name: "Continuar" }));
+      await screen.findByText("Los días van de 1 a 30.");
+      expect(screen.queryByText(LINK_COPY.es.handoff[0]!)).toBeNull();
+    }
+    fireEvent.change(days, { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText("Tokens por día"), { target: { value: "" } });
+    await fillNew({
+      otherCode: deviceCode(keysOf(b)),
+      workspace: "repo",
+      goal: "x",
+    });
+    await screen.findByText(/Los tokens por día deben ser/);
+    fireEvent.change(screen.getByLabelText("Tokens por día"), { target: { value: "5000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continuar" }));
+    await passChallenge();
+    const first = ((await screen.findByLabelText("Código del enlace")) as HTMLTextAreaElement).value;
+    expect(a.links.list()[0]).toMatchObject({ dailyTokenBudget: 5000 });
+    expect(a.links.list()[0]!.expiresAt - Date.now()).toBeLessThanOrEqual(3 * 86_400_000);
+    fireEvent.click(screen.getByRole("button", { name: "Listo" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ver código para la otra computadora" }));
+    expect(((await screen.findByLabelText("Código del enlace")) as HTMLTextAreaElement).value).toBe(first);
   });
 });

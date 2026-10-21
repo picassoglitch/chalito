@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { keyFingerprint } from "@chalito/client-keys";
 import {
   LINK_MAX_DAILY_TOKENS,
   LINK_MAX_RATE_PER_HOUR,
@@ -26,6 +27,12 @@ type Load =
   | { state: "error"; error: string };
 
 const short = (deviceId: string) => deviceId.slice(0, 8);
+
+const errorCode = (e: unknown) =>
+  e instanceof IpcUnavailableError ? "unavailable" : e instanceof Error ? e.message : String(e);
+
+/** A whole number in [min, max], or null: the panel says so instead of changing what was typed. */
+const whole = (n: number, min: number, max: number) => (Number.isInteger(n) && n >= min && n <= max ? n : null);
 
 interface Draft {
   mode: LinkMode;
@@ -68,6 +75,12 @@ const toSpec = (d: Draft, self: LinkIdentity, now: number): LinkSpec | { problem
   }
   if (!d.workspaceLabel.trim()) return { problem: "noWorkspace" };
   if (!d.goal.trim()) return { problem: "noGoal" };
+  const days = whole(d.days, 1, 30);
+  const dailyTokenBudget = whole(d.dailyTokenBudget, 1, LINK_MAX_DAILY_TOKENS);
+  const ratePerHour = whole(d.ratePerHour, 1, LINK_MAX_RATE_PER_HOUR);
+  if (days === null) return { problem: "badDays" };
+  if (dailyTokenBudget === null) return { problem: "badBudget" };
+  if (ratePerHour === null) return { problem: "badRate" };
   return {
     id: newLinkId(),
     mode: d.mode,
@@ -75,31 +88,67 @@ const toSpec = (d: Draft, self: LinkIdentity, now: number): LinkSpec | { problem
     receiver,
     workspaceLabel: d.workspaceLabel.trim(),
     goal: d.goal.trim(),
-    expiresAt: now + Math.min(30, Math.max(1, Math.round(d.days))) * DAY_MS,
-    dailyTokenBudget: Math.min(LINK_MAX_DAILY_TOKENS, Math.max(1, Math.round(d.dailyTokenBudget))),
-    ratePerHour: Math.min(LINK_MAX_RATE_PER_HOUR, Math.max(1, Math.round(d.ratePerHour))),
+    expiresAt: now + days * DAY_MS,
+    dailyTokenBudget,
+    ratePerHour,
     confirm: d.confirm,
     permissionCeiling: d.mode === "handoff" ? d.permissionCeiling : "default",
   };
 };
 
-/** What a link allows, as one line per fact (list rows and the pasted link's review). */
+/** The other end's key fingerprints (the verification code shown at pairing), for the owner to compare. */
+const PeerKeys = ({ end }: { end: LinkSpec["sender"] }) => {
+  const t = useT();
+  const [fp, setFp] = useState<{ sign: string; box: string } | null>(null);
+  useEffect(() => {
+    if (!end.pubSign || !end.pubBox) return;
+    void Promise.all([keyFingerprint(end.pubSign), keyFingerprint(end.pubBox)]).then(
+      ([sign, box]) => setFp({ sign, box }),
+      () => setFp(null),
+    );
+  }, [end.pubSign, end.pubBox]);
+  if (!fp) return null;
+  return (
+    <span className="muted" data-peer-keys={end.deviceId}>
+      {t("security.links.peerKeys", { device: short(end.deviceId), sign: fp.sign, box: fp.box })}
+    </span>
+  );
+};
+
+/** Everything a link grants: list rows and, before approving, a link pasted from another computer. */
 const LinkFacts = ({ link, self }: { link: LinkSpec; self: string | null }) => {
   const t = useT();
-  const end = (deviceId: string) => (deviceId === self ? t("security.links.thisComputer") : short(deviceId));
+  const end = (e: LinkSpec["sender"]) => {
+    const who = e.deviceId === self ? t("security.links.thisComputer") : short(e.deviceId);
+    const pins = [
+      e.appId ? t("security.links.pinApp", { app: e.appId }) : null,
+      e.sessionId ? t("security.links.pinSession", { sid: e.sessionId }) : null,
+    ].filter(Boolean);
+    return pins.length ? `${who} (${pins.join(", ")})` : who;
+  };
+  const peers = [link.sender, link.receiver].filter((e, i, all) => e.deviceId !== self && all.indexOf(e) === i);
   return (
     <>
       <span>
-        {t(`security.links.mode.${link.mode}`)}: {end(link.sender.deviceId)} → {end(link.receiver.deviceId)}
+        {t(`security.links.mode.${link.mode}`)}: {end(link.sender)} → {end(link.receiver)}
       </span>
       <span className="muted">
         {t("security.links.facts", {
           workspace: link.workspaceLabel,
           expires: new Date(link.expiresAt).toLocaleDateString(),
           confirm: t(link.confirm ? "security.links.askEachTime" : "security.links.automatic"),
-          ceiling: link.permissionCeiling,
+          ceiling:
+            link.mode === "share"
+              ? t("security.links.shareCeiling")
+              : t(`security.links.ceilings.${link.permissionCeiling}`),
         })}
       </span>
+      <span className="muted">
+        {t("security.links.limits", { budget: link.dailyTokenBudget, rate: link.ratePerHour })}
+      </span>
+      {peers.map((e) => (
+        <PeerKeys key={e.deviceId} end={e} />
+      ))}
       <span className="muted">{link.goal}</span>
     </>
   );
@@ -120,7 +169,12 @@ const LinkFlow = ({
   const t = useT();
   const [step, setStep] = useState<1 | 2>(1);
   const [typed, setTyped] = useState("");
-  const cancel = <button onClick={() => onDone(false)}>{t("security.devmode.cancel")}</button>;
+  const [pending, setPending] = useState(false);
+  const cancel = (
+    <button disabled={pending} onClick={() => onDone(false)}>
+      {t("security.devmode.cancel")}
+    </button>
+  );
   if (step === 1)
     return (
       <div className="card" data-step="1">
@@ -142,13 +196,14 @@ const LinkFlow = ({
       <input aria-label={challenge.phrase} value={typed} onChange={(e) => setTyped(e.target.value)} />
       <div className="row">
         <button
-          disabled={typed.trim() !== challenge.phrase}
-          onClick={() =>
-            void ipc.addLink(spec, { confirm: true, typed }).then(
+          disabled={pending || typed.trim() !== challenge.phrase}
+          onClick={() => {
+            setPending(true);
+            void ipc.addLink(spec, { confirm: true, typed: typed.trim() }).then(
               (r) => onDone(r.ok, r.ok ? undefined : r.reason),
-              (e: unknown) => onDone(false, e instanceof Error ? e.message : String(e)),
-            )
-          }
+              (e: unknown) => onDone(false, errorCode(e)),
+            );
+          }}
         >
           {t("security.links.confirm")}
         </button>
@@ -156,6 +211,11 @@ const LinkFlow = ({
       </div>
     </div>
   );
+};
+
+const specOf = (l: LinksView["links"][number]): LinkSpec => {
+  const { v: _v, createdAt: _c, createdBy: _b, ...spec } = l;
+  return spec;
 };
 
 /** D-070: links are made here only (hand-off loosens policy); a cross-device link on both computers. */
@@ -170,11 +230,11 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
     );
   }, [ipc]);
   useEffect(reload, [reload]);
-  const [labels, setLabels] = useState<string[]>([]);
+  const [labels, setLabels] = useState<string[] | null>([]);
   useEffect(() => {
     ipc.workspaces().then(
       (w) => setLabels(w.workspaces.map((x) => x.label)),
-      () => setLabels([]),
+      () => setLabels(null),
     );
   }, [ipc]);
   const [form, setForm] = useState<"new" | "paste" | null>(null);
@@ -182,15 +242,29 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
   const [pasted, setPasted] = useState("");
   const [review, setReview] = useState<LinkSpec | null>(null);
   const [flow, setFlow] = useState<{ spec: LinkSpec; challenge: LinkChallenge; fromPaste: boolean } | null>(null);
-  const [made, setMade] = useState<{ code: string | null } | null>(null);
+  const [made, setMade] = useState<{ code: string | null; again?: boolean } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // A refusal code from the agent, in words when the panel knows it (else the code itself).
+  const reason = (code: string) => {
+    const key = `security.links.reasons.${code}`;
+    const text = t(key);
+    return text === key ? code : text;
+  };
+  const revoke = (run: () => Promise<{ revoked: boolean | number }>) =>
+    void run()
+      .then(
+        (r) =>
+          setFailure(r.revoked === false ? t("security.links.revokeFailed", { reason: reason("not_found") }) : null),
+        (e: unknown) => setFailure(t("security.links.revokeFailed", { reason: reason(errorCode(e)) })),
+      )
+      .finally(reload);
   const set = <K extends keyof Draft>(k: K, value: Draft[K]) => setDraft((d) => ({ ...d, [k]: value }));
 
   const start = (spec: LinkSpec, fromPaste: boolean) => {
     setFailure(null);
     void ipc.linkChallenge(spec.mode).then(
       (challenge) => setFlow({ spec, challenge, fromPaste }),
-      (e: unknown) => setFailure(e instanceof Error ? e.message : String(e)),
+      (e: unknown) => setFailure(t("security.links.failed", { reason: reason(errorCode(e)) })),
     );
   };
 
@@ -203,7 +277,8 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
       <p className="muted">{t("security.links.intro")}</p>
       {v.state === "unavailable" && <p className="muted">{t("security.unavailable")}</p>}
       {v.state === "error" && <p role="alert">{v.error}</p>}
-      {failure && <p role="alert">{t("security.links.failed", { reason: failure })}</p>}
+      {failure && <p role="alert">{failure}</p>}
+      {v.state === "ok" && !self && <p className="muted">{t("security.links.noIdentity")}</p>}
       {v.state === "ok" && (
         <>
           {v.value.links.length === 0 ? (
@@ -216,20 +291,23 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
                   {v.value.pendingPublish.includes(l.id) && (
                     <em className="muted">{t("security.links.pendingPublish")}</em>
                   )}
-                  <button onClick={() => void ipc.revokeLink(l.id).finally(reload)}>
-                    {t("security.links.revoke")}
-                  </button>
+                  {l.sender.deviceId !== l.receiver.deviceId && (
+                    <button onClick={() => setMade({ code: linkCode(specOf(l)), again: true })}>
+                      {t("security.links.showCode")}
+                    </button>
+                  )}
+                  <button onClick={() => revoke(() => ipc.revokeLink(l.id))}>{t("security.links.revoke")}</button>
                 </li>
               ))}
             </ul>
           )}
           {v.value.links.length > 0 && (
-            <button onClick={() => void ipc.revokeAllLinks().finally(reload)}>{t("security.links.revokeAll")}</button>
+            <button onClick={() => revoke(() => ipc.revokeAllLinks())}>{t("security.links.revokeAll")}</button>
           )}
 
           {made && (
             <div className="card" data-made="link">
-              <p>{t("security.links.made")}</p>
+              {!made.again && <p>{t("security.links.made")}</p>}
               {made.code && (
                 <>
                   <p>{t("security.links.madeOther")}</p>
@@ -248,7 +326,7 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
               onDone={(ok, why) => {
                 const crossDevice = flow.spec.sender.deviceId !== flow.spec.receiver.deviceId;
                 setFlow(null);
-                setFailure(why ?? null);
+                setFailure(why ? t("security.links.failed", { reason: reason(why) }) : null);
                 if (ok) {
                   setForm(null);
                   setDraft(EMPTY);
@@ -318,17 +396,22 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
                 {receiverHere ? (
                   <select value={draft.workspaceLabel} onChange={(e) => set("workspaceLabel", e.target.value)}>
                     <option value="">—</option>
-                    {labels.map((l) => (
+                    {(labels ?? []).map((l) => (
                       <option key={l} value={l}>
                         {l}
                       </option>
                     ))}
                   </select>
                 ) : (
-                  <input value={draft.workspaceLabel} onChange={(e) => set("workspaceLabel", e.target.value)} />
+                  <input
+                    maxLength={80}
+                    value={draft.workspaceLabel}
+                    onChange={(e) => set("workspaceLabel", e.target.value)}
+                  />
                 )}
               </label>
-              {receiverHere && labels.length === 0 && <p className="muted">{t("security.links.noWorkspaces")}</p>}
+              {receiverHere && labels?.length === 0 && <p className="muted">{t("security.links.noWorkspaces")}</p>}
+              {receiverHere && labels === null && <p role="alert">{t("security.links.workspacesFailed")}</p>}
               <label>
                 {t("security.links.goal")}
                 <input maxLength={500} value={draft.goal} onChange={(e) => set("goal", e.target.value)} />
@@ -422,6 +505,9 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
                         if (!spec) setFailure(t("security.links.problems.badLinkCode"));
                         else if (!mine || mine.pubSign !== self.pubSign || mine.pubBox !== self.pubBox)
                           setFailure(t("security.links.problems.notForHere"));
+                        // This panel never pins an app or session; a code that pins this computer's end wasn't made here.
+                        else if (mine.appId !== undefined || mine.sessionId !== undefined)
+                          setFailure(t("security.links.problems.pinnedHere"));
                         else {
                           setFailure(null);
                           setReview(spec);
@@ -448,6 +534,7 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
             <label className="muted">
               {t("security.links.thisCode")}
               <textarea readOnly aria-label={t("security.links.thisCode")} value={deviceCode(self)} />
+              <PeerKeys end={self} />
             </label>
           )}
         </>
