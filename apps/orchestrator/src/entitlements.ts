@@ -1,6 +1,6 @@
 import type { Sql } from "postgres";
-import { computeEntitlements, hubTierOf, type HubClient } from "@chalito/billing";
-import type { Entitlements, PlansConfig } from "@chalito/protocol";
+import { computeEntitlements, type HubClient } from "@chalito/billing";
+import { hubTierOf, type Entitlements, type PlansConfig } from "@chalito/protocol";
 
 /**
  * Entitlements for a turn (ADR 0013): the hub tier Chalito has for the user (chalito.users.tier,
@@ -19,7 +19,7 @@ export const hubEntitlements =
   }) =>
   async (owner: string): Promise<Entitlements> => {
     const [u] = await p.sql<{ tier: string | null }[]>`select tier from chalito.users where id = ${owner}`;
-    // users.tier is stored as sent; read it like the notifier caps and api limits (#82), not case-sensitively.
+    // users.tier is stored as sent; read it like the notifier's caps, not case-sensitively.
     const tier = hubTierOf(u?.tier);
     const balance = await p.hub
       .balance(owner)

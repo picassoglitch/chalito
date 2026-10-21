@@ -81,7 +81,7 @@ describe("monthly plan caps (per calendar month, user tz)", () => {
   });
 
   it.each(["PRO", " Pro "])(
-    "a Pro user whose users.tier reads %j still gets the Pro calls (audit 2026-10-08)",
+    "a Pro user whose users.tier reads %j still gets the Pro calls (like #82)",
     async (tier) => {
       const h = user("u-pro", tier, [{ channel: "call", n: 29 }]);
       await h.publish({ v: 1, type: "notify", uid: "u-pro", item: item("n1") });

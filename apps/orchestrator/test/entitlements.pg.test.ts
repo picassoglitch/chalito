@@ -26,25 +26,30 @@ describe.skipIf(!url)("hubEntitlements", () => {
   };
 
   it.each([
-    ["free", "free", null],
-    ["pro", "pro", "standard"],
-    ["vip", "vip", "plus"],
-  ])("maps the stored hub tier %j to its access tier", async (tier, hubTier, accessTier) => {
-    expect(await entitlementsFor(tier)).toMatchObject({ hubTier, accessTier });
+    ["free", "free", null, "none"],
+    ["pro", "pro", "standard", "hub_tier"],
+    ["vip", "vip", "plus", "hub_tier"],
+  ])("maps the stored hub tier %j to its access tier", async (tier, hubTier, accessTier, source) => {
+    expect(await entitlementsFor(tier)).toMatchObject({ source, hubTier, accessTier });
   });
 
   it.each([
     ["PRO", "pro", "standard"],
     [" Pro ", "pro", "standard"],
+    ["VIP\n", "vip", "plus"],
     ["VIP", "vip", "plus"],
   ])(
-    "reads users.tier %j case-insensitively, like the notifier's caps (audit 2026-10-08)",
+    "reads users.tier %j case-insensitively, like the notifier's caps (like #82)",
     async (tier, hubTier, accessTier) => {
       expect(await entitlementsFor(tier)).toMatchObject({ source: "hub_tier", hubTier, accessTier });
     },
   );
 
+  it("knows an uppercase FREE is Chalyb Gratis (no Chalito access), not an unknown tier", async () => {
+    expect(await entitlementsFor("FREE")).toMatchObject({ source: "none", hubTier: "free", accessTier: null });
+  });
+
   it.each([null, "gold", "  "])("fails closed on a tier it doesn't know (%j)", async (tier) => {
-    expect(await entitlementsFor(tier)).toMatchObject({ hubTier: null, accessTier: null });
+    expect(await entitlementsFor(tier)).toMatchObject({ source: "none", hubTier: null, accessTier: null });
   });
 });

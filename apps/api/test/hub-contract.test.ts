@@ -1,9 +1,11 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { loadCatalog } from "@chalito/config";
 import { createApp } from "../src/app.js";
 import { MemoryAudit, type Deps } from "../src/deps.js";
 import { verifySsoToken } from "../src/hub/sso.js";
 import type { ApiRepo } from "../src/repo.js";
+import { MemoryStoreRepo } from "../src/store/repo.js";
 
 /**
  * The hub → Chalito direction, as the hub's engine factory actually calls it. Copied from
@@ -103,5 +105,45 @@ describe("hub → Chalito: the launch token (factory.ts:85-87, :277-282 @ main 3
     const token = `${body}.${createHmac("sha256", SSO).update(body).digest("base64url")}`;
     const r = verifySsoToken(token, SSO, NOW);
     expect(r.ok && r.payload).toEqual(payload);
+  });
+});
+
+describe("POST /sso/exchange: plan-included skins (like #82)", () => {
+  const exchange = async (tier: string) => {
+    const store = new MemoryStoreRepo();
+    store.companions.set("hub-user-1/c1", { skin: "skin_galaxy" }); // catalog: included in VIP
+    const repo = { claimSsoToken: async () => true, upsertUserFromSso: async () => {} } as unknown as ApiRepo;
+    const a = createApp({
+      repo,
+      identity: { verify: async () => Promise.reject(new Error("no")), mintUser: async () => "ct" } as never,
+      audit: new MemoryAudit(),
+      config: { ssoSecret: SSO, adminToken: ADMIN, recoveryCooldownMs: 1, skewMs: 60_000 },
+      store: { repo: store, catalog: loadCatalog(), hub: {} as never },
+      now: () => NOW,
+    } as unknown as Deps);
+    const payload = {
+      user_id: "hub-user-1",
+      email: "ana@example.mx",
+      tenant_id: "hub-user-1",
+      tier,
+      exp: NOW / 1000 + 300,
+    };
+    const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const token = `${body}.${createHmac("sha256", SSO).update(body).digest("base64url")}`;
+    const res = await a.request("/sso/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    expect(res.status).toBe(200);
+    return store.companions.get("hub-user-1/c1")?.skin;
+  };
+
+  it.each(["vip", "VIP", " Vip "])("a VIP launch with tier %j keeps the VIP skin on", async (tier) => {
+    expect(await exchange(tier)).toBe("skin_galaxy");
+  });
+
+  it("a Pro launch takes the VIP-only skin off", async () => {
+    expect(await exchange("pro")).toBeUndefined();
   });
 });

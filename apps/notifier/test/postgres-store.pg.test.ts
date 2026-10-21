@@ -268,14 +268,11 @@ if (!url) {
       expect(await new PostgresStore(sql).claimCallRef(hash, Date.now() + 60_000)).toBe(false);
     });
 
-    it.each(["pro", "PRO", " Pro "])(
-      "voice minutes from users.tier %j are Pro's 120 (audit 2026-10-08)",
-      async (tier) => {
-        const u = await user({ tier });
-        const deps = { store, caps: { plans: loadPlans(), isComped: () => false }, now: () => Date.now() };
-        expect(await voiceSecondsLeft(deps as unknown as NotifierDeps, u)).toBe(120 * 60);
-      },
-    );
+    it.each(["pro", "PRO", " Pro "])("voice minutes from users.tier %j are Pro's 120 (like #82)", async (tier) => {
+      const u = await user({ tier });
+      const deps = { store, caps: { plans: loadPlans(), isComped: () => false }, now: () => Date.now() };
+      expect(await voiceSecondsLeft(deps as unknown as NotifierDeps, u)).toBe(120 * 60);
+    });
 
     it("monthly cap queries: plan info, sends excluding suppressed, voice seconds, once-only notes", async () => {
       const u = await user({ tier: "pro" });

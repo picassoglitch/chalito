@@ -37,17 +37,15 @@ describe("/creditos plan name", () => {
     expect(await shown(value)).toBe(text);
   });
 
-  it("reads users.tier case-insensitively, like the api's limits and the notifier's caps", async () => {
-    expect(await shown("PRO")).toBe("Tu plan: Chalyb Pro");
-    cleanup();
-    expect(await shown(" Vip ")).toBe("Tu plan: Chalyb VIP");
+  it.each([
+    ["PRO", "Tu plan: Chalyb Pro"],
+    [" Vip ", "Tu plan: Chalyb VIP"],
+    ["FREE", "Tu plan: Chalyb Gratis"],
+  ])("reads users.tier %j case-insensitively, like the api's limits and the notifier's caps", async (value, text) => {
+    expect(await shown(value)).toBe(text);
   });
 
-  it("still says it can't see the plan for no tier or one it doesn't know", async () => {
-    expect(await shown(null)).toBe("No pudimos ver tu plan.");
-    cleanup();
-    expect(await shown("gold")).toBe("No pudimos ver tu plan.");
-    cleanup();
-    expect(await shown("  ")).toBe("No pudimos ver tu plan.");
+  it.each([null, "gold", "  "])("still says it can't see the plan for %j", async (value) => {
+    expect(await shown(value)).toBe("No pudimos ver tu plan.");
   });
 });

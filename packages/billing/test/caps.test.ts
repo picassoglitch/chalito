@@ -30,7 +30,7 @@ describe("monthly caps", () => {
     expect(monthlyLimit(plans, { ...at, hubTier: null, comped: true }, "call")).toBe(300);
     expect([hubTierOf("Pro"), hubTierOf("nope"), hubTierOf(null)]).toEqual(["pro", null, null]);
   });
-  it("reads the hub tier like the api's limits: spaces around it don't fail it closed (audit 2026-10-08)", () => {
+  it("reads the hub tier like the api's limits: spaces around it don't fail it closed (like #82)", () => {
     expect(["free", "pro", "vip", "PRO", " Pro ", "VIP\n"].map(hubTierOf)).toEqual([
       "free",
       "pro",

@@ -58,6 +58,15 @@ export const HubTierId = z.enum(["free", "pro", "vip"]);
 // Values as the hub sends them (lowercase effective tier; "free" is Chalyb Gratis).
 export type HubTierId = z.infer<typeof HubTierId>;
 
+/**
+ * users.tier as a hub tier, or null if it isn't one we know. It's stored as sent (any string);
+ * the ids are lowercase, so case and surrounding whitespace are dropped.
+ */
+export const hubTierOf = (tier: string | null | undefined): HubTierId | null => {
+  const r = HubTierId.safeParse((tier ?? "").trim().toLowerCase());
+  return r.success ? r.data : null;
+};
+
 /** Numeric inclusions a hub tier may lower below its ladder tier's (e.g. Gratis: 1 device). */
 export const LimitKey = z.enum([
   "devices",

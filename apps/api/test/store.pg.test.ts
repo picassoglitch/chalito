@@ -106,6 +106,18 @@ if (!url) {
       expect(d!.equipped).toEqual({ head: "viking_hat", skin: "skin_holo" });
     });
 
+    it.each([
+      ["vip", "vip"],
+      ["VIP", "vip"],
+      [" Vip ", "vip"],
+      ["  ", null],
+      [null, null],
+    ])("reads users.tier %j as %j, so a padded VIP keeps its plan skins (like #82)", async (tier, want) => {
+      const u = await user();
+      await admin`update chalito.users set tier = ${tier} where id = ${u}`;
+      expect(await repo.tier(u)).toBe(want);
+    });
+
     it("clients can read their purchases but never write them", async () => {
       const [r_ins] = await admin<{ ins: boolean }[]>`
         select has_table_privilege('authenticated', 'chalito.purchases', 'insert') as ins`;
