@@ -828,4 +828,24 @@ describe("audit 2026-10-08: hub cancel and insert failures", () => {
     spy.mockRestore();
     err.mockRestore();
   });
+
+  it("an id another owner won concurrently is 409 and releases this owner's paid reservation", async () => {
+    const { start, repo } = await paidSetup();
+    let inserted = false;
+    const ins = vi.spyOn(repo, "insert").mockImplementationOnce(async () => {
+      inserted = true;
+      return "duplicate_id";
+    });
+    const realGet = repo.get.bind(repo);
+    const get = vi
+      .spyOn(repo, "get")
+      .mockImplementation(async (id) =>
+        inserted && id === ID2 ? ({ owner: "someone-else" } as Awaited<ReturnType<typeof realGet>>) : realGet(id),
+      );
+    expect(await start(ID2)).toMatchObject({ status: 409, json: { error: "creation_id_conflict" } });
+    expect(hubCalls.map((c) => c.path)).toEqual(["admit", "settle"]);
+    expect(hubCalls[1]!.body).toEqual({ reservation_id: RID, outcome: "cancelled" });
+    ins.mockRestore();
+    get.mockRestore();
+  });
 });

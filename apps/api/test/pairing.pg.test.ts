@@ -134,12 +134,12 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
       deviceId: await deriveDeviceId(sign.publicKey),
     };
   };
-  const registration = (k: Keys, kind: "phone" | "web", name = "iPhone de Aldo") =>
+  const registration = (k: Keys, kind: "phone" | "web", name = "iPhone de Aldo", owner = OWNER) =>
     signEnvelope(
       "chalito.device-register.v1",
       {
         v: 1 as const,
-        owner: OWNER,
+        owner,
         deviceId: k.deviceId,
         kind,
         platform: "ios" as const,
@@ -251,6 +251,27 @@ describe.skipIf(!READY)("api end to end on Supabase (local stack)", () => {
           )
         ).status,
       ).toBe(409);
+    });
+
+    it("a signed-in user Chalito has no record for yet gets 403 not_provisioned, not a 500", async () => {
+      const email = `nouser-${randomUUID()}@example.invalid`;
+      const created = await authAdmin.admin.createUser({ email, email_confirm: true });
+      if (created.error || !created.data.user) throw created.error ?? new Error("no user");
+      try {
+        const link = await authAdmin.admin.generateLink({ type: "magiclink", email });
+        const { token } = await signIn(link.data.properties!.hashed_token);
+        const res = await call(
+          "/v1/devices/first",
+          {
+            registration: await registration(await keys(), "phone", "iPhone", created.data.user.id),
+            recoveryCode: RECOVERY,
+          },
+          token,
+        );
+        expect(res).toMatchObject({ status: 403, json: { error: "not_provisioned" } });
+      } finally {
+        await authAdmin.admin.deleteUser(created.data.user.id).catch(() => undefined);
+      }
     });
 
     it("refuses a registration whose id doesn't match its key", async () => {

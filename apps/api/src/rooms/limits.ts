@@ -17,9 +17,9 @@ export const roomsConfig = loadRooms();
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 /**
- * Tier ids are lowercase (plans.yaml); users.tier holds what the hub's launch sent, as sent. The
- * store already lowercases it (store/repo.ts tier()); limits must read it the same way, or a "Pro"
- * would fail closed to 0 rooms / 0 computers.
+ * Tier ids are lowercase (plans.yaml); users.tier holds what the hub's launch sent, as sent. Like
+ * the store (store/repo.ts tier()), limits lowercase it (and trim it), or a "Pro" would fail closed
+ * to 0 rooms / 0 computers.
  */
 const norm = (tier: string | null | undefined) => tier?.trim().toLowerCase() || null;
 
