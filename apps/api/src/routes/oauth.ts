@@ -824,8 +824,10 @@ export const oauthRoutes = (
     });
     if (!body.success) return fail(400, "bad_request");
     const env = RelayedCommand.parse({ relayedBy: viaA2a ? "a2a-server" : "mcp-gateway", body: body.data });
-    if ((await store().insertCommand(t.owner, target.deviceId, b.data.cid, env, body.data.expiresAt)) === "no_device")
-      return fail(404, "no_device");
+    const inserted = await store().insertCommand(t.owner, target.deviceId, b.data.cid, env, body.data.expiresAt);
+    if (inserted === "no_device") return fail(404, "no_device");
+    // Same as the prompt route: a reused cid is a retry, not a server error.
+    if (inserted === "exists") return fail(409, "duplicate_command");
     await deps.audit.record({
       action: confirm ? "link.handoff_pending" : "link.handoff_relayed",
       owner: t.owner,

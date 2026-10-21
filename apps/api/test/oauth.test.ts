@@ -423,4 +423,31 @@ describe("single use under races (audit 2026-10-08)", () => {
     expect(await send()).toMatchObject({ status: 409, json: { error: "duplicate_command" } });
     expect(h.mcp.commands).toHaveLength(1);
   });
+
+  it("a hand-off task retried with the same command id is 409, not a 500", async () => {
+    const h = await oauthHarness({
+      linkAuthorizer: {
+        authorize: async () => ({
+          ok: true,
+          linkId: "lnk_testlink1",
+          mode: "handoff",
+          confirm: false,
+          permissionCeiling: "default",
+        }),
+      },
+    });
+    h.mcp.devices.add(`${h.o}/dev_agent`);
+    const t = await h.connect(["mcp:read", "link:handoff"], CHATGPT_CLIENT);
+    const box = await generateBoxKeyPair();
+    const cid = "lnk_dupdupdup1234";
+    const promptCt = await sealJson("hi", { dev_agent: box.publicKey }, `command:${cid}`);
+    const send = () =>
+      h.call("/v1/gateway/link-tasks", {
+        json: { cid, appId: "claude-code", deviceId: "dev_agent", workspaceLabel: "chalito", promptCt },
+        headers: gw(t.access_token),
+      });
+    expect((await send()).status).toBe(201);
+    expect(await send()).toMatchObject({ status: 409, json: { error: "duplicate_command" } });
+    expect(h.mcp.commands).toHaveLength(1);
+  });
 });
