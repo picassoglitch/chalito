@@ -53,7 +53,7 @@ export const redact = (text: string): string => {
  * (a Twilio auth token, a hub api_token, a magic-link hash) has no prefix the RULES could spot.
  */
 const SECRET_KEY =
-  /^(?:authorization|cookie|set-cookie|.*(?:api[_-]?key|apikey|secret|token|passw(?:or)?d|pwd|credential|private[_-]?key|signature))$/i;
+  /^(?:(?:proxy-)?authorization|cookie|set-cookie|.*(?:api[_-]?keys?|apikeys?|secrets?|tokens?|passw(?:or)?ds?|pwd|credentials?|private[_-]?keys?|signatures?))$/i;
 
 /** A rule that recognised the value keeps its hint ("sk-ant-…"); anything else goes whole. */
 const secretValue = (x: string) => {

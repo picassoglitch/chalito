@@ -66,6 +66,19 @@ describe("redact (R-M9)", () => {
     expect(JSON.stringify(out)).not.toContain(twilio);
     expect(JSON.stringify(out)).not.toContain(fake("h", 43));
     expect(out).toMatchObject({ authToken: "…", api_token: "…", password: "…", note: "ok" });
+    const plural = {
+      credentials: "c".repeat(20),
+      secrets: "s".repeat(20),
+      apiKeys: "k".repeat(20),
+      tokens: "t".repeat(20),
+    };
+    expect(redactDeep({ ...plural, "proxy-authorization": "Basic Zm9vOmJhcg" })).toEqual({
+      credentials: "…",
+      secrets: "…",
+      apiKeys: "…",
+      tokens: "…",
+      "proxy-authorization": "Basic …",
+    });
     // Counts and other non-strings stay (a "maxTokens" number is not a secret).
     expect(redactDeep({ maxTokens: 5, tokens: { input: 3 } })).toEqual({ maxTokens: 5, tokens: { input: 3 } });
   });
