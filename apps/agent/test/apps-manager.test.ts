@@ -170,6 +170,25 @@ describe("AppManager: custom recipes run only once enabled on this computer", ()
     expect(await s.secrets.get(appSecretName("mi-agente"))).toBeNull();
   });
 
+  // Root ignores the read-only dir, so the write wouldn't fail.
+  it.skipIf(process.getuid?.() === 0)(
+    "a sign-in whose record can't be saved settles as signin_failed and the next sign-in runs",
+    async () => {
+      const s = setup({ installed: ["miagente"], customEnabled: true });
+      chmodSync(s.dir, 0o500);
+      try {
+        expect(await s.m.signin("mi-agente")).toEqual({ ok: true });
+        await expect(s.m.signingIn).resolves.toBeUndefined();
+        expect(s.last("mi-agente")).toMatchObject({ error: "signin_failed" });
+      } finally {
+        chmodSync(s.dir, 0o700);
+      }
+      expect(await s.m.signin("mi-agente")).toEqual({ ok: true });
+      await s.m.signingIn;
+      expect(s.last("mi-agente")).toMatchObject({ state: "connected" });
+    },
+  );
+
   it("once enabled: its own sign-in in its Chalito profile, confirmed by its status command", async () => {
     let signedIn = false;
     const s = setup({

@@ -245,10 +245,10 @@ export class ApprovalManager {
             reason: d.allow ? "signed_allow" : "signed_deny",
             byDeviceId: check.signerDeviceId,
           });
-        })().catch(() => {
+        })().catch((err: unknown) => {
           // Verifying threw (e.g. the nonce file couldn't be written): no allow, keep waiting
           // (the timeout denies), and don't let the rejection take the agent down.
-          audit({ type: "approval.decision_error", aid });
+          audit({ type: "approval.decision_error", aid, error: err instanceof Error ? err.message : "error" });
         });
       });
       this.#pending.add(finish);

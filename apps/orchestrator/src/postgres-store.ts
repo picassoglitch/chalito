@@ -3,7 +3,7 @@ import { enqueueUsage } from "@chalito/billing";
 import type { HubUsageEvent } from "@chalito/protocol";
 import { MesaDoc } from "./core/mesa.js";
 import type { BrainProviderId } from "./brains/brain.js";
-import type { PendingDecision } from "./decisions.js";
+import { PENDING_DECISIONS_LIMIT, type PendingDecision } from "./decisions.js";
 import type { BrainKeyRow, DecisionApproval, MesaStore, TurnSpend, UsageRow } from "./store.js";
 
 /** MesaStore on Postgres as chalito_server (migrations 001800/001900, usage outbox 001500). */
@@ -135,7 +135,7 @@ export class PostgresMesaStore implements MesaStore {
         and (${filter.owner ?? null}::text is null or a.owner = ${filter.owner ?? null})
         and (${filter.aid ?? null}::text is null or a.aid = ${filter.aid ?? null})
       order by a.owner, a.aid, d.rev
-      limit 500`;
+      limit ${PENDING_DECISIONS_LIMIT}`;
     const out = new Map<string, PendingDecision>();
     for (const r of rows) {
       const k = `${r.owner}/${r.aid}`;

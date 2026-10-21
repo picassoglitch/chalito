@@ -21,7 +21,7 @@ describe("service plans", () => {
       uid: 501,
     });
     expect(p.files[0]!.path).toBe("/Users/a/Library/LaunchAgents/com.chalito.agent.plist");
-    // Restarted after a crash, not after a clean stop (a revoked device stops with 0).
+    // Restarted after a non-zero exit, not after a clean exit 0 (a device revoked while running).
     expect(p.files[0]!.content).toContain("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>");
     expect(p.install[0]).toEqual(["launchctl", "bootstrap", "gui/501", p.files[0]!.path]);
   });

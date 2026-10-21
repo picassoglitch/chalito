@@ -11,8 +11,8 @@ describe("wsSocketFactory", () => {
     const { port } = server.address() as AddressInfo;
     try {
       const socket = wsSocketFactory(`ws://127.0.0.1:${port}/call`, { authorization: "Bearer x" });
-      await new Promise<void>((resolve) => socket.onClose(() => resolve()));
-      expect(true).toBe(true);
+      // Reaching 'close' means the 'error' was handled; unhandled, vitest fails the run.
+      await expect(new Promise<void>((resolve) => socket.onClose(() => resolve()))).resolves.toBeUndefined();
     } finally {
       server.close();
     }

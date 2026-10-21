@@ -37,7 +37,15 @@ import type { Launcher } from "./drivers/launcher.js";
 import type { AppDriverContext, LaunchableRecipe } from "./drivers/app-launch.js";
 import { ScreenManager } from "./screen/manager.js";
 import { iceServersFrom, weriftPeer, type PeerFactory } from "./screen/peer.js";
-import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
+import {
+  API_TIMEOUT_MS,
+  apiTokenSource,
+  fetchDeviceToken,
+  supabaseCloud,
+  type Cloud,
+  type FetchFn,
+  type MintToken,
+} from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, writeConfig, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
@@ -1296,7 +1304,7 @@ const startDaemon = async (
   // Engine: curated recipe updates from the api, used only when a compiled-in key verifies them.
   const catalogFetch: CatalogFetch | false =
     deps.catalogFetch ??
-    ((url) => fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30_000) }));
+    ((url) => fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(API_TIMEOUT_MS) }));
   const refreshCatalog = () => {
     if (!catalogFetch) return;
     void fetchCatalog(catalogFetch, cfg.apiBase)

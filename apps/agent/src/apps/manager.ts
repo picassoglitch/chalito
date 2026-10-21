@@ -920,12 +920,17 @@ export class AppManager {
         env: this.d.env,
         timeoutMs: INSTALL_TIMEOUT_MS,
       })
-      .catch(() => ({ code: -1 }));
+      .catch((err: unknown) => ({ code: -1, spawnError: err instanceof Error ? err.message : "error" }));
     live.busy = null;
     this.#npmBin = null;
     if (r.code !== 0) {
       live.error = "install_failed";
-      this.d.log.warn("app.install_failed", { appId, via, code: r.code });
+      this.d.log.warn("app.install_failed", {
+        appId,
+        via,
+        code: r.code,
+        ...("spawnError" in r ? { error: r.spawnError } : {}),
+      });
       return this.report(appId);
     }
     // A fresh install replaces whatever was pinned before (CLIs only).

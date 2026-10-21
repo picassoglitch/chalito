@@ -454,7 +454,7 @@ describe("signed approvals end to end (fake Claude Code)", () => {
     await waitFor(() => h.store.pendingApprovals().length === 1);
     broken = true;
     await h.decide(true);
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => h.store.audits.some((a) => a.type === "approval.decision_error"));
     expect(h.fake.run.ran).toHaveLength(0);
     broken = false;
     await h.decide(true);

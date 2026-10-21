@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { generateSigningKeyPair, randomNonce, signEnvelope, toB64url, type SigningKeyPair } from "@chalito/crypto";
 import type { DecisionBody } from "@chalito/protocol";
 import { OWNER, harness } from "./harness.js";
-import { processDecisions } from "../src/decisions.js";
+import { PENDING_DECISIONS_LIMIT, processDecisions } from "../src/decisions.js";
 
 /** A Mesa decision binds only after its signature is verified against the signer's stored key. */
 const NOW = 1_790_000_000_000;
@@ -169,5 +169,17 @@ describe("processDecisions bookkeeping", () => {
     expect(rejected.size).toBe(2);
     await processDecisions(d);
     expect([...rejected]).toEqual(["u1/apr_live/dev_phone/2"]);
+  });
+
+  it("keeps rejections when the scan came back as a full page (live approvals may be past it)", async () => {
+    const rejected = new Set(["u1/apr_past_page/dev_phone/1"]);
+    const answers = Array.from({ length: PENDING_DECISIONS_LIMIT }, (_, i) => ({ signer: "dev_phone", id: i }));
+    const store = {
+      pendingDecisions: async () => [{ owner: "u1", aid: "apr_live", answers }],
+    } as unknown as Parameters<typeof processDecisions>[0]["store"];
+    // Every answer is already rejected, so the scan only does bookkeeping.
+    for (const a of answers) rejected.add(`u1/apr_live/dev_phone/${a.id}`);
+    await processDecisions({ store, now: Date.now, audit: () => undefined, rejected });
+    expect(rejected.has("u1/apr_past_page/dev_phone/1")).toBe(true);
   });
 });
