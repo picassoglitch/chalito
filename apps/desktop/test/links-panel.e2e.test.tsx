@@ -358,7 +358,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     await paste(linkCode(fromB(a, b, { sender: { ...keysOf(b), appId: "codex" } })));
     const card = section().querySelector('[data-form="paste"]') as HTMLElement;
     await within(card).findByText(/Hasta 9999999 tokens por día · 59 entregas por hora/);
-    within(card).getByText(/Automático · Puede editar archivos/);
+    within(card).getByText(/Automático · permiso máximo: Puede editar archivos/);
     within(card).getByText(/dev_b1 \(solo codex\) → Esta computadora/);
     within(card).getByText("Ñandú: revisar el código 🚀");
     const [sign, box] = [await keyFingerprint(b.pubSign), await keyFingerprint(b.pubBox)];
@@ -429,17 +429,45 @@ describe("panel → agent: making hand-off links (D-070)", () => {
   it("one click makes one link: Confirm and Cancel lock while the agent answers", async () => {
     const a = await computer("dev_a1");
     let adds = 0;
-    renderLinks({ ...a.ipc, addLink: (l, x) => (adds++, a.ipc.addLink(l, x)) });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    renderLinks({ ...a.ipc, addLink: async (l, x) => (adds++, await gate, a.ipc.addLink(l, x)) });
     await fillNew({ workspace: "chalito", goal: "x" });
     await passChallenge();
-    const confirm = screen.queryByRole("button", { name: "Crear el enlace" }) as HTMLButtonElement | null;
-    if (confirm) {
-      expect(confirm.disabled).toBe(true);
-      fireEvent.click(confirm);
-    }
+    const confirm = screen.getByRole("button", { name: "Crear el enlace" }) as HTMLButtonElement;
+    const cancel = screen.getByRole("button", { name: "Cancelar" }) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(true));
+    expect(cancel.disabled).toBe(true);
+    fireEvent.click(confirm);
+    fireEvent.click(cancel);
+    release();
     await screen.findByText("Enlace creado.");
     expect(adds).toBe(1);
     expect(screen.queryByText(/No se creó/)).toBeNull();
+  });
+
+  it("no keys from the agent, or unreadable folders, are said plainly; the rate is checked too", async () => {
+    const a = await computer("dev_a1");
+    renderLinks({ ...a.ipc, links: async () => ({ ...(await a.ipc.links()), self: null }) });
+    await screen.findByText(/no dio las llaves de esta computadora/);
+    expect(screen.queryByRole("button", { name: "Nuevo enlace…" })).toBeNull();
+    cleanup();
+    renderLinks({
+      ...a.ipc,
+      workspaces: async () => {
+        throw new Error("internal");
+      },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo enlace…" }));
+    await screen.findByText("No se pudieron leer las carpetas de esta computadora.");
+    expect(screen.queryByText(/Primero agrega una carpeta/)).toBeNull();
+    cleanup();
+    renderLinks(a.ipc);
+    fireEvent.click(await screen.findByRole("button", { name: "Nuevo enlace…" }));
+    fireEvent.change(screen.getByLabelText(/Entregas por hora/), { target: { value: "61" } });
+    await fillNew({ workspace: "chalito", goal: "x" });
+    await screen.findByText("Las entregas por hora van de 1 a 60.");
+    expect(a.links.list()).toHaveLength(0);
   });
 
   it("out-of-range numbers are refused, not changed; a cross-device code can be shown again", async () => {
@@ -464,7 +492,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
       workspace: "repo",
       goal: "x",
     });
-    await screen.findByText(/Los tokens por día deben ser/);
+    await screen.findByText(/Los tokens por día van de 1 a 10/);
     fireEvent.change(screen.getByLabelText("Tokens por día"), { target: { value: "5000" } });
     fireEvent.click(screen.getByRole("button", { name: "Continuar" }));
     await passChallenge();
@@ -473,6 +501,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     expect(a.links.list()[0]!.expiresAt - Date.now()).toBeLessThanOrEqual(3 * 86_400_000);
     fireEvent.click(screen.getByRole("button", { name: "Listo" }));
     fireEvent.click(await screen.findByRole("button", { name: "Ver código para la otra computadora" }));
+    await screen.findByText(/por si la otra computadora aún no lo tiene/);
     expect(((await screen.findByLabelText("Código del enlace")) as HTMLTextAreaElement).value).toBe(first);
   });
 });

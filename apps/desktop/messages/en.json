@@ -181,7 +181,7 @@
         "badLinkCode": "The link code isn't valid or has expired.",
         "notForHere": "That link isn't for this computer.",
         "badDays": "Days go from 1 to 30.",
-        "badBudget": "Tokens per day must be a whole number above 0.",
+        "badBudget": "Tokens per day go from 1 to 10,000,000.",
         "badRate": "Deliveries per hour go from 1 to 60.",
         "pinnedHere": "That link pins an app or session on this computer; make it from here."
       },
@@ -199,11 +199,12 @@
         "link_out_of_scope": "that folder isn't on this computer",
         "link_wrong_endpoint": "neither end is this computer",
         "invalid": "invalid or already used link",
-        "link_local_only": "a hand-off is made only on the computer",
         "unavailable": "the agent isn't answering",
         "not_found": "that link no longer exists"
       },
-      "shareCeiling": "no hand-offs"
+      "shareCeiling": "no hand-offs",
+      "ceilingFact": "highest permission: {ceiling}",
+      "madeAgain": "Link code, in case the other computer doesn't have it yet:"
     }
   },
   "voice": {

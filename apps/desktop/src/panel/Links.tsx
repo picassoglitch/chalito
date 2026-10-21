@@ -140,7 +140,7 @@ const LinkFacts = ({ link, self }: { link: LinkSpec; self: string | null }) => {
           ceiling:
             link.mode === "share"
               ? t("security.links.shareCeiling")
-              : t(`security.links.ceilings.${link.permissionCeiling}`),
+              : t("security.links.ceilingFact", { ceiling: t(`security.links.ceilings.${link.permissionCeiling}`) }),
         })}
       </span>
       <span className="muted">
@@ -310,7 +310,7 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
               {!made.again && <p>{t("security.links.made")}</p>}
               {made.code && (
                 <>
-                  <p>{t("security.links.madeOther")}</p>
+                  <p>{t(made.again ? "security.links.madeAgain" : "security.links.madeOther")}</p>
                   <textarea readOnly aria-label={t("security.links.linkCode")} value={made.code} />
                 </>
               )}

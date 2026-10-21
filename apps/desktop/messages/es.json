@@ -181,7 +181,7 @@
         "badLinkCode": "El código del enlace no es válido o ya venció.",
         "notForHere": "Ese enlace no es para esta computadora.",
         "badDays": "Los días van de 1 a 30.",
-        "badBudget": "Los tokens por día deben ser un número entero mayor que 0.",
+        "badBudget": "Los tokens por día van de 1 a 10 000 000.",
         "badRate": "Las entregas por hora van de 1 a 60.",
         "pinnedHere": "Ese enlace fija una app o sesión en esta computadora; créalo desde aquí."
       },
@@ -199,11 +199,12 @@
         "link_out_of_scope": "esa carpeta no está en esta computadora",
         "link_wrong_endpoint": "ninguno de los dos extremos es esta computadora",
         "invalid": "enlace no válido o ya usado",
-        "link_local_only": "un encargo solo se crea en la computadora",
         "unavailable": "el agente no responde",
         "not_found": "ese enlace ya no existe"
       },
-      "shareCeiling": "sin encargos"
+      "shareCeiling": "sin encargos",
+      "ceilingFact": "permiso máximo: {ceiling}",
+      "madeAgain": "Código del enlace, por si la otra computadora aún no lo tiene:"
     }
   },
   "voice": {
