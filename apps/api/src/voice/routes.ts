@@ -3,6 +3,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { VoiceProvider } from "@chalito/adapters/voice";
 import { sweepVoiceSessions, type VoiceEventFor, type VoiceSessionStore } from "@chalito/billing";
+import { errorMessage } from "@chalito/redact";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
@@ -125,6 +126,9 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
       sourceId: `${sess.sourceId}:${total}`,
     });
   const settle = (owner: string, reservationId: string) => voice.hub.settle({ owner, admissionId: reservationId });
+  /** After the usage is recorded: a hub hiccup on settle never fails the request (the reservation expires). */
+  const settleQuietly = (owner: string, reservationId: string) =>
+    settle(owner, reservationId).catch((err: unknown) => console.error("[voice] settle failed", errorMessage(err)));
 
   app.post("/session", auth, rateLimit({ capacity: 10, refillPerSec: 0.1, now: deps.now }), async (c) => {
     const p = principal(c);
@@ -150,13 +154,20 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
       maxSeconds = Math.min(maxSeconds, cap.limitSeconds - cap.usedSeconds);
     }
     const sourceId = `voice_${randomUUID().replace(/-/g, "")}`;
-    const admit = await voice.hub.admit({
-      owner: p.owner,
-      kind: "voice.seconds",
-      class: "stream",
-      sourceId,
-      reserveSeconds: maxSeconds,
-    });
+    let admit: Awaited<ReturnType<VoiceDeps["hub"]["admit"]>>;
+    try {
+      admit = await voice.hub.admit({
+        owner: p.owner,
+        kind: "voice.seconds",
+        class: "stream",
+        sourceId,
+        reserveSeconds: maxSeconds,
+      });
+    } catch (err) {
+      // Hub down or a malformed answer: nothing was opened, so the person just tries again.
+      console.error("[voice] admit failed", errorMessage(err));
+      return fail(503, "hub_unavailable");
+    }
     if (!admit.admitted) return fail(402, "voice_not_admitted", admit.reason);
     const opened = await voice.sessions.open({
       sourceId,
@@ -169,7 +180,7 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
       maxSeconds,
     });
     if (opened === "busy") {
-      await settle(p.owner, admit.admissionId);
+      await settleQuietly(p.owner, admit.admissionId);
       return fail(409, "voice_session_open", "Another voice session is still open; end it first.");
     }
     await deps.audit.record({ action: "voice.session", owner: p.owner, actor: p.uid, target: sourceId });
@@ -205,17 +216,24 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
     if (!r.found) return fail(404, "voice_session_unknown");
     if (end) {
       await hangup(voice, r.callId);
-      await settle(t.owner, t.admissionId);
+      await settleQuietly(t.owner, t.admissionId);
       return c.json({ ok: true, continue: false, billedSeconds: r.total });
     }
     if (r.ended) {
       await hangup(voice, r.callId);
       return c.json({ ok: true, continue: false, reason: "ended" satisfies VoiceStopReason, billedSeconds: r.total });
     }
-    const alive =
-      r.total < r.maxSeconds
-        ? await voice.hub.keepAlive({ owner: t.owner, admissionId: t.admissionId, sourceId: t.sourceId })
-        : { continue: false };
+    // The time is already billed above; a hub that can't answer the keep-alive is 503, not a 500.
+    let alive: { continue: boolean };
+    try {
+      alive =
+        r.total < r.maxSeconds
+          ? await voice.hub.keepAlive({ owner: t.owner, admissionId: t.admissionId, sourceId: t.sourceId })
+          : { continue: false };
+    } catch (err) {
+      console.error("[voice] keep-alive failed", errorMessage(err));
+      return fail(503, "hub_unavailable");
+    }
     let underCap = true;
     if (voice.cap) {
       const cap = await voice.cap.status(t.owner, now);
@@ -247,12 +265,19 @@ export const voiceRoutes = (deps: Deps, voice: VoiceDeps) => {
     if (!open) return fail(404, "voice_session_unknown");
     if (open.callId) return fail(409, "voice_call_connected");
     if (deps.now() > open.startedAt + ttlSec * 1000) return fail(410, "voice_connect_expired");
-    const call = await voice.provider.connectCall({
-      sdp: body.data.sdp,
-      // A stable, non-reversible id for OpenAI's abuse monitoring (never the raw uid).
-      safetyIdentifier: createHash("sha256").update(`chalito:${p.owner}`).digest("hex"),
-      session: { model: voice.model, voice: voice.voiceName, instructions: PERSONA, tools: DESKTOP_TOOLS },
-    });
+    let call: Awaited<ReturnType<VoiceProvider["connectCall"]>>;
+    try {
+      call = await voice.provider.connectCall({
+        sdp: body.data.sdp,
+        // A stable, non-reversible id for OpenAI's abuse monitoring (never the raw uid).
+        safetyIdentifier: createHash("sha256").update(`chalito:${p.owner}`).digest("hex"),
+        session: { model: voice.model, voice: voice.voiceName, instructions: PERSONA, tools: DESKTOP_TOOLS },
+      });
+    } catch (err) {
+      // OpenAI refused the offer or is down: no call exists; the session can retry until ttlSec.
+      console.error("[voice] connect failed", errorMessage(err));
+      return fail(502, "voice_provider_failed");
+    }
     if (!(await voice.sessions.setCallId(p.owner, t.sourceId, call.callId))) {
       // Ended (cap, revoke, sweep) while connecting: don't leave the call running.
       await hangup(voice, call.callId);
