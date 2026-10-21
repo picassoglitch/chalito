@@ -48,13 +48,39 @@ export const redact = (text: string): string => {
   return out.replace(PHONE, (m) => `…${m.replace(/\D/g, "").slice(-2)}`);
 };
 
-/** Redacts every string inside a value (numbers and structure untouched). */
-export const redactDeep = (v: unknown): unknown => {
+/**
+ * A property whose NAME says it holds a secret. Its string value is dropped whole: a bare value
+ * (a Twilio auth token, a hub api_token, a magic-link hash) has no prefix the RULES could spot.
+ */
+const SECRET_KEY =
+  /^(?:authorization|cookie|set-cookie|.*(?:api[_-]?key|apikey|secret|token|passw(?:or)?d|pwd|credential|private[_-]?key|signature))$/i;
+
+/** A rule that recognised the value keeps its hint ("sk-ant-…"); anything else goes whole. */
+const secretValue = (x: string) => {
+  const r = redact(x);
+  return r !== x ? r : "…";
+};
+
+/** Redacts every string inside a value (numbers and structure untouched). Cycles become "[Circular]". */
+export const redactDeep = (v: unknown, seen: WeakSet<object> = new WeakSet()): unknown => {
   if (typeof v === "string") return redact(v);
-  if (Array.isArray(v)) return v.map(redactDeep);
   if (v instanceof Error) return redactError(v);
-  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redactDeep(x)]));
-  return v;
+  if (!v || typeof v !== "object") return v;
+  // A cycle used to recurse until the stack overflowed, so the log call itself threw.
+  if (seen.has(v)) return "[Circular]";
+  seen.add(v);
+  try {
+    if (Array.isArray(v)) return v.map((x) => redactDeep(x, seen));
+    return Object.fromEntries(
+      Object.entries(v).map(([k, x]) => [
+        k,
+        typeof x === "string" && SECRET_KEY.test(k) ? secretValue(x) : redactDeep(x, seen),
+      ]),
+    );
+  } finally {
+    // Only ancestors make a cycle: the same object twice side by side is printed twice.
+    seen.delete(v);
+  }
 };
 
 /** An error as loggable data: redacted name, message and (trimmed) stack; never the raw object. */

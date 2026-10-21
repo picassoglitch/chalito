@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createLogger, installConsoleRedaction, redact, redactError } from "../src/index.js";
+import { createLogger, installConsoleRedaction, redact, redactDeep, redactError } from "../src/index.js";
 
 // Built at runtime so no literal secret-shaped string is committed (push protection).
 const fake = (prefix: string, n = 24) => `${prefix}${"Zq7".repeat(Math.ceil(n / 3)).slice(0, n)}`;
@@ -58,5 +58,25 @@ describe("redact (R-M9)", () => {
     fakeConsole.error(new Error(`boom ${fake("gh" + "p_", 30)}`), { url: `https://h/x?token=${fake("z", 20)}` });
     expect(JSON.stringify(out)).not.toMatch(/Zq7Zq7Zq7/);
     expect(out).toHaveLength(1);
+  });
+
+  it("drops a bare secret held under a secret-named key (no prefix to match)", () => {
+    const twilio = "a1b2c3d4".repeat(4);
+    const out = redactDeep({ authToken: twilio, api_token: fake("h", 43), password: "hunter22", note: "ok" });
+    expect(JSON.stringify(out)).not.toContain(twilio);
+    expect(JSON.stringify(out)).not.toContain(fake("h", 43));
+    expect(out).toMatchObject({ authToken: "…", api_token: "…", password: "…", note: "ok" });
+    // Counts and other non-strings stay (a "maxTokens" number is not a secret).
+    expect(redactDeep({ maxTokens: 5, tokens: { input: 3 } })).toEqual({ maxTokens: 5, tokens: { input: 3 } });
+  });
+
+  it("a cyclic object is logged, not a stack overflow", () => {
+    const a: Record<string, unknown> = { name: "x" };
+    a.self = a;
+    const shared = { v: 1 };
+    expect(redactDeep({ a, b: [shared, shared] })).toEqual({
+      a: { name: "x", self: "[Circular]" },
+      b: [{ v: 1 }, { v: 1 }],
+    });
   });
 });
