@@ -114,9 +114,9 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
   const cancel = async (reservationId: string) => {
     try {
       const r = await av.hub.settle({ reservation_id: reservationId, outcome: "cancelled" });
-      if (!r.ok && !r.closed) console.error("[avatar] cancel failed", r.httpStatus);
+      if (!r.ok && !r.closed) console.error("[avatar] cancel failed", reservationId, r.httpStatus);
     } catch (err) {
-      console.error("[avatar] cancel failed", errorMessage(err));
+      console.error("[avatar] cancel failed", reservationId, errorMessage(err));
     }
   };
 

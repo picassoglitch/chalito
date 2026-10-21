@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { CatalogConfig } from "@chalito/config";
 import { HubUnavailable, type HubClient } from "@chalito/billing";
 import { CosmeticSlot, type HubUsageEvent } from "@chalito/protocol";
+import { errorMessage } from "@chalito/redact";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
@@ -51,9 +52,9 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
   const settle = async (reservationId: string, outcome: "cancelled" | "succeeded") => {
     try {
       const s = await store.hub.settle({ reservation_id: reservationId, outcome });
-      if (!s.ok && !s.closed) console.error("[store] settle failed", outcome, s.httpStatus);
+      if (!s.ok && !s.closed) console.error("[store] settle failed", reservationId, outcome, s.httpStatus);
     } catch (err) {
-      console.error("[store] settle failed", outcome, err instanceof Error ? err.name : "error");
+      console.error("[store] settle failed", reservationId, outcome, errorMessage(err));
     }
   };
 
