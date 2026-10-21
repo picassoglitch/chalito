@@ -121,6 +121,66 @@
       "enable": "Turn on…",
       "disable": "Turn off",
       "failed": "Not turned on ({reason})."
+    },
+    "links": {
+      "title": "Links between agents",
+      "intro": "Let one agent hand work (or information) to another, on this computer or between your computers. They're only made here.",
+      "none": "No links.",
+      "thisComputer": "This computer",
+      "mode": {
+        "handoff": "Hand-off",
+        "share": "Share information"
+      },
+      "facts": "Folder {workspace} · expires {expires} · {confirm} · highest permission {ceiling}",
+      "askEachTime": "Ask me each time",
+      "automatic": "Automatic",
+      "pendingPublish": "Pending publish: carries nothing yet",
+      "revoke": "Revoke",
+      "revokeAll": "Revoke all",
+      "new": "New link…",
+      "paste": "Paste a link from another computer…",
+      "kind": "Kind",
+      "where": "With which agent",
+      "here": "Another agent on this computer",
+      "otherComputer": "An agent on another of my computers",
+      "otherCode": "The other computer's code (in its panel: Security → Links between agents)",
+      "direction": "Direction",
+      "send": "This computer hands work to the other",
+      "receive": "The other computer hands work to this one",
+      "workspace": "Folder where the work happens",
+      "noWorkspaces": "First add a folder in Settings → This computer.",
+      "goal": "What the link is for",
+      "days": "Days it lasts (30 at most)",
+      "budget": "Tokens per day",
+      "rate": "Hand-offs per hour",
+      "ceiling": "Highest permission for the receiving session",
+      "ceilings": {
+        "plan": "Plan only",
+        "default": "Asks before each change",
+        "acceptEdits": "Can edit files"
+      },
+      "step1": {
+        "handoff": "You're about to let one agent ask another for work:",
+        "share": "You're about to let one agent send another information:"
+      },
+      "step2": "Type {phrase} to make the link. Chalito will ask for your computer's password.",
+      "confirm": "Make the link",
+      "made": "Link made.",
+      "madeOther": "Now paste this code on the other computer (Security → Links between agents → Paste a link) so it makes the link too:",
+      "linkCode": "Link code",
+      "done": "Done",
+      "reviewPasted": "This link was made on your other computer. Check that it's yours:",
+      "check": "Check",
+      "thisCode": "This computer's code (to make a link from another one)",
+      "failed": "The link wasn't made ({reason}).",
+      "problems": {
+        "badDeviceCode": "The other computer's code isn't valid.",
+        "sameComputer": "That code is this computer's own.",
+        "noWorkspace": "Choose the folder.",
+        "noGoal": "Write what the link is for.",
+        "badLinkCode": "The link code isn't valid or has expired.",
+        "notForHere": "That link isn't for this computer."
+      }
     }
   },
   "voice": {

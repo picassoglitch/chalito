@@ -121,6 +121,66 @@
       "enable": "Activar…",
       "disable": "Desactivar",
       "failed": "No se activó ({reason})."
+    },
+    "links": {
+      "title": "Enlaces entre agentes",
+      "intro": "Deja que un agente le pase trabajo (o información) a otro, en esta computadora o entre tus computadoras. Solo se crean aquí.",
+      "none": "No hay enlaces.",
+      "thisComputer": "Esta computadora",
+      "mode": {
+        "handoff": "Encargo",
+        "share": "Compartir información"
+      },
+      "facts": "Carpeta {workspace} · vence el {expires} · {confirm} · permiso máximo {ceiling}",
+      "askEachTime": "Preguntarme cada vez",
+      "automatic": "Automático",
+      "pendingPublish": "Pendiente de publicar: aún no lleva nada",
+      "revoke": "Revocar",
+      "revokeAll": "Revocar todos",
+      "new": "Nuevo enlace…",
+      "paste": "Pegar un enlace de otra computadora…",
+      "kind": "Tipo",
+      "where": "Con qué agente",
+      "here": "Otro agente en esta computadora",
+      "otherComputer": "Un agente en otra de mis computadoras",
+      "otherCode": "Código de la otra computadora (en su panel: Seguridad → Enlaces entre agentes)",
+      "direction": "Dirección",
+      "send": "Esta computadora le pasa trabajo a la otra",
+      "receive": "La otra computadora le pasa trabajo a esta",
+      "workspace": "Carpeta donde se trabaja",
+      "noWorkspaces": "Primero agrega una carpeta en Ajustes → Esta computadora.",
+      "goal": "Para qué es el enlace",
+      "days": "Días que dura (máximo 30)",
+      "budget": "Tokens por día",
+      "rate": "Encargos por hora",
+      "ceiling": "Permiso máximo de la sesión que recibe",
+      "ceilings": {
+        "plan": "Solo planear",
+        "default": "Pregunta antes de cada cambio",
+        "acceptEdits": "Puede editar archivos"
+      },
+      "step1": {
+        "handoff": "Vas a permitir que un agente le pida trabajo a otro:",
+        "share": "Vas a permitir que un agente le envíe información a otro:"
+      },
+      "step2": "Escribe {phrase} para crear el enlace. Chalito te pedirá la contraseña de tu computadora.",
+      "confirm": "Crear el enlace",
+      "made": "Enlace creado.",
+      "madeOther": "Ahora pega este código en la otra computadora (Seguridad → Enlaces entre agentes → Pegar un enlace) para que lo cree también:",
+      "linkCode": "Código del enlace",
+      "done": "Listo",
+      "reviewPasted": "Este enlace se hizo en tu otra computadora. Revisa que sea el tuyo:",
+      "check": "Revisar",
+      "thisCode": "Código de esta computadora (para crear un enlace desde otra)",
+      "failed": "No se creó el enlace ({reason}).",
+      "problems": {
+        "badDeviceCode": "El código de la otra computadora no es válido.",
+        "sameComputer": "Ese código es de esta misma computadora.",
+        "noWorkspace": "Elige la carpeta.",
+        "noGoal": "Escribe para qué es el enlace.",
+        "badLinkCode": "El código del enlace no es válido o ya venció.",
+        "notForHere": "Ese enlace no es para esta computadora."
+      }
     }
   },
   "voice": {

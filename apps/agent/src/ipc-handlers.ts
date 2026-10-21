@@ -130,6 +130,8 @@ export interface IpcDeps {
   screen?: ScreenManager | null;
   /** Agent-to-agent links (links/manager.ts); absent = the link calls answer `unavailable`. */
   links?: LinkManager | null;
+  /** This device's public keys: the panel puts them in a link's own end and in the code it shows. */
+  identity?: { deviceId: string; pubSign: string; pubBox: string };
   /** Agent audit trail (computer.enabled / computer.disabled, terminal.*, screen.*). */
   audit: (type: string, meta: Record<string, unknown>) => void;
   /** ~/.chalito: never a workspace. Absent = the workspace calls answer `unavailable`. */
@@ -628,7 +630,11 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     });
   },
   // `pendingPublish`: links the cloud mirror doesn't hold yet; nothing is delivered over them until it does.
-  linkList: async () => ({ links: linksOf(d).list(), pendingPublish: linksOf(d).pendingPublish() }),
+  linkList: async () => ({
+    links: linksOf(d).list(),
+    pendingPublish: linksOf(d).pendingPublish(),
+    self: d.identity ?? null,
+  }),
   linkRevoke: async (params) => {
     const { linkId } = parse(ForLink, params);
     return { revoked: await linksOf(d).revoke(linkId, "local") };

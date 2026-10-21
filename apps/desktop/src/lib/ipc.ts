@@ -1,5 +1,5 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
-import type { AppConnectionDoc, DevModeToggle, Recipe, RecipeInstall } from "@chalito/protocol";
+import type { AgentLink, AppConnectionDoc, DevModeToggle, LinkMode, Recipe, RecipeInstall } from "@chalito/protocol";
 
 /**
  * Local-only surfaces, reached through the agent's IPC (ADR 0004: the agent is a user
@@ -257,6 +257,32 @@ export interface ScreenStatus {
 
 export type ScreenMode = "view" | "control";
 
+/** A link as the panel sends it: the agent sets `v`, `createdAt` and `createdBy: "local"`. */
+export type LinkSpec = Omit<AgentLink, "v" | "createdAt" | "createdBy">;
+
+/** This computer's public keys, for a link's own end (apps/agent/src/ipc-handlers.ts `linkList`). */
+export interface LinkIdentity {
+  deviceId: string;
+  pubSign: string;
+  pubBox: string;
+}
+
+/** Active links on this computer; `pendingPublish` ids carry nothing until the cloud mirror has them. */
+export interface LinksView {
+  links: AgentLink[];
+  pendingPublish: string[];
+  self: LinkIdentity | null;
+}
+
+/** What the agent restates before making a link (links/local.ts `LINK_COPY`). */
+export interface LinkChallenge {
+  mode: LinkMode;
+  summary: string[];
+  phrase: string;
+}
+
+export type LinkAddResult = { ok: true; link: AgentLink } | { ok: false; reason: string };
+
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
@@ -345,6 +371,15 @@ export interface AgentIpc {
   /** `control` drops back to view only; `all` turns remote screen off. */
   disableScreen(what: "control" | "all"): Promise<void>;
   closeScreen(sid: string): Promise<void>;
+  /**
+   * Agent-to-agent links (ADR 0022 §3, D-070): a hand-off link is made only here. The agent asks
+   * the OS, then re-checks the confirmation and the typed phrase.
+   */
+  links(): Promise<LinksView>;
+  linkChallenge(mode: LinkMode): Promise<LinkChallenge>;
+  addLink(link: LinkSpec, answers: { confirm: boolean; typed: string }): Promise<LinkAddResult>;
+  revokeLink(linkId: string): Promise<{ revoked: boolean }>;
+  revokeAllLinks(): Promise<{ revoked: number }>;
 }
 
 export class IpcUnavailableError extends Error {
@@ -407,6 +442,11 @@ export const unavailableIpc: AgentIpc = {
   enableScreen: unavailable,
   disableScreen: unavailable,
   closeScreen: unavailable,
+  links: unavailable,
+  linkChallenge: unavailable,
+  addLink: unavailable,
+  revokeLink: unavailable,
+  revokeAllLinks: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -480,6 +520,11 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     enableScreen: (mode, answers) => call("enableScreen", { mode, answers }),
     disableScreen: async (what) => void (await call("disableScreen", { what })),
     closeScreen: async (sid) => void (await call("closeScreen", { sid })),
+    links: () => call("linkList"),
+    linkChallenge: (mode) => call("linkChallenge", { mode }),
+    addLink: (link, answers) => call("linkAdd", { link, answers }),
+    revokeLink: (linkId) => call("linkRevoke", { linkId }),
+    revokeAllLinks: () => call("linkRevokeAll"),
   };
 };
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import { useT } from "../lib/i18n.js";
+import { Links } from "./Links.js";
 import { RemoteTerminal } from "./RemoteTerminal.js";
 import {
   IpcUnavailableError,
@@ -505,6 +506,7 @@ export const Security = ({ ipc }: { ipc: AgentIpc }) => {
       <Policy ipc={ipc} />
       <DevMode ipc={ipc} />
       <Coordinator ipc={ipc} />
+      <Links ipc={ipc} />
       <Computer ipc={ipc} />
       <RemoteTerminal ipc={ipc} />
       <RemoteScreen ipc={ipc} />

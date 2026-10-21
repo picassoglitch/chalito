@@ -1370,6 +1370,7 @@ const startDaemon = async (
           terminal,
           screen,
           links,
+          identity: { deviceId: id.deviceId, pubSign: id.pubSign, pubBox: id.pubBox },
           audit: auditAgent,
           chalitoDir: dir,
         }),
