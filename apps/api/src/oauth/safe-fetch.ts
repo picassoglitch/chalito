@@ -30,6 +30,11 @@ for (const [net, bits] of [
 for (const [net, bits] of [
   ["::", 128],
   ["::1", 128],
+  // 6to4 and Teredo embed an IPv4 address that a relay may reach on our behalf.
+  ["2002::", 16],
+  ["2001::", 32],
+  // Deprecated site-local.
+  ["fec0::", 10],
   ["64:ff9b::", 96],
   ["100::", 64],
   ["2001:db8::", 32],
@@ -39,12 +44,32 @@ for (const [net, bits] of [
 ] as const)
   blocked.addSubnet(net, bits, "ipv6");
 
+/** The eight 16-bit groups of an IPv6 address (a trailing dotted IPv4 becomes two groups). */
+const groups6 = (ip: string): number[] => {
+  let a = ip.toLowerCase();
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+  if (v4) {
+    const [w, x, y, z] = v4[1]!.split(".").map(Number) as [number, number, number, number];
+    a = `${a.slice(0, -v4[1]!.length)}${((w << 8) | x).toString(16)}:${((y << 8) | z).toString(16)}`;
+  }
+  const [head, tail] = a.includes("::") ? (a.split("::") as [string, string]) : [a, null];
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const mid = tail === null ? [] : Array<string>(8 - h.length - t.length).fill("0");
+  return [...h, ...mid, ...t].map((g) => parseInt(g, 16));
+};
+
 export const publicAddress = (ip: string): boolean => {
   const v = isIP(ip);
   if (v === 0) return false;
   if (v === 6) {
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
-    if (mapped) return publicAddress(mapped[1]!);
+    const g = groups6(ip);
+    // IPv4 embedded in IPv6: mapped ::ffff:a.b.c.d, SIIT ::ffff:0:a.b.c.d and the deprecated
+    // IPv4-compatible ::a.b.c.d (e.g. ::7f00:1) are judged by their IPv4 address.
+    const zeros = (n: number) => g.slice(0, n).every((x) => x === 0);
+    const embedded =
+      (zeros(5) && g[5] === 0xffff) || (zeros(4) && g[4] === 0xffff && g[5] === 0) || (zeros(6) && (g[6]! | g[7]!) > 1);
+    if (embedded) return publicAddress(`${g[6]! >> 8}.${g[6]! & 255}.${g[7]! >> 8}.${g[7]! & 255}`);
     return !blocked.check(ip, "ipv6");
   }
   return !blocked.check(ip, "ipv4");

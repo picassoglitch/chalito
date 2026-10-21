@@ -38,7 +38,7 @@ export class MemoryMcpStore implements McpStore {
     return r && r.expiresAt > now ? r : null;
   }
   async deleteRequest(id: string) {
-    this.requests.delete(id);
+    return this.requests.delete(id);
   }
   async createGrant(g: Grant) {
     this.grants.set(this.#g(g.owner, g.cid), g);
@@ -99,6 +99,8 @@ export class MemoryMcpStore implements McpStore {
   }
   async insertCommand(owner: string, targetDeviceId: string, id: string, env: unknown, expiresAt: number) {
     if (!this.devices.has(`${owner}/${targetDeviceId}`)) return "no_device" as const;
+    if (this.commands.some((c) => c.owner === owner && c.targetDeviceId === targetDeviceId && c.id === id))
+      return "exists" as const;
     this.commands.push({ owner, targetDeviceId, id, env, expiresAt });
     return "ok" as const;
   }

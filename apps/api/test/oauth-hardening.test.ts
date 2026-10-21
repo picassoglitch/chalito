@@ -72,8 +72,16 @@ describe("R-M4: CIMD fetch can't reach internal addresses", () => {
     "fc00::1",
     "::ffff:10.0.0.1",
     "::ffff:127.0.0.1",
+    // Audit 2026-10-08: IPv4 hidden in other IPv6 forms.
+    "::ffff:7f00:1",
+    "::ffff:0:7f00:1",
+    "::7f00:1",
+    "::a9fe:a9fe",
+    "2002:7f00:1::",
+    "2001:0:7f00:1::",
+    "fec0::1",
   ])("%s is refused", (ip) => expect(publicAddress(ip)).toBe(false));
-  it.each(["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"])("%s is allowed", (ip) =>
+  it.each(["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"])("%s is allowed", (ip) =>
     expect(publicAddress(ip)).toBe(true),
   );
 
