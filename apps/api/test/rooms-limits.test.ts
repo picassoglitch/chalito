@@ -23,9 +23,9 @@ describe("room limits from plans.yaml", () => {
     expect(deviceLimitFor("vip")).toBe(10);
   });
   it("read the tier the way the store does: case and spaces don't fail it closed (audit 2026-10-08)", () => {
-    expect(roomLimitsFor("Pro")).toEqual(roomLimitsFor("pro"));
+    expect(roomLimitsFor("Pro")).toEqual({ rooms: 5, membersPerRoom: 8 });
     expect(roomLimitsFor(" VIP ")).toEqual(roomLimitsFor("vip"));
-    expect(deviceLimitFor("FREE")).toBe(1);
+    expect(deviceLimitFor("PRO")).toBe(5);
   });
   it("read the invite TTL from rooms.yaml", () => {
     expect(inviteTtlMs()).toBe(7 * 86_400_000);
