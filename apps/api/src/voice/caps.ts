@@ -11,10 +11,11 @@ export interface VoiceCap {
 
 /** VoiceCap over chalito.users (tier, tz) and the usage outbox's voice.seconds events. */
 export const pgVoiceCap = (sql: Sql, plans: PlansConfig, isComped: (uid: string) => boolean): VoiceCap => {
+  // users.tier holds the hub's tier as sent ("Pro"); plans.yaml ids are lowercase, like rooms/limits.ts.
   const user = async (owner: string) =>
     (
       await sql<{ tier: string | null; tz: string | null; locale: "es" | "en" }[]>`
-      select tier, tz, locale from chalito.users where id = ${owner}`
+      select lower(nullif(trim(tier), '')) as tier, tz, locale from chalito.users where id = ${owner}`
     )[0];
   return {
     async status(owner, now) {

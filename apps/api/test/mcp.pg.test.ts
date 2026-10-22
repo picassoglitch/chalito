@@ -122,6 +122,34 @@ describe.skipIf(!DB_URL)("M10 OAuth + gateway reader on Postgres", () => {
     expect((await admin`select count(*)::int as n from chalito.session_card_plain where owner = ${h.o}`)[0]!.n).toBe(0);
   });
 
+  it("single use on Postgres: a consent request deletes once; a reused command id is 409", async () => {
+    const { h, agent } = await setup();
+    const store = new PostgresMcpStore(server);
+    const q = new URLSearchParams({
+      response_type: "code",
+      client_id: CLAUDE_CLIENT,
+      redirect_uri: "https://claude.ai/api/mcp/auth_callback",
+      code_challenge: "a".repeat(43),
+      code_challenge_method: "S256",
+      resource: RESOURCE,
+      scope: "mcp:read",
+    });
+    const az = await h.call(`/oauth/authorize?${q}`);
+    const id = new URL(az.location!).searchParams.get("request")!;
+    expect([await store.deleteRequest(id), await store.deleteRequest(id)]).toEqual([true, false]);
+
+    const t = await h.connect(["mcp:read", "session:prompt"]);
+    const ct = await sealJson("hola", { [agent]: (await generateBoxKeyPair()).publicKey }, "command:mcp_dupdupdup123");
+    const send = () =>
+      h.call("/v1/gateway/prompts", {
+        json: { cid: "mcp_dupdupdup123", sid: "s_1", promptCt: ct },
+        headers: gwHeaders(t.access_token),
+      });
+    expect((await send()).status).toBe(201);
+    expect(await send()).toMatchObject({ status: 409, json: { error: "duplicate_command" } });
+    expect((await admin`select count(*)::int as n from chalito.commands where owner = ${h.o}`)[0]!.n).toBe(1);
+  });
+
   it("the gateway role can't write", async () => {
     await expect(gw`update chalito.approvals set status = 'approved'`).rejects.toThrow(/permission denied/);
     await expect(gw`delete from chalito_private.oauth_tokens`).rejects.toThrow(/permission denied/);

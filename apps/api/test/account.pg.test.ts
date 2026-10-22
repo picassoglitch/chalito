@@ -63,6 +63,39 @@ if (!url) {
       expect((await store.status(u))!.exportPath).toBe(`exports/${u}/3.json`);
     });
 
+    it("a claimed owner can't be cancelled; a crashed claim is listed and claimed again", async () => {
+      const { u, dev } = await user();
+      const t = Date.now();
+      await store.schedule(u, dev, t - 2000, t - 1000, `exports/${u}/1.json`);
+      expect(await store.claim(u, t)).toBe(true);
+      expect(await store.cancel(u, t)).toBe(false);
+      expect((await store.status(u))!.status).toBe("deleting");
+      expect(await store.schedule(u, dev, t, t + 1000, `exports/${u}/2.json`)).toBe("exists");
+      expect(await store.due(t)).toContain(u);
+      expect(await store.claim(u, t)).toBe(true);
+    });
+
+    it("a cancel before the claim wins: the claim is refused; a claim before due is refused", async () => {
+      const { u, dev } = await user();
+      const t = Date.now();
+      await store.schedule(u, dev, t, t + 60_000, `exports/${u}/1.json`);
+      expect(await store.claim(u, t)).toBe(false);
+      expect(await store.cancel(u, t)).toBe(true);
+      expect(await store.claim(u, t + 120_000)).toBe(false);
+      expect((await store.status(u))!.status).toBe("cancelled");
+    });
+
+    it("cancel and claim racing on one owner: exactly one wins", async () => {
+      for (let i = 0; i < 10; i++) {
+        const { u, dev } = await user();
+        const t = Date.now();
+        await store.schedule(u, dev, t - 2000, t - 1000, `exports/${u}/1.json`);
+        const [claimed, cancelled] = await Promise.all([store.claim(u, t), store.cancel(u, t)]);
+        expect(claimed !== cancelled).toBe(true);
+        expect((await store.status(u))!.status).toBe(claimed ? "deleting" : "cancelled");
+      }
+    });
+
     it("deletes the account's data (cascade + the rest), keeps unsent usage, leaves others alone", async () => {
       const a = await user();
       const b = await user();

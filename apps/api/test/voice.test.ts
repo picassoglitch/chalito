@@ -459,3 +459,57 @@ describe("the api ends the call itself (SDP proxy, R-H6 follow-up)", () => {
     expect([tooLate.status, tooLate.json.error]).toEqual([410, "voice_connect_expired"]);
   });
 });
+
+describe("hub and OpenAI failures are answers, never a 500", () => {
+  it("admit failing → 503; keep-alive failing → 503 (time still billed); settle failing on end → 200", async () => {
+    const down: HubUsage = {
+      admit: async () => {
+        throw new Error("fetch failed");
+      },
+      event: () => null,
+      keepAlive: async () => ({ continue: true }),
+      settle: async () => {},
+    };
+    expect(await setup(down).call("/session", "client:dev_phone")).toMatchObject({
+      status: 503,
+      json: { error: "hub_unavailable" },
+    });
+
+    const flaky: HubUsage = {
+      admit: async () => ({ admitted: true, admissionId: RID }),
+      event: () => null,
+      keepAlive: async () => {
+        throw new Error("fetch failed");
+      },
+      settle: async () => {
+        throw new Error("fetch failed");
+      },
+    };
+    const { call } = setup(flaky);
+    const voiceToken = String((await call("/session", "client:dev_phone")).json.voiceToken);
+    clock += 30_000;
+    expect(await call("/session/heartbeat", "client:dev_phone", { voiceToken, seconds: 30 })).toMatchObject({
+      status: 503,
+      json: { error: "hub_unavailable" },
+    });
+    expect(await call("/session/end", "client:dev_phone", { voiceToken, seconds: 0 })).toMatchObject({
+      status: 200,
+      json: { ok: true, continue: false, billedSeconds: 30 },
+    });
+  });
+
+  it("OpenAI refusing the offer → 502, and the session may try again", async () => {
+    const { call } = setup();
+    const voiceToken = String((await call("/session", "client:dev_phone")).json.voiceToken);
+    server.use(
+      http.post("https://api.openai.com/v1/realtime/calls", () => HttpResponse.json({ error: {} }, { status: 500 }), {
+        once: true,
+      }),
+    );
+    expect(await callSdp(voiceToken, "client:dev_phone")).toMatchObject({
+      status: 502,
+      json: { error: "voice_provider_failed" },
+    });
+    expect((await callSdp(voiceToken, "client:dev_phone")).status).toBe(201);
+  });
+});

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { CatalogConfig } from "@chalito/config";
 import { HubUnavailable, type HubClient } from "@chalito/billing";
 import { CosmeticSlot, type HubUsageEvent } from "@chalito/protocol";
+import { errorMessage } from "@chalito/redact";
 import type { Deps } from "../deps.js";
 import { principal, requireAuth, type AuthEnv } from "../lib/auth.js";
 import { fail } from "../lib/errors.js";
@@ -44,6 +45,18 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
   const app = new Hono<AuthEnv>();
   const auth = requireAuth(deps, ["user", "client"]);
   const limiter = rateLimit({ capacity: 20, refillPerSec: 0.5, now: deps.now });
+  /**
+   * Settle never decides the answer: the hub client throws on a network error, and an open
+   * reservation just expires on the hub. A throw here used to turn a committed purchase into a 500.
+   */
+  const settle = async (reservationId: string, outcome: "cancelled" | "succeeded") => {
+    try {
+      const s = await store.hub.settle({ reservation_id: reservationId, outcome });
+      if (!s.ok && !s.closed) console.error("[store] settle failed", reservationId, outcome, s.httpStatus);
+    } catch (err) {
+      console.error("[store] settle failed", reservationId, outcome, errorMessage(err));
+    }
+  };
 
   app.get("/catalog", auth, async (c) => {
     const owner = principal(c).owner;
@@ -107,7 +120,7 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
     }
     // An admit is not a balance check: a balance short of the price is no_tokens too (R-L9).
     if (admit.allowed && !admit.balance.unlimited && admit.balance.remaining < price) {
-      await store.hub.settle({ reservation_id: admit.reservation_id, outcome: "cancelled" });
+      await settle(admit.reservation_id, "cancelled");
       return c.json({ error: "no_tokens", chips: [{ label: "¿Por qué?", href: "/creditos" }] }, 402);
     }
     if (!admit.allowed) {
@@ -127,23 +140,31 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
       reservation_id: admit.reservation_id,
       metadata: { cosmetic_id: cosmeticId },
     };
-    const result = await store.repo.commitPurchase({
-      purchaseId,
-      owner: p.owner,
-      cosmeticId,
-      priceTokens: price,
-      reservationId: admit.reservation_id,
-      event,
-    });
+    let result: Awaited<ReturnType<StoreRepo["commitPurchase"]>>;
+    try {
+      result = await store.repo.commitPurchase({
+        purchaseId,
+        owner: p.owner,
+        cosmeticId,
+        priceTokens: price,
+        reservationId: admit.reservation_id,
+        event,
+      });
+    } catch (err) {
+      // Release the hold only when no purchase holds it: a concurrent retry with this id (same
+      // reservation) or a commit whose reply was lost must keep it. Unknown → it expires on the hub.
+      const holder = await store.repo.findPurchase(purchaseId).catch(() => undefined);
+      if (holder === null) await settle(admit.reservation_id, "cancelled");
+      throw err;
+    }
     if (result === "already_owned") {
-      await store.hub.settle({ reservation_id: admit.reservation_id, outcome: "cancelled" });
+      await settle(admit.reservation_id, "cancelled");
       return c.json({ status: "owned", cosmeticId, charged: 0 });
     }
     // duplicate_purchase: a concurrent retry with the same id committed (same reservation); it settles.
     if (result === "committed") {
-      const s = await store.hub.settle({ reservation_id: admit.reservation_id, outcome: "succeeded" });
       // The usage event is already in the outbox; an unsettled reservation just expires on the hub.
-      if (!s.ok && !s.closed) console.error("[store] settle failed", s.httpStatus);
+      await settle(admit.reservation_id, "succeeded");
       await deps.audit.record({ action: "store.purchase", owner: p.owner, actor: p.uid, target: cosmeticId });
     }
     return c.json({ status: "owned", cosmeticId, charged: price, ...(result === "committed" ? {} : { replay: true }) });

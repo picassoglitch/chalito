@@ -136,3 +136,47 @@ describe("phone verification", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("Twilio failures are answers, never a 500", () => {
+  const start = { e164: "+525512345678", channel: "sms", chargesNoticeAck: true };
+  it("5xx and network errors → 503; too many attempts → 429; a refused number → 400", async () => {
+    const { call } = setup();
+    server.use(
+      http.post(
+        "https://verify.twilio.com/v2/Services/:sid/Verifications",
+        () => new HttpResponse(null, { status: 503 }),
+        {
+          once: true,
+        },
+      ),
+    );
+    expect(await call("POST", "/start", start)).toMatchObject({ status: 503, json: { error: "verify_unavailable" } });
+    server.use(
+      http.post("https://verify.twilio.com/v2/Services/:sid/Verifications", () => HttpResponse.error(), { once: true }),
+    );
+    expect((await call("POST", "/start", start)).status).toBe(503);
+    server.use(
+      http.post(
+        "https://verify.twilio.com/v2/Services/:sid/Verifications",
+        () => new HttpResponse(null, { status: 400 }),
+        {
+          once: true,
+        },
+      ),
+    );
+    expect(await call("POST", "/start", start)).toMatchObject({ status: 400, json: { error: "verify_refused" } });
+    server.use(
+      http.post(
+        "https://verify.twilio.com/v2/Services/:sid/VerificationCheck",
+        () => new HttpResponse(null, { status: 429 }),
+        {
+          once: true,
+        },
+      ),
+    );
+    expect(await call("POST", "/check", { e164: "+525512345678", code: "123456" })).toMatchObject({
+      status: 429,
+      json: { error: "too_many_attempts" },
+    });
+  });
+});

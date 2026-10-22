@@ -1,4 +1,15 @@
 /** Twilio Verify (OTP by SMS or call) and Voice Geo Permissions, over REST. */
+
+/** Twilio answered with an error, or couldn't be reached (`status` null). Never carries the number. */
+export class VerifierError extends Error {
+  constructor(
+    readonly status: number | null,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export interface PhoneVerifier {
   start(e164: string, channel: "sms" | "call", locale: "es" | "en"): Promise<void>;
   /** True when Twilio says the code is approved. */
@@ -15,8 +26,13 @@ export const twilioPhoneVerifier = (opts: {
 }): PhoneVerifier => {
   const auth = `Basic ${Buffer.from(`${opts.accountSid}:${opts.authToken}`).toString("base64")}`;
   const f = opts.fetch ?? fetch;
+  // A network failure is a VerifierError too, so the routes answer 503 instead of 500.
+  const call = (url: string, init: RequestInit) =>
+    f(url, init).catch((err: unknown) => {
+      throw new VerifierError(null, `twilio unreachable: ${err instanceof Error ? err.name : "error"}`);
+    });
   const form = (url: string, body: Record<string, string>) =>
-    f(url, {
+    call(url, {
       method: "POST",
       headers: { authorization: auth, "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams(body).toString(),
@@ -25,20 +41,23 @@ export const twilioPhoneVerifier = (opts: {
   return {
     async start(e164, channel, locale) {
       const res = await form(`${verify}/Verifications`, { To: e164, Channel: channel, Locale: locale });
-      if (!res.ok) throw new Error(`verify start failed: ${res.status}`);
+      if (!res.ok) throw new VerifierError(res.status, `verify start failed: ${res.status}`);
     },
     async check(e164, code) {
       const res = await form(`${verify}/VerificationCheck`, { To: e164, Code: code });
       if (res.status === 404) return false; // expired or already used
-      if (!res.ok) throw new Error(`verify check failed: ${res.status}`);
+      if (!res.ok) throw new VerifierError(res.status, `verify check failed: ${res.status}`);
       return ((await res.json()) as { status?: string }).status === "approved";
     },
     async callsAllowed(country) {
-      const res = await f(`https://voice.twilio.com/v1/DialingPermissions/Countries/${encodeURIComponent(country)}`, {
-        headers: { authorization: auth },
-      });
+      const res = await call(
+        `https://voice.twilio.com/v1/DialingPermissions/Countries/${encodeURIComponent(country)}`,
+        {
+          headers: { authorization: auth },
+        },
+      );
       if (res.status === 404) return false;
-      if (!res.ok) throw new Error(`dialing permissions failed: ${res.status}`);
+      if (!res.ok) throw new VerifierError(res.status, `dialing permissions failed: ${res.status}`);
       return ((await res.json()) as { low_risk_numbers_enabled?: boolean }).low_risk_numbers_enabled === true;
     },
   };

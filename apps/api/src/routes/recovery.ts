@@ -91,12 +91,15 @@ export const recoveryRoutes = (deps: Deps) => {
       endorsedBy: null,
     });
     const next = await hashRecoveryCode(body.data.newRecoveryCode);
-    const done = await deps.repo.completeRecovery(p.owner, doc, {
-      ...next,
-      cooldownUntil: null,
-      createdAt: deps.now(),
-    });
+    const done = await deps.repo.completeRecovery(
+      p.owner,
+      doc,
+      { ...next, cooldownUntil: null, createdAt: deps.now() },
+      // The code verified above: a concurrent completion with it wins once, this one then fails.
+      rec.hash,
+    );
     if (done === "device_exists") fail(409, "device_exists");
+    if (done === "code_changed") fail(409, "recovery_used");
     await deps.audit.record({ action: "recovery.completed", owner: p.owner, actor: p.uid, target: doc.deviceId });
     return c.json(
       { customToken: await mintDeviceToken(deps, p.owner, doc.deviceId, "client"), deviceId: doc.deviceId },
