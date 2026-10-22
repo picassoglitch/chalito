@@ -84,6 +84,8 @@ export const CodingManagedConfig = z
     credentialTtlSeconds: z.number().int().min(300).max(86_400),
     /** The hub hold's ttl; every request re-admits it, so an idle session's hold lapses after this. */
     holdTtlSeconds: z.number().int().min(60).max(86_400),
+    /** Requests one session may have in flight at once (each one's worst case counts against the cap). */
+    maxInflightPerSession: z.number().int().min(1).max(32),
   })
   .refine((c) => c.tiers.every((t) => (c.dailyCap.ceiling[t] ?? -1) >= c.dailyCap.default), {
     message: "every managed tier needs a daily-cap ceiling at or above the default",
