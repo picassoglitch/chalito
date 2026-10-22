@@ -328,6 +328,8 @@ if (!url) {
         { model: s.model, tools: [{ type: "web_search_preview" }] },
         { model: s.model, tools: [{ type: "code_interpreter" }] },
         { model: s.model, previous_response_id: "resp_old" },
+        { model: s.model, tools: [{ type: "brand_new_hosted_tool" }] },
+        { model: s.model, background: true },
       ]) {
         const r = await responses(s.token, body);
         expect(r.status).toBe(400);
@@ -346,6 +348,22 @@ if (!url) {
         body: JSON.stringify({ contents: [], tools: [{ googleSearch: {} }] }),
       });
       expect(gr.status).toBe(400);
+      for (const extra of [
+        { tools: [{ google_search: {} }] },
+        { tools: [{ code_execution: {} }] },
+        { cached_content: "cachedContents/x" },
+      ]) {
+        const r = await fetch(`${base}/v1beta/models/${g.model}:generateContent`, {
+          method: "POST",
+          headers: { "x-goog-api-key": g.token, "content-type": "application/json" },
+          body: JSON.stringify({ contents: [], ...extra }),
+        });
+        expect(r.status, JSON.stringify(extra)).toBe(400);
+        await r.text();
+      }
+      // A priority tier is never asked for on our key.
+      await (await responses(s.token, { model: s.model, service_tier: "priority" })).text();
+      expect(fakes.seen.at(-1)!.body!.service_tier).toBeUndefined();
       // The token in the query string is never accepted (request logs keep it).
       const q = await fetch(`${base}/v1beta/models/${g.model}:generateContent?key=${g.token}`, {
         method: "POST",

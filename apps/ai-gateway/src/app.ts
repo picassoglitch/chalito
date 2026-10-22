@@ -13,6 +13,7 @@ import type {
 import type { ProvidersConfig } from "@chalito/config";
 import { errorMessage } from "@chalito/redact";
 import { gatewayRoutes } from "./limits.js";
+import { sanitizeGemini, sanitizeResponses } from "./wires/policy.js";
 import { geminiReader, responsesReader, type UsageReader } from "./wires/usage.js";
 
 /** Where the gateway sends each wire, with OUR key (Secret Manager). Base URLs are overridable for tests. */
@@ -44,30 +45,7 @@ const WIRE_OF: Record<CodingAgent, Wire> = { codex: "responses", "grok-build": "
 
 const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
 
-// Tools the provider runs and charges per call, outside the token usage we meter (ADR 0030).
-const PAID_RESPONSES_TOOLS = /^(web_search|file_search|code_interpreter|image_generation|computer_use|mcp)/;
-const PAID_GEMINI_TOOLS = [
-  "googleSearch",
-  "googleSearchRetrieval",
-  "codeExecution",
-  "urlContext",
-  "googleMaps",
-  "fileSearch",
-];
-
-/** Why a Responses body can't go out on our key, or null. Stored state would also be billed outside the request. */
-export const responsesProblem = (b: Record<string, unknown>): string | null => {
-  if (b.previous_response_id !== undefined || b.conversation !== undefined) return "stored_state_not_allowed";
-  const tools = Array.isArray(b.tools) ? (b.tools as { type?: unknown }[]) : [];
-  return tools.some((t) => PAID_RESPONSES_TOOLS.test(String(t?.type ?? ""))) ? "tool_not_allowed" : null;
-};
-
-/** The same for a Gemini body: its built-in tools and cached content. */
-export const geminiProblem = (b: Record<string, unknown>): string | null => {
-  if (b.cachedContent !== undefined) return "stored_state_not_allowed";
-  const tools = Array.isArray(b.tools) ? (b.tools as Record<string, unknown>[]) : [];
-  return tools.some((t) => t && PAID_GEMINI_TOOLS.some((k) => k in t)) ? "tool_not_allowed" : null;
-};
+const REFUSED_MESSAGE = "That tool or stored state isn't available with IA de Chalyb.";
 
 /** An error in the shape the person's CLI reads: OpenAI's for Responses, Google's for Gemini. */
 const errorBody = (wire: Wire, status: number, code: string, message: string) =>
@@ -281,18 +259,13 @@ export const createGateway = (d: GatewayDeps) => {
   app.post("/v1/responses", async (c) => {
     const cred = await authorize(c, "responses");
     if (cred instanceof Response) return cred;
-    const body = await readJson(c);
-    if (!body || typeof body.model !== "string")
-      return fail(c, "responses", 400, "bad_request", "A model is required.");
-    const problem = responsesProblem(body);
-    if (problem)
-      return fail(c, "responses", 400, problem, "That tool or stored state isn't available with IA de Chalyb.");
-    body.store = false;
+    const raw = await readJson(c);
+    if (!raw || typeof raw.model !== "string") return fail(c, "responses", 400, "bad_request", "A model is required.");
     const managed = d.providers.codingAgents[cred.agent]!.managed!;
-    // Codex never sends a limit: set one, and never above the agent's.
-    const asked =
-      typeof body.max_output_tokens === "number" && body.max_output_tokens > 0 ? body.max_output_tokens : Infinity;
-    body.max_output_tokens = Math.min(asked, managed.maxOutputTokens);
+    // Rebuilt from an allowlist; Codex never sends an output limit, so one is always set.
+    const clean = sanitizeResponses(raw, cred.provider, managed.maxOutputTokens);
+    if (!clean.ok) return fail(c, "responses", 400, clean.error, REFUSED_MESSAGE);
+    const body = clean.body as Record<string, unknown> & { model: string };
     const up = cred.provider === "xai" ? d.upstreams.xai : d.upstreams.openai;
     if (!up) return fail(c, "responses", 503, "managed_disabled", "IA de Chalyb is paused for this agent.");
     return forward(c, {
@@ -327,18 +300,12 @@ export const createGateway = (d: GatewayDeps) => {
     );
     if (!m) return fail(c, "gemini", 404, "not_found", "Unknown method.");
     const [, model, method] = m as unknown as [string, string, string];
-    const body = await readJson(c);
-    if (!body) return fail(c, "gemini", 400, "bad_request", "A JSON body is required.");
-    const problem = geminiProblem(body);
-    if (problem) return fail(c, "gemini", 400, problem, "That tool or stored state isn't available with IA de Chalyb.");
+    const raw = await readJson(c);
+    if (!raw) return fail(c, "gemini", 400, "bad_request", "A JSON body is required.");
     const managed = d.providers.codingAgents[cred.agent]!.managed!;
-    if (method !== "countTokens") {
-      const gc = (
-        body.generationConfig && typeof body.generationConfig === "object" ? body.generationConfig : {}
-      ) as Record<string, unknown>;
-      const asked = typeof gc.maxOutputTokens === "number" && gc.maxOutputTokens > 0 ? gc.maxOutputTokens : Infinity;
-      body.generationConfig = { ...gc, maxOutputTokens: Math.min(asked, managed.maxOutputTokens) };
-    }
+    const clean = sanitizeGemini(raw, method as "generateContent", managed.maxOutputTokens);
+    if (!clean.ok) return fail(c, "gemini", 400, clean.error, REFUSED_MESSAGE);
+    const body = clean.body;
     const up = d.upstreams.google;
     if (!up) return fail(c, "gemini", 503, "managed_disabled", "IA de Chalyb is paused for this agent.");
     const stream = method === "streamGenerateContent";
