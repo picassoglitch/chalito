@@ -25,8 +25,13 @@ describe("IA de Chalyb: Codex points at our gateway", () => {
     expect(l.env.OPENAI_API_KEY).toBeUndefined();
     expect(l.env[BYO_KEY_ENV]).toBeUndefined();
     expect(l.args.join(" ")).not.toContain(TOKEN);
-    // Commands Codex runs don't inherit it, whatever the repo's own config says.
-    expect(l.args).toContain('shell_environment_policy.exclude=["CHALITO_*"]');
+    // Commands Codex runs don't inherit the token, whatever the repo's own config says, but keep CHALITO_SESSION
+    // (the chalito CLI's in-session guard): the exclude names the token exactly, no glob.
+    const exclude = l.args.find((a) => a.startsWith("shell_environment_policy.exclude="))!;
+    const names = JSON.parse(exclude.slice("shell_environment_policy.exclude=".length)) as string[];
+    expect(names).toEqual([MANAGED_TOKEN_ENV]);
+    expect(names.some((n) => /[*?[]/.test(n))).toBe(false);
+    expect(l.env.CHALITO_SESSION).toBe("1");
   });
 
   it("refuses a gateway that isn't https (plain http only on this machine)", () => {
