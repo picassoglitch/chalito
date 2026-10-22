@@ -265,8 +265,12 @@ export const avatarRoutes = (deps: Deps, av: AvatarDeps) => {
         freeMarkers: free ? markers : null,
       });
     } catch (err) {
-      // No row, so nothing would ever settle it: release the hold, then fail.
-      if (reservationId) await cancel(reservationId);
+      // Release the hold only when no row holds it: a concurrent retry with this id (same
+      // reservation) or an insert whose reply was lost must keep it. Unknown → it expires on the hub.
+      if (reservationId) {
+        const holder = await av.repo.get(creationId).catch(() => undefined);
+        if (holder !== undefined && holder?.reservationId !== reservationId) await cancel(reservationId);
+      }
       throw err;
     }
     if (result === "duplicate_id") {

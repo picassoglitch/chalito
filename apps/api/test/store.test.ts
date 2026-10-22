@@ -364,4 +364,33 @@ describe("audit 2026-10-08: settle and commit failures", () => {
     spy.mockRestore();
     err.mockRestore();
   });
+
+  it("a commit that landed but whose reply was lost (or a retry's row) keeps the reservation", async () => {
+    const { call, store } = storeSetup();
+    const real = store.commitPurchase.bind(store);
+    const spy = vi.spyOn(store, "commitPurchase").mockImplementationOnce(async (p) => {
+      await real(p);
+      throw new Error("connection reset during COMMIT");
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await call("POST", "/purchase", { cosmeticId: "star_cape", purchaseId: PID })).status).toBe(500);
+    expect(hubCalls.map((c) => c.path)).toEqual(["admit"]);
+    spy.mockRestore();
+    err.mockRestore();
+  });
+
+  it("when the purchase can't be re-read either, the hold is left to expire, not cancelled", async () => {
+    const { call, store } = storeSetup();
+    const commit = vi.spyOn(store, "commitPurchase").mockRejectedValueOnce(new Error("db down"));
+    const find = vi
+      .spyOn(store, "findPurchase")
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("db down"));
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await call("POST", "/purchase", { cosmeticId: "star_cape", purchaseId: PID })).status).toBe(500);
+    expect(hubCalls.map((c) => c.path)).toEqual(["admit"]);
+    commit.mockRestore();
+    find.mockRestore();
+    err.mockRestore();
+  });
 });

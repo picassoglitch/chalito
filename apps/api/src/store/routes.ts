@@ -151,8 +151,10 @@ export const storeRoutes = (deps: Deps, store: StoreDeps) => {
         event,
       });
     } catch (err) {
-      // Nothing was written (one transaction): release the hold on the balance now, then fail.
-      await settle(admit.reservation_id, "cancelled");
+      // Release the hold only when no purchase holds it: a concurrent retry with this id (same
+      // reservation) or a commit whose reply was lost must keep it. Unknown → it expires on the hub.
+      const holder = await store.repo.findPurchase(purchaseId).catch(() => undefined);
+      if (holder === null) await settle(admit.reservation_id, "cancelled");
       throw err;
     }
     if (result === "already_owned") {

@@ -829,6 +829,20 @@ describe("audit 2026-10-08: hub cancel and insert failures", () => {
     err.mockRestore();
   });
 
+  it("an insert that landed but whose reply was lost keeps the paid reservation", async () => {
+    const { start, repo } = await paidSetup();
+    const real = repo.insert.bind(repo);
+    const spy = vi.spyOn(repo, "insert").mockImplementationOnce(async (r) => {
+      await real(r);
+      throw new Error("connection reset during COMMIT");
+    });
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await start(ID2)).status).toBe(500);
+    expect(hubCalls.map((c) => c.path)).toEqual(["admit"]);
+    spy.mockRestore();
+    err.mockRestore();
+  });
+
   it("an id another owner won concurrently is 409 and releases this owner's paid reservation", async () => {
     const { start, repo } = await paidSetup();
     let inserted = false;
