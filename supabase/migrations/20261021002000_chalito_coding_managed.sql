@@ -29,6 +29,9 @@ create table chalito_private.coding_credentials (
   inflight_micros bigint not null default 0 check (inflight_micros >= 0),
   inflight_requests integer not null default 0 check (inflight_requests >= 0),
   spent_micros bigint not null default 0 check (spent_micros >= 0),
+  -- Usage on the current hold generation: the hub subtracts it from the hold, so each top-up counts it.
+  gen_spent_micros bigint not null default 0 check (gen_spent_micros >= 0),
+  last_used_at timestamptz not null default now(),
   requests integer not null default 0 check (requests >= 0),
   blocked_reason text check (blocked_reason in ('out_of_energy', 'daily_cap')),
   created_at timestamptz not null default now(),
@@ -54,12 +57,25 @@ revoke all on chalito_private.coding_credentials from public, anon, authenticate
 grant select, insert, update on chalito_private.coding_credentials to chalito_server;
 create policy server_all on chalito_private.coding_credentials for all to chalito_server using (true) with check (true);
 grant select on chalito_private.coding_credentials to chalito_ai_gateway;
-grant update (hold_gen, reservation_id, inflight_micros, inflight_requests, spent_micros, requests, blocked_reason,
+grant update (hold_gen, reservation_id, inflight_micros, inflight_requests, spent_micros, gen_spent_micros, last_used_at,
+              requests, blocked_reason,
               revoked_at, revoked_reason, settled_at)
   on chalito_private.coding_credentials to chalito_ai_gateway;
 create policy ai_gateway_read on chalito_private.coding_credentials for select to chalito_ai_gateway using (true);
 create policy ai_gateway_meter on chalito_private.coding_credentials for update to chalito_ai_gateway
   using (true) with check (true);
+
+-- One row per finished request: a retried finish (lost commit ack) never releases a hold twice.
+create table chalito_private.coding_finished (
+  credential_id text not null references chalito_private.coding_credentials (id) on delete cascade,
+  seq integer not null check (seq >= 0),
+  finished_at timestamptz not null default now(),
+  primary key (credential_id, seq)
+);
+alter table chalito_private.coding_finished enable row level security;
+revoke all on chalito_private.coding_finished from public, anon, authenticated, service_role;
+grant select, insert on chalito_private.coding_finished to chalito_ai_gateway;
+create policy ai_gateway_all on chalito_private.coding_finished for all to chalito_ai_gateway using (true) with check (true);
 
 -- ---------------------------------------------------------------- settings
 create table chalito.coding_settings (

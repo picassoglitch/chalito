@@ -2,7 +2,7 @@
 -- and chalito_ai_gateway writes only metering and coding usage events.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(37);
+select plan(40);
 grant usage on schema extensions to chalito_server, chalito_ai_gateway;
 
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language plpgsql as $$
@@ -64,7 +64,7 @@ select throws_ok($$insert into chalito.coding_spend_daily (owner, day, agent) va
 set local role chalito_ai_gateway;
 select is((select count(*)::int from chalito_private.coding_credentials), 3, 'the gateway reads credentials');
 select lives_ok($$update chalito_private.coding_credentials
-  set inflight_micros = 10, inflight_requests = 1, spent_micros = 20, requests = 1, hold_gen = 1, blocked_reason = 'daily_cap',
+  set inflight_micros = 10, inflight_requests = 1, spent_micros = 20, gen_spent_micros = 5, last_used_at = now(), requests = 1, hold_gen = 1, blocked_reason = 'daily_cap',
       reservation_id = gen_random_uuid(), settled_at = now()
   where id = 'cc_00000000000000000000000000000006'$$, 'the gateway updates the metering columns');
 select throws_ok($$update chalito_private.coding_credentials set models = '{grok-4.7}'$$,
@@ -84,6 +84,10 @@ select lives_ok($$insert into chalito.coding_spend_daily (owner, day, agent, cos
   on conflict (owner, day, agent) do update set cost_usd_micros = coding_spend_daily.cost_usd_micros + 5$$,
   'the gateway adds to the day''s spend');
 select throws_ok($$update chalito.coding_settings set daily_cap_tokens = 1$$, '42501', null, 'the gateway never changes a cap');
+select lives_ok($$insert into chalito_private.coding_finished (credential_id, seq) values ('cc_00000000000000000000000000000006', 1)$$,
+  'the gateway marks a request finished');
+select throws_ok($$insert into chalito_private.coding_finished (credential_id, seq) values ('cc_00000000000000000000000000000006', 1)$$,
+  '23505', null, 'once');
 select is((select tier from chalito.users where id = 'cm-a'), 'Pro', 'the gateway reads the tier');
 select throws_ok($$select email from chalito.users$$, '42501', null, 'but not the rest of the user');
 select is((select revoked from chalito.devices where device_id = 'cm_a_desk'), false, 'and whether the device is revoked');
@@ -100,6 +104,7 @@ select pg_temp.as_device('cm-a', 'cm_a_phone', 'client');
 select is((select daily_cap_tokens from chalito.coding_settings), 1000000::bigint, 'the owner reads the cap');
 select is((select requests from chalito.coding_spend_daily), 1, 'and the day''s spend');
 select throws_ok($$select 1 from chalito_private.coding_credentials$$, '42501', null, 'never a credential');
+select throws_ok($$select 1 from chalito_private.coding_finished$$, '42501', null, 'nor a finish marker');
 select throws_ok($$update chalito.coding_settings set daily_cap_tokens = 99999999$$, '42501', null,
   'a client can''t raise the cap directly (the api checks the passkey)');
 select pg_temp.as_device('cm-a', 'cm_a_old', 'client');
