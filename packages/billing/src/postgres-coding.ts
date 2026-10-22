@@ -140,6 +140,8 @@ class PgCodingTx implements CodingTx {
         billable_tokens = coding_spend_daily.billable_tokens + excluded.billable_tokens,
         requests = coding_spend_daily.requests + 1,
         updated_at = now()`;
+    await this.tx`
+      update chalito_private.coding_credentials set spent_micros = spent_micros + ${r.costMicros} where id = ${this.c.id}`;
     return true;
   }
 }

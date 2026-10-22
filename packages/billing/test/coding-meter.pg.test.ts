@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, describe, expect, it } from "vitest";
 import { loadPrices, loadProviders } from "@chalito/config";
-import { CodingMeter, codingWorstCaseMicros, type CodingRequest } from "../src/coding.js";
+import { CodingMeter, SETTLE_CUTOFF_MS, codingWorstCaseMicros, type CodingRequest } from "../src/coding.js";
 import { HubClient } from "../src/hub.js";
 import { drainOutbox } from "../src/outbox.js";
 import { PostgresCodingStore } from "../src/postgres-coding.js";
@@ -121,7 +121,7 @@ if (!url) {
       expect(day!.day.toISOString().slice(0, 10)).toBe("2026-10-21");
       expect(Number(day!.billable_tokens)).toBe(Math.ceil((usageCost * 2.6) / 4));
       expect(Number((await cred(id)).inflight_micros)).toBe(0);
-      expect(Number((await cred(id)).spent_micros ?? 0)).toBeGreaterThanOrEqual(0);
+      expect(Number((await cred(id)).spent_micros)).toBe(usageCost);
 
       expect((await drain()).sent).toBe(1);
       expect(hub.used(owner)).toBe(Math.ceil((usageCost * 2.6) / 4));
@@ -151,6 +151,17 @@ if (!url) {
         await admin`select requests, billable_tokens from chalito.coding_spend_daily where owner = ${owner}`;
       expect(day).toMatchObject({ requests: 1 });
       expect(Number(day!.billable_tokens)).toBe(Math.ceil((usageCost * 2.6) / 4));
+      expect(Number((await cred(id)).inflight_micros)).toBe(worst);
+    });
+
+    it("a refused upstream call finished twice releases its hold once (another request stays held)", async () => {
+      const { id, meter } = await setup();
+      const a = await meter.begin(id, req);
+      const b = await meter.begin(id, req);
+      if (!a.ok || !b.ok) throw new Error("refused");
+      await meter.finish(a.ticket, { input: 0, output: 0 }, { outputBytes: 0 });
+      await meter.finish(a.ticket, { input: 0, output: 0 }, { outputBytes: 0 });
+      expect(await cred(id)).toMatchObject({ inflight_requests: 1 });
       expect(Number((await cred(id)).inflight_micros)).toBe(worst);
     });
 
@@ -232,7 +243,7 @@ if (!url) {
     });
 
     it("a session that ends while its request is still streaming keeps that request against the cap", async () => {
-      const { owner, id, meter } = await setup();
+      const { owner, id, meter, drain } = await setup();
       const second = `cc_${randomBytes(16).toString("hex")}`;
       await admin`insert into chalito_private.coding_credentials (id, token_hash, owner, device_id, sid, agent, provider, models, expires_at, created_at)
         select ${second}, ${createHash("sha256").update(second).digest("hex")}, owner, device_id, 'sid2', agent, provider, models, expires_at, created_at
@@ -242,10 +253,38 @@ if (!url) {
       const a = await meter.begin(id, req);
       if (!a.ok) throw new Error("refused");
       await admin`update chalito_private.coding_credentials set revoked_at = now(), revoked_reason = 'session_end' where id = ${id}`;
-      expect(await meter.settle(id)).toBe("settled");
+      // The hold stays while the request streams; the cap still counts it.
+      expect(await meter.settle(id)).toBe("open");
       expect(await meter.begin(second, req)).toEqual({ ok: false, reason: "daily_cap" });
       await meter.finish(a.ticket, usage, { outputBytes: 0 });
       expect((await meter.begin(second, req)).ok).toBe(true);
+      // Once the hub has the usage, the hold closes.
+      expect(await meter.settle(id)).toBe("open");
+      await drain();
+      expect(hub.used(owner)).toBe(Math.ceil((usageCost * 2.6) / 4));
+      expect(await meter.settle(id)).toBe("settled");
+    });
+
+    it("past the cutoff a hold closes even with a request that never finished; a hold the hub forgot (404) counts as closed", async () => {
+      const { id, meter } = await setup();
+      const a = await meter.begin(id, req);
+      if (!a.ok) throw new Error("refused");
+      await admin`update chalito_private.coding_credentials set revoked_at = ${new Date(clock)}, revoked_reason = 'session_end' where id = ${id}`;
+      expect(await meter.settle(id)).toBe("open");
+      clock += SETTLE_CUTOFF_MS + 1;
+      expect(await meter.settle(id)).toBe("settled");
+      expect(await cred(id)).toMatchObject({ inflight_requests: 0 });
+      expect(Number((await cred(id)).inflight_micros)).toBe(0);
+      clock = Date.UTC(2026, 9, 21, 18);
+
+      const other = await setup();
+      const b = await other.meter.begin(other.id, req);
+      if (!b.ok) throw new Error("refused");
+      await other.meter.finish(b.ticket, usage, { outputBytes: 0 });
+      await other.drain();
+      await admin`update chalito_private.coding_credentials set revoked_at = now(), revoked_reason = 'session_end',
+        reservation_id = ${randomUUID()} where id = ${other.id}`;
+      expect(await other.meter.settle(other.id)).toBe("settled");
     });
 
     it("a session has at most maxInflightPerSession requests in flight", async () => {
@@ -340,11 +379,12 @@ if (!url) {
     });
 
     it("settle: a revoked credential's hold closes at the hub; the sweep closes expired ones too", async () => {
-      const { id, meter } = await setup();
+      const { id, meter, drain } = await setup();
       const a = await meter.begin(id, req);
       if (!a.ok) throw new Error("refused");
       await meter.finish(a.ticket, usage, { outputBytes: 0 });
       expect(await meter.settle(id)).toBe("open"); // still live
+      await drain();
       clock += 2 * 86_400_000 + 1;
       expect(await meter.sweep()).toBeGreaterThanOrEqual(1);
       expect(holds(id)[0]!.status).toBe("succeeded");

@@ -22,6 +22,9 @@ export const CODING_PROVIDER: Record<CodingAgent, CodingProvider> = {
 /** The owner's day when users.tz is unset (the product's home market). */
 export const DEFAULT_TZ = "America/Mexico_City";
 
+/** How long a hold stays open after its session ended, for requests still streaming and unsent usage. */
+export const SETTLE_CUTOFF_MS = 20 * 60_000;
+
 export const codingHoldJobId = (credentialId: string, gen: number) => `coding:${credentialId}:${gen}`;
 /** Each request's usage event; `r` keeps it apart from the hold's job ids. */
 export const codingSourceId = (credentialId: string, seq: number) => `coding:${credentialId}:r${seq}`;
@@ -194,8 +197,13 @@ export class CodingMeter {
       cfg: CodingManagedConfig;
       reserveBasis: ReserveBasis;
       now: () => number;
+      log?: (msg: string, meta: Record<string, unknown>) => void;
     },
   ) {}
+  /** Settles that threw, by credential: retried after this instant. */
+  readonly #backoff = new Map<string, number>();
+  /** Tickets already finished here (a refused call bills nothing, so the outbox can't dedupe it). */
+  readonly #finished = new WeakSet<CodingTicket>();
 
   #eligible(tier: string | null) {
     const t = hubTierOf(tier);
@@ -277,6 +285,7 @@ export class CodingMeter {
    *  transaction. Idempotent per ticket (the event's source_id). */
   async finish(t: CodingTicket, usage: TokenUsage | null, fallback: CodingFallback): Promise<{ costMicros: number }> {
     const now = this.d.now();
+    if (this.#finished.has(t)) return { costMicros: 0 };
     const u: TokenUsage = usage ?? { input: t.inputBound, output: Math.max(0, Math.ceil(fallback.outputBytes)) };
     const costMicros = llmCostMicros(this.d.prices, t.provider, t.model, u);
     const tokens = {
@@ -318,6 +327,7 @@ export class CodingMeter {
           inflightRequests: Math.max(0, c.inflightRequests - 1),
         });
     });
+    this.#finished.add(t);
     return { costMicros };
   }
 
@@ -329,22 +339,40 @@ export class CodingMeter {
       if (c.settledAt !== null) return "none" as const;
       if (c.revokedAt === null && c.expiresAt > now) return "open" as const;
       if (c.revokedAt === null) await tx.update({ revoked: { at: now, reason: "expired" } });
+      // The hold covers requests still streaming and usage the hub hasn't seen, up to a cutoff after the end.
+      const ended = c.revokedAt ?? c.expiresAt;
+      const busy = c.inflightRequests > 0 || (await tx.unsentMicros()) > 0;
+      if (busy && now - ended < SETTLE_CUTOFF_MS) return "open" as const;
       if (c.reservationId) {
         const s = await this.d.hub.settle({ reservation_id: c.reservationId, outcome: "succeeded" });
-        if (!s.ok && !s.closed) return "open" as const;
+        // 404: the hub no longer has the hold (purged or expired long ago); nothing left to close.
+        if (!s.ok && !s.closed && s.httpStatus !== 404) {
+          this.d.log?.("coding.settle_failed", { credential: c.id, httpStatus: s.httpStatus });
+          return "open" as const;
+        }
       }
-      await tx.update({ settledAt: now });
+      // Past the cutoff, requests that never finished (a crashed gateway) stop counting against the cap.
+      await tx.update({ settledAt: now, inflightMicros: 0, inflightRequests: 0 });
+      if (busy) this.d.log?.("coding.settled_with_inflight", { credential: c.id, inflight: c.inflightRequests });
       return "settled" as const;
     });
     return r ?? "none";
   }
 
-  /** Every minute: settles the holds of revoked and expired credentials. A hub hiccup waits for the next run. */
+  /** Every minute: settles the holds of revoked and expired credentials; a failing one waits a few runs. */
   async sweep(limit = 200): Promise<number> {
     let n = 0;
-    for (const id of await this.d.store.unsettled(this.d.now(), limit)) {
-      const r = await this.settle(id).catch(() => "open" as const);
-      if (r === "settled") n += 1;
+    const now = this.d.now();
+    for (const id of await this.d.store.unsettled(now, limit + this.#backoff.size)) {
+      if ((this.#backoff.get(id) ?? 0) > now) continue;
+      const r = await this.settle(id).catch((err: unknown) => {
+        this.d.log?.("coding.settle_error", { credential: id, error: err instanceof Error ? err.message : "error" });
+        return "error" as const;
+      });
+      if (r === "settled") {
+        n += 1;
+        this.#backoff.delete(id);
+      } else if (r === "error") this.#backoff.set(id, now + 5 * 60_000);
     }
     return n;
   }
