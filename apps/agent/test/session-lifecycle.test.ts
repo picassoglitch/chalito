@@ -520,3 +520,36 @@ describe("IA de Chalyb blocked (ADR 0030)", () => {
     expect(blocked[0]).toMatchObject({ sid: r.sid, reason: "out_of_energy", urgency: "normal" });
   });
 });
+
+describe("IA de Chalyb credential expiry (ADR 0030)", () => {
+  it("after an idle-expired credential ends the CLI, the next prompt restarts it on a fresh credential", async () => {
+    const issued: string[] = [];
+    let state: "active" | "expired" = "expired";
+    const h = await harness({
+      turns: [[{ say: "Listo." }], [{ say: "Otra vez." }]],
+      wrap: (inner) =>
+        new ManagedSessionAdapter("claude-code", {
+          source: {
+            issue: async (sid) => {
+              issued.push(sid);
+              return { id: `cc_${issued.length}`, token: "chc_x", baseUrl: "https://ai.test", model: "m" };
+            },
+            status: async () => ({ state, blockedReason: null }),
+            end: async () => undefined,
+          },
+          make: () => inner,
+        }),
+    });
+    const r = await h.start();
+    if (!r.ok) throw new Error(JSON.stringify(r));
+    await waitFor(() => h.states(r.sid!).includes("idle"));
+    // The credential expired: the CLI is ended, and the session waits, resumable.
+    expect(issued).toHaveLength(1);
+    state = "active";
+    await new Promise((res) => setTimeout(res, 50));
+    const p = await h.prompt(r.sid!, "sigue");
+    if (!p.ok) throw new Error(JSON.stringify(p));
+    await waitFor(() => issued.length === 2);
+    await waitFor(() => h.store.events.filter((e) => e.type === "message.assistant").length === 2);
+  });
+});
