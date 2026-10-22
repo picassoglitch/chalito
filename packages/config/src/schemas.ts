@@ -46,6 +46,48 @@ export const PricesConfig = z.object({
 });
 export type PricesConfig = z.infer<typeof PricesConfig>;
 
+export const CodingAgentId = z.enum(["claude-code", "codex", "grok-build", "gemini-cli"]);
+export type CodingAgentId = z.infer<typeof CodingAgentId>;
+
+/** How apps/ai-gateway speaks to the provider for a managed coding agent (ADR 0030). */
+export const ManagedWire = z.enum(["openai_responses", "gemini", "xai_responses"]);
+export type ManagedWire = z.infer<typeof ManagedWire>;
+
+/** "IA de Chalyb" for one coding agent: the models the gateway accepts and the output it allows. */
+const CodingAgentManaged = z
+  .object({
+    wire: ManagedWire,
+    /** The allowlist: every request names one of these (each must be priced in prices.yaml). */
+    models: z.array(z.string().min(1).max(80)).min(1).max(16),
+    defaultModel: z.string().min(1),
+    /** Output tokens per request at most: the gateway clamps the request's own limit to this. */
+    maxOutputTokens: z.number().int().positive().max(256_000),
+  })
+  .refine((m) => m.models.includes(m.defaultModel), { message: "defaultModel must be one of models" });
+
+const BillableTokens = z.number().int().nonnegative().max(1e11);
+
+/** Who may use managed coding agents and how much per day (ADR 0030). */
+export const CodingManagedConfig = z
+  .object({
+    /** Hub tiers (lowercase plans.yaml hubTiers ids) that may use it. Paid tiers only. */
+    tiers: z.array(z.enum(["pro", "vip"])).min(1),
+    dailyCap: z.object({
+      /** Billable tokens per owner local day when the owner never set a cap. */
+      default: BillableTokens,
+      /** The most an owner on that tier may raise it to (passkey step-up). */
+      ceiling: z.partialRecord(z.enum(["pro", "vip"]), BillableTokens),
+    }),
+    /** How long one session credential lives at most. */
+    credentialTtlSeconds: z.number().int().min(300).max(86_400),
+    /** The hub hold's ttl; every request re-admits it, so an idle session's hold lapses after this. */
+    holdTtlSeconds: z.number().int().min(60).max(86_400),
+  })
+  .refine((c) => c.tiers.every((t) => (c.dailyCap.ceiling[t] ?? -1) >= c.dailyCap.default), {
+    message: "every managed tier needs a daily-cap ceiling at or above the default",
+  });
+export type CodingManagedConfig = z.infer<typeof CodingManagedConfig>;
+
 export const ProvidersConfig = z.object({
   schemaVersion: z.literal(1),
   providers: z.record(
@@ -57,10 +99,18 @@ export const ProvidersConfig = z.object({
       managed: z.boolean(),
     }),
   ),
-  codingAgents: z.record(
-    z.enum(["claude-code", "codex", "grok-build"]),
-    z.object({ provider: Provider, auth: z.array(z.enum(["api_key", "chatgpt_plan", "grok_login"])).min(1) }),
-  ),
+  codingAgents: z
+    .record(
+      CodingAgentId,
+      z.object({
+        provider: Provider,
+        auth: z.array(z.enum(["api_key", "chatgpt_plan", "grok_login", "google_login"])).min(1),
+        managed: CodingAgentManaged.optional(),
+      }),
+    )
+    // ADR 0030: Anthropic's terms forbid paying for or intermediating Claude Code usage.
+    .refine((a) => !a["claude-code"]?.managed, { message: "claude-code can never be managed (ADR 0030)" }),
+  codingManaged: CodingManagedConfig,
 });
 export type ProvidersConfig = z.infer<typeof ProvidersConfig>;
 

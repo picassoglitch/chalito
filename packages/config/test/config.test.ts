@@ -12,7 +12,13 @@ import {
   loadSessions,
 } from "../src/load.js";
 import { isLintedFile, lintCurrency } from "../src/currency.js";
-import { CatalogConfig, SESSIONS_DEFAULTS, SessionsConfig } from "../src/schemas.js";
+import {
+  CatalogConfig,
+  CodingManagedConfig,
+  ProvidersConfig,
+  SESSIONS_DEFAULTS,
+  SessionsConfig,
+} from "../src/schemas.js";
 import { SkinEffect } from "@chalito/protocol";
 
 describe("config files", () => {
@@ -54,9 +60,42 @@ describe("config files", () => {
     expect(prices.images[models.images.avatar.provider]?.[models.images.avatar.model]?.perImage).toBeGreaterThan(0);
   });
 
-  it("coding agents never draw on the managed balance and Claude Code is API-key only", () => {
+  it("Claude Code is API-key only and never managed (ADR 0030)", () => {
     const p = loadProviders();
     expect(p.codingAgents["claude-code"].auth).toEqual(["api_key"]);
+    expect(p.codingAgents["claude-code"].managed).toBeUndefined();
+    const raw = {
+      ...p,
+      codingAgents: { ...p.codingAgents, "claude-code": { ...p.codingAgents.codex, provider: "anthropic" } },
+    };
+    expect(ProvidersConfig.safeParse(raw).success).toBe(false);
+  });
+
+  it("managed coding agents: Codex, Grok Build and Gemini CLI, every allowed model priced for its provider", () => {
+    const p = loadProviders();
+    const prices = loadPrices();
+    const managed = Object.entries(p.codingAgents).filter(([, a]) => a.managed);
+    expect(managed.map(([id]) => id).sort()).toEqual(["codex", "gemini-cli", "grok-build"]);
+    for (const [id, a] of managed)
+      for (const m of a.managed!.models)
+        expect(prices.llm[a.provider as keyof typeof prices.llm]?.[m], `${id}: ${a.provider}/${m}`).toBeDefined();
+  });
+
+  it("managed coding: paid hub tiers only, each with a ceiling at or above the default daily cap", () => {
+    const { codingManaged: c } = loadProviders();
+    const plans = loadPlans();
+    for (const t of c.tiers) {
+      expect(plans.hubTiers[t]?.access, t).not.toBe("none");
+      expect(c.dailyCap.ceiling[t]).toBeGreaterThanOrEqual(c.dailyCap.default);
+    }
+    expect(c.tiers).not.toContain("free");
+    // About five dollars a day at the hub's unit (4 micros per billable token).
+    expect(c.dailyCap.default).toBe(1_250_000);
+    const bad = {
+      ...c,
+      dailyCap: { ...c.dailyCap, ceiling: { pro: c.dailyCap.default - 1, vip: c.dailyCap.default } },
+    };
+    expect(CodingManagedConfig.safeParse(bad).success).toBe(false);
   });
 });
 

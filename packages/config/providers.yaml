@@ -28,8 +28,37 @@ providers:
     mcpConnector: none
     managed: true
 
-# Coding agents are always BYO, under the user's own auth, and never draw on the hub balance.
+# Coding agents run under the user's own auth (key or plan sign-in), or, for the agents with a
+# `managed` block, on "IA de Chalyb": apps/ai-gateway holds our provider keys, the agent gets an
+# opaque per-session token, and the usage is billed to the owner's hub balance (ADR 0030).
+# Claude Code is never managed: Anthropic's terms forbid paying for or intermediating its usage.
+# Every managed model needs a price in prices.yaml (config test). Grok Build 1.0.46 lists
+# grok-4.6/4.5 as built-ins; only priced models are allowed here.
 codingAgents:
   claude-code: { provider: anthropic, auth: [api_key] }
-  codex: { provider: openai, auth: [api_key, chatgpt_plan] }
-  grok-build: { provider: xai, auth: [api_key, grok_login] }
+  codex:
+    provider: openai
+    auth: [api_key, chatgpt_plan]
+    managed:
+      { wire: openai_responses, models: [gpt-5.6-luna, gpt-6-luna], defaultModel: gpt-5.6-luna, maxOutputTokens: 32000 }
+  grok-build:
+    provider: xai
+    auth: [api_key, grok_login]
+    managed: { wire: xai_responses, models: [grok-4.7, grok-4.3], defaultModel: grok-4.3, maxOutputTokens: 32000 }
+  gemini-cli:
+    provider: google
+    auth: [api_key, google_login]
+    managed:
+      { wire: gemini, models: [gemini-3.1-flash-lite], defaultModel: gemini-3.1-flash-lite, maxOutputTokens: 32000 }
+
+# Who may use "IA de Chalyb" for coding agents, and how much per owner local day, in billable tokens
+# (1,250,000 at 4 micros each, with the hub's 160% margin, is the owner's "about 5 dollars a day").
+# Lowering the cap is free; raising it needs a passkey step-up and stops at the tier's ceiling.
+# The global switch is the CODING_MANAGED_ENABLED env var (api and ai-gateway), off by default.
+codingManaged:
+  tiers: [pro, vip]
+  dailyCap:
+    default: 1250000
+    ceiling: { pro: 5000000, vip: 12500000 }
+  credentialTtlSeconds: 43200
+  holdTtlSeconds: 3600

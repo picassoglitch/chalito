@@ -5,6 +5,8 @@ import { parse } from "yaml";
 import type { AgentOption } from "@/components/Onboarding";
 
 const AGENTS = ["claude-code", "codex", "grok-build"] as const;
+/** In providers.yaml, but not in this onboarding's guided list (it has no copy for them). */
+const NOT_GUIDED = ["gemini-cli"] as const;
 const PROVIDERS = ["anthropic", "openai", "xai"] as const;
 
 /**
@@ -17,7 +19,10 @@ export const agentOptions = (): AgentOption[] => {
     providers: Record<string, { subscriptionLocal?: unknown }>;
     codingAgents: Record<string, { provider: string; auth: string[] }>;
   };
-  return Object.entries(raw.codingAgents).map(([agent, a]) => {
+  const guided = Object.entries(raw.codingAgents).filter(
+    ([agent]) => !(NOT_GUIDED as readonly string[]).includes(agent),
+  );
+  return guided.map(([agent, a]) => {
     if (!(AGENTS as readonly string[]).includes(agent) || !(PROVIDERS as readonly string[]).includes(a.provider))
       throw new Error(`providers.yaml: unexpected coding agent ${agent} (${a.provider})`);
     return {
