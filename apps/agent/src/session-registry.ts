@@ -39,12 +39,20 @@ export interface SessionRegistry {
 export const RECORD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const RECORD_MAX = 200;
 
-/** Newest first, at most RECORD_MAX, none older than RECORD_MAX_AGE_MS. */
-export const pruneRecords = (records: SessionRecord[], now: number): SessionRecord[] =>
-  records
+/** ADR 0031 §6a: terminal-started records kept, so they never push the owner's other sessions out. */
+export const LOCAL_CLI_RECORD_MAX = 20;
+
+/** Newest first, at most RECORD_MAX (terminal ones last, at most LOCAL_CLI_RECORD_MAX), none too old. */
+export const pruneRecords = (records: SessionRecord[], now: number): SessionRecord[] => {
+  const fresh = records
     .filter((r) => now - r.lastActiveAt <= RECORD_MAX_AGE_MS)
-    .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
-    .slice(0, RECORD_MAX);
+    .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+  const others = fresh.filter((r) => r.startedBy !== "local:cli").slice(0, RECORD_MAX);
+  const cli = fresh
+    .filter((r) => r.startedBy === "local:cli")
+    .slice(0, Math.min(LOCAL_CLI_RECORD_MAX, RECORD_MAX - others.length));
+  return [...others, ...cli].sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+};
 
 /** The file-backed registry. An unreadable file is ignored (nothing to resume), never fatal. */
 export class FileSessionRegistry implements SessionRegistry {

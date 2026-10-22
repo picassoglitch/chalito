@@ -47,7 +47,7 @@ export class LinkTools {
    * `a2a:`) never gets the tools, so an outside task can't hop on through them.
    */
   attach(sid: string, startedBy: Origin): McpServerSpec | null {
-    if (startedBy.startsWith("mcp:") || startedBy.startsWith("a2a:")) return null;
+    if (startedBy.startsWith("mcp:") || startedBy.startsWith("a2a:") || startedBy === "local:cli") return null;
     if (this.d.links.senderLinks(sid).length === 0) return null;
     const launch = this.d.mcpLaunch();
     if (!launch) return null;

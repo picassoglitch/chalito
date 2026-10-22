@@ -87,7 +87,7 @@ export const originAllowed = (
   },
   origin: Origin,
 ) =>
-  origin === "local"
+  origin === "local" || origin === "local:cli"
     ? origins.local
     : origin.startsWith("client:")
       ? origins.client

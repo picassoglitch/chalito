@@ -55,6 +55,8 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
+import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
+import { codeService } from "./code/service.js";
 import { FileLinkStorage, LinkManager, LinkTools, MemoryLinkCloud } from "./links/index.js";
 import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
@@ -195,6 +197,8 @@ export interface DaemonDeps {
   ipcSecret?: string | null;
   /** Defaults to ~/.chalito/agent.sock (a named pipe on Windows). */
   ipcPath?: string;
+  /** `chalito code`'s socket (ADR 0031 §1); default ~/.chalito/code.sock. */
+  codePath?: string;
   /** The OS check for enabling Developer mode from the panel (os-auth.ts in production). */
   osAuth?: () => OsAuth;
   /** The providers' CLIs (install, sign-in, status); tests pass a fake. */
@@ -601,16 +605,14 @@ const startDaemon = async (
   const allowSignIn = deps.signInAllowed ?? ((p: Provider) => signInAllowed(p));
   const currentConfig = (): PairedConfig => requirePaired(readConfig(dir, env, { keys: id.sign }));
   // First Run D: what the checklist reads (pinned app ids, folder count and labels; never paths).
-  const reportSetup = setupReporter(
-    () =>
-      deviceSetup(currentConfig(), policy.get(), (appId) => {
-        const r = catalog.get(appId)?.recipe;
-        return !!r && r.kinds.some((k) => SESSION_KINDS.has(k));
-      }),
-    async (setup) => {
-      if (store) await store.updateDevice({ presence: { setup } });
-    },
-  );
+  const readSetup = () =>
+    deviceSetup(currentConfig(), policy.get(), (appId) => {
+      const r = catalog.get(appId)?.recipe;
+      return !!r && r.kinds.some((k) => SESSION_KINDS.has(k));
+    });
+  const reportSetup = setupReporter(readSetup, async (setup) => {
+    if (store) await store.updateDevice({ presence: { setup } });
+  });
   const catalog = new AppCatalog({
     dir,
     customEnables: () => policy.get().apps?.custom ?? {},
@@ -1384,6 +1386,7 @@ const startDaemon = async (
     await broker?.close().catch(() => undefined);
     await linksBroker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
+    await codeServer?.close().catch(() => undefined);
     await lan?.stop("agent_stop").catch(() => undefined);
     links.close();
     await cloud.close().catch(() => undefined);
@@ -1394,6 +1397,22 @@ const startDaemon = async (
   const onSignal = deps.onSignal ?? ((sig, fn) => process.once(sig, fn));
   onSignal("SIGTERM", () => void stop("SIGTERM"));
   onSignal("SIGINT", () => void stop("SIGINT"));
+
+  // ADR 0031: sessions typed at this computer; the panel's are `local`, `chalito code`'s `local:cli` (§6a).
+  const code = codeService(core, () => policy.get(), readSetup, "local");
+  let codeServer: CodeServer | null = null;
+  const codeAt = deps.codePath ?? codePath(dir);
+  if (codeAt)
+    try {
+      codeServer = await startCodeServer({
+        path: codeAt,
+        code: codeService(core, () => policy.get(), readSetup, "local:cli"),
+        onError: (method, err) =>
+          log.warn("code.request_failed", { method, error: err instanceof Error ? err.message : "error" }),
+      });
+    } catch (err) {
+      log.error("code.unavailable", { error: err instanceof Error ? err.message : "error" });
+    }
 
   // The desktop panel's local IPC (only with the app's secret).
   let ipc: IpcServer | null = null;
@@ -1425,6 +1444,7 @@ const startDaemon = async (
           identity: { deviceId: id.deviceId, pubSign: id.pubSign, pubBox: id.pubBox },
           audit: auditAgent,
           chalitoDir: dir,
+          code,
         }),
         onError: (method, err) =>
           log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),
