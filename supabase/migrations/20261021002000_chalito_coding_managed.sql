@@ -126,3 +126,53 @@ create policy ai_gateway_read on chalito_private.usage_outbox for select to chal
 -- A device revoked since its credential was issued is refused on the next request.
 grant select (owner, device_id, revoked) on chalito.devices to chalito_ai_gateway;
 create policy ai_gateway_read on chalito.devices for select to chalito_ai_gateway using (true);
+
+-- ---------------------------------------------------------------- the "chalyb" connect method
+-- An agent reports a coding agent connected on "IA de Chalyb" (mode chalyb); otherwise as in 20261015000400.
+create or replace function chalito_private.valid_connection_doc(d jsonb)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select jsonb_typeof(d) = 'object' and (
+    -- Before 2026-10-06 (settings migration 001100).
+    ((d - array['mode', 'connected', 'updated_at']) = '{}'::jsonb
+     and d ->> 'mode' in ('byo_api_key', 'byo_subscription_local', 'byo_mcp_connector', 'managed')
+     and jsonb_typeof(d -> 'connected') = 'boolean'
+     and (not d ? 'updated_at' or jsonb_typeof(d -> 'updated_at') in ('number', 'string')))
+    or
+    -- ProviderConnectionDoc (migration 20261006000100) and AppConnectionDoc (this one): the same
+    -- core, plus kind/custom/name for apps.
+    ((d - array['mode', 'connected', 'state', 'cli', 'error', 'at', 'kind', 'custom', 'name']) = '{}'::jsonb
+     and d ?& array['mode', 'connected', 'state', 'cli', 'error', 'at']
+     and (jsonb_typeof(d -> 'mode') = 'null' or d ->> 'mode' in ('api_key', 'signin', 'chalyb'))
+     and jsonb_typeof(d -> 'connected') = 'boolean'
+     and d ->> 'state' in ('not_installed', 'installing', 'needs_auth', 'signing_in', 'connected', 'error',
+                           'blocked_by_policy', 'available')
+     and (d -> 'connected') = to_jsonb(d ->> 'state' = 'connected')
+     and jsonb_typeof(d -> 'cli') = 'object'
+     and ((d -> 'cli') - array['installed', 'version']) = '{}'::jsonb
+     and jsonb_typeof(d -> 'cli' -> 'installed') = 'boolean'
+     and (jsonb_typeof(d -> 'cli' -> 'version') = 'null'
+          or (jsonb_typeof(d -> 'cli' -> 'version') = 'string' and length(d -> 'cli' ->> 'version') <= 64))
+     and (jsonb_typeof(d -> 'error') = 'null'
+          or d ->> 'error' in ('install_failed', 'install_unconfirmed', 'npm_missing', 'pin_failed', 'signin_failed',
+                               'signin_timeout', 'key_invalid', 'keychain_failed', 'status_failed',
+                               'launch_failed', 'unsupported_platform', 'install_unavailable', 'recipe_disabled'))
+     and jsonb_typeof(d -> 'at') = 'number'
+     -- kind and custom come together (an app doc) or not at all (a provider doc).
+     and (d ? 'kind') = (d ? 'custom')
+     and (not d ? 'kind'
+          or d ->> 'kind' in ('claude-sdk', 'codex', 'acp', 'terminal', 'desktop-app', 'web-app', 'chat-api', 'a2a'))
+     and (not d ? 'custom' or jsonb_typeof(d -> 'custom') = 'boolean')
+     -- The only name ever uploaded: a custom recipe's own (the hub has no catalog entry for it).
+     and (not d ? 'name'
+          or (jsonb_typeof(d -> 'name') = 'string' and length(d ->> 'name') between 1 and 60
+              and (d -> 'custom') = 'true'::jsonb))
+     -- The new state and error codes belong to app docs only.
+     and (d ? 'kind' or (d ->> 'state' <> 'available'
+          and coalesce(d ->> 'error', '') not in ('launch_failed', 'unsupported_platform', 'install_unavailable',
+                                                  'recipe_disabled'))))
+  )
+$$;

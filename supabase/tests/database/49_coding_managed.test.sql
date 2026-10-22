@@ -2,7 +2,7 @@
 -- and chalito_ai_gateway writes only metering and coding usage events.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(35);
+select plan(37);
 grant usage on schema extensions to chalito_server, chalito_ai_gateway;
 
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language plpgsql as $$
@@ -107,6 +107,12 @@ select is((select count(*)::int from chalito.coding_settings), 0, 'a revoked dev
 select pg_temp.as_device('cm-b', 'cm_b_phone', 'client');
 select is((select count(*)::int from chalito.coding_spend_daily) + (select count(*)::int from chalito.coding_settings), 0,
   'another owner sees nothing');
+
+-- ================================================================ the chalyb connect method
+select ok(chalito_private.valid_connection_doc('{"mode": "chalyb", "connected": true, "state": "connected",
+  "cli": {"installed": true, "version": "0.163.0"}, "error": null, "at": 1}'), 'a connection doc may say chalyb');
+select ok(not chalito_private.valid_connection_doc('{"mode": "ours", "connected": true, "state": "connected",
+  "cli": {"installed": true, "version": null}, "error": null, "at": 1}'), 'but no other new mode');
 
 -- ================================================================ account deletion
 reset role;
