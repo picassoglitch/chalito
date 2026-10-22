@@ -4,16 +4,22 @@ import type { CodingProvider } from "@chalito/billing";
  *  outside the token usage we meter (hosted tools, stored state, priority tiers, extra candidates) never leaves. */
 export type Sanitized = { ok: true; body: Record<string, unknown> } | { ok: false; error: string };
 
-/** Any media referenced by URL or file id, anywhere in the body: the provider fetches and bills it beyond our bytes. */
-const MEDIA_REF_KEYS = new Set(["image_url", "file_url", "file_id", "fileData", "file_data", "fileUri", "file_uri"]);
+/** Media the provider bills beyond the body's bytes: anything by URL or file id, and inline files other than
+ *  images (billed per page or second). Only inline images (data:image/…, inlineData image/*) pass. */
+const BY_REF = new Set(["file_url", "file_id", "fileData", "file_data", "fileUri", "file_uri"]);
+const inlineImage = (v: unknown) => typeof v === "string" && v.startsWith("data:image/");
 const refersToMedia = (v: unknown, depth = 0): boolean => {
   if (depth > 64 || !v || typeof v !== "object") return false;
   if (Array.isArray(v)) return v.some((x) => refersToMedia(x, depth + 1));
   for (const [k, x] of Object.entries(v)) {
-    if (MEDIA_REF_KEYS.has(k) && !(typeof x === "string" && x.startsWith("data:"))) {
-      // image_url may be { url } in some shapes: only inline data passes.
-      const url = typeof x === "object" && x && "url" in x ? (x as { url: unknown }).url : null;
-      if (!(typeof url === "string" && url.startsWith("data:"))) return true;
+    if (BY_REF.has(k)) return true;
+    if (k === "image_url") {
+      const url = typeof x === "object" && x && "url" in x ? (x as { url: unknown }).url : x;
+      if (!inlineImage(url)) return true;
+    }
+    if ((k === "inlineData" || k === "inline_data") && x && typeof x === "object") {
+      const mime = (x as Record<string, unknown>).mimeType ?? (x as Record<string, unknown>).mime_type;
+      if (!(typeof mime === "string" && mime.startsWith("image/"))) return true;
     }
     if (refersToMedia(x, depth + 1)) return true;
   }

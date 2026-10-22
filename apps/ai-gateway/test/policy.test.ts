@@ -52,6 +52,35 @@ describe("Responses bodies are rebuilt from an allowlist (ADR 0030)", () => {
     expect(sanitizeResponses(msg({ type: "input_text", text: "see https://x.test" }), "openai", 1).ok).toBe(true);
   });
 
+  it("files are billed per page, beyond their bytes: only inline images pass", () => {
+    const msg = (part: Record<string, unknown>) => ({ ...codex, input: [{ role: "user", content: [part] }] });
+    expect(
+      sanitizeResponses(
+        msg({ type: "input_file", filename: "a.pdf", file_data: "data:application/pdf;base64,AAAA" }),
+        "openai",
+        1,
+      ),
+    ).toEqual({ ok: false, error: "media_url_not_allowed" });
+    expect(
+      sanitizeResponses(msg({ type: "input_image", image_url: "data:application/pdf;base64,AAAA" }), "openai", 1),
+    ).toEqual({ ok: false, error: "media_url_not_allowed" });
+    for (const part of [
+      { inlineData: { mimeType: "application/pdf", data: "AAAA" } },
+      { inline_data: { mime_type: "video/mp4", data: "AAAA" } },
+    ])
+      expect(
+        sanitizeGemini({ contents: [{ role: "user", parts: [part] }] }, "generateContent", 1),
+        JSON.stringify(part),
+      ).toEqual({ ok: false, error: "media_url_not_allowed" });
+    expect(
+      sanitizeGemini(
+        { contents: [{ role: "user", parts: [{ inline_data: { mime_type: "image/jpeg", data: "AAAA" } }] }] },
+        "generateContent",
+        1,
+      ).ok,
+    ).toBe(true);
+  });
+
   it("stored state and background work are refused", () => {
     for (const extra of [
       { previous_response_id: "r" },
