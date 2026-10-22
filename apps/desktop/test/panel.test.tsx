@@ -246,6 +246,11 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
       calls.push(["closeScreen", sid]);
       scr = { ...scr, active: scr.active.filter((a) => a.sid !== sid) };
     },
+    links: async () => ({ links: [], pendingPublish: [], self: null }),
+    linkChallenge: async (mode) => ({ mode, summary: [], phrase: "LINK AGENTS" }),
+    addLink: async () => ({ ok: false, reason: "cancelled" }),
+    revokeLink: async () => ({ revoked: false }),
+    revokeAllLinks: async () => ({ revoked: 0 }),
     ...over,
   };
 };
@@ -253,7 +258,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(6));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(7));
   });
 
   it("policy view shows the chain head and rules", async () => {

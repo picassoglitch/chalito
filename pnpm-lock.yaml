@@ -265,6 +265,9 @@ importers:
       '@chalito/client-keys':
         specifier: workspace:*
         version: link:../../packages/client-keys
+      '@chalito/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@chalito/glyph':
         specifier: workspace:*
         version: link:../../packages/glyph
@@ -314,9 +317,6 @@ importers:
       '@chalito/brand':
         specifier: workspace:*
         version: link:../../packages/brand
-      '@chalito/crypto':
-        specifier: workspace:*
-        version: link:../../packages/crypto
       '@tauri-apps/cli':
         specifier: 2.12.1
         version: 2.12.1

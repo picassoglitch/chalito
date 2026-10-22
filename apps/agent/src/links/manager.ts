@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolve, sep } from "node:path";
 import { LinkProjector, type AdapterEvent } from "@chalito/adapters";
 import {
+  deriveDeviceId,
   fromB64url,
   openJson,
   randomNonce,
@@ -342,6 +343,10 @@ export class LinkManager implements LinkAuthorizer {
     const self = this.d.deviceId;
     if (link.sender.deviceId !== self && link.receiver.deviceId !== self)
       return { ok: false, reason: "link_wrong_endpoint" };
+    // A device id is derived from its signing key: an end naming one device with another's keys is forged.
+    for (const end of [link.sender, link.receiver])
+      if (end.pubSign !== undefined && (await deriveDeviceId(await fromB64url(end.pubSign))) !== end.deviceId)
+        return { ok: false, reason: "link_key_mismatch" };
     if (link.receiver.deviceId === self && !this.d.policy().workspaces.some((w) => w.label === link.workspaceLabel))
       return { ok: false, reason: "link_out_of_scope" };
     if (this.#state.revoked.some((r) => r.id === link.id) || this.#state.links.some((l) => l.id === link.id))
