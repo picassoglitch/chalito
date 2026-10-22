@@ -222,6 +222,17 @@ describe("ClientActions commands", () => {
     await expect(actions.prompt("nope", "x")).rejects.toMatchObject({ code: "unknown_session" });
   });
 
+  it("transferSession goes to the computer running the session, naming the other one (ADR 0031)", async () => {
+    const { agent, db, live, actions } = await setup();
+    seedSession(db, agent);
+    await live.resync();
+    await actions.transferSession("s1", "dev_laptop");
+    const c = commandOf(db);
+    expect(c.env.body.payload).toEqual({ type: "session.transfer", sid: "s1", toDeviceId: "dev_laptop" });
+    expect(db.rows("commands").at(-1)!.target_device_id).toBe(agent.deviceId);
+    await expect(actions.transferSession("nope", "dev_laptop")).rejects.toMatchObject({ code: "unknown_session" });
+  });
+
   it("never seals to, or commands, an agent this device hasn't verified locally", async () => {
     const { agent, db, live, actions } = await setup({ trustAgent: false });
     seedSession(db, agent);

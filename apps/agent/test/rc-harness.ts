@@ -154,7 +154,13 @@ export const agentFor = async (
     now: Date.now,
     log: createLogger(() => undefined),
   });
+  // The host the core gives its link manager, for tests that call it directly.
+  let linkHost: Parameters<LinkManager["attach"]>[0] | null = null;
+  const attach = links.attach.bind(links);
+  links.attach = (h) => ((linkHost = h), attach(h));
   const adapter = new FakeAdapter();
+  /** Timers the core and its parts set; a test fires them by hand. */
+  const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
   const core = new AgentCore({
     store,
     adapters: { "claude-code": adapter },
@@ -178,7 +184,11 @@ export const agentFor = async (
           },
         }
       : {}),
-    setTimer: () => ({ clear: () => undefined }),
+    setTimer: (fn, ms) => {
+      const t = { fn, ms, cleared: false };
+      timers.push(t);
+      return { clear: () => void (t.cleared = true) };
+    },
   });
 
   let n = 0;
@@ -238,6 +248,8 @@ export const agentFor = async (
     links,
     cloud,
     audits,
+    timers,
+    linkHost: () => linkHost!,
     command,
     answer,
     policy: holder,

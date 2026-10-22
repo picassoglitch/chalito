@@ -18,6 +18,8 @@ export interface CodeService {
   }): Promise<CommandResult>;
   prompt(sid: string, text: string): Promise<CommandResult>;
   stop(sid: string): Promise<CommandResult>;
+  /** ADR 0031 §4: the panel's "Mover a otra computadora" (code.sock has no such method). */
+  transfer(sid: string, toDeviceId: string): Promise<CommandResult>;
   tap(fn: LocalTap): () => void;
 }
 
@@ -50,5 +52,6 @@ export const codeService = (
   start: (i) => core.localCommand(origin, { type: "session.start", ...i }),
   prompt: (sid, text) => core.localCommand(origin, { type: "session.prompt", sid, text }),
   stop: (sid) => core.localCommand(origin, { type: "session.interrupt", sid }),
+  transfer: (sid, toDeviceId) => core.localCommand(origin, { type: "session.transfer", sid, toDeviceId }),
   tap: (fn) => core.tap(fn),
 });
