@@ -146,6 +146,29 @@ describe("ManagedSessionAdapter", () => {
     expect(source.ended).toEqual(["cc_s1"]);
   });
 
+  it("a session whose CLI crashed (done rejects) still revokes its credential, without an unhandled rejection", async () => {
+    const source = new Source();
+    let fail: (e: Error) => void = () => undefined;
+    const a = new ManagedSessionAdapter("codex", {
+      source,
+      make: () => ({
+        kind: "codex",
+        start: async () => ({
+          prompt() {},
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          close() {},
+          done: new Promise<void>((_, rej) => (fail = rej)),
+        }),
+      }),
+    });
+    const h = await a.start(opts([]));
+    h.done.catch(() => undefined);
+    fail(new Error("crash"));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(source.ended).toEqual(["cc_s1"]);
+  });
+
   it("refused at start for tokens or the cap: the same blocked event, and no CLI starts", async () => {
     const source = new Source();
     source.refuse = { blocked: "daily_cap" };
