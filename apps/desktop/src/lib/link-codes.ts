@@ -1,3 +1,4 @@
+import { deriveDeviceId, fromB64url as keyBytes } from "@chalito/crypto";
 import { AgentLink, DeviceId, LinkId, PubBox, PubSign } from "@chalito/protocol";
 import type { LinkIdentity, LinkSpec } from "./ipc.js";
 
@@ -37,25 +38,37 @@ const decode = (code: string, prefix: string): unknown => {
 export const deviceCode = (id: LinkIdentity): string =>
   DEVICE_PREFIX + toB64url(JSON.stringify({ deviceId: id.deviceId, pubSign: id.pubSign, pubBox: id.pubBox }));
 
-export const parseDeviceCode = (code: string): LinkIdentity | null => {
+/** A device id is derived from its signing key (as the agent's is): a code naming one device with another's keys is forged. */
+const keyMatchesId = async (deviceId: string, pubSign: string): Promise<boolean> => {
+  try {
+    return (await deriveDeviceId(await keyBytes(pubSign))) === deviceId;
+  } catch {
+    return false;
+  }
+};
+
+export const parseDeviceCode = async (code: string): Promise<LinkIdentity | null> => {
   const raw = decode(code, DEVICE_PREFIX) as Partial<Record<keyof LinkIdentity, unknown>> | null;
   if (!raw || typeof raw !== "object" || Object.keys(raw).length !== 3) return null;
   const ok =
     DeviceId.safeParse(raw.deviceId).success &&
     PubSign.safeParse(raw.pubSign).success &&
     PubBox.safeParse(raw.pubBox).success;
-  return ok ? { deviceId: raw.deviceId as string, pubSign: raw.pubSign as string, pubBox: raw.pubBox as string } : null;
+  if (!ok || !(await keyMatchesId(raw.deviceId as string, raw.pubSign as string))) return null;
+  return { deviceId: raw.deviceId as string, pubSign: raw.pubSign as string, pubBox: raw.pubBox as string };
 };
 
 export const linkCode = (spec: LinkSpec): string => LINK_PREFIX + toB64url(JSON.stringify(spec));
 
 /** A link made on the other computer, checked as the agent will check it (and not yet expired). */
-export const parseLinkCode = (code: string, now: number): LinkSpec | null => {
+export const parseLinkCode = async (code: string, now: number): Promise<LinkSpec | null> => {
   const raw = decode(code, LINK_PREFIX);
   if (!raw || typeof raw !== "object") return null;
   const r = AgentLink.safeParse({ ...raw, v: 1, createdAt: now, createdBy: "local" });
   if (!r.success) return null;
   const { v: _v, createdAt: _c, createdBy: _b, ...spec } = r.data;
+  for (const end of [spec.sender, spec.receiver])
+    if (end.pubSign !== undefined && !(await keyMatchesId(end.deviceId, end.pubSign))) return null;
   return spec;
 };
 

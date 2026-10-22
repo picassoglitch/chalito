@@ -200,7 +200,8 @@
         "link_wrong_endpoint": "neither end is this computer",
         "invalid": "invalid or already used link",
         "unavailable": "the agent isn't answering",
-        "not_found": "that link no longer exists"
+        "not_found": "that link no longer exists",
+        "link_key_mismatch": "the computer's id doesn't match its keys"
       },
       "shareCeiling": "no hand-offs",
       "ceilingFact": "highest permission: {ceiling}",

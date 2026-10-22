@@ -13,6 +13,7 @@ import { loadLiabilityText } from "@chalito/config";
 import {
   MemoryNonceStore,
   TrustedClientList,
+  deriveDeviceId,
   generateBoxKeyPair,
   generateSigningKeyPair,
   openJson,
@@ -82,6 +83,11 @@ const device = async (id: string): Promise<Device> => {
   const sign = await generateSigningKeyPair();
   const box = await generateBoxKeyPair();
   return { id, sign, box, pubSign: await toB64url(sign.publicKey), pubBox: await toB64url(box.publicKey) };
+};
+/** An agent's id is derived from its signing key (identity.ts); links refuse an end that isn't. */
+const agentDevice = async (): Promise<Device> => {
+  const d = await device("");
+  return { ...d, id: await deriveDeviceId(d.sign.publicKey) };
 };
 
 interface Run {
@@ -322,7 +328,7 @@ const baseLink = (o: Partial<AgentLink> & Pick<AgentLink, "sender" | "receiver">
 const oneDevice = async (o: Parameters<typeof agentFor>[3] = {}) => {
   const phone = await device("dev_phone");
   const passkey = new SoftAuthenticator({ origin: "https://chalito.chalyb.com" });
-  const a = await agentFor(await device("dev_agent"), phone, passkey, o);
+  const a = await agentFor(await agentDevice(), phone, passkey, o);
   return { a, phone, passkey };
 };
 
@@ -331,8 +337,8 @@ const twoDevices = async (o: { devToggles?: ("autoApproveHigh" | "autoApproveCri
   const phone = await device("dev_phone");
   const passkey = new SoftAuthenticator({ origin: "https://chalito.chalyb.com" });
   const cloud = new MemoryLinkCloud();
-  const devA = await device("dev_a");
-  const devB = await device("dev_b");
+  const devA = await agentDevice();
+  const devB = await agentDevice();
   const A = await agentFor(devA, phone, passkey, { ...o, cloud });
   const B = await agentFor(devB, phone, passkey, { ...o, cloud });
   const byId: Record<string, Agent> = { [devA.id]: A, [devB.id]: B };
@@ -518,6 +524,25 @@ describe("making links", () => {
     const x = await device("dev_x");
     const y = await device("dev_y");
     expect(await a.links.createLocal(baseLink(endpoints(x, y)))).toEqual({ ok: false, reason: "link_wrong_endpoint" });
+  });
+
+  it("an end whose device id isn't derived from its key is refused (a forged code naming my other computer)", async () => {
+    const { a } = await oneDevice();
+    const real = await agentDevice();
+    const attacker = await agentDevice();
+    const forged = { deviceId: real.id, pubSign: attacker.pubSign, pubBox: attacker.pubBox };
+    const me = { deviceId: a.self.id, pubSign: a.self.pubSign, pubBox: a.self.pubBox };
+    expect(await a.links.createLocal(baseLink({ sender: forged, receiver: me }))).toEqual({
+      ok: false,
+      reason: "link_key_mismatch",
+    });
+    const meForged = { ...me, pubSign: attacker.pubSign };
+    const peer = { deviceId: real.id, pubSign: real.pubSign, pubBox: real.pubBox };
+    expect(await a.links.createLocal(baseLink({ sender: meForged, receiver: peer }))).toEqual({
+      ok: false,
+      reason: "link_key_mismatch",
+    });
+    expect((await a.links.createLocal(baseLink({ sender: peer, receiver: me }))).ok).toBe(true);
   });
 
   it("the links file is signed: an edited file loads as no links", async () => {
@@ -966,7 +991,7 @@ describe("revoke", () => {
   it("revoke-all (ADR 0020 bundle) clears every link on the device", async () => {
     const phone = await device("dev_phone");
     const passkey = new SoftAuthenticator({ origin: "https://chalito.chalyb.com" });
-    const a = await agentFor(await device("dev_agent"), phone, passkey);
+    const a = await agentFor(await agentDevice(), phone, passkey);
     const other = await device("dev_tablet");
     await sameDeviceHandoff(a);
     await sameDeviceHandoff(a, { mode: "share" });
@@ -1291,7 +1316,7 @@ describe("session link tools (M16 F): a running agent hands off or shares itself
     const share = await sameDeviceHandoff(a, { mode: "share", confirm: false });
     const other = await a.ownSession();
     const pinned = await sameDeviceHandoff(a, { confirm: false, sender: { deviceId: a.self.id, sessionId: other } });
-    const peer = await device("dev_peer");
+    const peer = await agentDevice();
     const inbound = await a.links.createLocal(
       baseLink({
         sender: { deviceId: peer.id, pubSign: peer.pubSign, pubBox: peer.pubBox },

@@ -2,7 +2,7 @@
 // `invokeIpc` going through `ipcHandlers` as the native side would carry it.
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { generateBoxKeyPair, generateSigningKeyPair, toB64url } from "@chalito/crypto";
+import { deriveDeviceId, generateBoxKeyPair, generateSigningKeyPair, toB64url } from "@chalito/crypto";
 import { keyFingerprint } from "@chalito/client-keys";
 import type { Locale } from "@chalito/protocol";
 import { ipcHandlers } from "../../agent/src/ipc-handlers.js";
@@ -17,10 +17,13 @@ import { Links } from "../src/panel/Links.js";
 afterEach(cleanup);
 
 const OWNER = "hub-user-1";
+const short = (deviceId: string) => deviceId.slice(0, 8);
 
 /** One computer: its keys, a real LinkManager, and the real IPC handlers behind the panel's client. */
-const computer = async (id: string, o: { workspaces?: string[]; osAuth?: boolean } = {}) => {
+// `_name` only labels the call; the id is derived from the key, as an agent's is (identity.ts).
+const computer = async (_name: string, o: { workspaces?: string[]; osAuth?: boolean } = {}) => {
   const sign = await generateSigningKeyPair();
+  const id = await deriveDeviceId(sign.publicKey);
   const box = await generateBoxKeyPair();
   const pubSign = await toB64url(sign.publicKey);
   const pubBox = await toB64url(box.publicKey);
@@ -126,8 +129,8 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     expect(link).toMatchObject({
       mode: "handoff",
       createdBy: "local",
-      sender: { deviceId: "dev_a1" },
-      receiver: { deviceId: "dev_a1" },
+      sender: { deviceId: a.id },
+      receiver: { deviceId: a.id },
       workspaceLabel: "chalito",
       goal: "Revisar mis PR",
       confirm: true,
@@ -154,7 +157,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Pegar un enlace de otra computadora…" }));
     fireEvent.change(screen.getByLabelText("Código del enlace"), { target: { value: code } });
     fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
-    await screen.findByText(/Encargo: dev_a1 → Esta computadora/);
+    await screen.findByText(`Encargo: ${short(a.id)} → Esta computadora`);
     fireEvent.click(screen.getByRole("button", { name: "Continuar" }));
     await passChallenge();
     await screen.findByText("Enlace creado.");
@@ -173,7 +176,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     const a = await computer("dev_a1");
     const b = await computer("dev_b1");
     const c = await computer("dev_c1");
-    const spec = parseLinkCode(
+    const spec = (await parseLinkCode(
       linkCode({
         id: "lnk_abcdefgh12345678",
         mode: "handoff",
@@ -188,18 +191,26 @@ describe("panel → agent: making hand-off links (D-070)", () => {
         permissionCeiling: "default",
       }),
       Date.now(),
-    )!;
+    ))!;
     renderLinks(a.ipc);
     fireEvent.click(await screen.findByRole("button", { name: "Pegar un enlace de otra computadora…" }));
     const box = screen.getByLabelText("Código del enlace");
     fireEvent.change(box, { target: { value: linkCode(spec) } });
     fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
     await screen.findByText(/Ese enlace no es para esta computadora/);
-    // A's id with someone else's keys: A's relays wouldn't verify on the other end.
+    // A's id with someone else's keys: the id isn't derived from those keys, so the code is forged.
     const forged = { ...spec, receiver: { deviceId: a.id, pubSign: c.pubSign, pubBox: c.pubBox } };
     fireEvent.change(box, { target: { value: linkCode(forged) } });
     fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
+    await screen.findByText(/no es válido o ya venció/);
+    // Both ends this computer, the receiver pinned: the pin check can't be dodged by the first end.
+    const me = { deviceId: a.id, pubSign: a.pubSign, pubBox: a.pubBox };
+    const doubled = { ...spec, sender: me, receiver: { ...me, sessionId: "s_pinned1" } };
+    fireEvent.change(box, { target: { value: linkCode(doubled) } });
+    fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
+    await waitFor(() => expect(screen.queryByText(/no es válido o ya venció/)).toBeNull());
     await screen.findByText(/Ese enlace no es para esta computadora/);
+    expect(screen.queryByRole("button", { name: "Continuar" })).toBeNull();
     fireEvent.change(box, { target: { value: "chalito-link:not-json" } });
     fireEvent.click(screen.getByRole("button", { name: "Revisar" }));
     await screen.findByText(/no es válido o ya venció/);
@@ -309,6 +320,31 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     renderLinks(a.ipc);
     await fillNew({ otherCode: "chalito-pc:garbage", goal: "x", workspace: "repo" });
     await screen.findByText(/El código de la otra computadora no es válido/);
+    // My other computer's id with an attacker's keys: refused, and the agent refuses it too.
+    const b = await computer("dev_b1");
+    const evil = await computer("dev_evil");
+    const forged = { deviceId: b.id, pubSign: evil.pubSign, pubBox: evil.pubBox };
+    fireEvent.change(screen.getByLabelText(/Código de la otra computadora/), { target: { value: deviceCode(forged) } });
+    fireEvent.click(screen.getByRole("button", { name: "Continuar" }));
+    await waitFor(() => expect(screen.getAllByText(/El código de la otra computadora no es válido/)).toHaveLength(1));
+    expect(
+      await a.ipc.addLink(
+        {
+          id: "lnk_forgedpeer1234",
+          mode: "handoff",
+          sender: { deviceId: a.id, pubSign: a.pubSign, pubBox: a.pubBox },
+          receiver: forged,
+          workspaceLabel: "repo",
+          goal: "x",
+          expiresAt: Date.now() + 86_400_000,
+          dailyTokenBudget: 1000,
+          ratePerHour: 1,
+          confirm: true,
+          permissionCeiling: "default",
+        },
+        { confirm: true, typed: LINK_COPY.es.phrase },
+      ),
+    ).toEqual({ ok: false, reason: "link_key_mismatch" });
     fireEvent.change(screen.getByLabelText(/Código de la otra computadora/), {
       target: { value: deviceCode({ deviceId: a.id, pubSign: a.pubSign, pubBox: a.pubBox }) },
     });
@@ -359,14 +395,14 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     const card = section().querySelector('[data-form="paste"]') as HTMLElement;
     await within(card).findByText(/Hasta 9999999 tokens por día · 59 entregas por hora/);
     within(card).getByText(/Automático · permiso máximo: Puede editar archivos/);
-    within(card).getByText(/dev_b1 \(solo codex\) → Esta computadora/);
+    within(card).getByText(`Encargo: ${short(b.id)} (solo codex) → Esta computadora`);
     within(card).getByText("Ñandú: revisar el código 🚀");
     const [sign, box] = [await keyFingerprint(b.pubSign), await keyFingerprint(b.pubBox)];
-    await within(card).findByText(`Código de verificación de dev_b1: ${sign} · cifrado ${box}`);
+    await within(card).findByText(`Código de verificación de ${short(b.id)}: ${sign} · cifrado ${box}`);
     // The same verification code shows next to B's own code in B's panel, for the owner to compare.
     cleanup();
     renderLinks(b.ipc);
-    await screen.findByText(`Código de verificación de dev_b1: ${sign} · cifrado ${box}`);
+    await screen.findByText(`Código de verificación de ${short(b.id)}: ${sign} · cifrado ${box}`);
   });
 
   it("a pasted link that pins an app or a session on this computer's end is refused", async () => {
@@ -387,7 +423,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
   it("an expired link code is refused; an accented goal survives the code both ways", async () => {
     const a = await computer("dev_a1");
     const b = await computer("dev_b1");
-    expect(parseLinkCode(linkCode(fromB(a, b)), Date.now())?.goal).toBe("Ñandú: revisar el código 🚀");
+    expect((await parseLinkCode(linkCode(fromB(a, b)), Date.now()))?.goal).toBe("Ñandú: revisar el código 🚀");
     renderLinks(a.ipc);
     await paste(linkCode(fromB(a, b, { expiresAt: Date.now() - 1 })));
     await screen.findByText(/no es válido o ya venció/);

@@ -63,12 +63,12 @@ const EMPTY: Draft = {
 };
 
 /** The draft as the agent's link spec, or the key of what's missing. */
-const toSpec = (d: Draft, self: LinkIdentity, now: number): LinkSpec | { problem: string } => {
+const toSpec = async (d: Draft, self: LinkIdentity, now: number): Promise<LinkSpec | { problem: string }> => {
   const mine = { deviceId: self.deviceId, pubSign: self.pubSign, pubBox: self.pubBox };
   let sender: LinkSpec["sender"] = { deviceId: self.deviceId };
   let receiver: LinkSpec["receiver"] = { deviceId: self.deviceId };
   if (d.other === "other") {
-    const peer = parseDeviceCode(d.otherCode);
+    const peer = await parseDeviceCode(d.otherCode);
     if (!peer) return { problem: "badDeviceCode" };
     if (peer.deviceId === self.deviceId) return { problem: "sameComputer" };
     [sender, receiver] = d.direction === "send" ? [mine, peer] : [peer, mine];
@@ -113,6 +113,19 @@ const PeerKeys = ({ end }: { end: LinkSpec["sender"] }) => {
       {t("security.links.peerKeys", { device: short(end.deviceId), sign: fp.sign, box: fp.box })}
     </span>
   );
+};
+
+// A pasted link: exactly one end is this computer, with its own keys and no pin (this panel never
+// pins); checking only the first matching end would let a doubled end carry a pin.
+const checkPasted = async (code: string, self: LinkIdentity, now: number): Promise<LinkSpec | { problem: string }> => {
+  const spec = await parseLinkCode(code, now);
+  if (!spec) return { problem: "badLinkCode" };
+  const here = [spec.sender, spec.receiver].filter((e) => e.deviceId === self.deviceId);
+  if (here.length !== 1) return { problem: "notForHere" };
+  const mine = here[0]!;
+  if (mine.pubSign !== self.pubSign || mine.pubBox !== self.pubBox) return { problem: "notForHere" };
+  if (mine.appId !== undefined || mine.sessionId !== undefined) return { problem: "pinnedHere" };
+  return spec;
 };
 
 /** Everything a link grants: list rows and, before approving, a link pasted from another computer. */
@@ -467,11 +480,11 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
               </label>
               <div className="row">
                 <button
-                  onClick={() => {
-                    const r = toSpec(draft, self, Date.now());
-                    if ("problem" in r) setFailure(t(`security.links.problems.${r.problem}`));
-                    else start(r, false);
-                  }}
+                  onClick={() =>
+                    void toSpec(draft, self, Date.now()).then((r) =>
+                      "problem" in r ? setFailure(t(`security.links.problems.${r.problem}`)) : start(r, false),
+                    )
+                  }
                 >
                   {t("security.devmode.continue")}
                 </button>
@@ -497,22 +510,13 @@ export const Links = ({ ipc }: { ipc: AgentIpc }) => {
                   </label>
                   <div className="row">
                     <button
-                      onClick={() => {
-                        const spec = parseLinkCode(pasted, Date.now());
-                        const ends = spec ? [spec.sender, spec.receiver] : [];
-                        // This computer's end must carry its own keys, or the other computer's relays won't verify.
-                        const mine = ends.find((e) => e.deviceId === self.deviceId);
-                        if (!spec) setFailure(t("security.links.problems.badLinkCode"));
-                        else if (!mine || mine.pubSign !== self.pubSign || mine.pubBox !== self.pubBox)
-                          setFailure(t("security.links.problems.notForHere"));
-                        // This panel never pins an app or session; a code that pins this computer's end wasn't made here.
-                        else if (mine.appId !== undefined || mine.sessionId !== undefined)
-                          setFailure(t("security.links.problems.pinnedHere"));
-                        else {
+                      onClick={() =>
+                        void checkPasted(pasted, self, Date.now()).then((r) => {
+                          if ("problem" in r) return setFailure(t(`security.links.problems.${r.problem}`));
                           setFailure(null);
-                          setReview(spec);
-                        }
-                      }}
+                          setReview(r);
+                        })
+                      }
                     >
                       {t("security.links.check")}
                     </button>

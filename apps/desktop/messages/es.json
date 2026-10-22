@@ -200,7 +200,8 @@
         "link_wrong_endpoint": "ninguno de los dos extremos es esta computadora",
         "invalid": "enlace no válido o ya usado",
         "unavailable": "el agente no responde",
-        "not_found": "ese enlace ya no existe"
+        "not_found": "ese enlace ya no existe",
+        "link_key_mismatch": "el código de la computadora no corresponde a sus llaves"
       },
       "shareCeiling": "sin encargos",
       "ceilingFact": "permiso máximo: {ceiling}",
