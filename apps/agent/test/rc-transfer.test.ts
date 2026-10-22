@@ -715,7 +715,7 @@ describe("transfer (ADR 0031 §4)", () => {
         "terraform.tfstate.backup": "{}",
         kubeconfig: "apiVersion: v1",
         "office.ovpn": "client",
-        "notes.txt": "aws AKIAABCDEFGHIJKLMNOP here",
+        "notes.txt": `aws ${"AKIA" + "Q".repeat(16)} here`,
         "svc.json": '{ "type": "service_account", "private_key": "x" }',
         "key.txt": "-----BEGIN OPENSSH PRIVATE KEY-----\nabc",
         "todo.md": "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
