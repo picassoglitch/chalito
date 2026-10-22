@@ -60,7 +60,7 @@ switch and is checked on staging before the switch goes on.
      byte), output = the clamped limit;
   3. checks the daily cap, with the owner's begins serialized (advisory lock): today's spend plus the
      billable worst case of every request in flight on the owner's sessions, this one included, above
-     the cap → 402 `daily_cap`. A session has at most `maxInflightPerSession` requests in flight;
+     the cap → 402 `daily_cap`. A session has at most `maxInflightPerSession` requests in flight (429 past it).
   4. re-admits the same hold with `est_tokens = reserveTokens(unsent + in-flight + worst case)`
      (pre-margin; the hub adds the margin). "Unsent" is this credential's usage still pending in
      the outbox, which the hub can't see yet. `no_tokens` → 402 `out_of_energy`. An expired hold
