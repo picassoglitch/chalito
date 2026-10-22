@@ -746,24 +746,46 @@ describe("panel: IA conectadas (catalog)", () => {
   });
 
   it("a key goes to the agent over the local IPC; sign-in, open and disconnect are local actions", async () => {
-    const ipc = fakeIpc({ apps: async () => views() });
+    // A slow agent, as on a loaded CI runner: each action settles a macrotask after its call is
+    // recorded, so the panel stays busy (buttons disabled) for a while after the call shows up.
+    const base = fakeIpc({ apps: async () => views() });
+    const slow =
+      <A extends unknown[]>(f: (...a: A) => Promise<void>) =>
+      async (...a: A) => {
+        await f(...a);
+        await new Promise((r) => setTimeout(r, 20));
+      };
+    const ipc = {
+      ...base,
+      connectAppKey: slow(base.connectAppKey),
+      signinApp: slow(base.signinApp),
+      launchApp: slow(base.launchApp),
+      disconnectApp: slow(base.disconnectApp),
+    };
     const { container } = renderPanel({ initialTab: "ai", ipc }, "en");
+    // The previous action must settle (busy cleared) before the next click, or it lands on a
+    // disabled button; waiting only for the recorded call made this test flaky in CI.
+    const click = async (id: string, text: string) => {
+      const button = await within(row(container, id)).findByText(text);
+      await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(button);
+    };
     await waitFor(() => expect(row(container, "grok")).toBeTruthy());
-    fireEvent.click(within(row(container, "claude-code")).getByText("Connect with an API key"));
+    await click("claude-code", "Connect with an API key");
     fireEvent.change(row(container, "claude-code").querySelector('input[type="password"]')!, {
       target: { value: " sk-ant-x " },
     });
-    fireEvent.click(within(row(container, "claude-code")).getByText("Save"));
+    await click("claude-code", "Save");
     await waitFor(() => expect(ipc.calls).toContainEqual(["connectAppKey", "claude-code", "sk-ant-x"]));
 
-    fireEvent.click(within(row(container, "grok")).getByText("Sign in"));
+    await click("grok", "Sign in");
     await waitFor(() => expect(ipc.calls).toContainEqual(["signinApp", "grok"]));
-    fireEvent.click(within(row(container, "chatgpt")).getByText("Open (sign in there)"));
+    await click("chatgpt", "Open (sign in there)");
     await waitFor(() => expect(ipc.calls).toContainEqual(["launchApp", "chatgpt"]));
 
-    fireEvent.click(within(row(container, "codex")).getByText("Disconnect"));
+    await click("codex", "Disconnect");
     expect(ipc.calls.some((c) => c[0] === "disconnectApp")).toBe(false);
-    fireEvent.click(within(row(container, "codex")).getByText("Yes, disconnect"));
+    await click("codex", "Yes, disconnect");
     await waitFor(() => expect(ipc.calls).toContainEqual(["disconnectApp", "codex"]));
   });
 
