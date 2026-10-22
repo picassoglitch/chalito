@@ -6,7 +6,16 @@ import type { Deps } from "../src/deps.js";
 import { API_ROUTES } from "../src/limits.js";
 
 /** Every optional router mounted; the dependencies are inert (only the guard is under test). */
-const OPTIONAL = { phone: true, voice: true, store: true, billing: true, releases: true, account: true, avatar: true };
+const OPTIONAL = {
+  phone: true,
+  voice: true,
+  store: true,
+  billing: true,
+  releases: true,
+  account: true,
+  avatar: true,
+  coding: true,
+};
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- an inert stand-in for every dependency
 const inert: any = new Proxy(() => inert, { get: (_t, p) => (p === "then" ? undefined : inert), apply: () => inert });
 const app = () =>
@@ -25,6 +34,7 @@ const app = () =>
     releases: inert,
     account: inert,
     avatar: inert,
+    coding: inert,
   } as unknown as Deps);
 
 describe("api route limits (M15)", () => {

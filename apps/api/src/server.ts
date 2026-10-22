@@ -22,7 +22,16 @@ import {
   compedFrom,
   parseReserveBasis,
 } from "@chalito/billing";
-import { checkRole, loadCatalog, loadModels, loadPlans, loadPrices } from "@chalito/config";
+import {
+  checkRole,
+  loadCatalog,
+  loadModels,
+  loadPlans,
+  loadPrices,
+  loadProviders,
+  loadSessions,
+} from "@chalito/config";
+import { PostgresCodingIssueStore } from "./coding/store.js";
 import type { Sql } from "postgres";
 import { PostgresPhoneStore } from "./phone/postgres.js";
 import type { PhoneDeps } from "./phone/routes.js";
@@ -118,6 +127,21 @@ const backend = (): {
             hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
           },
           billing: { hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }) },
+        }
+      : {}),
+    // ADR 0030: "IA de Chalyb" coding credentials, once the ai-gateway has a URL; off until CODING_MANAGED_ENABLED=1.
+    ...(process.env.CHALYB_BASE_URL && process.env.CHALITO_AI_GATEWAY_URL
+      ? {
+          coding: {
+            store: new PostgresCodingIssueStore(sql),
+            hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
+            prices: loadPrices(),
+            providers: loadProviders(),
+            maxLivePerDevice: loadSessions().session.maxLivePerDevice,
+            reserveBasis,
+            enabled: () => process.env.CODING_MANAGED_ENABLED === "1",
+            gatewayUrl: process.env.CHALITO_AI_GATEWAY_URL,
+          },
         }
       : {}),
     // Custom companions from a photo: paid ones are admitted and billed through the hub; the photo
