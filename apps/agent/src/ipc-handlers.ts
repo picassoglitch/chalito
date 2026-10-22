@@ -128,8 +128,8 @@ export interface IpcDeps {
   terminal?: TerminalControl | null;
   /** Remote screen; null without the desktop app. */
   screen?: ScreenManager | null;
-  /** Build flags (features.ts). Absent = off: the screen calls answer `remote_screen_off`. */
-  remote?: { screen?: boolean };
+  /** Build flags (features.ts). Absent = off: the screen and terminal calls answer `remote_screen_off` / `remote_terminal_off`. */
+  remote?: { screen?: boolean; terminal?: boolean };
   /** Agent-to-agent links (links/manager.ts); absent = the link calls answer `unavailable`. */
   links?: LinkManager | null;
   /** This device's public keys: the panel puts them in a link's own end and in the code it shows. */
@@ -340,16 +340,21 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
       pending: [],
     },
 
-  terminalChallenge: async () => ({ terminal: TERMINAL_COPY[d.locale()], rawShell: RAW_SHELL_COPY[d.locale()] }),
+  terminalChallenge: async () => {
+    if (!d.remote?.terminal) throw new IpcError("remote_terminal_off");
+    return { terminal: TERMINAL_COPY[d.locale()], rawShell: RAW_SHELL_COPY[d.locale()] };
+  },
 
   /** Local-only enable, same rules as the CLI: the agent asks the OS itself and re-checks the answers. */
   enableRemoteTerminal: async (params) => {
+    if (!d.remote?.terminal) throw new IpcError("remote_terminal_off");
     const { answers } = parse(TerminalEnable, params);
     return enableRemoteTerminal(terminalToggleDeps(d, answers));
   },
 
   /** The raw shell: its own, stronger confirmation (four answers, a longer phrase). */
   enableRawShell: async (params) => {
+    if (!d.remote?.terminal) throw new IpcError("remote_terminal_off");
     const { answers } = parse(TerminalEnable, params);
     return enableRawShell(terminalToggleDeps(d, answers));
   },

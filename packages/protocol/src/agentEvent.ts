@@ -298,6 +298,8 @@ export const CommandRejectReason = z.enum([
   /** app.launch / app.install: nothing to do for that app on this computer's OS. */
   "app_unavailable",
   // ---- TERMINAL ----
+  /** Remote terminal and raw shell are not shipped in this build (CHALITO_REMOTE_TERMINAL off); refused outright. */
+  "remote_terminal_off",
   /** Remote terminal is off on this computer (turned on only there). */
   "terminal_disabled",
   /** appId "shell" while the raw-shell toggle is off on this computer. */

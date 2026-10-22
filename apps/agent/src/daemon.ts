@@ -29,7 +29,9 @@ import { defaultRealpath, heldWorkspaces, hooksOptionsFor, pinHolds } from "./po
 import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
+import { remoteTerminalOn } from "./features.js";
 import { TerminalControl } from "./terminal/control.js";
+import { disableRemoteTerminal } from "./terminal/toggle.js";
 import { rawShellLaunch, resolveProgram, type TerminalLaunch } from "./terminal/driver.js";
 import { loadPtyBackend, type PtyBackend } from "./terminal/pty.js";
 import { AppLauncher, registerAppDrivers } from "./drivers/apps.js";
@@ -540,6 +542,7 @@ const startDaemon = async (
   // Late-bound: created once signed in (it reports through the store), only with the desktop app.
   let computer: ComputerControl | null = null;
   let terminal: TerminalControl | null = null;
+  const terminalOn = remoteTerminalOn(env);
   let screen: ScreenManager | null = null;
   const screenOn = remoteScreenOn(env);
   // LAN direct path (lan/, ADR 0022 §5): null without a LAN-capable cloud; off until local policy.
@@ -889,63 +892,65 @@ const startDaemon = async (
     // The recipe comes from the engine's catalog on this computer (a custom one only once enabled
     // here), never from the remote command, which only names it; its driver from the registry.
     const recipes = deps.terminalRecipes ?? usableRecipe;
-    terminal = new TerminalControl({
-      deviceId: id.deviceId,
-      policy: () => policy.get().remoteTerminal,
-      // A pinned workspace that moved isn't offered as a terminal's folder.
-      workspaces: () => heldWorkspaces(policy.get().workspaces, deps.home ?? homedir()),
-      launch: (appId) => {
-        const recipe = recipes(appId);
-        const factory = driverFactory("terminal");
-        if (!recipe || !factory) return null;
-        const built = factory({
-          recipe,
-          custom: catalog.get(recipe.id)?.custom ?? false,
-          bin: null,
-          auth: { signIn: false },
-          env,
-          home: join(dir, "apps", recipe.id),
-          dir,
-          platform: process.platform,
-          log,
-        });
-        return built && !(built instanceof Promise) && built.terminal ? (built.terminal as TerminalLaunch) : null;
-      },
-      rawShell: () => rawShellLaunch(env),
-      pty: deps.ptyBackend ?? (() => loadPtyBackend()),
-      resolve: (program) => resolveProgram(program, env),
-      env: () => env,
-      requestApproval: (tid, input, onRequested) =>
-        core.approvals.request({
-          sid: tid,
-          risk: "HIGH",
-          stepUp: true,
-          origin: input.origin,
-          kind: "terminal",
-          details: input.details,
-          onRequested,
-        }),
-      seal: (value, aad) => core.sealer.seal(value, aad),
-      writeEvent: (e) => signedInStore.writeEvent(e),
-      upsertSession: (tid, data) => signedInStore.upsertSession(tid, data),
-      audit: auditAgent,
-      publish: (st) =>
-        publish({
-          v: 1,
-          type: "terminal.changed",
-          deviceId: id.deviceId,
-          enabled: st.enabled,
-          rawShell: st.rawShell,
-          activeSessions: st.activeSessions,
-          ...(st.by ? { by: st.by } : {}),
-          t: now(),
-        }),
-      now,
-      locale: () => cfg.locale,
-      log: (msg, meta) => log.warn(msg, meta),
-      ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
-    });
-    coreDeps.terminal = terminal;
+    if (terminalOn) {
+      terminal = new TerminalControl({
+        deviceId: id.deviceId,
+        policy: () => policy.get().remoteTerminal,
+        // A pinned workspace that moved isn't offered as a terminal's folder.
+        workspaces: () => heldWorkspaces(policy.get().workspaces, deps.home ?? homedir()),
+        launch: (appId) => {
+          const recipe = recipes(appId);
+          const factory = driverFactory("terminal");
+          if (!recipe || !factory) return null;
+          const built = factory({
+            recipe,
+            custom: catalog.get(recipe.id)?.custom ?? false,
+            bin: null,
+            auth: { signIn: false },
+            env,
+            home: join(dir, "apps", recipe.id),
+            dir,
+            platform: process.platform,
+            log,
+          });
+          return built && !(built instanceof Promise) && built.terminal ? (built.terminal as TerminalLaunch) : null;
+        },
+        rawShell: () => rawShellLaunch(env),
+        pty: deps.ptyBackend ?? (() => loadPtyBackend()),
+        resolve: (program) => resolveProgram(program, env),
+        env: () => env,
+        requestApproval: (tid, input, onRequested) =>
+          core.approvals.request({
+            sid: tid,
+            risk: "HIGH",
+            stepUp: true,
+            origin: input.origin,
+            kind: "terminal",
+            details: input.details,
+            onRequested,
+          }),
+        seal: (value, aad) => core.sealer.seal(value, aad),
+        writeEvent: (e) => signedInStore.writeEvent(e),
+        upsertSession: (tid, data) => signedInStore.upsertSession(tid, data),
+        audit: auditAgent,
+        publish: (st) =>
+          publish({
+            v: 1,
+            type: "terminal.changed",
+            deviceId: id.deviceId,
+            enabled: st.enabled,
+            rawShell: st.rawShell,
+            activeSessions: st.activeSessions,
+            ...(st.by ? { by: st.by } : {}),
+            t: now(),
+          }),
+        now,
+        locale: () => cfg.locale,
+        log: (msg, meta) => log.warn(msg, meta),
+        ...(deps.setTimer ? { setTimer: deps.setTimer } : {}),
+      });
+      coreDeps.terminal = terminal;
+    }
 
     // Remote screen (screen/manager.ts): same desktop-app condition, indicator and kill switch.
     // Dormant unless built in (features.ts): without the flag no manager exists at all.
@@ -1030,7 +1035,7 @@ const startDaemon = async (
     now,
   });
   coreDeps.linkTools = linkTools;
-  coreDeps.remote = { screen: screenOn };
+  coreDeps.remote = { screen: screenOn, terminal: terminalOn };
   const core = new AgentCore(coreDeps);
   // Sessions from before this start can be resumed (lazily: nothing is spawned for them now).
   await core
@@ -1056,6 +1061,12 @@ const startDaemon = async (
       const error = err instanceof Error ? err.message : "error";
       log.warn("screen.clear_failed", { error });
       auditAgent("screen.clear_failed", { error });
+    });
+  if (!terminalOn)
+    await disableRemoteTerminal({ policy, emit: auditAgent }, "flag_off").catch((err: unknown) => {
+      const error = err instanceof Error ? err.message : "error";
+      log.warn("terminal.clear_failed", { error });
+      auditAgent("terminal.clear_failed", { error });
     });
   await lan?.onPolicyChange();
   try {
@@ -1409,7 +1420,7 @@ const startDaemon = async (
           computer,
           terminal,
           screen,
-          remote: { screen: screenOn },
+          remote: { screen: screenOn, terminal: terminalOn },
           links,
           identity: { deviceId: id.deviceId, pubSign: id.pubSign, pubBox: id.pubBox },
           audit: auditAgent,

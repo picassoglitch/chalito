@@ -158,8 +158,8 @@ export interface AgentCoreDeps {
   terminal?: TerminalCommands;
   /** Remote screen (screen/manager.ts); absent = `screen.*` commands are refused. */
   screen?: ScreenManager;
-  /** Build flags (features.ts). Absent = off: `screen.*` is refused and audited. */
-  remote?: { screen?: boolean };
+  /** Build flags (features.ts). Absent = off: `screen.*` and `terminal.*` are refused and audited. */
+  remote?: { screen?: boolean; terminal?: boolean };
   /** M16 A: idle-close, live cap and delta flushing (packages/config sessions.yaml). */
   sessionsConfig?: Pick<SessionsConfig, "session" | "live">;
   /** M16 A: where sessions are remembered for resume (~/.chalito/sessions.json); absent = memory only. */
@@ -463,6 +463,12 @@ export class AgentCore {
     if (p.type.startsWith("screen.") && !this.d.remote?.screen) {
       this.#audit("remote_screen.refused", { cid, command: p.type, origin });
       return this.#reject(cid, "remote_screen_off");
+    }
+
+    // Remote terminal and raw shell are dormant unless built in (features.ts): refuse every terminal.* and say so.
+    if (p.type.startsWith("terminal.") && !this.d.remote?.terminal) {
+      this.#audit("remote_terminal.refused", { cid, command: p.type, origin });
+      return this.#reject(cid, "remote_terminal_off");
     }
 
     switch (p.type) {

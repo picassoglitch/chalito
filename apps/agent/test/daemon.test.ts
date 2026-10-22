@@ -27,7 +27,7 @@ import { AlreadyRunningError, acquireInstanceLock, lockPath } from "../src/insta
 import type { Provider } from "@chalito/protocol";
 import { ipcCall } from "./ipc-server.test.js";
 import { fakeProviderProcs } from "./fake-provider-procs.js";
-import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
+import { DEFAULT_POLICY, DEFAULT_REMOTE_TERMINAL, policyHash } from "../src/policy/index.js";
 import { AnchorStore } from "../src/anchor.js";
 import { FilePolicyHolder } from "../src/policy-file.js";
 import { BUILTIN_CATALOG } from "../src/apps/catalog.js";
@@ -291,6 +291,47 @@ describe("chalito run (daemon)", () => {
     });
   });
 
+  describe("remote terminal build flag", () => {
+    const ON = { ...DEFAULT_REMOTE_TERMINAL, enabled: true, rawShell: true };
+    const seeded = async () => {
+      const s = await setup();
+      mkdirSync(s.dir, { recursive: true });
+      const holder = new FilePolicyHolder(s.dir, s.id.sign, { anchor: await new AnchorStore(s.secrets).load() });
+      await holder.set({ ...DEFAULT_POLICY, remoteTerminal: ON }, "local");
+      return s;
+    };
+
+    it("off (default): clears terminal and raw shell at startup and audits it; no controller exists", async () => {
+      const s = await seeded();
+      const d = await runDaemon(s.deps);
+      expect(d.policy.get().remoteTerminal).toMatchObject({ enabled: false, rawShell: false });
+      expect(s.store.audits.find((a) => a.type === "terminal.disabled")?.meta).toMatchObject({ by: "flag_off" });
+      expect(d.terminal).toBeNull();
+      await d.stop();
+    });
+
+    it("off: a policy write that fails is audited and the agent still starts", async () => {
+      const s = await seeded();
+      const set = vi.spyOn(FilePolicyHolder.prototype, "set").mockRejectedValue(new Error("EROFS: read-only"));
+      try {
+        const d = await runDaemon(s.deps);
+        expect(s.store.audits.find((a) => a.type === "terminal.clear_failed")?.meta).toMatchObject({
+          error: "EROFS: read-only",
+        });
+        await d.stop();
+      } finally {
+        set.mockRestore();
+      }
+    });
+
+    it("on (CHALITO_REMOTE_TERMINAL=1): the saved state is left alone", async () => {
+      const s = await seeded();
+      const d = await runDaemon({ ...s.deps, env: { ...s.deps.env, CHALITO_REMOTE_TERMINAL: "1" } });
+      expect(d.policy.get().remoteTerminal).toMatchObject({ enabled: true, rawShell: true });
+      await d.stop();
+    });
+  });
+
   it("refreshes the device token on a timer (~50 min)", async () => {
     const s = await setup();
     const d = await runDaemon(s.deps);
@@ -457,6 +498,8 @@ describe("chalito run (daemon)", () => {
       const osChecks: number[] = [];
       const d = await runDaemon({
         ...s.deps,
+        // Remote terminal is built in for these tests; the flag-off cases are below.
+        env: { ...s.deps.env, CHALITO_REMOTE_TERMINAL: "1" },
         ipcSecret: SECRET,
         ipcPath: sock,
         osAuth: () => ({ verify: async () => (osChecks.push(1), osOk) }),
