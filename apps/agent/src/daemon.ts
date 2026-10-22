@@ -25,7 +25,7 @@ import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
 import { SCAN_MAX_AGE_MS } from "./policy/git-hooks.js";
 import { refreshRepoIndex } from "./policy/repo-index.js";
-import { defaultRealpath, hooksOptionsFor, pinHolds } from "./policy/classify.js";
+import { defaultRealpath, heldWorkspaces, hooksOptionsFor, pinHolds } from "./policy/classify.js";
 import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
@@ -889,7 +889,8 @@ const startDaemon = async (
     terminal = new TerminalControl({
       deviceId: id.deviceId,
       policy: () => policy.get().remoteTerminal,
-      workspaces: () => policy.get().workspaces,
+      // A pinned workspace that moved isn't offered as a terminal's folder.
+      workspaces: () => heldWorkspaces(policy.get().workspaces, deps.home ?? homedir()),
       launch: (appId) => {
         const recipe = recipes(appId);
         const factory = driverFactory("terminal");

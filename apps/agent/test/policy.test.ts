@@ -10,6 +10,7 @@ import {
   decide,
   defaultRealpath,
   isTighterOrEqual,
+  heldWorkspaces,
   originAllowed,
   pinHolds,
   policyHash,
@@ -340,6 +341,35 @@ describe("policy changes", () => {
     // A later tighten keeps the pin; it doesn't re-record the swapped target.
     const again = applyRemoteTighten(res.policy, { approvals: { ttlSeconds: 60 } });
     expect(again.ok && again.policy.workspaces[0]?.realPath).toBe(sub);
+  });
+
+  it("a moved workspace can't be the parent of a later tighten (swap, then add `/`)", () => {
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "chalito-ws-")));
+    const sub = join(ws, "sub");
+    mkdirSync(sub);
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    const first = applyRemoteTighten(cur, {
+      workspaces: [
+        { label: "ws", path: ws },
+        { label: "sub", path: sub },
+      ],
+    });
+    if (!first.ok) throw new Error(first.reason);
+    rmSync(sub, { recursive: true });
+    symlinkSync("/", sub);
+    const patch = (extra: { label: string; path: string }) => ({
+      workspaces: [...first.policy.workspaces.map(({ label, path }) => ({ label, path })), extra],
+    });
+    expect(applyRemoteTighten(first.policy, patch({ label: "disk", path: "/" }))).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    expect(applyRemoteTighten(first.policy, patch({ label: "etc", path: "/etc" }))).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    // The terminal's workspace list leaves the moved one out too.
+    expect(heldWorkspaces(first.policy.workspaces, HOME).map((w) => w.label)).toEqual(["ws"]);
   });
 
   it("the pin check folds case where the file system does (the daemon's repo scan uses the same check)", () => {

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import type { PolicyPreset } from "@chalito/protocol";
 import type { z } from "zod";
-import { defaultRealpath } from "./classify.js";
+import { defaultRealpath, pinHolds } from "./classify.js";
 import { DEFAULT_REMOTE_TERMINAL, PERMISSION_RANK, Policy, SANDBOX_RANK } from "./schema.js";
 
 const within = (child: string, parent: string) =>
@@ -34,7 +34,11 @@ export const isTighterOrEqual = (
   const real = fs.realpath ?? realpathSync.native;
   // Compared as the classifier sees them (`~` expanded, symlinks resolved), so `<ws>/link -> /` isn't narrower.
   const curLexical = new Set(cur.workspaces.map((c) => expandHome(c.path, home)));
-  const curWs = cur.workspaces.map((c) => defaultRealpath(expandHome(c.path, home)));
+  // A pinned workspace counts where it was pinned; one that moved (swapped for a symlink) counts nowhere.
+  const curWs = cur.workspaces.flatMap((c) => {
+    const r = defaultRealpath(expandHome(c.path, home));
+    return pinHolds(c, r) ? [c.realPath ?? r] : [];
+  });
   return (
     next.workspaces.every((w) => {
       const lexical = expandHome(w.path, home);

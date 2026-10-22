@@ -90,6 +90,15 @@ export const defaultRealpath = (p: string): string => {
 export const pinHolds = (w: { realPath?: string }, resolvedNow: string, platform: NodeJS.Platform = process.platform) =>
   w.realPath === undefined || foldKey(resolvedNow, platform) === foldKey(w.realPath, platform);
 
+/** The workspaces whose pin still holds; a moved one is out of every decision (fail closed). */
+export const heldWorkspaces = <W extends { path: string; realPath?: string }>(workspaces: W[], home: string): W[] =>
+  workspaces.filter((w) =>
+    pinHolds(
+      w,
+      defaultRealpath(resolve(w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : w.path)),
+    ),
+  );
+
 const withinExact = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
