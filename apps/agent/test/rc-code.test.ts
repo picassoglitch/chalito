@@ -4,12 +4,13 @@ import { mkdtempSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { Duplex, PassThrough, duplexPair } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { openJson } from "@chalito/crypto";
 import type { DeviceSetup } from "@chalito/protocol";
 import { runCode } from "../src/code/cli.js";
 import { codePath, startCodeServer, type CodeServer } from "../src/code/server.js";
+import { onlyUserAndSystem, pipeLockedTo, pipeSddl, type WinPipeSecurity } from "../src/code/winpipe.js";
 import { LinkTools } from "../src/links/index.js";
 import { LOCAL_CLI_RECORD_MAX, pruneRecords } from "../src/session-registry.js";
 import { codeService } from "../src/code/service.js";
@@ -357,7 +358,10 @@ describe("chalito code (ADR 0031 §1)", () => {
     const elsewhere = cli(r.path, ["claude", "x"], { cwd: "/tmp" });
     expect(await elsewhere.done).toBe(1);
     expect(elsewhere.err()).toContain("--workspace");
-    expect(codePath("C:\\Users\\ana\\.chalito", "win32")).toBeNull();
+    // Named by the user's SID (a renamed or look-alike account name can't collide); no SID, no pipe.
+    expect(codePath("C:\\x", "win32", "S-1-5-21-1-2-3-1001")).toBe("\\\\.\\pipe\\chalito-code-S-1-5-21-1-2-3-1001");
+    expect(codePath("C:\\x", "win32")).toBeNull();
+    expect(codePath("C:\\x", "win32", "Ana María")).toBeNull();
     const onWindows = runCode(
       { input: new PassThrough(), out: () => undefined, err: (e) => void (winErr += e), env: {}, cwd: WS },
       null,
@@ -365,7 +369,7 @@ describe("chalito code (ADR 0031 §1)", () => {
       "es",
     );
     expect(await onWindows).toBe(1);
-    expect(winErr).toContain("panel de Chalito");
+    expect(winErr).toContain("desde el panel");
     const unknown = cli(r.path, ["copilot", "x"]);
     expect(await unknown.done).toBe(1);
     expect(unknown.err()).toContain("claude-code");
@@ -579,5 +583,201 @@ describe("sessions.json (review)", () => {
     expect(kept.filter((r) => r.startedBy === "client:phone")).toHaveLength(190);
     expect(kept.filter((r) => r.startedBy === "local:cli")).toHaveLength(10);
     expect(pruneRecords(cli, now)).toHaveLength(LOCAL_CLI_RECORD_MAX);
+  });
+});
+
+describe("chalito code on Windows (owner 2026-10-22)", () => {
+  const SID = "S-1-5-21-1111111111-2222222222-3333333333-1001";
+
+  it("accepts only a protected DACL for this user and SYSTEM", () => {
+    expect(pipeSddl(SID)).toBe(`O:${SID}D:P(D;;GA;;;NU)(A;;GA;;;${SID})(A;;GA;;;SY)`);
+    const ok = `D:P(D;;FA;;;NU)(A;;FA;;;${SID})(A;;FA;;;SY)`;
+    expect(onlyUserAndSystem(ok, SID)).toBe(true);
+    // Network logons must be denied explicitly (SMB from another machine as the same account).
+    expect(onlyUserAndSystem(`D:P(A;;FA;;;${SID})(A;;FA;;;SY)`, SID)).toBe(false);
+    // Not protected, Everyone, Administrators, another user, or no allow at all: refused.
+    expect(onlyUserAndSystem(`D:(D;;FA;;;NU)(A;;FA;;;${SID})`, SID)).toBe(false);
+    expect(onlyUserAndSystem(`D:P(D;;FA;;;NU)(A;;FA;;;${SID})(A;;FR;;;WD)`, SID)).toBe(false);
+    expect(onlyUserAndSystem(`D:P(D;;FA;;;NU)(A;;FA;;;${SID})(A;;FA;;;BA)`, SID)).toBe(false);
+    expect(onlyUserAndSystem(`D:P(D;;FA;;;NU)(A;;FA;;;S-1-5-21-9-9-9-1002)`, SID)).toBe(false);
+    expect(onlyUserAndSystem("D:P(D;;FA;;;NU)", SID)).toBe(false);
+    // The built-in Administrator account reads back as its alias.
+    expect(onlyUserAndSystem("D:P(D;;FA;;;NU)(A;;FA;;;LA)(A;;FA;;;SY)", "S-1-5-21-1-2-3-500", "LA")).toBe(true);
+    expect(onlyUserAndSystem("D:P(D;;FA;;;NU)(A;;FA;;;LA)(A;;FA;;;SY)", "S-1-5-21-1-2-3-500")).toBe(false);
+    // The owner counts too: this user (or its alias), never someone else, never missing.
+    expect(pipeLockedTo(`O:${SID}${ok}`, SID)).toBe(true);
+    expect(pipeLockedTo("O:LAD:P(D;;FA;;;NU)(A;;FA;;;LA)(A;;FA;;;SY)", "S-1-5-21-1-2-3-500", "LA")).toBe(true);
+    expect(pipeLockedTo(`O:BA${ok}`, SID)).toBe(false);
+    expect(pipeLockedTo(`O:SY${ok}`, SID)).toBe(false);
+    expect(pipeLockedTo(ok, SID)).toBe(false);
+  });
+
+  it("serves nothing when the pipe can't be created locked (squatted name, refused DACL)", async () => {
+    const r = await rig();
+    const path = "\\\\.\\pipe\\chalito-code-test";
+    await expect(
+      startCodeServer({
+        path,
+        code: r.code,
+        listen: () => {
+          throw new Error("pipe_create_failed_5");
+        },
+      }),
+    ).rejects.toThrow("pipe_create_failed_5");
+  });
+
+  it("serves through the Windows listener: same rules, every stream it hands over", async () => {
+    const r = await rig();
+    let hand: ((s: Duplex) => void) | null = null;
+    let closed = false;
+    const server = await startCodeServer({
+      path: "\\\\.\\pipe\\chalito-code-test",
+      code: r.code,
+      listen: (_p, on) => ((hand = on), { close: () => void (closed = true), sddl: "" }),
+    });
+    const [a, b] = duplexPair();
+    hand!(a);
+    let got = "";
+    b.setEncoding("utf8");
+    b.on("data", (c: string) => void (got += c));
+    b.write(`${JSON.stringify({ id: 1, method: "apps" })}\n`);
+    await waitFor(() => got.includes('"id":1'));
+    expect(JSON.parse(got.split("\n")[0]!)).toMatchObject({ ok: true, result: { apps: ["claude-code"] } });
+    b.write(`${JSON.stringify({ id: 2, method: "decide", params: {} })}\n`);
+    await waitFor(() => got.includes('"id":2'));
+    expect(got).toContain("unknown_method");
+    await server.close();
+    expect(closed).toBe(true);
+  });
+
+  it("the CLI sends nothing to a pipe another user serves", async () => {
+    const r = await rig();
+    const seen: string[] = [];
+    const tapped = r.code.tap((_sid, e) => void seen.push(e.type));
+    let err = "";
+    const code = await runCode(
+      {
+        input: new PassThrough(),
+        out: () => undefined,
+        err: (e) => void (err += e),
+        env: {},
+        cwd: WS,
+        openPipe: () => ({ ok: false, reason: "not_mine" }),
+      },
+      r.path,
+      ["claude", "borra todo"],
+      "es",
+    );
+    tapped();
+    expect(code).toBe(1);
+    expect(err).toContain("no es tu Chalito");
+    expect(r.adapter.runs).toHaveLength(0);
+  });
+
+  it("a write that fails after the agent closed is a disconnect, not a crash", async () => {
+    const r = await rig();
+    let answered = 0;
+    // Answers the CLI's setup like the agent, then the agent is gone: the next write fails.
+    const stream = new Duplex({
+      read() {},
+      write(chunk: Buffer, _enc, cb) {
+        const req = JSON.parse(chunk.toString()) as { id: number; method: string };
+        if (answered++ >= 3) return cb(new Error("EPIPE"));
+        const result =
+          req.method === "apps"
+            ? { apps: ["claude-code"], workspaces: ["chalito"] }
+            : req.method === "workspaceFor"
+              ? { label: "chalito" }
+              : { sid: "s1" };
+        setImmediate(() => this.push(`${JSON.stringify({ id: req.id, ok: true, result })}\n`));
+        cb();
+      },
+    });
+    const input = new PassThrough();
+    let err = "";
+    const done = runCode(
+      {
+        input,
+        out: () => undefined,
+        err: (x) => void (err += x),
+        env: {},
+        cwd: WS,
+        openPipe: () => ({ ok: true, stream }),
+      },
+      r.path,
+      ["claude", "hola"],
+      "es",
+    );
+    await waitFor(() => answered === 3);
+    input.write("otra cosa\n");
+    expect(await done).toBe(1);
+    expect(err).toContain("Se perdió la conexión");
+  });
+
+  it("the CLI runs all its traffic over the one connection it checked", async () => {
+    const r = await rig();
+    let opened = 0;
+    const input = new PassThrough();
+    let out = "";
+    const done = runCode(
+      {
+        input,
+        out: (x) => void (out += x),
+        err: () => undefined,
+        env: {},
+        cwd: WS,
+        openPipe: () => (opened++, { ok: true, stream: connect(r.path) }),
+        connect: () => {
+          throw new Error("a second connection was opened");
+        },
+      },
+      r.path,
+      ["claude", "hola"],
+      "es",
+    );
+    await waitFor(() => r.adapter.runs.length === 1);
+    r.adapter.runs[0]!.emit({ type: "assistant_text", text: "por el mismo tubo" });
+    await waitFor(() => out.includes("por el mismo tubo"));
+    input.write("/salir\n");
+    expect(await done).toBe(0);
+    expect(opened).toBe(1);
+  });
+
+  it("on Windows the command line checks who serves the pipe, and without that check says to use the panel", async () => {
+    const { main } = await import("../src/cli.js");
+    const home = mkdtempSync(join(tmpdir(), "chalito-home-"));
+    const io = (winPipeSecurity: () => Promise<WinPipeSecurity | null>, sink: { err: string }) =>
+      ({
+        out: () => undefined,
+        err: (s: string) => void (sink.err += s),
+        tty: { input: new PassThrough(), output: new PassThrough() },
+        env: {},
+        home,
+        platform: "win32",
+        winPipeSecurity,
+      }) as never;
+    const none = { err: "" };
+    expect(
+      await main(
+        ["code", "claude", "hola"],
+        io(async () => null, none),
+      ),
+    ).toBe(1);
+    expect(none.err).toContain("Chalito instalado");
+    const other = { err: "" };
+    const sec: WinPipeSecurity = {
+      userSid: SID,
+      listen: () => {
+        throw new Error("not in this test");
+      },
+      connect: () => ({ ok: false, reason: "not_mine" }),
+    };
+    expect(
+      await main(
+        ["code", "claude", "hola"],
+        io(async () => sec, other),
+      ),
+    ).toBe(1);
+    expect(other.err).toContain("no es tu Chalito");
   });
 });

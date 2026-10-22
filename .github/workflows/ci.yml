@@ -265,6 +265,25 @@ jobs:
           # `terraform plan` via Workload Identity Federation is added once the owner
           # creates the WIF pool for this repo (OPS); until then CI runs without credentials.
 
+  # ADR 0031 (owner 2026-10-22): `chalito code` on Windows. Under Bun (the shipped runtime) and as a
+  # compiled binary: the pipe is locked to this user, can't be taken twice, and can't impersonate the CLI.
+  agent-windows-pipe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: pnpm install --frozen-lockfile
+      - run: bun apps/agent/scripts/check-winpipe.ts
+      - run: bun build --compile apps/agent/scripts/check-winpipe.ts --outfile check-winpipe.exe
+      - run: ./check-winpipe.exe
+
   # M7 desktop (Tauri v2): unsigned debug bundles on all three OSes, the Rust hit-test unit
   # tests and the desktop front-end tests. No signing, no publishing (ADR 0014 comes later).
   desktop:

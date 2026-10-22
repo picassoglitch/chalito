@@ -1,5 +1,6 @@
 import { chmodSync, rmSync } from "node:fs";
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, type Server } from "node:net";
+import type { Duplex } from "node:stream";
 import { join } from "node:path";
 import { z } from "zod";
 import { AppId, RemotePermissionMode, SessionId } from "@chalito/protocol";
@@ -17,9 +18,13 @@ const EARLY_MAX = 500;
 export const CODE_STARTS_PER_CONN = 3;
 export const CODE_STARTS_PER_MINUTE = 6;
 
-// ADR 0031 §6a: no Windows pipe until it can carry a current-user DACL (squatting); null = not served.
-export const codePath = (dir: string, platform: NodeJS.Platform = process.platform): string | null =>
-  platform === "win32" ? null : join(dir, "code.sock");
+// ADR 0031 §6a: on Windows a pipe named by this user's SID (winpipe.ts); without a SID there, none.
+export const codePath = (dir: string, platform: NodeJS.Platform = process.platform, userSid?: string): string | null =>
+  platform !== "win32"
+    ? join(dir, "code.sock")
+    : userSid && /^S-1-[0-9-]+$/.test(userSid)
+      ? `\\\\.\\pipe\\chalito-code-${userSid}`
+      : null;
 
 const Start = z
   .object({
@@ -46,7 +51,7 @@ class Conn {
   #starting = 0;
   /** Events of sessions not known yet, kept only while one of this connection's starts runs. */
   #early = new Map<string, LocalEvent[]>();
-  constructor(readonly sock: Socket) {}
+  constructor(readonly sock: Duplex) {}
 
   #earlyCount = 0;
   starts = 0;
@@ -87,6 +92,8 @@ export const startCodeServer = async (opts: {
   code: CodeService;
   onError?: (method: string, err: unknown) => void;
   platform?: NodeJS.Platform;
+  /** Windows: serve through this listener (a pipe locked to this user, winpipe.ts) instead of a socket. */
+  listen?: (path: string, onStream: (stream: Duplex) => void) => { close(): void };
 }): Promise<CodeServer> => {
   const { code } = opts;
   const unix = (opts.platform ?? process.platform) !== "win32";
@@ -157,7 +164,7 @@ export const startCodeServer = async (opts: {
     }
   };
 
-  const server: Server = createServer((sock) => {
+  const attach = (sock: Duplex) => {
     const c = new Conn(sock);
     conns.add(c);
     let buf = "";
@@ -176,7 +183,27 @@ export const startCodeServer = async (opts: {
       // Limit is per request line, not per burst of small ones.
       if (buf.length > CODE_MAX_LINE) return void sock.destroy();
     });
-  });
+  };
+
+  if (opts.listen) {
+    let listener: { close(): void };
+    try {
+      listener = opts.listen(opts.path, attach);
+    } catch (err) {
+      untap();
+      throw err;
+    }
+    return {
+      path: opts.path,
+      close: async () => {
+        untap();
+        for (const c of conns) c.sock.destroy();
+        listener.close();
+      },
+    };
+  }
+
+  const server: Server = createServer(attach);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(opts.path, () => {
