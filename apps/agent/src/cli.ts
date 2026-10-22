@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { redactError } from "./redact.js";
 import { runCode } from "./code/cli.js";
 import { codePath } from "./code/server.js";
+import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -79,6 +80,8 @@ export interface CliIo {
   hostname?: string;
   /** `chalito code`'s folder (default: the process's). */
   cwd?: string;
+  /** Windows pipe security for `chalito code` (tests pass their own). */
+  winPipeSecurity?: () => Promise<WinPipeSecurity | null>;
 }
 
 const SCREEN_USAGE = `  screen enable [view|control]         remote screen: let your trusted browser see (or also control)
@@ -536,7 +539,10 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   }
 
   // ADR 0031 §1: talks to the running agent over code.sock; needs no secrets.
-  if (cmd === "code")
+  if (cmd === "code") {
+    // Windows: the pipe, only when this build can check who serves it (the shipped agent).
+    const winSec = io.platform === "win32" ? await (io.winPipeSecurity ?? loadWinPipeSecurity)() : null;
+    const where = io.platform === "win32" && !winSec ? null : codePath(dir, io.platform, winSec?.userSid);
     return runCode(
       {
         input: io.tty.input,
@@ -548,11 +554,13 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           process.on("SIGINT", fn);
           return () => void process.off("SIGINT", fn);
         },
+        ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
       },
-      codePath(dir, io.platform),
+      where,
       argv.slice(argv.indexOf("code") + 1),
       locale,
     );
+  }
 
   // Everything that changes trust, keys, policy, Developer mode or the service needs a human
   // at a real terminal, and never runs from inside an agent session (CHALITO_SESSION is set
