@@ -160,6 +160,8 @@ export const managedOverrides = (baseUrl: string): string[] => [
   'model_providers.chalito_managed.wire_api="responses"',
   "model_providers.chalito_managed.requires_openai_auth=false",
   "model_providers.chalito_managed.supports_websockets=false",
+  // The runtime layer beats project config: commands Codex runs never see the session token.
+  'shell_environment_policy.exclude=["CHALITO_*"]',
 ];
 
 const TOML_KEY = /^[A-Za-z0-9_-]{1,64}$/;

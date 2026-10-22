@@ -25,6 +25,8 @@ describe("IA de Chalyb: Codex points at our gateway", () => {
     expect(l.env.OPENAI_API_KEY).toBeUndefined();
     expect(l.env[BYO_KEY_ENV]).toBeUndefined();
     expect(l.args.join(" ")).not.toContain(TOKEN);
+    // Commands Codex runs don't inherit it, whatever the repo's own config says.
+    expect(l.args).toContain('shell_environment_policy.exclude=["CHALITO_*"]');
   });
 
   it("refuses a gateway that isn't https (plain http only on this machine)", () => {

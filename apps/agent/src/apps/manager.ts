@@ -61,8 +61,9 @@ export const isWebOnly = (r: Recipe) => r.kinds.every((k) => k === "web-app");
 export const isNetworkOnly = (r: Recipe) =>
   Object.keys(r.platforms).length === 0 && r.kinds.some((k) => k === "chat-api" || k === "a2a");
 
-/** Apps that can run on "IA de Chalyb" (ADR 0030; providers.yaml codingAgents.*.managed). Never Claude Code. */
-export const CHALYB_APPS: ReadonlySet<string> = new Set(["codex", "grok", "gemini"]);
+/** Apps that can run on "IA de Chalyb" (ADR 0030; providers.yaml codingAgents.*.managed). Never Claude Code;
+ *  Grok Build is pending (its tools would see the token). */
+export const CHALYB_APPS: ReadonlySet<string> = new Set(["codex", "gemini"]);
 
 /** What the agent remembers per app in ~/.chalito/apps.json (0600; never a secret). */
 const AppRecord = z.object({
