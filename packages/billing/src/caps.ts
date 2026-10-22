@@ -42,6 +42,19 @@ export const localMonthStart = (now: number, tz: string): number => {
   return t;
 };
 
+/** The instant the user's current local day began (local midnight). */
+export const localDayStart = (now: number, tz: string): number => {
+  const local = new Date(wallClock(now, tz));
+  const midnight = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+  // Two passes settle the offset across DST changes, as in localMonthStart.
+  let t = midnight - (wallClock(midnight, tz) - midnight);
+  t = midnight - (wallClock(t, tz) - t);
+  return t;
+};
+
+/** "YYYY-MM-DD" of the user's current local day (a Postgres `date`). */
+export const localDayKey = (now: number, tz: string): string => new Date(wallClock(now, tz)).toISOString().slice(0, 10);
+
 /** "YYYY_MM" of the user's current month, for once-a-month notes. */
 export const localMonthKey = (now: number, tz: string) => {
   const d = new Date(wallClock(now, tz));
