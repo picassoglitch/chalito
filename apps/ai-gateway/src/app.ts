@@ -8,6 +8,7 @@ import type {
   CodingRefusal,
   CodingStore,
   CodingTicket,
+  TokenUsage,
 } from "@chalito/billing";
 import type { ProvidersConfig } from "@chalito/config";
 import { errorMessage } from "@chalito/redact";
@@ -43,6 +44,31 @@ const WIRE_OF: Record<CodingAgent, Wire> = { codex: "responses", "grok-build": "
 
 const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
 
+// Tools the provider runs and charges per call, outside the token usage we meter (ADR 0030).
+const PAID_RESPONSES_TOOLS = /^(web_search|file_search|code_interpreter|image_generation|computer_use|mcp)/;
+const PAID_GEMINI_TOOLS = [
+  "googleSearch",
+  "googleSearchRetrieval",
+  "codeExecution",
+  "urlContext",
+  "googleMaps",
+  "fileSearch",
+];
+
+/** Why a Responses body can't go out on our key, or null. Stored state would also be billed outside the request. */
+export const responsesProblem = (b: Record<string, unknown>): string | null => {
+  if (b.previous_response_id !== undefined || b.conversation !== undefined) return "stored_state_not_allowed";
+  const tools = Array.isArray(b.tools) ? (b.tools as { type?: unknown }[]) : [];
+  return tools.some((t) => PAID_RESPONSES_TOOLS.test(String(t?.type ?? ""))) ? "tool_not_allowed" : null;
+};
+
+/** The same for a Gemini body: its built-in tools and cached content. */
+export const geminiProblem = (b: Record<string, unknown>): string | null => {
+  if (b.cachedContent !== undefined) return "stored_state_not_allowed";
+  const tools = Array.isArray(b.tools) ? (b.tools as Record<string, unknown>[]) : [];
+  return tools.some((t) => t && PAID_GEMINI_TOOLS.some((k) => k in t)) ? "tool_not_allowed" : null;
+};
+
 /** An error in the shape the person's CLI reads: OpenAI's for Responses, Google's for Gemini. */
 const errorBody = (wire: Wire, status: number, code: string, message: string) =>
   wire === "gemini"
@@ -61,11 +87,12 @@ const REFUSAL: Record<CodingRefusal, [number, string]> = {
   hub_unavailable: [503, "Chalyb can't check your balance right now. Try again in a moment."],
 };
 
-/** The token, wherever the CLI puts it: Bearer (Codex, Grok), x-goog-api-key or ?key= (Gemini). */
+/** The token, where the CLI puts it: Bearer (Codex, Grok) or x-goog-api-key (Gemini). */
 const tokenOf = (c: Context) => {
   const auth = c.req.header("authorization") ?? "";
   if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
-  return c.req.header("x-goog-api-key") ?? c.req.query("key") ?? "";
+  // Never ?key=: request logs keep the query string.
+  return c.req.header("x-goog-api-key") ?? "";
 };
 
 export const createGateway = (d: GatewayDeps) => {
@@ -81,6 +108,22 @@ export const createGateway = (d: GatewayDeps) => {
       ...(d.trustedProxies !== undefined ? { trustedProxies: d.trustedProxies } : {}),
     }),
   );
+  // Usage the database refused even after retries, replayed by retryPending (the sweep's tick).
+  const pending: { ticket: CodingTicket; usage: TokenUsage | null; outputBytes: number }[] = [];
+  const streams = new Set<{ stop(ms: number): Promise<void> }>();
+  const record = async (r: { ticket: CodingTicket; usage: TokenUsage | null; outputBytes: number }) => {
+    for (const wait of [0, 200, 1000]) {
+      if (wait) await new Promise((ok) => setTimeout(ok, wait));
+      try {
+        await d.meter.finish(r.ticket, r.usage, { outputBytes: r.outputBytes });
+        return true;
+      } catch (err) {
+        log("meter.finish_failed", { credential: r.ticket.credentialId, seq: r.ticket.seq, error: errorMessage(err) });
+      }
+    }
+    if (!pending.includes(r)) pending.push(r);
+    return false;
+  };
   app.get("/healthz", (c) => c.json({ ok: true }));
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -147,14 +190,12 @@ export const createGateway = (d: GatewayDeps) => {
       if (finished || !ticket) return;
       finished = true;
       // A refused or failed upstream call isn't charged by the provider: nothing billed, the hold released.
-      const usage = ok && reader ? reader.end() : { input: 0, output: 0 };
-      try {
-        await d.meter.finish(ticket, usage, { outputBytes: reader?.bytes ?? 0 });
-      } catch (err) {
-        log("meter.finish_failed", { credential: ticket.credentialId, seq: ticket.seq, error: errorMessage(err) });
-      }
+      await record({
+        ticket,
+        usage: ok && reader ? reader.end() : { input: 0, output: 0 },
+        outputBytes: reader?.bytes ?? 0,
+      });
     };
-
     let upstream: Response;
     try {
       upstream = await doFetch(p.url, {
@@ -179,44 +220,53 @@ export const createGateway = (d: GatewayDeps) => {
     const src = upstream.body.getReader();
     const drainMs = d.drainMs ?? 15 * 60_000;
     let clientGone = false;
-    // The CLI hung up: keep reading (bounded) so the provider's final usage still reaches the bill.
-    const drain = async () => {
-      const until = Date.now() + drainMs;
-      try {
-        for (;;) {
-          if (Date.now() > until) {
-            await src.cancel().catch(() => undefined);
-            break;
+    let draining: Promise<void> | null = null;
+    const cut = () => log("upstream.stream_cut", { credential: p.cred.id, seq: ticket?.seq ?? null });
+    // The CLI hung up: keep reading (bounded, even if the provider stalls) so its final usage reaches the bill.
+    const drain = (ms: number) =>
+      (draining ??= (async () => {
+        const timer = setTimeout(() => void src.cancel().catch(() => undefined), ms);
+        try {
+          for (;;) {
+            const { done, value } = await src.read();
+            if (done) break;
+            reader.push(value);
           }
-          const { done, value } = await src.read();
-          if (done) break;
-          reader.push(value);
+        } catch {
+          cut();
+        } finally {
+          clearTimeout(timer);
         }
-      } catch {
-        /* the provider cut the stream: fallback billing */
-      }
+        await finish(reader, okStatus);
+      })());
+    const live = { stop: (ms: number) => drain(ms) };
+    if (ticket) streams.add(live);
+    const done = async () => {
+      streams.delete(live);
       await finish(reader, okStatus);
     };
     const out = new ReadableStream<Uint8Array>({
       async pull(ctrl) {
+        if (draining) return;
         try {
-          const { done, value } = await src.read();
-          if (done) {
+          const { done: end, value } = await src.read();
+          if (end) {
             // Metered before the response ends: on Cloud Run the CPU may stop once the last byte is sent.
-            await finish(reader, okStatus);
+            await done();
             ctrl.close();
             return;
           }
           reader.push(value);
           if (!clientGone) ctrl.enqueue(value);
         } catch {
+          cut();
+          await done();
           ctrl.error(new Error("upstream stream failed"));
-          await finish(reader, okStatus);
         }
       },
       cancel() {
         clientGone = true;
-        void drain();
+        void drain(drainMs).finally(() => streams.delete(live));
       },
     });
     return new Response(out, { status: upstream.status, headers });
@@ -234,6 +284,10 @@ export const createGateway = (d: GatewayDeps) => {
     const body = await readJson(c);
     if (!body || typeof body.model !== "string")
       return fail(c, "responses", 400, "bad_request", "A model is required.");
+    const problem = responsesProblem(body);
+    if (problem)
+      return fail(c, "responses", 400, problem, "That tool or stored state isn't available with IA de Chalyb.");
+    body.store = false;
     const managed = d.providers.codingAgents[cred.agent]!.managed!;
     // Codex never sends a limit: set one, and never above the agent's.
     const asked =
@@ -275,6 +329,8 @@ export const createGateway = (d: GatewayDeps) => {
     const [, model, method] = m as unknown as [string, string, string];
     const body = await readJson(c);
     if (!body) return fail(c, "gemini", 400, "bad_request", "A JSON body is required.");
+    const problem = geminiProblem(body);
+    if (problem) return fail(c, "gemini", 400, problem, "That tool or stored state isn't available with IA de Chalyb.");
     const managed = d.providers.codingAgents[cred.agent]!.managed!;
     if (method !== "countTokens") {
       const gc = (
@@ -302,5 +358,16 @@ export const createGateway = (d: GatewayDeps) => {
     log("unhandled", { error: errorMessage(err) });
     return c.json({ error: { message: "internal", code: "internal" } }, 500);
   });
-  return app;
+  return Object.assign(app, {
+    /** Replays usage the database refused; true when nothing is left. */
+    retryPending: async () => {
+      for (const r of pending.splice(0)) await record(r);
+      return pending.length === 0;
+    },
+    /** SIGTERM: every live stream stops reading within `ms` and is billed (its usage, or the estimate). */
+    shutdown: async (ms: number) => {
+      await Promise.allSettled([...streams].map((s) => s.stop(ms)));
+    },
+    pendingCount: () => pending.length,
+  });
 };

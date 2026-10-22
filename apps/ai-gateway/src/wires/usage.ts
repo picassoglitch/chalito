@@ -31,23 +31,27 @@ export const geminiUsage = (u: unknown): TokenUsage | null => {
   return { input: prompt - cacheRead, output: int(o.candidatesTokenCount) + int(o.thoughtsTokenCount), cacheRead };
 };
 
-/** Splits SSE `data:` payloads (any line ending), or keeps the whole body for a JSON answer. */
+/** Splits SSE `data:` payloads (any line ending); a JSON answer (`json`) is kept whole, newlines and all. */
 class Lines {
   #buf = "";
   #dec = new TextDecoder();
   bytes = 0;
-  constructor(private readonly onData: (json: unknown) => void) {}
+  constructor(
+    private readonly onData: (json: unknown) => void,
+    private readonly json = false,
+  ) {}
   push(chunk: Uint8Array) {
     this.bytes += chunk.byteLength;
     this.#buf += this.#dec.decode(chunk, { stream: true });
+    // Over 32 MB isn't an answer we can read: stop buffering (the meter bills its estimate).
+    if (this.#buf.length > 32 * 1024 * 1024) this.#buf = "";
+    if (this.json) return;
     let i: number;
     while ((i = this.#buf.search(/\r?\n/)) >= 0) {
       const line = this.#buf.slice(0, i);
       this.#buf = this.#buf.slice(this.#buf[i] === "\r" ? i + 2 : i + 1);
       this.#line(line);
     }
-    // A body over 32 MB without a newline isn't SSE we can read: stop buffering (fallback billing).
-    if (this.#buf.length > 32 * 1024 * 1024) this.#buf = "";
   }
   #line(line: string) {
     if (!line.startsWith("data:")) return;
@@ -59,39 +63,36 @@ class Lines {
       /* not JSON: not usage */
     }
   }
-  /** What's left: the last SSE line, or a whole JSON body. */
-  rest() {
+  /** At the end: the last SSE line, or the whole JSON answer. */
+  end() {
     const r = this.#buf + this.#dec.decode();
     this.#buf = "";
-    return r;
-  }
-  flushLine() {
-    const r = this.rest();
-    if (r.startsWith("data:")) this.#line(r);
-    return r;
+    if (!this.json) {
+      if (r.startsWith("data:")) this.#line(r);
+      return;
+    }
+    try {
+      this.onData(JSON.parse(r));
+    } catch {
+      /* not JSON: not usage */
+    }
   }
 }
 
 const FINAL_RESPONSES = new Set(["response.completed", "response.incomplete", "response.failed"]);
 
-/** Responses streams end with response.completed (or incomplete/failed) carrying the usage. */
+/** Responses streams end with response.completed (or incomplete/failed) carrying the usage; a JSON answer has it on top. */
 export const responsesReader = (stream: boolean): UsageReader => {
   let usage: TokenUsage | null = null;
   const lines = new Lines((j) => {
-    const e = j as { type?: string; response?: { usage?: unknown } };
-    if (e.type && FINAL_RESPONSES.has(e.type)) usage = responsesUsage(e.response?.usage) ?? usage;
-  });
+    const e = j as { type?: string; response?: { usage?: unknown }; usage?: unknown };
+    if (!stream) usage = responsesUsage(e.usage);
+    else if (e.type && FINAL_RESPONSES.has(e.type)) usage = responsesUsage(e.response?.usage) ?? usage;
+  }, !stream);
   return {
     push: (c) => lines.push(c),
     end() {
-      const rest = stream ? lines.flushLine() : lines.rest();
-      if (!stream && !usage) {
-        try {
-          usage = responsesUsage((JSON.parse(rest) as { usage?: unknown }).usage);
-        } catch {
-          /* not JSON */
-        }
-      }
+      lines.end();
       return usage;
     },
     get bytes() {
@@ -103,22 +104,14 @@ export const responsesReader = (stream: boolean): UsageReader => {
 /** Gemini: every chunk may carry usageMetadata; it's final on the chunk with a finishReason. */
 export const geminiReader = (stream: boolean): UsageReader => {
   let usage: TokenUsage | null = null;
-  const take = (j: unknown) => {
+  const lines = new Lines((j) => {
     const c = j as { usageMetadata?: unknown; candidates?: { finishReason?: string }[] };
     if (c.candidates?.some((x) => x.finishReason)) usage = geminiUsage(c.usageMetadata) ?? usage;
-  };
-  const lines = new Lines(take);
+  }, !stream);
   return {
     push: (c) => lines.push(c),
     end() {
-      const rest = stream ? lines.flushLine() : lines.rest();
-      if (!stream) {
-        try {
-          take(JSON.parse(rest));
-        } catch {
-          /* not JSON */
-        }
-      }
+      lines.end();
       return usage;
     },
     get bytes() {

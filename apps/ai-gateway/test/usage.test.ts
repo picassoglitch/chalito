@@ -29,9 +29,12 @@ describe("Responses usage (Codex, Grok)", () => {
     expect(r.bytes).toBeGreaterThan(0);
   });
 
-  it("a JSON answer's usage", () => {
+  it("a JSON answer's usage, pretty-printed as the providers send it", () => {
     const r = responsesReader(false);
-    feed(r, JSON.stringify({ id: "r", usage: { input_tokens: 10, output_tokens: 2 } }));
+    feed(
+      r,
+      JSON.stringify({ id: "r", output: [{ text: "a\nb" }], usage: { input_tokens: 10, output_tokens: 2 } }, null, 2),
+    );
     expect(r.end()).toEqual({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
   });
 });
@@ -46,6 +49,19 @@ describe("Gemini usage", () => {
   it("only the chunk with a finishReason is final; thoughts are output, cached comes out of the prompt", () => {
     const r = geminiReader(true);
     feed(r, geminiSse("x", final).join(""), 5);
+    expect(r.end()).toEqual({ input: 800, output: 80, cacheRead: 200 });
+  });
+
+  it("a JSON answer (generateContent), pretty-printed", () => {
+    const r = geminiReader(false);
+    feed(
+      r,
+      JSON.stringify(
+        { candidates: [{ content: { parts: [{ text: "hola" }] }, finishReason: "STOP" }], usageMetadata: final },
+        null,
+        2,
+      ),
+    );
     expect(r.end()).toEqual({ input: 800, output: 80, cacheRead: 200 });
   });
 

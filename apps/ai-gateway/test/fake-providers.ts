@@ -21,7 +21,9 @@ export type Behaviour =
   | { kind: "gemini"; usage: Record<string, unknown>; text?: string; stream?: boolean; chunks?: number }
   | { kind: "status"; status: number; body: unknown }
   /** Sends `chunks` events, then drops the connection before the usage. */
-  | { kind: "cut"; chunks: number };
+  | { kind: "cut"; chunks: number; delayMs?: number }
+  /** Sends `chunks` events, then never another byte. */
+  | { kind: "stall"; chunks: number };
 
 export const responsesSse = (text: string, usage: Record<string, unknown>, chunks = 3) => {
   const ev = (type: string, extra: Record<string, unknown>) =>
@@ -81,10 +83,10 @@ export class FakeProviders {
       res.writeHead(b.status, { "content-type": "application/json" }).end(JSON.stringify(b.body));
       return;
     }
-    if (b.kind === "cut") {
+    if (b.kind === "cut" || b.kind === "stall") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       for (const e of responsesSse("partial", {}, b.chunks).slice(0, b.chunks)) res.write(e);
-      setTimeout(() => res.socket?.destroy(), 20);
+      if (b.kind === "cut") setTimeout(() => res.socket?.destroy(), b.delayMs ?? 20);
       return;
     }
     const usage = b.usage;
@@ -99,7 +101,7 @@ export class FakeProviders {
               usage,
             }
           : { candidates: [{ content: { parts: [{ text }] }, finishReason: "STOP" }], usageMetadata: usage };
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(json));
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(json, null, 2));
       return;
     }
     res.writeHead(200, { "content-type": "text/event-stream" });

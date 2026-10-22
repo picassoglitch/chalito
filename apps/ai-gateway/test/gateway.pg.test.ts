@@ -29,6 +29,14 @@ if (!url) {
   let base = "";
   let http: ServerType;
   let perToken = { capacity: 60, refillPerSec: 1 };
+  let drainMs = 10_000;
+  let failFinish = 0;
+  let gwApp: ReturnType<typeof createGateway>;
+  const upstreams = {
+    openai: { baseUrl: "", apiKey: OPENAI_KEY },
+    xai: { baseUrl: "", apiKey: XAI_KEY },
+    google: { baseUrl: "", apiKey: GEMINI_KEY },
+  };
   const meter = new CodingMeter({
     store: new PostgresCodingStore(gw),
     hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "t", fetch: hub.fetch }),
@@ -40,23 +48,34 @@ if (!url) {
 
   beforeAll(async () => {
     const up = await fakes.start();
-    const app = createGateway({
+    upstreams.openai.baseUrl = `${up}/openai/v1`;
+    upstreams.xai.baseUrl = `${up}/xai/v1`;
+    upstreams.google.baseUrl = `${up}/google`;
+    const app = (gwApp = createGateway({
       store: new PostgresCodingStore(gw),
-      meter,
-      providers,
-      upstreams: {
-        openai: { baseUrl: `${up}/openai/v1`, apiKey: OPENAI_KEY },
-        xai: { baseUrl: `${up}/xai/v1`, apiKey: XAI_KEY },
-        google: { baseUrl: `${up}/google`, apiKey: GEMINI_KEY },
+      // The real meter; `failFinish` makes its next finishes fail like a database blip.
+      meter: {
+        begin: (id, r) => meter.begin(id, r),
+        finish: async (t, u, f) => {
+          if (failFinish > 0) {
+            failFinish -= 1;
+            throw new Error("database unavailable");
+          }
+          return meter.finish(t, u, f);
+        },
       },
+      providers,
+      upstreams,
       enabled: () => enabled,
       now: Date.now,
       get perToken() {
         return perToken;
       },
-      drainMs: 10_000,
+      get drainMs() {
+        return drainMs;
+      },
       log: (m, meta) => void logs.push(`${m} ${JSON.stringify(meta)}`),
-    });
+    }));
     http = serve({ fetch: app.fetch, port: 0 });
     await new Promise((r) => http.once("listening", r));
     base = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
@@ -69,6 +88,8 @@ if (!url) {
   beforeEach(() => {
     enabled = true;
     perToken = { capacity: 60, refillPerSec: 1 };
+    drainMs = 10_000;
+    failFinish = 0;
   });
 
   const session = async (
@@ -226,6 +247,132 @@ if (!url) {
       expect(res.status).toBe(400);
       expect(((await res.json()) as { error: { code: string } }).error.code).toBe("model_not_allowed");
       expect(fakes.seen.length).toBe(before);
+    });
+  });
+
+  describe("failure paths still bill exactly once", () => {
+    it("the CLI hangs up and then the provider cuts the stream: the estimate is billed and the hold released", async () => {
+      const s = await session();
+      fakes.behaviour = { kind: "cut", chunks: 2, delayMs: 300 };
+      const ctrl = new AbortController();
+      const res = await responses(s.token, { model: s.model, stream: true }, ctrl.signal);
+      await res.body!.getReader().read();
+      ctrl.abort();
+      await until(async () => (await events(s.owner)).length === 1);
+      expect((await events(s.owner))[0]!.event.metadata).toMatchObject({ estimated: true });
+      await until(async () => Number((await cred(s.id)).inflight_micros) === 0);
+      expect(logs.some((l) => l.startsWith("upstream.stream_cut"))).toBe(true);
+    });
+
+    it("a provider that stalls after the CLI left is cut off after drainMs and the estimate billed", async () => {
+      const s = await session();
+      drainMs = 300;
+      fakes.behaviour = { kind: "stall", chunks: 2 };
+      const ctrl = new AbortController();
+      const res = await responses(s.token, { model: s.model, stream: true }, ctrl.signal);
+      await res.body!.getReader().read();
+      ctrl.abort();
+      await until(async () => (await events(s.owner)).length === 1, 5000);
+      expect((await events(s.owner))[0]!.event.metadata).toMatchObject({ estimated: true });
+    });
+
+    it("the provider can't be reached: 502, nothing billed, the hold released", async () => {
+      const s = await session();
+      const was = upstreams.openai.baseUrl;
+      upstreams.openai.baseUrl = "http://127.0.0.1:9/v1";
+      try {
+        const res = await responses(s.token, { model: s.model });
+        expect(res.status).toBe(502);
+      } finally {
+        upstreams.openai.baseUrl = was;
+      }
+      expect(Number((await cred(s.id)).inflight_micros)).toBe(0);
+      expect(await events(s.owner)).toHaveLength(0);
+    });
+
+    it("the database refuses the usage once: retried at once, billed once", async () => {
+      const s = await session();
+      fakes.behaviour = { kind: "responses", usage, stream: false };
+      failFinish = 1;
+      await (await responses(s.token, { model: s.model })).text();
+      await until(async () => (await events(s.owner)).length === 1);
+      expect((await events(s.owner))[0]!.event.cost_usd_micros).toBe(usageCost);
+    });
+
+    it("the database stays down: the usage waits and the next tick records it", async () => {
+      const s = await session();
+      fakes.behaviour = { kind: "responses", usage, stream: false };
+      failFinish = 3;
+      await (await responses(s.token, { model: s.model })).text();
+      await until(async () => gwApp.pendingCount() === 1, 5000);
+      expect(await events(s.owner)).toHaveLength(0);
+      expect(await gwApp.retryPending()).toBe(true);
+      expect((await events(s.owner))[0]!.event.cost_usd_micros).toBe(usageCost);
+      expect(Number((await cred(s.id)).inflight_micros)).toBe(0);
+    });
+
+    it("SIGTERM mid-stream: the stream is stopped and billed before the process exits", async () => {
+      const s = await session();
+      fakes.behaviour = { kind: "stall", chunks: 2 };
+      const res = await responses(s.token, { model: s.model, stream: true });
+      await res.body!.getReader().read();
+      await gwApp.shutdown(200);
+      await until(async () => (await events(s.owner)).length === 1);
+      expect((await events(s.owner))[0]!.event.metadata).toMatchObject({ estimated: true });
+    });
+
+    it("paid built-in tools and stored state never go out on our key; store is always off", async () => {
+      const s = await session();
+      const before = fakes.seen.length;
+      for (const body of [
+        { model: s.model, tools: [{ type: "web_search_preview" }] },
+        { model: s.model, tools: [{ type: "code_interpreter" }] },
+        { model: s.model, previous_response_id: "resp_old" },
+      ]) {
+        const r = await responses(s.token, body);
+        expect(r.status).toBe(400);
+        await r.text();
+      }
+      expect(fakes.seen.length).toBe(before);
+      fakes.behaviour = { kind: "responses", usage, stream: false };
+      await (
+        await responses(s.token, { model: s.model, store: true, tools: [{ type: "function", name: "shell" }] })
+      ).text();
+      expect(fakes.seen.at(-1)!.body!.store).toBe(false);
+      const g = await session("gemini-cli");
+      const gr = await fetch(`${base}/v1beta/models/${g.model}:generateContent`, {
+        method: "POST",
+        headers: { "x-goog-api-key": g.token, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [], tools: [{ googleSearch: {} }] }),
+      });
+      expect(gr.status).toBe(400);
+      // The token in the query string is never accepted (request logs keep it).
+      const q = await fetch(`${base}/v1beta/models/${g.model}:generateContent?key=${g.token}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      expect(q.status).toBe(401);
+    });
+
+    it("Gemini generateContent (not streamed) is billed from its usageMetadata, not the estimate", async () => {
+      const s = await session("gemini-cli");
+      fakes.behaviour = {
+        kind: "gemini",
+        stream: false,
+        usage: { promptTokenCount: 2_000, candidatesTokenCount: 100, totalTokenCount: 2_100 },
+      };
+      const res = await fetch(`${base}/v1beta/models/${s.model}:generateContent`, {
+        method: "POST",
+        headers: { "x-goog-api-key": s.token, "content-type": "application/json" },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "hola" }] }] }),
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+      await until(async () => (await events(s.owner)).length === 1);
+      const [e] = await events(s.owner);
+      expect(e!.event.cost_usd_micros).toBe(500 + 150);
+      expect(e!.event.metadata.estimated).toBeUndefined();
     });
   });
 

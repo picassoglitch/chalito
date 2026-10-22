@@ -29,6 +29,7 @@ const meter = new CodingMeter({
   cfg: providers.codingManaged,
   reserveBasis: parseReserveBasis(process.env.HUB_RESERVE_BASIS),
   now: Date.now,
+  log: (msg, meta) => console.error(`[ai-gateway] ${msg}`, JSON.stringify(meta)),
 });
 // Our keys, from projects used for nothing else (docs/OPS.md, managed coding agents). A missing key pauses that agent.
 const upstream = (key: string | undefined, base: string) => (key ? { baseUrl: base, apiKey: key } : null);
@@ -54,13 +55,24 @@ const app = createGateway({
   ...(process.env.TRUSTED_PROXIES ? { trustedProxies: Number(process.env.TRUSTED_PROXIES) } : {}),
 });
 
-// Every minute: close the hub holds of ended and expired sessions.
+// Every minute: replay usage the database refused, then close the hub holds of ended and expired sessions.
 setInterval(() => {
-  meter
-    .sweep()
-    .catch((err: unknown) => console.error("[ai-gateway] sweep failed", err instanceof Error ? err.name : "error"));
+  void (async () => {
+    if (!(await app.retryPending())) console.error("[ai-gateway] usage still unrecorded", app.pendingCount());
+    await meter.sweep();
+  })().catch((err: unknown) => console.error("[ai-gateway] tick failed", err instanceof Error ? err.message : "error"));
 }, 60_000).unref();
 
 const port = Number(process.env.PORT ?? 8790);
-serve({ fetch: app.fetch, port });
+const server = serve({ fetch: app.fetch, port });
 process.stdout.write(`[ai-gateway] listening on :${port}\n`);
+
+// Cloud Run gives 10 s after SIGTERM: stop reading live streams, bill them (usage or estimate), then exit.
+process.once("SIGTERM", () => {
+  server.close();
+  void (async () => {
+    await app.shutdown(6_000);
+    if (!(await app.retryPending())) console.error("[ai-gateway] usage lost at shutdown", app.pendingCount());
+    process.exit(0);
+  })();
+});
