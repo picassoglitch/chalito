@@ -77,6 +77,8 @@ export const fetchDeviceToken = async (
 export interface Cloud {
   /** Fetches fresh credentials and applies them. */
   refresh(): Promise<void>;
+  /** The device's current access token, for Chalito's api (managed coding credentials, ADR 0030). */
+  accessToken?(): Promise<string>;
   readonly refreshIntervalMs: number;
   store(owner: string, deviceId: string): AgentStore;
   /** Agent-to-agent link relays and the phone's link list (links/cloud.ts); absent = links stay on this device. */
@@ -172,6 +174,10 @@ export const supabaseCloud = (
   return {
     refreshIntervalMs: tokens.refreshIntervalMs,
     refresh: async () => apply(await tokens.getToken()),
+    accessToken: async () => {
+      if (!token) await apply(await tokens.getToken());
+      return token!;
+    },
     store: (owner, deviceId) => {
       const s = new SupabaseStore(client, owner, deviceId, {
         ...(opts.log ? { log: opts.log } : {}),

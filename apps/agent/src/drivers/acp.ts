@@ -11,6 +11,8 @@ export interface AcpDriverOptions {
   readonly apiKey?: string;
   /** The app's own sign-in on this computer, where the recipe's `planSignin` allows it. */
   readonly signIn?: boolean;
+  /** "IA de Chalyb" (ADR 0030): this session's gateway credential, instead of a key or sign-in. */
+  readonly managed?: { baseUrl: string; token: string; model: string };
   /** Chalito's own state dir for the app. */
   readonly home: string;
   /** Base environment; the adapter passes only an allowlist of it on. */
@@ -30,7 +32,7 @@ export const acpDriver = (o: AcpDriverOptions): AcpAdapter => {
     { ...o.recipe, driver: { acp: o.recipe.driver.acp } },
     {
       binPath: o.binPath,
-      ...(o.apiKey ? { apiKey: o.apiKey } : { signIn: o.signIn ?? false }),
+      ...(o.managed ? { managed: o.managed } : o.apiKey ? { apiKey: o.apiKey } : { signIn: o.signIn ?? false }),
       home: o.home,
       env: o.env,
     },

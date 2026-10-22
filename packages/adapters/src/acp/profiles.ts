@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import type { AuthMethod } from "@agentclientprotocol/sdk";
 import type { RemotePermissionMode } from "@chalito/protocol";
 import { allowedEnv } from "../env.js";
+import { GATEWAY_URL } from "../managed.js";
 import { type ModePolicy, keyEnvAllowed, unsafeLaunchArg } from "./policy.js";
 import { type AcpRecipe, BUILTIN_ACP_RECIPES, acpRecipeProblem } from "./recipe.js";
 
@@ -35,6 +36,8 @@ export interface AcpConfig {
    * remembered grants or hooks. Also holds files Chalito hands the CLI (Gemini's admin policy).
    */
   home?: string;
+  /** "IA de Chalyb" (ADR 0030): our ai-gateway with a per-session token. Only presets that support it accept it. */
+  managed?: { baseUrl: string; token: string; model: string };
   /** Reported in `initialize.clientInfo.version`. */
   clientVersion?: string;
   /** Base environment (defaults to process.env); only allowlisted variables reach the CLI. */
@@ -78,6 +81,8 @@ export interface AcpPreset {
   harden?(launch: AcpLaunch, ctx: { config: AcpConfig; mode: RemotePermissionMode; home: string }): void;
   /** False: the key never goes in the environment (the preset's `authenticate` carries it). */
   readonly keyInEnv?: boolean;
+  /** The preset can point its CLI at our ai-gateway (`config.managed`); every other recipe refuses it. */
+  readonly managed?: boolean;
   authenticate?(config: AcpConfig, recipe: AcpRecipe): AcpAuthenticate | null;
   readonly safeMode?: string;
   readonly unsafeModes?: readonly string[];
@@ -144,12 +149,24 @@ export const grokPreset: AcpPreset = {
   harden(launch, { config, mode, home }) {
     launch.args.unshift("--sandbox", grokSandboxFor(mode));
     for (const k of GROK_COMPAT_OFF) launch.env[k] = "false";
-    if (config.apiKey) {
+    if (config.managed) {
+      // Its own GROK_HOME: a cached `grok login` would win over the key. The gateway's list decides the models.
+      privateDir(home);
+      writeFileSync(join(home, "requirements.toml"), GROK_REQUIREMENTS, { mode: 0o600 });
+      launch.env.GROK_HOME = home;
+      launch.env.GROK_MODELS_BASE_URL = `${config.managed.baseUrl.replace(/\/+$/, "")}/v1`;
+      launch.env.XAI_API_KEY = config.managed.token;
+      launch.env.GROK_DEFAULT_MODEL = config.managed.model;
+      launch.env.GROK_TELEMETRY_ENABLED = "false";
+    } else if (config.apiKey) {
       privateDir(home);
       writeFileSync(join(home, "requirements.toml"), GROK_REQUIREMENTS, { mode: 0o600 });
       launch.env.GROK_HOME = home;
     }
   },
+  authenticate: (config, recipe) =>
+    config.apiKey || config.managed ? { methodId: recipe.driver.acp?.authMethods?.[0] ?? "xai.api_key" } : null,
+  managed: true,
   unsafeModes: ["bypassPermissions", "always-approve", "auto", "acceptEdits", "dontAsk"],
   allowedCommands: ["compact", "context", "session-info"],
 };
@@ -184,17 +201,25 @@ export const geminiPreset: AcpPreset = {
     privateDir(policyDir);
     writeFileSync(join(policyDir, "chalito.toml"), GEMINI_POLICY, { mode: 0o600 });
     launch.args.push("--admin-policy", policyDir);
-    if (config.apiKey) {
+    if (config.apiKey || config.managed) {
       const cliHome = join(home, "home");
       privateDir(cliHome);
       launch.env.GEMINI_CLI_HOME = cliHome;
     }
+    if (config.managed) {
+      // The SDK adds /v1beta itself; the token goes in authenticate's _meta, never the env.
+      launch.env.GOOGLE_GEMINI_BASE_URL = config.managed.baseUrl.replace(/\/+$/, "");
+      launch.args.push("--model", config.managed.model);
+    }
   },
   keyInEnv: false,
-  authenticate: (config, recipe) =>
-    config.apiKey
-      ? { methodId: recipe.driver.acp?.authMethods?.[0] ?? "gemini-api-key", _meta: { "api-key": config.apiKey } }
-      : null,
+  authenticate: (config, recipe) => {
+    const key = config.managed?.token ?? config.apiKey;
+    return key
+      ? { methodId: recipe.driver.acp?.authMethods?.[0] ?? "gemini-api-key", _meta: { "api-key": key } }
+      : null;
+  },
+  managed: true,
   unsafeModes: ["yolo", "autoEdit"],
   safeMode: "default",
   allowedCommands: ["compress", "stats"],
@@ -289,7 +314,11 @@ export const profileFor = (
     signInHint:
       preset.signInHint ?? `Sign in to ${title} on this computer with its own sign-in, or save an API key for it.`,
     launch(config, mode) {
-      if (!config.apiKey && !config.signIn) throw new Error(`${title} needs an API key or the CLI's own sign-in`);
+      if (config.managed && !preset.managed) throw new Error(`${title} has no IA de Chalyb`);
+      if (config.managed && !GATEWAY_URL.test(config.managed.baseUrl))
+        throw new Error("IA de Chalyb needs an https gateway URL");
+      if (!config.apiKey && !config.signIn && !config.managed)
+        throw new Error(`${title} needs an API key or the CLI's own sign-in`);
       const env = baseEnv(config);
       if (config.apiKey && preset.keyInEnv !== false && recipe.apiKey && keyEnvAllowed(recipe.apiKey.env))
         env[recipe.apiKey.env] = config.apiKey;

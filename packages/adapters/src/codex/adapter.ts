@@ -14,6 +14,7 @@ import type {
   ToolCall,
 } from "../core.js";
 import { allowedEnv } from "../env.js";
+import { GATEWAY_URL } from "../managed.js";
 
 /**
  * Codex adapter over `codex app-server` on stdio (VERIFIED_APIS §1, D-021): newline-delimited
@@ -68,6 +69,8 @@ export interface CodexConfig {
    * CODEX_HOME's login; Chalito never reads or relays the token. Needs `chatgptPlanEnabled`.
    */
   chatgptLogin?: boolean;
+  /** "IA de Chalyb" (ADR 0030): our ai-gateway with a per-session token, through an env-key provider. */
+  managed?: { baseUrl: string; token: string };
   /** `providers.yaml: openai.subscriptionLocal` resolved for this user (owner_only/approved → true). */
   chatgptPlanEnabled?: boolean;
   model?: string;
@@ -145,6 +148,20 @@ export const API_KEY_OVERRIDES = [
   "model_providers.chalito_openai_key.supports_websockets=false",
 ];
 
+/** The variable that carries a session's IA de Chalyb token into the child, and only there. */
+export const MANAGED_TOKEN_ENV = "CHALITO_MANAGED_TOKEN";
+
+/** `-c` overrides for IA de Chalyb: Codex talks Responses to our gateway, never to OpenAI. */
+export const managedOverrides = (baseUrl: string): string[] => [
+  'model_provider="chalito_managed"',
+  'model_providers.chalito_managed.name="IA de Chalyb"',
+  `model_providers.chalito_managed.base_url=${JSON.stringify(`${baseUrl.replace(/\/+$/, "")}/v1`)}`,
+  `model_providers.chalito_managed.env_key="${MANAGED_TOKEN_ENV}"`,
+  'model_providers.chalito_managed.wire_api="responses"',
+  "model_providers.chalito_managed.requires_openai_auth=false",
+  "model_providers.chalito_managed.supports_websockets=false",
+];
+
 const TOML_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
@@ -185,7 +202,11 @@ export const codexLaunch = (
   const args = ["app-server", "--listen", "stdio://"];
   for (const o of HARDENING_OVERRIDES) args.push("-c", o);
   for (const o of mcpServerOverrides(mcpServers)) args.push("-c", o);
-  if (config.chatgptPlan) {
+  if (config.managed) {
+    if (!GATEWAY_URL.test(config.managed.baseUrl)) throw new Error("IA de Chalyb needs an https gateway URL");
+    env[MANAGED_TOKEN_ENV] = config.managed.token;
+    for (const o of managedOverrides(config.managed.baseUrl)) args.push("-c", o);
+  } else if (config.chatgptPlan) {
     if (!config.chatgptPlanEnabled) throw new Error("ChatGPT plan usage is not enabled for this user");
     env.ACCESS_TOKEN = config.chatgptPlan.accessToken;
     for (const o of CHATGPT_PLAN_OVERRIDES) args.push("-c", o);

@@ -110,6 +110,8 @@ export interface TerminalCommands {
 export interface AppCommands {
   connectKey(appId: string, key: unknown): Promise<{ ok: boolean; reason?: string }>;
   signin(appId: string): Promise<{ ok: boolean; reason?: string }>;
+  /** "IA de Chalyb" for a coding agent (ADR 0030). Absent: refused. */
+  useChalyb?(appId: string): Promise<{ ok: boolean; reason?: string }>;
   disconnect(appId: string): Promise<{ ok: boolean; reason?: string }>;
   requestInstall(appId: string): Promise<{ ok: boolean; reason?: string }>;
   launch(appId: string): Promise<{ ok: boolean; reason?: string }>;
@@ -737,7 +739,9 @@ export class AgentCore {
         const r =
           p.method === "api_key"
             ? await apps.connectKey(appId, await open<string>(p.keyCt!))
-            : await apps.signin(appId);
+            : p.method === "chalyb"
+              ? ((await apps.useChalyb?.(appId)) ?? { ok: false, reason: "app_unavailable" })
+              : await apps.signin(appId);
         this.#audit("app.connect", { appId, method: p.method, by: origin, ok: r.ok, via: p.type });
         return r.ok ? { ok: true } : this.#reject(cid, r.reason ?? "provider_failed");
       }
@@ -2191,6 +2195,9 @@ export class AgentCore {
       case "error":
         this.#local(s.sid, { type: "error", code: e.code });
         await this.#event(s, { type: "error", code: e.code === "adapter_crash" ? "adapter_crash" : e.code });
+        return;
+      case "blocked":
+        await this.#event(s, { type: "session.blocked", urgency: "normal", reason: e.reason });
         return;
     }
   }

@@ -61,9 +61,12 @@ export const isWebOnly = (r: Recipe) => r.kinds.every((k) => k === "web-app");
 export const isNetworkOnly = (r: Recipe) =>
   Object.keys(r.platforms).length === 0 && r.kinds.some((k) => k === "chat-api" || k === "a2a");
 
+/** Apps that can run on "IA de Chalyb" (ADR 0030; providers.yaml codingAgents.*.managed). Never Claude Code. */
+export const CHALYB_APPS: ReadonlySet<string> = new Set(["codex", "grok", "gemini"]);
+
 /** What the agent remembers per app in ~/.chalito/apps.json (0600; never a secret). */
 const AppRecord = z.object({
-  mode: z.enum(["api_key", "signin"]).nullable().default(null),
+  mode: z.enum(["api_key", "signin", "chalyb"]).nullable().default(null),
   /** A sign-in finished here (the only signal for CLIs without a status command). */
   signedIn: z.boolean().default(false),
 });
@@ -564,6 +567,7 @@ export class AppManager {
     else if ((rec.mode === "signin" || live.blocked) && !this.d.signinAllowed(e)) state = "blocked_by_policy";
     else if (rec.mode === "api_key" && (await this.#hasKey(appId))) state = "connected";
     else if (rec.mode === "signin" && (await this.#signedIn(e))) state = "connected";
+    else if (rec.mode === "chalyb" && CHALYB_APPS.has(appId) && !e.custom) state = "connected";
     else if (live.error) state = "error";
     else if (!e.recipe.apiKey && !this.#observableSignin(e)) state = "available";
     else state = "needs_auth";
@@ -659,6 +663,22 @@ export class AppManager {
     live.blocked = false;
     if (this.#bin(u.e)) await this.#autoPin(appId);
     this.d.log.info("app.connected", { appId, mode: "api_key" });
+    await this.report(appId);
+    this.d.onChange();
+    return { ok: true };
+  }
+
+  /** "IA de Chalyb": no key and no sign-in here; each session gets a token from the api (which checks the plan). */
+  async useChalyb(appId: string): Promise<AppResult> {
+    const u = this.#usable(appId);
+    if ("fail" in u) return u.fail;
+    if (!CHALYB_APPS.has(appId) || u.e.custom) return { ok: false, reason: "app_unavailable" };
+    this.#save(appId, { mode: "chalyb", signedIn: false });
+    const live = this.#liveOf(appId);
+    live.error = null;
+    live.blocked = false;
+    if (this.#bin(u.e)) await this.#autoPin(appId);
+    this.d.log.info("app.connected", { appId, mode: "chalyb" });
     await this.report(appId);
     this.d.onChange();
     return { ok: true };

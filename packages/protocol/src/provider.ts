@@ -8,8 +8,8 @@ import { EpochMs } from "./common.js";
  * CLI profile).
  */
 
-/** How a provider is connected: a BYO API key, or the person's own sign-in in the provider's official CLI. */
-export const ProviderConnectMethod = z.enum(["api_key", "signin"]);
+/** A BYO API key, the person's own sign-in in the official CLI, or "IA de Chalyb" (ADR 0030: our keys, billed). */
+export const ProviderConnectMethod = z.enum(["api_key", "signin", "chalyb"]);
 export type ProviderConnectMethod = z.infer<typeof ProviderConnectMethod>;
 
 /**

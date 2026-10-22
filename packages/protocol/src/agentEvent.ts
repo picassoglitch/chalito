@@ -139,6 +139,8 @@ export const AgentEvent = z.discriminatedUnion("type", [
     tokCached: z.number().int().nonnegative().default(0),
   }),
   z.object({ ...base, type: z.literal("card.updated"), cardVersion: z.number().int().nonnegative() }),
+  /** "IA de Chalyb" refused the next request (ADR 0030): the hub shows the recharge chip and "Usar mi clave". */
+  z.object({ ...base, type: z.literal("session.blocked"), reason: z.enum(["out_of_energy", "daily_cap"]) }),
   // ---- SCREEN (screen.ts): a screen session's own stream ------------------------------------
   /** Where the screen session is; metadata only. `reason` once it ended. */
   z.object({

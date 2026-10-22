@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { ManagedSessionAdapter, type SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter } from "@chalito/adapters/claude-code";
 import { fakeClaudeCode, type FakeStep } from "@chalito/adapters/testing";
 import { SESSIONS_DEFAULTS, loadLiabilityText } from "@chalito/config";
@@ -74,6 +75,8 @@ const harness = async (
     maxLive?: number;
     flushChars?: number;
     policy?: Partial<Policy>;
+    /** Wraps the Claude Code adapter (e.g. in a ManagedSessionAdapter). */
+    wrap?: (a: SessionAdapter) => SessionAdapter;
   } = {},
 ) => {
   const agent = await device("dev_agent");
@@ -103,7 +106,11 @@ const harness = async (
   const logs: string[] = [];
   const core = new AgentCore({
     store,
-    adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },
+    adapters: {
+      "claude-code": (o.wrap ?? ((a) => a))(
+        new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }),
+      ),
+    },
     policy: holder,
     devMode,
     trust: () => trust,
@@ -487,5 +494,29 @@ describe("an agent revoked mid-approval (beta rehearsal f)", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+});
+
+describe("IA de Chalyb blocked (ADR 0030)", () => {
+  it("a session refused for tokens after its turn gets session.blocked {out_of_energy}, once", async () => {
+    let checks = 0;
+    const h = await harness({
+      turns: [[{ say: "Listo." }], [{ say: "Otra." }]],
+      wrap: (inner) =>
+        new ManagedSessionAdapter("claude-code", {
+          source: {
+            issue: async (sid) => ({ id: `cc_${sid}`, token: "chc_x", baseUrl: "https://ai.test", model: "m" }),
+            status: async () => ({ state: "active", blockedReason: ++checks >= 1 ? "out_of_energy" : null }),
+            end: async () => undefined,
+          },
+          make: () => inner,
+        }),
+    });
+    const r = await h.start();
+    if (!r.ok) throw new Error(JSON.stringify(r));
+    await waitFor(() => h.store.events.some((e) => e.type === "session.blocked"));
+    const blocked = h.store.events.filter((e) => e.type === "session.blocked");
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toMatchObject({ sid: r.sid, reason: "out_of_energy", urgency: "normal" });
   });
 });

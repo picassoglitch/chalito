@@ -47,6 +47,8 @@ export type AdapterEvent =
   | { type: "tool_finished"; toolUseId: string; ok: boolean }
   | { type: "usage"; tokIn: number; tokOut: number; tokCacheRead: number; tokCacheWrite: number; model?: string }
   | { type: "state"; state: SessionState }
+  /** "IA de Chalyb" refused the session's next request (ADR 0030): out of tokens or over today's cap. */
+  | { type: "blocked"; reason: "out_of_energy" | "daily_cap" }
   | {
       type: "error";
       code: "adapter_crash" | "auth_required" | "rate_limited" | "quota_exhausted" | "internal";

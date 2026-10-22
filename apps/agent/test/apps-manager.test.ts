@@ -297,3 +297,21 @@ describe("AppManager: launch", () => {
     expect(web.fake.opened).toEqual(["https://chatgpt.com/"]);
   });
 });
+
+describe("AppManager: IA de Chalyb (ADR 0030)", () => {
+  it("Codex, Grok and Gemini can run on IA de Chalyb: no key, no sign-in, reported as connected in chalyb mode", async () => {
+    const s = setup({ installed: ["codex"], entries: [curated("codex"), curated("claude-code"), curated("goose")] });
+    expect(await s.m.useChalyb("codex")).toEqual({ ok: true });
+    expect(s.m.activeMode("codex")).toBe("chalyb");
+    expect(s.last("codex")).toMatchObject({ mode: "chalyb", state: "connected", connected: true });
+    expect(await s.secrets.get(appSecretName("codex"))).toBeNull();
+    expect(s.changes()).toBe(1);
+  });
+
+  it("never Claude Code (Anthropic's terms) and never any other app", async () => {
+    const s = setup({ installed: ["claude", "goose"], entries: [curated("claude-code"), curated("goose")] });
+    expect(await s.m.useChalyb("claude-code")).toEqual({ ok: false, reason: "app_unavailable" });
+    expect(await s.m.useChalyb("goose")).toEqual({ ok: false, reason: "app_unavailable" });
+    expect(s.m.activeMode("claude-code")).toBeNull();
+  });
+});

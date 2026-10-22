@@ -10,7 +10,7 @@ export type RenderQuality = (typeof RENDER_QUALITIES)[number];
  * agent's provider status (ProviderConnectionDoc); the others from rows written before it.
  */
 export type ConnectionMode =
-  "byo_api_key" | "byo_subscription_local" | "byo_mcp_connector" | "managed" | "api_key" | "signin";
+  "byo_api_key" | "byo_subscription_local" | "byo_mcp_connector" | "managed" | "api_key" | "signin" | "chalyb";
 
 export interface ConnectionStatus {
   /** Provider id from providers.yaml (anthropic, openai, xai, google). */

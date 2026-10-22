@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, watch, type FSWatcher } from "node:fs";
 import { basename, delimiter, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import type { SessionAdapter } from "@chalito/adapters";
+import { ManagedSessionAdapter, type ManagedSource, type SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv, type ClaudeAuth } from "@chalito/adapters/claude-code";
 import { CodexAdapter } from "@chalito/adapters/codex";
 import { builtinAcpRecipe } from "@chalito/adapters/acp";
@@ -72,6 +72,7 @@ import { FilePolicyHolder } from "./policy-file.js";
 import { createLogger, redactDeep, type Logger } from "./redact.js";
 import { SESSION_KINDS, deviceSetup, setupReporter } from "./setup-report.js";
 import { acpDriver } from "./drivers/index.js";
+import { apiManagedSource } from "./managed-source.js";
 import { spawnRunner, which } from "./runner.js";
 import { syncEndorsements, syncRevocations, syncSignIns } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
@@ -276,12 +277,16 @@ export interface AdapterInput {
     path: string;
     apiKey?: string;
     chatgptLogin?: true;
+    /** "IA de Chalyb" (ADR 0030): each session asks the api for a gateway credential. */
+    managed?: true;
     home: string;
     env: Record<string, string | undefined>;
   };
   /** Pinned Grok Build / Gemini CLI with a BYO key, or the CLI's own sign-in where allowed. */
   grok?: AcpInput;
   gemini?: AcpInput;
+  /** Per-session IA de Chalyb credentials for an agent, from the api. Absent: managed agents don't run. */
+  managedSource?: (agent: "codex" | "gemini-cli" | "grok-build") => ManagedSource;
   log: Logger;
 }
 
@@ -291,6 +296,8 @@ export interface AcpInput {
   apiKey?: string;
   /** No key: use the CLI's own login, which providers.yaml allows for this provider. */
   signIn: boolean;
+  /** "IA de Chalyb" (ADR 0030): each session asks the api for a gateway credential. */
+  managed?: true;
   /** Chalito's own state dir for the CLI (~/.chalito/<tool>). */
   home: string;
   env: Record<string, string | undefined>;
@@ -302,57 +309,70 @@ export const defaultAdapters: NonNullable<DaemonDeps["adapters"]> = ({
   codex,
   grok,
   gemini,
+  managedSource,
   log,
-}) => ({
-  ...(apiKey && claudePath
-    ? {
-        "claude-code": new ClaudeCodeAdapter({
-          apiKey,
-          claudePath,
-          // apiKeySource here shows which one is in use (ANTHROPIC_API_KEY for a BYO key).
-          onInit: (i) => log.info("adapter.init", { ...i }),
+}) => {
+  const logFn = (msg: string, meta: Record<string, unknown>) => log.warn(msg, meta);
+  const acp = (kind: "grok" | "gemini", i: AcpInput) => {
+    const base = { recipe: builtinAcpRecipe(kind), binPath: i.path, home: i.home, env: i.env, log };
+    if (!i.managed) return acpDriver({ ...base, ...(i.apiKey ? { apiKey: i.apiKey } : { signIn: i.signIn }) });
+    if (!managedSource) return null;
+    // Every session on a fresh IA de Chalyb credential (ADR 0030); the CLI never sees one of our keys.
+    return new ManagedSessionAdapter(kind, {
+      source: managedSource(kind === "grok" ? "grok-build" : "gemini-cli"),
+      make: (c) => acpDriver({ ...base, managed: { baseUrl: c.baseUrl, token: c.token, model: c.model } }),
+      localMcp: true,
+      log: logFn,
+    });
+  };
+  const codexAdapter = (c: NonNullable<AdapterInput["codex"]>) => {
+    if (!c.managed)
+      return new CodexAdapter({
+        codexPath: c.path,
+        ...(c.chatgptLogin ? { chatgptLogin: true, chatgptPlanEnabled: true } : { apiKey: c.apiKey }),
+        codexHome: c.home,
+        env: c.env,
+      });
+    if (!managedSource) return null;
+    return new ManagedSessionAdapter("codex", {
+      source: managedSource("codex"),
+      make: (m) =>
+        new CodexAdapter({
+          codexPath: c.path,
+          managed: { baseUrl: m.baseUrl, token: m.token },
+          model: m.model,
+          codexHome: c.home,
+          env: c.env,
         }),
-      }
-    : {}),
-  // A BYO key goes through the adapter's env-key provider: Codex never logs in with it or stores
-  // it (R-L12). A ChatGPT plan is the person's own `codex login` in Chalito's CODEX_HOME, offered
-  // only where providers.yaml allows it for them (resolved before this point; D-003, connect
-  // contract). Either way Codex runs with an allowlisted env and refuses app-server builds
-  // outside DEFAULT_CODEX_VERSIONS.
-  ...(codex
-    ? {
-        codex: new CodexAdapter({
-          codexPath: codex.path,
-          ...(codex.chatgptLogin ? { chatgptLogin: true, chatgptPlanEnabled: true } : { apiKey: codex.apiKey }),
-          codexHome: codex.home,
-          env: codex.env,
-        }),
-      }
-    : {}),
-  // Over ACP (D-022, D-065): the recipe-driven ACP driver; every permission request goes through
-  // the gate; the key runs with Chalito's own CLI home, sign-in with the person's own login (never
-  // started or read by us).
-  ...Object.fromEntries(
-    (["grok", "gemini"] as const).flatMap((kind) => {
-      const i = kind === "grok" ? grok : gemini;
-      return i
-        ? [
-            [
-              kind,
-              acpDriver({
-                recipe: builtinAcpRecipe(kind),
-                binPath: i.path,
-                ...(i.apiKey ? { apiKey: i.apiKey } : { signIn: i.signIn }),
-                home: i.home,
-                env: i.env,
-                log,
-              }),
-            ],
-          ]
-        : [];
-    }),
-  ),
-});
+      localMcp: true,
+      log: logFn,
+    });
+  };
+  const codexA = codex ? codexAdapter(codex) : null;
+  return {
+    ...(apiKey && claudePath
+      ? {
+          "claude-code": new ClaudeCodeAdapter({
+            apiKey,
+            claudePath,
+            // apiKeySource here shows which one is in use (ANTHROPIC_API_KEY for a BYO key).
+            onInit: (i) => log.info("adapter.init", { ...i }),
+          }),
+        }
+      : {}),
+    // BYO key via an env-key provider (R-L12), the person's own `codex login` (D-003), or IA de Chalyb's
+    // per-session gateway token (ADR 0030); always an allowlisted env and a version pin.
+    ...(codexA ? { codex: codexA } : {}),
+    // Over ACP (D-022, D-065): every permission request goes through the gate.
+    ...Object.fromEntries(
+      (["grok", "gemini"] as const).flatMap((kind) => {
+        const i = kind === "grok" ? grok : gemini;
+        const a = i ? acp(kind, i) : null;
+        return a ? [[kind, a]] : [];
+      }),
+    ),
+  };
+};
 
 const isInterpreter = (p: string) => /^(node|nodejs|bun|tsx)(\.exe)?$/i.test(basename(p));
 
@@ -682,17 +702,22 @@ const startDaemon = async (
         : CLAUDE_PIN_FAILED[c.locale](pin.reason);
     const codexPin = c.codex ? await checkClaudePin(c.codex) : null;
     const codexLogin = activeMode("openai") === "signin";
-    const openaiKey = c.codex && !codexLogin ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
+    const codexChalyb = activeMode("openai") === "chalyb";
+    const openaiKey = c.codex && !codexLogin && !codexChalyb ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
     if (codexPin && !codexPin.ok)
       log.error("adapter.codex_unavailable", { reason: CODEX_PIN_FAILED[c.locale](codexPin.reason) });
-    else if (codexPin && !openaiKey && !codexLogin)
+    else if (codexPin && !openaiKey && !codexLogin && !codexChalyb)
       log.error("adapter.codex_unavailable", { reason: OPENAI_KEY_MISSING[c.locale] });
     const codexHome = apps.profileEnv("codex").CODEX_HOME ?? join(dir, "codex");
     const codex =
-      codexPin?.ok && (openaiKey || codexLogin)
+      codexPin?.ok && (openaiKey || codexLogin || codexChalyb)
         ? {
             path: c.codex!.path,
-            ...(codexLogin ? { chatgptLogin: true as const } : { apiKey: openaiKey! }),
+            ...(codexChalyb
+              ? { managed: true as const }
+              : codexLogin
+                ? { chatgptLogin: true as const }
+                : { apiKey: openaiKey! }),
             home: codexHome,
             env: { ...env },
           }
@@ -714,6 +739,8 @@ const startDaemon = async (
         log.error(`adapter.${tool}_unavailable`, { reason: ACP_PIN_FAILED[c.locale](tool, check.reason) });
         return undefined;
       }
+      if (activeMode(provider) === "chalyb")
+        return { path: pinned.path, signIn: false, managed: true, home: join(dir, tool), env: { ...env } };
       const key =
         activeMode(provider) === "signin"
           ? null
@@ -746,6 +773,12 @@ const startDaemon = async (
   await cloud.refresh();
   store = cloud.store(cfg.owner, id.deviceId);
   const signedInStore = store;
+  const accessToken = cloud.accessToken?.bind(cloud);
+  // IA de Chalyb (ADR 0030): this device asks the api for each session's gateway credential.
+  const managedSource = accessToken
+    ? (agent: "codex" | "gemini-cli" | "grok-build") =>
+        apiManagedSource({ apiBase: cfg.apiBase, agent, accessToken, fetch: fetchFn as typeof fetch })
+    : undefined;
   for (const e of queued.splice(0)) publish(e);
   void apps.report();
 
@@ -804,11 +837,13 @@ const startDaemon = async (
       ...(codex ? { codex } : {}),
       ...(grok ? { grok } : {}),
       ...(gemini ? { gemini } : {}),
+      ...(managedSource ? { managedSource } : {}),
       log,
     }),
     apps: {
       connectKey: (a, k) => apps.connectKey(a, k),
       signin: (a) => apps.signin(a),
+      useChalyb: (a) => apps.useChalyb(a),
       disconnect: (a) => apps.disconnect(a),
       requestInstall: (a) => apps.requestInstall(a),
       launch: (a) => apps.launch(a),
@@ -1163,6 +1198,7 @@ const startDaemon = async (
             ...(r.codex ? { codex: r.codex } : {}),
             ...(r.grok ? { grok: r.grok } : {}),
             ...(r.gemini ? { gemini: r.gemini } : {}),
+            ...(managedSource ? { managedSource } : {}),
             log,
           }),
           await rebuildDrivers(),
