@@ -73,6 +73,14 @@ if (!url) {
     api = codingRoutes(deps, {
       store: new PostgresCodingIssueStore(serverSql),
       hub: hubClient,
+      meter: new CodingMeter({
+        store: new PostgresCodingStore(serverSql),
+        hub: hubClient,
+        prices: loadPrices(),
+        cfg: providers.codingManaged,
+        reserveBasis: "pre_margin",
+        now: Date.now,
+      }),
       prices: loadPrices(),
       providers,
       maxLivePerDevice: 6,
@@ -195,14 +203,19 @@ if (!url) {
     expect(events.filter((e) => e.type === "blocked")).toEqual([{ type: "blocked", reason: "daily_cap" }]);
     expect(hub.events.size).toBe(1);
 
-    // Session end: the token is revoked, the gateway refuses it, and the sweep closes the hold.
+    // Session end: the token is revoked and its hold closed.
     h.close();
     await until(
       async () =>
         (await admin`select revoked_reason from chalito_private.coding_credentials where id = ${cred!.id}`)[0]!
           .revoked_reason === "session_end",
     );
-    expect(await meter.sweep()).toBeGreaterThanOrEqual(1);
+    // The api closed the hold at session end (the sweep, which sees every owner's credentials, isn't needed).
+    await until(
+      async () =>
+        (await admin`select settled_at from chalito_private.coding_credentials where id = ${cred!.id}`)[0]!
+          .settled_at !== null,
+    );
     expect(hub.reservations.filter((r) => r.user === owner).every((r) => r.status !== "open")).toBe(true);
   });
 }
