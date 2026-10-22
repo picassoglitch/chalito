@@ -25,7 +25,7 @@ import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
 import { SCAN_MAX_AGE_MS } from "./policy/git-hooks.js";
 import { refreshRepoIndex } from "./policy/repo-index.js";
-import { hooksOptionsFor } from "./policy/classify.js";
+import { defaultRealpath, heldWorkspaces, hooksOptionsFor, pinHolds } from "./policy/classify.js";
 import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
@@ -37,7 +37,15 @@ import type { Launcher } from "./drivers/launcher.js";
 import type { AppDriverContext, LaunchableRecipe } from "./drivers/app-launch.js";
 import { ScreenManager } from "./screen/manager.js";
 import { iceServersFrom, weriftPeer, type PeerFactory } from "./screen/peer.js";
-import { apiTokenSource, fetchDeviceToken, supabaseCloud, type Cloud, type FetchFn, type MintToken } from "./cloud.js";
+import {
+  API_TIMEOUT_MS,
+  apiTokenSource,
+  fetchDeviceToken,
+  supabaseCloud,
+  type Cloud,
+  type FetchFn,
+  type MintToken,
+} from "./cloud.js";
 import { chalitoDir, ensureChalitoDir, readConfig, requirePaired, writeConfig, type PairedConfig } from "./config.js";
 import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from "./device-auth.js";
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
@@ -476,12 +484,14 @@ const startDaemon = async (
   const scanWorkspaceRepos = (_force = false) => {
     const home = deps.home ?? homedir();
     // The same paths the classifier uses: ~ expanded, then resolved.
-    const paths = (policyRef?.get().workspaces ?? []).map((w) => {
+    // A pinned workspace that moved is out of the classifier's list (same check), so don't walk it.
+    const paths = (policyRef?.get().workspaces ?? []).flatMap((w) => {
       const p = w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : resolve(w.path);
+      if (!pinHolds(w, defaultRealpath(p))) return [];
       try {
-        return realpathSync.native(p);
+        return [realpathSync.native(p)];
       } catch {
-        return p;
+        return [p];
       }
     });
     // Async (fs.promises): never blocks a classification; the classifier keeps the last result.
@@ -879,7 +889,8 @@ const startDaemon = async (
     terminal = new TerminalControl({
       deviceId: id.deviceId,
       policy: () => policy.get().remoteTerminal,
-      workspaces: () => policy.get().workspaces,
+      // A pinned workspace that moved isn't offered as a terminal's folder.
+      workspaces: () => heldWorkspaces(policy.get().workspaces, deps.home ?? homedir()),
       launch: (appId) => {
         const recipe = recipes(appId);
         const factory = driverFactory("terminal");
@@ -1056,7 +1067,17 @@ const startDaemon = async (
   }
   await terminal?.onPolicyChange();
   // The indicator watchdog: open terminals close when the desktop app stops showing it.
-  const terminalWatchdog = terminal ? every(() => void terminal?.tick(), 1000) : null;
+  const terminalWatchdog = terminal
+    ? every(
+        () =>
+          void terminal
+            ?.tick()
+            .catch((err: unknown) =>
+              log.warn("terminal.tick_failed", { error: err instanceof Error ? err.message : "error" }),
+            ),
+        1000,
+      )
+    : null;
 
   // Engine: every usable app's drivers (drivers/registry.ts). Session adapters for apps beyond the
   // built-in four go to the core by app id; launchers back `app.launch`. Built with only what the
@@ -1222,9 +1243,12 @@ const startDaemon = async (
   syncTrust();
 
   const unwatchCommands = signedInStore.watchCommands((cid, doc) => {
-    void core.handleCommand(cid, doc).then((r) => {
-      if (!r.ok) log.warn("command.not_applied", { cid, reason: r.reason });
-    });
+    void core.handleCommand(cid, doc).then(
+      (r) => {
+        if (!r.ok) log.warn("command.not_applied", { cid, reason: r.reason });
+      },
+      (err: unknown) => log.error("command.failed", { cid, error: err instanceof Error ? err.message : "error" }),
+    );
   });
   await signedInStore.updateDevice({ policyHash: policy.hash, devMode: devMode.state, lastSeenAt: now() });
   await reportSetup().catch((err: unknown) =>
@@ -1282,7 +1306,8 @@ const startDaemon = async (
 
   // Engine: curated recipe updates from the api, used only when a compiled-in key verifies them.
   const catalogFetch: CatalogFetch | false =
-    deps.catalogFetch ?? ((url) => fetch(url, { headers: { accept: "application/json" } }));
+    deps.catalogFetch ??
+    ((url) => fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(API_TIMEOUT_MS) }));
   const refreshCatalog = () => {
     if (!catalogFetch) return;
     void fetchCatalog(catalogFetch, cfg.apiBase)

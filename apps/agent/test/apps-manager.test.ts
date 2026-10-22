@@ -170,6 +170,25 @@ describe("AppManager: custom recipes run only once enabled on this computer", ()
     expect(await s.secrets.get(appSecretName("mi-agente"))).toBeNull();
   });
 
+  // Root ignores the read-only dir, so the write wouldn't fail.
+  it.skipIf(process.getuid?.() === 0)(
+    "a sign-in whose record can't be saved settles as signin_failed and the next sign-in runs",
+    async () => {
+      const s = setup({ installed: ["miagente"], customEnabled: true });
+      chmodSync(s.dir, 0o500);
+      try {
+        expect(await s.m.signin("mi-agente")).toEqual({ ok: true });
+        await expect(s.m.signingIn).resolves.toBeUndefined();
+        expect(s.last("mi-agente")).toMatchObject({ error: "signin_failed" });
+      } finally {
+        chmodSync(s.dir, 0o700);
+      }
+      expect(await s.m.signin("mi-agente")).toEqual({ ok: true });
+      await s.m.signingIn;
+      expect(s.last("mi-agente")).toMatchObject({ state: "connected" });
+    },
+  );
+
   it("once enabled: its own sign-in in its Chalito profile, confirmed by its status command", async () => {
     let signedIn = false;
     const s = setup({
@@ -217,6 +236,23 @@ describe("AppManager: official installs only", () => {
     expect(win.fake.calls.map(cmd).find((c) => c.startsWith("winget"))).toBe(
       "winget.EXE install --id 9PLM9XGG6VKS --exact --source msstore --accept-package-agreements --accept-source-agreements --disable-interactivity",
     );
+  });
+
+  it("an installer that fails to spawn leaves the app usable again (not stuck installing)", async () => {
+    const mac = setup({
+      platform: "darwin",
+      tools: ["brew"],
+      answer: (c) => {
+        if (c.args[0] === "install") throw new Error("spawn EACCES");
+        return {};
+      },
+    });
+    expect(await mac.m.install("chatgpt-desktop")).toEqual({ ok: true });
+    await expect(mac.m.installing).resolves.toBeUndefined();
+    expect(mac.last("chatgpt-desktop")).toMatchObject({ error: "install_failed" });
+    // Not provider_busy: the next try runs.
+    expect(await mac.m.install("chatgpt-desktop")).toEqual({ ok: true });
+    await mac.m.installing;
   });
 
   it("an official-url install only opens the vendor's page; a missing tool is an error code", async () => {

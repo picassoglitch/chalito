@@ -56,6 +56,8 @@ const setup = (
   const timers = manualTimers();
   let release: ((o: ScreenApprovalOutcome) => void) | null = null;
   let n = 0;
+  /** Runs before each session-row write; may throw (cloud down) or wait. */
+  let beforeUpsert: (doc: Record<string, unknown>) => Promise<void> = async () => undefined;
   const deps: ScreenDeps = {
     policy: () => policy,
     driver: () => {
@@ -71,7 +73,10 @@ const setup = (
       return new Promise((r) => (release = r));
     },
     writeEvent: async (e) => void events.push(e as unknown as Record<string, unknown>),
-    upsertSession: async (sid, doc) => void sessions.set(sid, { ...sessions.get(sid), ...doc }),
+    upsertSession: async (sid, doc) => {
+      await beforeUpsert(doc as Record<string, unknown>);
+      sessions.set(sid, { ...sessions.get(sid), ...doc });
+    },
     sealFor: async (to, value, aad) => {
       if (to !== "dev_phone") return null;
       sealed.push({ to, value, aad });
@@ -107,6 +112,7 @@ const setup = (
     asked,
     sealed,
     setPolicy: (p: Policy["screen"]) => (policy = p),
+    setBeforeUpsert: (f: typeof beforeUpsert) => (beforeUpsert = f),
     setIndicator: (v: boolean) => (indicator = v),
     setDesktop: (v: boolean) => (desktop = v),
     advance: (ms: number) => (t += ms),
@@ -182,6 +188,39 @@ describe("remote screen: off unless enabled on the device", () => {
     expect(await r.m.open({ origin: PHONE, mode: "view" })).toEqual({ ok: false, reason: "rate_limited" });
     r.advance(10 * 60 * 1000);
     expect((await r.m.open({ origin: PHONE, mode: "view" })).ok).toBe(true);
+  });
+});
+
+describe("remote screen: cloud write failures", () => {
+  it("an open whose session row can't be written is refused and doesn't hold a slot", async () => {
+    const h = setup();
+    h.setBeforeUpsert(async () => {
+      throw new Error("network");
+    });
+    for (let i = 0; i < SCREEN_MAX_SESSIONS + 1; i++)
+      expect(await h.m.open({ origin: PHONE, mode: "view" })).toEqual({ ok: false, reason: "screen_unavailable" });
+    expect(h.m.status().pending).toEqual([]);
+    expect(h.asked).toEqual([]);
+    h.setBeforeUpsert(async () => undefined);
+    expect((await h.m.open({ origin: PHONE, mode: "view" })).ok).toBe(true);
+  });
+
+  it("a kill while going live leaves no frame loop behind", async () => {
+    const h = setup();
+    let unblock: () => void = () => undefined;
+    h.setBeforeUpsert((doc) => (doc.state === "live" ? new Promise<void>((r) => (unblock = r)) : Promise.resolve()));
+    const r = await h.m.open({ origin: PHONE, mode: "view" });
+    if (!r.ok) throw new Error(r.reason);
+    await tick();
+    await h.decide(true);
+    await h.m.signal(r.sid, PHONE, { kind: "answer", sdp: "v=0 answer" });
+    h.peers.at(-1)!.channel(SCREEN_FRAMES_CHANNEL)!.open();
+    await tick();
+    expect(await h.m.kill("hotkey")).toBe(1);
+    unblock();
+    await tick();
+    await tick();
+    expect(h.timers.loops.filter((l) => !l.cleared)).toEqual([]);
   });
 });
 

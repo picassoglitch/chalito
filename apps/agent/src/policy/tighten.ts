@@ -1,6 +1,9 @@
-import { resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve, sep } from "node:path";
 import type { PolicyPreset } from "@chalito/protocol";
 import type { z } from "zod";
+import { defaultRealpath, pinHolds } from "./classify.js";
 import { DEFAULT_REMOTE_TERMINAL, PERMISSION_RANK, Policy, SANDBOX_RANK } from "./schema.js";
 
 const within = (child: string, parent: string) =>
@@ -9,30 +12,63 @@ const subsetOf = (a: string[], b: string[]) => a.every((x) => b.includes(x));
 const flagsOnlyOff = <T extends Record<string, boolean | undefined>>(next: T, cur: T) =>
   Object.keys(next).every((k) => !next[k] || cur[k]);
 
+const expandHome = (p: string, home: string) =>
+  resolve(p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p);
+
+/** Strict realpath: a path that doesn't exist can't be checked (a symlink made there later could point anywhere). */
+const strictReal = (p: string, real: (p: string) => string): string | null => {
+  try {
+    return real(p);
+  } catch {
+    return null;
+  }
+};
+
 /** True when `next` grants nothing that `cur` doesn't: the only kind of change a remote surface may make. */
-export const isTighterOrEqual = (next: Policy, cur: Policy): boolean =>
-  next.workspaces.every((w) => cur.workspaces.some((c) => within(resolve(w.path), resolve(c.path)))) &&
-  flagsOnlyOff(next.adapters, cur.adapters) &&
-  PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
-  SANDBOX_RANK[next.remote.maxCodexSandbox] <= SANDBOX_RANK[cur.remote.maxCodexSandbox] &&
-  // `origins.agent` absent means on (links, ADR 0022): compared as such, so a patch that drops it
-  // can't turn a local `false` back on.
-  flagsOnlyOff(
-    { ...next.origins, agent: next.origins.agent !== false },
-    { ...cur.origins, agent: cur.origins.agent !== false },
-  ) &&
-  flagsOnlyOff(next.egress, cur.egress) &&
-  next.approvals.ttlSeconds <= cur.approvals.ttlSeconds &&
-  subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
-  subsetOf(next.web.allowDomains, cur.web.allowDomains) &&
-  subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
-  computerTighterOrEqual(next.computer, cur.computer) &&
-  appsTighterOrEqual(next.apps, cur.apps) &&
-  remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
-  screenTighterOrEqual(next.screen, cur.screen) &&
-  lanTighterOrEqual(next.lan, cur.lan) &&
-  exposedTighterOrEqual(next.exposed, cur.exposed) &&
-  coordinatorTighterOrEqual(next.coordinator, cur.coordinator);
+export const isTighterOrEqual = (
+  next: Policy,
+  cur: Policy,
+  fs: { home?: string; realpath?: (p: string) => string } = {},
+): boolean => {
+  const home = fs.home ?? homedir();
+  const real = fs.realpath ?? realpathSync.native;
+  // Compared as the classifier sees them (`~` expanded, symlinks resolved), so `<ws>/link -> /` isn't narrower.
+  const curLexical = new Set(cur.workspaces.map((c) => expandHome(c.path, home)));
+  // A pinned workspace counts where it was pinned; one that moved (swapped for a symlink) counts nowhere.
+  const curWs = cur.workspaces.flatMap((c) => {
+    const r = defaultRealpath(expandHome(c.path, home));
+    return pinHolds(c, r) ? [c.realPath ?? r] : [];
+  });
+  return (
+    next.workspaces.every((w) => {
+      const lexical = expandHome(w.path, home);
+      if (curLexical.has(lexical)) return true;
+      const r = strictReal(lexical, real);
+      return r !== null && curWs.some((c) => within(r, c));
+    }) &&
+    flagsOnlyOff(next.adapters, cur.adapters) &&
+    PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
+    SANDBOX_RANK[next.remote.maxCodexSandbox] <= SANDBOX_RANK[cur.remote.maxCodexSandbox] &&
+    // `origins.agent` absent means on (links, ADR 0022): compared as such, so a patch that drops it
+    // can't turn a local `false` back on.
+    flagsOnlyOff(
+      { ...next.origins, agent: next.origins.agent !== false },
+      { ...cur.origins, agent: cur.origins.agent !== false },
+    ) &&
+    flagsOnlyOff(next.egress, cur.egress) &&
+    next.approvals.ttlSeconds <= cur.approvals.ttlSeconds &&
+    subsetOf(next.allowlist.commands, cur.allowlist.commands) &&
+    subsetOf(next.web.allowDomains, cur.web.allowDomains) &&
+    subsetOf(next.mcp.readOnlyTools, cur.mcp.readOnlyTools) &&
+    computerTighterOrEqual(next.computer, cur.computer) &&
+    appsTighterOrEqual(next.apps, cur.apps) &&
+    remoteTerminalTighterOrEqual(next.remoteTerminal, cur.remoteTerminal) &&
+    screenTighterOrEqual(next.screen, cur.screen) &&
+    lanTighterOrEqual(next.lan, cur.lan) &&
+    exposedTighterOrEqual(next.exposed, cur.exposed) &&
+    coordinatorTighterOrEqual(next.coordinator, cur.coordinator)
+  );
+};
 
 /**
  * Coordinator mode can only be turned off or answer fewer kinds; never on, and never more kinds
@@ -123,7 +159,11 @@ export type TightenResult = { ok: true; policy: Policy } | { ok: false; reason: 
  * Applies a remote patch (shallow per section) only if the result is a subset of the
  * current policy. Loosening is possible only by editing the file locally.
  */
-export const applyRemoteTighten = (cur: Policy, patch: unknown): TightenResult => {
+export const applyRemoteTighten = (
+  cur: Policy,
+  patch: unknown,
+  fs: { home?: string; realpath?: (p: string) => string } = {},
+): TightenResult => {
   if (!patch || typeof patch !== "object") return { ok: false, reason: "invalid_patch" };
   const merged: Record<string, unknown> = { ...cur };
   for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
@@ -133,7 +173,31 @@ export const applyRemoteTighten = (cur: Policy, patch: unknown): TightenResult =
   }
   const parsed = Policy.safeParse(merged);
   if (!parsed.success) return { ok: false, reason: "invalid_patch" };
-  return isTighterOrEqual(parsed.data, cur) ? { ok: true, policy: parsed.data } : { ok: false, reason: "would_loosen" };
+  if (!isTighterOrEqual(parsed.data, cur, fs)) return { ok: false, reason: "would_loosen" };
+  return { ok: true, policy: { ...parsed.data, workspaces: pinRealPaths(parsed.data.workspaces, cur, fs) } };
+};
+
+/**
+ * Workspaces kept from `cur` keep its `realPath`; ones the patch added get where they resolve now.
+ * A patch's own `realPath` is never trusted.
+ */
+const pinRealPaths = (
+  next: Policy["workspaces"],
+  cur: Policy,
+  fs: { home?: string; realpath?: (p: string) => string },
+): Policy["workspaces"] => {
+  const home = fs.home ?? homedir();
+  const real = fs.realpath ?? realpathSync.native;
+  const kept = new Map(cur.workspaces.map((c) => [expandHome(c.path, home), c.realPath]));
+  return next.map(({ realPath: _ignored, ...w }) => {
+    const lexical = expandHome(w.path, home);
+    if (kept.has(lexical)) {
+      const was = kept.get(lexical);
+      return was ? { ...w, realPath: was } : w;
+    }
+    // isTighterOrEqual already required this to resolve.
+    return { ...w, realPath: real(lexical) };
+  });
 };
 
 /**

@@ -35,6 +35,7 @@ import {
 } from "./config.js";
 import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
+import { DeviceRevokedError } from "./device-auth.js";
 import { readIpcSecret } from "./ipc-server.js";
 import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
@@ -46,7 +47,7 @@ import { appsTighterOrEqual, coordinatorTighterOrEqual, isTighterOrEqual, policy
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
 import { openSecretStore, passphraseFileProblem } from "./secret-choice.js";
 import { KeyringUnavailableError, SECRET_NAMES, type SecretStore } from "./secrets.js";
-import { servicePlan } from "./service.js";
+import { LABEL as SERVICE_LABEL, servicePlan } from "./service.js";
 import { TrustStore } from "./trust-store.js";
 import { LineReader, isYes, readHidden, type TtyIo } from "./tty.js";
 import { TtyPrompter } from "./tty-prompter.js";
@@ -172,6 +173,9 @@ const T = {
     terminalTitle: "\n!!  ¿Activar la terminal remota?  !!\nCon esto, una terminal aprobada puede:\n",
     shellTitle: "\n!!  ¿Activar la SHELL COMPLETA remota?  !!\nCon esto, una shell aprobada puede:\n",
     shellFinal: "\nConfirmación 4 de 4. ",
+    deviceRevoked: "Esta computadora se quitó de tu cuenta de Chalito. Emparéjala de nuevo: `chalito pair`.\n",
+    launchdStop: (code: number) =>
+      `Servicio de launchd: termina con 0 (no ${code}) para que launchd no lo reinicie en bucle.\n`,
     terminalSecond: (n: number) => `\nConfirmación 2 de ${n}. `,
     terminalType: (p: string, n: number) => `\nConfirmación 3 de ${n}. Escribe exactamente "${p}": `,
     terminalOn:
@@ -290,6 +294,9 @@ const T = {
     terminalTitle: "\n!!  Turn on remote terminal?  !!\nWith it, an approved terminal can:\n",
     shellTitle: "\n!!  Turn on the remote FULL SHELL?  !!\nWith it, an approved shell can:\n",
     shellFinal: "\nConfirmation 4 of 4. ",
+    deviceRevoked: "This computer was removed from your Chalito account. Pair it again: `chalito pair`.\n",
+    launchdStop: (code: number) =>
+      `launchd service: exiting 0 (not ${code}) so launchd doesn't restart it in a loop.\n`,
     terminalSecond: (n: number) => `\nConfirmation 2 of ${n}. `,
     terminalType: (p: string, n: number) => `\nConfirmation 3 of ${n}. Type exactly "${p}": `,
     terminalOn:
@@ -580,15 +587,25 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
         } catch (err) {
           // Distinct codes so the desktop supervisor neither races another agent nor
           // restarts in a loop while a setup step is missing.
+          let code: number;
           if (err instanceof AlreadyRunningError) {
             io.err(`${err.message}\n`);
-            return EXIT_ALREADY_RUNNING;
-          }
-          if (err instanceof OnboardingError) {
+            code = EXIT_ALREADY_RUNNING;
+          } else if (err instanceof OnboardingError) {
             io.err(`${err.message}\n`);
-            return EXIT_NEEDS_SETUP;
+            code = EXIT_NEEDS_SETUP;
+          } else if (err instanceof DeviceRevokedError) {
+            // Removed from the account: only pairing again helps, so don't restart into the same refusal.
+            io.err(t.deviceRevoked);
+            code = EXIT_NEEDS_SETUP;
+          } else throw err;
+          // launchd's KeepAlive restarts on any non-zero exit (it has no per-code setting, unlike
+          // systemd's RestartPreventExitStatus): under it, stop with 0 instead of looping.
+          if (io.platform === "darwin" && (flags.service === true || io.env.XPC_SERVICE_NAME === SERVICE_LABEL)) {
+            io.err(t.launchdStop(code));
+            return 0;
           }
-          throw err;
+          return code;
         }
         await d.done;
         return 0;

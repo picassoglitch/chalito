@@ -63,6 +63,8 @@ export interface ClassifyContext {
    * redirection): the AppData entries of the shared lists are checked under them too.
    */
   env?: Record<string, string | undefined>;
+  /** A workspace no longer resolves where a remote tighten pinned it; it was dropped for this check. */
+  onWorkspaceMoved?: (label: string, pinned: string, now: string) => void;
 }
 
 const RANK: Record<RiskTier, number> = { LOW: 0, MED: 1, HIGH: 2, CRITICAL: 3 };
@@ -83,6 +85,19 @@ export const defaultRealpath = (p: string): string => {
     }
   }
 };
+
+/** Whether a workspace still resolves where a remote tighten pinned it (always, when unpinned). */
+export const pinHolds = (w: { realPath?: string }, resolvedNow: string, platform: NodeJS.Platform = process.platform) =>
+  w.realPath === undefined || foldKey(resolvedNow, platform) === foldKey(w.realPath, platform);
+
+/** The workspaces whose pin still holds; a moved one is out of every decision (fail closed). */
+export const heldWorkspaces = <W extends { path: string; realPath?: string }>(workspaces: W[], home: string): W[] =>
+  workspaces.filter((w) =>
+    pinHolds(
+      w,
+      defaultRealpath(resolve(w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : w.path)),
+    ),
+  );
 
 const withinExact = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
@@ -139,7 +154,13 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const real = ctx.realpath ?? defaultRealpath;
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
   const res = (p: string, cwd = ctx.cwd) => real(resolve(cwd, expand(p)));
-  const workspaces = ctx.policy.workspaces.map((w) => real(resolve(expand(w.path))));
+  // Fail closed: a pinned workspace that now resolves elsewhere (e.g. swapped for `ln -s /`) is dropped.
+  const workspaces = ctx.policy.workspaces.flatMap((w) => {
+    const r = real(resolve(expand(w.path)));
+    if (pinHolds(w, r, platform)) return [r];
+    ctx.onWorkspaceMoved?.(w.label, w.realPath!, r);
+    return [];
+  });
   // git hooks, worked out by reading git's own files (never by running git), for every repo in or
   // around each workspace (repo-index.ts). Classification only reads the last completed index: no
   // folder walk, no per-repo stat here.

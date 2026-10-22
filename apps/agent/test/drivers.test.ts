@@ -177,6 +177,9 @@ describe("managed browser profiles (web-app)", () => {
       reason: "origin_not_allowed",
     });
     expect(spawned).toHaveLength(2);
+    // The browser gets the URL as it was checked (parsing drops tabs/newlines), never the raw string.
+    expect(await d.launch(chatgpt, { url: "https://chatgpt.com/c/\t2\n" })).toEqual({ ok: true, detail: "chrome" });
+    expect(spawned[2]!.args.at(-1)).toBe("--app=https://chatgpt.com/c/2");
   });
 
   it("refuses recipes whose start page isn't on their own allowlist, and reports a missing browser", async () => {

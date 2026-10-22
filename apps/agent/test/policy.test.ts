@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,7 +10,9 @@ import {
   decide,
   defaultRealpath,
   isTighterOrEqual,
+  heldWorkspaces,
   originAllowed,
+  pinHolds,
   policyHash,
   presetPolicy,
   splitShell,
@@ -287,6 +289,113 @@ describe("policy changes", () => {
     expect(applyRemoteTighten(old, { adapters: { grok: true } })).toEqual({ ok: false, reason: "would_loosen" });
     expect(applyRemoteTighten(policy, { adapters: { gemini: false } })).toMatchObject({ ok: true });
     expect(DEFAULT_POLICY.adapters).toEqual({ claudeCode: true, codex: true, grok: true, gemini: true });
+  });
+
+  it("a remote tighten can't add a workspace that is a symlink out of the current ones", () => {
+    const ws = mkdtempSync(join(tmpdir(), "chalito-ws-"));
+    mkdirSync(join(ws, "sub"));
+    symlinkSync("/", join(ws, "root"));
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    expect(
+      applyRemoteTighten(cur, {
+        workspaces: [
+          { label: "ws", path: ws },
+          { label: "root", path: join(ws, "root") },
+        ],
+      }),
+    ).toEqual({ ok: false, reason: "would_loosen" });
+    // A real subdirectory is still a narrower workspace.
+    expect(applyRemoteTighten(cur, { workspaces: [{ label: "sub", path: join(ws, "sub") }] })).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("a workspace a remote tighten added is pinned: swapped for a symlink later, it's dropped (fail closed)", () => {
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "chalito-ws-")));
+    const sub = join(ws, "sub");
+    mkdirSync(sub);
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    // A patch's own realPath is ignored: the agent records where the path resolves now.
+    const res = applyRemoteTighten(cur, { workspaces: [{ label: "sub", path: sub, realPath: "/" }] });
+    if (!res.ok) throw new Error(res.reason);
+    expect(res.policy.workspaces).toEqual([{ label: "sub", path: sub, realPath: sub }]);
+    const moved: string[] = [];
+    const at = () => ({
+      policy: res.policy,
+      home: HOME,
+      cwd: sub,
+      onWorkspaceMoved: (label: string, _pinned: string, now: string) => void moved.push(`${label}->${now}`),
+    });
+    expect(classifyToolCall("Read", { file_path: join(sub, "a.txt") }, at()).noWorkspace).toBe(false);
+    // Something running in `ws` swaps the folder for a link to `/`.
+    rmSync(sub, { recursive: true });
+    symlinkSync("/", sub);
+    const c = classifyToolCall("Read", { file_path: join(sub, "etc", "hostname") }, at());
+    expect(c.noWorkspace).toBe(true);
+    expect(c.tier).toBe("CRITICAL");
+    expect(moved).toEqual(["sub->/"]);
+    // A workspace chosen locally carries no pin and resolves as before.
+    expect(
+      classifyToolCall("Read", { file_path: join(ws, "a.txt") }, { ...at(), policy: cur, cwd: ws }).noWorkspace,
+    ).toBe(false);
+    // A later tighten keeps the pin; it doesn't re-record the swapped target.
+    const again = applyRemoteTighten(res.policy, { approvals: { ttlSeconds: 60 } });
+    expect(again.ok && again.policy.workspaces[0]?.realPath).toBe(sub);
+  });
+
+  it("a moved workspace can't be the parent of a later tighten (swap, then add `/`)", () => {
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "chalito-ws-")));
+    const sub = join(ws, "sub");
+    mkdirSync(sub);
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    const first = applyRemoteTighten(cur, {
+      workspaces: [
+        { label: "ws", path: ws },
+        { label: "sub", path: sub },
+      ],
+    });
+    if (!first.ok) throw new Error(first.reason);
+    rmSync(sub, { recursive: true });
+    symlinkSync("/", sub);
+    const patch = (extra: { label: string; path: string }) => ({
+      workspaces: [...first.policy.workspaces.map(({ label, path }) => ({ label, path })), extra],
+    });
+    expect(applyRemoteTighten(first.policy, patch({ label: "disk", path: "/" }))).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    expect(applyRemoteTighten(first.policy, patch({ label: "etc", path: "/etc" }))).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    // The terminal's workspace list leaves the moved one out too.
+    expect(heldWorkspaces(first.policy.workspaces, HOME).map((w) => w.label)).toEqual(["ws"]);
+  });
+
+  it("the pin check folds case where the file system does (the daemon's repo scan uses the same check)", () => {
+    const w = { realPath: "/Users/ana/Proj" };
+    expect(pinHolds(w, "/Users/ana/proj", "darwin")).toBe(true);
+    expect(pinHolds(w, "/Users/ana/proj", "linux")).toBe(false);
+    expect(pinHolds({}, "/anything", "linux")).toBe(true);
+  });
+
+  it("a remote tighten can't add a workspace that doesn't exist yet (it could become a symlink later)", () => {
+    const ws = mkdtempSync(join(tmpdir(), "chalito-ws-"));
+    const future = join(ws, "future");
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    expect(applyRemoteTighten(cur, { workspaces: [{ label: "future", path: future }] })).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    // What the check prevents: accepted, the classifier would realpath this to `/` from now on.
+    symlinkSync("/", future);
+    expect(applyRemoteTighten(cur, { workspaces: [{ label: "future", path: future }] })).toEqual({
+      ok: false,
+      reason: "would_loosen",
+    });
+    // A workspace the local policy already lists passes even if its folder is gone.
+    const gone = { ...DEFAULT_POLICY, workspaces: [{ label: "old", path: join(ws, "deleted") }] };
+    expect(applyRemoteTighten(gone, { approvals: { ttlSeconds: 60 } }).ok).toBe(true);
   });
 
   it("remote tightening applies; remote loosening is rejected", () => {

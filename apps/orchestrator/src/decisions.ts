@@ -21,6 +21,9 @@ export interface PendingDecision {
   answers: { id: string; signer: string; decision: unknown }[];
 }
 
+/** Rows `pendingDecisions` returns at most; a full page means the scan may have missed some. */
+export const PENDING_DECISIONS_LIMIT = 500;
+
 export interface DecisionStore {
   pendingDecisions(filter: { owner?: string; aid?: string }): Promise<PendingDecision[]>;
   /** pub_sign (b64url) of an active client device of the owner, else null. */
@@ -68,7 +71,15 @@ export const processDecisions = async (
   filter: { owner?: string; aid?: string } = {},
 ): Promise<ProcessResult> => {
   const out: ProcessResult = { resolved: [], invalid: 0 };
-  for (const p of await d.store.pendingDecisions(filter)) {
+  const pending = await d.store.pendingDecisions(filter);
+  // A complete scan: forget rejections for approvals no longer pending, so the set doesn't grow.
+  // A full page may have cut off live approvals, whose rejections must stay.
+  const rows = pending.reduce((n, p) => n + p.answers.length, 0);
+  if (!filter.owner && !filter.aid && rows < PENDING_DECISIONS_LIMIT) {
+    const live = new Set(pending.map((p) => `${p.owner}/${p.aid}`));
+    for (const key of d.rejected) if (!live.has(key.split("/", 2).join("/"))) d.rejected.delete(key);
+  }
+  for (const p of pending) {
     for (const answer of p.answers) {
       // Per attempt: a rejected row is audited once and never blocks the signer's next attempt.
       const key = `${p.owner}/${p.aid}/${answer.signer}/${answer.id}`;

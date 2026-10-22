@@ -17,9 +17,9 @@ export const launchdPlist = (bin: string, logDir: string) => `<?xml version="1.0
 <dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
-  <array><string>${xmlEscape(bin)}</string><string>run</string></array>
+  <array><string>${xmlEscape(bin)}</string><string>run</string><string>--service</string></array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>${xmlEscape(join(logDir, "agent.log"))}</string>
   <key>StandardErrorPath</key><string>${xmlEscape(join(logDir, "agent.log"))}</string>
@@ -44,6 +44,9 @@ Type=simple
 ExecStart="${bin}" run
 Restart=on-failure
 RestartSec=5
+# 75: another agent (the desktop app's) already runs; 78: a setup step is missing / the device was
+# revoked. Restarting can't fix either; it would only loop every RestartSec.
+RestartPreventExitStatus=75 78
 NoNewPrivileges=true
 ${opts.passphraseFile ? `LoadCredential=${PASSPHRASE_CREDENTIAL}:${opts.passphraseFile}\n` : ""}
 [Install]
