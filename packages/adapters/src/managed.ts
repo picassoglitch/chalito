@@ -81,14 +81,12 @@ export class ManagedSessionAdapter implements SessionAdapter {
     }
     // Revoked however the session ends; a failed revoke is logged (the credential still expires).
     const end = () =>
-      void this.d.source
-        .end(cred.id)
-        .catch((err: unknown) =>
-          this.d.log?.("managed.end_failed", {
-            credential: cred.id,
-            error: err instanceof Error ? err.message : "error",
-          }),
-        );
+      void this.d.source.end(cred.id).catch((err: unknown) =>
+        this.d.log?.("managed.end_failed", {
+          credential: cred.id,
+          error: err instanceof Error ? err.message : "error",
+        }),
+      );
     handle.done.then(end, end);
     return handle;
   }
