@@ -136,6 +136,33 @@ importers:
         specifier: ^4.10.2
         version: 4.10.2
 
+  apps/ai-gateway:
+    dependencies:
+      '@chalito/billing':
+        specifier: workspace:*
+        version: link:../../packages/billing
+      '@chalito/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@chalito/guard':
+        specifier: workspace:*
+        version: link:../../packages/guard
+      '@chalito/redact':
+        specifier: workspace:*
+        version: link:../../packages/redact
+      '@hono/node-server':
+        specifier: ^2.1.3
+        version: 2.1.3(hono@4.13.12)
+      hono:
+        specifier: ^4.13.12
+        version: 4.13.12
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+
   apps/api:
     dependencies:
       '@chalito/adapters':

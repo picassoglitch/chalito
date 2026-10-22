@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # One image per Cloud Run service or job, from the repo root:
 #   docker build -f docker/service.Dockerfile --build-arg APP=api .
-#   (APP = api | notifier | orchestrator | mcp-gateway | avatar-jobs; ENTRY defaults to src/server.ts)
+#   (APP = api | notifier | orchestrator | mcp-gateway | ai-gateway | avatar-jobs; ENTRY defaults to src/server.ts)
 # Base images are pinned by digest; bump them deliberately (docs/RUNBOOK.md §1.2).
 
 # ---- build: install with the lockfile, then a production-only tree for the one app
