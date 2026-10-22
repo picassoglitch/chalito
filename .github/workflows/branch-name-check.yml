@@ -1,0 +1,18 @@
+# Picasso branch-name gate. Copy to .github/workflows/branch-name-check.yml in each personal repo.
+name: branch-name-check
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate head branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          PATTERN='^(feat|fix|chore|hotfix|refactor|perf|test|docs|ci)/(([0-9]+|m[0-9]+)-)?[a-z0-9][a-z0-9._-]*$'
+          if [[ "$BRANCH" =~ $PATTERN ]] && [[ "$BRANCH" != claude/* ]]; then echo "OK: $BRANCH"; exit 0; fi
+          echo "::error::Branch \"$BRANCH\" must look like feat/42-short-desc, fix/m16-short-desc or chore/short-desc."
+          echo "Rename: git branch -m feat/42-short-desc && git push origin -u feat/42-short-desc && git push origin --delete \"$BRANCH\""
+          exit 1
