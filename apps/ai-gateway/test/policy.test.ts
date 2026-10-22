@@ -158,6 +158,25 @@ describe("Gemini bodies are rebuilt from an allowlist, both spellings", () => {
     ).toBe(true);
   });
 
+  it("parts are an allowlist: text, inline images, function calls and responses, thoughts; anything else is refused", () => {
+    const g = (part: Record<string, unknown>) =>
+      sanitizeGemini({ contents: [{ role: "user", parts: [part] }] }, "generateContent", 1);
+    for (const part of [
+      { text: "hola" },
+      { functionCall: { name: "ls", args: {} } },
+      { function_response: { name: "ls", response: {} } },
+      { text: "pensé", thought: true, thoughtSignature: "sig" },
+    ])
+      expect(g(part).ok, JSON.stringify(part)).toBe(true);
+    for (const part of [
+      { executableCode: { code: "1" } },
+      { code_execution_result: {} },
+      { videoMetadata: {} },
+      { brandNewPart: {} },
+    ])
+      expect(g(part), JSON.stringify(part)).toEqual({ ok: false, error: "part_not_allowed" });
+  });
+
   it("cached content is refused in either spelling", () => {
     for (const k of ["cachedContent", "cached_content"])
       expect(sanitizeGemini({ ...base, [k]: "cachedContents/x" }, "streamGenerateContent", 1)).toEqual({

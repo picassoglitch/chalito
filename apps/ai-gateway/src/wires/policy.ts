@@ -121,6 +121,28 @@ const normalizeInline = (v: unknown, depth = 0): unknown => {
   return out;
 };
 
+// Part fields a coding agent sends; any other part type (code execution, video, new billable kinds) is refused.
+const GEMINI_PART_KEYS = new Set([
+  "text",
+  "inlineData",
+  "inline_data",
+  "functionCall",
+  "function_call",
+  "functionResponse",
+  "function_response",
+  "thought",
+  "thoughtSignature",
+  "thought_signature",
+]);
+const partsOk = (v: unknown): boolean => {
+  const list = Array.isArray(v) ? v : v === undefined ? [] : [v];
+  return list.every((c) => {
+    if (!obj(c)) return false;
+    const parts = c.parts === undefined ? [] : c.parts;
+    return Array.isArray(parts) && parts.every((p) => obj(p) && Object.keys(p).every((k) => GEMINI_PART_KEYS.has(k)));
+  });
+};
+
 export const sanitizeGemini = (
   b: Record<string, unknown>,
   method: "generateContent" | "streamGenerateContent" | "countTokens",
@@ -139,6 +161,7 @@ export const sanitizeGemini = (
     const to = GEMINI_FIELDS[k];
     if (to && v !== undefined) out[to] = v;
   }
+  if (!partsOk(out.contents) || !partsOk(out.systemInstruction)) return { ok: false, error: "part_not_allowed" };
   const tools = out.tools === undefined ? [] : out.tools;
   if (!Array.isArray(tools) || !tools.every((t) => obj(t) && Object.keys(t).every((k) => GEMINI_TOOL_KEYS.has(k))))
     return { ok: false, error: "tool_not_allowed" };
