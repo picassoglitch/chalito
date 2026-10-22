@@ -5,12 +5,14 @@ import {
   CODING_PROVIDER,
   DEFAULT_TZ,
   HubUnavailable,
+  capTz,
   codingDailyCap,
   codingHoldRequest,
   codingWorstCaseMicros,
   hubTierOf,
   localDayKey,
   reserveTokens,
+  type CapZone,
   type CodingAgent,
   type HubClient,
   type ReserveBasis,
@@ -26,7 +28,7 @@ import type { CodingIssueStore } from "./store.js";
 
 export interface CodingDeps {
   store: CodingIssueStore;
-  hub: Pick<HubClient, "admit">;
+  hub: Pick<HubClient, "admit" | "settle">;
   prices: PricesConfig;
   providers: ProvidersConfig;
   /** sessions.yaml maxLivePerDevice: live managed credentials per device. */
@@ -56,8 +58,8 @@ export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig 
     const t = hubTierOf(tier);
     return t !== null && (cfg.tiers as string[]).includes(t);
   };
-  const spentToday = async (owner: string, tz: string | null, now: number) => {
-    const day = localDayKey(now, tz ?? DEFAULT_TZ);
+  const spentToday = async (owner: string, zone: CapZone, now: number) => {
+    const day = localDayKey(now, capTz(zone, now));
     return (await coding.store.spend(owner, day))
       .filter((r) => r.day === day)
       .reduce((s, r) => s + r.billableTokens, 0);
@@ -81,7 +83,7 @@ export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig 
       coding.maxLivePerDevice
     )
       return fail(429, "session_limit");
-    if ((await spentToday(p.owner, o.tz, now)) >= codingDailyCap(cfg, o.tier, o.capTokens))
+    if ((await spentToday(p.owner, o.capZone, now)) >= codingDailyCap(cfg, o.tier, o.capTokens))
       return fail(402, "daily_cap");
 
     const id = `cc_${randomBytes(16).toString("hex")}`;
@@ -107,19 +109,27 @@ export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig 
       return admit.reason === "no_tokens" ? fail(402, "out_of_energy") : fail(429, "managed_busy", admit.reason);
     const token = newToken();
     const expiresAt = now + cfg.credentialTtlSeconds * 1000;
-    await coding.store.issue({
-      id,
-      tokenHash: sha256hex(token),
-      owner: p.owner,
-      deviceId: p.deviceId!,
-      sid: body.data.sid,
-      agent,
-      provider,
-      models: managed.models,
-      reservationId: admit.reservation_id,
-      createdAt: now,
-      expiresAt,
-    });
+    const issued = await coding.store.issue(
+      {
+        id,
+        tokenHash: sha256hex(token),
+        owner: p.owner,
+        deviceId: p.deviceId!,
+        sid: body.data.sid,
+        agent,
+        provider,
+        models: managed.models,
+        reservationId: admit.reservation_id,
+        createdAt: now,
+        expiresAt,
+      },
+      coding.maxLivePerDevice,
+    );
+    if (issued === "limit") {
+      // Lost the race for the device's last slot: give the hold back.
+      await coding.hub.settle({ reservation_id: admit.reservation_id, outcome: "cancelled" }).catch(() => undefined);
+      return fail(429, "session_limit");
+    }
     await deps.audit.record({
       action: "coding.credential_issued",
       owner: p.owner,
@@ -166,7 +176,7 @@ export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig 
     const now = deps.now();
     const o = await coding.store.owner(p.owner);
     const tier = hubTierOf(o?.tier ?? null);
-    const tz = o?.tz ?? DEFAULT_TZ;
+    const tz = o ? capTz(o.capZone, now) : DEFAULT_TZ;
     const from = localDayKey(now - 29 * 86_400_000, tz);
     const days = await coding.store.spend(p.owner, from);
     const today = localDayKey(now, tz);

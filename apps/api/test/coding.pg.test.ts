@@ -196,6 +196,43 @@ if (!url) {
       expect((await s.issue("s3")).json).toEqual({ error: "session_limit" });
     });
 
+    it("10 parallel issues on one device never exceed the live limit; the refused ones release their holds", async () => {
+      const s = await setup({ maxLive: 3 });
+      hub.activeStreams = 50;
+      try {
+        const results = await Promise.all(Array.from({ length: 10 }, (_, i) => s.issue(`par${i}`)));
+        expect(results.filter((r) => r.status === 201)).toHaveLength(3);
+        expect(results.filter((r) => r.status === 429).map((r) => r.json.error)).toEqual(
+          Array(7).fill("session_limit"),
+        );
+        const live =
+          await admin`select 1 from chalito_private.coding_credentials where owner = ${s.owner} and revoked_at is null`;
+        expect(live).toHaveLength(3);
+        const mine = hub.reservations.filter((r) => r.user === s.owner);
+        expect(mine.filter((r) => r.status === "open")).toHaveLength(3);
+        expect(mine.filter((r) => r.status === "cancelled")).toHaveLength(mine.length - 3);
+      } finally {
+        hub.activeStreams = 5;
+      }
+    });
+
+    it("freezes the cap's zone at the first issue; a later tz change waits for that day to end", async () => {
+      const s = await setup();
+      expect((await s.issue("z1")).status).toBe(201);
+      expect(
+        (await admin`select cap_tz, cap_tz_next from chalito.coding_settings where owner = ${s.owner}`)[0],
+      ).toEqual({
+        cap_tz: "America/Mexico_City",
+        cap_tz_next: null,
+      });
+      await admin`update chalito.users set tz = 'Asia/Tokyo' where id = ${s.owner}`;
+      expect((await s.issue("z2")).status).toBe(201);
+      const [z] =
+        await admin`select cap_tz, cap_tz_next, cap_tz_from from chalito.coding_settings where owner = ${s.owner}`;
+      expect(z).toMatchObject({ cap_tz: "America/Mexico_City", cap_tz_next: "Asia/Tokyo" });
+      expect(z!.cap_tz_from.toISOString()).toBe("2026-10-22T06:00:00.000Z");
+    });
+
     it("out of tokens: 402 out_of_energy, nothing stored", async () => {
       const s = await setup({ allocation: 10 });
       expect(await s.issue()).toMatchObject({ status: 402, json: { error: "out_of_energy" } });
