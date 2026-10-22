@@ -22,7 +22,7 @@ import {
   enableRemoteTerminal,
   type TerminalPrompter,
 } from "./terminal/toggle.js";
-import { remoteScreenOn } from "./features.js";
+import { remoteScreenOn, remoteTerminalOn } from "./features.js";
 import { disableScreen, enableScreen, screenLevel, type ScreenPrompter } from "./screen/toggle.js";
 import {
   ConfigTamperedError,
@@ -81,7 +81,12 @@ const SCREEN_USAGE = `  screen enable [view|control]         remote screen: let 
   screen disable [control]|status      this screen, approved per session (enable: local only)
 `;
 
-const usageText = (screenOn: boolean) => `chalito <command>
+const TERMINAL_USAGE = `  terminal enable|disable|status       remote terminal: open an AI's terminal app from a trusted browser
+                                       after a passkey approval (enable: local only, OS auth + confirmations)
+  terminal shell enable|disable        the full shell over remote terminal (stronger confirmation)
+`;
+
+const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
 
   run                                  run the agent (the OS service does this)
   pair [--laptop]                      pair this computer with your phone
@@ -100,10 +105,7 @@ const usageText = (screenOn: boolean) => `chalito <command>
   apps sessions list|enable <id>|disable <id>
                                        which apps may start sessions here (off until enabled;
                                        enable: local only, OS auth + review)
-  terminal enable|disable|status       remote terminal: open an AI's terminal app from a trusted browser
-                                       after a passkey approval (enable: local only, OS auth + confirmations)
-  terminal shell enable|disable        the full shell over remote terminal (stronger confirmation)
-${screenOn ? SCREEN_USAGE : ""}  claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
+${terminalOn ? TERMINAL_USAGE : ""}${screenOn ? SCREEN_USAGE : ""}  claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   codex pin [path]                     trust this Codex binary (path + sha256); after updates too
   grok pin [path]                      trust this Grok Build binary (path + sha256); after updates too
   gemini pin [path]                    trust this Gemini CLI binary (path + sha256); after updates too
@@ -121,8 +123,9 @@ not from an AI session). Dev/test: CHALITO_SECRETS=file:<path> + CHALITO_SECRETS
 keep keys in an encrypted file instead of the OS keychain.
 `;
 
-/** Remote screen is dormant unless built in (features.ts): its commands leave the usage text. */
-export const usageFor = (env: Record<string, string | undefined>): string => usageText(remoteScreenOn(env));
+/** Remote screen and terminal are dormant unless built in (features.ts): their commands leave the usage text. */
+export const usageFor = (env: Record<string, string | undefined>): string =>
+  usageText(remoteScreenOn(env), remoteTerminalOn(env));
 export const USAGE = usageFor({});
 
 const ON_TOGGLES = EnableableDevModeToggle.options;
@@ -188,6 +191,7 @@ const T = {
     terminalOn:
       "Terminal remota activada. Cada terminal pedirá tu aprobación con passkey; la app de escritorio debe estar abierta.\n",
     shellOn: "Shell completa remota activada. Apágala con `chalito terminal shell disable` cuando termines.\n",
+    terminalOffBuild: "La terminal remota no está disponible en esta versión de Chalito.\n",
     terminalAlready: "La terminal remota ya está activada.\n",
     shellAlready: "La shell completa remota ya está activada.\n",
     shellNeedsTerminal: "Primero activa la terminal remota: `chalito terminal enable`.\n",
@@ -310,6 +314,7 @@ const T = {
     terminalOn:
       "Remote terminal is on. Every terminal will ask for your passkey approval; the desktop app must be open.\n",
     shellOn: "The remote full shell is on. Turn it off with `chalito terminal shell disable` when you're done.\n",
+    terminalOffBuild: "Remote terminal isn't available in this version of Chalito.\n",
     terminalAlready: "Remote terminal is already on.\n",
     shellAlready: "The remote full shell is already on.\n",
     shellNeedsTerminal: "Turn on remote terminal first: `chalito terminal enable`.\n",
@@ -529,6 +534,10 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   // by the adapters). Neither check alone is enough: `script -qc` supplies a pty.
   if (cmd === "screen" && !remoteScreenOn(io.env)) {
     io.err(t.screenOffBuild);
+    return 1;
+  }
+  if (cmd === "terminal" && !remoteTerminalOn(io.env)) {
+    io.err(t.terminalOffBuild);
     return 1;
   }
   const mutating =

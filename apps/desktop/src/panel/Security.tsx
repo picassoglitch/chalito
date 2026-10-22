@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
 import { useT } from "../lib/i18n.js";
 import { Links } from "./Links.js";
-import { remoteScreenOn } from "../lib/features.js";
+import { remoteScreenOn, remoteTerminalOn } from "../lib/features.js";
 import { RemoteTerminal } from "./RemoteTerminal.js";
 import {
   IpcUnavailableError,
@@ -509,7 +509,7 @@ export const Security = ({ ipc }: { ipc: AgentIpc }) => {
       <Coordinator ipc={ipc} />
       <Links ipc={ipc} />
       <Computer ipc={ipc} />
-      <RemoteTerminal ipc={ipc} />
+      {remoteTerminalOn() && <RemoteTerminal ipc={ipc} />}
       {remoteScreenOn() && <RemoteScreen ipc={ipc} />}
     </div>
   );

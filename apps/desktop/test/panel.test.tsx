@@ -261,7 +261,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(6));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(5));
   });
 
   it("policy view shows the chain head and rules", async () => {
@@ -345,7 +345,16 @@ describe("panel: local-only security screens", () => {
     expect(ipc.calls).toContainEqual(["disableCoordinator"]);
   });
 
+  it("remote terminal and raw shell are not rendered while the build flag is off (the default)", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    await screen.findByText("Version 7 · 0123456789ab");
+    expect(container.querySelector('[data-section="terminal"]')).toBeNull();
+    expect(container.querySelector("[data-raw-shell]")).toBeNull();
+  });
+
   it("remote terminal: local enable with the phrase; the raw shell needs a fourth step", async () => {
+    vi.stubEnv("VITE_CHALITO_REMOTE_TERMINAL", "1");
     const ipc = fakeIpc();
     const { container } = renderPanel({ initialTab: "security", ipc }, "en");
     const section = await waitFor(() => {

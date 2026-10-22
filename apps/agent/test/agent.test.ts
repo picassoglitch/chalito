@@ -85,6 +85,8 @@ const harness = async (
     computer?: boolean;
     /** Wire remote terminal with an echoing fake PTY (aider is the only recipe). */
     terminal?: boolean;
+    /** The CHALITO_REMOTE_TERMINAL build flag; defaults to `terminal` (wired means built in). */
+    terminalFlag?: boolean;
     /** Wire remote screen (fake capture and fake WebRTC peer). */
     screen?: boolean;
     /** The CHALITO_REMOTE_SCREEN build flag; defaults to `screen` (wired means built in). */
@@ -256,7 +258,10 @@ const harness = async (
     ...(computer ? { computer } : {}),
     ...(terminal ? { terminal } : {}),
     ...(screenMgr ? { screen: screenMgr } : {}),
-    remote: { screen: opts.screenFlag ?? opts.screen ?? false },
+    remote: {
+      screen: opts.screenFlag ?? opts.screen ?? false,
+      terminal: opts.terminalFlag ?? opts.terminal ?? false,
+    },
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
@@ -1703,6 +1708,30 @@ describe("computer control in sessions", () => {
     });
     expect(off).toEqual({ ok: true });
     expect(on.getPolicy().computer).toEqual({ enabled: false, maxActionsPerMinute: 60 });
+  });
+});
+
+describe("remote terminal build flag off", () => {
+  it("refuses every terminal.* command, raw shell included, with remote_terminal_off and audits it, even when wired", async () => {
+    const h = await harness({ terminal: true, terminalFlag: false });
+    const tid = "term_12345678";
+    const dataCt = await h.sealed(1, { data: "ls" });
+    for (const payload of [
+      { type: "terminal.open", appId: "aider", workspaceLabel: "chalito" },
+      { type: "terminal.open", appId: "shell", workspaceLabel: "chalito" },
+      { type: "terminal.input", tid, dataCt },
+      { type: "terminal.resize", tid, cols: 80, rows: 24 },
+      { type: "terminal.close", tid },
+    ] as const) {
+      expect(await h.command(payload as never)).toEqual({ ok: false, reason: "remote_terminal_off" });
+    }
+    await waitFor(() => h.store.audits.filter((a) => a.type === "remote_terminal.refused").length === 5);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+  });
+
+  it("structured sessions keep working with the flag off", async () => {
+    const h = await harness({ terminalFlag: false });
+    expect((await h.startSession()).ok).toBe(true);
   });
 });
 
