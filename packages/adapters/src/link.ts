@@ -131,6 +131,9 @@ export class LinkProjector {
         t.metadata = { ...t.metadata, usage: { ...this.#usage } };
         return [];
       }
+      case "blocked":
+        // The session's own state change ends the task; the block reaches the owner as session.blocked.
+        return [];
       case "error":
         return this.#move(e.code === "auth_required" ? "TASK_STATE_AUTH_REQUIRED" : "TASK_STATE_FAILED", [
           { data: { error: { code: e.code } } },

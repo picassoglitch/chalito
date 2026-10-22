@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AppConnectionDoc, Recipe } from "@chalito/protocol";
 import type { ClaudePin } from "../src/claude-pin.js";
 import { BUILTIN_CATALOG, type CatalogEntry } from "../src/apps/catalog.js";
-import { AppManager, appSecretName, expandPath } from "../src/apps/manager.js";
+import { AppManager, appSecretName, expandPath, runsOnChalyb } from "../src/apps/manager.js";
 import { createLogger } from "../src/redact.js";
 import { MemorySecretStore } from "../src/secrets.js";
 import { fakeProviderProcs, type ProcCall } from "./fake-provider-procs.js";
@@ -295,5 +295,37 @@ describe("AppManager: launch", () => {
     const web = setup();
     expect(await web.m.signin("chatgpt")).toEqual({ ok: true });
     expect(web.fake.opened).toEqual(["https://chatgpt.com/"]);
+  });
+});
+
+describe("AppManager: IA de Chalyb (ADR 0030)", () => {
+  it("Codex and Gemini can run on IA de Chalyb: no key, no sign-in, reported as connected in chalyb mode", async () => {
+    const s = setup({ installed: ["codex"], entries: [curated("codex"), curated("claude-code"), curated("goose")] });
+    expect(await s.m.useChalyb("codex")).toEqual({ ok: true });
+    expect(s.m.activeMode("codex")).toBe("chalyb");
+    expect(s.last("codex")).toMatchObject({ mode: "chalyb", state: "connected", connected: true });
+    expect(await s.secrets.get(appSecretName("codex"))).toBeNull();
+    expect(s.changes()).toBe(1);
+  });
+
+  it("never Claude Code (Anthropic's terms), not Grok Build yet, and never any other app", async () => {
+    const s = setup({
+      installed: ["claude", "goose", "grok"],
+      entries: [curated("claude-code"), curated("goose"), curated("grok")],
+    });
+    expect(await s.m.useChalyb("grok")).toEqual({ ok: false, reason: "app_unavailable" });
+    expect(await s.m.useChalyb("claude-code")).toEqual({ ok: false, reason: "app_unavailable" });
+    expect(await s.m.useChalyb("goose")).toEqual({ ok: false, reason: "app_unavailable" });
+    expect(s.m.activeMode("claude-code")).toBeNull();
+  });
+});
+
+describe("runsOnChalyb: the daemon's gate for managed mode", () => {
+  it("only an allowed app with chalyb chosen; a stale or hand-edited apps.json can't turn it on for Grok or Claude Code", () => {
+    expect(runsOnChalyb("codex", "chalyb")).toBe(true);
+    expect(runsOnChalyb("gemini", "chalyb")).toBe(true);
+    expect(runsOnChalyb("grok", "chalyb")).toBe(false);
+    expect(runsOnChalyb("claude-code", "chalyb")).toBe(false);
+    expect(runsOnChalyb("codex", "api_key")).toBe(false);
   });
 });
