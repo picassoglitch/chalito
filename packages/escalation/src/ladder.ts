@@ -31,8 +31,11 @@ export const APPROVAL_LADDER: readonly Rung[] = [
   { afterMs: 8 * MIN, channel: "sms", level: "L4" },
 ];
 
+/** A coding session finished a turn: one push, never WhatsApp, a call or SMS. */
+export const TURN_LADDER: readonly Rung[] = [{ afterMs: 0, channel: "push", level: "L1" }];
+
 export const ladderFor = (item: EscalationItem): readonly Rung[] =>
-  item.source === "approval" ? APPROVAL_LADDER : STANDARD_LADDER;
+  item.source === "approval" ? APPROVAL_LADDER : item.source === "turn_finished" ? TURN_LADDER : STANDARD_LADDER;
 
 export const LEVEL_RANK: Record<Level, number> = { L0: 0, L1: 1, L2: 2, L3: 3, L4: 4 };
 export const maxLevel = (a: Level, b: Level): Level => (LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b);

@@ -73,6 +73,83 @@ if (!url) {
       });
     });
 
+    it("a turn of a minute or more that ends idle or completed queues one turn_finished; short turns and repeats don't", async () => {
+      const { u, dev } = await user();
+      const at = (sec: number) => new Date(Date.UTC(2026, 9, 21, 12, 0, sec));
+      let n = 0;
+      const state = (sid: string, sec: number, st: string) =>
+        admin`insert into chalito.session_events (owner, sid, eid, device_id, seq, t, type, doc)
+              values (${u}, ${sid}, ${`e${++n}`}, ${dev}, ${n}, ${at(sec)}, 'session.state', ${admin.json({ state: st })})`;
+      // s1: a 90 s turn, with an approval wait in the middle (running again after it), ends idle; then
+      // the session closes as completed with no new turn.
+      for (const [sec, st] of [
+        [0, "running"],
+        [30, "waiting_approval"],
+        [40, "running"],
+        [90, "idle"],
+        [100, "completed"],
+      ] as const)
+        await state("s1", sec, st);
+      // s2: a 20 s turn.
+      for (const [sec, st] of [
+        [0, "running"],
+        [20, "idle"],
+      ] as const)
+        await state("s2", sec, st);
+      // s3: a second long turn after an idle one is its own notification.
+      for (const [sec, st] of [
+        [0, "running"],
+        [10, "idle"],
+        [100, "running"],
+        [200, "idle"],
+      ] as const)
+        await state("s3", sec, st);
+      // s6: the next turn starts in the same millisecond the last one ended; s7: a turn lost for hours.
+      for (const [sec, st] of [
+        [0, "running"],
+        [100, "idle"],
+        [100, "running"],
+        [200, "idle"],
+      ] as const)
+        await state("s6", sec, st);
+      for (const [sec, st] of [
+        [0, "running"],
+        [5 * 3600, "idle"],
+      ] as const)
+        await state("s7", sec, st);
+      // Not a turn end: failed, and a state with no turn before it.
+      for (const [sec, st] of [
+        [0, "running"],
+        [90, "failed"],
+      ] as const)
+        await state("s4", sec, st);
+      await state("s5", 0, "idle");
+
+      const r = await rows(u);
+      const msgs = r.map((x) => NotifierMessage.parse(x.message));
+      expect(msgs).toHaveLength(4);
+      expect(msgs[0]).toMatchObject({
+        uid: u,
+        item: {
+          source: "turn_finished",
+          level: "L1",
+          urgency: "low",
+          deepLink: "/s/s1",
+          coalesceKey: "turn:s1",
+          counts: { approvals: 0, questions: 0, messages: 1, mesas: 0 },
+        },
+      });
+      expect(msgs[1]).toMatchObject({ item: { source: "turn_finished", deepLink: "/s/s3" } });
+      expect(r.map((x) => x.source_key)).toEqual([
+        `turn:${u}:s1:e4`,
+        `turn:${u}:s3:e11`,
+        `turn:${u}:s6:e13`,
+        `turn:${u}:s6:e15`,
+      ]);
+      // The queued message is what the notifier accepts and sends once.
+      expect(r.every((x) => x.status === "pending")).toBe(true);
+    });
+
     it("a room message nudges each other member once; presence doesn't", async () => {
       const mom = await user("nb-mom");
       const kid = await user("nb-kid");

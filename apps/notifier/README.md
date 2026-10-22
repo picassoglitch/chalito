@@ -31,6 +31,7 @@ Persistent channels carry no content. Nothing here can approve anything.
 Agents, the orchestrator and the api write to Postgres, not to Pub/Sub. So the database queues messages for the notifier itself (migration `20261004003050`): `chalito_private.notify_outbox`, written by triggers in the same transaction as the source row, with an idempotent key per source. The sources:
 - `approvals`: pending → `notify` (LOW/MED → L2, HIGH → L3, CRITICAL → L4); resolved → `ack`; expired → `approval_expired`;
 - `session_events` of type `question.asked` → `session_question` at L3;
+- `session_events` of type `session.state` with state `idle` or `completed`, after a turn of at least 60 s → `turn_finished` at L1 (one push, no WhatsApp/call/SMS; dropped, not held, in quiet hours);
 - `room_events` of the message kinds → an L1 nudge to each addressed co-member;
 - `notifications` rows written by anyone but the notifier. The notifier marks its own transactions with `chalito.origin = notifier`, so nothing loops.
 
@@ -54,6 +55,7 @@ Rows are claimed with a 60 s lease (`FOR UPDATE SKIP LOCKED`), so a poke and the
 - **`level` is the most the item may escalate to.** The producer maps risk and source to it:
   - `approval`: LOW/MED → L2, HIGH → L3, CRITICAL → L4;
   - `session_question`: L3;
+  - `turn_finished`: L1;
   - `mesa_starting`: L4;
   - `security`: L4 (allowlist it in `l4_quiet_override` to break quiet hours);
   - `unanswered_messages`: L2;

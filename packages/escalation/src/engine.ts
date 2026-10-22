@@ -243,6 +243,8 @@ class Ctx {
       const end = quietHoursEnd(this.now, this.prefs.tz, this.#quiet!);
       this.actions.push({ type: "suppressed", nid: item.nid, channel: rung.channel, reason: "quiet_hours" });
       // An approval can't wait for the morning: skip the rung (the expiry notice still comes).
+      // Neither does "your turn finished": at 07:00 it is stale news, so it is dropped, not held.
+      if (item.source === "turn_finished") return null;
       return item.approvalExpiresAt !== undefined && end >= item.approvalExpiresAt ? null : end;
     }
     const blocked = this.#unavailable(rung.channel);
