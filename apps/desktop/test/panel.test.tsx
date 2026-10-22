@@ -23,7 +23,10 @@ import { SignIn } from "../src/panel/SignIn.js";
 import { SignInController } from "../src/lib/sign-in.js";
 import { SsoFlow } from "../src/lib/sso.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
 
 const renderPanel = (p: Partial<PanelProps> & { initialTab?: Tab }, locale: Locale = "es") =>
   render(
@@ -258,7 +261,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 describe("panel: local-only security screens", () => {
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
-    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(7));
+    await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(6));
   });
 
   it("policy view shows the chain head and rules", async () => {
@@ -381,7 +384,16 @@ describe("panel: local-only security screens", () => {
     await waitFor(() => expect(ipc.calls).toContainEqual(["disableRemoteTerminal"]));
   });
 
+  it("remote screen is not rendered while the build flag is off (the default)", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "en");
+    await screen.findByText("Version 7 · 0123456789ab");
+    expect(container.querySelector('[data-section="screen"]')).toBeNull();
+    expect(ipc.calls.map((c) => c[0])).not.toContain("screenStatus");
+  });
+
   it("remote screen: local enable (view, then control) with the phrase; close a session; turn off", async () => {
+    vi.stubEnv("VITE_CHALITO_REMOTE_SCREEN", "1");
     const ipc = fakeIpc();
     const { container } = renderPanel({ initialTab: "security", ipc }, "en");
     expect(await screen.findByText("Open session: Remote screen (view)")).toBeTruthy();

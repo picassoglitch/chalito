@@ -128,6 +128,8 @@ export interface IpcDeps {
   terminal?: TerminalControl | null;
   /** Remote screen; null without the desktop app. */
   screen?: ScreenManager | null;
+  /** Build flags (features.ts). Absent = off: the screen calls answer `remote_screen_off`. */
+  remote?: { screen?: boolean };
   /** Agent-to-agent links (links/manager.ts); absent = the link calls answer `unavailable`. */
   links?: LinkManager | null;
   /** This device's public keys: the panel puts them in a link's own end and in the code it shows. */
@@ -289,10 +291,12 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     return { view: !!(s?.view || s?.control), control: !!s?.control, active: [], pending: [] };
   },
   screenChallenge: async (params) => {
+    if (!d.remote?.screen) throw new IpcError("remote_screen_off");
     const { mode } = parse(ScreenChallenge, params);
     return SCREEN_COPY[d.locale()][mode];
   },
   enableScreen: async (params) => {
+    if (!d.remote?.screen) throw new IpcError("remote_screen_off");
     const { mode, answers } = parse(ScreenEnable, params);
     return enableScreen(
       {

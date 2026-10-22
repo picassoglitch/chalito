@@ -28,6 +28,8 @@ import type { Provider } from "@chalito/protocol";
 import { ipcCall } from "./ipc-server.test.js";
 import { fakeProviderProcs } from "./fake-provider-procs.js";
 import { DEFAULT_POLICY, policyHash } from "../src/policy/index.js";
+import { AnchorStore } from "../src/anchor.js";
+import { FilePolicyHolder } from "../src/policy-file.js";
 import { BUILTIN_CATALOG } from "../src/apps/catalog.js";
 import { KeyFile, RECIPES_DIR, signCatalog } from "../scripts/recipes.js";
 import { createLogger } from "../src/redact.js";
@@ -245,6 +247,48 @@ describe("chalito run (daemon)", () => {
     expect((s.store.device.presence as { setup?: unknown }).setup).toMatchObject({ workspaces: 1, labels: ["w"] });
     expect(JSON.stringify(s.store.device.presence)).not.toContain(s.home);
     await d.stop();
+  });
+
+  describe("remote screen build flag", () => {
+    const SCREEN_ON = { view: true, control: true, maxFps: 5, maxInputsPerMinute: 600, maxSessionMinutes: 60 };
+    const seeded = async () => {
+      const s = await setup();
+      mkdirSync(s.dir, { recursive: true });
+      const holder = new FilePolicyHolder(s.dir, s.id.sign, { anchor: await new AnchorStore(s.secrets).load() });
+      await holder.set({ ...DEFAULT_POLICY, screen: SCREEN_ON }, "local");
+      return s;
+    };
+
+    it("off (default): clears an enabled screen at startup and audits it; the panel calls are refused", async () => {
+      const s = await seeded();
+      const d = await runDaemon(s.deps);
+      expect(d.policy.get().screen).toMatchObject({ view: false, control: false });
+      expect(s.store.audits.find((a) => a.type === "screen.disabled")?.meta).toMatchObject({ by: "flag_off" });
+      expect(d.screen).toBeNull();
+      await d.stop();
+    });
+
+    it("off: a policy write that fails is audited and the agent still starts", async () => {
+      const s = await seeded();
+      const set = vi.spyOn(FilePolicyHolder.prototype, "set").mockRejectedValue(new Error("EROFS: read-only"));
+      try {
+        const d = await runDaemon(s.deps);
+        expect(set).toHaveBeenCalled();
+        expect(s.store.audits.find((a) => a.type === "screen.clear_failed")?.meta).toMatchObject({
+          error: "EROFS: read-only",
+        });
+        await d.stop();
+      } finally {
+        set.mockRestore();
+      }
+    });
+
+    it("on (CHALITO_REMOTE_SCREEN=1): the saved state is left alone", async () => {
+      const s = await seeded();
+      const d = await runDaemon({ ...s.deps, env: { ...s.deps.env, CHALITO_REMOTE_SCREEN: "1" } });
+      expect(d.policy.get().screen).toMatchObject(SCREEN_ON);
+      await d.stop();
+    });
   });
 
   it("refreshes the device token on a timer (~50 min)", async () => {

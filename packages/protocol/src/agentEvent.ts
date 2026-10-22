@@ -315,6 +315,8 @@ export const CommandRejectReason = z.enum([
   "rate_limited",
   // ---- end TERMINAL ----
   // ---- SCREEN (screen.ts) ----
+  /** Remote screen is not shipped in this build (CHALITO_REMOTE_SCREEN off); the command is refused outright. */
+  "remote_screen_off",
   /** Remote view (or control, for a control session) isn't turned on on that computer. */
   "screen_disabled",
   /** screen.open must come from a person's trusted browser (`client:`). */

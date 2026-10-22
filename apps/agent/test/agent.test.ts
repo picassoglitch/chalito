@@ -87,6 +87,8 @@ const harness = async (
     terminal?: boolean;
     /** Wire remote screen (fake capture and fake WebRTC peer). */
     screen?: boolean;
+    /** The CHALITO_REMOTE_SCREEN build flag; defaults to `screen` (wired means built in). */
+    screenFlag?: boolean;
     nonces?: NonceStore;
   } = {},
 ) => {
@@ -254,6 +256,7 @@ const harness = async (
     ...(computer ? { computer } : {}),
     ...(terminal ? { terminal } : {}),
     ...(screenMgr ? { screen: screenMgr } : {}),
+    remote: { screen: opts.screenFlag ?? opts.screen ?? false },
     setTimer: (fn) => {
       timers.push(fn);
       return { clear: () => undefined };
@@ -1880,6 +1883,33 @@ const CommandEnvelopeParse = (o: { relayedBy: string; payload: unknown }) =>
       payload: o.payload,
     },
   }).success;
+
+describe("remote screen build flag off", () => {
+  it("refuses every screen.* command with remote_screen_off and audits it, even when wired", async () => {
+    const h = await harness({
+      screen: true,
+      screenFlag: false,
+      policy: { screen: { view: true, control: true, maxFps: 5, maxInputsPerMinute: 600, maxSessionMinutes: 60 } },
+    });
+    const sid = "sess_12345678";
+    const signalCt = await h.sealed(1, { kind: "offer" });
+    for (const payload of [
+      { type: "screen.open", mode: "view" },
+      { type: "screen.close", sid },
+      { type: "screen.signal", sid, signalCt },
+    ] as const) {
+      expect(await h.command(payload as never)).toEqual({ ok: false, reason: "remote_screen_off" });
+    }
+    await waitFor(() => h.store.audits.filter((a) => a.type === "remote_screen.refused").length === 3);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    expect(h.screenPeers).toHaveLength(0);
+  });
+
+  it("structured sessions keep working with the flag off", async () => {
+    const h = await harness({ screenFlag: false });
+    expect((await h.startSession()).ok).toBe(true);
+  });
+});
 
 describe("remote screen through signed commands", () => {
   const VIEW = {
