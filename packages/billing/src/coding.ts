@@ -260,7 +260,8 @@ export class CodingMeter {
       const committed = (await tx.spentOn(day)) + estimateBillable(o.inflightMicros + worst, HUB_MARGIN_PERCENT);
       if (committed > codingDailyCap(this.d.cfg, o.tier, o.capTokens)) return block("daily_cap");
 
-      const est = reserveTokens(c.inflightMicros + worst, this.d.reserveBasis);
+      // Usage still in the outbox isn't in the hub's `used` yet: the hold covers it until it's sent.
+      const est = reserveTokens((await tx.unsentMicros()) + c.inflightMicros + worst, this.d.reserveBasis);
       let gen = c.holdGen;
       let admit;
       try {

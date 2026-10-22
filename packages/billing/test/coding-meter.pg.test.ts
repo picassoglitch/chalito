@@ -227,6 +227,20 @@ if (!url) {
       clock = Date.UTC(2026, 9, 21, 18);
     });
 
+    it("usage still in the outbox (not yet at the hub) is held by the new hold, so outbox lag can't overdraw", async () => {
+      const { id, meter } = await setup();
+      const a = await meter.begin(id, req);
+      if (!a.ok) throw new Error("refused");
+      await meter.finish(a.ticket, usage, { outputBytes: 0 });
+      // No drain: the hub hasn't seen the usage yet.
+      const b = await meter.begin(id, req);
+      if (!b.ok) throw new Error("refused");
+      expect(admits(id).at(-1)).toMatchObject({
+        external_job_id: `coding:${id}:1`,
+        est_tokens: Math.ceil((usageCost + worst) / 4),
+      });
+    });
+
     it("a zero-usage finish retried by another instance (lost commit ack) releases the hold once", async () => {
       const { id, meter } = await setup();
       const a = await meter.begin(id, req);
