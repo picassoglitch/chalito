@@ -71,11 +71,11 @@ describe("config files", () => {
     expect(ProvidersConfig.safeParse(raw).success).toBe(false);
   });
 
-  it("managed coding agents: Codex, Grok Build and Gemini CLI, every allowed model priced for its provider", () => {
+  it("managed coding agents: Codex and Gemini CLI (Grok Build pending), every allowed model priced for its provider", () => {
     const p = loadProviders();
     const prices = loadPrices();
     const managed = Object.entries(p.codingAgents).filter(([, a]) => a.managed);
-    expect(managed.map(([id]) => id).sort()).toEqual(["codex", "gemini-cli", "grok-build"]);
+    expect(managed.map(([id]) => id).sort()).toEqual(["codex", "gemini-cli"]);
     for (const [id, a] of managed)
       for (const m of a.managed!.models)
         expect(prices.llm[a.provider as keyof typeof prices.llm]?.[m], `${id}: ${a.provider}/${m}`).toBeDefined();

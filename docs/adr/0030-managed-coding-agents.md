@@ -21,13 +21,14 @@ Checked in the CLIs' source (2026-10-21) that each can point at our own base URL
 | Gemini CLI 0.61 | `GOOGLE_GEMINI_BASE_URL` (HTTPS) with ACP `authenticate {methodId: "gemini-api-key", _meta: {"api-key": token}}`; key in `x-goog-api-key` | `POST {base}/v1beta/models/{m}:streamGenerateContent?alt=sse`, `:generateContent`, `:countTokens` |
 | Grok Build 1.0.46 | `GROK_MODELS_BASE_URL` with `XAI_API_KEY` = token in a fresh `GROK_HOME` (a cached `grok login` wins over the key) | `GET {base}/models` at start, `POST {base}/responses` |
 
-Grok's ACP key path against a custom base is not verified end to end; it ships behind the same
-switch and is checked on staging before the switch goes on.
+Managed Grok Build is pending: its `XAI_API_KEY` sits in the environment its tools inherit, and
+that its inference goes only to our gateway (never `api.x.ai` with our token) isn't proven. Until
+both are, Grok runs only on the person's own key or login.
 
 ## Decision
 
 ### Scope
-- "IA de Chalyb" for Codex, Gemini CLI and Grok Build, never Claude Code (providers.yaml
+- "IA de Chalyb" for Codex and Gemini CLI (Grok Build pending), never Claude Code (providers.yaml
   `codingAgents.*.managed`; the schema refuses a `managed` block on claude-code).
 - Paid hub tiers only: Pro and VIP (`codingManaged.tiers`, read from `users.tier`).
 - Global switch `CODING_MANAGED_ENABLED=1` on the api and the gateway. Off by default; off means
@@ -40,7 +41,7 @@ switch and is checked on staging before the switch goes on.
   with its device token. The answer has an opaque token (`chc_` + 32 random bytes, base64url),
   the gateway URL, the allowed models and the expiry. Only the token's SHA-256 is stored
   (`chalito_private.coding_credentials`, the mcp-gateway pattern). The token is bound to owner,
-  device, sid, agent, provider and the model allowlist, lives at most `credentialTtlSeconds`, and is
+  device, sid, agent, provider and the model allowlist, lives at most `credentialTtlSeconds` and is refused after `credentialIdleSeconds` unused, and is
   revoked on session end (`DELETE /v1/coding/credentials/:id`), re-issue, kill switch, device
   revoke and expiry.
 - The agent puts the token in the CLI's environment after the allowlist (R-L12), in Chalito's own
@@ -61,20 +62,22 @@ switch and is checked on staging before the switch goes on.
   3. checks the daily cap, with the owner's begins serialized (advisory lock): today's spend plus the
      billable worst case of every request in flight on the owner's sessions, this one included, above
      the cap → 402 `daily_cap`. A session has at most `maxInflightPerSession` requests in flight (429 past it).
-  4. re-admits the same hold with `est_tokens = reserveTokens(unsent + in-flight + worst case)`
-     (pre-margin; the hub adds the margin). "Unsent" is this credential's usage still pending in
-     the outbox, which the hub can't see yet. `no_tokens` → 402 `out_of_energy`. An expired hold
+  4. re-admits the same hold with `est_tokens = reserveTokens(spent on this hold + in-flight + worst case)`
+     (pre-margin; the hub adds the margin). The hub holds `max(0, est − usage reported on the hold)`,
+     so counting all of this hold's usage, sent or not, leaves in flight + worst case held. `no_tokens` → 402 `out_of_energy`. An expired hold
      (`already_settled`) is replaced by a new one (`gen + 1`).
 - After the response: usage from the provider's own numbers (`response.completed` usage, Gemini's
   last `usageMetadata`), priced from prices.yaml, written in one transaction: an `llm.tokens`
   event in `usage_outbox` (origin `session.managed`, `source_id coding:<credential>:<seq>`, tied to
   the hold), the day's row in `coding_spend_daily`, the credential's totals. If the person's CLI
   disconnects, the gateway keeps reading the provider stream to its end so the usage is known. If
-  the provider never reports usage, the request is billed at its worst-case input plus the output
-  bytes streamed, marked `estimated`.
+  the provider never reports usage, the request is billed at its worst case (input bound and the
+  clamped output, since hidden reasoning isn't streamed), marked `estimated`. Each ticket's finish is
+  recorded durably (`coding_finished`), so a retry never releases a hold twice.
 - Settle `succeeded` when the credential is revoked or expires: the api right away at session end
   or re-issue, the gateway's sweep every minute as the backstop. A hold stays open while the
-  session's requests still stream or its usage is unsent, up to 20 minutes after the end.
+  session's requests still stream or its usage is unsent, up to 20 minutes after the end; past that,
+  requests that never finished (a crashed gateway) are billed at their worst case (`orphan`, estimated).
 - The hub applies the margin. Chalito only ever sends provider cost. A request is billed once
   (idempotent `source_id`), and only through the outbox, never a second path.
 
@@ -96,6 +99,8 @@ switch and is checked on staging before the switch goes on.
 ### Abuse
 - Per-token and per-IP token buckets on the gateway, the live-credential limit, the model
   allowlist, the output clamp, and the kill switch.
+- Media referenced by URL or file id (which a provider fetches and bills far beyond the body's
+  bytes) is refused; provider error bodies never reach the CLI (a generic error; the body is logged).
 - Request bodies are rebuilt from allowlists, so nothing the provider bills outside the metered
   tokens goes out on our key: only tools the CLI runs itself (function declarations), no stored
   state (`previous_response_id`, cached content), no background work, no priority tier, one

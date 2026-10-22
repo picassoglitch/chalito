@@ -82,6 +82,8 @@ export const CodingManagedConfig = z
     }),
     /** How long one session credential lives at most. */
     credentialTtlSeconds: z.number().int().min(300).max(86_400),
+    /** A credential unused this long is refused, whatever its ttl. */
+    credentialIdleSeconds: z.number().int().min(300).max(86_400),
     /** The hub hold's ttl; every request re-admits it, so an idle session's hold lapses after this. */
     holdTtlSeconds: z.number().int().min(60).max(86_400),
     /** Requests one session may have in flight at once (each one's worst case counts against the cap). */

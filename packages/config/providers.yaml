@@ -32,8 +32,7 @@ providers:
 # `managed` block, on "IA de Chalyb": apps/ai-gateway holds our provider keys, the agent gets an
 # opaque per-session token, and the usage is billed to the owner's hub balance (ADR 0030).
 # Claude Code is never managed: Anthropic's terms forbid paying for or intermediating its usage.
-# Every managed model needs a price in prices.yaml (config test). Grok Build 1.0.46 lists
-# grok-4.6/4.5 as built-ins; only priced models are allowed here.
+# Every managed model needs a price in prices.yaml (config test).
 codingAgents:
   claude-code: { provider: anthropic, auth: [api_key] }
   codex:
@@ -47,17 +46,9 @@ codingAgents:
         maxOutputTokens: 32000,
         maxInputTokens: 400000,
       }
-  grok-build:
-    provider: xai
-    auth: [api_key, grok_login]
-    managed:
-      {
-        wire: xai_responses,
-        models: [grok-4.7, grok-4.3],
-        defaultModel: grok-4.3,
-        maxOutputTokens: 32000,
-        maxInputTokens: 256000,
-      }
+  # Managed Grok Build is pending (ADR 0030): its key sits in the env its tools inherit, and its inference path to our
+  # gateway isn't proven; until both are, Grok runs only on the person's own key or login.
+  grok-build: { provider: xai, auth: [api_key, grok_login] }
   gemini-cli:
     provider: google
     auth: [api_key, google_login]
@@ -80,5 +71,7 @@ codingManaged:
     default: 1250000
     ceiling: { pro: 5000000, vip: 12500000 }
   credentialTtlSeconds: 43200
+  # A token unused this long is refused (a new session gets a new one); the ttl above is the hard limit.
+  credentialIdleSeconds: 3600
   holdTtlSeconds: 3600
   maxInflightPerSession: 4
