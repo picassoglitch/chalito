@@ -53,6 +53,7 @@ import type { DevMode } from "./devmode.js";
 import { DeltaThrottle } from "./live/deltas.js";
 import { coordResultOf, type LinkHost, type LinkManager } from "./links/manager.js";
 import { partsAsData } from "./links/frame.js";
+import { Transfers, repoRemote, transferFrame } from "./links/transfer.js";
 import type { LinkTools } from "./links/tool-server.js";
 import { LINKS_TOOL_PREFIX, LinkToolArgs, isLinkToolName } from "./links/tools.js";
 import type { ScreenManager } from "./screen/manager.js";
@@ -300,6 +301,9 @@ export class AgentCore {
   #revoked = false;
   /** ADR 0031 §1: plaintext listeners on this computer (`code.sock`); never stored or sent. */
   readonly #taps = new Set<LocalTap>();
+  /** ADR 0031 §4: sessions this computer moves to another one (absent without links). */
+  #transfers: Transfers | null = null;
+  readonly #git: GitRun;
 
   constructor(private readonly d: AgentCoreDeps) {
     this.sealer = new Sealer(d.trust, { deviceId: d.self.deviceId, pubBox: d.self.pubBox });
@@ -332,16 +336,48 @@ export class AgentCore {
       now: d.now,
       log: (msg, meta) => d.log.warn(msg, meta),
     });
+    this.#git = d.git ?? nodeGit();
     this.coordinator = new Coordinator({
       host: this.#coordHost(),
-      git: d.git ?? nodeGit(),
+      git: this.#git,
       now: d.now,
       audit: (type, meta) => this.#audit(type, meta),
       log: (msg, meta) => d.log.warn(msg, meta),
       ...(d.setTimer ? { setTimer: d.setTimer } : {}),
     });
-    d.links?.attach(this.#linkHost());
+    const host = this.#linkHost();
+    d.links?.attach(host);
     d.links?.onResult(({ taskId, result }) => this.#coordResult?.(taskId, coordResultOf(result)) ?? false);
+    if (d.links) {
+      const transfers = new Transfers({
+        links: d.links,
+        git: this.#git,
+        session: (sid) => {
+          const s = this.sessions.get(sid);
+          const info = host.session(sid);
+          return info
+            ? {
+                sid,
+                cwd: info.cwd,
+                ...(info.appId ? { appId: info.appId } : {}),
+                state: s?.state,
+                permissionMode: info.permissionMode,
+              }
+            : undefined;
+        },
+        event: (sid, partial) => host.event(sid, partial),
+        close: (sid) => {
+          const s = this.sessions.get(sid);
+          if (s) this.#suspend(s, "transferred");
+        },
+        audit: (type, meta) => this.#audit(type, meta),
+        log: d.log,
+        setTimer: (fn, ms) => this.#schedule(fn, ms),
+      });
+      this.#transfers = transfers;
+      this.#taps.add((sid, e) => transfers.record(sid, e));
+      d.links.onResult(({ taskId, result }) => transfers.onResult(taskId, result));
+    }
   }
 
   // ---- remote control at the computer (ADR 0031 §1) ------------------------------
@@ -372,7 +408,8 @@ export class AgentCore {
           permissionMode: RemotePermissionMode;
         }
       | { type: "session.prompt"; sid: string; text: string }
-      | { type: "session.interrupt"; sid: string },
+      | { type: "session.interrupt"; sid: string }
+      | { type: "session.transfer"; sid: string; toDeviceId: string },
   ): Promise<CommandResult> {
     const cid = `loc${randomUUID().replace(/-/g, "")}`;
     const seal = async (text: string) =>
@@ -578,6 +615,7 @@ export class AgentCore {
         }
       }
       case "session.prompt": {
+        if (this.#transfers?.isMoving(p.sid)) return this.#reject(cid, "session_busy");
         const s = this.sessions.get(p.sid);
         if (!s) {
           if (!this.#dormant.has(p.sid)) return this.#reject(cid, "unknown_session");
@@ -591,9 +629,13 @@ export class AgentCore {
         this.#prompt(s, this.#withLinkData(s.sid, text, origin), origin);
         return { ok: true };
       }
-      // ADR 0031 §4: transfers are wired to the link manager in their own change.
-      case "session.transfer":
-        return this.#reject(cid, "invalid");
+      case "session.transfer": {
+        // ADR 0031 §4: the owner's own call (phone or panel); a terminal or relayed turn can't move it.
+        if (!isSignedOrigin(origin)) return this.#reject(cid, "origin_mismatch");
+        if (!this.#transfers) return this.#reject(cid, "links_disabled");
+        const r = await this.#transfers.start(p.sid, p.toDeviceId);
+        return r.ok ? { ok: true, sid: p.sid } : this.#reject(cid, r.reason);
+      }
       case "session.interrupt": {
         const s = this.sessions.get(p.sid);
         if (!s) return this.#dormant.has(p.sid) ? { ok: true } : this.#reject(cid, "unknown_session");
@@ -601,6 +643,7 @@ export class AgentCore {
         return { ok: true };
       }
       case "session.resume": {
+        if (this.#transfers?.isMoving(p.sid)) return this.#reject(cid, "session_busy");
         const s = this.sessions.get(p.sid);
         if (!s) {
           // Idle-closed, ended, or from before a restart: reopen it in the provider (M16 A).
@@ -961,7 +1004,7 @@ export class AgentCore {
       permissionMode: s.permissionMode,
       ...(s.appId ? { appId: s.appId } : {}),
     });
-    return {
+    const host: LinkHost = {
       session: (sid) => {
         const s = this.sessions.get(sid);
         if (s) return info(s);
@@ -981,6 +1024,8 @@ export class AgentCore {
       sessions: () => [...this.sessions.values()].map(info),
       coordTask: (input) => this.coordinator.runRemote(input),
       startSession: async (input) => {
+        // A link starts new sessions only: never one this computer already has, live or dormant.
+        if (this.sessions.has(input.sid) || this.#dormant.has(input.sid)) return { ok: false, reason: "start_failed" };
         const policy = this.d.policy.get();
         const ws = policy.workspaces.find((w) => w.label === input.workspaceLabel);
         if (!ws) return { ok: false, reason: "unknown_workspace" };
@@ -1006,6 +1051,8 @@ export class AgentCore {
         }
       },
       prompt: async (sid, text, origin) => {
+        // A session on its way to another computer takes no hand-off (the link reports it as failed).
+        if (this.#transfers?.isMoving(sid)) throw new Error("session_busy");
         const s = this.sessions.get(sid);
         if (!s) {
           if (this.#dormant.has(sid)) await this.#revive(`link-${sid}-${this.d.now()}`, sid, text, origin);
@@ -1052,6 +1099,39 @@ export class AgentCore {
       handleCommand: (cid, doc) => this.handleCommand(cid, doc),
       sealForClients: (value, aad) => this.sealer.seal(value, aad),
     };
+    // ADR 0031 §4: a session moved here. Same project (origin) or refused; then the owner's next turns.
+    host.transferIn = async (i) => {
+      const ws = this.d.policy.get().workspaces.find((w) => w.label === i.workspaceLabel);
+      if (!ws) return { ok: false, reason: "start_failed" };
+      if (i.transfer.repo && (await repoRemote(this.#git, ws.path)) !== i.transfer.repo.remote)
+        return { ok: false, reason: "wrong_repo" };
+      const started = await host.startSession({
+        sid: i.sid,
+        appId: i.appId,
+        workspaceLabel: i.workspaceLabel,
+        prompt: transferFrame(i.transfer, i.fromDeviceId),
+        origin: i.origin,
+        // Never above the session's own mode on the other computer, nor the link's ceiling.
+        permissionMode:
+          PERMISSION_RANK[i.transfer.permissionMode] <= PERMISSION_RANK[i.ceiling]
+            ? i.transfer.permissionMode
+            : i.ceiling,
+      });
+      if (!started.ok) return { ok: false, reason: "start_failed" };
+      this.#audit("session.transfer.received", { sid: i.sid, from: i.fromDeviceId, fromSid: i.transfer.fromSid });
+      // Started: the ack must go back even if this notice can't be written.
+      await host
+        .event(i.sid, {
+          type: "session.transferred",
+          direction: "in",
+          stage: "delivered",
+          peerDeviceId: i.fromDeviceId,
+          peerSid: i.transfer.fromSid,
+        })
+        .catch((err: unknown) => this.#writeFailed("session.transfer_event_failed", err));
+      return { ok: true };
+    };
+    return host;
   }
 
   /**
@@ -1651,7 +1731,7 @@ export class AgentCore {
    * Closes a session's process and keeps it resumable: `handle.close()`, out of the live map,
    * its provider session id kept. The phone keeps the state it had (no "completed").
    */
-  #suspend(s: Session, reason: "idle" | "session_limit" | "agent_stop" | "agent_revoked"): void {
+  #suspend(s: Session, reason: "idle" | "session_limit" | "agent_stop" | "agent_revoked" | "transferred"): void {
     if (s.closing) return;
     s.closing = true;
     s.idleTimer?.clear();

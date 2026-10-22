@@ -98,6 +98,7 @@ const CodeStart = z
   .strict();
 const CodePrompt = z.object({ sid: SessionId, text: z.string().min(1).max(20_000) }).strict();
 const ForSession = z.object({ sid: SessionId }).strict();
+const CodeTransfer = z.object({ sid: SessionId, toDeviceId: z.string().min(1).max(128) }).strict();
 const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boolean() });
 const ForProvider = z.object({ provider: Provider });
 const ProviderKey = z.object({ provider: Provider, key: z.string().min(1).max(512) });
@@ -653,6 +654,10 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     return codeResult(await codeOf(d).prompt(sid, text));
   },
   codeStop: async (params) => codeResult(await codeOf(d).stop(parse(ForSession, params).sid)),
+  codeTransfer: async (params) => {
+    const { sid, toDeviceId } = parse(CodeTransfer, params);
+    return codeResult(await codeOf(d).transfer(sid, toDeviceId));
+  },
 
   // ---- LINKS (ADR 0022 §3): made only here for hand-off; revoked from anywhere --------------
   linkChallenge: async (params) => {

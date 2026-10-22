@@ -38,12 +38,14 @@ import {
   type Origin,
   type RemotePermissionMode,
   type SealedEnvelope,
+  type SessionTransfer,
 } from "@chalito/protocol";
 import { PERMISSION_RANK, originAllowed, type Policy } from "../policy/index.js";
 import type { Logger } from "../redact.js";
 import type { LinkCloud, PublishedLink } from "./cloud.js";
 import { artifactsAsData, handoffFrame, partsAsData, sharedBlock, withLinkData } from "./frame.js";
 import type { LinkState, LinkStorage } from "./storage.js";
+import { transferOf } from "./transfer.js";
 
 /**
  * Agent-to-agent links on this device (ADR 0022 §3): the local list (links/storage.ts), the
@@ -109,6 +111,16 @@ export interface LinkHost {
     ceiling: RemotePermissionMode;
     task: CoordRemoteTask;
   }): Promise<CoordRemoteResult>;
+  /** ADR 0031 §4: a session moved here (the hand-off's only part is `chalito.transfer.v1`); absent = refused. */
+  transferIn?(input: {
+    sid: string;
+    workspaceLabel: string;
+    appId: string;
+    ceiling: RemotePermissionMode;
+    origin: Origin;
+    fromDeviceId: string;
+    transfer: SessionTransfer;
+  }): Promise<{ ok: true } | { ok: false; reason: "wrong_repo" | "start_failed" }>;
 }
 
 export interface LinkManagerDeps {
@@ -638,6 +650,8 @@ export class LinkManager implements LinkAuthorizer {
     text?: string;
     /** Instead of text: structured parts (a coordinator task, G4). */
     parts?: LinkPart[];
+    /** Called with the task id before the relay leaves (a transfer listens for its ack from then). */
+    onTaskId?: (taskId: string) => void;
   }): Promise<LinkResultOf<{ taskId: string }>> {
     const link = this.get(input.linkId);
     if (!link || link.mode !== "handoff") return { ok: false, reason: "unknown_link" };
@@ -675,6 +689,7 @@ export class LinkManager implements LinkAuthorizer {
       role: "ROLE_USER",
       parts: input.parts ?? [{ text: input.text ?? "" }],
     });
+    input.onTaskId?.(taskId);
     this.#outbound.set(taskId, {
       linkId: link.id,
       link,
@@ -908,6 +923,37 @@ export class LinkManager implements LinkAuthorizer {
         .catch((err: unknown) => failed(err instanceof Error ? err.message.slice(0, 200) : "error"))
         .then((r) => this.#finishCoord(sid, inbound, link, r));
       return;
+    }
+    const transfer = transferOf(message);
+    if (transfer) {
+      // A transfer always makes a new session; it never lands in one a link pins.
+      if (link.receiver.sessionId !== undefined || target) return void (await back("wrong_endpoint"));
+      // The brief must be of the session that sent it.
+      if (transfer.fromSid !== fromSid) return void (await back("wrong_endpoint"));
+      if (!this.#h.transferIn) return void (await back("start_failed"));
+      const started = await this.#h
+        .transferIn({
+          sid,
+          workspaceLabel: link.workspaceLabel,
+          appId: link.receiver.appId ?? transfer.appId,
+          ceiling: o.ceiling,
+          origin,
+          fromDeviceId: link.sender.deviceId,
+          transfer,
+        })
+        .catch((): { ok: false; reason: "start_failed" } => ({ ok: false, reason: "start_failed" }));
+      if (!started.ok) return void (await back(started.reason));
+      this.d.audit("link.handoff.delivered", {
+        linkId: link.id,
+        taskId: p.taskId,
+        hop: p.hop,
+        sid,
+        from: fromSid,
+        confirmed: link.confirm,
+        transfer: true,
+      });
+      // Answered at once: the session is the owner's from here on, not a task that reports back.
+      return void (await this.#finishTransfer(sid, inbound, link));
     }
     inbound.projector.prompt(message.parts.find((x) => x.text !== undefined)?.text ?? "", {
       messageId: message.messageId,
@@ -1150,6 +1196,25 @@ export class LinkManager implements LinkAuthorizer {
       t.fromSid,
       t.taskId,
       { v: 1, taskId: t.taskId, state, artifacts: [{ artifactId: randomUUID(), parts: [{ data: r }] }] },
+      sid,
+    );
+  }
+
+  async #finishTransfer(sid: string, t: Inbound, link: AgentLink): Promise<void> {
+    if (t.done) return;
+    t.done = true;
+    if (this.#inbound.get(sid) === t) this.#inbound.delete(sid);
+    const ack = { v: 1, kind: "chalito.transfer.ack.v1", sid } as const;
+    await this.#sendResult(
+      link,
+      t.fromSid,
+      t.taskId,
+      {
+        v: 1,
+        taskId: t.taskId,
+        state: "TASK_STATE_COMPLETED",
+        artifacts: [{ artifactId: randomUUID(), parts: [{ data: ack }] }],
+      },
       sid,
     );
   }

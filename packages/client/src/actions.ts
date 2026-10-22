@@ -57,6 +57,8 @@ const CLIENT_COMMANDS = new Set<CommandPayload["type"]>([
   "session.resume",
   "session.setPermissionMode",
   "session.answer",
+  // ADR 0031 §4: moving a session goes over a hand-off link made on its computer; nothing to sign more.
+  "session.transfer",
   "devmode.off",
   "devmode.toggleOff",
   "device.revokeClient",
@@ -214,6 +216,11 @@ export class ClientActions {
 
   async interrupt(sid: string): Promise<string> {
     return this.#command(this.#agentOf(sid), async () => ({ type: "session.interrupt", sid }));
+  }
+
+  /** ADR 0031 §4: move an idle session to another of the owner's computers (over a link made on its own). */
+  async transferSession(sid: string, toDeviceId: string): Promise<string> {
+    return this.#command(this.#agentOf(sid), async () => ({ type: "session.transfer", sid, toDeviceId }));
   }
 
   async resume(sid: string, text?: string): Promise<string> {
