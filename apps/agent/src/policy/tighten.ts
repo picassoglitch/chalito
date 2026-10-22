@@ -155,7 +155,11 @@ export type TightenResult = { ok: true; policy: Policy } | { ok: false; reason: 
  * Applies a remote patch (shallow per section) only if the result is a subset of the
  * current policy. Loosening is possible only by editing the file locally.
  */
-export const applyRemoteTighten = (cur: Policy, patch: unknown): TightenResult => {
+export const applyRemoteTighten = (
+  cur: Policy,
+  patch: unknown,
+  fs: { home?: string; realpath?: (p: string) => string } = {},
+): TightenResult => {
   if (!patch || typeof patch !== "object") return { ok: false, reason: "invalid_patch" };
   const merged: Record<string, unknown> = { ...cur };
   for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
@@ -165,7 +169,31 @@ export const applyRemoteTighten = (cur: Policy, patch: unknown): TightenResult =
   }
   const parsed = Policy.safeParse(merged);
   if (!parsed.success) return { ok: false, reason: "invalid_patch" };
-  return isTighterOrEqual(parsed.data, cur) ? { ok: true, policy: parsed.data } : { ok: false, reason: "would_loosen" };
+  if (!isTighterOrEqual(parsed.data, cur, fs)) return { ok: false, reason: "would_loosen" };
+  return { ok: true, policy: { ...parsed.data, workspaces: pinRealPaths(parsed.data.workspaces, cur, fs) } };
+};
+
+/**
+ * Workspaces kept from `cur` keep its `realPath`; ones the patch added get where they resolve now.
+ * A patch's own `realPath` is never trusted.
+ */
+const pinRealPaths = (
+  next: Policy["workspaces"],
+  cur: Policy,
+  fs: { home?: string; realpath?: (p: string) => string },
+): Policy["workspaces"] => {
+  const home = fs.home ?? homedir();
+  const real = fs.realpath ?? realpathSync.native;
+  const kept = new Map(cur.workspaces.map((c) => [expandHome(c.path, home), c.realPath]));
+  return next.map(({ realPath: _ignored, ...w }) => {
+    const lexical = expandHome(w.path, home);
+    if (kept.has(lexical)) {
+      const was = kept.get(lexical);
+      return was ? { ...w, realPath: was } : w;
+    }
+    // isTighterOrEqual already required this to resolve.
+    return { ...w, realPath: real(lexical) };
+  });
 };
 
 /**

@@ -1868,8 +1868,22 @@ export class AgentCore {
   }
 
   #classifyContext(policy: Policy, s: Session): ClassifyContext {
-    return { policy, home: this.d.home, cwd: s.cwd, ...this.d.classifyExtras?.() };
+    return {
+      policy,
+      home: this.d.home,
+      cwd: s.cwd,
+      ...this.d.classifyExtras?.(),
+      onWorkspaceMoved: (label, pinned, now) => {
+        // Once per workspace and target, not once per tool call.
+        const key = `${label}\0${now}`;
+        if (this.#movedWorkspaces.has(key)) return;
+        this.#movedWorkspaces.add(key);
+        this.#audit("policy.workspace_moved", { label, pinned, now });
+      },
+    };
   }
+
+  #movedWorkspaces = new Set<string>();
 
   async #onAdapterEvent(s: Session, e: AdapterEvent): Promise<void> {
     // An idle-closed (or replaced) session's last words, e.g. "completed" after close().

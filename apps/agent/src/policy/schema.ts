@@ -8,6 +8,11 @@ import { AppId, AutoKind, RemoteCodexSandbox, RemotePermissionMode } from "@chal
 export const Workspace = z.object({
   label: z.string().min(1).max(60),
   path: z.string().min(1),
+  /**
+   * Where `path` resolved when a remote tighten added it. If it later resolves elsewhere (swapped
+   * for a symlink), the classifier drops the workspace. Absent on locally chosen workspaces.
+   */
+  realPath: z.string().min(1).optional(),
 });
 
 export const Policy = z.object({

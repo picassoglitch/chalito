@@ -484,13 +484,16 @@ const startDaemon = async (
   const scanWorkspaceRepos = (_force = false) => {
     const home = deps.home ?? homedir();
     // The same paths the classifier uses: ~ expanded, then resolved.
-    const paths = (policyRef?.get().workspaces ?? []).map((w) => {
+    const paths = (policyRef?.get().workspaces ?? []).flatMap((w) => {
       const p = w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : resolve(w.path);
+      let r = p;
       try {
-        return realpathSync.native(p);
+        r = realpathSync.native(p);
       } catch {
-        return p;
+        /* not there (yet): scanned as written */
       }
+      // A pinned workspace that moved is out of the classifier's list, so don't walk where it points.
+      return w.realPath === undefined || r === w.realPath ? [r] : [];
     });
     // Async (fs.promises): never blocks a classification; the classifier keeps the last result.
     // The union is prebuilt with the classification's own options (agent-core's classify context).

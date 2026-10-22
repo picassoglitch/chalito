@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -306,6 +306,39 @@ describe("policy changes", () => {
     expect(applyRemoteTighten(cur, { workspaces: [{ label: "sub", path: join(ws, "sub") }] })).toMatchObject({
       ok: true,
     });
+  });
+
+  it("a workspace a remote tighten added is pinned: swapped for a symlink later, it's dropped (fail closed)", () => {
+    const ws = realpathSync(mkdtempSync(join(tmpdir(), "chalito-ws-")));
+    const sub = join(ws, "sub");
+    mkdirSync(sub);
+    const cur = { ...DEFAULT_POLICY, workspaces: [{ label: "ws", path: ws }] };
+    // A patch's own realPath is ignored: the agent records where the path resolves now.
+    const res = applyRemoteTighten(cur, { workspaces: [{ label: "sub", path: sub, realPath: "/" }] });
+    if (!res.ok) throw new Error(res.reason);
+    expect(res.policy.workspaces).toEqual([{ label: "sub", path: sub, realPath: sub }]);
+    const moved: string[] = [];
+    const at = () => ({
+      policy: res.policy,
+      home: HOME,
+      cwd: sub,
+      onWorkspaceMoved: (label: string, _pinned: string, now: string) => void moved.push(`${label}->${now}`),
+    });
+    expect(classifyToolCall("Read", { file_path: join(sub, "a.txt") }, at()).noWorkspace).toBe(false);
+    // Something running in `ws` swaps the folder for a link to `/`.
+    rmSync(sub, { recursive: true });
+    symlinkSync("/", sub);
+    const c = classifyToolCall("Read", { file_path: join(sub, "etc", "hostname") }, at());
+    expect(c.noWorkspace).toBe(true);
+    expect(c.tier).toBe("CRITICAL");
+    expect(moved).toEqual(["sub->/"]);
+    // A workspace chosen locally carries no pin and resolves as before.
+    expect(
+      classifyToolCall("Read", { file_path: join(ws, "a.txt") }, { ...at(), policy: cur, cwd: ws }).noWorkspace,
+    ).toBe(false);
+    // A later tighten keeps the pin; it doesn't re-record the swapped target.
+    const again = applyRemoteTighten(res.policy, { approvals: { ttlSeconds: 60 } });
+    expect(again.ok && again.policy.workspaces[0]?.realPath).toBe(sub);
   });
 
   it("a remote tighten can't add a workspace that doesn't exist yet (it could become a symlink later)", () => {
