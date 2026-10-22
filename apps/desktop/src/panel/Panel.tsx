@@ -9,6 +9,7 @@ import type { ThisComputerApi } from "../lib/this-computer.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import { Inbox } from "./Inbox.js";
+import { NewSession } from "./NewSession.js";
 import { Rooms } from "./Rooms.js";
 import { ConnectComputer, type AutoPair } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
@@ -21,7 +22,7 @@ import { ThisComputer } from "./ThisComputer.js";
 import { Updates } from "./Updates.js";
 import { Voice } from "./Voice.js";
 
-const TABS = ["inbox", "rooms", "settings", "ai", "security", "voice"] as const;
+const TABS = ["inbox", "sessions", "rooms", "settings", "ai", "security", "voice"] as const;
 export type Tab = (typeof TABS)[number];
 
 export interface PanelProps {
@@ -61,6 +62,7 @@ export interface PanelProps {
 export const Panel = (p: PanelProps) => {
   const t = useT();
   const [tab, setTab] = useState<Tab>(p.initialTab ?? "inbox");
+  const [codeSid, setCodeSid] = useState<string | null>(null);
   return (
     <div className="panel-shell">
       <header className="row">
@@ -104,6 +106,9 @@ export const Panel = (p: PanelProps) => {
           ) : (
             (p.signIn ?? <p className="muted">{t("offline")}</p>)
           ))}
+        {tab === "sessions" && (
+          <NewSession ipc={p.ipc} client={p.client} canStepUp={p.canStepUp ?? false} sid={codeSid} onSid={setCodeSid} />
+        )}
         {tab === "rooms" &&
           (p.rooms ? <Rooms source={p.rooms} /> : (p.signIn ?? <p className="muted">{t("offline")}</p>))}
         {tab === "settings" && p.settingsError && <p role="alert">{t(`settingsError.${p.settingsError}`)}</p>}

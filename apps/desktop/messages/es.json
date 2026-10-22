@@ -5,7 +5,8 @@
     "security": "Seguridad",
     "voice": "Voz",
     "rooms": "Salas",
-    "ai": "IA conectadas"
+    "ai": "IA conectadas",
+    "sessions": "Sesiones"
   },
   "dnd": "No molestar",
   "offline": "Sin conexión a tu cuenta. Empareja esta computadora con «chalito pair».",
@@ -583,5 +584,43 @@
       "firstTask": "Probar la primera tarea"
     },
     "signingIn": "Termina de iniciar sesión en el navegador que se abrió."
+  },
+  "sessions": {
+    "title": "Nueva sesión",
+    "intro": "Empieza aquí y síguela en tu teléfono. Las aprobaciones llegan a los dos lados.",
+    "app": "IA",
+    "workspace": "Carpeta",
+    "prompt": "Qué quieres que haga",
+    "mode": "Permisos",
+    "modes": {
+      "default": "Pregunta antes de cambiar",
+      "plan": "Solo planea",
+      "acceptEdits": "Edita sin preguntar en la carpeta"
+    },
+    "start": "Empezar",
+    "noApps": "No hay una IA lista en esta computadora. Conéctala en «IA conectadas».",
+    "noWorkspaces": "Agrega una carpeta en Ajustes para empezar.",
+    "unavailable": "Chalito no está corriendo en esta computadora.",
+    "refused": "Chalito no la aceptó: {reason}",
+    "send": "Enviar",
+    "stop": "Detener",
+    "another": "Otra sesión",
+    "you": "Tú",
+    "phone": "Tú (teléfono)",
+    "agent": "Otro agente",
+    "ai": "IA",
+    "writing": "escribiendo…",
+    "state": {
+      "starting": "Arrancando",
+      "running": "Trabajando",
+      "waiting_approval": "Espera tu aprobación",
+      "waiting_input": "Espera tu respuesta",
+      "idle": "Lista",
+      "completed": "Terminó",
+      "failed": "Falló",
+      "interrupted": "Detenida"
+    },
+    "signInForLive": "Inicia sesión en Chalito para ver la conversación aquí; mientras, síguela en tu teléfono.",
+    "terminal": "Tú (terminal)"
   }
 }

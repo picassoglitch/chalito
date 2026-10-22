@@ -1,4 +1,5 @@
 import { connect as netConnect, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { createInterface } from "node:readline";
 import type { LocalEvent } from "./events.js";
 
@@ -18,7 +19,9 @@ const T = {
       "Uso: chalito code <claude|codex|gemini|grok|app> [--workspace <nombre>] [--mode default|plan|acceptEdits] [instrucción]\n",
     inSession: "chalito code no se puede usar dentro de una sesión de Chalito.\n",
     notRunning: "Chalito no está corriendo en esta computadora. Ábrelo (o `chalito run`) y vuelve a intentar.\n",
-    windows: "En Windows, empieza la sesión desde el panel de Chalito (Sesiones → Nueva sesión).\n",
+    windows:
+      "En Windows, `chalito code` funciona con el Chalito instalado; si no, empieza la sesión desde el panel (Sesiones → Nueva sesión).\n",
+    notMine: "Lo que responde en esta computadora no es tu Chalito (otro usuario de Windows). No se envió nada.\n",
     unknownApp: (a: string, apps: string[]) =>
       `La IA «${a}» no está lista aquí. Listas: ${apps.length ? apps.join(", ") : "ninguna (conéctala en Chalito)"}.\n`,
     noWorkspace: (ws: string[]) =>
@@ -46,7 +49,9 @@ const T = {
       "Usage: chalito code <claude|codex|gemini|grok|app> [--workspace <name>] [--mode default|plan|acceptEdits] [prompt]\n",
     inSession: "chalito code can't be used inside a Chalito session.\n",
     notRunning: "Chalito isn't running on this computer. Open it (or `chalito run`) and try again.\n",
-    windows: "On Windows, start the session from the Chalito panel (Sessions → New session).\n",
+    windows:
+      "On Windows, `chalito code` works with the installed Chalito; otherwise start the session from the panel (Sessions → New session).\n",
+    notMine: "What answers on this computer isn't your Chalito (another Windows user). Nothing was sent.\n",
     unknownApp: (a: string, apps: string[]) =>
       `“${a}” isn't ready here. Ready: ${apps.length ? apps.join(", ") : "none (connect one in Chalito)"}.\n`,
     noWorkspace: (ws: string[]) =>
@@ -79,6 +84,8 @@ export interface CodeCliIo {
   cwd: string;
   /** Ctrl-C; returns the unsubscribe. */
   onSigint?: (fn: () => void) => () => void;
+  /** Windows: the one connection, its server checked to be this user's on that same handle. */
+  openPipe?: () => { ok: true; stream: Duplex } | { ok: false; reason: "not_mine" | "unavailable" };
   connect?: (path: string) => Socket;
 }
 
@@ -87,7 +94,7 @@ interface Rpc {
   close(): void;
 }
 
-const openRpc = (sock: Socket, onPush: (e: LocalEvent & { sid: string }) => void, onClose: () => void): Rpc => {
+const openRpc = (sock: Duplex, onPush: (e: LocalEvent & { sid: string }) => void, onClose: () => void): Rpc => {
   let n = 0;
   const waits = new Map<number, (r: { ok: boolean; result?: unknown; error?: string }) => void>();
   let buf = "";
@@ -111,6 +118,8 @@ const openRpc = (sock: Socket, onPush: (e: LocalEvent & { sid: string }) => void
       }
     }
   });
+  // A write after the agent went away errors before it closes: that's a disconnect, not a crash.
+  sock.on("error", () => sock.destroy());
   sock.on("close", () => {
     for (const w of waits.values()) w({ ok: false, error: "closed" });
     waits.clear();
@@ -192,7 +201,10 @@ export const runCode = async (
         ? Promise.resolve(null)
         : new Promise<string | null>((r) => (lineWait = r));
 
-  const sock = await connectTo(io, path);
+  // Another user's process holding the pipe name never sees a prompt (owner 2026-10-22).
+  const opened = io.openPipe?.();
+  if (opened && !opened.ok) return (lines.close(), io.err(opened.reason === "not_mine" ? t.notMine : t.notRunning), 1);
+  const sock = opened?.ok ? opened.stream : await connectTo(io, path);
   if (!sock) return (lines.close(), io.err(t.notRunning), 1);
 
   let sid: string | null = null;
@@ -316,6 +328,7 @@ export const runCode = async (
       ownLocal++;
       state = "running";
       const r = await rpc.call("prompt", { sid, text });
+      if (closed) break;
       if (!r.ok) {
         ownLocal = Math.max(0, ownLocal - 1);
         state = "idle";

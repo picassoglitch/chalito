@@ -19,7 +19,7 @@ What `main` already has:
 ### 1. Start at the computer
 - **CLI:** `chalito code <agent> [--workspace <label>] [--mode default|plan|acceptEdits] [prompt…]`. `<agent>` is an app id or a short name (`claude`, `codex`, `gemini`, `grok`). Without `--workspace`, the workspace whose folder contains the current directory; none is an error (Chalito never runs outside a workspace the owner allowed).
   - Interactive like `claude`: assistant text streams (escape sequences and control characters stripped before they reach the terminal), tool steps print as one line (category + summary), `Ctrl-C` stops the turn, a second `Ctrl-C` or `/salir` leaves (the session stays, resumable from the phone).
-  - It talks to the running agent over a second local socket, `code.sock` (0600, same directory as `agent.sock`). Not on Windows for now (§6a): there the CLI points to the panel. It serves only the methods below.
+  - It talks to the running agent over a second local socket, `code.sock` (0600, same directory as `agent.sock`). On Windows a per-user named pipe, locked down (§6a). It serves only the methods below.
 - **Desktop panel:** "Nueva sesión" (AI from the ready apps, workspace from the policy, first prompt). The panel uses its existing IPC (`agent.sock`, per-launch secret) for start / prompt / stop, and its live store for the transcript and approvals (it is a trusted client already, so approvals stay signed decisions with passkey).
 - Methods: the panel's IPC gets `codeApps`, `codeStart {appId, workspaceLabel, prompt, permissionMode}`, `codePrompt {sid, text}`, `codeStop {sid}`. `code.sock` has `apps`, `workspaceFor {cwd}`, `start`, `prompt`, `stop` and `sessions`, and pushes the plaintext events of the sessions that connection started (kept in memory only; nothing new is stored or sent). A connection steers only its own sessions.
 - Origins: the panel's turns are `local` (signed: only the desktop app holds its per-launch IPC secret). `chalito code`'s turns are **`local:cli`, an unsigned origin** (§6a): no Developer-mode auto-approve, no `acceptEdits`, no LOW auto-allow beyond reads, no computer control, no link tools; every other tool asks. It is allowed or refused with `origins.local`. Phone turns stay `client:<id>`. Permission mode at most `policy.remote.maxPermissionMode`; the hard floor and policy blocks still deny.
@@ -81,7 +81,13 @@ What `main` already has:
   - **No escalation by mode:** a `local:cli` start can't pick `acceptEdits` (it would carry over to the owner's later signed turns).
   - **Bounded:** a reader that falls 1 MB behind is dropped; events from before a start's id is known are kept up to 500.
   - Every command typed at the computer gets an audit row (`command.accepted` / `command.rejected`) with its origin; a session started there shows its first prompt on the phone like any turn.
-- **Windows:** Node can't create a named pipe with an explicit DACL or `FILE_FLAG_FIRST_PIPE_INSTANCE`, so another user's process could squat `\\.\pipe\chalito-code-<user>` and read what the CLI sends. Until a native pipe with a current-user-only DACL and a server-owner check exists, the agent doesn't serve `code.sock` on Windows and the CLI says to use the panel.
+- **Windows (owner, 2026-10-22: "build it now"):** `\\.\pipe\chalito-code-<user SID>`, served by the shipped (Bun) agent through bun:ffi (no libuv pipe):
+  - Every instance is created with its security set at creation: owner = this user, a protected DACL that denies network logons (`NU`) and allows only this user and SYSTEM, and `PIPE_REJECT_REMOTE_CLIENTS`. The first instance uses `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a name someone else made first means nothing is served. The agent reads the owner and DACL back from its own handle before serving.
+  - Each accepted connection must be local (no client computer name) and its client process must run as this user; otherwise it's dropped.
+  - Every connection runs in `PIPE_NOWAIT` mode: reads follow a peek, and a write takes what fits and finishes on a later tick, so a client that stops reading never blocks the agent's one JS thread; past 1 MB of backlog it's dropped. If the next instance can't be made, the loop logs it and stops accepting.
+  - The CLI opens the pipe once with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION` (a server can identify it, never impersonate it), and on that same handle checks the pipe object's owner and DACL (which the server can't fake) and the server process's user (`GetNamedPipeServerProcessId`); all its traffic then goes over that handle. Another user's pipe never sees a byte.
+  - Outside the shipped agent (a dev run under Node) there's no bun:ffi, so `chalito code` on Windows points to the panel.
+  - Tested on a Windows runner (CI `agent-windows-pipe`) under Bun and as a compiled binary: owner and DACL read back; a second server refused; the CLI end to end; the impersonation level a pipe server gets (identification for ours, impersonation for a plain client as the control); a default-DACL pipe and a pipe owned by another principal refused; an SMB-loopback (remote) client refused while the control pipe accepts it.
 - Owner option (§8): give `chalito code` signed trust after an OS password prompt per start (human presence), still with no `decide`.
 
 Nothing here can turn on remote screen, remote terminal, the raw shell, Developer mode or computer control, or raise a permission mode above the ceiling.
@@ -105,7 +111,7 @@ Nothing here can turn on remote screen, remote terminal, the raw shell, Develope
 - Routing evaluated on the computers, or rules that can refuse a start.
 
 ## 8. Open for the owner
-- Whether `chalito code` sessions should become `local` (signed) after an OS password prompt at each start (today: `local:cli`, unsigned), and a native Windows pipe with a current-user DACL so the CLI works there.
+- None open. Decided 2026-10-22 (Aldo): moving a session with unfinished work saves it to a new `chalito/move-<id>` branch and pushes it (#95); `chalito code` on Windows uses a native pipe locked to the current user (#96); `chalito code` sessions stay `local:cli` (no OS password prompt).
 
 ## 9. Delivery
 Rollout: clients drop events their protocol copy doesn't parse, so the hub's vendored protocol (f) and the web app ship before any agent runs (b) or (d); until then an older phone doesn't show `local:cli` sessions' turns or `session.transferred`.

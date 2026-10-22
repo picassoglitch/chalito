@@ -57,6 +57,8 @@ import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
+import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
+import type { Duplex } from "node:stream";
 import { FileLinkStorage, LinkManager, LinkTools, MemoryLinkCloud } from "./links/index.js";
 import { ipcPath, startIpcServer, type IpcServer } from "./ipc-server.js";
 import { FileNonceStore } from "./nonce-store.js";
@@ -199,6 +201,8 @@ export interface DaemonDeps {
   ipcPath?: string;
   /** `chalito code`'s socket (ADR 0031 §1); default ~/.chalito/code.sock. */
   codePath?: string;
+  /** Windows pipe security (tests pass their own); default bun:ffi under the shipped agent. */
+  winPipeSecurity?: () => Promise<WinPipeSecurity | null>;
   /** The OS check for enabling Developer mode from the panel (os-auth.ts in production). */
   osAuth?: () => OsAuth;
   /** The providers' CLIs (install, sign-in, status); tests pass a fake. */
@@ -1401,12 +1405,20 @@ const startDaemon = async (
   // ADR 0031: sessions typed at this computer; the panel's are `local`, `chalito code`'s `local:cli` (§6a).
   const code = codeService(core, () => policy.get(), readSetup, "local");
   let codeServer: CodeServer | null = null;
-  const codeAt = deps.codePath ?? codePath(dir);
-  if (codeAt)
+  // Windows: only with the pipe locked to this user and served by this process (owner 2026-10-22).
+  const winSec = process.platform === "win32" ? await (deps.winPipeSecurity ?? loadWinPipeSecurity)() : null;
+  const codeAt = deps.codePath ?? codePath(dir, process.platform, winSec?.userSid);
+  if (codeAt && (process.platform !== "win32" || winSec))
     try {
       codeServer = await startCodeServer({
         path: codeAt,
         code: codeService(core, () => policy.get(), readSetup, "local:cli"),
+        ...(winSec
+          ? {
+              listen: (p: string, on: (s: Duplex) => void) =>
+                winSec.listen(p, on, (msg) => log.error("code.pipe_listener", { msg })),
+            }
+          : {}),
         onError: (method, err) =>
           log.warn("code.request_failed", { method, error: err instanceof Error ? err.message : "error" }),
       });

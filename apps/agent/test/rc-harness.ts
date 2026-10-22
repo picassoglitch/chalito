@@ -1,6 +1,6 @@
 // ADR 0031 tests: a real AgentCore (real gate, approvals, sealing) with a scripted adapter, a phone
 // that signs commands and decisions, and optional links between two such agents.
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterEvent, SessionAdapter, SessionHandle, SessionStartOptions } from "@chalito/adapters";
@@ -30,8 +30,11 @@ import { createLogger } from "../src/redact.js";
 import { MemoryStore } from "../src/store.js";
 
 export const OWNER = "hub-user-1";
-export const HOME = "/home/aldo";
-export const WS = "/home/aldo/code/chalito";
+// Real folders (realpath'd: macOS /var → /private/var), so path checks behave the same on every OS.
+const ROOT = realpathSync(mkdtempSync(join(tmpdir(), "chalito-rc-")));
+export const HOME = join(ROOT, "home");
+export const WS = join(HOME, "code", "chalito");
+mkdirSync(WS, { recursive: true });
 
 export const waitFor = async (cond: () => boolean, ms = 3000) => {
   const t0 = Date.now();
@@ -212,8 +215,9 @@ export const agentFor = async (
     return core.handleCommand(String(body.cid), { env, fromDeviceId: phone.id });
   };
   /** The phone's signed answer to the newest pending approval (with its passkey when `stepUp`). */
-  const answer = async (allow: boolean, stepUp = false) => {
-    const pending = store.pendingApprovals().at(-1)!;
+  /** The phone answers approval `aid` (default: the newest pending one). */
+  const answer = async (allow: boolean, stepUp = false, aid?: string) => {
+    const pending = aid ? store.approvals.get(aid)! : store.pendingApprovals().at(-1)!;
     const opened = await openJson<{ request: { body: { detailsHash: string } } }>(
       pending.detailsCt,
       phone.id,
