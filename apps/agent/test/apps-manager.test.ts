@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AppConnectionDoc, Recipe } from "@chalito/protocol";
 import type { ClaudePin } from "../src/claude-pin.js";
 import { BUILTIN_CATALOG, type CatalogEntry } from "../src/apps/catalog.js";
-import { AppManager, appSecretName, expandPath } from "../src/apps/manager.js";
+import { AppManager, appSecretName, expandPath, runsOnChalyb } from "../src/apps/manager.js";
 import { createLogger } from "../src/redact.js";
 import { MemorySecretStore } from "../src/secrets.js";
 import { fakeProviderProcs, type ProcCall } from "./fake-provider-procs.js";
@@ -317,5 +317,15 @@ describe("AppManager: IA de Chalyb (ADR 0030)", () => {
     expect(await s.m.useChalyb("claude-code")).toEqual({ ok: false, reason: "app_unavailable" });
     expect(await s.m.useChalyb("goose")).toEqual({ ok: false, reason: "app_unavailable" });
     expect(s.m.activeMode("claude-code")).toBeNull();
+  });
+});
+
+describe("runsOnChalyb: the daemon's gate for managed mode", () => {
+  it("only an allowed app with chalyb chosen; a stale or hand-edited apps.json can't turn it on for Grok or Claude Code", () => {
+    expect(runsOnChalyb("codex", "chalyb")).toBe(true);
+    expect(runsOnChalyb("gemini", "chalyb")).toBe(true);
+    expect(runsOnChalyb("grok", "chalyb")).toBe(false);
+    expect(runsOnChalyb("claude-code", "chalyb")).toBe(false);
+    expect(runsOnChalyb("codex", "api_key")).toBe(false);
   });
 });

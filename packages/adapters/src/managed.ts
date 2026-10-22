@@ -59,6 +59,8 @@ export class ManagedSessionAdapter implements SessionAdapter {
         // Reported once per block; a later turn that passes clears it.
         if (s.blockedReason && s.blockedReason !== blocked) opts.onEvent({ type: "blocked", reason: s.blockedReason });
         blocked = s.blockedReason;
+        // Expired, idle or revoked: end this process; the next prompt resumes the session on a new credential.
+        if (s.state !== "active") handle?.close();
       } catch (err) {
         this.d.log?.("managed.status_failed", {
           credential: cred.id,
@@ -66,7 +68,7 @@ export class ManagedSessionAdapter implements SessionAdapter {
         });
       }
     };
-    let handle: SessionHandle;
+    let handle: SessionHandle | undefined;
     try {
       handle = await this.d.make(cred).start({
         ...opts,

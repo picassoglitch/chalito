@@ -64,6 +64,8 @@ export const isNetworkOnly = (r: Recipe) =>
 /** Apps that can run on "IA de Chalyb" (ADR 0030; providers.yaml codingAgents.*.managed). Never Claude Code;
  *  Grok Build is pending (its tools would see the token). */
 export const CHALYB_APPS: ReadonlySet<string> = new Set(["codex", "gemini"]);
+/** Whether an app runs on IA de Chalyb: chosen here (apps.json) and allowed (a stale or edited record isn't enough). */
+export const runsOnChalyb = (appId: string, mode: string | null) => mode === "chalyb" && CHALYB_APPS.has(appId);
 
 /** What the agent remembers per app in ~/.chalito/apps.json (0600; never a secret). */
 const AppRecord = z.object({

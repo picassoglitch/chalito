@@ -80,6 +80,7 @@ class Source implements ManagedSource {
   issued: string[] = [];
   ended: string[] = [];
   blocked: "out_of_energy" | "daily_cap" | null = null;
+  state: "active" | "revoked" | "expired" = "active";
   refuse: { blocked: "out_of_energy" | "daily_cap" | null } | null = null;
   async issue(sid: string): Promise<ManagedCredential> {
     if (this.refuse) throw Object.assign(new Error("refused"), this.refuse);
@@ -87,7 +88,7 @@ class Source implements ManagedSource {
     return { id: `cc_${sid}`, token: TOKEN, baseUrl: GW, model: "gpt-5.6-luna" };
   }
   async status() {
-    return { state: "active" as const, blockedReason: this.blocked };
+    return { state: this.state, blockedReason: this.blocked };
   }
   async end(id: string) {
     this.ended.push(id);
@@ -172,6 +173,18 @@ describe("ManagedSessionAdapter", () => {
     const h = await a.start(opts([]));
     h.done.catch(() => undefined);
     fail(new Error("crash"));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(source.ended).toEqual(["cc_s1"]);
+  });
+
+  it("a credential that expired or went idle ends the CLI after its turn, so the next prompt resumes on a new one", async () => {
+    const source = new Source();
+    const made: ManagedCredential[] = [];
+    const c = cli(made);
+    const h = await new ManagedSessionAdapter("codex", { source, make: c.make }).start(opts([]));
+    source.state = "expired";
+    c.emit({ type: "state", state: "idle" });
+    await h.done;
     await new Promise((r) => setTimeout(r, 10));
     expect(source.ended).toEqual(["cc_s1"]);
   });

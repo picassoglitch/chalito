@@ -65,7 +65,7 @@ import { FileNonceStore } from "./nonce-store.js";
 import { osAuthFor } from "./os-auth.js";
 import { spawnProviderProcs, type ProviderProcs } from "./provider-cli.js";
 import { AppCatalog, fetchCatalog, type CatalogEntry, type CatalogFetch } from "./apps/catalog.js";
-import { AppManager } from "./apps/manager.js";
+import { AppManager, runsOnChalyb } from "./apps/manager.js";
 import { buildDrivers, driverFactory, type Driver } from "./drivers/registry.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { FilePolicyHolder } from "./policy-file.js";
@@ -702,7 +702,7 @@ const startDaemon = async (
         : CLAUDE_PIN_FAILED[c.locale](pin.reason);
     const codexPin = c.codex ? await checkClaudePin(c.codex) : null;
     const codexLogin = activeMode("openai") === "signin";
-    const codexChalyb = activeMode("openai") === "chalyb";
+    const codexChalyb = runsOnChalyb("codex", activeMode("openai"));
     const openaiKey = c.codex && !codexLogin && !codexChalyb ? await secrets.get(SECRET_NAMES.openaiApiKey) : null;
     if (codexPin && !codexPin.ok)
       log.error("adapter.codex_unavailable", { reason: CODEX_PIN_FAILED[c.locale](codexPin.reason) });
@@ -739,7 +739,7 @@ const startDaemon = async (
         log.error(`adapter.${tool}_unavailable`, { reason: ACP_PIN_FAILED[c.locale](tool, check.reason) });
         return undefined;
       }
-      if (activeMode(provider) === "chalyb")
+      if (runsOnChalyb(tool, activeMode(provider)))
         return { path: pinned.path, signIn: false, managed: true, home: join(dir, tool), env: { ...env } };
       const key =
         activeMode(provider) === "signin"
