@@ -101,6 +101,8 @@ export type Provider = z.infer<typeof Provider>;
  */
 export const Origin = z.union([
   z.literal("local"),
+  // ADR 0031: typed into `chalito code`; unsigned, since any process of the user can reach code.sock.
+  z.literal("local:cli"),
   z.string().regex(/^client:[A-Za-z0-9_-]{1,128}$/),
   z.string().regex(/^mcp:(chatgpt|claude)$/),
   z.string().regex(/^call:CA[0-9a-f]{32}$/),

@@ -223,6 +223,8 @@ export const LinkRefusal = z.enum([
   "owner_declined",
   "origin_disabled",
   "start_failed",
+  // ADR 0031 §4: a transfer's project isn't the receiving workspace's (`origin` differs).
+  "wrong_repo",
 ]);
 export type LinkRefusal = z.infer<typeof LinkRefusal>;
 
