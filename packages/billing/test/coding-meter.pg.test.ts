@@ -231,6 +231,23 @@ if (!url) {
       expect(results.filter((r) => !r.ok).map((r) => (r.ok ? null : r.reason))).toEqual(["daily_cap", "daily_cap"]);
     });
 
+    it("a session that ends while its request is still streaming keeps that request against the cap", async () => {
+      const { owner, id, meter } = await setup();
+      const second = `cc_${randomBytes(16).toString("hex")}`;
+      await admin`insert into chalito_private.coding_credentials (id, token_hash, owner, device_id, sid, agent, provider, models, expires_at, created_at)
+        select ${second}, ${createHash("sha256").update(second).digest("hex")}, owner, device_id, 'sid2', agent, provider, models, expires_at, created_at
+        from chalito_private.coding_credentials where id = ${id}`;
+      const one = Math.ceil((worst * 2.6) / 4);
+      await admin`insert into chalito.coding_settings (owner, daily_cap_tokens) values (${owner}, ${one + 2_500})`;
+      const a = await meter.begin(id, req);
+      if (!a.ok) throw new Error("refused");
+      await admin`update chalito_private.coding_credentials set revoked_at = now(), revoked_reason = 'session_end' where id = ${id}`;
+      expect(await meter.settle(id)).toBe("settled");
+      expect(await meter.begin(second, req)).toEqual({ ok: false, reason: "daily_cap" });
+      await meter.finish(a.ticket, usage, { outputBytes: 0 });
+      expect((await meter.begin(second, req)).ok).toBe(true);
+    });
+
     it("a session has at most maxInflightPerSession requests in flight", async () => {
       const { id, meter } = await setup();
       const n = cfg.maxInflightPerSession;

@@ -80,7 +80,7 @@ class PgCodingTx implements CodingTx {
       select u.tier, s.daily_cap_tokens as cap, s.cap_tz, s.cap_tz_next, s.cap_tz_from,
              (select d.revoked from chalito.devices d where d.owner = u.id and d.device_id = ${this.c.deviceId}) as revoked,
              (select coalesce(sum(k.inflight_micros), 0) from chalito_private.coding_credentials k
-              where k.owner = u.id and k.settled_at is null) as inflight
+              where k.owner = u.id and k.inflight_micros > 0) as inflight
       from chalito.users u left join chalito.coding_settings s on s.owner = u.id
       where u.id = ${this.c.owner}`;
     return {
