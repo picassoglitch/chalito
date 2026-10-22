@@ -58,8 +58,9 @@ switch and is checked on staging before the switch goes on.
      `managed.maxOutputTokens` (Codex never sends one; the gateway sets it);
   2. prices the worst case from prices.yaml: input ≤ request body bytes (a token is at least one
      byte), output = the clamped limit;
-  3. checks the daily cap: today's spend (owner local day, `users.tz`) in billable tokens at the
-     hub's 160% ≥ cap → 402 `daily_cap`;
+  3. checks the daily cap, with the owner's begins serialized (advisory lock): today's spend plus the
+     billable worst case of every request in flight on the owner's sessions, this one included, above
+     the cap → 402 `daily_cap`. A session has at most `maxInflightPerSession` requests in flight;
   4. re-admits the same hold with `est_tokens = reserveTokens(unsent + in-flight + worst case)`
      (pre-margin; the hub adds the margin). "Unsent" is this credential's usage still pending in
      the outbox, which the hub can't see yet. `no_tokens` → 402 `out_of_energy`. An expired hold
@@ -76,7 +77,7 @@ switch and is checked on staging before the switch goes on.
   (idempotent `source_id`), and only through the outbox, never a second path.
 
 ### Out of tokens or over the cap
-- The request in flight finishes. The next one gets 402 with `{error: "out_of_energy" | "daily_cap"}`
+- A request runs only if its worst case still fits; the one in flight always finishes. The next one gets 402 with `{error: "out_of_energy" | "daily_cap"}`
   and the credential records `blocked_reason`. The agent reads it after the turn
   (`GET /v1/coding/credentials/:id`) and emits `session.blocked {reason}`. The hub shows the
   recharge chip and "Usar mi clave". A later request passes again once the balance or cap allows.
@@ -85,6 +86,10 @@ switch and is checked on staging before the switch goes on.
 - `chalito.coding_settings.daily_cap_tokens`; unset means `codingManaged.dailyCap.default`
   (1,250,000 billable tokens, about five dollars). Lowering is free. Raising needs a passkey
   step-up (`verifyStepUp`) and stops at the tier's `ceiling`.
+- The cap's day is the owner's local day in a zone frozen at the first credential
+  (`coding_settings.cap_tz`). A later `users.tz` change takes over only when that day ends, so
+  switching zones can't reset the cap.
+- Issuing is serialized per device: the live count and the insert run in one transaction.
 
 ### Abuse
 - Per-token and per-IP token buckets on the gateway, the live-credential limit, the model
@@ -106,5 +111,6 @@ step-up) → B5 apps/ai-gateway → B6 agent and adapters (the `chalyb` connect 
   It is still their session's allowlist, their balance and their cap, until the session ends.
 - The hub's per-tier stream caps apply: Pro has one active stream (shared with desktop voice),
   VIP five. A second managed session on Pro is refused as busy until the hub's caps change.
-- One request can exceed the cap or the balance by at most its own worst case; the next is refused.
+- The cap counts worst cases, so an owner near the cap is refused a little before it is reached.
+- The balance can still be exceeded by the requests in flight when it runs out; the next is refused.
 - Only priced models can be allowed. Better coding models need verified prices first.
