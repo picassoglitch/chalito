@@ -17,8 +17,12 @@ const refersToMedia = (v: unknown, depth = 0): boolean => {
       const url = typeof x === "object" && x && "url" in x ? (x as { url: unknown }).url : x;
       if (!inlineImage(url)) return true;
     }
-    if ((k === "inlineData" || k === "inline_data") && x && typeof x === "object") {
-      const mime = (x as Record<string, unknown>).mimeType ?? (x as Record<string, unknown>).mime_type;
+    if (k === "inlineData" || k === "inline_data") {
+      // Two spellings at once (part or MIME type) could be read differently by the provider: refused.
+      if ("inlineData" in v && "inline_data" in v) return true;
+      const d = (x ?? {}) as Record<string, unknown>;
+      if ("mimeType" in d && "mime_type" in d) return true;
+      const mime = d.mimeType ?? d.mime_type;
       if (!(typeof mime === "string" && mime.startsWith("image/"))) return true;
     }
     if (refersToMedia(x, depth + 1)) return true;
@@ -103,6 +107,20 @@ const geminiGeneration = (raw: unknown, maxOutput: number): Record<string, unkno
   return { ...g, candidateCount: 1, maxOutputTokens: Math.min(asked ?? Infinity, maxOutput) };
 };
 
+/** Inline images go out rebuilt: one spelling, only the MIME type and the data. */
+const normalizeInline = (v: unknown, depth = 0): unknown => {
+  if (depth > 64 || !v || typeof v !== "object") return v;
+  if (Array.isArray(v)) return v.map((x) => normalizeInline(x, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (k === "inlineData" || k === "inline_data") {
+      const d = x as Record<string, unknown>;
+      out.inlineData = { mimeType: d.mimeType ?? d.mime_type, data: d.data };
+    } else out[k] = normalizeInline(x, depth + 1);
+  }
+  return out;
+};
+
 export const sanitizeGemini = (
   b: Record<string, unknown>,
   method: "generateContent" | "streamGenerateContent" | "countTokens",
@@ -124,6 +142,8 @@ export const sanitizeGemini = (
   const tools = out.tools === undefined ? [] : out.tools;
   if (!Array.isArray(tools) || !tools.every((t) => obj(t) && Object.keys(t).every((k) => GEMINI_TOOL_KEYS.has(k))))
     return { ok: false, error: "tool_not_allowed" };
+  if (out.contents !== undefined) out.contents = normalizeInline(out.contents);
+  if (out.systemInstruction !== undefined) out.systemInstruction = normalizeInline(out.systemInstruction);
   out.generationConfig = geminiGeneration(out.generationConfig, maxOutput);
   return { ok: true, body: out };
 };

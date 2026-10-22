@@ -81,6 +81,27 @@ describe("Responses bodies are rebuilt from an allowlist (ADR 0030)", () => {
     ).toBe(true);
   });
 
+  it("a part can't carry two spellings of the inline data or its MIME type (the provider may read the other)", () => {
+    const g = (part: Record<string, unknown>) =>
+      sanitizeGemini({ contents: [{ role: "user", parts: [part] }] }, "generateContent", 1);
+    for (const part of [
+      { inlineData: { mimeType: "image/png", mime_type: "application/pdf", data: "AAAA" } },
+      {
+        inlineData: { mimeType: "image/png", data: "AAAA" },
+        inline_data: { mime_type: "application/pdf", data: "AAAA" },
+      },
+    ])
+      expect(g(part), JSON.stringify(part)).toEqual({ ok: false, error: "media_url_not_allowed" });
+    // An accepted image goes out rebuilt: one spelling, only its MIME type and data.
+    expect(g({ inline_data: { mime_type: "image/png", data: "AAAA", extra: 1 } })).toEqual({
+      ok: true,
+      body: {
+        contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/png", data: "AAAA" } }] }],
+        generationConfig: { candidateCount: 1, maxOutputTokens: 1 },
+      },
+    });
+  });
+
   it("stored state and background work are refused", () => {
     for (const extra of [
       { previous_response_id: "r" },
