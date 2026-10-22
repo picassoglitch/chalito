@@ -1050,7 +1050,13 @@ const startDaemon = async (
     now,
   });
   // A policy saved while remote screen was built in must not keep it enabled (features.ts).
-  if (!screenOn) await disableScreen({ policy, emit: auditAgent }, "all", "flag_off");
+  // A failed write (read-only disk, tampered policy) must not stop the agent: the gate already refuses the commands.
+  if (!screenOn)
+    await disableScreen({ policy, emit: auditAgent }, "all", "flag_off").catch((err: unknown) => {
+      const error = err instanceof Error ? err.message : "error";
+      log.warn("screen.clear_failed", { error });
+      auditAgent("screen.clear_failed", { error });
+    });
   await lan?.onPolicyChange();
   try {
     linksBroker = await startBroker({

@@ -64,6 +64,11 @@ for (const triple of triples) {
       // Compiled agents are release builds: the pairing loopback accepts only the production hub.
       "--define",
       "__CHALITO_RELEASE__=true",
+      // Dormant remote features: off unless the build itself opts in (never the user's environment).
+      "--define",
+      `__CHALITO_REMOTE_SCREEN__=${process.env.CHALITO_BUILD_REMOTE_SCREEN === "1"}`,
+      "--define",
+      `__CHALITO_REMOTE_TERMINAL__=${process.env.CHALITO_BUILD_REMOTE_TERMINAL === "1"}`,
       `--target=${TARGETS[triple]}`,
       entry,
       "--outfile",

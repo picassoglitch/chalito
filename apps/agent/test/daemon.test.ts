@@ -268,6 +268,21 @@ describe("chalito run (daemon)", () => {
       await d.stop();
     });
 
+    it("off: a policy write that fails is audited and the agent still starts", async () => {
+      const s = await seeded();
+      const set = vi.spyOn(FilePolicyHolder.prototype, "set").mockRejectedValue(new Error("EROFS: read-only"));
+      try {
+        const d = await runDaemon(s.deps);
+        expect(set).toHaveBeenCalled();
+        expect(s.store.audits.find((a) => a.type === "screen.clear_failed")?.meta).toMatchObject({
+          error: "EROFS: read-only",
+        });
+        await d.stop();
+      } finally {
+        set.mockRestore();
+      }
+    });
+
     it("on (CHALITO_REMOTE_SCREEN=1): the saved state is left alone", async () => {
       const s = await seeded();
       const d = await runDaemon({ ...s.deps, env: { ...s.deps.env, CHALITO_REMOTE_SCREEN: "1" } });
