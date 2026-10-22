@@ -50,7 +50,7 @@ const redactProvider = (t: string) =>
   t
     .slice(0, 500)
     .replace(/\b(sk|xai|AIza)[-_A-Za-z0-9.]{6,}/g, "[key]")
-    .replace(/\b(org|proj)[-_][A-Za-z0-9]{4,}/g, "[$1]");
+    .replace(/\b(org|proj)[-_][A-Za-z0-9]{4,}/g, (_m, kind: string) => `[${kind}]`);
 
 const REFUSED_MESSAGE = "That tool or stored state isn't available with IA de Chalyb.";
 
