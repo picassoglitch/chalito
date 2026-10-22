@@ -1,13 +1,11 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useFormatter, useTranslations } from "next-intl";
+import { hubTierOf, type HubTierId } from "@chalito/protocol";
 import type { Balance } from "@/lib/balance";
 import { env } from "@/lib/env";
 import { Link } from "@/i18n/navigation";
 import { useChalito } from "./ChalitoProvider";
-
-/** The Chalyb tiers this page can name (packages/config plans.yaml hubTiers). */
-const HUB_TIERS = new Set(["free", "pro", "vip"]);
 
 /** Where credits are bought: the hub's usage page (token packs). Prices only ever live there. */
 export const rechargeUrl = (hubUrl: string): string | null => (hubUrl ? `${hubUrl}/app/usage` : null);
@@ -80,7 +78,7 @@ export const Credits = () => {
   const t = useTranslations("credits");
   const tp = useTranslations("landing.plans.hub");
   const { settings, status } = useChalito();
-  const [tier, setTier] = useState<string | null | "loading">("loading");
+  const [tier, setTier] = useState<HubTierId | null | "loading">("loading");
 
   useEffect(() => {
     if (status === "loading") return;
@@ -88,7 +86,7 @@ export const Credits = () => {
     let alive = true;
     void settings
       .load()
-      .then((r) => alive && setTier(r.values.planCredits.tier))
+      .then((r) => alive && setTier(hubTierOf(r.values.planCredits.tier)))
       .catch(() => alive && setTier(null));
     return () => {
       alive = false;
@@ -103,7 +101,7 @@ export const Credits = () => {
         <h2 className="font-semibold">{t("plan.title")}</h2>
         {tier === "loading" ? (
           <p aria-live="polite">{t("plan.loading")}</p>
-        ) : tier && HUB_TIERS.has(tier) ? (
+        ) : tier ? (
           <p data-testid="credits-tier">{t("plan.yours", { plan: tp(tier) })}</p>
         ) : (
           <p data-testid="credits-tier">{status === "signed_out" ? t("plan.signedOut") : t("plan.unknown")}</p>

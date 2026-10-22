@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { afterAll, describe, expect, it } from "vitest";
+import { loadPlans } from "@chalito/config";
 import type { Ladder } from "@chalito/escalation";
+import { voiceSecondsLeft } from "../src/caps.js";
+import type { NotifierDeps } from "../src/executor.js";
 import { PostgresStore } from "../src/postgres-store.js";
 
 /** A complete HubUsageEvent, as the outbox CHECK requires (source_id must match the row). */
@@ -263,6 +266,12 @@ if (!url) {
       ]);
       expect([a, b].sort()).toEqual([false, true]);
       expect(await new PostgresStore(sql).claimCallRef(hash, Date.now() + 60_000)).toBe(false);
+    });
+
+    it.each(["pro", "PRO", " Pro "])("voice minutes from users.tier %j are Pro's 120 (like #82)", async (tier) => {
+      const u = await user({ tier });
+      const deps = { store, caps: { plans: loadPlans(), isComped: () => false }, now: () => Date.now() };
+      expect(await voiceSecondsLeft(deps as unknown as NotifierDeps, u)).toBe(120 * 60);
     });
 
     it("monthly cap queries: plan info, sends excluding suppressed, voice seconds, once-only notes", async () => {

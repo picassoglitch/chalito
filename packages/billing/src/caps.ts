@@ -1,4 +1,4 @@
-import { HubTierId, type Entitlements, type PlansConfig } from "@chalito/protocol";
+import { hubTierOf, type Entitlements, type PlansConfig } from "@chalito/protocol";
 import { computeEntitlements } from "./entitlements.js";
 
 /**
@@ -48,11 +48,8 @@ export const localMonthKey = (now: number, tz: string) => {
   return `${d.getUTCFullYear()}_${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
-/** The hub tier as the SSO token reported it (users.tier), or null if it isn't one we know. */
-export const hubTierOf = (tier: string | null | undefined) => {
-  const r = HubTierId.safeParse((tier ?? "").toLowerCase());
-  return r.success ? r.data : null;
-};
+/** The hub tier as the SSO token reported it (users.tier); lives next to HubTierId so web reads it the same. */
+export { hubTierOf };
 
 /** Monthly limit for a channel (in sends, or minutes for voice); unset → 0. */
 export const monthlyLimit = (

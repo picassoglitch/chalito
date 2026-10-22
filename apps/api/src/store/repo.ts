@@ -44,7 +44,8 @@ export class PostgresStoreRepo implements StoreRepo {
 
   async tier(owner: string) {
     const [r] = await this.sql<{ tier: string | null }[]>`select tier from chalito.users where id = ${owner}`;
-    return r?.tier ? r.tier.toLowerCase() : null;
+    // #82 — like the plan limits: a padded " VIP " must not drop the skins VIP includes.
+    return r?.tier?.trim().toLowerCase() || null;
   }
 
   async findPurchase(purchaseId: string) {

@@ -1,6 +1,6 @@
 import type { Sql } from "postgres";
 import { computeEntitlements, type HubClient } from "@chalito/billing";
-import { HubTierId, type Entitlements, type PlansConfig } from "@chalito/protocol";
+import { hubTierOf, type Entitlements, type PlansConfig } from "@chalito/protocol";
 
 /**
  * Entitlements for a turn (ADR 0013): the hub tier Chalito has for the user (chalito.users.tier,
@@ -19,7 +19,8 @@ export const hubEntitlements =
   }) =>
   async (owner: string): Promise<Entitlements> => {
     const [u] = await p.sql<{ tier: string | null }[]>`select tier from chalito.users where id = ${owner}`;
-    const tier = HubTierId.safeParse(u?.tier);
+    // users.tier is stored as sent; read it like the notifier's caps, not case-sensitively.
+    const tier = hubTierOf(u?.tier);
     const balance = await p.hub
       .balance(owner)
       .then((b) => ({ remaining: b.remaining, unlimited: b.unlimited }))
@@ -27,7 +28,7 @@ export const hubEntitlements =
     return computeEntitlements(
       {
         uid: owner,
-        hubTier: tier.success ? tier.data : null,
+        hubTier: tier,
         soloTier: null,
         hubTrialActive: false,
         hubBalanceRemaining: Math.max(0, balance.remaining),

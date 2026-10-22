@@ -93,7 +93,7 @@ export const hubRoutes = (deps: Deps) => {
     });
     // The tier may have just changed: a skin only the old plan included comes off. Never blocks sign-in.
     if (deps.store)
-      await dropLapsedSkins(deps.store, payload.user_id, payload.tier.toLowerCase()).catch((err: unknown) =>
+      await dropLapsedSkins(deps.store, payload.user_id, payload.tier.trim().toLowerCase()).catch((err: unknown) =>
         console.error("[sso] lapsed skins", err instanceof Error ? err.message : "error"),
       );
     const customToken = await deps.identity.mintUser(payload.user_id, payload.tier);
