@@ -62,6 +62,8 @@ const CodingAgentManaged = z
     defaultModel: z.string().min(1),
     /** Output tokens per request at most: the gateway clamps the request's own limit to this. */
     maxOutputTokens: z.number().int().positive().max(256_000),
+    /** The model's input window: with the body size, it bounds a request's worst-case input for the hold. */
+    maxInputTokens: z.number().int().positive().max(4_000_000),
   })
   .refine((m) => m.models.includes(m.defaultModel), { message: "defaultModel must be one of models" });
 

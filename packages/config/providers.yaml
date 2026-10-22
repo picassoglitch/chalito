@@ -40,16 +40,35 @@ codingAgents:
     provider: openai
     auth: [api_key, chatgpt_plan]
     managed:
-      { wire: openai_responses, models: [gpt-5.6-luna, gpt-6-luna], defaultModel: gpt-5.6-luna, maxOutputTokens: 32000 }
+      {
+        wire: openai_responses,
+        models: [gpt-5.6-luna, gpt-6-luna],
+        defaultModel: gpt-5.6-luna,
+        maxOutputTokens: 32000,
+        maxInputTokens: 400000,
+      }
   grok-build:
     provider: xai
     auth: [api_key, grok_login]
-    managed: { wire: xai_responses, models: [grok-4.7, grok-4.3], defaultModel: grok-4.3, maxOutputTokens: 32000 }
+    managed:
+      {
+        wire: xai_responses,
+        models: [grok-4.7, grok-4.3],
+        defaultModel: grok-4.3,
+        maxOutputTokens: 32000,
+        maxInputTokens: 256000,
+      }
   gemini-cli:
     provider: google
     auth: [api_key, google_login]
     managed:
-      { wire: gemini, models: [gemini-3.1-flash-lite], defaultModel: gemini-3.1-flash-lite, maxOutputTokens: 32000 }
+      {
+        wire: gemini,
+        models: [gemini-3.1-flash-lite],
+        defaultModel: gemini-3.1-flash-lite,
+        maxOutputTokens: 32000,
+        maxInputTokens: 1048576,
+      }
 
 # Who may use "IA de Chalyb" for coding agents, and how much per owner local day, in billable tokens
 # (1,250,000 at 4 micros each, with the hub's 160% margin, is the owner's "about 5 dollars a day").
