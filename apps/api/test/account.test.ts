@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { deriveDeviceId, generateSigningKeyPair, toB64url } from "@chalito/crypto";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import type { DeviceDoc } from "@chalito/protocol";
@@ -41,7 +41,13 @@ class MemoryAccountStore implements AccountStore {
     return true;
   }
   async due(now: number) {
-    return [...this.rows].filter(([, r]) => r.status === "scheduled" && r.dueAt <= now).map(([o]) => o);
+    return [...this.rows].filter(([, r]) => r.status !== "cancelled" && r.dueAt <= now).map(([o]) => o);
+  }
+  async claim(o: string, now: number) {
+    const r = this.rows.get(o);
+    if (!r || r.status === "cancelled" || r.dueAt > now) return false;
+    r.status = "deleting";
+    return true;
   }
   async export(o: string) {
     return { owner: o, tables: { devices: this.devicesOf(o).map((d) => ({ device_id: d })) } };
@@ -300,5 +306,41 @@ describe("runDueDeletions (audit 2026-10-08)", () => {
     expect(store.deleted).toEqual(["u_a"]);
     expect(store.rows.get("u_b")?.status).toBe("cancelled");
     expect(deletedDevices).toEqual(["dev_1"]);
+  });
+
+  it("the owner cancelling while their own files are being deleted gets 409 too_late, never 'cancelled'", async () => {
+    const s = await setup();
+    await s.enrol();
+    await s.call("POST", "/v1/account/deletion", "phone", { stepUp: await s.stepUp() });
+    s.tick(DELETION_GRACE_MS + 1);
+    let cancelled: { status: number; json: unknown } | null = null;
+    const realDelete = s.files.deleteOwner.bind(s.files);
+    s.files.deleteOwner = async (o: string) => {
+      cancelled = await s.call("DELETE", "/v1/account/deletion", "person");
+      return realDelete(o);
+    };
+    const run = await s.call("POST", "/tasks/account-deletions", "good-oidc", {});
+    expect(run.json).toEqual({ deleted: 1, failed: 0 });
+    expect(cancelled).toMatchObject({ status: 409, json: { error: "too_late" } });
+    expect(s.store.deleted).toEqual([s.o]);
+  });
+
+  it("a run that crashed after the claim is retried by the next run, not lost", async () => {
+    const s = await setup();
+    await s.enrol();
+    await s.call("POST", "/v1/account/deletion", "phone", { stepUp: await s.stepUp() });
+    s.tick(DELETION_GRACE_MS + 1);
+    const realDelete = s.store.deleteAccount.bind(s.store);
+    s.store.deleteAccount = async () => {
+      throw new Error("connection reset");
+    };
+    const err = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    expect((await s.call("POST", "/tasks/account-deletions", "good-oidc", {})).json).toEqual({ deleted: 0, failed: 1 });
+    expect(s.store.rows.get(s.o)?.status).toBe("deleting");
+    expect(await s.call("GET", "/v1/account/deletion", "person")).toMatchObject({ json: { status: "scheduled" } });
+    s.store.deleteAccount = realDelete;
+    expect((await s.call("POST", "/tasks/account-deletions", "good-oidc", {})).json).toEqual({ deleted: 1, failed: 0 });
+    expect(s.store.deleted).toEqual([s.o]);
+    err.mockRestore();
   });
 });

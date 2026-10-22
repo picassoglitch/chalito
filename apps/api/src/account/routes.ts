@@ -31,7 +31,9 @@ export const accountRoutes = (deps: Deps, account: AccountDeps, wa: WebAuthnConf
 
   app.get("/deletion", requireAuth(deps, ["user", "client"]), async (c) => {
     const s = await account.store.status(principal(c).owner);
-    return c.json(s ? { status: s.status, requestedAt: s.requestedAt, dueAt: s.dueAt } : { status: "none" });
+    // "deleting" is internal: to the owner it is still a scheduled deletion (a cancel now answers too_late).
+    const status = s?.status === "deleting" ? "scheduled" : s?.status;
+    return c.json(s ? { status, requestedAt: s.requestedAt, dueAt: s.dueAt } : { status: "none" });
   });
 
   app.post("/deletion", requireAuth(deps, ["client"]), async (c) => {
@@ -47,7 +49,7 @@ export const accountRoutes = (deps: Deps, account: AccountDeps, wa: WebAuthnConf
     });
     if (!step.ok) return fail(step.status, step.error);
     const existing = await account.store.status(p.owner);
-    if (existing?.status === "scheduled") return fail(409, "already_scheduled");
+    if (existing?.status === "scheduled" || existing?.status === "deleting") return fail(409, "already_scheduled");
 
     const now = deps.now();
     // The export first: everything Chalito holds, downloadable until the deletion runs.
@@ -90,7 +92,10 @@ export const accountRoutes = (deps: Deps, account: AccountDeps, wa: WebAuthnConf
   // Cancelling only makes the account safer, so any of the owner's sessions may do it.
   app.delete("/deletion", requireAuth(deps, ["user", "client"]), async (c) => {
     const p = principal(c);
-    if (!(await account.store.cancel(p.owner, deps.now()))) return fail(404, "nothing_scheduled");
+    if (!(await account.store.cancel(p.owner, deps.now()))) {
+      if ((await account.store.status(p.owner))?.status === "deleting") return fail(409, "too_late");
+      return fail(404, "nothing_scheduled");
+    }
     await deps.audit.record({ action: "account.deletion_cancelled", owner: p.owner, actor: p.uid });
     return c.json({ status: "cancelled" });
   });
@@ -126,10 +131,9 @@ export const runDueDeletions = async (deps: Deps, account: AccountDeps) => {
   const failed: string[] = [];
   for (const owner of await account.store.due(deps.now())) {
     try {
-      // Re-read right before the irreversible steps: a cancel that landed after `due` (while an
-      // earlier owner's files were being deleted) must win.
-      const s = await account.store.status(owner);
-      if (s?.status !== "scheduled" || s.dueAt > deps.now()) continue;
+      // Claimed before anything irreversible: a cancel that landed after `due` wins, and one that
+      // lands after the claim is refused (too_late) instead of answering "cancelled".
+      if (!(await account.store.claim(owner, deps.now()))) continue;
       for (const id of await account.store.deviceIds(owner)) await deps.identity.deleteDevice(id);
       const files = await account.files.deleteOwner(owner);
       // Recorded before the rows go (server_audit cascades with the user); the stream keeps it.

@@ -1,7 +1,8 @@
 import type { Sql } from "postgres";
 
 export interface DeletionStatus {
-  status: "scheduled" | "cancelled";
+  /** "deleting": the job claimed it; a cancel is too late. */
+  status: "scheduled" | "cancelled" | "deleting";
   requestedAt: number;
   dueAt: number;
   exportPath: string;
@@ -13,7 +14,10 @@ export interface AccountStore {
   /** "exists" when a deletion is already scheduled (a cancelled one can be scheduled again). */
   schedule(owner: string, by: string, at: number, dueAt: number, exportPath: string): Promise<"scheduled" | "exists">;
   cancel(owner: string, at: number): Promise<boolean>;
+  /** Scheduled (or a crashed run's) owners that are due. */
   due(now: number): Promise<string[]>;
+  /** Atomically moves a due owner to "deleting"; false when it was cancelled meanwhile. */
+  claim(owner: string, now: number): Promise<boolean>;
   export(owner: string): Promise<Record<string, unknown>>;
   deviceIds(owner: string): Promise<string[]>;
   deleteAccount(owner: string): Promise<void>;
@@ -24,7 +28,7 @@ export class PostgresAccountStore implements AccountStore {
 
   async status(owner: string) {
     const [r] = await this.sql<
-      { status: "scheduled" | "cancelled"; requested_at: Date; due_at: Date; export_path: string }[]
+      { status: DeletionStatus["status"]; requested_at: Date; due_at: Date; export_path: string }[]
     >`
       select status, requested_at, due_at, export_path from chalito_private.account_deletions where owner = ${owner}`;
     return r
@@ -59,8 +63,17 @@ export class PostgresAccountStore implements AccountStore {
   async due(now: number) {
     const rows = await this.sql<{ owner: string }[]>`
       select owner from chalito_private.account_deletions
-      where status = 'scheduled' and due_at <= ${new Date(now)} order by due_at limit 50`;
+      where status in ('scheduled', 'deleting') and due_at <= ${new Date(now)} order by due_at limit 50`;
     return rows.map((r) => r.owner);
+  }
+
+  async claim(owner: string, now: number) {
+    // 'deleting' again too: a run that crashed mid-delete is retried, and every step is idempotent.
+    const rows = await this.sql`
+      update chalito_private.account_deletions set status = 'deleting'
+      where owner = ${owner} and status in ('scheduled', 'deleting') and due_at <= ${new Date(now)}
+      returning owner`;
+    return rows.length > 0;
   }
 
   async export(owner: string) {
