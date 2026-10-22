@@ -39,6 +39,7 @@ describe("Terraform wires every required env var by the name the code reads (R-L
     ["notifier", "notifier"],
     ["orchestrator", "orchestrator"],
     ["mcp-gateway", "mcp_gateway"],
+    ["ai-gateway", "ai_gateway"],
   ] as const)
     it(app, () => {
       const b = block(mod);
