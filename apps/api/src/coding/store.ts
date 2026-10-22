@@ -51,7 +51,7 @@ export interface CodingIssueStore {
   ): Promise<number>;
   /** One transaction serialized per device: re-counts live credentials (refusing past `maxLive`), revokes the
    *  session's previous one for this agent, stores the new one and freezes the cap's zone. */
-  issue(c: IssuedCredential, maxLive: number): Promise<"issued" | "limit">;
+  issue(c: IssuedCredential, maxLive: number): Promise<{ result: "issued"; replaced: string[] } | { result: "limit" }>;
   get(owner: string, deviceId: string, id: string): Promise<CredentialView | null>;
   revoke(owner: string, deviceId: string, id: string, reason: CodingRevokeReason, now: number): Promise<boolean>;
   setCap(owner: string, tokens: number, now: number): Promise<void>;
@@ -113,12 +113,12 @@ export class PostgresCodingIssueStore implements CodingIssueStore {
         select count(*)::int as n from chalito_private.coding_credentials
         where owner = ${c.owner} and device_id = ${c.deviceId} and revoked_at is null and expires_at > ${new Date(c.createdAt)}
           and not (sid = ${c.sid} and agent = ${c.agent})`;
-      if ((n?.n ?? 0) >= maxLive) return "limit" as const;
-      // The gateway's sweep settles the replaced credential's hold.
-      await tx`
+      if ((n?.n ?? 0) >= maxLive) return { result: "limit" as const };
+      const replaced = await tx<{ id: string }[]>`
         update chalito_private.coding_credentials set revoked_at = ${new Date(c.createdAt)}, revoked_reason = 'reissued'
         where owner = ${c.owner} and device_id = ${c.deviceId} and sid = ${c.sid} and agent = ${c.agent}
-          and revoked_at is null`;
+          and revoked_at is null
+        returning id`;
       await tx`
         insert into chalito_private.coding_credentials
           (id, token_hash, owner, device_id, sid, agent, provider, models, reservation_id, created_at, expires_at)
@@ -140,8 +140,8 @@ export class PostgresCodingIssueStore implements CodingIssueStore {
         values (${c.owner}, ${plan.tz}, ${plan.next}, ${plan.from === null ? null : new Date(plan.from)})
         on conflict (owner) do update set cap_tz = excluded.cap_tz, cap_tz_next = excluded.cap_tz_next,
           cap_tz_from = excluded.cap_tz_from`;
-      return "issued" as const;
-    })) as "issued" | "limit";
+      return { result: "issued" as const, replaced: replaced.map((r) => r.id) };
+    })) as { result: "issued"; replaced: string[] } | { result: "limit" };
   }
 
   async get(owner: string, deviceId: string, id: string) {

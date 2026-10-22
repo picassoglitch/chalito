@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import postgres from "postgres";
 import { afterAll, describe, expect, it } from "vitest";
-import { HubClient } from "@chalito/billing";
+import { CodingMeter, HubClient, PostgresCodingStore } from "@chalito/billing";
 import { FakeHub } from "@chalito/billing/testing";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 import { loadPrices, loadProviders } from "@chalito/config";
@@ -32,7 +32,9 @@ if (!url) {
   const clock = Date.UTC(2026, 9, 21, 18);
   const hub = new FakeHub(() => clock);
 
-  const setup = async (o: { tier?: string; enabled?: boolean; maxLive?: number; allocation?: number } = {}) => {
+  const setup = async (
+    o: { tier?: string; enabled?: boolean; maxLive?: number; allocation?: number; failIssue?: boolean } = {},
+  ) => {
     const owner = `cd-${randomUUID()}`;
     const agentId = `agent_${randomBytes(6).toString("hex")}`;
     const phoneId = `phone_${randomBytes(6).toString("hex")}`;
@@ -87,8 +89,20 @@ if (!url) {
         codingRoutes(
           deps,
           {
-            store: new PostgresCodingIssueStore(sql),
+            store: o.failIssue
+              ? Object.assign(new PostgresCodingIssueStore(sql), {
+                  issue: async () => Promise.reject(new Error("db down")),
+                })
+              : new PostgresCodingIssueStore(sql),
             hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "t", fetch: hub.fetch }),
+            meter: new CodingMeter({
+              store: new PostgresCodingStore(sql),
+              hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "t", fetch: hub.fetch }),
+              prices: loadPrices(),
+              cfg: providers.codingManaged,
+              reserveBasis: "pre_margin",
+              now: () => clock,
+            }),
             prices: loadPrices(),
             providers,
             maxLivePerDevice: o.maxLive ?? 6,
@@ -110,7 +124,7 @@ if (!url) {
       return {
         status: res.status,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        json: (text ? JSON.parse(text) : null) as Record<string, any>,
+        json: (text.startsWith("{") ? JSON.parse(text) : null) as Record<string, any>,
         headers: res.headers,
       };
     };
@@ -153,13 +167,28 @@ if (!url) {
       expect(s.audit.events.at(-1)).toMatchObject({ action: "coding.credential_issued", target: r.json.id });
     });
 
-    it("re-issuing for the same session revokes the previous token (reissued)", async () => {
+    it("re-issuing for the same session revokes the previous token (reissued) and frees its hold at once", async () => {
       const s = await setup();
       const a = await s.issue();
       const b = await s.issue();
       expect(b.status).toBe(201);
       expect(await row(a.json.id)).toMatchObject({ revoked_reason: "reissued" });
+      expect((await row(a.json.id))!.settled_at).not.toBeNull();
+      expect(hub.reservations.find((x) => x.jobId === `coding:${a.json.id}:0`)!.status).toBe("succeeded");
       expect((await row(b.json.id))!.revoked_at).toBeNull();
+    });
+
+    it("on Pro (one stream) a session can start right after the previous one ended", async () => {
+      const s = await setup();
+      hub.activeStreams = 1;
+      try {
+        const a = await s.issue("one");
+        expect(a.status).toBe(201);
+        expect((await s.call("DELETE", `/v1/coding/credentials/${a.json.id}`, "agent")).status).toBe(200);
+        expect((await s.issue("two")).status).toBe(201);
+      } finally {
+        hub.activeStreams = 5;
+      }
     });
 
     it("never for Claude Code or an unknown agent", async () => {
@@ -231,6 +260,13 @@ if (!url) {
         await admin`select cap_tz, cap_tz_next, cap_tz_from from chalito.coding_settings where owner = ${s.owner}`;
       expect(z).toMatchObject({ cap_tz: "America/Mexico_City", cap_tz_next: "Asia/Tokyo" });
       expect(z!.cap_tz_from.toISOString()).toBe("2026-10-22T06:00:00.000Z");
+    });
+
+    it("a failed write after the hold was admitted gives the hold back", async () => {
+      const s = await setup({ failIssue: true });
+      expect((await s.issue()).status).toBe(500);
+      const mine = hub.reservations.filter((r) => r.user === s.owner);
+      expect(mine.map((r) => r.status)).toEqual(["cancelled"]);
     });
 
     it("out of tokens: 402 out_of_energy, nothing stored", async () => {

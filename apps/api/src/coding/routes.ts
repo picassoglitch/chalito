@@ -14,6 +14,7 @@ import {
   reserveTokens,
   type CapZone,
   type CodingAgent,
+  type CodingMeter,
   type HubClient,
   type ReserveBasis,
 } from "@chalito/billing";
@@ -29,6 +30,8 @@ import type { CodingIssueStore } from "./store.js";
 export interface CodingDeps {
   store: CodingIssueStore;
   hub: Pick<HubClient, "admit" | "settle">;
+  /** Closes a revoked credential's hold right away (the ai-gateway's sweep is the backstop). */
+  meter: Pick<CodingMeter, "settle">;
   prices: PricesConfig;
   providers: ProvidersConfig;
   /** sessions.yaml maxLivePerDevice: live managed credentials per device. */
@@ -54,6 +57,9 @@ const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
 export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig = webauthnConfigFromEnv()) => {
   const app = new Hono<AuthEnv>();
   const cfg = coding.providers.codingManaged;
+  // Frees the hub's stream slot now instead of at the next sweep (Pro has one).
+  const settleNow = (id: string) =>
+    coding.meter.settle(id).catch((err: unknown) => console.error("[coding] settle failed", id, errorMessage(err)));
   const eligible = (tier: string | null) => {
     const t = hubTierOf(tier);
     return t !== null && (cfg.tiers as string[]).includes(t);
@@ -109,27 +115,40 @@ export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig 
       return admit.reason === "no_tokens" ? fail(402, "out_of_energy") : fail(429, "managed_busy", admit.reason);
     const token = newToken();
     const expiresAt = now + cfg.credentialTtlSeconds * 1000;
-    const issued = await coding.store.issue(
-      {
-        id,
-        tokenHash: sha256hex(token),
-        owner: p.owner,
-        deviceId: p.deviceId!,
-        sid: body.data.sid,
-        agent,
-        provider,
-        models: managed.models,
-        reservationId: admit.reservation_id,
-        createdAt: now,
-        expiresAt,
-      },
-      coding.maxLivePerDevice,
-    );
-    if (issued === "limit") {
+    const cancel = (why: string) =>
+      coding.hub
+        .settle({ reservation_id: admit.reservation_id, outcome: "cancelled" })
+        .catch((err: unknown) =>
+          console.error("[coding] hold not cancelled", why, admit.reservation_id, errorMessage(err)),
+        );
+    let issued: Awaited<ReturnType<CodingDeps["store"]["issue"]>>;
+    try {
+      issued = await coding.store.issue(
+        {
+          id,
+          tokenHash: sha256hex(token),
+          owner: p.owner,
+          deviceId: p.deviceId!,
+          sid: body.data.sid,
+          agent,
+          provider,
+          models: managed.models,
+          reservationId: admit.reservation_id,
+          createdAt: now,
+          expiresAt,
+        },
+        coding.maxLivePerDevice,
+      );
+    } catch (err) {
+      await cancel("issue_failed");
+      throw err;
+    }
+    if (issued.result === "limit") {
       // Lost the race for the device's last slot: give the hold back.
-      await coding.hub.settle({ reservation_id: admit.reservation_id, outcome: "cancelled" }).catch(() => undefined);
+      await cancel("session_limit");
       return fail(429, "session_limit");
     }
+    for (const old of issued.replaced) await settleNow(old);
     await deps.audit.record({
       action: "coding.credential_issued",
       owner: p.owner,
@@ -168,6 +187,7 @@ export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig 
     const id = c.req.param("id");
     if (!(await coding.store.get(p.owner, p.deviceId!, id))) return fail(404, "not_found");
     await coding.store.revoke(p.owner, p.deviceId!, id, "session_end", deps.now());
+    await settleNow(id);
     return c.json({ ok: true });
   });
 

@@ -15,7 +15,9 @@ import { googleOidcVerifier } from "./lib/oidc.js";
 import type { AuditSink } from "./deps.js";
 import { openaiRealtime } from "@chalito/adapters/voice";
 import {
+  CodingMeter,
   HubClient,
+  PostgresCodingStore,
   HubStreamUsage,
   PostgresVoiceSessions,
   avatarQuote,
@@ -135,6 +137,14 @@ const backend = (): {
           coding: {
             store: new PostgresCodingIssueStore(sql),
             hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
+            meter: new CodingMeter({
+              store: new PostgresCodingStore(sql),
+              hub: new HubClient({ baseUrl: env("CHALYB_BASE_URL"), token: env("CHALITO_ADMIN_TOKEN") }),
+              prices: loadPrices(),
+              cfg: loadProviders().codingManaged,
+              reserveBasis,
+              now: Date.now,
+            }),
             prices: loadPrices(),
             providers: loadProviders(),
             maxLivePerDevice: loadSessions().session.maxLivePerDevice,
