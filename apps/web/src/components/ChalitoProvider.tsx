@@ -508,9 +508,12 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const client = ctx.client;
     if (!client) return;
-    return client.live.subscribe(() => {
+    // Check once up front too: a revoke seen before this effect subscribed would never notify.
+    const check = () => {
       if (client.live.getSnapshot().status === "revoked") void keysRef.current?.forget().catch(() => undefined);
-    });
+    };
+    check();
+    return client.live.subscribe(check);
   }, [ctx.client]);
 
   return <Chalito.Provider value={ctx}>{children}</Chalito.Provider>;
