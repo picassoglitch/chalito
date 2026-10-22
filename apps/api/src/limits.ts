@@ -117,6 +117,13 @@ export const API_ROUTES: RouteTable = {
   "GET /v1/avatar/rooms/:roomId/cards": user(60, 1, 0),
   "GET /v1/billing/balance": user(60, 1, 0),
 
+  // Managed coding agents (ADR 0030): one credential per session start; the cap raise is passkey-gated.
+  "POST /v1/coding/credentials": user(30, 0.5, 2 * KB),
+  "GET /v1/coding/credentials/:id": user(120, 2, 0),
+  "DELETE /v1/coding/credentials/:id": user(60, 1, 0),
+  "GET /v1/coding/settings": user(60, 1, 0),
+  "POST /v1/coding/settings": user(20, 0.2, 8 * KB),
+
   // Rooms (sealed payloads)
   "POST /v1/rooms": user(20, 0.2, MEDIUM),
   "POST /v1/rooms/:roomId/invites": user(30, 0.5, MEDIUM),
