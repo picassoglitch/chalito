@@ -177,7 +177,10 @@ export const codingRoutes = (deps: Deps, coding: CodingDeps, wa: WebAuthnConfig 
     const p = principal(c);
     const v = await coding.store.get(p.owner, p.deviceId!, c.req.param("id"));
     if (!v) return fail(404, "not_found");
-    const state = v.revokedAt !== null ? "revoked" : v.expiresAt <= deps.now() ? "expired" : "active";
+    const now = deps.now();
+    // Unused past the idle limit counts as expired too, so the agent knows to ask for a new one.
+    const idle = now - v.lastUsedAt > cfg.credentialIdleSeconds * 1000;
+    const state = v.revokedAt !== null ? "revoked" : v.expiresAt <= now || idle ? "expired" : "active";
     return c.json({ id: v.id, state, blockedReason: v.blockedReason, revokedReason: v.revokedReason });
   });
 

@@ -28,6 +28,7 @@ export interface CredentialView {
   sid: string;
   agent: CodingAgent;
   expiresAt: number;
+  lastUsedAt: number;
   revokedAt: number | null;
   revokedReason: CodingRevokeReason | null;
   blockedReason: CodingBlock | null;
@@ -151,12 +152,14 @@ export class PostgresCodingIssueStore implements CodingIssueStore {
         sid: string;
         agent: CodingAgent;
         expires_at: Date;
+        last_used_at: Date;
         revoked_at: Date | null;
         revoked_reason: CodingRevokeReason | null;
         blocked_reason: CodingBlock | null;
       }[]
     >`
-      select id, sid, agent, expires_at, revoked_at, revoked_reason, blocked_reason from chalito_private.coding_credentials
+      select id, sid, agent, expires_at, last_used_at, revoked_at, revoked_reason, blocked_reason
+      from chalito_private.coding_credentials
       where id = ${id} and owner = ${owner} and device_id = ${deviceId}`;
     return r
       ? {
@@ -164,6 +167,7 @@ export class PostgresCodingIssueStore implements CodingIssueStore {
           sid: r.sid,
           agent: r.agent,
           expiresAt: r.expires_at.getTime(),
+          lastUsedAt: r.last_used_at.getTime(),
           revokedAt: ms(r.revoked_at),
           revokedReason: r.revoked_reason,
           blockedReason: r.blocked_reason,

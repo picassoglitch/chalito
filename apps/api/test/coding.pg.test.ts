@@ -303,6 +303,9 @@ if (!url) {
         blockedReason: null,
         revokedReason: null,
       });
+      await admin`update chalito_private.coding_credentials set last_used_at = ${new Date(clock - (providers.codingManaged.credentialIdleSeconds + 1) * 1000)} where id = ${json.id}`;
+      expect((await s.call("GET", `/v1/coding/credentials/${json.id}`, "agent")).json.state).toBe("expired");
+      await admin`update chalito_private.coding_credentials set last_used_at = ${new Date(clock)} where id = ${json.id}`;
       expect((await s.call("DELETE", `/v1/coding/credentials/${json.id}`, "other-agent")).status).toBe(403);
       expect((await row(json.id))!.revoked_at).toBeNull();
       await admin`update chalito_private.coding_credentials set blocked_reason = 'out_of_energy' where id = ${json.id}`;
