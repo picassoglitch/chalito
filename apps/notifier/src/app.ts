@@ -218,6 +218,12 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
   // ---- The database's notify outbox (pg_net poke + scheduled drain) -------------------
   /** One outbox row through the same path as Pub/Sub `notifications`. */
   const handleOutbox = async (row: OutboxMessage): Promise<"ok" | "invalid"> => {
+    // A source this build doesn't know yet (a newer migration, an older notifier): drop quietly, don't alert.
+    const source = (row.message as { item?: { source?: unknown } } | null)?.item?.source;
+    if (typeof source === "string" && !(NotificationSource.options as string[]).includes(source)) {
+      deps.log.info("notifier.outbox_unknown_source", { source });
+      return "ok";
+    }
     const msg = NotifierMessage.safeParse(row.message);
     if (!msg.success || msg.data.uid !== row.owner) return "invalid";
     await handleEvent(deps, msg.data.uid, toEvent(msg.data));

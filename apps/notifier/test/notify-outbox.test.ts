@@ -129,6 +129,16 @@ describe("notify outbox: the scheduled drain", () => {
     expect(cap.push).toHaveLength(0);
   });
 
+  it("a source this build doesn't know is dropped quietly: marked sent, no push, no alert", async () => {
+    const h = user();
+    const m = approvalMessage();
+    h.notifyOutbox.add(UID, { ...m, item: { ...m.item, source: "from_the_future" } });
+    expect(await (await drain(h)).json()).toEqual({ delivered: 1, retried: 0, dead: 0 });
+    expect(h.notifyOutbox.rows[0]!.status).toBe("sent");
+    expect(h.logs.filter((l) => l.msg === "notifier.outbox_dead")).toHaveLength(0);
+    expect(cap.push).toHaveLength(0);
+  });
+
   it("a failing delivery retries with backoff, then goes dead and is alerted after the last attempt", async () => {
     const h = user();
     const id = h.notifyOutbox.add(UID, approvalMessage());

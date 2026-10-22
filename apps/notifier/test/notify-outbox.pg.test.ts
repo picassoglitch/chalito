@@ -50,7 +50,7 @@ if (!url) {
         item: { nid: "apr_a", source: "approval", level: "L3", urgency: "high", deepLink: "/a/apr_a" },
       });
       expect(msgs[1]).toMatchObject({ item: { level: "L4", urgency: "critical" } });
-      expect(r.map((x) => x.source_key)).toEqual([
+      expect(r.slice(0, 4).map((x) => x.source_key)).toEqual([
         `approval:${u}:apr_a`,
         `approval:${u}:apr_b`,
         `approval_end:${u}:apr_a`,
@@ -104,12 +104,14 @@ if (!url) {
         [200, "idle"],
       ] as const)
         await state("s3", sec, st);
-      // s6: the next turn starts in the same millisecond the last one ended; s7: a turn lost for hours.
+      // s6: the next turn starts in the same millisecond the last one ended, and a third turn follows within 10 min (no second push); s7: a turn lost for an hour.
       for (const [sec, st] of [
         [0, "running"],
         [100, "idle"],
         [100, "running"],
-        [200, "idle"],
+        [800, "idle"],
+        [810, "running"],
+        [900, "idle"],
       ] as const)
         await state("s6", sec, st);
       for (const [sec, st] of [
@@ -125,9 +127,26 @@ if (!url) {
         await state("s4", sec, st);
       await state("s5", 0, "idle");
 
-      const r = await rows(u);
+      // s9: the owner prompts again, which acks a waiting "finished" push.
+      for (const [sec, st] of [
+        [0, "running"],
+        [100, "idle"],
+      ] as const)
+        await state("s9", sec, st);
+      await admin`insert into chalito.session_events (owner, sid, eid, device_id, seq, t, type, doc)
+                  values (${u}, 's9', 'prompt1', ${dev}, 99, ${at(120)}, 'message.user', '{}')`;
+
+      const all = await rows(u);
+      const acks = all.filter((x) => x.source_key.startsWith("turn_ack:"));
+      expect(acks).toHaveLength(1);
+      expect(NotifierMessage.parse(acks[0]!.message)).toMatchObject({
+        type: "ack",
+        via: "app",
+        coalesceKey: "turn:s9",
+      });
+      const r = all.filter((x) => x.source_key.startsWith("turn:"));
       const msgs = r.map((x) => NotifierMessage.parse(x.message));
-      expect(msgs).toHaveLength(4);
+      expect(msgs).toHaveLength(5);
       expect(msgs[0]).toMatchObject({
         uid: u,
         item: {
@@ -140,12 +159,13 @@ if (!url) {
         },
       });
       expect(msgs[1]).toMatchObject({ item: { source: "turn_finished", deepLink: "/s/s3" } });
-      expect(r.map((x) => x.source_key)).toEqual([
+      expect(r.slice(0, 4).map((x) => x.source_key)).toEqual([
         `turn:${u}:s1:e4`,
         `turn:${u}:s3:e11`,
         `turn:${u}:s6:e13`,
         `turn:${u}:s6:e15`,
       ]);
+      expect(r[4]!.source_key.startsWith(`turn:${u}:s9:`)).toBe(true);
       // The queued message is what the notifier accepts and sends once.
       expect(r.every((x) => x.status === "pending")).toBe(true);
     });
@@ -186,7 +206,7 @@ if (!url) {
                  values (${u}, 'own_1', 'L1', 'budget', 'normal', ${tx.json({ approvals: 0, questions: 0, messages: 0, mesas: 0 })}, '/', 'cap:voice')`;
       });
       const r = await rows(u);
-      expect(r.map((x) => x.source_key)).toEqual([`notification:${u}:recovery_1`]);
+      expect(r.slice(0, 4).map((x) => x.source_key)).toEqual([`notification:${u}:recovery_1`]);
       expect(NotifierMessage.parse(r[0]!.message)).toMatchObject({ item: { source: "security", level: "L3" } });
     });
 

@@ -348,9 +348,19 @@ describe("turn finished", () => {
     expect(log.some((l) => l.action.type === "suppressed" && l.action.reason === "quiet_hours")).toBe(true);
   });
 
-  it("waits out the desktop-active hold, then pushes", () => {
-    const { sends } = simulate(prefsAll(), [turn(NOON_MX)], { presence: { desktopActive: true } });
-    expect(timeline(sends, NOON_MX)).toEqual([[2, "push"]]);
+  it("waits out the desktop-active hold, then pushes only if the desktop went idle", () => {
+    const left = simulate(
+      prefsAll(),
+      [
+        turn(NOON_MX),
+        { at: NOON_MX + MIN, event: { type: "tick" as const, nid: "zz" }, presence: { desktopActive: false } },
+      ],
+      { presence: { desktopActive: true } },
+    );
+    expect(timeline(left.sends, NOON_MX)).toEqual([[2, "push"]]);
+    // Still at the desktop when the hold ends: dropped, not sent late.
+    const here = simulate(prefsAll(), [turn(NOON_MX)], { presence: { desktopActive: true } });
+    expect(timeline(here.sends, NOON_MX)).toEqual([]);
   });
 
   it("opening it (ack) before the hold ends cancels the push", () => {
