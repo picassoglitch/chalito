@@ -198,10 +198,12 @@ if (!url) {
 
     it("the daily cap: refused once today's spend reaches it, in the owner's local day; tomorrow passes", async () => {
       const { owner, id, meter } = await setup();
-      await admin`insert into chalito.coding_settings (owner, daily_cap_tokens) values (${owner}, 2000)`;
+      const one = Math.ceil((worst * 2.6) / 4);
+      // Room for a request's worst case after one real request, not after two.
+      await admin`insert into chalito.coding_settings (owner, daily_cap_tokens) values (${owner}, ${one + 2_500})`;
       const a = await meter.begin(id, req);
       if (!a.ok) throw new Error("refused");
-      await meter.finish(a.ticket, usage, { outputBytes: 0 }); // 1_976 billable: under 2_000
+      await meter.finish(a.ticket, usage, { outputBytes: 0 }); // 1_976 billable
       const b = await meter.begin(id, req);
       if (!b.ok) throw new Error("refused under the cap");
       await meter.finish(b.ticket, usage, { outputBytes: 0 });
@@ -209,6 +211,54 @@ if (!url) {
       expect((await cred(id)).blocked_reason).toBe("daily_cap");
       // 23:59 in Mexico City is still the same day; 00:01 is the next.
       clock = Date.UTC(2026, 9, 22, 5, 59);
+      expect(await meter.begin(id, req)).toEqual({ ok: false, reason: "daily_cap" });
+      clock = Date.UTC(2026, 9, 22, 6, 1);
+      expect((await meter.begin(id, req)).ok).toBe(true);
+      clock = Date.UTC(2026, 9, 21, 18);
+    });
+
+    it("concurrent requests can't overshoot the cap: in-flight worst cases count against it, across sessions", async () => {
+      const { owner, id, meter } = await setup();
+      const second = `cc_${randomBytes(16).toString("hex")}`;
+      await admin`insert into chalito_private.coding_credentials (id, token_hash, owner, device_id, sid, agent, provider, models, expires_at, created_at)
+        select ${second}, ${createHash("sha256").update(second).digest("hex")}, owner, device_id, 'sid2', agent, provider, models, expires_at, created_at
+        from chalito_private.coding_credentials where id = ${id}`;
+      // Room for one worst case at the hub's margin, not two.
+      const one = Math.ceil((worst * 2.6) / 4);
+      await admin`insert into chalito.coding_settings (owner, daily_cap_tokens) values (${owner}, ${one + 10})`;
+      const results = await Promise.all([meter.begin(id, req), meter.begin(second, req), meter.begin(id, req)]);
+      expect(results.filter((r) => r.ok)).toHaveLength(1);
+      expect(results.filter((r) => !r.ok).map((r) => (r.ok ? null : r.reason))).toEqual(["daily_cap", "daily_cap"]);
+    });
+
+    it("a session has at most maxInflightPerSession requests in flight", async () => {
+      const { id, meter } = await setup();
+      const n = cfg.maxInflightPerSession;
+      const tickets = [];
+      for (let i = 0; i < n; i++) {
+        const r = await meter.begin(id, req);
+        if (!r.ok) throw new Error(`refused at ${i}`);
+        tickets.push(r.ticket);
+      }
+      expect(await meter.begin(id, req)).toEqual({ ok: false, reason: "busy" });
+      await meter.finish(tickets[0]!, usage, { outputBytes: 0 });
+      expect((await meter.begin(id, req)).ok).toBe(true);
+    });
+
+    it("switching time zone mid-day doesn't reset the cap: the frozen zone holds until its day ends", async () => {
+      const { owner, id, meter } = await setup();
+      const cap = Math.ceil((worst * 2.6) / 4) + 2_500;
+      await admin`insert into chalito.coding_settings (owner, daily_cap_tokens, cap_tz) values (${owner}, ${cap}, 'America/Mexico_City')`;
+      const a = await meter.begin(id, req);
+      if (!a.ok) throw new Error("refused");
+      await meter.finish(a.ticket, usage, { outputBytes: 0 });
+      await admin`insert into chalito.coding_spend_daily (owner, day, agent, billable_tokens) values (${owner}, '2026-10-21', 'grok-build', 5000)`;
+      // 23:00 in Mexico City is already tomorrow in Tokyo.
+      clock = Date.UTC(2026, 9, 22, 5);
+      await admin`update chalito.users set tz = 'Asia/Tokyo' where id = ${owner}`;
+      expect(await meter.begin(id, req)).toEqual({ ok: false, reason: "daily_cap" });
+      // The api schedules the new zone for when Mexico City's day ends.
+      await admin`update chalito.coding_settings set cap_tz_next = 'Asia/Tokyo', cap_tz_from = '2026-10-22T06:00:00Z' where owner = ${owner}`;
       expect(await meter.begin(id, req)).toEqual({ ok: false, reason: "daily_cap" });
       clock = Date.UTC(2026, 9, 22, 6, 1);
       expect((await meter.begin(id, req)).ok).toBe(true);

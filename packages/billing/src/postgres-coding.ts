@@ -23,6 +23,7 @@ type Row = {
   hold_gen: number;
   reservation_id: string | null;
   inflight_micros: string;
+  inflight_requests: number;
   requests: number;
   blocked_reason: CodingBlock | null;
   expires_at: Date;
@@ -31,7 +32,7 @@ type Row = {
 };
 
 const COLS = `id, owner, device_id, sid, agent, provider, models, hold_gen, reservation_id, inflight_micros,
-  requests, blocked_reason, expires_at, revoked_at, settled_at`;
+  inflight_requests, requests, blocked_reason, expires_at, revoked_at, settled_at`;
 
 const fromRow = (r: Row): CodingCredential => ({
   id: r.id,
@@ -44,6 +45,7 @@ const fromRow = (r: Row): CodingCredential => ({
   holdGen: r.hold_gen,
   reservationId: r.reservation_id,
   inflightMicros: Number(r.inflight_micros),
+  inflightRequests: r.inflight_requests,
   requests: r.requests,
   blockedReason: r.blocked_reason,
   expiresAt: r.expires_at.getTime(),
@@ -62,19 +64,36 @@ class PgCodingTx implements CodingTx {
   }
 
   async owner(): Promise<CodingOwnerState> {
+    // Serializes the owner's begins (whichever session), so the cap check sees every request in flight.
+    await this.tx`select pg_advisory_xact_lock(hashtextextended(${`coding:${this.c.owner}`}, 0))`;
     const [r] = await this.tx<
-      { tier: string | null; tz: string | null; cap: string | null; revoked: boolean | null }[]
+      {
+        tier: string | null;
+        cap: string | null;
+        cap_tz: string | null;
+        cap_tz_next: string | null;
+        cap_tz_from: Date | null;
+        revoked: boolean | null;
+        inflight: string;
+      }[]
     >`
-      select u.tier, u.tz,
-             (select s.daily_cap_tokens from chalito.coding_settings s where s.owner = u.id) as cap,
-             (select d.revoked from chalito.devices d where d.owner = u.id and d.device_id = ${this.c.deviceId}) as revoked
-      from chalito.users u where u.id = ${this.c.owner}`;
+      select u.tier, s.daily_cap_tokens as cap, s.cap_tz, s.cap_tz_next, s.cap_tz_from,
+             (select d.revoked from chalito.devices d where d.owner = u.id and d.device_id = ${this.c.deviceId}) as revoked,
+             (select coalesce(sum(k.inflight_micros), 0) from chalito_private.coding_credentials k
+              where k.owner = u.id and k.settled_at is null) as inflight
+      from chalito.users u left join chalito.coding_settings s on s.owner = u.id
+      where u.id = ${this.c.owner}`;
     return {
       tier: r?.tier ?? null,
-      tz: r?.tz ?? null,
+      capZone: {
+        tz: r?.cap_tz ?? null,
+        next: r?.cap_tz_next ?? null,
+        from: r?.cap_tz_from ? r.cap_tz_from.getTime() : null,
+      },
       capTokens: r?.cap == null ? null : Number(r.cap),
       // A device row that's gone counts as revoked.
       deviceRevoked: r?.revoked !== false,
+      inflightMicros: Number(r?.inflight ?? 0),
     };
   }
 
@@ -97,7 +116,8 @@ class PgCodingTx implements CodingTx {
     const [r] = await this.tx<Row[]>`
       update chalito_private.coding_credentials set
         hold_gen = ${next.holdGen}, reservation_id = ${next.reservationId},
-        inflight_micros = ${next.inflightMicros}, requests = ${next.requests}, blocked_reason = ${next.blockedReason},
+        inflight_micros = ${next.inflightMicros}, inflight_requests = ${next.inflightRequests},
+        requests = ${next.requests}, blocked_reason = ${next.blockedReason},
         settled_at = ${next.settledAt === null ? null : new Date(next.settledAt)}
         ${p.revoked ? this.tx`, revoked_at = ${new Date(p.revoked.at)}, revoked_reason = ${p.revoked.reason}` : this.tx``}
       where id = ${this.c.id}

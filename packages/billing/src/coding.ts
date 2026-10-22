@@ -2,7 +2,7 @@ import type { CodingManagedConfig, PricesConfig } from "@chalito/config";
 import type { HubAdmitRequest, HubUsageEvent } from "@chalito/protocol";
 import type { z } from "zod";
 import { usageEvent } from "./billable.js";
-import { hubTierOf, localDayKey } from "./caps.js";
+import { hubTierOf, localDayKey, localDayStart } from "./caps.js";
 import { llmCostMicros, type TokenUsage } from "./cost.js";
 import { HubUnavailable, type HubClient } from "./hub.js";
 import { HUB_MARGIN_PERCENT, reserveTokens, type ReserveBasis } from "./reserve-basis.js";
@@ -37,6 +37,7 @@ export interface CodingCredential {
   holdGen: number;
   reservationId: string | null;
   inflightMicros: number;
+  inflightRequests: number;
   requests: number;
   blockedReason: CodingBlock | null;
   expiresAt: number;
@@ -44,17 +45,46 @@ export interface CodingCredential {
   settledAt: number | null;
 }
 
-/** What the meter reads about the owner, under the credential's lock. */
+/** The cap's zone (coding_settings): frozen at first use; a new zone takes over at `from`. */
+export interface CapZone {
+  tz: string | null;
+  next: string | null;
+  from: number | null;
+}
+
+/** What the meter reads about the owner, under the owner's lock (begins are serialized per owner). */
 export interface CodingOwnerState {
   tier: string | null;
-  tz: string | null;
+  capZone: CapZone;
   /** coding_settings.daily_cap_tokens, or null when never set. */
   capTokens: number | null;
   deviceRevoked: boolean;
+  /** Worst cases of every request in flight on the owner's sessions, this one's included. */
+  inflightMicros: number;
 }
 
+/** The zone the cap's day follows at `now`. Never users.tz directly: changing it mid-day mustn't reset the cap. */
+export const capTz = (z: CapZone, now: number): string =>
+  (z.next && z.from !== null && now >= z.from ? z.next : z.tz) ?? DEFAULT_TZ;
+
+/** The next local midnight in `tz` (23- and 25-hour days included). */
+const nextMidnight = (now: number, tz: string) => localDayStart(localDayStart(now, tz) + 36 * 3_600_000, tz);
+
+/** At issue: freezes the zone on first use, or schedules the owner's new zone for when the current day ends. */
+export const planCapZone = (z: CapZone, userTz: string | null, now: number): CapZone => {
+  const current = capTz(z, now);
+  const frozen = z.tz === null ? (userTz ?? DEFAULT_TZ) : current;
+  const want = userTz ?? frozen;
+  if (want === frozen) return { tz: frozen, next: null, from: null };
+  const pending = z.next === want && z.from !== null && now < z.from;
+  return { tz: frozen, next: want, from: pending ? z.from : nextMidnight(now, frozen) };
+};
+
 export type CodingPatch = Partial<
-  Pick<CodingCredential, "holdGen" | "reservationId" | "inflightMicros" | "requests" | "blockedReason" | "settledAt">
+  Pick<
+    CodingCredential,
+    "holdGen" | "reservationId" | "inflightMicros" | "inflightRequests" | "requests" | "blockedReason" | "settledAt"
+  >
 > & { revoked?: { at: number; reason: CodingRevokeReason } };
 
 /** One request's usage, written with the credential's counters in the same transaction. */
@@ -190,14 +220,18 @@ export class CodingMeter {
         return { ok: false as const, reason: "device_revoked" as const };
       }
       if (!this.#eligible(o.tier)) return { ok: false as const, reason: "not_eligible" as const };
+      if (c.inflightRequests >= this.d.cfg.maxInflightPerSession)
+        return { ok: false as const, reason: "busy" as const };
       const block = async (reason: CodingBlock) => {
         if (c.blockedReason !== reason) await tx.update({ blockedReason: reason });
         return { ok: false as const, reason };
       };
-      const day = localDayKey(now, o.tz ?? DEFAULT_TZ);
-      if ((await tx.spentOn(day)) >= codingDailyCap(this.d.cfg, o.tier, o.capTokens)) return block("daily_cap");
-
       const worst = codingWorstCaseMicros(this.d.prices, c.provider, req);
+      // Everything in flight on the owner's sessions counts, so parallel requests can't overshoot the cap.
+      const day = localDayKey(now, capTz(o.capZone, now));
+      const committed = (await tx.spentOn(day)) + estimateBillable(o.inflightMicros + worst, HUB_MARGIN_PERCENT);
+      if (committed > codingDailyCap(this.d.cfg, o.tier, o.capTokens)) return block("daily_cap");
+
       const est = reserveTokens((await tx.unsentMicros()) + c.inflightMicros + worst, this.d.reserveBasis);
       let gen = c.holdGen;
       let admit;
@@ -219,6 +253,7 @@ export class CodingMeter {
         holdGen: gen,
         reservationId: admit.reservation_id,
         inflightMicros: c.inflightMicros + worst,
+        inflightRequests: c.inflightRequests + 1,
         requests: seq,
         blockedReason: null,
       });
@@ -272,12 +307,16 @@ export class CodingMeter {
         amount === 0 ||
         (await tx.record({
           event,
-          day: localDayKey(now, o.tz ?? DEFAULT_TZ),
+          day: localDayKey(now, capTz(o.capZone, now)),
           agent: t.agent,
           costMicros,
           billableTokens: estimateBillable(costMicros, HUB_MARGIN_PERCENT),
         }));
-      if (fresh) await tx.update({ inflightMicros: Math.max(0, c.inflightMicros - t.worstMicros) });
+      if (fresh)
+        await tx.update({
+          inflightMicros: Math.max(0, c.inflightMicros - t.worstMicros),
+          inflightRequests: Math.max(0, c.inflightRequests - 1),
+        });
     });
     return { costMicros };
   }

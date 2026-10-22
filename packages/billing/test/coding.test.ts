@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { loadPrices, loadProviders } from "@chalito/config";
 import { isBillable, usageEvent } from "../src/billable.js";
 import { localDayKey, localDayStart } from "../src/caps.js";
-import { codingDailyCap, codingHoldJobId, codingSourceId, codingWorstCaseMicros } from "../src/coding.js";
+import {
+  capTz,
+  codingDailyCap,
+  codingHoldJobId,
+  codingSourceId,
+  codingWorstCaseMicros,
+  planCapZone,
+} from "../src/coding.js";
 
 const prices = loadPrices();
 const cfg = loadProviders().codingManaged;
@@ -76,5 +83,27 @@ describe("daily cap", () => {
     expect(codingDailyCap(cfg, " VIP ", 99_000_000)).toBe(cfg.dailyCap.ceiling.vip);
     expect(codingDailyCap(cfg, "free", null)).toBe(0);
     expect(codingDailyCap(cfg, null, null)).toBe(0);
+  });
+});
+
+describe("the cap's zone (frozen, so a tz switch can't reset the day)", () => {
+  const now = Date.UTC(2026, 9, 22, 5); // 23:00 Oct 21 in Mexico City, 14:00 Oct 22 in Tokyo
+  it("is frozen on first use", () => {
+    expect(planCapZone({ tz: null, next: null, from: null }, "America/Mexico_City", now)).toEqual({
+      tz: "America/Mexico_City",
+      next: null,
+      from: null,
+    });
+  });
+  it("a new zone waits for the frozen zone's day to end", () => {
+    const z = planCapZone({ tz: "America/Mexico_City", next: null, from: null }, "Asia/Tokyo", now);
+    expect(z).toEqual({ tz: "America/Mexico_City", next: "Asia/Tokyo", from: Date.UTC(2026, 9, 22, 6) });
+    expect(capTz(z, now)).toBe("America/Mexico_City");
+    expect(capTz(z, Date.UTC(2026, 9, 22, 6))).toBe("Asia/Tokyo");
+    // Asking again doesn't push the switch further out; switching back cancels it.
+    expect(planCapZone(z, "Asia/Tokyo", now)).toEqual(z);
+    expect(planCapZone(z, "America/Mexico_City", now)).toEqual({ tz: "America/Mexico_City", next: null, from: null });
+    // Once it took over, it is the frozen zone.
+    expect(planCapZone(z, "Asia/Tokyo", Date.UTC(2026, 9, 23))).toEqual({ tz: "Asia/Tokyo", next: null, from: null });
   });
 });
