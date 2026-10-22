@@ -102,7 +102,7 @@ if (!url) {
     await admin`insert into chalito.users (id, tenant_id, tier, tz) values (${owner}, ${owner}, ${o.tier ?? "Pro"}, 'America/Mexico_City')`;
     await admin`insert into chalito.devices (owner, device_id, role, kind, platform, name, pub_sign, pub_box, fingerprint, enrolled_via, auth_user_id, revoked)
       values (${owner}, ${device}, 'agent', 'desktop', 'linux', 'Desk', 'pk', 'p', 'f', 'pairing', ${randomUUID()}, false)`;
-    const managed = providers.codingAgents[agent].managed!;
+    const managed = providers.codingAgents[agent].managed ?? { models: ["grok-4.3"], defaultModel: "grok-4.3" };
     const provider = { codex: "openai", "grok-build": "xai", "gemini-cli": "google" }[agent];
     const id = `cc_${randomBytes(16).toString("hex")}`;
     const token = `chc_${randomBytes(32).toString("base64url")}`;
@@ -234,7 +234,7 @@ if (!url) {
       const s = await session();
       fakes.behaviour = { kind: "status", status: 500, body: { error: { message: "overloaded" } } };
       const res = await responses(s.token, { model: s.model, stream: true });
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(502);
       await res.text();
       await until(async () => Number((await cred(s.id)).inflight_micros) === 0);
       expect(await events(s.owner)).toHaveLength(0);
@@ -309,6 +309,34 @@ if (!url) {
       expect(await gwApp.retryPending()).toBe(true);
       expect((await events(s.owner))[0]!.event.cost_usd_micros).toBe(usageCost);
       expect(Number((await cred(s.id)).inflight_micros)).toBe(0);
+    });
+
+    it("SIGTERM while a hung-up stream drains: the drain is cut to the shutdown's deadline and billed", async () => {
+      const s = await session();
+      fakes.behaviour = { kind: "stall", chunks: 2 };
+      const ctrl = new AbortController();
+      const res = await responses(s.token, { model: s.model, stream: true }, ctrl.signal);
+      await res.body!.getReader().read();
+      ctrl.abort();
+      await new Promise((r) => setTimeout(r, 100));
+      const t0 = Date.now();
+      await gwApp.shutdown(200);
+      expect(Date.now() - t0).toBeLessThan(2000);
+      await until(async () => (await events(s.owner)).length === 1, 2000);
+    });
+
+    it("a provider error body never reaches the CLI (it can name our org or key); the status does", async () => {
+      const s = await session();
+      fakes.behaviour = {
+        kind: "status",
+        status: 429,
+        body: { error: { message: "Rate limit for org-SECRET42 on key sk-...abcd" } },
+      };
+      const res = await responses(s.token, { model: s.model });
+      expect(res.status).toBe(429);
+      const text = await res.text();
+      expect(text).not.toContain("org-SECRET42");
+      expect(JSON.parse(text)).toMatchObject({ error: { code: "upstream_error" } });
     });
 
     it("SIGTERM mid-stream: the stream is stopped and billed before the process exits", async () => {
@@ -471,24 +499,17 @@ if (!url) {
   });
 
   describe("Grok Build and Gemini CLI", () => {
-    it("Grok: lists the session's models and streams Responses through xAI with our xAI key", async () => {
-      const s = await session("grok-build");
+    it("lists the session's models (Grok Build's start-up call), and a Grok credential is refused while managed Grok is pending", async () => {
+      const s = await session("codex");
       const models = await fetch(`${base}/v1/models`, { headers: { authorization: `Bearer ${s.token}` } });
       expect(((await models.json()) as { data: { id: string }[] }).data.map((m) => m.id)).toEqual(
-        providers.codingAgents["grok-build"].managed!.models,
+        providers.codingAgents.codex.managed!.models,
       );
-      fakes.behaviour = { kind: "responses", usage: { input_tokens: 1000, output_tokens: 100, total_tokens: 1100 } };
-      const res = await responses(s.token, { model: s.model, stream: true });
-      expect(res.status).toBe(200);
-      await res.text();
-      expect(fakes.seen.at(-1)!.path).toBe("/xai/v1/responses");
-      expect(fakes.seen.at(-1)!.headers.authorization).toBe(`Bearer ${XAI_KEY}`);
-      await until(async () => (await events(s.owner)).length === 1);
-      // grok-4.3: 1.25 in, 2.50 out per 1M.
-      expect((await events(s.owner))[0]!.event).toMatchObject({
-        cost_usd_micros: 1_250 + 250,
-        metadata: { agent: "grok-build" },
-      });
+      const g = await session("grok-build");
+      const before = fakes.seen.length;
+      const r = await responses(g.token, { model: "grok-4.3" });
+      expect(r.status).toBe(400);
+      expect(fakes.seen.length).toBe(before);
     });
 
     it("a Codex token can't be used on the Gemini route, nor a Gemini token on Responses", async () => {

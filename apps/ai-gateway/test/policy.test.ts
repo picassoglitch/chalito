@@ -34,6 +34,24 @@ describe("Responses bodies are rebuilt from an allowlist (ADR 0030)", () => {
     expect(sanitizeResponses({ ...codex, tools: "web_search" }, "openai", 1).ok).toBe(false);
   });
 
+  it("media by URL or file id is refused (the provider fetches and bills it beyond the body's bytes); inline data passes", () => {
+    const msg = (part: Record<string, unknown>) => ({ ...codex, input: [{ role: "user", content: [part] }] });
+    for (const part of [
+      { type: "input_image", image_url: "https://x.test/a.png" },
+      { type: "input_image", file_id: "file_1" },
+      { type: "input_file", file_url: "https://x.test/a.pdf" },
+      { type: "input_file", file_id: "file_1" },
+    ])
+      expect(sanitizeResponses(msg(part), "openai", 1), JSON.stringify(part)).toEqual({
+        ok: false,
+        error: "media_url_not_allowed",
+      });
+    expect(
+      sanitizeResponses(msg({ type: "input_image", image_url: "data:image/png;base64,AAAA" }), "openai", 1).ok,
+    ).toBe(true);
+    expect(sanitizeResponses(msg({ type: "input_text", text: "see https://x.test" }), "openai", 1).ok).toBe(true);
+  });
+
   it("stored state and background work are refused", () => {
     for (const extra of [
       { previous_response_id: "r" },
@@ -69,6 +87,21 @@ describe("Gemini bodies are rebuilt from an allowlist, both spellings", () => {
     expect(
       sanitizeGemini(
         { ...base, tools: [{ function_declarations: [] }, { functionDeclarations: [] }] },
+        "generateContent",
+        1,
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("media by URI (fileData, YouTube…) is refused in either spelling; inline data passes", () => {
+    for (const part of [{ fileData: { fileUri: "https://youtu.be/x" } }, { file_data: { file_uri: "gs://b/o" } }])
+      expect(sanitizeGemini({ contents: [{ role: "user", parts: [part] }] }, "generateContent", 1)).toEqual({
+        ok: false,
+        error: "media_url_not_allowed",
+      });
+    expect(
+      sanitizeGemini(
+        { contents: [{ role: "user", parts: [{ inlineData: { mimeType: "image/png", data: "AAAA" } }] }] },
         "generateContent",
         1,
       ).ok,

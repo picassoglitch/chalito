@@ -4,6 +4,22 @@ import type { CodingProvider } from "@chalito/billing";
  *  outside the token usage we meter (hosted tools, stored state, priority tiers, extra candidates) never leaves. */
 export type Sanitized = { ok: true; body: Record<string, unknown> } | { ok: false; error: string };
 
+/** Any media referenced by URL or file id, anywhere in the body: the provider fetches and bills it beyond our bytes. */
+const MEDIA_REF_KEYS = new Set(["image_url", "file_url", "file_id", "fileData", "file_data", "fileUri", "file_uri"]);
+const refersToMedia = (v: unknown, depth = 0): boolean => {
+  if (depth > 64 || !v || typeof v !== "object") return false;
+  if (Array.isArray(v)) return v.some((x) => refersToMedia(x, depth + 1));
+  for (const [k, x] of Object.entries(v)) {
+    if (MEDIA_REF_KEYS.has(k) && !(typeof x === "string" && x.startsWith("data:"))) {
+      // image_url may be { url } in some shapes: only inline data passes.
+      const url = typeof x === "object" && x && "url" in x ? (x as { url: unknown }).url : null;
+      if (!(typeof url === "string" && url.startsWith("data:"))) return true;
+    }
+    if (refersToMedia(x, depth + 1)) return true;
+  }
+  return false;
+};
+
 const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const pick = (b: Record<string, unknown>, keys: readonly string[]) =>
   Object.fromEntries(keys.filter((k) => b[k] !== undefined).map((k) => [k, b[k]]));
@@ -44,6 +60,7 @@ export const sanitizeResponses = (
   if (typeof b.model !== "string") return { ok: false, error: "bad_request" };
   if (RESPONSES_REFUSED.some((k) => b[k] !== undefined && b[k] !== null && b[k] !== false))
     return { ok: false, error: "stored_state_not_allowed" };
+  if (refersToMedia(b.input)) return { ok: false, error: "media_url_not_allowed" };
   const tools = b.tools === undefined ? [] : b.tools;
   if (!Array.isArray(tools) || !tools.every((t) => obj(t) && CLIENT_TOOLS[provider].has(String(t.type))))
     return { ok: false, error: "tool_not_allowed" };
@@ -91,6 +108,8 @@ export const sanitizeGemini = (
     return { ok: true, body: out };
   }
   if (GEMINI_REFUSED.some((k) => b[k] !== undefined)) return { ok: false, error: "stored_state_not_allowed" };
+  if (refersToMedia(b.contents) || refersToMedia(b.systemInstruction) || refersToMedia(b.system_instruction))
+    return { ok: false, error: "media_url_not_allowed" };
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(b)) {
     const to = GEMINI_FIELDS[k];

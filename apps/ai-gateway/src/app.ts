@@ -45,6 +45,13 @@ const WIRE_OF: Record<CodingAgent, Wire> = { codex: "responses", "grok-build": "
 
 const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** Provider keys and ids out of a provider's error text before it's logged. */
+const redactProvider = (t: string) =>
+  t
+    .slice(0, 500)
+    .replace(/\b(sk|xai|AIza)[-_A-Za-z0-9.]{6,}/g, "[key]")
+    .replace(/\b(org|proj)[-_][A-Za-z0-9]{4,}/g, "[$1]");
+
 const REFUSED_MESSAGE = "That tool or stored state isn't available with IA de Chalyb.";
 
 /** An error in the shape the person's CLI reads: OpenAI's for Responses, Google's for Gemini. */
@@ -187,6 +194,20 @@ export const createGateway = (d: GatewayDeps) => {
       return fail(c, p.wire, 502, "upstream_unavailable", "The model provider didn't answer. Try again.");
     }
     const okStatus = upstream.ok;
+    if (!okStatus) {
+      // Provider error bodies can name our org, project or key: logged here (redacted), never passed on.
+      const detail = await upstream.text().catch(() => "");
+      log("upstream.error", { credential: p.cred.id, status: upstream.status, body: redactProvider(detail) });
+      await finish(null, false);
+      const status = upstream.status === 429 ? 429 : upstream.status >= 500 ? 502 : 400;
+      return fail(
+        c,
+        p.wire,
+        status,
+        "upstream_error",
+        "The model provider refused the request. Try again in a moment.",
+      );
+    }
     const reader = p.wire === "gemini" ? geminiReader(p.stream) : responsesReader(p.stream);
     const headers = new Headers({ "cache-control": "no-store" });
     const type = upstream.headers.get("content-type");
@@ -201,9 +222,19 @@ export const createGateway = (d: GatewayDeps) => {
     let draining: Promise<void> | null = null;
     const cut = () => log("upstream.stream_cut", { credential: p.cred.id, seq: ticket?.seq ?? null });
     // The CLI hung up: keep reading (bounded, even if the provider stalls) so its final usage reaches the bill.
-    const drain = (ms: number) =>
-      (draining ??= (async () => {
-        const timer = setTimeout(() => void src.cancel().catch(() => undefined), ms);
+    let deadline = Infinity;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // A later, shorter deadline (SIGTERM) re-arms the timer; the stream is then cut and billed at once.
+    const arm = (ms: number) => {
+      const at = Date.now() + ms;
+      if (at >= deadline) return;
+      deadline = at;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void src.cancel().catch(() => undefined), ms);
+    };
+    const drain = (ms: number) => {
+      arm(ms);
+      return (draining ??= (async () => {
         try {
           for (;;) {
             const { done, value } = await src.read();
@@ -213,10 +244,11 @@ export const createGateway = (d: GatewayDeps) => {
         } catch {
           cut();
         } finally {
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
         }
         await finish(reader, okStatus);
       })());
+    };
     const live = { stop: (ms: number) => drain(ms) };
     if (ticket) streams.add(live);
     const done = async () => {
@@ -261,8 +293,9 @@ export const createGateway = (d: GatewayDeps) => {
     if (cred instanceof Response) return cred;
     const raw = await readJson(c);
     if (!raw || typeof raw.model !== "string") return fail(c, "responses", 400, "bad_request", "A model is required.");
-    const managed = d.providers.codingAgents[cred.agent]!.managed!;
+    const managed = d.providers.codingAgents[cred.agent]?.managed;
     // Rebuilt from an allowlist; Codex never sends an output limit, so one is always set.
+    if (!managed) return fail(c, "responses", 400, "not_managed", "This agent has no IA de Chalyb.");
     const clean = sanitizeResponses(raw, cred.provider, managed.maxOutputTokens);
     if (!clean.ok) return fail(c, "responses", 400, clean.error, REFUSED_MESSAGE);
     const body = clean.body as Record<string, unknown> & { model: string };
@@ -302,7 +335,8 @@ export const createGateway = (d: GatewayDeps) => {
     const [, model, method] = m as unknown as [string, string, string];
     const raw = await readJson(c);
     if (!raw) return fail(c, "gemini", 400, "bad_request", "A JSON body is required.");
-    const managed = d.providers.codingAgents[cred.agent]!.managed!;
+    const managed = d.providers.codingAgents[cred.agent]?.managed;
+    if (!managed) return fail(c, "gemini", 400, "not_managed", "This agent has no IA de Chalyb.");
     const clean = sanitizeGemini(raw, method as "generateContent", managed.maxOutputTokens);
     if (!clean.ok) return fail(c, "gemini", 400, clean.error, REFUSED_MESSAGE);
     const body = clean.body;
