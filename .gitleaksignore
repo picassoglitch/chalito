@@ -6,3 +6,4 @@ f4b7674f2ccc4aaa050d5eb2c5126e4068a076c1:apps/web/src/lib/keys.ts:generic-api-ke
 # Fake test keys in the daemon test ("xai-test-123456", "AIza-test-123456"), not credentials.
 406380a250166d752b2938ad10cf762a8f89594c:apps/agent/test/daemon.test.ts:generic-api-key:563
 406380a250166d752b2938ad10cf762a8f89594c:apps/agent/test/daemon.test.ts:generic-api-key:569
+fe136bd7e97d059edc943a5d0eed369fd7517307:apps/agent/test/rc-transfer.test.ts:aws-access-token:718
