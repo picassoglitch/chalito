@@ -27,6 +27,7 @@ create table chalito_private.coding_credentials (
   reservation_id uuid,
   -- Worst-case provider cost of requests in flight, and what this credential has billed so far.
   inflight_micros bigint not null default 0 check (inflight_micros >= 0),
+  inflight_requests integer not null default 0 check (inflight_requests >= 0),
   spent_micros bigint not null default 0 check (spent_micros >= 0),
   requests integer not null default 0 check (requests >= 0),
   blocked_reason text check (blocked_reason in ('out_of_energy', 'daily_cap')),
@@ -53,7 +54,7 @@ revoke all on chalito_private.coding_credentials from public, anon, authenticate
 grant select, insert, update on chalito_private.coding_credentials to chalito_server;
 create policy server_all on chalito_private.coding_credentials for all to chalito_server using (true) with check (true);
 grant select on chalito_private.coding_credentials to chalito_ai_gateway;
-grant update (hold_gen, reservation_id, inflight_micros, spent_micros, requests, blocked_reason,
+grant update (hold_gen, reservation_id, inflight_micros, inflight_requests, spent_micros, requests, blocked_reason,
               revoked_at, revoked_reason, settled_at)
   on chalito_private.coding_credentials to chalito_ai_gateway;
 create policy ai_gateway_read on chalito_private.coding_credentials for select to chalito_ai_gateway using (true);
@@ -63,8 +64,14 @@ create policy ai_gateway_meter on chalito_private.coding_credentials for update 
 -- ---------------------------------------------------------------- settings
 create table chalito.coding_settings (
   owner chalito.id primary key references chalito.users (id) on delete cascade,
-  daily_cap_tokens bigint not null check (daily_cap_tokens between 0 and 100000000000),
-  updated_at timestamptz not null default now()
+  -- Null: providers.yaml codingManaged.dailyCap.default.
+  daily_cap_tokens bigint check (daily_cap_tokens between 0 and 100000000000),
+  -- The cap's day follows this zone, frozen at first use; a users.tz change takes over when that day ends.
+  cap_tz text check (cap_tz is null or char_length(cap_tz) between 1 and 64),
+  cap_tz_next text check (cap_tz_next is null or char_length(cap_tz_next) between 1 and 64),
+  cap_tz_from timestamptz,
+  updated_at timestamptz not null default now(),
+  check ((cap_tz_next is null) = (cap_tz_from is null))
 );
 alter table chalito.coding_settings enable row level security;
 revoke all on chalito.coding_settings from public, anon, authenticated, service_role;

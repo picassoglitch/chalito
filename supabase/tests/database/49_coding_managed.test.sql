@@ -2,7 +2,7 @@
 -- and chalito_ai_gateway writes only metering and coding usage events.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(34);
+select plan(35);
 grant usage on schema extensions to chalito_server, chalito_ai_gateway;
 
 create function pg_temp.as_device(owner text, device text, chalito_role text) returns void language plpgsql as $$
@@ -55,6 +55,8 @@ select lives_ok($$insert into chalito.coding_settings (owner, daily_cap_tokens) 
   'the api stores the owner''s cap');
 select throws_ok($$insert into chalito.coding_settings (owner, daily_cap_tokens) values ('cm-b', -1)$$,
   '23514', null, 'a cap is never negative');
+select throws_ok($$insert into chalito.coding_settings (owner, cap_tz_next) values ('cm-b', 'Asia/Tokyo')$$,
+  '23514', null, 'a pending cap zone always says when it starts');
 select throws_ok($$insert into chalito.coding_spend_daily (owner, day, agent) values ('cm-a', current_date, 'codex')$$,
   '42501', null, 'the api never writes spend (only the gateway meters)');
 
@@ -62,7 +64,7 @@ select throws_ok($$insert into chalito.coding_spend_daily (owner, day, agent) va
 set local role chalito_ai_gateway;
 select is((select count(*)::int from chalito_private.coding_credentials), 3, 'the gateway reads credentials');
 select lives_ok($$update chalito_private.coding_credentials
-  set inflight_micros = 10, spent_micros = 20, requests = 1, hold_gen = 1, blocked_reason = 'daily_cap',
+  set inflight_micros = 10, inflight_requests = 1, spent_micros = 20, requests = 1, hold_gen = 1, blocked_reason = 'daily_cap',
       reservation_id = gen_random_uuid(), settled_at = now()
   where id = 'cc_00000000000000000000000000000006'$$, 'the gateway updates the metering columns');
 select throws_ok($$update chalito_private.coding_credentials set models = '{grok-4.7}'$$,
