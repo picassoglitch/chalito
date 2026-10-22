@@ -17,6 +17,7 @@ use hittest::{Activity, ClickThrough, Rect};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -225,18 +226,61 @@ fn spawn_computer_poll(app: AppHandle, ui: SharedUi, stop_item: Option<MenuItem<
 #[derive(Default)]
 struct AutostartItem(Mutex<Option<CheckMenuItem<tauri::Wry>>>);
 
+/// Linux: the XDG autostart folder and the plugin's old one (autostart::xdg).
+#[cfg(target_os = "linux")]
+fn xdg_dirs(app: &AppHandle) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let dir = autostart::xdg::dir(&home, std::env::var_os("XDG_CONFIG_HOME").as_deref());
+    Ok((dir, autostart::xdg::legacy_dir(&home)))
+}
+
+/// Linux: the program this copy registers.
+#[cfg(target_os = "linux")]
+fn xdg_target() -> Result<std::path::PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    Ok(autostart::launch_target(std::env::var_os("APPIMAGE"), std::env::var_os("APPDIR"), exe))
+}
+
+fn os_autostart_set(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (dir, legacy) = xdg_dirs(app)?;
+        let r = if enabled {
+            autostart::xdg::enable(&dir, &xdg_target()?)
+        } else {
+            autostart::xdg::disable(&dir, &legacy)
+        };
+        r.map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let launch = app.autolaunch();
+        let r = if enabled { launch.enable() } else { launch.disable() };
+        r.map_err(|e| e.to_string())
+    }
+}
+
+fn os_autostart_enabled(app: &AppHandle) -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        autostart::xdg::is_enabled(&xdg_dirs(app)?.0).map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    }
+}
+
 /// Turns start-with-the-computer on or off now, saves the person's choice and ticks the tray item.
 /// Returns what the OS has afterwards.
 fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<bool, String> {
-    let launch = app.autolaunch();
-    let r = if enabled { launch.enable() } else { launch.disable() };
-    r.map_err(|e| e.to_string())?;
+    os_autostart_set(app, enabled)?;
     if let Ok(dir) = app.path().app_config_dir() {
         if let Err(e) = autostart::write(&dir, autostart::Pref { enabled }) {
             eprintln!("autostart: saving the choice failed: {e}");
         }
     }
-    let now = launch.is_enabled().unwrap_or(enabled);
+    let now = os_autostart_enabled(app).unwrap_or(enabled);
     if let Some(slot) = app.try_state::<AutostartItem>() {
         if let Some(item) = slot.0.lock().ok().and_then(|g| g.clone()) {
             let _ = item.set_checked(now);
@@ -248,7 +292,7 @@ fn apply_autostart(app: &AppHandle, enabled: bool) -> Result<bool, String> {
 /// Whether Chalito starts with the computer (the panel's switch).
 #[tauri::command]
 fn autostart_status(app: AppHandle) -> bool {
-    app.autolaunch().is_enabled().unwrap_or(false)
+    os_autostart_enabled(&app).unwrap_or(false)
 }
 
 /// Panel only: the person's switch.
@@ -285,7 +329,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
         autostart::TRAY_ITEM,
         autostart::tray_label(&lang),
         true,
-        app.autolaunch().is_enabled().unwrap_or(false),
+        os_autostart_enabled(app).unwrap_or(false),
         None::<&str>,
     )?;
     if let Some(slot) = app.try_state::<AutostartItem>() {
@@ -298,7 +342,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
         match event.id().as_ref() {
             computer::TRAY_STOP => computer_kill(app, "tray"),
             autostart::TRAY_ITEM => {
-                let on = app.autolaunch().is_enabled().unwrap_or(false);
+                let on = os_autostart_enabled(app).unwrap_or(false);
                 if let Err(e) = apply_autostart(app, !on) {
                     eprintln!("autostart: {e}");
                 }
@@ -406,7 +450,6 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_dialog::init())
         // Computer control's kill switch. The shortcut is registered only while it's enabled.
         .plugin(
@@ -421,6 +464,10 @@ pub fn run() {
         .manage(state.clone())
         .manage(computer_ui.clone())
         .manage(AutostartItem::default());
+    // Linux writes its own XDG entry (autostart::xdg); the plugin would use ~/.config regardless.
+    #[cfg(not(target_os = "linux"))]
+    let builder =
+        builder.plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None));
     // The updater exists only in release builds: CI adds `plugins.updater` (public key +
     // endpoint) through the release config overlay. Dev and plain debug builds have no updater.
     let context = tauri::generate_context!();
@@ -470,10 +517,24 @@ pub fn run() {
             // Start with the computer: on by default the first time; the person's choice after that.
             // Release builds only: a dev build must not register itself to start at login.
             if let (false, Ok(dir)) = (cfg!(debug_assertions), app.path().app_config_dir()) {
-                if let Some(on) = autostart::on_launch(autostart::read(&dir)) {
-                    if let Err(e) = apply_autostart(app.handle(), on) {
-                        eprintln!("autostart: {e}");
+                match autostart::on_launch(autostart::read(&dir)) {
+                    autostart::Launch::Enable => {
+                        if let Err(e) = apply_autostart(app.handle(), true) {
+                            eprintln!("autostart: {e}");
+                        }
                     }
+                    #[cfg(target_os = "linux")]
+                    autostart::Launch::Repair => {
+                        let r = xdg_dirs(app.handle()).and_then(|(d, l)| {
+                            autostart::xdg::repair(&d, &l, &xdg_target()?).map_err(|e| e.to_string())
+                        });
+                        match r {
+                            Ok(true) => eprintln!("autostart: entry repaired"),
+                            Ok(false) => {}
+                            Err(e) => eprintln!("autostart: {e}"),
+                        }
+                    }
+                    _ => {}
                 }
             }
             // The bundled agent runs while the app is open (release builds; none in dev).
