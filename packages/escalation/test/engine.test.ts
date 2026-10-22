@@ -323,3 +323,52 @@ describe("stale and unknown ticks", () => {
     ).toEqual([]);
   });
 });
+
+describe("turn finished", () => {
+  const turn = (at: number, over = {}) =>
+    notify(at, {
+      source: "turn_finished",
+      urgency: "low",
+      level: "L1",
+      counts: { approvals: 0, questions: 0, messages: 1, mesas: 0 },
+      coalesceKey: "turn:s1",
+      ...over,
+    });
+  const night = Date.UTC(2026, 9, 6, 5, 30); // 23:30 in Mexico City
+
+  it("is one push, even with WhatsApp, calls and SMS all enabled", () => {
+    const { sends, history } = simulate(prefsAll({ sms: { enabled: true } }), [turn(NOON_MX)]);
+    expect(timeline(sends, NOON_MX)).toEqual([[0, "push"]]);
+    expect(history.ladders[0]!.state).toBe("done");
+  });
+
+  it("is dropped in quiet hours instead of arriving as stale news at 07:00", () => {
+    const { sends, log } = simulate(prefsAll(), [turn(night)]);
+    expect(timeline(sends, night)).toEqual([]);
+    expect(log.some((l) => l.action.type === "suppressed" && l.action.reason === "quiet_hours")).toBe(true);
+  });
+
+  it("waits out the desktop-active hold, then pushes only if the desktop went idle", () => {
+    const left = simulate(
+      prefsAll(),
+      [
+        turn(NOON_MX),
+        { at: NOON_MX + MIN, event: { type: "tick" as const, nid: "zz" }, presence: { desktopActive: false } },
+      ],
+      { presence: { desktopActive: true } },
+    );
+    expect(timeline(left.sends, NOON_MX)).toEqual([[2, "push"]]);
+    // Still at the desktop when the hold ends: dropped, not sent late.
+    const here = simulate(prefsAll(), [turn(NOON_MX)], { presence: { desktopActive: true } });
+    expect(timeline(here.sends, NOON_MX)).toEqual([]);
+  });
+
+  it("opening it (ack) before the hold ends cancels the push", () => {
+    const { sends } = simulate(
+      prefsAll(),
+      [turn(NOON_MX), { at: NOON_MX + MIN, event: { type: "ack" as const, via: "app" as const, nid: "n1" } }],
+      { presence: { desktopActive: true } },
+    );
+    expect(timeline(sends, NOON_MX)).toEqual([]);
+  });
+});

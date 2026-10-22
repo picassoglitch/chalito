@@ -15,6 +15,7 @@ import {
 export const NotificationSource = z.enum([
   "approval",
   "session_question",
+  "turn_finished",
   "mesa_starting",
   "room_event",
   "unanswered_messages",

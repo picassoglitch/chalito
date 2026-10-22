@@ -113,6 +113,38 @@ describe("OIDC on Pub/Sub push and Cloud Tasks", () => {
   });
 });
 
+describe("turn finished, end to end", () => {
+  const turn = item({
+    nid: "t_s1_e9",
+    source: "turn_finished",
+    urgency: "low",
+    level: "L1",
+    counts: { approvals: 0, questions: 0, messages: 1, mesas: 0 },
+    coalesceKey: "turn:s1",
+  });
+
+  it("is one metadata-only push to the session's link; no WhatsApp, call or tick follows", async () => {
+    const h = withUser();
+    expect((await h.publish({ v: 1, type: "notify", uid: UID, item: turn })).status).toBe(204);
+    expect(h.pushed).toHaveLength(2);
+    expect(h.pushed[0]).toMatchObject({ nid: "t_s1_e9", source: "turn_finished", deepLink: "/s/s1", level: "L1" });
+    await drive(h);
+    expect(cap.whatsapp.length + cap.calls.length + cap.sms.length + cap.tasks.length).toBe(0);
+    expect(h.store.notifications.get(`${UID}/t_s1_e9`)).toMatchObject({ source: "turn_finished", level: "L1" });
+  });
+
+  it("at night nothing is sent to the phone, now or at 07:00", async () => {
+    const h = withUser();
+    h.setClock(Date.UTC(2026, 9, 6, 5, 30));
+    expect(
+      (await h.publish({ v: 1, type: "notify", uid: UID, item: { ...turn, createdAt: h.deps.now() } })).status,
+    ).toBe(204);
+    await drive(h, Date.UTC(2026, 9, 7, 5, 30));
+    expect(cap.push).toHaveLength(0);
+    expect(cap.whatsapp.length + cap.calls.length).toBe(0);
+  });
+});
+
 describe("a full L4 ladder, end to end", () => {
   it("push → re-push → WhatsApp → call → SMS, each through its provider", async () => {
     const h = withUser();

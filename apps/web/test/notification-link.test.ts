@@ -7,6 +7,8 @@ describe("notification links (/n/<nid>)", () => {
     expect(notificationTarget("/a/apr_1", "en")).toBe("/en/a/apr_1");
     expect(notificationTarget("/m/m1", "es")).toBe("/m/m1");
     expect(notificationTarget("/r/r1", "en")).toBe("/en/r/r1");
+    expect(notificationTarget("/s/ses_1", "es")).toBe("/sesiones/ses_1");
+    expect(notificationTarget("/s/ses_1", "en")).toBe("/en/sesiones/ses_1");
     expect(notificationTarget("/creditos", "es")).toBe("/creditos");
     for (const bad of ["https://evil.com/a/x", "//evil.com", "/ajustes", "/a/../dispositivos", "/a/x?y=1", ""])
       expect(notificationTarget(bad, "es"), bad).toBeNull();

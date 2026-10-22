@@ -1,13 +1,15 @@
 import { safeNextPath } from "@chalito/ui";
 
-/** Where a notification may send someone: an approval, a mesa, a room, or credits. Nothing else. */
-const TARGET = /^\/(a|m|r)\/[A-Za-z0-9_-]{1,128}$|^\/creditos$/;
+/** Where a notification may send someone: an approval, a mesa, a room, a session, or credits. Nothing else. */
+const TARGET = /^\/(a|m|r|s)\/[A-Za-z0-9_-]{1,128}$|^\/creditos$/;
 
 /** The notification's deepLink, localized, or null when it isn't one of ours. */
 export const notificationTarget = (deepLink: string, locale: "es" | "en"): string | null => {
   const p = safeNextPath(deepLink);
   if (!TARGET.test(p)) return null;
-  return locale === "en" ? `/en${p}` : p;
+  // The notifier says "/s/<sid>"; the session page here is /sesiones/<sid>.
+  const path = p.startsWith("/s/") ? `/sesiones/${p.slice(3)}` : p;
+  return locale === "en" ? `/en${path}` : path;
 };
 
 /**

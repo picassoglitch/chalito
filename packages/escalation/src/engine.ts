@@ -235,6 +235,15 @@ class Ctx {
       payload: buildPushPayload(item, level),
     });
 
+    // Still at the desktop once the hold ends: they saw the turn finish, so "finished" is dropped.
+    if (
+      item.source === "turn_finished" &&
+      this.presence.desktopActive &&
+      this.now >= l.openedAt + this.config.presenceHoldMs
+    ) {
+      this.actions.push({ type: "suppressed", nid: item.nid, channel: rung.channel, reason: "presence_hold" });
+      return null;
+    }
     if (PHONE.has(rung.channel) && this.presence.desktopActive && this.now < l.openedAt + this.config.presenceHoldMs) {
       this.actions.push({ type: "suppressed", nid: item.nid, channel: rung.channel, reason: "presence_hold" });
       return l.openedAt + this.config.presenceHoldMs;
@@ -243,6 +252,8 @@ class Ctx {
       const end = quietHoursEnd(this.now, this.prefs.tz, this.#quiet!);
       this.actions.push({ type: "suppressed", nid: item.nid, channel: rung.channel, reason: "quiet_hours" });
       // An approval can't wait for the morning: skip the rung (the expiry notice still comes).
+      // Neither does "your turn finished": at 07:00 it is stale news, so it is dropped, not held.
+      if (item.source === "turn_finished") return null;
       return item.approvalExpiresAt !== undefined && end >= item.approvalExpiresAt ? null : end;
     }
     const blocked = this.#unavailable(rung.channel);

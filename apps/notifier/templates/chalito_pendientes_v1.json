@@ -34,6 +34,7 @@
       "es": {
         "approval": "aprobaciones",
         "session_question": "preguntas de agentes",
+        "turn_finished": "turnos terminados",
         "mesa_starting": "Mesa por empezar",
         "room_event": "salas",
         "unanswered_messages": "mensajes sin contestar",
@@ -46,6 +47,7 @@
       "en": {
         "approval": "approvals",
         "session_question": "agent questions",
+        "turn_finished": "finished turns",
         "mesa_starting": "Mesa starting",
         "room_event": "rooms",
         "unanswered_messages": "unanswered messages",
