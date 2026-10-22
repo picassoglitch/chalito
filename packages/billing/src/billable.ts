@@ -21,7 +21,9 @@ export type UsageOrigin =
   | "store.purchase"
   /** The user's coding agents, driven on their own machine and account. */
   | "session.claude-code"
-  | "session.codex";
+  | "session.codex"
+  /** A coding agent on Chalyb's keys through apps/ai-gateway (ADR 0030): billed like any managed work. */
+  | "session.managed";
 
 export interface UsageContext {
   owner: string;
@@ -30,7 +32,7 @@ export interface UsageContext {
 }
 
 export const isBillable = (ctx: UsageContext): boolean =>
-  ctx.billingMode === "managed" && !ctx.origin.startsWith("session.");
+  ctx.billingMode === "managed" && (!ctx.origin.startsWith("session.") || ctx.origin === "session.managed");
 
 export interface UsageInput {
   kind: z.infer<typeof HubUsageKind>;
@@ -57,7 +59,7 @@ export const usageEvent = (ctx: UsageContext, u: UsageInput): HubUsageEvent | nu
     occurred_at: new Date(u.occurredAt).toISOString(),
     ...(u.reservationId ? { reservation_id: u.reservationId } : {}),
     metadata: {
-      purpose: ctx.origin.startsWith("companion") || ctx.origin.startsWith("mesa") ? "work" : "comms",
+      purpose: /^(companion|mesa|session)\./.test(ctx.origin) ? "work" : "comms",
       ...u.metadata,
     },
   });
