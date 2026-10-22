@@ -25,6 +25,7 @@ locals {
     "chalito-avatar-jobs"  = "Chalito avatar jobs: upload validation, conversion and custom companions (Gemini key, database)"
     "chalito-pubsub-push"  = "Identity Pub/Sub uses to push to Chalito services"
     "chalito-avatar-trig"  = "Chalito avatar trigger: Eventarc + the Workflow that starts avatar-jobs"
+    "chalito-ai-gateway"   = "Chalito AI gateway: IA de Chalyb for coding agents, our provider keys, metering only"
   }
 
   topics = ["agent-events", "notifications", "room-events", "billing-events", "usage", "audit"]
@@ -51,6 +52,7 @@ locals {
   orchestrator = local.sa["chalito-orchestrator"]
   notifier     = local.sa["chalito-notifier"]
   mcp          = local.sa["chalito-mcp-gateway"]
+  ai_gateway   = local.sa["chalito-ai-gateway"]
   push         = local.sa["chalito-pubsub-push"]
   # The `api` service account comes from Chalyb's engine module (ADR 0016); empty until it exists.
   api_list  = var.api_service_account == "" ? [] : [var.api_service_account]
@@ -160,8 +162,13 @@ module "secrets" {
     # R-L12: everything the services require, by the names the code reads (see secret_env below).
     # chalito-database-url is not here: Chalyb's engine module creates it (hub_secret_read below).
     "chalito-gateway-database-url" = [local.mcp]
-    "chalito-gateway-token"        = concat([local.mcp], local.api_list)
-    "chalito-supabase-secret-key"  = [local.orchestrator]
+    # ADR 0030: the ai-gateway's login (chalito_ai_gateway) and keys from provider projects used only for it.
+    "chalito-ai-gateway-database-url" = [local.ai_gateway]
+    "chalito-coding-openai-key"       = [local.ai_gateway]
+    "chalito-coding-xai-key"          = [local.ai_gateway]
+    "chalito-coding-gemini-key"       = [local.ai_gateway]
+    "chalito-gateway-token"           = concat([local.mcp], local.api_list)
+    "chalito-supabase-secret-key"     = [local.orchestrator]
     # The api's desktop-voice token key (VOICE_TOKEN_SECRET); 32 random bytes.
     "chalito-voice-token-secret"    = local.api_list
     "chalito-vapid-private-key"     = [local.notifier]
@@ -262,7 +269,7 @@ locals {
   hub_secret_readers = var.api_service_account == "" ? {} : merge(
     # The avatar job records creations and their usage events (apps/avatar-jobs src/creations.ts).
     { "chalito-database-url" = [local.orchestrator, local.notifier, local.avatar_sa] },
-    var.hub_admin_token_secret == "" ? {} : { (var.hub_admin_token_secret) = [local.orchestrator, local.notifier] },
+    var.hub_admin_token_secret == "" ? {} : { (var.hub_admin_token_secret) = [local.orchestrator, local.notifier, local.ai_gateway] },
   )
   hub_secret_bindings = merge([
     for id, members in local.hub_secret_readers : { for m in members : "${id}/${m}" => { id = id, member = m } }
@@ -345,6 +352,32 @@ module "mcp_gateway" {
   }
 
   depends_on = [module.secrets, module.service_accounts]
+}
+
+# ADR 0030: public by design (the person's coding CLI calls it); every request needs a live,
+# hashed session token. CPU stays on so a stream's usage is still metered after the CLI hangs up.
+module "ai_gateway" {
+  source          = "../../modules/cloud_run_service"
+  project_id      = var.project_id
+  region          = var.region
+  name            = "chalito-ai-gateway"
+  service_account = local.ai_gateway
+  public          = true
+  cpu_always      = true
+  labels          = local.labels
+  env = {
+    CHALYB_BASE_URL = "https://www.chalyb.com"
+    # The kill switch: off until the owner flips var.coding_managed_enabled.
+    CODING_MANAGED_ENABLED = var.coding_managed_enabled ? "1" : "0"
+  }
+  secret_env = merge({
+    DATABASE_URL          = "chalito-ai-gateway-database-url"
+    CODING_OPENAI_API_KEY = "chalito-coding-openai-key"
+    CODING_XAI_API_KEY    = "chalito-coding-xai-key"
+    CODING_GEMINI_API_KEY = "chalito-coding-gemini-key"
+  }, local.hub_bearer)
+
+  depends_on = [module.secrets, module.service_accounts, google_secret_manager_secret_iam_member.hub_secret_read]
 }
 
 # ---- Push subscriptions ---------------------------------------------------------

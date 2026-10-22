@@ -102,3 +102,9 @@ variable "mcp_resource" {
   type        = string
   default     = ""
 }
+
+variable "coding_managed_enabled" {
+  description = "ADR 0030 kill switch for IA de Chalyb on the ai-gateway (the api has its own CODING_MANAGED_ENABLED)."
+  type        = bool
+  default     = false
+}

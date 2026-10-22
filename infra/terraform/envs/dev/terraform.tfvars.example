@@ -40,3 +40,5 @@ realtime_sip_uri = "" # sip:<proj>@sip.api.openai.com;transport=tls;secure=true
 web_origin   = "" # https://www.chalyb.com
 app_url      = "" # https://www.chalyb.com/app/chalito
 mcp_resource = "" # the mcp-gateway's URL + /mcp when it has no mcp.<domain> host
+# ADR 0030 kill switch for IA de Chalyb on chalito-ai-gateway (docs/OPS.md §13): true only on the owner's go.
+coding_managed_enabled = false
