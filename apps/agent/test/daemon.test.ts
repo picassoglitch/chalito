@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "@chalito/adapters/codex";
@@ -514,6 +514,18 @@ describe("chalito run (daemon)", () => {
       const d = await runDaemon(s.deps);
       expect(existsSync(join(s.dir, "agent.sock"))).toBe(false);
       await d.stop();
+    });
+
+    it("serves `chalito code`'s socket without the app's secret (0600), and removes it on stop (ADR 0031)", async () => {
+      const s = await setup();
+      const d = await runDaemon(s.deps);
+      const sock = join(s.dir, "code.sock");
+      expect(statSync(sock).mode & 0o777).toBe(0o600);
+      const r = (await ipcCall(sock, { id: 1, method: "apps" })) as IpcReply;
+      expect(r).toMatchObject({ ok: true, result: { apps: expect.any(Array), workspaces: expect.any(Array) } });
+      expect(await ipcCall(sock, { id: 2, method: "devMode" })).toMatchObject({ ok: false, error: "unknown_method" });
+      await d.stop();
+      expect(existsSync(sock)).toBe(false);
     });
 
     it("ping, policy view and Developer-mode state; the socket goes away on stop", async () => {

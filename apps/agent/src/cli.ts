@@ -1,5 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { redactError } from "./redact.js";
+import { runCode } from "./code/cli.js";
+import { codePath } from "./code/server.js";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +77,8 @@ export interface CliIo {
   /** Injected in tests: how OS-auth helpers (/usr/bin/pkexec, osascript) are checked for root ownership. */
   osStat?: StatFn;
   hostname?: string;
+  /** `chalito code`'s folder (default: the process's). */
+  cwd?: string;
 }
 
 const SCREEN_USAGE = `  screen enable [view|control]         remote screen: let your trusted browser see (or also control)
@@ -89,6 +93,8 @@ const TERMINAL_USAGE = `  terminal enable|disable|status       remote terminal: 
 const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
 
   run                                  run the agent (the OS service does this)
+  code <claude|codex|gemini|grok|app> [--workspace <label>] [--mode default|plan|acceptEdits] [prompt]
+                                       a session here that is also live on your phone (Ctrl-C stops)
   pair [--laptop]                      pair this computer with your phone
   status                               show pairing, policy, Developer mode and keys
   devmode on <toggle>                  turn a Developer-mode toggle on (local only, 3 confirmations)
@@ -528,6 +534,25 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     });
     return 0;
   }
+
+  // ADR 0031 §1: talks to the running agent over code.sock; needs no secrets.
+  if (cmd === "code")
+    return runCode(
+      {
+        input: io.tty.input,
+        out: io.out,
+        err: io.err,
+        env: io.env,
+        cwd: io.cwd ?? process.cwd(),
+        onSigint: (fn) => {
+          process.on("SIGINT", fn);
+          return () => void process.off("SIGINT", fn);
+        },
+      },
+      codePath(dir, io.platform),
+      argv.slice(argv.indexOf("code") + 1),
+      locale,
+    );
 
   // Everything that changes trust, keys, policy, Developer mode or the service needs a human
   // at a real terminal, and never runs from inside an agent session (CHALITO_SESSION is set

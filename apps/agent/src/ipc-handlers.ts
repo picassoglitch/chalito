@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AppId,
+  RemotePermissionMode,
   DevModeToggle,
   EnableableDevModeToggle,
   PROVIDER_APP,
@@ -34,6 +35,8 @@ import {
   enableRemoteTerminal,
 } from "./terminal/toggle.js";
 import type { AgentStore } from "./store.js";
+import type { CommandResult } from "./agent-core.js";
+import type { CodeService } from "./code/service.js";
 import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
 
 /** The agent version the panel's `ping` sees. */
@@ -85,6 +88,16 @@ const LinkSend = z.object({
   linkId: z.string().max(80),
   text: z.string().min(1).max(20_000),
 });
+const CodeStart = z
+  .object({
+    appId: AppId,
+    workspaceLabel: z.string().min(1).max(80),
+    prompt: z.string().min(1).max(20_000),
+    permissionMode: RemotePermissionMode.default("default"),
+  })
+  .strict();
+const CodePrompt = z.object({ sid: SessionId, text: z.string().min(1).max(20_000) }).strict();
+const ForSession = z.object({ sid: SessionId }).strict();
 const ConfirmPairing = z.object({ pairingId: z.string().max(128), match: z.boolean() });
 const ForProvider = z.object({ provider: Provider });
 const ProviderKey = z.object({ provider: Provider, key: z.string().min(1).max(512) });
@@ -140,7 +153,18 @@ export interface IpcDeps {
   chalitoDir?: string;
   /** The person's home folder (default: the OS's); tests point it elsewhere. */
   home?: string;
+  /** ADR 0031 §1: sessions started here ("Nueva sesión"); absent = the code calls answer `unavailable`. */
+  code?: CodeService;
 }
+
+const codeOf = (d: IpcDeps): CodeService => {
+  if (!d.code) throw new IpcError("unavailable");
+  return d.code;
+};
+const codeResult = (r: CommandResult) => {
+  if (!r.ok) throw new IpcError(r.reason ?? "internal");
+  return { ok: true, ...(r.sid ? { sid: r.sid } : {}) };
+};
 
 const linksOf = (d: IpcDeps): LinkManager => {
   if (!d.links) throw new IpcError("unavailable");
@@ -620,6 +644,15 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     await d.apps.declineInstall(PROVIDER_APP[provider]);
     return { ok: true };
   },
+
+  // ---- SESSIONS started here (ADR 0031 §1): origin `local`, every gate as for the phone ------
+  codeApps: async () => codeOf(d).apps(),
+  codeStart: async (params) => codeResult(await codeOf(d).start(parse(CodeStart, params))),
+  codePrompt: async (params) => {
+    const { sid, text } = parse(CodePrompt, params);
+    return codeResult(await codeOf(d).prompt(sid, text));
+  },
+  codeStop: async (params) => codeResult(await codeOf(d).stop(parse(ForSession, params).sid)),
 
   // ---- LINKS (ADR 0022 §3): made only here for hand-off; revoked from anywhere --------------
   linkChallenge: async (params) => {

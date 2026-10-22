@@ -16,6 +16,7 @@ import type { AdapterEvent, SessionAdapter, SessionHandle, ToolCall, ToolGate } 
 import {
   AgentEvent,
   CommandEnvelope,
+  CommandPayload,
   Id,
   TerminalData,
   type CommandAcceptedMeta,
@@ -23,7 +24,6 @@ import {
   isSignedOrigin,
   type AdapterKind,
   type CommandBody,
-  type CommandPayload,
   type Origin,
   type RemotePermissionMode,
   type RiskTier,
@@ -37,10 +37,11 @@ import {
   type CoordRemoteResult,
 } from "@chalito/protocol";
 import { SESSIONS_DEFAULTS, type SessionsConfig } from "@chalito/config";
-import { outsideTaskSid } from "@chalito/crypto";
+import { outsideTaskSid, sealJson } from "@chalito/crypto";
 import { ApprovalManager, type ApprovalOutcome } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
+import type { LocalEvent, LocalTap } from "./code/events.js";
 import { Coordinator, nodeGit, type CoordHost, type GitRun } from "./coord/coordinator.js";
 import { coordAnswer } from "./coord/gate.js";
 import { CoordRules, type CoordTombstones } from "./coord/rules.js";
@@ -236,6 +237,8 @@ const BUSY: ReadonlySet<SessionState> = new Set<SessionState>([
 ]);
 /** After a crash, events may have used seq numbers past the last save. */
 const RESTART_SEQ_MARGIN = 1000;
+/** ADR 0031 §6a: live sessions started from code.sock (any same-user process can ask for them). */
+export const LOCAL_CLI_LIVE_MAX = 2;
 
 const originTrust = (o: Origin) => (o === "local" ? 2 : isSignedOrigin(o) ? 1 : 0);
 const lowerTrust = (a: Origin, b: Origin): Origin => (originTrust(b) < originTrust(a) ? b : a);
@@ -295,6 +298,8 @@ export class AgentCore {
   /** The coordinator's listener for results of tasks it sent to other computers (G4). */
   #coordResult: ((taskId: string, r: CoordRemoteResult | null) => boolean) | null = null;
   #revoked = false;
+  /** ADR 0031 §1: plaintext listeners on this computer (`code.sock`); never stored or sent. */
+  readonly #taps = new Set<LocalTap>();
 
   constructor(private readonly d: AgentCoreDeps) {
     this.sealer = new Sealer(d.trust, { deviceId: d.self.deviceId, pubBox: d.self.pubBox });
@@ -337,6 +342,78 @@ export class AgentCore {
     });
     d.links?.attach(this.#linkHost());
     d.links?.onResult(({ taskId, result }) => this.#coordResult?.(taskId, coordResultOf(result)) ?? false);
+  }
+
+  // ---- remote control at the computer (ADR 0031 §1) ------------------------------
+
+  tap(fn: LocalTap): () => void {
+    this.#taps.add(fn);
+    return () => void this.#taps.delete(fn);
+  }
+
+  #local(sid: string, e: LocalEvent): void {
+    for (const fn of this.#taps)
+      try {
+        fn(sid, e);
+      } catch (err) {
+        this.d.log.warn("code.tap_failed", { error: err instanceof Error ? err.message : "error" });
+      }
+  }
+
+  /** ADR 0031 §1: a command typed at this computer (panel `local`, terminal `local:cli`), fully checked. */
+  async localCommand(
+    origin: "local" | "local:cli",
+    payload:
+      | {
+          type: "session.start";
+          appId: string;
+          workspaceLabel: string;
+          prompt: string;
+          permissionMode: RemotePermissionMode;
+        }
+      | { type: "session.prompt"; sid: string; text: string }
+      | { type: "session.interrupt"; sid: string },
+  ): Promise<CommandResult> {
+    const cid = `loc${randomUUID().replace(/-/g, "")}`;
+    const seal = async (text: string) =>
+      sealJson(text, { [this.d.self.deviceId]: this.d.self.box.publicKey }, `command:${cid}`);
+    const p = CommandPayload.safeParse(
+      payload.type === "session.start"
+        ? {
+            type: "session.start",
+            appId: payload.appId,
+            workspaceLabel: payload.workspaceLabel,
+            permissionMode: payload.permissionMode,
+            promptCt: await seal(payload.prompt),
+          }
+        : payload.type === "session.prompt"
+          ? { type: "session.prompt", sid: payload.sid, promptCt: await seal(payload.text) }
+          : payload,
+    );
+    if (!p.success) return { ok: false, reason: "invalid" };
+    const r = await this.#localDispatch(cid, p.data, origin);
+    // The owner's audit trail: what was typed at this computer and what became of it, with its origin.
+    this.#audit(r.ok ? "command.accepted" : "command.rejected", {
+      cid,
+      origin,
+      command: p.data.type,
+      ...(r.sid ? { sid: r.sid } : {}),
+      ...(r.ok ? {} : { reason: publicReason(r.reason) }),
+    });
+    return r;
+  }
+
+  async #localDispatch(cid: string, p: CommandPayload, origin: "local" | "local:cli"): Promise<CommandResult> {
+    if (!originAllowed(this.d.policy.get().origins, origin)) return this.#reject(cid, "origin_disabled");
+    // An unsigned start can't pick acceptEdits: it would carry over to the owner's later signed turns.
+    if (origin === "local:cli" && p.type === "session.start" && p.permissionMode === "acceptEdits")
+      return this.#reject(cid, "permission_mode_above_ceiling");
+    try {
+      return await this.#dispatch(cid, p, origin);
+    } catch (err) {
+      this.d.log.error("code.command_failed", { error: err instanceof Error ? err.message : "error" });
+      return { ok: false, reason: "internal" };
+    }
   }
 
   // ---- commands ---------------------------------------------------------------
@@ -483,7 +560,7 @@ export class AgentCore {
         // A hand-off task from outside (MCP create_task, A2A SendMessage, M16 F).
         if (origin.startsWith("mcp:") || origin.startsWith("a2a:"))
           return this.#outsideStart(cid, origin, p, ws, target, prompt);
-        if (!(await this.#makeRoom())) return this.#reject(cid, "session_limit");
+        if (!(await this.#makeRoom(origin))) return this.#reject(cid, "session_limit");
         try {
           const sid = await this.startSession({
             adapter: target.adapter,
@@ -505,9 +582,11 @@ export class AgentCore {
         if (!s) {
           if (!this.#dormant.has(p.sid)) return this.#reject(cid, "unknown_session");
           const text = await open<string>(p.promptCt);
+          this.#local(p.sid, { type: "user", origin, text });
           return this.#revive(cid, p.sid, this.#withLinkData(p.sid, text, origin), origin);
         }
         const text = await open<string>(p.promptCt);
+        this.#local(s.sid, { type: "user", origin, text });
         await this.#event(s, { type: "message.user", origin, ct: await this.sealer.seal({ text }, `event:${s.sid}`) });
         this.#prompt(s, this.#withLinkData(s.sid, text, origin), origin);
         return { ok: true };
@@ -1118,6 +1197,14 @@ export class AgentCore {
           permissionMode: input.permissionMode,
         });
       }
+      if (input.prompt) this.#local(sid, { type: "user", origin: input.origin, text: input.prompt });
+      // ADR 0031 §1: a session typed at this computer shows its first prompt on the phone too.
+      if (!resume && input.prompt && (input.origin === "local" || input.origin === "local:cli"))
+        await this.#event(session, {
+          type: "message.user",
+          origin: input.origin,
+          ct: await this.sealer.seal({ text: input.prompt }, `event:${sid}`),
+        });
       if (resume && input.prompt)
         await this.#event(session, {
           type: "message.user",
@@ -1495,7 +1582,8 @@ export class AgentCore {
     const helper = this.#coordOf.get(sid);
     // Never learned a provider session (it failed at start): a prompt starts afresh in the same sid.
     if (!r.providerSessionId && !prompt) return { ok: true, sid };
-    if (!(await this.#makeRoom())) return this.#reject(cid, "session_limit");
+    if (!(await this.#makeRoom(r.startedBy === "local:cli" ? "local:cli" : origin)))
+      return this.#reject(cid, "session_limit");
     try {
       await this.startSession({
         adapter: target.adapter,
@@ -1525,9 +1613,19 @@ export class AgentCore {
    * Below the live cap, or made so by closing the longest-idle session. False when every live
    * session is busy.
    */
-  async #makeRoom(): Promise<boolean> {
+  async #makeRoom(origin?: Origin): Promise<boolean> {
     const max = this.#lifecycle.session.maxLivePerDevice;
     const live = [...this.sessions.values()].filter((s) => !s.closing);
+    // ADR 0031 §6a: terminal sessions get a small cap of their own and only ever evict each other.
+    if (origin === "local:cli") {
+      const mine = live.filter((s) => s.startedBy === "local:cli");
+      const over = Math.max(mine.length - LOCAL_CLI_LIVE_MAX + 1, live.length - max + 1, 0);
+      if (over === 0) return true;
+      const idle = mine.filter((s) => !BUSY.has(s.state)).sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+      if (idle.length < over) return false;
+      for (const s of idle.slice(0, over)) this.#suspend(s, "session_limit");
+      return true;
+    }
     if (live.length < max) return true;
     const idle = live.filter((s) => !BUSY.has(s.state)).sort((a, b) => a.lastActiveAt - b.lastActiveAt);
     for (const s of idle.slice(0, live.length - max + 1)) this.#suspend(s, "session_limit");
@@ -1809,6 +1907,13 @@ export class AgentCore {
       details: input.details,
       onRequested: (requested, expiresAt) => {
         aid = requested;
+        this.#local(s.sid, {
+          type: "approval",
+          aid: requested,
+          risk: input.risk,
+          stepUp: input.stepUp,
+          summary: approvalSummary(input.details.toolName, input.details.input).summary,
+        });
         announced = (async () => {
           s.card.approvalPending(requested, true);
           await this.#event(s, {
@@ -1835,6 +1940,7 @@ export class AgentCore {
     // Revoked meanwhile: the sweep already denied it and removed its call line; write nothing.
     if (this.#revoked) return outcome;
     if (aid) {
+      this.#local(s.sid, { type: "approval_done", aid, allow: outcome.allow, reason: outcome.reason });
       s.card.approvalPending(aid, false);
       await this.callLines.remove(`${s.sid}_${aid}`);
       await this.#event(s, {
@@ -1921,6 +2027,7 @@ export class AgentCore {
         await this.d.store.upsertSession(s.sid, { providerSessionId: e.providerSessionId });
         return;
       case "assistant_delta": {
+        this.#local(s.sid, { type: "delta", text: e.text });
         // Throttled (sessions.yaml live.*), broadcast only; the final text below is the message.
         const live = this.#lifecycle.live;
         if (!s.draft) {
@@ -1940,6 +2047,7 @@ export class AgentCore {
         return;
       }
       case "assistant_text": {
+        this.#local(s.sid, { type: "assistant", text: e.text });
         const draft = s.draft;
         draft?.throttle.discard();
         s.draft = undefined;
@@ -1959,6 +2067,13 @@ export class AgentCore {
       case "tool_started": {
         const policy = this.d.policy.get();
         const c = classifyToolCall(e.toolName, e.input, this.#classifyContext(policy, s));
+        this.#local(s.sid, {
+          type: "tool",
+          toolUseId: e.toolUseId,
+          category: c.category,
+          risk: c.tier,
+          summary: approvalSummary(e.toolName, e.input).summary,
+        });
         await this.#event(s, {
           type: "tool.started",
           toolUseId: e.toolUseId,
@@ -1969,12 +2084,14 @@ export class AgentCore {
         return;
       }
       case "tool_finished":
+        this.#local(s.sid, { type: "tool_done", toolUseId: e.toolUseId, ok: e.ok });
         await this.#event(s, { type: "tool.finished", toolUseId: e.toolUseId, ok: e.ok });
         return;
       case "usage":
         await this.#event(s, { type: "usage", tokIn: e.tokIn, tokOut: e.tokOut, tokCached: e.tokCacheRead });
         return;
       case "state":
+        this.#local(s.sid, { type: "state", state: e.state as SessionState });
         s.state = e.state as SessionState;
         if (e.state !== "running") s.turnOriginFloor = undefined;
         if (!BUSY.has(s.state)) {
@@ -1991,6 +2108,7 @@ export class AgentCore {
         await this.#publishCard(s);
         return;
       case "error":
+        this.#local(s.sid, { type: "error", code: e.code });
         await this.#event(s, { type: "error", code: e.code === "adapter_crash" ? "adapter_crash" : e.code });
         return;
     }
