@@ -62,9 +62,9 @@ both are, Grok runs only on the person's own key or login.
   3. checks the daily cap, with the owner's begins serialized (advisory lock): today's spend plus the
      billable worst case of every request in flight on the owner's sessions, this one included, above
      the cap → 402 `daily_cap`. A session has at most `maxInflightPerSession` requests in flight (429 past it).
-  4. re-admits the same hold with `est_tokens = reserveTokens(spent on this hold + in-flight + worst case)`
-     (pre-margin; the hub adds the margin). The hub holds `max(0, est − usage reported on the hold)`,
-     so counting all of this hold's usage, sent or not, leaves in flight + worst case held. `no_tokens` → 402 `out_of_energy`. An expired hold
+  4. admits the hold with `est_tokens = reserveTokens(in-flight + worst case)` (pre-margin; the hub
+     adds the margin). A hold that already has usage on it is settled and replaced (`gen + 1`): the
+     hub's admit counts reported usage in `used`, so re-admitting it would count that usage twice. `no_tokens` → 402 `out_of_energy`. An expired hold
      (`already_settled`) is replaced by a new one (`gen + 1`).
 - After the response: usage from the provider's own numbers (`response.completed` usage, Gemini's
   last `usageMetadata`), priced from prices.yaml, written in one transaction: an `llm.tokens`
