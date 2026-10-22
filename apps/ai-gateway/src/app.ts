@@ -202,8 +202,9 @@ export const createGateway = (d: GatewayDeps) => {
         try {
           const { done, value } = await src.read();
           if (done) {
-            ctrl.close();
+            // Metered before the response ends: on Cloud Run the CPU may stop once the last byte is sent.
             await finish(reader, okStatus);
+            ctrl.close();
             return;
           }
           reader.push(value);
