@@ -12,6 +12,7 @@ import { OnboardingError, type Daemon } from "../src/daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "../src/instance-lock.js";
 import { DeviceRevokedError } from "../src/device-auth.js";
 import { DevModeStore } from "../src/devmode.js";
+import { servicePlan } from "../src/service.js";
 import { loadOrCreateIdentity } from "../src/identity.js";
 import { FilePolicyHolder, policyToYaml } from "../src/policy-file.js";
 import { DEFAULT_POLICY } from "../src/policy/index.js";
@@ -137,6 +138,50 @@ describe("chalito CLI", () => {
     // A computer removed from the account doesn't crash-loop (exit 1) into the same refusal.
     expect(await main(["run"], io(new DeviceRevokedError()))).toBe(EXIT_NEEDS_SETUP);
     expect([EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP]).toEqual([75, 78]);
+  });
+
+  it("run under launchd (macOS): 75/78 become exit 0 with a log line so KeepAlive doesn't loop", async () => {
+    const c = cli();
+    const errs: string[] = [];
+    const io = (fail: Error, platform: NodeJS.Platform, env: Record<string, string> = {}) => ({
+      out: () => undefined,
+      err: (s: string) => void errs.push(s),
+      tty: { input: new PassThrough(), output: new PassThrough() },
+      env,
+      home: c.home,
+      platform,
+      secrets: c.secrets,
+      runner: { run: async () => ({ code: 0, stdout: "", stderr: "" }) },
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+      now: Date.now,
+      execPath: "/x",
+      tmpdir: tmpdir(),
+      daemon: async () => {
+        throw fail;
+      },
+    });
+    // The plist's own arguments, as launchd runs them.
+    const plist = servicePlan("darwin", "/Applications/Chalito.app/chalito-agent", { home: c.home, uid: 501 });
+    const args = [...plist.files[0]!.content.matchAll(/<string>([^<]*)<\/string>/g)]
+      .map((m) => m[1]!)
+      .filter((a) => a === "run" || a.startsWith("--"));
+    expect(args).toEqual(["run", "--service"]);
+    expect(await main(args, io(new AlreadyRunningError(1234), "darwin"))).toBe(0);
+    expect(await main(args, io(new OnboardingError("Pin Claude Code first."), "darwin"))).toBe(0);
+    expect(await main(args, io(new DeviceRevokedError(), "darwin"))).toBe(0);
+    expect(errs.filter((e) => e.includes("launchd"))).toHaveLength(3);
+    // Plists installed before --service existed: launchd's XPC_SERVICE_NAME identifies the job.
+    expect(await main(["run"], io(new DeviceRevokedError(), "darwin", { XPC_SERVICE_NAME: "com.chalito.agent" }))).toBe(
+      0,
+    );
+    // Everything else keeps its code: run by hand on macOS, any other job name, and Linux even with the flag.
+    expect(await main(["run"], io(new DeviceRevokedError(), "darwin"))).toBe(EXIT_NEEDS_SETUP);
+    expect(await main(["run"], io(new AlreadyRunningError(1), "darwin", { XPC_SERVICE_NAME: "0" }))).toBe(
+      EXIT_ALREADY_RUNNING,
+    );
+    expect(await main(["run", "--service"], io(new OnboardingError("x"), "linux"))).toBe(EXIT_NEEDS_SETUP);
+    // A real crash still exits non-zero, so launchd restarts it.
+    expect(await main(args, io(new Error("boom"), "darwin"))).toBe(1);
   });
 
   it("run: starts the daemon with the CLI's I/O and waits for it", async () => {

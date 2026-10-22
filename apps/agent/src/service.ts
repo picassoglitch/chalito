@@ -17,7 +17,7 @@ export const launchdPlist = (bin: string, logDir: string) => `<?xml version="1.0
 <dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
-  <array><string>${xmlEscape(bin)}</string><string>run</string></array>
+  <array><string>${xmlEscape(bin)}</string><string>run</string><string>--service</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ProcessType</key><string>Background</string>
