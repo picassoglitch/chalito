@@ -11,6 +11,7 @@ import {
   defaultRealpath,
   isTighterOrEqual,
   originAllowed,
+  pinHolds,
   policyHash,
   presetPolicy,
   splitShell,
@@ -339,6 +340,13 @@ describe("policy changes", () => {
     // A later tighten keeps the pin; it doesn't re-record the swapped target.
     const again = applyRemoteTighten(res.policy, { approvals: { ttlSeconds: 60 } });
     expect(again.ok && again.policy.workspaces[0]?.realPath).toBe(sub);
+  });
+
+  it("the pin check folds case where the file system does (the daemon's repo scan uses the same check)", () => {
+    const w = { realPath: "/Users/ana/Proj" };
+    expect(pinHolds(w, "/Users/ana/proj", "darwin")).toBe(true);
+    expect(pinHolds(w, "/Users/ana/proj", "linux")).toBe(false);
+    expect(pinHolds({}, "/anything", "linux")).toBe(true);
   });
 
   it("a remote tighten can't add a workspace that doesn't exist yet (it could become a symlink later)", () => {

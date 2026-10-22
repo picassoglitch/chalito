@@ -25,7 +25,7 @@ import { AnchorStore } from "./anchor.js";
 import { checkClaudePin } from "./claude-pin.js";
 import { SCAN_MAX_AGE_MS } from "./policy/git-hooks.js";
 import { refreshRepoIndex } from "./policy/repo-index.js";
-import { hooksOptionsFor } from "./policy/classify.js";
+import { defaultRealpath, hooksOptionsFor, pinHolds } from "./policy/classify.js";
 import { brokerPath, linksBrokerPath, startBroker, type Broker } from "./computer/broker.js";
 import { ComputerControl } from "./computer/control.js";
 import { loadNativeDriver, type NativeDriver } from "./computer/native.js";
@@ -484,16 +484,15 @@ const startDaemon = async (
   const scanWorkspaceRepos = (_force = false) => {
     const home = deps.home ?? homedir();
     // The same paths the classifier uses: ~ expanded, then resolved.
+    // A pinned workspace that moved is out of the classifier's list (same check), so don't walk it.
     const paths = (policyRef?.get().workspaces ?? []).flatMap((w) => {
       const p = w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : resolve(w.path);
-      let r = p;
+      if (!pinHolds(w, defaultRealpath(p))) return [];
       try {
-        r = realpathSync.native(p);
+        return [realpathSync.native(p)];
       } catch {
-        /* not there (yet): scanned as written */
+        return [p];
       }
-      // A pinned workspace that moved is out of the classifier's list, so don't walk where it points.
-      return w.realPath === undefined || r === w.realPath ? [r] : [];
     });
     // Async (fs.promises): never blocks a classification; the classifier keeps the last result.
     // The union is prebuilt with the classification's own options (agent-core's classify context).

@@ -86,6 +86,10 @@ export const defaultRealpath = (p: string): string => {
   }
 };
 
+/** Whether a workspace still resolves where a remote tighten pinned it (always, when unpinned). */
+export const pinHolds = (w: { realPath?: string }, resolvedNow: string, platform: NodeJS.Platform = process.platform) =>
+  w.realPath === undefined || foldKey(resolvedNow, platform) === foldKey(w.realPath, platform);
+
 const withinExact = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
@@ -144,8 +148,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   // Fail closed: a pinned workspace that now resolves elsewhere (e.g. swapped for `ln -s /`) is dropped.
   const workspaces = ctx.policy.workspaces.flatMap((w) => {
     const r = real(resolve(expand(w.path)));
-    if (w.realPath === undefined || same(r, w.realPath)) return [r];
-    ctx.onWorkspaceMoved?.(w.label, w.realPath, r);
+    if (pinHolds(w, r, platform)) return [r];
+    ctx.onWorkspaceMoved?.(w.label, w.realPath!, r);
     return [];
   });
   // git hooks, worked out by reading git's own files (never by running git), for every repo in or
