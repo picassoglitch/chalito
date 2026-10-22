@@ -966,7 +966,12 @@ export class LinkManager implements LinkAuthorizer {
       request: message.parts,
     });
     if (target) {
-      await this.#h.prompt(sid, frame, origin);
+      // A session on its way to another computer refuses the prompt: answer now, don't let the sender wait.
+      try {
+        await this.#h.prompt(sid, frame, origin);
+      } catch {
+        return void (await back("receiver_busy"));
+      }
     } else {
       const started = await this.#h.startSession({
         sid,

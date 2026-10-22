@@ -84,6 +84,14 @@ export const TransferRefusal = z.enum([
   "no_link",
   "dirty",
   "unpushed",
+  // Saving unfinished work on a branch for the move: the push was refused (auth) or failed.
+  "push_auth",
+  "push_failed",
+  // Untracked files that look like secrets or dumps (their paths travel sealed, `ct`), git older than
+  // 2.40 (can't keep filters off), and Git LFS files (would go up raw).
+  "secret_files",
+  "git_too_old",
+  "lfs_files",
   /** The receiver didn't answer within the relay's lifetime. */
   "offline",
   /** The receiving computer's workspace isn't the same project (`origin` differs). */

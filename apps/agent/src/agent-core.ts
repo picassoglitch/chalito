@@ -366,6 +366,7 @@ export class AgentCore {
             : undefined;
         },
         event: (sid, partial) => host.event(sid, partial),
+        seal: (value, aad) => this.sealer.seal(value, aad),
         close: (sid) => {
           const s = this.sessions.get(sid);
           if (s) this.#suspend(s, "transferred");

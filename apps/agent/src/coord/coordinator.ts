@@ -83,7 +83,7 @@ export interface GitResult {
   out: string;
   err: string;
 }
-export type GitRun = (cwd: string, args: string[]) => Promise<GitResult>;
+export type GitRun = (cwd: string, args: string[], env?: Record<string, string>) => Promise<GitResult>;
 
 /**
  * git as the coordinator runs it (security review, 2026-10-19): hooks off, no fsmonitor, no
@@ -103,7 +103,7 @@ export const nodeGit = (): GitRun => {
     "diff.external=",
     "protocol.ext.allow=never",
   ].flatMap((c) => ["-c", c]);
-  return (cwd, args) =>
+  return (cwd, args, extraEnv) =>
     new Promise((resolve) => {
       execFile(
         "git",
@@ -115,12 +115,16 @@ export const nodeGit = (): GitRun => {
           env: {
             ...process.env,
             GIT_TERMINAL_PROMPT: "0",
+            // Messages are matched in English ("not a git repository").
+            LC_ALL: "C",
+            LANGUAGE: "",
             GIT_EDITOR: "true",
             GIT_MERGE_AUTOEDIT: "no",
             GIT_CONFIG_NOSYSTEM: "1",
             GIT_ATTR_NOSYSTEM: "1",
             GIT_EXTERNAL_DIFF: "",
             GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? "",
+            ...extraEnv,
           },
         },
         (err, stdout, stderr) =>
