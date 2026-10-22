@@ -17,7 +17,7 @@ const summary = (d: Record<string, unknown> | null, fallback: string): string =>
  * marked, deny only. A truncated summary (R-M10): the full input must be opened before
  * approving, so the person has seen everything they sign.
  */
-const ApprovalRow = ({
+export const ApprovalRow = ({
   a,
   canStepUp,
   run,
