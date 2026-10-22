@@ -72,7 +72,9 @@ switch and is checked on staging before the switch goes on.
   disconnects, the gateway keeps reading the provider stream to its end so the usage is known. If
   the provider never reports usage, the request is billed at its worst-case input plus the output
   bytes streamed, marked `estimated`.
-- Settle `succeeded` when the credential is revoked or expires (the gateway's sweep, every minute).
+- Settle `succeeded` when the credential is revoked or expires: the api right away at session end
+  or re-issue, the gateway's sweep every minute as the backstop. A hold stays open while the
+  session's requests still stream or its usage is unsent, up to 20 minutes after the end.
 - The hub applies the margin. Chalito only ever sends provider cost. A request is billed once
   (idempotent `source_id`), and only through the outbox, never a second path.
 
@@ -94,6 +96,10 @@ switch and is checked on staging before the switch goes on.
 ### Abuse
 - Per-token and per-IP token buckets on the gateway, the live-credential limit, the model
   allowlist, the output clamp, and the kill switch.
+- Request bodies are rebuilt from allowlists, so nothing the provider bills outside the metered
+  tokens goes out on our key: only tools the CLI runs itself (function declarations), no stored
+  state (`previous_response_id`, cached content), no background work, no priority tier, one
+  candidate. `store` is always off.
 
 ### Hub UI (chalyb)
 - Per agent: "IA de Chalyb" / "Mi clave" / "Mi plan". Claude Code has no Chalyb option and a short
