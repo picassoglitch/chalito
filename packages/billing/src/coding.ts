@@ -124,14 +124,16 @@ export interface CodingTx {
   record(r: CodingRecord): Promise<boolean>;
   /** Marks request `seq` finished; false when it already was (a retry after a lost commit ack). */
   markFinished(seq: number): Promise<boolean>;
+  /** Marks every request up to `seq` finished (those billed as orphans). */
+  markFinishedUpTo(seq: number): Promise<void>;
 }
 
 export interface CodingStore {
   byTokenHash(hash: string): Promise<CodingCredential | null>;
   /** Null when there's no such credential. */
   withCredential<T>(id: string, fn: (tx: CodingTx) => Promise<T>): Promise<T | null>;
-  /** Credentials whose hold is still open although revoked or expired at `now`. */
-  unsettled(now: number, limit: number): Promise<string[]>;
+  /** Credentials whose hold is still open although revoked, expired, or unused since `idleBefore`. */
+  unsettled(now: number, limit: number, idleBefore: number): Promise<string[]>;
 }
 
 export type CodingRefusal =
@@ -258,18 +260,22 @@ export class CodingMeter {
       const committed = (await tx.spentOn(day)) + estimateBillable(o.inflightMicros + worst, HUB_MARGIN_PERCENT);
       if (committed > codingDailyCap(this.d.cfg, o.tier, o.capTokens)) return block("daily_cap");
 
-      // The hub holds est − usage reported on the hold, so all of this generation's usage counts here.
-      let genSpent = c.genSpentMicros;
-      let est = reserveTokens(genSpent + c.inflightMicros + worst, this.d.reserveBasis);
+      const est = reserveTokens(c.inflightMicros + worst, this.d.reserveBasis);
       let gen = c.holdGen;
       let admit;
       try {
+        // A hold with usage on it is replaced: the hub's admit counts that usage in `used` and again in a
+        // re-admitted estimate, so it would refuse with balance left. The new hold covers what's in flight.
+        if (c.genSpentMicros > 0 && c.reservationId) {
+          const closed = await this.d.hub.settle({ reservation_id: c.reservationId, outcome: "succeeded" });
+          if (!closed.ok && !closed.closed && closed.httpStatus !== 404)
+            return { ok: false as const, reason: "hub_unavailable" as const };
+          gen += 1;
+        }
         admit = await this.d.hub.admit(codingHoldRequest(c, gen, est, this.d.cfg.holdTtlSeconds));
         // The hold lapsed (ttl) or was settled: a new one, under the next job id.
         if (!admit.allowed && admit.reason === "already_settled") {
           gen += 1;
-          genSpent = 0;
-          est = reserveTokens(c.inflightMicros + worst, this.d.reserveBasis);
           admit = await this.d.hub.admit(codingHoldRequest(c, gen, est, this.d.cfg.holdTtlSeconds));
         }
       } catch (err) {
@@ -281,7 +287,7 @@ export class CodingMeter {
       const seq = c.requests + 1;
       await tx.update({
         holdGen: gen,
-        genSpentMicros: genSpent,
+        genSpentMicros: gen === c.holdGen ? c.genSpentMicros : 0,
         lastUsedAt: now,
         reservationId: admit.reservation_id,
         inflightMicros: c.inflightMicros + worst,
@@ -351,6 +357,7 @@ export class CodingMeter {
       await tx.update({
         inflightMicros: Math.max(0, c.inflightMicros - t.worstMicros),
         inflightRequests: Math.max(0, c.inflightRequests - 1),
+        lastUsedAt: Math.max(c.lastUsedAt, now),
         ...(c.holdGen === t.holdGen ? { genSpentMicros: c.genSpentMicros + costMicros } : {}),
       });
     });
@@ -364,10 +371,11 @@ export class CodingMeter {
     const r = await this.d.store.withCredential(credentialId, async (tx) => {
       const c = tx.credential();
       if (c.settledAt !== null) return "none" as const;
-      if (c.revokedAt === null && c.expiresAt > now) return "open" as const;
+      const idleSince = c.lastUsedAt + this.d.cfg.credentialIdleSeconds * 1000;
+      if (c.revokedAt === null && c.expiresAt > now && idleSince > now) return "open" as const;
       if (c.revokedAt === null) await tx.update({ revoked: { at: now, reason: "expired" } });
       // The hold covers requests still streaming and usage the hub hasn't seen, up to a cutoff after the end.
-      const ended = c.revokedAt ?? c.expiresAt;
+      const ended = c.revokedAt ?? Math.min(c.expiresAt, idleSince);
       const busy = c.inflightRequests > 0 || (await tx.unsentMicros()) > 0;
       if (busy && now - ended < SETTLE_CUTOFF_MS) return "open" as const;
       if (c.reservationId) {
@@ -394,6 +402,8 @@ export class CodingMeter {
             metadata: { agent: c.agent, estimated: true, orphan: true, requests: c.inflightRequests },
           },
         );
+        // A request billed here never bills again if it finishes late.
+        await tx.markFinishedUpTo(c.requests);
         if (orphan)
           await tx.record({
             event: orphan,
@@ -414,7 +424,8 @@ export class CodingMeter {
   async sweep(limit = 200): Promise<number> {
     let n = 0;
     const now = this.d.now();
-    for (const id of await this.d.store.unsettled(now, limit + this.#backoff.size)) {
+    const idleBefore = now - this.d.cfg.credentialIdleSeconds * 1000;
+    for (const id of await this.d.store.unsettled(now, limit + this.#backoff.size, idleBefore)) {
       if ((this.#backoff.get(id) ?? 0) > now) continue;
       const r = await this.settle(id).catch((err: unknown) => {
         this.d.log?.("coding.settle_error", { credential: id, error: err instanceof Error ? err.message : "error" });

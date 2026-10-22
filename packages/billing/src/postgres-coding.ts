@@ -137,6 +137,13 @@ class PgCodingTx implements CodingTx {
     return rows.length > 0;
   }
 
+  async markFinishedUpTo(seq: number) {
+    await this.tx`
+      insert into chalito_private.coding_finished (credential_id, seq)
+      select ${this.c.id}, g from generate_series(1, ${seq}::int) g
+      on conflict do nothing`;
+  }
+
   async record(r: CodingRecord) {
     const inserted = await this.tx`
       insert into chalito_private.usage_outbox (owner, source_id, event)
@@ -176,10 +183,11 @@ export class PostgresCodingStore implements CodingStore {
     })) as T | null;
   }
 
-  async unsettled(now: number, limit: number) {
+  async unsettled(now: number, limit: number, idleBefore: number) {
     const rows = await this.sql<{ id: string }[]>`
       select id from chalito_private.coding_credentials
-      where settled_at is null and (revoked_at is not null or expires_at <= ${new Date(now)})
+      where settled_at is null
+        and (revoked_at is not null or expires_at <= ${new Date(now)} or last_used_at < ${new Date(idleBefore)})
       order by expires_at limit ${limit}`;
     return rows.map((r) => r.id);
   }

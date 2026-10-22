@@ -167,6 +167,66 @@ if (!url) {
       expect(Number((await cred(id)).inflight_micros)).toBe(worst);
     });
 
+    it("a session that spent a lot isn't refused with balance left: its hold rotates instead of counting spend twice", async () => {
+      const big = { input: 300_000, output: 20_000 }; // 60_000 + 24_000 micros
+      const bigBillable = Math.ceil((84_000 * 2.6) / 4);
+      const one = Math.ceil(Math.ceil(worst / 4) * 2.6);
+      // After the big request: room for the next worst case, not for that plus the spend again.
+      const { owner, id, meter, drain } = await setup({ allocation: bigBillable + one + 500 });
+      const a = await meter.begin(id, req);
+      if (!a.ok) throw new Error("refused");
+      await meter.finish(a.ticket, big, { outputBytes: 0 });
+      await drain();
+      expect(hub.used(owner)).toBe(bigBillable);
+      expect((await meter.begin(id, req)).ok).toBe(true);
+      expect(holds(id).filter((r) => r.status === "open")).toHaveLength(1);
+    });
+
+    it("a request billed as an orphan at settle never bills again if it finishes late", async () => {
+      const { owner, id, meter } = await setup();
+      const a = await meter.begin(id, req);
+      if (!a.ok) throw new Error("refused");
+      await admin`update chalito_private.coding_credentials set revoked_at = ${new Date(clock)}, revoked_reason = 'session_end' where id = ${id}`;
+      clock += SETTLE_CUTOFF_MS + 1;
+      expect(await meter.settle(id)).toBe("settled");
+      const other = new CodingMeter({
+        store: new PostgresCodingStore(gw),
+        hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "t", fetch: hub.fetch }),
+        prices,
+        cfg,
+        reserveBasis: "pre_margin",
+        now,
+      });
+      await other.finish(a.ticket, usage, { outputBytes: 0 });
+      expect((await outbox(owner)).map((r) => r.source_id)).toEqual([`coding:${id}:orphan:0`]);
+      clock = Date.UTC(2026, 9, 21, 18);
+    });
+
+    it("a finished request renews the idle clock; an idle credential is swept and settled", async () => {
+      const { id, drain } = await setup();
+      const strict = new CodingMeter({
+        store: new PostgresCodingStore(gw),
+        hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "t", fetch: hub.fetch }),
+        prices,
+        cfg: real,
+        reserveBasis: "pre_margin",
+        now,
+      });
+      const a = await strict.begin(id, req);
+      if (!a.ok) throw new Error("refused");
+      clock += (real.credentialIdleSeconds - 10) * 1000;
+      await strict.finish(a.ticket, usage, { outputBytes: 0 });
+      clock += (real.credentialIdleSeconds - 10) * 1000;
+      expect((await strict.begin(id, req)).ok).toBe(true);
+      clock += (real.credentialIdleSeconds + 60) * 1000;
+      await admin`update chalito_private.coding_credentials set inflight_micros = 0, inflight_requests = 0 where id = ${id}`;
+      await drain();
+      await strict.sweep();
+      expect(await cred(id)).toMatchObject({ revoked_reason: "expired" });
+      expect((await cred(id)).settled_at).not.toBeNull();
+      clock = Date.UTC(2026, 9, 21, 18);
+    });
+
     it("a zero-usage finish retried by another instance (lost commit ack) releases the hold once", async () => {
       const { id, meter } = await setup();
       const a = await meter.begin(id, req);
@@ -204,7 +264,7 @@ if (!url) {
       clock = Date.UTC(2026, 9, 21, 18);
     });
 
-    it("every top-up counts all of this hold's usage, sent or not, so the hub keeps in flight + worst case held", async () => {
+    it("once a hold has usage on it, the next request replaces it: the new hold covers in flight + worst case", async () => {
       const { id, meter, drain } = await setup();
       const a = await meter.begin(id, req);
       if (!a.ok) throw new Error("refused");
@@ -212,13 +272,9 @@ if (!url) {
       await drain();
       const b = await meter.begin(id, req);
       if (!b.ok) throw new Error("refused");
-      expect(admits(id).at(-1)).toMatchObject({
-        external_job_id: `coding:${id}:0`,
-        est_tokens: Math.ceil((usageCost + worst) / 4),
-      });
-      // The hub subtracts the reported usage from the hold: what's left still covers this request's worst case.
-      expect(hub.held(holds(id)[0]!)).toBeGreaterThanOrEqual(Math.ceil((worst * 2.6) / 4) - 2);
-      expect(holds(id)).toHaveLength(1);
+      expect(admits(id).at(-1)).toMatchObject({ external_job_id: `coding:${id}:1`, est_tokens: Math.ceil(worst / 4) });
+      expect(holds(id).map((r) => r.status)).toEqual(["succeeded", "open"]);
+      expect(hub.held(holds(id)[1]!)).toBe(Math.ceil(Math.ceil(worst / 4) * 2.6));
     });
 
     it("concurrent requests on one session each get a ticket and the final hold covers both", async () => {
@@ -393,7 +449,7 @@ if (!url) {
       const { id, meter } = await setup();
       const a = await meter.begin(id, req);
       if (!a.ok) throw new Error("refused");
-      await meter.finish(a.ticket, usage, { outputBytes: 0 });
+      await meter.finish(a.ticket, { input: 0, output: 0 }, { outputBytes: 0 }); // no usage: the same hold would be re-admitted
       clock += (cfg.holdTtlSeconds + 1) * 1000;
       const b = await meter.begin(id, req);
       expect(b.ok).toBe(true);
