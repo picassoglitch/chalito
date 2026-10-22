@@ -512,6 +512,9 @@ export class AgentCore {
         this.#prompt(s, this.#withLinkData(s.sid, text, origin), origin);
         return { ok: true };
       }
+      // ADR 0031 §4: transfers are wired to the link manager in their own change.
+      case "session.transfer":
+        return this.#reject(cid, "invalid");
       case "session.interrupt": {
         const s = this.sessions.get(p.sid);
         if (!s) return this.#dormant.has(p.sid) ? { ok: true } : this.#reject(cid, "unknown_session");

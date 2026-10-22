@@ -124,6 +124,8 @@ export const CommandPayload = z.discriminatedUnion("type", [
   SessionStart,
   z.object({ type: z.literal("session.prompt"), sid: SessionId, promptCt: SealedEnvelope }),
   z.object({ type: z.literal("session.interrupt"), sid: SessionId }),
+  // ADR 0031 §4: move an idle session to another of the owner's computers, over a hand-off link.
+  z.object({ type: z.literal("session.transfer"), sid: SessionId, toDeviceId: DeviceId }),
   z.object({ type: z.literal("session.resume"), sid: SessionId, promptCt: SealedEnvelope.optional() }),
   z.object({
     type: z.literal("session.setPermissionMode"),
