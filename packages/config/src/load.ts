@@ -53,7 +53,8 @@ export const loadLiabilityText = (locale: "es" | "en", dir = CONFIG_DIR): Liabil
     new URL(`legal/devmode-liability.${locale}.md`, `file://${dir.endsWith("/") ? dir : `${dir}/`}`),
     "utf8",
   );
-  const match = /^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/.exec(raw);
+  // A Windows checkout may have CRLF line endings.
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n(?:\r?\n)?([\s\S]*)$/.exec(raw);
   if (!match) throw new Error(`devmode-liability.${locale}.md: missing front matter`);
   const meta = parse(match[1]!) as { version: number; toggle_phrase: string };
   return { locale, version: meta.version, phrase: meta.toggle_phrase, text: match[2]!.trim() };

@@ -5,7 +5,8 @@
     "security": "Security",
     "voice": "Voice",
     "rooms": "Rooms",
-    "ai": "Connected AI"
+    "ai": "Connected AI",
+    "sessions": "Sessions"
   },
   "dnd": "Do not disturb",
   "offline": "Not connected to your account. Pair this computer with “chalito pair”.",
@@ -583,5 +584,43 @@
       "firstTask": "Try the first task"
     },
     "signingIn": "Finish signing in in the browser that opened."
+  },
+  "sessions": {
+    "title": "New session",
+    "intro": "Start here and follow it on your phone. Approvals reach both.",
+    "app": "AI",
+    "workspace": "Folder",
+    "prompt": "What should it do",
+    "mode": "Permissions",
+    "modes": {
+      "default": "Asks before changes",
+      "plan": "Plan only",
+      "acceptEdits": "Edits the folder without asking"
+    },
+    "start": "Start",
+    "noApps": "No AI is ready on this computer. Connect one in “Connected AI”.",
+    "noWorkspaces": "Add a folder in Settings to start.",
+    "unavailable": "Chalito isn't running on this computer.",
+    "refused": "Chalito refused it: {reason}",
+    "send": "Send",
+    "stop": "Stop",
+    "another": "Another session",
+    "you": "You",
+    "phone": "You (phone)",
+    "agent": "Another agent",
+    "ai": "AI",
+    "writing": "writing…",
+    "state": {
+      "starting": "Starting",
+      "running": "Working",
+      "waiting_approval": "Waiting for your approval",
+      "waiting_input": "Waiting for your answer",
+      "idle": "Ready",
+      "completed": "Done",
+      "failed": "Failed",
+      "interrupted": "Stopped"
+    },
+    "signInForLive": "Sign in to Chalito to see the conversation here; meanwhile, follow it on your phone.",
+    "terminal": "You (terminal)"
   }
 }

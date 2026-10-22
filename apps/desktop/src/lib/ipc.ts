@@ -380,7 +380,19 @@ export interface AgentIpc {
   addLink(link: LinkSpec, answers: { confirm: boolean; typed: string }): Promise<LinkAddResult>;
   revokeLink(linkId: string): Promise<{ revoked: boolean }>;
   revokeAllLinks(): Promise<{ revoked: number }>;
+  // ADR 0031 §1: "Nueva sesión", sessions started here with origin `local`.
+  codeApps(): Promise<{ apps: string[]; workspaces: string[] }>;
+  codeStart(i: {
+    appId: string;
+    workspaceLabel: string;
+    prompt: string;
+    permissionMode: CodeMode;
+  }): Promise<{ sid: string }>;
+  codePrompt(sid: string, text: string): Promise<void>;
+  codeStop(sid: string): Promise<void>;
 }
+
+export type CodeMode = "default" | "plan" | "acceptEdits";
 
 export class IpcUnavailableError extends Error {
   constructor() {
@@ -447,6 +459,10 @@ export const unavailableIpc: AgentIpc = {
   addLink: unavailable,
   revokeLink: unavailable,
   revokeAllLinks: unavailable,
+  codeApps: unavailable,
+  codeStart: unavailable,
+  codePrompt: unavailable,
+  codeStop: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -525,6 +541,10 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     addLink: (link, answers) => call("linkAdd", { link, answers }),
     revokeLink: (linkId) => call("linkRevoke", { linkId }),
     revokeAllLinks: () => call("linkRevokeAll"),
+    codeApps: () => call("codeApps"),
+    codeStart: (i) => call("codeStart", { ...i }),
+    codePrompt: async (sid, text) => void (await call("codePrompt", { sid, text })),
+    codeStop: async (sid) => void (await call("codeStop", { sid })),
   };
 };
 

@@ -254,6 +254,10 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     addLink: async () => ({ ok: false, reason: "cancelled" }),
     revokeLink: async () => ({ revoked: false }),
     revokeAllLinks: async () => ({ revoked: 0 }),
+    codeApps: async () => ({ apps: [], workspaces: [] }),
+    codeStart: async () => ({ sid: "s1" }),
+    codePrompt: async () => undefined,
+    codeStop: async () => undefined,
     ...over,
   };
 };
