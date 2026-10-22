@@ -159,6 +159,8 @@ jobs:
       - run: pnpm --filter @chalito/guard test:pg
         env:
           CHALITO_DB_ROLE: chalito_server
+      # The ai-gateway end to end (ADR 0030): its own role, fake providers, the hub ledger.
+      - run: pnpm --filter @chalito/ai-gateway test:pg
       - name: Agent SupabaseStore and browser client integration
         run: |
           eval "$(supabase status -o env)"
@@ -201,6 +203,7 @@ jobs:
           - { app: notifier, entry: src/server.ts, expect: "is required" }
           - { app: orchestrator, entry: src/server.ts, expect: "is required" }
           - { app: mcp-gateway, entry: src/server.ts, expect: "is required" }
+          - { app: ai-gateway, entry: src/server.ts, expect: "is required" }
           - { app: avatar-jobs, entry: src/job.ts, expect: "AVATAR_BUCKET and UPLOAD_PATH are required" }
     steps:
       - uses: actions/checkout@v4

@@ -1,0 +1,23 @@
+{
+  "name": "@chalito/ai-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:pg": "vitest run -c vitest.pg.config.ts"
+  },
+  "dependencies": {
+    "@chalito/billing": "workspace:*",
+    "@chalito/config": "workspace:*",
+    "@chalito/guard": "workspace:*",
+    "@chalito/redact": "workspace:*",
+    "@hono/node-server": "^2.1.3",
+    "hono": "^4.13.12",
+    "postgres": "^3.4.9",
+    "tsx": "^4.23.15"
+  }
+}
