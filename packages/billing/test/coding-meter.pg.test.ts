@@ -22,7 +22,9 @@ if (!url) {
     await Promise.all([gw.end(), server.end(), admin.end()]);
   });
   const prices = loadPrices();
-  const cfg = loadProviders().codingManaged;
+  const real = loadProviders().codingManaged;
+  // These tests move the clock by hours and days; the idle limit has its own test below.
+  const cfg = { ...real, credentialIdleSeconds: 30 * 86_400 };
   let clock = Date.UTC(2026, 9, 21, 18); // 12:00 in Mexico City
   const now = () => clock;
   // One ledger for the file: a drain sends every pending row, whichever test wrote it.
@@ -165,20 +167,57 @@ if (!url) {
       expect(Number((await cred(id)).inflight_micros)).toBe(worst);
     });
 
-    it("usage the hub hasn't seen yet stays in the hold; once sent, it leaves it (never counted twice)", async () => {
+    it("a zero-usage finish retried by another instance (lost commit ack) releases the hold once", async () => {
+      const { id, meter } = await setup();
+      const a = await meter.begin(id, req);
+      const b = await meter.begin(id, req);
+      if (!a.ok || !b.ok) throw new Error("refused");
+      await meter.finish(a.ticket, { input: 0, output: 0 }, { outputBytes: 0 });
+      const other = new CodingMeter({
+        store: new PostgresCodingStore(gw),
+        hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "t", fetch: hub.fetch }),
+        prices,
+        cfg,
+        reserveBasis: "pre_margin",
+        now,
+      });
+      await other.finish(a.ticket, { input: 0, output: 0 }, { outputBytes: 0 });
+      expect(await cred(id)).toMatchObject({ inflight_requests: 1 });
+      expect(Number((await cred(id)).inflight_micros)).toBe(worst);
+    });
+
+    it("a token unused for credentialIdleSeconds is refused; each request renews it", async () => {
+      const { id } = await setup();
+      const strict = new CodingMeter({
+        store: new PostgresCodingStore(gw),
+        hub: new HubClient({ baseUrl: "https://www.chalyb.com", token: "t", fetch: hub.fetch }),
+        prices,
+        cfg: real,
+        reserveBasis: "pre_margin",
+        now,
+      });
+      expect((await strict.begin(id, req)).ok).toBe(true);
+      clock += (real.credentialIdleSeconds - 10) * 1000;
+      expect((await strict.begin(id, req)).ok).toBe(true);
+      clock += (real.credentialIdleSeconds + 1) * 1000;
+      expect(await strict.begin(id, req)).toEqual({ ok: false, reason: "expired" });
+      clock = Date.UTC(2026, 9, 21, 18);
+    });
+
+    it("every top-up counts all of this hold's usage, sent or not, so the hub keeps in flight + worst case held", async () => {
       const { id, meter, drain } = await setup();
       const a = await meter.begin(id, req);
       if (!a.ok) throw new Error("refused");
       await meter.finish(a.ticket, usage, { outputBytes: 0 });
-      await meter.begin(id, req);
+      await drain();
+      const b = await meter.begin(id, req);
+      if (!b.ok) throw new Error("refused");
       expect(admits(id).at(-1)).toMatchObject({
         external_job_id: `coding:${id}:0`,
         est_tokens: Math.ceil((usageCost + worst) / 4),
       });
-      await drain();
-      await meter.begin(id, req);
-      // Two requests in flight now (the second never finished), and nothing unsent.
-      expect(admits(id).at(-1)).toMatchObject({ est_tokens: Math.ceil((2 * worst) / 4) });
+      // The hub subtracts the reported usage from the hold: what's left still covers this request's worst case.
+      expect(hub.held(holds(id)[0]!)).toBeGreaterThanOrEqual(Math.ceil((worst * 2.6) / 4) - 2);
       expect(holds(id)).toHaveLength(1);
     });
 
@@ -274,6 +313,13 @@ if (!url) {
       clock += SETTLE_CUTOFF_MS + 1;
       expect(await meter.settle(id)).toBe("settled");
       expect(await cred(id)).toMatchObject({ inflight_requests: 0 });
+      // The request that never finished is billed at its worst case, once.
+      const orphan = await admin<
+        { source_id: string; event: { cost_usd_micros: number; metadata: Record<string, unknown> } }[]
+      >`
+        select source_id, event from chalito_private.usage_outbox where source_id = ${`coding:${id}:orphan:0`}`;
+      expect(orphan).toHaveLength(1);
+      expect(orphan[0]!.event).toMatchObject({ cost_usd_micros: worst, metadata: { estimated: true, orphan: true } });
       expect(Number((await cred(id)).inflight_micros)).toBe(0);
       clock = Date.UTC(2026, 9, 21, 18);
 
@@ -373,9 +419,10 @@ if (!url) {
       const a = await meter.begin(id, req);
       if (!a.ok) throw new Error("refused");
       const { costMicros } = await meter.finish(a.ticket, null, { outputBytes: 500 });
-      expect(costMicros).toBe(8_000 + 600);
+      // Hidden reasoning isn't streamed: the output is billed at its clamped limit, not the bytes seen.
+      expect(costMicros).toBe(worst);
       const [row] = await outbox(owner);
-      expect(row!.event.metadata).toMatchObject({ estimated: true, tokens: { input: 40_000, output: 500 } });
+      expect(row!.event.metadata).toMatchObject({ estimated: true, tokens: { input: 40_000, output: 32_000 } });
     });
 
     it("settle: a revoked credential's hold closes at the hub; the sweep closes expired ones too", async () => {

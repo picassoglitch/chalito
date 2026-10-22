@@ -40,10 +40,17 @@ export class FakeHub {
     return this.reservations.filter((r) => r.user === user && r.status === "open");
   }
 
+  /** What an open hold still holds: its estimate minus the usage reported on it (hub 0065 usage_balance). */
+  held(r: Reservation) {
+    let spent = 0;
+    for (const e of this.events.values()) if (e.reservationId === r.id) spent += e.billable;
+    return Math.max(0, r.est - spent);
+  }
+
   remaining(user: string) {
     const u = this.users.get(user);
     if (!u) return 0;
-    return u.allocation - u.used - this.#open(user).reduce((s, r) => s + r.est, 0);
+    return u.allocation - u.used - this.#open(user).reduce((s, r) => s + this.held(r), 0);
   }
 
   #balance(user: string) {
@@ -54,7 +61,7 @@ export class FakeHub {
       monthlyAllocation: u.allocation,
       bonus: 0,
       monthlyUsed: u.used,
-      reserved: this.#open(user).reduce((s, r) => s + r.est, 0),
+      reserved: this.#open(user).reduce((s, r) => s + this.held(r), 0),
       periodStart: "2026-10-01T00:00:00.000Z",
     };
   }

@@ -24,6 +24,8 @@ type Row = {
   reservation_id: string | null;
   inflight_micros: string;
   inflight_requests: number;
+  gen_spent_micros: string;
+  last_used_at: Date;
   requests: number;
   blocked_reason: CodingBlock | null;
   expires_at: Date;
@@ -32,7 +34,7 @@ type Row = {
 };
 
 const COLS = `id, owner, device_id, sid, agent, provider, models, hold_gen, reservation_id, inflight_micros,
-  inflight_requests, requests, blocked_reason, expires_at, revoked_at, settled_at`;
+  inflight_requests, gen_spent_micros, last_used_at, requests, blocked_reason, expires_at, revoked_at, settled_at`;
 
 const fromRow = (r: Row): CodingCredential => ({
   id: r.id,
@@ -46,6 +48,8 @@ const fromRow = (r: Row): CodingCredential => ({
   reservationId: r.reservation_id,
   inflightMicros: Number(r.inflight_micros),
   inflightRequests: r.inflight_requests,
+  genSpentMicros: Number(r.gen_spent_micros),
+  lastUsedAt: r.last_used_at.getTime(),
   requests: r.requests,
   blockedReason: r.blocked_reason,
   expiresAt: r.expires_at.getTime(),
@@ -63,9 +67,9 @@ class PgCodingTx implements CodingTx {
     return this.c;
   }
 
-  async owner(): Promise<CodingOwnerState> {
+  async owner(lock = true): Promise<CodingOwnerState> {
     // Serializes the owner's begins (whichever session), so the cap check sees every request in flight.
-    await this.tx`select pg_advisory_xact_lock(hashtextextended(${`coding:${this.c.owner}`}, 0))`;
+    if (lock) await this.tx`select pg_advisory_xact_lock(hashtextextended(${`coding:${this.c.owner}`}, 0))`;
     const [r] = await this.tx<
       {
         tier: string | null;
@@ -117,12 +121,20 @@ class PgCodingTx implements CodingTx {
       update chalito_private.coding_credentials set
         hold_gen = ${next.holdGen}, reservation_id = ${next.reservationId},
         inflight_micros = ${next.inflightMicros}, inflight_requests = ${next.inflightRequests},
+        gen_spent_micros = ${next.genSpentMicros}, last_used_at = ${new Date(next.lastUsedAt)},
         requests = ${next.requests}, blocked_reason = ${next.blockedReason},
         settled_at = ${next.settledAt === null ? null : new Date(next.settledAt)}
         ${p.revoked ? this.tx`, revoked_at = ${new Date(p.revoked.at)}, revoked_reason = ${p.revoked.reason}` : this.tx``}
       where id = ${this.c.id}
       returning ${this.tx.unsafe(COLS)}`;
     this.c = fromRow(r!);
+  }
+
+  async markFinished(seq: number) {
+    const rows = await this.tx`
+      insert into chalito_private.coding_finished (credential_id, seq) values (${this.c.id}, ${seq})
+      on conflict do nothing returning seq`;
+    return rows.length > 0;
   }
 
   async record(r: CodingRecord) {

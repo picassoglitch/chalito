@@ -41,6 +41,9 @@ export interface CodingCredential {
   reservationId: string | null;
   inflightMicros: number;
   inflightRequests: number;
+  /** Usage on the current hold generation (the hub subtracts it from the hold). */
+  genSpentMicros: number;
+  lastUsedAt: number;
   requests: number;
   blockedReason: CodingBlock | null;
   expiresAt: number;
@@ -86,7 +89,15 @@ export const planCapZone = (z: CapZone, userTz: string | null, now: number): Cap
 export type CodingPatch = Partial<
   Pick<
     CodingCredential,
-    "holdGen" | "reservationId" | "inflightMicros" | "inflightRequests" | "requests" | "blockedReason" | "settledAt"
+    | "holdGen"
+    | "reservationId"
+    | "inflightMicros"
+    | "inflightRequests"
+    | "genSpentMicros"
+    | "lastUsedAt"
+    | "requests"
+    | "blockedReason"
+    | "settledAt"
   >
 > & { revoked?: { at: number; reason: CodingRevokeReason } };
 
@@ -102,7 +113,8 @@ export interface CodingRecord {
 /** Everything the meter does to one credential happens inside `withCredential`, under its row lock. */
 export interface CodingTx {
   credential(): CodingCredential;
-  owner(): Promise<CodingOwnerState>;
+  /** `lock`: serialize with the owner's other begins (only begin needs it; it holds it across the hub call). */
+  owner(lock?: boolean): Promise<CodingOwnerState>;
   /** Billable tokens already spent on the owner's local `day`, all agents. */
   spentOn(day: string): Promise<number>;
   /** This credential's usage still pending in the outbox: spent, but not yet seen by the hub. */
@@ -110,6 +122,8 @@ export interface CodingTx {
   update(patch: CodingPatch): Promise<void>;
   /** False when the event was already recorded (a retried finish): nothing is added twice. */
   record(r: CodingRecord): Promise<boolean>;
+  /** Marks request `seq` finished; false when it already was (a retry after a lost commit ack). */
+  markFinished(seq: number): Promise<boolean>;
 }
 
 export interface CodingStore {
@@ -139,7 +153,10 @@ export interface CodingTicket {
   seq: number;
   worstMicros: number;
   reservationId: string;
+  holdGen: number;
   inputBound: number;
+  /** The clamped output limit: the fallback's output when the provider never reports usage. */
+  maxOutput: number;
 }
 
 export interface CodingRequest {
@@ -152,7 +169,7 @@ export interface CodingRequest {
   maxOutputTokens: number;
 }
 
-/** What a request without provider usage is billed at: its worst-case input, its streamed output bytes. */
+/** Kept for the log: what streamed. A request without provider usage is billed at its worst case. */
 export interface CodingFallback {
   outputBytes: number;
 }
@@ -220,9 +237,10 @@ export class CodingMeter {
     const res = await this.d.store.withCredential(credentialId, async (tx) => {
       const c = tx.credential();
       if (c.revokedAt !== null) return { ok: false as const, reason: "revoked" as const };
-      if (c.expiresAt <= now) return { ok: false as const, reason: "expired" as const };
+      if (c.expiresAt <= now || now - c.lastUsedAt > this.d.cfg.credentialIdleSeconds * 1000)
+        return { ok: false as const, reason: "expired" as const };
       if (!c.models.includes(req.model)) return { ok: false as const, reason: "model_not_allowed" as const };
-      const o = await tx.owner();
+      const o = await tx.owner(true);
       if (o.deviceRevoked) {
         await tx.update({ revoked: { at: now, reason: "device_revoked" } });
         return { ok: false as const, reason: "device_revoked" as const };
@@ -240,7 +258,9 @@ export class CodingMeter {
       const committed = (await tx.spentOn(day)) + estimateBillable(o.inflightMicros + worst, HUB_MARGIN_PERCENT);
       if (committed > codingDailyCap(this.d.cfg, o.tier, o.capTokens)) return block("daily_cap");
 
-      const est = reserveTokens((await tx.unsentMicros()) + c.inflightMicros + worst, this.d.reserveBasis);
+      // The hub holds est − usage reported on the hold, so all of this generation's usage counts here.
+      let genSpent = c.genSpentMicros;
+      let est = reserveTokens(genSpent + c.inflightMicros + worst, this.d.reserveBasis);
       let gen = c.holdGen;
       let admit;
       try {
@@ -248,6 +268,8 @@ export class CodingMeter {
         // The hold lapsed (ttl) or was settled: a new one, under the next job id.
         if (!admit.allowed && admit.reason === "already_settled") {
           gen += 1;
+          genSpent = 0;
+          est = reserveTokens(c.inflightMicros + worst, this.d.reserveBasis);
           admit = await this.d.hub.admit(codingHoldRequest(c, gen, est, this.d.cfg.holdTtlSeconds));
         }
       } catch (err) {
@@ -259,6 +281,8 @@ export class CodingMeter {
       const seq = c.requests + 1;
       await tx.update({
         holdGen: gen,
+        genSpentMicros: genSpent,
+        lastUsedAt: now,
         reservationId: admit.reservation_id,
         inflightMicros: c.inflightMicros + worst,
         inflightRequests: c.inflightRequests + 1,
@@ -274,7 +298,9 @@ export class CodingMeter {
         seq,
         worstMicros: worst,
         reservationId: admit.reservation_id,
+        holdGen: gen,
         inputBound: Math.min(Math.max(0, req.inputBytes), req.maxInputTokens),
+        maxOutput: Math.max(0, req.maxOutputTokens),
       };
       return { ok: true as const, ticket };
     });
@@ -286,7 +312,8 @@ export class CodingMeter {
   async finish(t: CodingTicket, usage: TokenUsage | null, fallback: CodingFallback): Promise<{ costMicros: number }> {
     const now = this.d.now();
     if (this.#finished.has(t)) return { costMicros: 0 };
-    const u: TokenUsage = usage ?? { input: t.inputBound, output: Math.max(0, Math.ceil(fallback.outputBytes)) };
+    void fallback;
+    const u: TokenUsage = usage ?? { input: t.inputBound, output: t.maxOutput };
     const costMicros = llmCostMicros(this.d.prices, t.provider, t.model, u);
     const tokens = {
       input: u.input,
@@ -309,23 +336,23 @@ export class CodingMeter {
       },
     );
     await this.d.store.withCredential(t.credentialId, async (tx) => {
+      // Durable: a retry after a lost commit ack (another instance, a replay) finds the marker and changes nothing.
+      if (!(await tx.markFinished(t.seq))) return;
       const c = tx.credential();
-      const o = await tx.owner();
-      const fresh =
-        !event ||
-        amount === 0 ||
-        (await tx.record({
+      const o = await tx.owner(false);
+      if (event && amount > 0)
+        await tx.record({
           event,
           day: localDayKey(now, capTz(o.capZone, now)),
           agent: t.agent,
           costMicros,
           billableTokens: estimateBillable(costMicros, HUB_MARGIN_PERCENT),
-        }));
-      if (fresh)
-        await tx.update({
-          inflightMicros: Math.max(0, c.inflightMicros - t.worstMicros),
-          inflightRequests: Math.max(0, c.inflightRequests - 1),
         });
+      await tx.update({
+        inflightMicros: Math.max(0, c.inflightMicros - t.worstMicros),
+        inflightRequests: Math.max(0, c.inflightRequests - 1),
+        ...(c.holdGen === t.holdGen ? { genSpentMicros: c.genSpentMicros + costMicros } : {}),
+      });
     });
     this.#finished.add(t);
     return { costMicros };
@@ -351,7 +378,31 @@ export class CodingMeter {
           return "open" as const;
         }
       }
-      // Past the cutoff, requests that never finished (a crashed gateway) stop counting against the cap.
+      // Past the cutoff, requests that never finished (a crashed gateway) are billed at their worst case, once.
+      if (c.inflightMicros > 0) {
+        const o = await tx.owner(false);
+        const orphan = usageEvent(
+          { owner: c.owner, billingMode: "managed", origin: "session.managed" },
+          {
+            kind: "llm.tokens",
+            provider: c.provider,
+            amount: 0,
+            costUsdMicros: c.inflightMicros,
+            occurredAt: now,
+            sourceId: `coding:${c.id}:orphan:${c.holdGen}`,
+            ...(c.reservationId ? { reservationId: c.reservationId } : {}),
+            metadata: { agent: c.agent, estimated: true, orphan: true, requests: c.inflightRequests },
+          },
+        );
+        if (orphan)
+          await tx.record({
+            event: orphan,
+            day: localDayKey(now, capTz(o.capZone, now)),
+            agent: c.agent,
+            costMicros: c.inflightMicros,
+            billableTokens: estimateBillable(c.inflightMicros, HUB_MARGIN_PERCENT),
+          });
+      }
       await tx.update({ settledAt: now, inflightMicros: 0, inflightRequests: 0 });
       if (busy) this.d.log?.("coding.settled_with_inflight", { credential: c.id, inflight: c.inflightRequests });
       return "settled" as const;
