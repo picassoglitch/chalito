@@ -35,7 +35,9 @@ import { loadPtyBackend, type PtyBackend } from "./terminal/pty.js";
 import { AppLauncher, registerAppDrivers } from "./drivers/apps.js";
 import type { Launcher } from "./drivers/launcher.js";
 import type { AppDriverContext, LaunchableRecipe } from "./drivers/app-launch.js";
+import { remoteScreenOn } from "./features.js";
 import { ScreenManager } from "./screen/manager.js";
+import { disableScreen } from "./screen/toggle.js";
 import { iceServersFrom, weriftPeer, type PeerFactory } from "./screen/peer.js";
 import {
   API_TIMEOUT_MS,
@@ -539,6 +541,7 @@ const startDaemon = async (
   let computer: ComputerControl | null = null;
   let terminal: TerminalControl | null = null;
   let screen: ScreenManager | null = null;
+  const screenOn = remoteScreenOn(env);
   // LAN direct path (lan/, ADR 0022 §5): null without a LAN-capable cloud; off until local policy.
   let lan: LanService | null = null;
 
@@ -945,56 +948,59 @@ const startDaemon = async (
     coreDeps.terminal = terminal;
 
     // Remote screen (screen/manager.ts): same desktop-app condition, indicator and kill switch.
+    // Dormant unless built in (features.ts): without the flag no manager exists at all.
     const control = computer;
-    screen = new ScreenManager({
-      policy: () => policy.get().screen,
-      driver: deps.computerDriver ?? (() => loadNativeDriver({ runner: spawnRunner, env })),
-      desktopPresent: () => control.desktopPresent(),
-      indicatorShown: () => control.indicatorShown(),
-      requestApproval: (sid, input) =>
-        core.approvals.request({
-          sid,
-          risk: "HIGH",
-          stepUp: true,
-          origin: input.origin,
-          kind: input.kind,
-          details: input.details,
-          onRequested: input.onRequested,
-        }),
-      writeEvent: (e) => signedInStore.writeEvent(e),
-      upsertSession: (sid, doc) => signedInStore.upsertSession(sid, doc),
-      // Signaling goes to the one browser that opened the session (and this agent), nobody else.
-      sealFor: async (clientDeviceId, value, aad) => {
-        const key = trust.recipients()[clientDeviceId];
-        if (!key) return null;
-        return sealJson(
-          value,
-          { [id.deviceId]: await fromB64url(id.pubBox), [clientDeviceId]: await fromB64url(key) },
-          aad,
-        );
-      },
-      signSignal: async (body) =>
-        (await signEnvelope("chalito.screen-signal.v1", body, id.deviceId, id.sign.secretKey)) as SignedScreenSignal,
-      peer: deps.screenPeer ?? weriftPeer,
-      iceServers: () => iceServersFrom(env),
-      apps: { has: (a) => appLauncher.has(a), focusOrLaunch: (a) => appLauncher.focusOrLaunch(a) },
-      audit: auditAgent,
-      publish: (st) =>
-        publish({
-          v: 1,
-          type: "screen.changed",
-          deviceId: id.deviceId,
-          view: st.view,
-          control: st.control,
-          activeSessions: st.activeSessions,
-          ...(st.by ? { by: st.by } : {}),
-          t: now(),
-        }),
-      deviceId: id.deviceId,
-      now,
-      locale: () => cfg.locale,
-    });
-    coreDeps.screen = screen;
+    if (screenOn) {
+      screen = new ScreenManager({
+        policy: () => policy.get().screen,
+        driver: deps.computerDriver ?? (() => loadNativeDriver({ runner: spawnRunner, env })),
+        desktopPresent: () => control.desktopPresent(),
+        indicatorShown: () => control.indicatorShown(),
+        requestApproval: (sid, input) =>
+          core.approvals.request({
+            sid,
+            risk: "HIGH",
+            stepUp: true,
+            origin: input.origin,
+            kind: input.kind,
+            details: input.details,
+            onRequested: input.onRequested,
+          }),
+        writeEvent: (e) => signedInStore.writeEvent(e),
+        upsertSession: (sid, doc) => signedInStore.upsertSession(sid, doc),
+        // Signaling goes to the one browser that opened the session (and this agent), nobody else.
+        sealFor: async (clientDeviceId, value, aad) => {
+          const key = trust.recipients()[clientDeviceId];
+          if (!key) return null;
+          return sealJson(
+            value,
+            { [id.deviceId]: await fromB64url(id.pubBox), [clientDeviceId]: await fromB64url(key) },
+            aad,
+          );
+        },
+        signSignal: async (body) =>
+          (await signEnvelope("chalito.screen-signal.v1", body, id.deviceId, id.sign.secretKey)) as SignedScreenSignal,
+        peer: deps.screenPeer ?? weriftPeer,
+        iceServers: () => iceServersFrom(env),
+        apps: { has: (a) => appLauncher.has(a), focusOrLaunch: (a) => appLauncher.focusOrLaunch(a) },
+        audit: auditAgent,
+        publish: (st) =>
+          publish({
+            v: 1,
+            type: "screen.changed",
+            deviceId: id.deviceId,
+            view: st.view,
+            control: st.control,
+            activeSessions: st.activeSessions,
+            ...(st.by ? { by: st.by } : {}),
+            t: now(),
+          }),
+        deviceId: id.deviceId,
+        now,
+        locale: () => cfg.locale,
+      });
+      coreDeps.screen = screen;
+    }
   }
   // Agent-to-agent links (ADR 0022 §3): the list is local and signed (~/.chalito/links.json);
   // the cloud only carries relays and shows the list on the phone.
@@ -1024,6 +1030,7 @@ const startDaemon = async (
     now,
   });
   coreDeps.linkTools = linkTools;
+  coreDeps.remote = { screen: screenOn };
   const core = new AgentCore(coreDeps);
   // Sessions from before this start can be resumed (lazily: nothing is spawned for them now).
   await core
@@ -1042,6 +1049,8 @@ const startDaemon = async (
     log,
     now,
   });
+  // A policy saved while remote screen was built in must not keep it enabled (features.ts).
+  if (!screenOn) await disableScreen({ policy, emit: auditAgent }, "all", "flag_off");
   await lan?.onPolicyChange();
   try {
     linksBroker = await startBroker({
@@ -1394,6 +1403,7 @@ const startDaemon = async (
           computer,
           terminal,
           screen,
+          remote: { screen: screenOn },
           links,
           identity: { deviceId: id.deviceId, pubSign: id.pubSign, pubBox: id.pubBox },
           audit: auditAgent,

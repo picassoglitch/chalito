@@ -22,6 +22,7 @@ import {
   enableRemoteTerminal,
   type TerminalPrompter,
 } from "./terminal/toggle.js";
+import { remoteScreenOn } from "./features.js";
 import { disableScreen, enableScreen, screenLevel, type ScreenPrompter } from "./screen/toggle.js";
 import {
   ConfigTamperedError,
@@ -76,7 +77,11 @@ export interface CliIo {
   hostname?: string;
 }
 
-export const USAGE = `chalito <command>
+const SCREEN_USAGE = `  screen enable [view|control]         remote screen: let your trusted browser see (or also control)
+  screen disable [control]|status      this screen, approved per session (enable: local only)
+`;
+
+const usageText = (screenOn: boolean) => `chalito <command>
 
   run                                  run the agent (the OS service does this)
   pair [--laptop]                      pair this computer with your phone
@@ -98,9 +103,7 @@ export const USAGE = `chalito <command>
   terminal enable|disable|status       remote terminal: open an AI's terminal app from a trusted browser
                                        after a passkey approval (enable: local only, OS auth + confirmations)
   terminal shell enable|disable        the full shell over remote terminal (stronger confirmation)
-  screen enable [view|control]         remote screen: let your trusted browser see (or also control)
-  screen disable [control]|status      this screen, approved per session (enable: local only)
-  claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
+${screenOn ? SCREEN_USAGE : ""}  claude pin [path]                    trust this Claude Code binary (path + sha256); after updates too
   codex pin [path]                     trust this Codex binary (path + sha256); after updates too
   grok pin [path]                      trust this Grok Build binary (path + sha256); after updates too
   gemini pin [path]                    trust this Gemini CLI binary (path + sha256); after updates too
@@ -117,6 +120,10 @@ Commands that change anything only run in a terminal you are typing in (not pipe
 not from an AI session). Dev/test: CHALITO_SECRETS=file:<path> + CHALITO_SECRETS_PASSPHRASE
 keep keys in an encrypted file instead of the OS keychain.
 `;
+
+/** Remote screen is dormant unless built in (features.ts): its commands leave the usage text. */
+export const usageFor = (env: Record<string, string | undefined>): string => usageText(remoteScreenOn(env));
+export const USAGE = usageFor({});
 
 const ON_TOGGLES = EnableableDevModeToggle.options;
 const KEY_NAMES = {
@@ -202,6 +209,7 @@ const T = {
       control
         ? "Pantalla remota activada (ver y controlar). Cada sesión pedirá tu aprobación con passkey; la app de escritorio debe estar abierta.\n"
         : "Pantalla remota activada (solo ver). Cada sesión pedirá tu aprobación con passkey; la app de escritorio debe estar abierta.\n",
+    screenOffBuild: "La pantalla remota no está disponible en esta versión de Chalito.\n",
     screenAlready: "La pantalla remota ya está activada así.\n",
     screenOff: "Pantalla remota desactivada. Las sesiones abiertas terminaron.\n",
     screenControlOff: "Control remoto desactivado (ver sigue activo). Las sesiones con control terminaron.\n",
@@ -323,6 +331,7 @@ const T = {
       control
         ? "Remote screen is on (view and control). Every session will ask for your passkey approval; the desktop app must be open.\n"
         : "Remote screen is on (view only). Every session will ask for your passkey approval; the desktop app must be open.\n",
+    screenOffBuild: "Remote screen isn't available in this version of Chalito.\n",
     screenAlready: "Remote screen is already on like that.\n",
     screenOff: "Remote screen is off. Open sessions ended.\n",
     screenControlOff: "Remote control is off (viewing stays on). Sessions with control ended.\n",
@@ -475,7 +484,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   const t = T[locale];
 
   if (!cmd || flags.help || cmd === "help") {
-    io.out(USAGE);
+    io.out(usageFor(io.env));
     return cmd || flags.help ? 0 : 1;
   }
 
@@ -518,6 +527,10 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   // Everything that changes trust, keys, policy, Developer mode or the service needs a human
   // at a real terminal, and never runs from inside an agent session (CHALITO_SESSION is set
   // by the adapters). Neither check alone is enough: `script -qc` supplies a pty.
+  if (cmd === "screen" && !remoteScreenOn(io.env)) {
+    io.err(t.screenOffBuild);
+    return 1;
+  }
   const mutating =
     ["pair", "keys", "service", "devmode", "claude", "codex", "grok", "gemini"].includes(cmd) ||
     (cmd === "policy" && sub === "edit") ||

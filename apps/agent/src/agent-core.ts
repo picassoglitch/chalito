@@ -158,6 +158,8 @@ export interface AgentCoreDeps {
   terminal?: TerminalCommands;
   /** Remote screen (screen/manager.ts); absent = `screen.*` commands are refused. */
   screen?: ScreenManager;
+  /** Build flags (features.ts). Absent = off: `screen.*` is refused and audited. */
+  remote?: { screen?: boolean };
   /** M16 A: idle-close, live cap and delta flushing (packages/config sessions.yaml). */
   sessionsConfig?: Pick<SessionsConfig, "session" | "live">;
   /** M16 A: where sessions are remembered for resume (~/.chalito/sessions.json); absent = memory only. */
@@ -456,6 +458,12 @@ export class AgentCore {
       PERMISSION_RANK[mode] > PERMISSION_RANK[policy.remote.maxPermissionMode];
     const sandboxAboveCeiling = (sandbox: keyof typeof SANDBOX_RANK | undefined) =>
       sandbox !== undefined && SANDBOX_RANK[sandbox] > SANDBOX_RANK[policy.remote.maxCodexSandbox];
+
+    // Remote screen is dormant unless built in (features.ts): refuse every screen.* and say so.
+    if (p.type.startsWith("screen.") && !this.d.remote?.screen) {
+      this.#audit("remote_screen.refused", { cid, command: p.type, origin });
+      return this.#reject(cid, "remote_screen_off");
+    }
 
     switch (p.type) {
       case "session.start": {

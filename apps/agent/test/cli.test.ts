@@ -59,7 +59,8 @@ const cli = (
       err: (s) => void (err += s),
       tty: { input, output },
       osStat: () => ({ uid: opts.helperUid ?? 0, mode: 0o100755, isFile: () => true }),
-      env: { LANG: "en_US.UTF-8", ...opts.env },
+      // Remote screen is built in for these tests; the flag-off cases pass "".
+      env: { LANG: "en_US.UTF-8", CHALITO_REMOTE_SCREEN: "1", ...opts.env },
       home,
       platform: opts.platform ?? "linux",
       secrets,
@@ -515,6 +516,17 @@ describe("chalito CLI", () => {
       expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
       expect(c.err()).toMatch(/chalito apps sessions enable/);
       expect((await policyOf(c)).apps?.sessions).toBeUndefined();
+    });
+  });
+
+  describe("screen flag off", () => {
+    it("refuses `screen` and hides it from usage", async () => {
+      const c = cli({ tty: true, env: { CHALITO_REMOTE_SCREEN: "" } });
+      expect(await c.run(["screen", "status"])).toBe(1);
+      expect(c.err()).toMatch(/isn't available/);
+      const h = cli({ tty: true, env: { CHALITO_REMOTE_SCREEN: "" } });
+      expect(await h.run(["help"])).toBe(0);
+      expect(h.out()).not.toMatch(/screen enable/);
     });
   });
 
