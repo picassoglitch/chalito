@@ -114,6 +114,20 @@ describe("devmode liability text", () => {
     expect(en.text).toContain("Chalito is not liable");
     expect(es.phrase).toBe("ACEPTO");
   });
+
+  it("loads from a Windows checkout too (CRLF line endings)", async () => {
+    const { CONFIG_DIR, loadLiabilityText } = await import("../src/load.js");
+    const { mkdtempSync, mkdirSync, readFileSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "chalito-config-"));
+    mkdirSync(join(dir, "legal"));
+    const lf = readFileSync(join(CONFIG_DIR, "legal", "devmode-liability.es.md"), "utf8");
+    writeFileSync(join(dir, "legal", "devmode-liability.es.md"), lf.replace(/\r?\n/g, "\r\n"));
+    const crlf = loadLiabilityText("es", dir);
+    expect(crlf.phrase).toBe("ACEPTO");
+    expect(crlf.text).toContain("Chalito no es responsable");
+  });
 });
 
 describe("catalog skins (material effects, no art)", () => {

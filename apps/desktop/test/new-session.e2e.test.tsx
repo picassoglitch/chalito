@@ -117,7 +117,7 @@ const computer = async () => {
       subscribe: (fn: () => void) => (subs.add(fn), () => void subs.delete(fn)),
       getSnapshot: () => snap,
     },
-    actions: { decide: async (_aid: string, allow: boolean) => a.answer(allow) },
+    actions: { decide: async (aid: string, allow: boolean) => a.answer(allow, false, aid) },
   } as never;
   return { ...a, ipc, client, refresh };
 };
