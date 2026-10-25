@@ -73,7 +73,8 @@ import { createLogger, redactDeep, type Logger } from "./redact.js";
 import { SESSION_KINDS, deviceSetup, setupReporter } from "./setup-report.js";
 import { acpDriver } from "./drivers/index.js";
 import { apiManagedSource } from "./managed-source.js";
-import { spawnRunner, which } from "./runner.js";
+import { spawnRunner, which, type ProcessRunner } from "./runner.js";
+import { PrWatch, findGh } from "./prs/watch.js";
 import { syncEndorsements, syncRevocations, syncSignIns } from "./endorsement-sync.js";
 import { openSecretStore } from "./secret-choice.js";
 import { SECRET_NAMES, type SecretStore } from "./secrets.js";
@@ -229,6 +230,10 @@ export interface DaemonDeps {
   terminalRecipes?: (appId: string) => Recipe | null;
   /** Remote screen's WebRTC peer (screen/peer.ts werift in production; a fake in tests). */
   screenPeer?: PeerFactory;
+  /** Runs `gh` and `git` for the PR watch (prs/watch.ts); tests pass a fake. */
+  prRunner?: ProcessRunner;
+  /** Finds the person's `gh`; default PATH plus the installers' folders. */
+  ghPath?: () => string | null;
   /**
    * The recipes remote screen and the computer MCP may launch. Defaults to the engine's catalog
    * (curated, and custom recipes enabled on this computer).
@@ -443,6 +448,12 @@ const defaultCloud =
       batch: { ms: sessionsConfig(log).events.batchMs, max: sessionsConfig(log).events.batchMax },
     });
   };
+
+const oneShot = (fn: () => void, ms: number) => {
+  const t = setTimeout(fn, ms);
+  t.unref?.();
+  return { clear: () => clearTimeout(t) };
+};
 
 const repeat = (fn: () => void, ms: number) => {
   const t = setInterval(fn, ms);
@@ -1419,6 +1430,7 @@ const startDaemon = async (
     const st = computer?.status();
     if (st && (st.active.length || st.pending.length)) await computer?.kill("agent_stop").catch(() => undefined);
     terminalWatchdog?.clear();
+    prs?.stop();
     await terminal?.kill("agent_stop").catch(() => undefined);
     await screen?.stopAll().catch(() => undefined);
     // Every session stays resumable after the restart (sessions.json).
@@ -1440,6 +1452,25 @@ const startDaemon = async (
 
   // ADR 0031: sessions typed at this computer; the panel's are `local`, `chalito code`'s `local:cli` (§6a).
   const code = codeService(core, () => policy.get(), readSetup, "local");
+  // Only the panel shows PR news, so the watch runs only for an agent the app started.
+  const prs = deps.ipcSecret
+    ? new PrWatch({
+        runner: deps.prRunner ?? spawnRunner,
+        ghPath: deps.ghPath ?? (() => findGh(env)),
+        sessions: () =>
+          [...core.sessions.values()].map((s) => ({
+            sid: s.sid,
+            label: s.label,
+            cwd: s.cwd,
+            lastActiveAt: s.lastActiveAt,
+          })),
+        dir,
+        now,
+        setTimer: deps.setTimer ?? oneShot,
+        log,
+      })
+    : null;
+  prs?.start();
   let codeServer: CodeServer | null = null;
   // Windows: only with the pipe locked to this user and served by this process (owner 2026-10-22).
   const winSec = process.platform === "win32" ? await (deps.winPipeSecurity ?? loadWinPipeSecurity)() : null;
@@ -1493,6 +1524,7 @@ const startDaemon = async (
           audit: auditAgent,
           chalitoDir: dir,
           code,
+          ...(prs ? { prs } : {}),
         }),
         onError: (method, err) =>
           log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),

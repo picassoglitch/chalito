@@ -697,5 +697,58 @@
     "moveToApplications": "Move to Applications",
     "askDownloads": "Also check Downloads and Desktop",
     "askDownloadsHint": "macOS will ask you to let Chalito see those folders."
+  },
+  "prs": {
+    "title": "Your GitHub PRs",
+    "none": "You have no open PRs.",
+    "draft": "Draft",
+    "review": {
+      "approved": "Approved",
+      "changes_requested": "Changes requested",
+      "review_required": "Needs review"
+    },
+    "ci": {
+      "passing": "CI green",
+      "failing": "CI failed",
+      "pending": "CI running"
+    },
+    "comments": "{n} new comments",
+    "recent": "News",
+    "event": {
+      "approved": "{by} approved PR #{number}",
+      "changes_requested": "{by} requested changes on PR #{number}",
+      "comments": "{by} left comments on PR #{number}",
+      "ci_failed": "CI failed on PR #{number}",
+      "ci_passed": "CI passed on PR #{number}",
+      "merged": "PR #{number} was merged"
+    },
+    "inSession": "in session “{label}”",
+    "general": "no session open on that branch",
+    "error": "Couldn't read GitHub. Chalito retries on its own, less often each time.",
+    "hint": {
+      "gh_missing": "To see your PRs, install GitHub CLI (gh) and sign in with “gh auth login”. Then turn it on again in Settings.",
+      "logged_out": "gh isn't signed in. Run “gh auth login” and turn it on again in Settings.",
+      "dismiss": "Got it"
+    },
+    "settings": {
+      "title": "PR alerts",
+      "toggle": "Tell me about my GitHub PRs",
+      "about": "Every 5 minutes Chalito uses your own gh (GitHub CLI) to read your PRs: reviews, comments, CI and merges. It only reads and keeps no token.",
+      "gh": {
+        "ready": "gh is signed in: you can turn this on.",
+        "missing": "GitHub CLI (gh) isn't on this computer.",
+        "logged_out": "gh isn't signed in (“gh auth login”)."
+      },
+      "watching": "Watching {login}'s PRs.",
+      "allow": "Only these repos (optional)",
+      "deny": "Except these repos",
+      "listHint": "owner/repo, owner/* or owner, comma separated",
+      "save": "Save",
+      "saveFailed": "Couldn't save. Try again.",
+      "invalid": "Couldn't read: {list}. Use owner/repo, owner/* or owner.",
+      "tooMany": "At most {max} repos per list."
+    },
+    "commentsOne": "1 new comment",
+    "retry": "Try again"
   }
 }

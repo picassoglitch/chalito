@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
 import type { AgentLink, AppConnectionDoc, DevModeToggle, LinkMode, Recipe, RecipeInstall } from "@chalito/protocol";
+import type { PrWatchSettings, PrWatchView } from "./prs.js";
 
 /**
  * Local-only surfaces, reached through the agent's IPC (ADR 0004: the agent is a user
@@ -390,6 +391,10 @@ export interface AgentIpc {
   }): Promise<{ sid: string }>;
   codePrompt(sid: string, text: string): Promise<void>;
   codeStop(sid: string): Promise<void>;
+  /** The person's GitHub PRs through their own `gh` (off until they turn it on). */
+  /** `probe` (Settings only) also asks whether `gh` is signed in while the watch is off. */
+  prWatch(o?: { probe?: boolean }): Promise<PrWatchView>;
+  setPrWatch(c: PrWatchSettings): Promise<PrWatchView>;
 }
 
 export type CodeMode = "default" | "plan" | "acceptEdits";
@@ -463,6 +468,8 @@ export const unavailableIpc: AgentIpc = {
   codeStart: unavailable,
   codePrompt: unavailable,
   codeStop: unavailable,
+  prWatch: unavailable,
+  setPrWatch: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -545,6 +552,8 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     codeStart: (i) => call("codeStart", { ...i }),
     codePrompt: async (sid, text) => void (await call("codePrompt", { sid, text })),
     codeStop: async (sid) => void (await call("codeStop", { sid })),
+    prWatch: (o) => call("prWatch", o?.probe ? { probe: true } : undefined),
+    setPrWatch: (c) => call("setPrWatch", { ...c }),
   };
 };
 

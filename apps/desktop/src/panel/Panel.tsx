@@ -12,6 +12,7 @@ import type { CopiesApi } from "../lib/copies.js";
 import { Inbox } from "./Inbox.js";
 import { NewSession } from "./NewSession.js";
 import { OldCopies } from "./OldCopies.js";
+import { PrList, PrSettings } from "./Prs.js";
 import { Rooms } from "./Rooms.js";
 import { ConnectComputer, type AutoPair } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
@@ -111,6 +112,7 @@ export const Panel = (p: PanelProps) => {
           ) : (
             (p.signIn ?? <p className="muted">{t("offline")}</p>)
           ))}
+        {tab === "inbox" && <PrList ipc={p.ipc} {...(p.openUrl ? { openUrl: p.openUrl } : {})} />}
         {tab === "sessions" && (
           <NewSession ipc={p.ipc} client={p.client} canStepUp={p.canStepUp ?? false} sid={codeSid} onSid={setCodeSid} />
         )}
@@ -125,6 +127,7 @@ export const Panel = (p: PanelProps) => {
             phoneVerifier={p.phoneVerifier}
           />
         )}
+        {tab === "settings" && <PrSettings ipc={p.ipc} />}
         {tab === "settings" && p.thisComputer && <ThisComputer api={p.thisComputer} ipc={p.ipc} />}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
         {tab === "ai" && <Apps ipc={p.ipc} />}

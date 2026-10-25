@@ -697,5 +697,58 @@
     "moveToApplications": "Mover a Aplicaciones",
     "askDownloads": "Revisar también Descargas y Escritorio",
     "askDownloadsHint": "macOS te pedirá permiso para que Chalito vea esas carpetas."
+  },
+  "prs": {
+    "title": "Tus PRs en GitHub",
+    "none": "No tienes PRs abiertos.",
+    "draft": "Borrador",
+    "review": {
+      "approved": "Aprobado",
+      "changes_requested": "Piden cambios",
+      "review_required": "Falta revisión"
+    },
+    "ci": {
+      "passing": "CI verde",
+      "failing": "CI falló",
+      "pending": "CI corriendo"
+    },
+    "comments": "{n} comentarios nuevos",
+    "recent": "Novedades",
+    "event": {
+      "approved": "{by} aprobó el PR #{number}",
+      "changes_requested": "{by} pidió cambios en el PR #{number}",
+      "comments": "{by} dejó comentarios en el PR #{number}",
+      "ci_failed": "Falló la CI del PR #{number}",
+      "ci_passed": "Pasó la CI del PR #{number}",
+      "merged": "Se fusionó el PR #{number}"
+    },
+    "inSession": "en la sesión «{label}»",
+    "general": "sin sesión abierta en esa rama",
+    "error": "No se pudo leer GitHub. Chalito lo vuelve a intentar solo, cada vez más espaciado.",
+    "hint": {
+      "gh_missing": "Para ver tus PRs, instala GitHub CLI (gh) e inicia sesión con «gh auth login». Luego vuelve a activarlo en Ajustes.",
+      "logged_out": "gh no tiene una sesión iniciada. Corre «gh auth login» y vuelve a activarlo en Ajustes.",
+      "dismiss": "Entendido"
+    },
+    "settings": {
+      "title": "Avisos de tus PRs",
+      "toggle": "Avisarme de mis PRs en GitHub",
+      "about": "Cada 5 minutos Chalito usa tu propio gh (GitHub CLI) para leer tus PRs: revisiones, comentarios, CI y fusiones. Solo lee y no guarda ningún token.",
+      "gh": {
+        "ready": "gh ya tiene tu sesión: puedes activarlo.",
+        "missing": "No encontramos gh (GitHub CLI) en esta computadora.",
+        "logged_out": "gh no tiene una sesión iniciada («gh auth login»)."
+      },
+      "watching": "Viendo los PRs de {login}.",
+      "allow": "Solo estos repos (opcional)",
+      "deny": "Excepto estos repos",
+      "listHint": "owner/repo, owner/* u owner, separados por comas",
+      "save": "Guardar",
+      "saveFailed": "No se pudo guardar. Intenta de nuevo.",
+      "invalid": "No se entiende: {list}. Usa owner/repo, owner/* u owner.",
+      "tooMany": "Máximo {max} repos por lista."
+    },
+    "commentsOne": "1 comentario nuevo",
+    "retry": "Reintentar"
   }
 }

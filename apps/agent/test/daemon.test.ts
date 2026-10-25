@@ -27,6 +27,7 @@ import { AlreadyRunningError, acquireInstanceLock, lockPath } from "../src/insta
 import type { Provider } from "@chalito/protocol";
 import { ipcCall } from "./ipc-server.test.js";
 import { fakeProviderProcs } from "./fake-provider-procs.js";
+import { ok, pr, viewerJson } from "./prs-fixtures.js";
 import { DEFAULT_POLICY, DEFAULT_REMOTE_TERMINAL, policyHash } from "../src/policy/index.js";
 import { AnchorStore } from "../src/anchor.js";
 import { FilePolicyHolder } from "../src/policy-file.js";
@@ -508,6 +509,83 @@ describe("chalito run (daemon)", () => {
         ipcCall(sock, { id: 1, token: SECRET, method, params }) as Promise<IpcReply>;
       return { s, d, sock, call, osChecks };
     };
+
+    it("PR watch: off by default, then the person's gh runs through the injected runner (owner, 2026-10-25)", async () => {
+      const s = await setup();
+      const sock = join(s.home, "ipc-prs.sock");
+      const ran: string[][] = [];
+      const d = await runDaemon({
+        ...s.deps,
+        ipcSecret: SECRET,
+        ipcPath: sock,
+        ghPath: () => "/opt/gh/bin/gh",
+        prRunner: {
+          run: async (cmd, args) => {
+            ran.push([cmd, ...args]);
+            if (args[0] === "auth") return ok("Logged in to github.com");
+            if (args[1] === "graphql") return ok(viewerJson([pr()]));
+            return { code: 128, stdout: "", stderr: "not a git repository" };
+          },
+        },
+      });
+      const call = async (method: string, params?: unknown) =>
+        ipcCall(sock, { id: 1, token: SECRET, method, params }) as Promise<IpcReply>;
+      expect((await call("prWatch", { probe: true })).result).toMatchObject({
+        enabled: false,
+        state: "off",
+        gh: "ready",
+        prs: [],
+      });
+      expect(ran.some((a) => a.includes("graphql"))).toBe(false);
+      expect((await call("setPrWatch", { enabled: true })).result).toMatchObject({ enabled: true });
+      await vi.waitFor(async () =>
+        expect((await call("prWatch")).result).toMatchObject({ state: "ok", login: "me", prs: [{ number: 7 }] }),
+      );
+      expect(ran.find((a) => a.includes("graphql"))?.slice(0, 3)).toEqual(["/opt/gh/bin/gh", "api", "graphql"]);
+      expect((await call("setPrWatch", { deny: ["no es un repo"] })).error).toBe("bad_params");
+      expect((await call("setPrWatch", { enabled: true, token: "x" })).error).toBe("bad_params");
+      await d.stop();
+      const graphqlRuns = ran.filter((a) => a.includes("graphql")).length;
+      expect(JSON.parse(readFileSync(join(s.dir, "pr-watch.json"), "utf8"))).toMatchObject({
+        enabled: true,
+        primed: true,
+      });
+
+      // After a restart it polls by itself, and what it already saw is not news again.
+      const sock2 = join(s.home, "ipc-prs2.sock");
+      const d2 = await runDaemon({
+        ...s.deps,
+        ipcSecret: SECRET,
+        ipcPath: sock2,
+        ghPath: () => "/opt/gh/bin/gh",
+        prRunner: { run: async (cmd, args) => (ran.push([cmd, ...args]), ok(viewerJson([pr()]))) },
+      });
+      const call2 = async (method: string, params?: unknown) =>
+        ipcCall(sock2, { id: 1, token: SECRET, method, params }) as Promise<IpcReply>;
+      await vi.waitFor(async () => expect((await call2("prWatch")).result).toMatchObject({ state: "ok" }));
+      expect(ran.filter((a) => a.includes("graphql")).length).toBe(graphqlRuns + 1);
+      expect((await call2("prWatch")).result.events).toEqual([]);
+      await d2.stop();
+    });
+
+    it("PR watch: gh missing through the daemon is one state and no process; no app secret, no watch at all", async () => {
+      const s = await setup();
+      const sock = join(s.home, "ipc-prs3.sock");
+      const ran: string[][] = [];
+      const runner = { run: async (cmd: string, args: string[]) => (ran.push([cmd, ...args]), ok("")) };
+      const d = await runDaemon({ ...s.deps, ipcSecret: SECRET, ipcPath: sock, ghPath: () => null, prRunner: runner });
+      const call = async (method: string, params?: unknown) =>
+        ipcCall(sock, { id: 1, token: SECRET, method, params }) as Promise<IpcReply>;
+      await call("setPrWatch", { enabled: true });
+      await vi.waitFor(async () => expect((await call("prWatch")).result).toMatchObject({ state: "gh_missing" }));
+      expect(ran).toEqual([]);
+      await d.stop();
+      // The same computer, started by the OS service (no app secret): enabled on disk, still never polled.
+      const service = await runDaemon({ ...s.deps, ghPath: () => "/opt/gh/bin/gh", prRunner: runner });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(ran).toEqual([]);
+      await service.stop();
+    });
 
     it("only with the app's secret: no secret, no socket", async () => {
       const s = await setup();
