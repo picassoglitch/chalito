@@ -55,6 +55,8 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
+import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
+import { openOwnSession } from "./watch/open.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
@@ -1465,6 +1467,8 @@ const startDaemon = async (
   // The desktop panel's local IPC (only with the app's secret).
   let ipc: IpcServer | null = null;
   if (deps.ipcSecret) {
+    const ownPaths = watchPaths(dir, env, deps.home ?? homedir());
+    const ownWatcher = new OwnSessionWatcher({ paths: ownPaths, log: (m, meta) => log.warn(m, meta) });
     try {
       ipc = await startIpcServer({
         path: deps.ipcPath ?? ipcPath(dir),
@@ -1493,6 +1497,10 @@ const startDaemon = async (
           audit: auditAgent,
           chalitoDir: dir,
           code,
+          ownSessions: {
+            watcher: ownWatcher,
+            open: (v) => openOwnSession(v, { platform: process.platform, run: spawnRunner, paths: ownPaths }),
+          },
         }),
         onError: (method, err) =>
           log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),

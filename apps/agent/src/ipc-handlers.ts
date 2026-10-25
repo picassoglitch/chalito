@@ -38,6 +38,7 @@ import type { AgentStore } from "./store.js";
 import type { CommandResult } from "./agent-core.js";
 import type { CodeService } from "./code/service.js";
 import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
+import { ownSessionHandlers, type OwnSessionsDeps } from "./watch/ipc.js";
 
 /** The agent version the panel's `ping` sees. */
 export const AGENT_VERSION = "0.0.0";
@@ -156,6 +157,8 @@ export interface IpcDeps {
   home?: string;
   /** ADR 0031 §1: sessions started here ("Nueva sesión"); absent = the code calls answer `unavailable`. */
   code?: CodeService;
+  /** Sessions the person started outside Chalito (opt-in, read-only); absent = those calls answer `unavailable`. */
+  ownSessions?: OwnSessionsDeps | null;
 }
 
 const codeOf = (d: IpcDeps): CodeService => {
@@ -205,6 +208,7 @@ const appCall = async (d: IpcDeps, run: (m: AppManager) => Promise<AppResult>) =
  */
 export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   ping: async () => ({ version: AGENT_VERSION }),
+  ...ownSessionHandlers(d.ownSessions),
 
   startPairing: async () => {
     throw new IpcError("already_paired");

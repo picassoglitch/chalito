@@ -697,5 +697,50 @@
     "moveToApplications": "Mover a Aplicaciones",
     "askDownloads": "Revisar también Descargas y Escritorio",
     "askDownloadsHint": "macOS te pedirá permiso para que Chalito vea esas carpetas."
+  },
+  "own": {
+    "title": "Sesiones que abriste tú",
+    "state": {
+      "working": "Trabajando",
+      "question": "Te hizo una pregunta",
+      "approval": "Espera tu aprobación",
+      "guessed": "Parece esperar tu aprobación",
+      "reviewing": "Codex lo está revisando",
+      "error": "Se detuvo con un error",
+      "finished": "Terminó"
+    },
+    "observed": "Solo la estás viendo desde aquí: Chalito no puede aprobar ni responder esta sesión. Hazlo donde la abriste.",
+    "open": "Abrir",
+    "seen": "Visto",
+    "openFallback": "No pude traerla al frente. Está en:",
+    "settings": {
+      "title": "Sesiones que abrí yo",
+      "label": "Ver sesiones que abrí yo",
+      "hint": "Chalito lee los registros locales de las sesiones de IA que abriste tú en esta computadora, para avisarte cuando una te pregunta algo, espera tu aprobación, falla o termina. Solo lee: no cambia nada y nada de esto sale de tu computadora.",
+      "unavailable": "El agente local no responde, así que esto no está disponible ahora.",
+      "failed": "No se pudo cambiar. Inténtalo otra vez."
+    },
+    "hook": {
+      "title": "Avisos de aprobación de Codex (opcional)",
+      "why": "Codex no deja por escrito cuándo espera tu aprobación. Con este hook, Codex se lo cuenta a Chalito.",
+      "steps": "Copia esto en ~/.codex/hooks.json (o súmalo a los hooks que ya tengas) y reinicia Codex. Chalito nunca edita tu carpeta ~/.codex.",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "note": "El hook no imprime nada y no decide nada: Codex te sigue preguntando como siempre. Corre en cada aprobación y en cada herramienta que Codex usa, y solo anota en tu computadora que hay una aprobación pendiente, mientras esta opción esté activada.",
+      "noCommand": "No encontré el comando chalito en esta computadora. Instálalo primero (Seguridad › Agente de esta computadora › Instalar el comando chalito) o el hook no va a funcionar.",
+      "copyFailed": "No pude copiarlo. Selecciona el texto y cópialo a mano."
+    },
+    "detail": {
+      "question": "Tiene una pregunta para ti.",
+      "questionWith": "Tiene una pregunta para ti: {x}",
+      "approval": "Pide tu permiso.",
+      "approvalWith": "Pide tu permiso para usar {x}.",
+      "stopped": "Se detuvo.",
+      "stoppedWith": "Se detuvo: {x}",
+      "tool": "Esperando una herramienta.",
+      "toolWith": "Esperando: {x}"
+    },
+    "closed": "Esa sesión ya se cerró. Estaba en:",
+    "stale": "No pude leer las sesiones hace un momento; lo que ves puede estar desactualizado."
   }
 }

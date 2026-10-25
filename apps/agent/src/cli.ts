@@ -5,6 +5,8 @@ import { codePath } from "./code/server.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { readHookInput, recordHook } from "./watch/hook.js";
+import { watchPaths } from "./watch/watcher.js";
 import { fileURLToPath } from "node:url";
 import { loadLiabilityText } from "@chalito/config";
 import { DevModeToggle, EnableableDevModeToggle } from "@chalito/protocol";
@@ -508,6 +510,16 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   if (!cmd || flags.help || cmd === "help") {
     io.out(usageFor(io.env));
     return cmd || flags.help ? 0 : 1;
+  }
+
+  // Codex's PermissionRequest/PostToolUse hook for "Ver sesiones que abrí yo": silent, never fails Codex.
+  if (cmd === "watch-hook" && sub === "codex") {
+    try {
+      recordHook(await readHookInput(io.tty.input), watchPaths(dir, io.env, io.home), io.now());
+    } catch {
+      // a hook must never change what Codex does
+    }
+    return 0;
   }
 
   // Started by Claude Code or Codex inside a session (CHALITO_SESSION is set): the stdio MCP
