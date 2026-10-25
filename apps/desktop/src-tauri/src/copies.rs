@@ -391,10 +391,10 @@ pub fn parse_proc_lines(out: &str) -> Vec<(u32, u32, PathBuf)> {
         .collect()
 }
 
-/// An AppImage's sidecar: from its mount, or `… (deleted)` once the mount is gone.
+/// An AppImage's sidecar (`/tmp/.mount_…`, still in the path once unmounted). A bare
+/// `(deleted)` isn't enough: updating the service's copy or the deb leaves one too.
 pub fn in_appimage_mount(exe: &Path) -> bool {
-    let s = exe.to_string_lossy();
-    s.ends_with(" (deleted)") || s.contains("/.mount_")
+    exe.to_string_lossy().contains("/.mount_")
 }
 
 /// Chalito processes of this user (other users' exe links can't be read, so they're skipped).
@@ -629,7 +629,7 @@ impl Ctx {
     }
 
     /// "Usar esta copia": autostart (only if it's on) and the chalito:// handler start this copy.
-    /// Everything is read first, so a failure leaves both entries as they were.
+    /// Reads everything first, then the handler (the sign-in fix), then autostart.
     pub fn use_this(&self) -> io::Result<()> {
         let autostart_on = matches!(xdg::state(&self.autostart_dir)?, xdg::State::Live | xdg::State::Dangling);
         let exec = xdg::exec_value(&self.running)?;
@@ -639,15 +639,15 @@ impl Ctx {
             Some(p) => (p.clone(), with_exec(&fs::read_to_string(p)?, &exec)),
             None => (apps.join(HANDLER_ID), new_handler(&exec)),
         };
-        if autostart_on {
-            xdg::write(&self.autostart_dir, &self.running)?;
-        }
         fs::create_dir_all(&apps)?;
         let tmp = apps.join(format!(".{HANDLER_ID}.{}.tmp", std::process::id()));
         fs::write(&tmp, body)?;
         if let Err(e) = fs::rename(&tmp, &file) {
             let _ = fs::remove_file(&tmp);
             return Err(e);
+        }
+        if autostart_on {
+            xdg::write(&self.autostart_dir, &self.running)?;
         }
         if !self.os_tools {
             return Ok(());
@@ -851,6 +851,7 @@ mod tests {
             // The background service and `chalito run`: never orphans, whoever their parent is.
             proc(400, 1, "/home/ana/.local/share/chalito/chalito-agent"),
             proc(401, 1, "/usr/bin/chalito-agent"),
+            proc(402, 1, "/home/ana/.local/share/chalito/chalito-agent (deleted)"),
             proc(500, 1, "/Applications/Chalito.app/Contents/MacOS/chalito-agent"),
             proc(501, 77, "C:/Program Files/Chalito/chalito-agent.exe"),
         ];
