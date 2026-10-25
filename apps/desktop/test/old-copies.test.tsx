@@ -24,6 +24,7 @@ const clean: CopiesReport = {
   instances: [],
   installs: [],
   placement: "ok",
+  askDownloads: false,
 };
 
 /** The owner's machine on 2026-10-25. */
@@ -45,6 +46,7 @@ const fake = (first: CopiesReport, after: CopiesReport = clean) => ({
   reveal: vi.fn(async (_path: string) => after),
   uninstall: vi.fn(async (_id: string) => after),
   showApplications: vi.fn(async () => after),
+  scanDownloads: vi.fn(async () => after),
 });
 
 const show = (api: CopiesApi, locale: "es" | "en" = "es") =>
@@ -198,16 +200,15 @@ const windows: CopiesReport = {
 const APP = "/Volumes/Chalito 0.2.0/Chalito.app";
 const OLD_APP = "/Users/ana/Downloads/Chalito 2.app";
 
-/** macOS: opened from the DMG, with another bundle and a .dmg in Downloads. */
+const DMG = "/Users/ana/Downloads/Chalito_0.2.0_universal.dmg";
+
+/** macOS: opened from the DMG (its .dmg files held back natively), another bundle in Applications. */
 const mac: CopiesReport = {
   ...clean,
   running: APP,
   autostart: { state: "other", path: `${OLD_APP}/Contents/MacOS/chalito-desktop` },
   placement: "dmg",
-  copies: [
-    { path: OLD_APP, version: "0.1.0", bytes: 0, kind: "app" },
-    { path: "/Users/ana/Downloads/Chalito_0.2.0_universal.dmg", version: "0.2.0", bytes: 9, kind: "dmg" },
-  ],
+  copies: [{ path: OLD_APP, version: "0.1.0", bytes: 0, kind: "app" }],
 };
 
 describe("other copies on Windows and macOS (panel notice)", () => {
@@ -224,6 +225,9 @@ describe("other copies on Windows and macOS (panel notice)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Desinstalar" }));
     await waitFor(() => expect(api.uninstall).toHaveBeenCalledWith("HKLM\\Chalito"));
     await screen.findByText("Abrí el desinstalador de esa copia. Sigue sus pasos.");
+    // One uninstaller per install: a second click can't open another window.
+    expect(screen.getByRole("button", { name: "Desinstalar" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/No marques «Eliminar los datos de aplicación»/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Abrir carpeta" }));
     await waitFor(() => expect(api.reveal).toHaveBeenCalledWith(SETUP));
@@ -242,7 +246,8 @@ describe("other copies on Windows and macOS (panel notice)", () => {
   it("Windows: no Recycle Bin on that drive and an HKLM startup entry are explained", async () => {
     for (const [code, text] of [
       ["no_trash", /Esa unidad no tiene papelera/],
-      ["autostart_not_set", /una entrada de inicio para todos los usuarios/],
+      ["cancelled", /Lo cancelaste; no cambié nada/],
+      ["autostart_not_set", /una entrada para todos los usuarios/],
     ] as const) {
       cleanup();
       const api = {
@@ -251,7 +256,7 @@ describe("other copies on Windows and macOS (panel notice)", () => {
         useThis: vi.fn(async () => Promise.reject(code)),
       };
       show(api);
-      const button = code === "no_trash" ? "Mover a la papelera" : "Usar esta copia";
+      const button = code === "autostart_not_set" ? "Usar esta copia" : "Mover a la papelera";
       fireEvent.click(await screen.findByRole("button", { name: button }));
       expect((await screen.findByRole("alert")).textContent).toMatch(text);
     }
@@ -263,10 +268,9 @@ describe("other copies on Windows and macOS (panel notice)", () => {
     await screen.findByText(/se está abriendo desde el disco de instalación \(\.dmg\)/);
     expect(screen.getByText(/Arrastra Chalito a la carpeta Aplicaciones/)).toBeTruthy();
     expect(screen.getByText(/Otra copia de la app \(versión 0\.1\.0\)/)).toBeTruthy();
-    expect(screen.getByText(/Imagen de disco descargada \(versión 0\.2\.0\)/)).toBeTruthy();
     expect(screen.getByText(/Al encender la computadora se abre otra copia/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Usar esta copia" })).toBeNull();
-    expect(screen.getAllByRole("button", { name: "Mover a la papelera" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Mover a la papelera" })).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Mover a Aplicaciones" }));
     await waitFor(() => expect(api.showApplications).toHaveBeenCalledTimes(1));
@@ -282,9 +286,21 @@ describe("other copies on Windows and macOS (panel notice)", () => {
     expect(screen.queryByRole("button", { name: "Use this copy" })).toBeNull();
 
     cleanup();
-    show(fake({ ...mac, placement: "ok", copies: [] }), "en");
+    show(fake({ ...mac, placement: "ok", copies: [{ path: DMG, version: "0.2.0", bytes: 9, kind: "dmg" }] }), "en");
     await screen.findByRole("button", { name: "Use this copy" });
     expect(screen.queryByRole("button", { name: "Move to Applications" })).toBeNull();
+    expect(screen.getByText(/Downloaded disk image \(version 0\.2\.0\)/)).toBeTruthy();
+  });
+
+  it("macOS: Downloads and Desktop are read only after the person asks", async () => {
+    const api = fake({ ...mac, askDownloads: true }, { ...mac, askDownloads: false });
+    show(api);
+    await screen.findByText("macOS te pedirá permiso para que Chalito vea esas carpetas.");
+    expect(api.scanDownloads).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Revisar también Descargas y Escritorio" }));
+    await waitFor(() => expect(api.scanDownloads).toHaveBeenCalledTimes(1));
+    await screen.findByText("Listo: revisé también Descargas y Escritorio.");
+    expect(screen.queryByRole("button", { name: "Revisar también Descargas y Escritorio" })).toBeNull();
   });
 });
 
@@ -302,6 +318,7 @@ describe("the copies commands (Tauri)", () => {
     await api.reveal(SETUP);
     await api.uninstall("HKLM\\Chalito");
     await api.showApplications();
+    await api.scanDownloads();
     expect(calls).toEqual([
       ["copies_report", {}],
       ["copies_use_this", {}],
@@ -310,6 +327,7 @@ describe("the copies commands (Tauri)", () => {
       ["copies_reveal", { path: SETUP }],
       ["copies_uninstall", { id: "HKLM\\Chalito" }],
       ["copies_show_applications", {}],
+      ["copies_scan_downloads", {}],
     ]);
   });
 

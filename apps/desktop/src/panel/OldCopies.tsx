@@ -11,6 +11,7 @@ const REFUSALS = [
   "autostart_not_set",
   "no_trash",
   "bad_placement",
+  "cancelled",
 ] as const;
 
 type Notice = { kind: "done" | "error"; key: string; detail?: string };
@@ -22,6 +23,8 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
   const [report, setReport] = useState<CopiesReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // The uninstaller runs on its own after it opens: one launch per install, not one per click.
+  const [launched, setLaunched] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
     const read = () =>
@@ -102,7 +105,16 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
                   version: i.version ?? "",
                   location: i.location ?? t("copies.install.unknown"),
                 })}{" "}
-                <button disabled={busy} onClick={() => void act(() => api.uninstall(i.id), "copies.done.uninstall")}>
+                <button
+                  disabled={busy || launched.has(i.id)}
+                  onClick={() =>
+                    void act(async () => {
+                      const r = await api.uninstall(i.id);
+                      setLaunched((s) => new Set(s).add(i.id));
+                      return r;
+                    }, "copies.done.uninstall")
+                  }
+                >
                   {t("copies.uninstall")}
                 </button>
               </li>
@@ -142,6 +154,15 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
           </ul>
           <p className="muted">{t("copies.trashHint")}</p>
         </>
+      )}
+
+      {report.askDownloads && (
+        <p data-copies="ask-downloads">
+          <button disabled={busy} onClick={() => void act(() => api.scanDownloads(), "copies.done.scanDownloads")}>
+            {t("copies.askDownloads")}
+          </button>{" "}
+          <span className="muted">{t("copies.askDownloadsHint")}</span>
+        </p>
       )}
 
       {notice && (

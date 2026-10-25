@@ -653,7 +653,8 @@
       "close": "Done: asked it to close.",
       "uninstall": "Opened that copy's uninstaller. Follow its steps.",
       "reveal": "Opened the folder.",
-      "showApplications": "Opened Applications: drag Chalito there and open it from there."
+      "showApplications": "Opened Applications: drag Chalito there and open it from there.",
+      "scanDownloads": "Done: checked Downloads and Desktop too."
     },
     "error": {
       "running": "That's the copy that's open; I won't touch it.",
@@ -661,10 +662,11 @@
       "not_listed": "That copy isn't open anymore.",
       "other": "I couldn't do it. Try again.",
       "still_running": "It's still open: close it from its own tray icon.",
-      "handler_not_set": "I changed the file, but your desktop still opens chalito:// links with another copy. Check your system's default apps.",
-      "autostart_not_set": "I changed what I could, but a startup entry for all users still opens another copy. Uninstall that copy to remove it.",
+      "handler_not_set": "I changed it, but your system still opens chalito:// links with another copy. Check your system's default apps.",
+      "autostart_not_set": "I changed it, but starting the computer still opens another copy. On Windows it may be an entry for all users: remove it as an administrator or uninstall that copy.",
       "no_trash": "That drive has no trash, so I didn't touch it. Use “Open folder” and delete it yourself if you want.",
-      "bad_placement": "Move Chalito to Applications first; I can't register it from here."
+      "bad_placement": "Move Chalito to Applications first; I can't register it from here.",
+      "cancelled": "You cancelled; nothing changed."
     },
     "kind": {
       "installer": "Downloaded installer: {path}",
@@ -683,12 +685,14 @@
       "unknown": "a folder I don't know"
     },
     "uninstall": "Uninstall",
-    "uninstallHint": "That copy's own uninstaller opens; follow its steps. I never delete folders myself.",
+    "uninstallHint": "That copy's own uninstaller opens; follow its steps. Don't tick “Delete the application data”: this copy uses that data too. I never delete folders myself.",
     "placement": {
       "dmg": "Chalito is opening from the install disk (.dmg). From there it doesn't update or start with the computer.",
       "translocated": "macOS opened Chalito from a temporary location because it isn't in Applications. From there it doesn't update or start with the computer.",
       "steps": "1. Quit Chalito. 2. Drag Chalito into the Applications folder. 3. Open it from Applications."
     },
-    "moveToApplications": "Move to Applications"
+    "moveToApplications": "Move to Applications",
+    "askDownloads": "Also check Downloads and Desktop",
+    "askDownloadsHint": "macOS will ask you to let Chalito see those folders."
   }
 }

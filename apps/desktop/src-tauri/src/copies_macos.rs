@@ -64,6 +64,10 @@ fn dmg_kind(name: &str) -> Option<CopyKind> {
 fn info_plist(bundle: &Path) -> Option<String> {
     let file = bundle.join("Contents/Info.plist");
     let bytes = fs::read(&file).ok()?;
+    // Binary plists keep ASCII strings as-is: no id in the bytes, no plutil run for this app.
+    if !bytes.windows(BUNDLE_ID.len()).any(|w| w == BUNDLE_ID.as_bytes()) {
+        return None;
+    }
     if !bytes.starts_with(b"bplist") {
         return Some(String::from_utf8_lossy(&bytes).into_owned());
     }
@@ -119,6 +123,18 @@ fn same_build(a: &Path, b: &Path) -> bool {
     read(a).is_some_and(|x| read(b).is_some_and(|y| x == y))
 }
 
+/// What never goes in the trash list while the app runs from a DMG or a translocated path.
+pub fn hold_back(mut found: Vec<OldCopy>, placement: Placement, me: &Path) -> Vec<OldCopy> {
+    if placement != Placement::Ok {
+        found.retain(|c| c.kind != CopyKind::App || !same_build(Path::new(&c.path), me));
+    }
+    if placement == Placement::Dmg {
+        // One of these .dmg files is the disk the app runs from right now.
+        found.retain(|c| c.kind != CopyKind::Dmg);
+    }
+    found
+}
+
 pub fn report(i: &Inputs) -> Report {
     let bundle = bundle_of(&i.running);
     let me = bundle.clone().unwrap_or_else(|| i.running.clone());
@@ -132,11 +148,27 @@ pub fn report(i: &Inputs) -> Report {
     });
     let handler = i.handler.as_deref().map_or(Link::None, |h| copies::link(Some(h), canon(h) == me_c, h.is_dir()));
     let roots = roots(&i.applications, &i.home, i.downloads.as_deref(), i.desktop.as_deref());
-    let mut found = copies::scan_with(&roots, &me, dmg_kind, Some(bundle_version));
-    if placement != Placement::Ok {
-        found.retain(|c| c.kind != CopyKind::App || !same_build(Path::new(&c.path), &me));
+    let found = hold_back(copies::scan_with(&roots, &me, dmg_kind, Some(bundle_version)), placement, &me);
+    Report {
+        running: me.display().to_string(),
+        autostart,
+        handler,
+        copies: found,
+        placement,
+        ask_downloads: i.downloads.is_none() && i.desktop.is_none(),
+        ..Report::default()
     }
-    Report { running: me.display().to_string(), autostart, handler, copies: found, placement, ..Report::default() }
+}
+
+/// Bundles identical to the running one: from a translocated path, its original (to show it).
+pub fn originals(i: &Inputs) -> Vec<PathBuf> {
+    let me = bundle_of(&i.running).unwrap_or_else(|| i.running.clone());
+    let roots = roots(&i.applications, &i.home, i.downloads.as_deref(), i.desktop.as_deref());
+    copies::scan_with(&roots, &me, dmg_kind, Some(bundle_version))
+        .into_iter()
+        .map(|c| PathBuf::from(c.path))
+        .filter(|p| p.is_dir() && same_build(p, &me))
+        .collect()
 }
 
 /// The copies the trash guard may take (`copies::may_trash` needs a fresh list).
@@ -195,22 +227,16 @@ pub mod os {
         }
     }
 
-    /// NSFileManager trashItemAtURL (JXA, path as an argument, never in the script), else the
-    /// Finder. A move to the Trash, never `rm`.
+    /// NSFileManager trashItemAtURL (JXA, path as an argument, never in the script): a move to
+    /// the Trash, never `rm`. No Finder fallback: on a volume without a Trash it deletes for good.
     pub fn trash(path: &Path) -> io::Result<()> {
         const JS: &str = "function run(argv) { ObjC.import('Foundation'); return $.NSFileManager.defaultManager.trashItemAtURLResultingItemURLError($.NSURL.fileURLWithPath(argv[0]), null, null) ? 'ok' : 'no'; }";
-        let first = jxa(JS, Some(path));
-        if first.as_deref().is_ok_and(|o| o == "ok") && fs::symlink_metadata(path).is_err() {
-            return Ok(());
-        }
-        let s = Command::new(OSASCRIPT)
-            .args(["-e", "on run argv", "-e", "set f to POSIX file (item 1 of argv)", "-e", "tell application \"Finder\" to delete f", "-e", "end run"])
-            .arg(path)
-            .status()?;
-        if s.success() && fs::symlink_metadata(path).is_err() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!("trash: {first:?}, Finder: {s}")))
+        let gone = || matches!(fs::symlink_metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound);
+        match jxa(JS, Some(path))?.as_str() {
+            "ok" if gone() => Ok(()),
+            // NSFileManager says no when the volume has no Trash (a network share, some disks).
+            "no" => Err(io::Error::other(copies::NO_TRASH)),
+            other => Err(io::Error::other(format!("trash: {other}"))),
         }
     }
 
@@ -222,13 +248,20 @@ pub mod os {
             eprintln!("copies: lsregister -f: {s}");
         }
         const JS: &str = "function run(argv) { ObjC.import('AppKit'); var ws = $.NSWorkspace.sharedWorkspace; if (!ws.respondsToSelector('setDefaultApplicationAtURL:toOpenURLsWithScheme:completionHandler:')) return 'old'; ws.setDefaultApplicationAtURLToOpenURLsWithSchemeCompletionHandler($.NSURL.fileURLWithPath(argv[0]), 'chalito', null); delay(1); return 'ok'; }";
-        jxa(JS, Some(bundle)).map(|_| ())
+        match jxa(JS, Some(bundle))?.as_str() {
+            "ok" => Ok(()),
+            // macOS 11: only the lsregister above; the caller's re-check says whether it took.
+            other => Err(io::Error::other(format!("set default handler: {other}"))),
+        }
     }
 
-    /// "Mover a Aplicaciones": opens Applications, and from a DMG shows the app to drag there.
-    pub fn show_applications(bundle: Option<&Path>, placement: Placement) -> io::Result<()> {
-        if let (Some(b), Placement::Dmg) = (bundle, placement) {
-            Command::new("/usr/bin/open").arg("-R").arg(b).status()?;
+    /// "Mover a Aplicaciones": opens Applications and shows the app to drag there (from a DMG,
+    /// the bundle on the disk; translocated, its original).
+    pub fn show_applications(reveal: &[PathBuf]) -> io::Result<()> {
+        for b in reveal {
+            if let Err(e) = Command::new("/usr/bin/open").arg("-R").arg(b).status() {
+                eprintln!("copies: open -R {}: {e}", b.display());
+            }
         }
         let s = Command::new("/usr/bin/open").arg("/Applications").status()?;
         if s.success() {
@@ -372,6 +405,7 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)] // macOS paths: translocation is spotted by its `/AppTranslocation/` segment.
     #[test]
     fn from_a_dmg_or_translocated_the_identical_bundle_is_never_offered_for_the_trash() {
         let d = tmp("placement");
@@ -392,8 +426,25 @@ mod tests {
         let r = report(&i);
         assert_eq!(r.placement, Placement::Translocated);
         let paths: Vec<PathBuf> = r.copies.iter().map(|c| PathBuf::from(&c.path)).collect();
-        assert_eq!(paths, vec![older]);
+        assert_eq!(paths, vec![older.clone()]);
         assert!(!paths.contains(&original));
+        // "Mover a Aplicaciones" shows where that original is.
+        assert_eq!(originals(&i), vec![original.clone()]);
+        // Running from the DMG, the .dmg files are held back too (one is the disk in use).
+        let dmg = OldCopy { path: home.join("Downloads/Chalito_0.2.0.dmg").display().to_string(), kind: CopyKind::Dmg, ..OldCopy::default() };
+        let app_copy = |p: &Path| OldCopy { path: p.display().to_string(), kind: CopyKind::App, ..OldCopy::default() };
+        let all = vec![dmg.clone(), app_copy(&original), app_copy(&older)];
+        assert_eq!(hold_back(all.clone(), Placement::Dmg, &running), vec![app_copy(&older)]);
+        assert_eq!(hold_back(all.clone(), Placement::Ok, &running), all);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn downloads_and_desktop_wait_for_a_click() {
+        let d = tmp("ask");
+        let i = Inputs { running: d.join("Chalito.app/Contents/MacOS/chalito-desktop"), applications: d.join("A"), home: d.clone(), ..Inputs::default() };
+        assert!(report(&i).ask_downloads);
+        assert!(!report(&Inputs { downloads: Some(d.join("Downloads")), ..i }).ask_downloads);
         let _ = fs::remove_dir_all(&d);
     }
 

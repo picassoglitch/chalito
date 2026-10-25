@@ -383,17 +383,28 @@ fn copies_files(app: &AppHandle) -> Result<copies::Report, String> {
     Ok(copies_windows::report(&copies_win(app)?))
 }
 
+/// macOS asks for permission the first time an app reads Downloads or Desktop: that waits for the
+/// person's click ("Revisar Descargas y Escritorio"), then holds for the session.
+#[derive(Default)]
+struct CopiesDownloads(std::sync::atomic::AtomicBool);
+
 /// macOS: what copies_macos.rs reads (bundles, .dmg files, the LaunchAgent, LaunchServices).
 #[cfg(target_os = "macos")]
-fn copies_mac(app: &AppHandle) -> Result<copies_macos::Inputs, String> {
+fn copies_mac(app: &AppHandle, downloads: bool) -> Result<copies_macos::Inputs, String> {
     let home = app.path().home_dir().map_err(|e| e.to_string())?;
     let p = app.path();
-    Ok(copies_macos::os::inputs(current_exe()?, home, p.download_dir().ok(), p.desktop_dir().ok()))
+    let (dl, desk) = if downloads { (p.download_dir().ok(), p.desktop_dir().ok()) } else { (None, None) };
+    Ok(copies_macos::os::inputs(current_exe()?, home, dl, desk))
+}
+
+#[cfg(target_os = "macos")]
+fn copies_downloads_on(app: &AppHandle) -> bool {
+    app.try_state::<CopiesDownloads>().is_some_and(|s| s.0.load(Ordering::Relaxed))
 }
 
 #[cfg(target_os = "macos")]
 fn copies_files(app: &AppHandle) -> Result<copies::Report, String> {
-    Ok(copies_macos::report(&copies_mac(app)?))
+    Ok(copies_macos::report(&copies_mac(app, copies_downloads_on(app))?))
 }
 
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
@@ -401,13 +412,14 @@ fn copies_files(_app: &AppHandle) -> Result<copies::Report, String> {
     Ok(copies::Report { running: current_exe()?.display().to_string(), ..Default::default() })
 }
 
-/// After "Usar esta copia": still pointing elsewhere is an error, never a silent "done".
+/// After "Usar esta copia": done only when chalito:// (and autostart, if it was on) read back as
+/// this copy. "None" isn't done either: the write didn't land or couldn't be read back.
 #[cfg(any(windows, target_os = "macos"))]
-fn copies_check_fixed(app: &AppHandle) -> Result<(), String> {
+fn copies_check_fixed(app: &AppHandle, before: &copies::Report) -> Result<(), String> {
     let after = copies_files(app)?;
-    if after.handler.needs_fix() {
+    if after.handler != copies::Link::Ours {
         Err(copies::HANDLER_NOT_SET.into())
-    } else if after.autostart.needs_fix() {
+    } else if before.autostart != copies::Link::None && after.autostart != copies::Link::Ours {
         Err(copies::AUTOSTART_NOT_SET.into())
     } else {
         Ok(())
@@ -424,7 +436,7 @@ fn copies_use_this_os(app: &AppHandle) -> Result<(), String> {
     if before.autostart != copies::Link::None {
         app.autolaunch().enable().map_err(|e| e.to_string())?;
     }
-    copies_check_fixed(app)
+    copies_check_fixed(app, &before)
 }
 
 /// LaunchServices for chalito://, and auto-launch's LaunchAgent (only when autostart is on).
@@ -443,7 +455,7 @@ fn copies_use_this_os(app: &AppHandle) -> Result<(), String> {
     if before.autostart != copies::Link::None {
         app.autolaunch().enable().map_err(|e| e.to_string())?;
     }
-    copies_check_fixed(app)
+    copies_check_fixed(app, &before)
 }
 
 #[cfg(target_os = "linux")]
@@ -481,7 +493,7 @@ fn copies_trash_one(app: &AppHandle, path: &std::path::Path) -> Result<(), Strin
     if cfg!(debug_assertions) {
         return Err("not allowed".into());
     }
-    let i = copies_mac(app)?;
+    let i = copies_mac(app, copies_downloads_on(app))?;
     copies::may_trash(path, &i.running, &copies_macos::found(&i)).map_err(|r| r.code().to_string())?;
     copies_macos::os::trash(path).map_err(|e| e.to_string())
 }
@@ -506,9 +518,14 @@ fn copies_uninstall_one(_id: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn copies_show_applications_os(app: &AppHandle) -> Result<(), String> {
-    let placement = copies_files(app)?.placement;
-    let bundle = copies_macos::bundle_of(&current_exe()?);
-    copies_macos::os::show_applications(bundle.as_deref(), placement).map_err(|e| e.to_string())
+    // The click is consent to look in Downloads and Desktop, where a translocated original sits.
+    let i = copies_mac(app, true)?;
+    let reveal = match copies_macos::report(&i).placement {
+        copies::Placement::Dmg => copies_macos::bundle_of(&i.running).into_iter().collect(),
+        copies::Placement::Translocated => copies_macos::originals(&i),
+        copies::Placement::Ok => Vec::new(),
+    };
+    copies_macos::os::show_applications(&reveal).map_err(|e| e.to_string())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -582,6 +599,18 @@ async fn copies_uninstall(app: AppHandle, window: tauri::Window, id: String) -> 
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click (macOS): from now on the check reads Downloads and Desktop.
+#[tauri::command]
+async fn copies_scan_downloads(app: AppHandle, window: tauri::Window) -> Result<copies::Report, String> {
+    if window.label() != "panel" || cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    if let Some(s) = app.try_state::<CopiesDownloads>() {
+        s.0.store(true, Ordering::Relaxed);
+    }
+    tauri::async_runtime::spawn_blocking(move || copies_report_now(&app)).await.map_err(|e| e.to_string())?
 }
 
 /// Panel only, on the person's click (macOS): opens Applications so the app can be dragged there.
@@ -772,7 +801,8 @@ pub fn run() {
         )
         .manage(state.clone())
         .manage(computer_ui.clone())
-        .manage(AutostartItem::default());
+        .manage(AutostartItem::default())
+        .manage(CopiesDownloads::default());
     // Linux writes its own XDG entry (autostart::xdg); the plugin would use ~/.config regardless.
     #[cfg(not(target_os = "linux"))]
     let builder =
@@ -808,6 +838,7 @@ pub fn run() {
         copies_reveal,
         copies_uninstall,
         copies_show_applications,
+        copies_scan_downloads,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -832,7 +863,8 @@ pub fn run() {
         copies_close,
         copies_reveal,
         copies_uninstall,
-        copies_show_applications
+        copies_show_applications,
+        copies_scan_downloads
     ]);
     builder
         .setup(move |app| {

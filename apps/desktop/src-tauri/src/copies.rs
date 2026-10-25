@@ -23,6 +23,8 @@ pub const HANDLER_NOT_SET: &str = "handler_not_set";
 pub const AUTOSTART_NOT_SET: &str = "autostart_not_set";
 /// That drive has no trash to move to (Windows: not a fixed disk); nothing was touched.
 pub const NO_TRASH: &str = "no_trash";
+/// The person said no in the OS's own dialog (Recycle Bin, UAC): nothing to report as a failure.
+pub const CANCELLED: &str = "cancelled";
 /// The handler file this app writes when it has to create one.
 pub const HANDLER_ID: &str = "chalito.desktop";
 /// `~/Applications/<folder>/<sub>/Chalito.AppImage` at most: AppImageLauncher and by-hand layouts.
@@ -158,6 +160,8 @@ pub struct Report {
     pub instances: Vec<Instance>,
     pub installs: Vec<Install>,
     pub placement: Placement,
+    /// macOS: Downloads and Desktop weren't read (each asks for permission), only after a click.
+    pub ask_downloads: bool,
 }
 
 /// `*Chalito*.AppImage`, any case.

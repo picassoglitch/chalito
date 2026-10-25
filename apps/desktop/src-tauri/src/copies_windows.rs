@@ -29,10 +29,9 @@ pub struct Entry {
     pub uninstall: Option<String>,
 }
 
-/// DisplayName or Publisher is Chalito (the NSIS entry's DisplayName is the product name).
+/// DisplayName is Chalito (the NSIS entry's is the product name; its Publisher is "chalyb").
 pub fn is_chalito_entry(e: &Entry) -> bool {
-    let is = |v: &Option<String>| v.as_deref().is_some_and(|v| v.trim().eq_ignore_ascii_case("chalito"));
-    is(&e.display) || is(&e.publisher)
+    e.display.as_deref().is_some_and(|v| v.trim().eq_ignore_ascii_case("chalito"))
 }
 
 /// NSIS quotes InstallLocation (`"C:\…\Chalito"`).
@@ -94,18 +93,13 @@ fn runs_from(location: Option<&str>, running: &[String]) -> bool {
     location.is_some_and(|l| running.iter().any(|r| holds(l, r)))
 }
 
-/// Chalito installs other than the one the running exe (any of its forms) belongs to.
+/// Chalito installs other than the running one that "Desinstalar" may act on: the same guard
+/// decides the list and the click, so no button is offered that would always be refused.
 pub fn installs(entries: &[Entry], running: &[String]) -> Vec<Install> {
     entries
         .iter()
-        .filter(|e| is_chalito_entry(e))
-        .filter_map(|e| {
-            let location = location_of(e);
-            if runs_from(location.as_deref(), running) {
-                return None;
-            }
-            Some(Install { id: e.id.clone(), scope: e.scope?, location, version: e.version.clone() })
-        })
+        .filter(|e| may_uninstall(&e.id, entries, running).is_ok())
+        .filter_map(|e| Some(Install { id: e.id.clone(), scope: e.scope?, location: location_of(e), version: e.version.clone() }))
         .collect()
 }
 
@@ -139,10 +133,11 @@ pub fn uninstaller(cmd: &str) -> Option<Uninstaller> {
 }
 
 /// The uninstall guard: a Chalito entry from a fresh read, not the running install, whose
-/// uninstaller sits in its own folder.
+/// uninstaller sits in its own folder. No known folder: it might be ours, so it's refused.
 pub fn may_uninstall(id: &str, entries: &[Entry], running: &[String]) -> Result<Uninstaller, Refusal> {
     let e = entries.iter().find(|e| e.id == id && is_chalito_entry(e)).ok_or(Refusal::NotACopy)?;
-    let location = location_of(e);
+    let location = location_of(e).filter(|l| is_abs(l)).ok_or(Refusal::NotACopy)?;
+    let location = Some(location);
     if runs_from(location.as_deref(), running) {
         return Err(Refusal::Running);
     }
@@ -269,12 +264,28 @@ pub mod os {
         }
     }
 
-    fn powershell(script: &str, env: (&str, &Path)) -> io::Result<std::process::ExitStatus> {
-        Command::new("powershell")
+    /// `%SystemRoot%\System32\…`: never a same-named program next to the app or on PATH.
+    fn system32(exe: &str) -> PathBuf {
+        let root = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        root.join("System32").join(exe)
+    }
+
+    fn powershell(script: &str, env: (&str, &Path)) -> io::Result<std::process::Output> {
+        Command::new(system32(r"WindowsPowerShell\v1.0\powershell.exe"))
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env(env.0, env.1)
             .creation_flags(CREATE_NO_WINDOW)
-            .status()
+            .output()
+    }
+
+    /// Exit 5: the person said no (a Recycle Bin or UAC dialog), which isn't an error.
+    fn outcome(out: std::process::Output, what: &str) -> io::Result<()> {
+        match out.status.code() {
+            Some(0) => Ok(()),
+            Some(3) => Err(io::Error::other(copies::NO_TRASH)),
+            Some(5) => Err(io::Error::other(copies::CANCELLED)),
+            _ => Err(io::Error::other(format!("{what}: {} {}", out.status, String::from_utf8_lossy(&out.stderr).trim()))),
+        }
     }
 
     /// To the Recycle Bin through the shell (VB FileIO), never a delete. Off a fixed disk there's
@@ -286,15 +297,11 @@ pub mod os {
             r"if (-not $root -or $root.StartsWith('\\') -or ",
             "([System.IO.DriveInfo]::new($root)).DriveType -ne 'Fixed') { exit 3 }; ",
             "Add-Type -AssemblyName Microsoft.VisualBasic; ",
-            "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'AllDialogs', 'SendToRecycleBin'); ",
-            "if (Test-Path -LiteralPath $p) { exit 4 }"
+            "try { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'AllDialogs', 'SendToRecycleBin') } ",
+            "catch [System.OperationCanceledException] { exit 5 }; ",
+            "if ([System.IO.File]::Exists($p)) { exit 4 }"
         );
-        let s = powershell(SCRIPT, ("CHALITO_TRASH", path))?;
-        match s.code() {
-            Some(0) => Ok(()),
-            Some(3) => Err(io::Error::other(copies::NO_TRASH)),
-            _ => Err(io::Error::other(format!("recycle bin: {s}"))),
-        }
+        outcome(powershell(SCRIPT, ("CHALITO_TRASH", path))?, "recycle bin")
     }
 
     /// Starts the uninstaller with its own window, then returns: the person goes through it.
@@ -305,16 +312,13 @@ pub mod os {
                 Ok(_) => Ok(()),
                 Err(e) if e.raw_os_error() == Some(ELEVATION_REQUIRED) => {
                     // ShellExecute shows the UAC prompt that CreateProcess refuses to.
-                    let s = powershell("Start-Process -FilePath $env:CHALITO_UNINSTALL", ("CHALITO_UNINSTALL", exe))?;
-                    if s.success() {
-                        Ok(())
-                    } else {
-                        Err(io::Error::other(format!("uninstaller: {s}")))
-                    }
+                    // A refused UAC prompt throws (ERROR_CANCELLED): that's the person's no.
+                    const SCRIPT: &str = "$ErrorActionPreference = 'Stop'; try { Start-Process -FilePath $env:CHALITO_UNINSTALL } catch { if ($_.Exception.InnerException.NativeErrorCode -eq 1223 -or $_.Exception.NativeErrorCode -eq 1223) { exit 5 }; throw }";
+                    outcome(powershell(SCRIPT, ("CHALITO_UNINSTALL", exe))?, "uninstaller")
                 }
                 Err(e) => Err(e),
             },
-            Uninstaller::Msi(guid) => Command::new("msiexec").args(["/x", guid]).spawn().map(|_| ()),
+            Uninstaller::Msi(guid) => Command::new(system32("msiexec.exe")).args(["/x", guid]).spawn().map(|_| ()),
         }
     }
 }
@@ -362,10 +366,13 @@ mod tests {
     fn the_chalito_entries_are_the_ones_named_chalito() {
         let mut e = entry("HKCU\\Chalito", "Chalito", None, None);
         assert!(is_chalito_entry(&e));
+        e.display = Some(" chalito ".into());
+        assert!(is_chalito_entry(&e));
         e.display = Some("Chalito Notes".into());
         assert!(!is_chalito_entry(&e));
-        e.publisher = Some(" chalito ".into());
-        assert!(is_chalito_entry(&e));
+        // Another chalyb product shares the publisher; only the name counts.
+        e.display = Some("Chalyb Studio".into());
+        assert!(!is_chalito_entry(&e));
         assert!(!is_chalito_entry(&entry("HKCU\\Cursor", "Cursor", None, None)));
     }
 
@@ -435,6 +442,28 @@ mod tests {
         assert_eq!(may_uninstall("HKCU\\Chalito2", &entries, running), Err(Refusal::NotACopy));
         assert_eq!(may_uninstall("HKCU\\Cursor", &entries, running), Err(Refusal::NotACopy));
         assert_eq!(may_uninstall("HKCU\\Gone", &entries, running), Err(Refusal::NotACopy));
+        // Only the uninstallable ones are listed: no button that would always be refused.
+        let listed: Vec<String> = installs(&entries, running).into_iter().map(|i| i.id).collect();
+        assert_eq!(listed, vec!["HKLM\\Chalito".to_string()]);
+    }
+
+    #[test]
+    fn an_install_with_no_known_folder_fails_closed() {
+        // An MSI entry without InstallLocation could be the running copy: never offered.
+        let msi = entry("HKLM\\{0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9}", "Chalito", None, Some("MsiExec.exe /X{0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9}"));
+        let running = &[r"C:\Program Files\Chalito\chalito-desktop.exe".to_string()];
+        assert_eq!(may_uninstall(&msi.id, std::slice::from_ref(&msi), running), Err(Refusal::NotACopy));
+        assert!(installs(std::slice::from_ref(&msi), running).is_empty());
+        // With its folder known, it's judged like any other install.
+        let mut placed = msi.clone();
+        placed.location = Some(r"C:\Program Files\Chalito".into());
+        assert_eq!(may_uninstall(&placed.id, std::slice::from_ref(&placed), running), Err(Refusal::Running));
+        let elsewhere = &[r"C:\Users\Ana\AppData\Local\Chalito\chalito-desktop.exe".to_string()];
+        assert!(matches!(may_uninstall(&placed.id, std::slice::from_ref(&placed), elsewhere), Ok(Uninstaller::Msi(_))));
+        // A relative InstallLocation is no known folder either.
+        let mut rel = placed.clone();
+        rel.location = Some("Chalito".into());
+        assert_eq!(may_uninstall(&rel.id, std::slice::from_ref(&rel), elsewhere), Err(Refusal::NotACopy));
     }
 
     #[test]
@@ -486,7 +515,15 @@ mod tests {
     #[test]
     fn a_fake_uninstall_entry_in_the_registry_is_scanned() {
         use windows_registry::CURRENT_USER;
+        /// Removes the test key even when an assert fails first.
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = CURRENT_USER.remove_tree(&self.0);
+            }
+        }
         let base = format!(r"Software\ChalitoCopiesTest-{}", std::process::id());
+        let _cleanup = Cleanup(base.clone());
         let d = tmp("registry");
         let other = d.join("Program Files").join("Chalito");
         std::fs::create_dir_all(&other).unwrap();

@@ -38,6 +38,8 @@ export interface CopiesReport {
   installs: OtherInstall[];
   /** macOS: "dmg" or "translocated" when the app runs from where it can't stay. */
   placement: "ok" | "dmg" | "translocated";
+  /** macOS: Downloads and Desktop are read only after a click (each asks the person for access). */
+  askDownloads: boolean;
 }
 
 /** Each call resolves to a fresh report; a refusal rejects with its code (`running`, `not_a_copy`…). */
@@ -49,6 +51,7 @@ export interface CopiesApi {
   reveal(path: string): Promise<CopiesReport>;
   uninstall(id: string): Promise<CopiesReport>;
   showApplications(): Promise<CopiesReport>;
+  scanDownloads(): Promise<CopiesReport>;
 }
 
 type Invoke = <T>(cmd: string, args: Record<string, unknown>) => Promise<T>;
@@ -61,6 +64,7 @@ export const invokeCopies = (call: Invoke): CopiesApi => ({
   reveal: (path) => call<CopiesReport>("copies_reveal", { path }),
   uninstall: (id) => call<CopiesReport>("copies_uninstall", { id }),
   showApplications: () => call<CopiesReport>("copies_show_applications", {}),
+  scanDownloads: () => call<CopiesReport>("copies_scan_downloads", {}),
 });
 
 export const needsFix = (l: Link): l is Extract<Link, { path: string }> => l.state === "other" || l.state === "gone";
