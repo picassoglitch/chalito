@@ -1,8 +1,17 @@
 import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n.js";
-import { anythingFound, needsFix, type CopiesApi, type CopiesReport } from "../lib/copies.js";
+import { anythingFound, copyLabel, needsFix, type CopiesApi, type CopiesReport } from "../lib/copies.js";
 
-const REFUSALS = ["running", "not_a_copy", "not_listed", "still_running", "handler_not_set"] as const;
+const REFUSALS = [
+  "running",
+  "not_a_copy",
+  "not_listed",
+  "still_running",
+  "handler_not_set",
+  "autostart_not_set",
+  "no_trash",
+  "bad_placement",
+] as const;
 
 type Notice = { kind: "done" | "error"; key: string; detail?: string };
 
@@ -52,6 +61,19 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
       <h2 id="copies-title">{t("copies.title")}</h2>
       {anythingFound(report) && <p className="muted">{t("copies.intro")}</p>}
 
+      {report.placement !== "ok" && (
+        <div data-copies="placement" data-placement={report.placement}>
+          <p>{t(`copies.placement.${report.placement}`)}</p>
+          <p className="muted">{t("copies.placement.steps")}</p>
+          <button
+            disabled={busy}
+            onClick={() => void act(() => api.showApplications(), "copies.done.showApplications")}
+          >
+            {t("copies.moveToApplications")}
+          </button>
+        </div>
+      )}
+
       {links.length > 0 && (
         <>
           <ul className="list" data-copies="links">
@@ -62,9 +84,31 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
             ))}
           </ul>
           <p className="muted mono">{t("copies.this", { path: report.running })}</p>
-          <button disabled={busy} onClick={() => void act(() => api.useThis(), "copies.done.useThis")}>
-            {t("copies.useThis")}
-          </button>
+          {/* From a DMG or a translocated path the fix wouldn't last: moving the app comes first. */}
+          {report.placement === "ok" && (
+            <button disabled={busy} onClick={() => void act(() => api.useThis(), "copies.done.useThis")}>
+              {t("copies.useThis")}
+            </button>
+          )}
+        </>
+      )}
+
+      {report.installs.length > 0 && (
+        <>
+          <ul className="list" data-copies="installs">
+            {report.installs.map((i) => (
+              <li key={i.id} data-install={i.scope}>
+                {t(`copies.install.${i.scope}${i.version ? "Version" : ""}`, {
+                  version: i.version ?? "",
+                  location: i.location ?? t("copies.install.unknown"),
+                })}{" "}
+                <button disabled={busy} onClick={() => void act(() => api.uninstall(i.id), "copies.done.uninstall")}>
+                  {t("copies.uninstall")}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="muted">{t("copies.uninstallHint")}</p>
         </>
       )}
 
@@ -85,12 +129,13 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
         <>
           <ul className="list" data-copies="files">
             {report.copies.map((c) => (
-              <li key={c.path} data-copy={c.path}>
-                {c.version
-                  ? t("copies.oldVersion", { version: c.version, path: c.path })
-                  : t("copies.old", { path: c.path })}{" "}
+              <li key={c.path} data-copy={c.path} data-kind={c.kind}>
+                {t(copyLabel(c), { version: c.version ?? "", path: c.path })}{" "}
                 <button disabled={busy} onClick={() => void act(() => api.trash(c.path), "copies.done.trash")}>
                   {t("copies.trash")}
+                </button>{" "}
+                <button disabled={busy} onClick={() => void act(() => api.reveal(c.path), "copies.done.reveal")}>
+                  {t("copies.reveal")}
                 </button>
               </li>
             ))}

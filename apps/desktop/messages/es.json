@@ -650,7 +650,10 @@
     "done": {
       "useThis": "Listo: Chalito se abrirá desde esta copia.",
       "trash": "Listo: la moví a la papelera.",
-      "close": "Listo: le pedí que se cerrara."
+      "close": "Listo: le pedí que se cerrara.",
+      "uninstall": "Abrí el desinstalador de esa copia. Sigue sus pasos.",
+      "reveal": "Abrí la carpeta.",
+      "showApplications": "Abrí Aplicaciones: arrastra Chalito ahí y ábrelo desde ahí."
     },
     "error": {
       "running": "Esa es la copia que está abierta; no la toco.",
@@ -658,7 +661,34 @@
       "not_listed": "Esa copia ya no está abierta.",
       "other": "No pude hacerlo. Inténtalo otra vez.",
       "still_running": "Sigue abierta: ciérrala desde su propio ícono en la barra.",
-      "handler_not_set": "Cambié el archivo, pero tu escritorio sigue abriendo los enlaces chalito:// con otra copia. Revisa las aplicaciones predeterminadas de tu sistema."
-    }
+      "handler_not_set": "Cambié el archivo, pero tu escritorio sigue abriendo los enlaces chalito:// con otra copia. Revisa las aplicaciones predeterminadas de tu sistema.",
+      "autostart_not_set": "Cambié lo que pude, pero una entrada de inicio para todos los usuarios sigue abriendo otra copia. Desinstala esa copia para quitarla.",
+      "no_trash": "Esa unidad no tiene papelera, así que no lo toqué. Usa «Abrir carpeta» y bórralo tú si quieres.",
+      "bad_placement": "Primero mueve Chalito a Aplicaciones; desde aquí no puedo registrarlo."
+    },
+    "kind": {
+      "installer": "Instalador descargado: {path}",
+      "installerVersion": "Instalador descargado (versión {version}): {path}",
+      "dmg": "Imagen de disco descargada: {path}",
+      "dmgVersion": "Imagen de disco descargada (versión {version}): {path}",
+      "app": "Otra copia de la app: {path}",
+      "appVersion": "Otra copia de la app (versión {version}): {path}"
+    },
+    "reveal": "Abrir carpeta",
+    "install": {
+      "user": "Chalito instalado solo para tu usuario: {location}",
+      "machine": "Chalito instalado para todos los usuarios: {location}",
+      "userVersion": "Chalito {version} instalado solo para tu usuario: {location}",
+      "machineVersion": "Chalito {version} instalado para todos los usuarios: {location}",
+      "unknown": "una carpeta que no sé"
+    },
+    "uninstall": "Desinstalar",
+    "uninstallHint": "Se abre el desinstalador de esa copia; sigue sus pasos. No borro carpetas por mi cuenta.",
+    "placement": {
+      "dmg": "Chalito se está abriendo desde el disco de instalación (.dmg). Así no se actualiza ni arranca con la computadora.",
+      "translocated": "macOS abrió Chalito desde una ubicación temporal porque no está en Aplicaciones. Así no se actualiza ni arranca con la computadora.",
+      "steps": "1. Cierra Chalito. 2. Arrastra Chalito a la carpeta Aplicaciones. 3. Ábrelo desde Aplicaciones."
+    },
+    "moveToApplications": "Mover a Aplicaciones"
   }
 }

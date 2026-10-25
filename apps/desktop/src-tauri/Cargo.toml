@@ -38,3 +38,8 @@ getrandom = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Other copies (copies_windows.rs): reads the uninstall entries, Run value and chalito:// handler.
+# Already in the build through tauri-plugin-autostart and tauri-plugin-deep-link.
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
