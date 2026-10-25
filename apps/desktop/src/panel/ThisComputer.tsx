@@ -2,18 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { useT } from "../lib/i18n.js";
 import { IpcUnavailableError, type AgentIpc, type Workspace } from "../lib/ipc.js";
 import type { ThisComputerApi } from "../lib/this-computer.js";
+import { loadPetWalk, savePetWalk } from "../lib/pet-prefs.js";
 
-/**
- * "Esta computadora" (First Run C, ADR 0028): leave the computer on and Chalito takes over.
- * Start with the computer (on by default; also in the tray), and the folders Chalito may work in,
- * chosen with the OS folder picker. Adding a folder asks the OS (password or biometric) in the
- * agent; removing one doesn't.
- */
+/** "Esta computadora" (ADR 0028): start with the computer, the pet's walks, and the folders Chalito may work
+ * in, chosen with the OS picker (adding one asks the OS for a password in the agent; removing doesn't). */
 export const ThisComputer = ({ api, ipc }: { api: ThisComputerApi; ipc: AgentIpc }) => {
   const t = useT();
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [folders, setFolders] = useState<Workspace[] | "unavailable" | null>(null);
   const [busy, setBusy] = useState(false);
+  const [walk, setWalk] = useState(() => loadPetWalk());
   const [notice, setNotice] = useState<{ kind: "added" | "already" | "error"; text: string } | null>(null);
 
   useEffect(() => {
@@ -84,6 +82,18 @@ export const ThisComputer = ({ api, ipc }: { api: ThisComputerApi; ipc: AgentIpc
         </label>
       )}
       {autostart !== null && <p className="muted">{t("computer.autostart.hint")}</p>}
+
+      <label data-pet-walk={walk ? "on" : "off"}>
+        <input
+          type="checkbox"
+          checked={walk}
+          onChange={(e) => {
+            setWalk(e.target.checked);
+            savePetWalk(e.target.checked);
+          }}
+        />{" "}
+        {t("computer.petWalk.label")}
+      </label>
 
       <h3>{t("computer.folders.title")}</h3>
       {folders === "unavailable" ? (

@@ -11,7 +11,9 @@ import { PET_COSMETICS_REFRESH_MS, cosmeticsKey, watchCosmetics } from "./cosmet
 import type { CustomCardSource } from "@chalito/scene/custom-card";
 import { PetLook, QualityResolver } from "./look.js";
 import { CARD_WAIT_MS, loadLastDrawn, petCard, saveLastDrawn } from "./choice.js";
-import { petReaction, playReaction } from "./reactions.js";
+import { PerkGate, mouseMayPlay, petReaction, playReaction } from "./reactions.js";
+import { PetMotion, type PetWindowApi } from "./motion.js";
+import { loadPetWalk } from "../lib/pet-prefs.js";
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
 const ROSTER_BASE = "/roster/";
@@ -41,6 +43,7 @@ export const startPet = (
   sh: DesktopShell,
   cosmetics: () => Promise<SceneCosmetic[] | null> = async () => null,
   myCard: Pick<CustomCardSource, "subscribe" | "getSnapshot" | "files" | "refresh"> | null = null,
+  win: PetWindowApi | null = null,
 ) => {
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0);
@@ -62,6 +65,7 @@ export const startPet = (
   const driver = new AvatarDriver({ seed: 1 });
   // Retro motion at every level (owner, 2026-10-25): poses step at 10 fps under any FPS cap.
   const retro = new RetroStepper();
+  const perks = new PerkGate();
   const creature = new CreatureBinding(placeholder);
   let look: PetLook | null = null;
   /** What's drawn (or loading): companion card and its cosmetics. */
@@ -145,7 +149,9 @@ export const startPet = (
       () => undefined, // no art: keep what's drawn
     );
   };
+  let walkOn = loadPetWalk();
   const onStorage = () => {
+    walkOn = loadPetWalk();
     applySettings();
     void wear.refresh();
     // The panel changed something (maybe the companion): ask whether it wears a custom card.
@@ -165,12 +171,33 @@ export const startPet = (
   let lastActivity: Activity | null = null;
   let sentBox: Rect | null = null;
   let geometry = { innerX: 0, innerY: 0, scale: 1 };
+  let geometryAsk = 0;
+  // Moves fire many reads during a drag: only the latest answer may set the hit box's origin.
+  const refreshGeometry = () => {
+    const n = ++geometryAsk;
+    void sh.geometry().then(
+      (g) => n === geometryAsk && (geometry = g),
+      () => undefined,
+    );
+  };
+  const ack = () => {
+    acked = true;
+    void sh.sendPetAck();
+  };
+  const motion = win
+    ? new PetMotion(win, {
+        storage: localStorage,
+        walkEnabled: () => walkOn,
+        onMoved: refreshGeometry,
+        onClick: ack,
+      })
+    : null;
 
   const resize = () => {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
     camera.aspect = window.innerWidth / Math.max(1, window.innerHeight);
     camera.updateProjectionMatrix();
-    void sh.geometry().then((g) => (geometry = g));
+    refreshGeometry();
   };
   resize();
   window.addEventListener("resize", resize);
@@ -201,8 +228,10 @@ export const startPet = (
         behaviour: o.state,
         quiet,
         playing: driver.actionAt(now),
+        perkOk: lastActivity && act.messages > lastActivity.messages ? perks.reply(now, !!ctx.panelFocused) : true,
       });
       if (r) playReaction(r, now, flash, driver);
+      if (r?.action === "perk") perks.perked(now);
       lastActivity = act;
     }
     if (faceUntil && now >= faceUntil) {
@@ -211,6 +240,15 @@ export const startPet = (
     }
     if (o.requestFocus && !out?.requestFocus) void sh.focusPet("L4").catch(() => undefined);
     out = o;
+    if (motion) {
+      const playing = driver.actionAt(now);
+      const quiet = ctx.dnd || ctx.quietHours;
+      // A situation's move (hop, slump, go…) is playing: no walk starts and mouse moves wait (reactions.ts).
+      const actionPlaying = !mouseMayPlay("walk", { playing, behaviour: o.state, quiet: false });
+      const m = motion.update(now, { hit: sentBox, scale: geometry.scale, state: o.state, ctx, actionPlaying });
+      driver.lookAt(m.gaze);
+      if (m.play && mouseMayPlay(m.play, { playing, behaviour: o.state, quiet })) driver.playAction(m.play, now);
+    }
     const frame = retro.step(now, driver.frame(now));
     if (look) look.apply(frame, now);
     else creature.apply(frame);
@@ -232,15 +270,17 @@ export const startPet = (
   applySettings();
   window.addEventListener("storage", onStorage);
 
-  // Clicks only arrive over the avatar (click-through elsewhere): acknowledge and open the panel.
-  canvas.addEventListener("click", () => {
-    acked = true;
-    void sh.sendPetAck();
-  });
+  // Presses only arrive over the avatar (click-through elsewhere): a click acks and opens the panel.
+  const detachPress = motion
+    ? motion.attach(canvas)
+    : (canvas.addEventListener("click", ack), () => canvas.removeEventListener("click", ack));
+  void motion?.start();
   const offCtx = sh.onPetContext((c) => (ctx = c));
 
   return () => {
     loop?.stop();
+    motion?.stop();
+    detachPress();
     clearTimeout(cardWait);
     wear.stop();
     offCard?.();

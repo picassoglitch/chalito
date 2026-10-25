@@ -13,6 +13,7 @@ import {
 } from "../src/lib/ipc.js";
 import type { AgentStatus, CliStatus, LocalAgentApi } from "../src/lib/local-agent.js";
 import type { ThisComputerApi } from "../src/lib/this-computer.js";
+import { loadPetWalk } from "../src/lib/pet-prefs.js";
 import { Apps } from "../src/panel/Apps.js";
 import { LocalAgent } from "../src/panel/LocalAgent.js";
 import { ThisComputer } from "../src/panel/ThisComputer.js";
@@ -222,6 +223,20 @@ describe("Esta computadora: start with the computer and the folders", () => {
     fireEvent.click(box);
     await waitFor(() => expect(a.setAutostart).toHaveBeenCalledWith(false));
     await waitFor(() => expect(container.querySelector('[data-autostart="off"]')).toBeTruthy());
+  });
+
+  it("the pet's taskbar walks are on by default; turning them off sticks on this device", async () => {
+    localStorage.removeItem("chalito-desktop-pet-walk");
+    const { container } = withText(<ThisComputer api={api()} ipc={ipcWith(folders()).ipc} />);
+    const box = (await screen.findByLabelText(/camine de vez en cuando/)) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    fireEvent.click(box);
+    expect(container.querySelector('[data-pet-walk="off"]')).toBeTruthy();
+    expect(loadPetWalk()).toBe(false);
+    cleanup();
+    withText(<ThisComputer api={api()} ipc={ipcWith(folders()).ipc} />);
+    expect(((await screen.findByLabelText(/camine de vez en cuando/)) as HTMLInputElement).checked).toBe(false);
+    localStorage.removeItem("chalito-desktop-pet-walk");
   });
 
   it('no folders yet says so; "Agregar una carpeta" opens the picker and adds it through the agent', async () => {

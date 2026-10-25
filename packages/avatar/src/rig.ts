@@ -1,7 +1,7 @@
 import { clamp } from "./math.js";
 import { ACTION_MS, fidgetAt, type CreatureAction, type CreatureMode } from "./actions.js";
 import type { Gaze } from "./idle.js";
-import { keyed } from "./retro.js";
+import { keyed, type Key } from "./retro.js";
 
 /** Cutout rigs (2026-10-19): each part is a full-card image turned about its pivot (card space, 0..1
  * from the top left) so arms, head, lids and mouth move. A card without a rig moves as one piece. */
@@ -100,6 +100,24 @@ const ramp = (u: number, a: number, b: number) => clamp((u - a) / (b - a));
 
 /** In and out of a held pose: 0 → 1 over the first `inn`, 1 until `out`, back to 0 at the end. */
 const hold = (u: number, inn = 0.15, out = 0.85) => (u < inn ? ramp(u, 0, inn) : u > out ? 1 - ramp(u, out, 1) : 1);
+
+const WALK_SWING: readonly Key[] = [
+  [0, 14],
+  [0.5, -14],
+  [0.9, 0],
+];
+const NOTICE_LIFT: readonly Key[] = [
+  [0, 1],
+  [0.6, 0],
+];
+const POKE_TILT: readonly Key[] = [
+  [0, 1],
+  [0.7, 0],
+];
+const POKE_SQUINT: readonly Key[] = [
+  [0, 1],
+  [0.3, 0],
+];
 
 export const rigPose = (i: RigInput): RigPose => {
   const t = i.tMs / 1000;
@@ -259,6 +277,23 @@ export const rigPose = (i: RigInput): RigPose => {
           ),
         );
         if (u < 0.7) pose.lids = 0;
+        break;
+      case "walk": {
+        const swing = keyed(WALK_SWING, u);
+        pose.armL += Math.max(0, swing);
+        pose.armR += Math.max(0, -swing);
+        break;
+      }
+      case "notice": {
+        const k = keyed(NOTICE_LIFT, u);
+        pose.head -= 4 * k;
+        pose.armL += 10 * k;
+        pose.armR += 10 * k;
+        break;
+      }
+      case "poke":
+        pose.head += 5 * keyed(POKE_TILT, u);
+        pose.lids = Math.max(pose.lids, 0.7 * keyed(POKE_SQUINT, u));
         break;
     }
   }

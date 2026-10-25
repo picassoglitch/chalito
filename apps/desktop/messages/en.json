@@ -537,6 +537,9 @@
       "hint": "That way, if you leave the computer on, Chalito comes back by itself after a restart and keeps working. You can also change it from Chalito's icon in the menu bar or taskbar.",
       "failed": "I couldn't change it. Please try again."
     },
+    "petWalk": {
+      "label": "Let your companion take a short walk along the taskbar now and then"
+    },
     "folders": {
       "title": "Folders Chalito can work in",
       "hint": "Choose your project folders. Chalito only works inside them, and your computer will ask for your password to add one.",

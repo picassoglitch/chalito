@@ -1,11 +1,12 @@
 import { clamp, easeInOutCubic, easeOutCubic, rng } from "./math.js";
 import type { CreaturePose } from "./gestures.js";
-import { keyed } from "./retro.js";
+import { keyed, type Key } from "./retro.js";
 
-/** Movement only shows something (owner 2026-10-19): a mode lasts while true (an AI busy, an answer
- * waiting); an action plays once (hop = done, slump = failed, go = started, glance = alert, perk = message). */
+/** Movement only shows something (owner 2026-10-19): a mode lasts while true (an AI busy, an answer waiting);
+ * an action plays once (hop done, slump failed, go started, glance alert, perk message; walk/notice/poke: mouse). */
 export type CreatureMode = "rest" | "working" | "needs_you";
-export type CreatureAction = "hop" | "slump" | "wave" | "cheer" | "nod" | "go" | "glance" | "perk";
+export type CreatureAction =
+  "hop" | "slump" | "wave" | "cheer" | "nod" | "go" | "glance" | "perk" | "walk" | "notice" | "poke";
 
 export const CREATURE_ACTIONS: readonly CreatureAction[] = [
   "hop",
@@ -16,6 +17,9 @@ export const CREATURE_ACTIONS: readonly CreatureAction[] = [
   "go",
   "glance",
   "perk",
+  "walk",
+  "notice",
+  "poke",
 ];
 
 export const ACTION_MS: Record<CreatureAction, number> = {
@@ -27,6 +31,10 @@ export const ACTION_MS: Record<CreatureAction, number> = {
   go: 900,
   glance: 1300,
   perk: 800,
+  // One step cycle; the pet replays it while it walks along the taskbar.
+  walk: 520,
+  notice: 650,
+  poke: 480,
 };
 
 /** A layer over the rest pose: offsets add, scale multiplies, tilt adds (degrees). */
@@ -71,6 +79,31 @@ export const modeLayer = (mode: CreatureMode, tMs: number): CreatureLayer => {
 };
 
 /** An action's layer `elapsed` ms after it started; `done` once it's over (then it's NONE). */
+const WALK_STEP: readonly Key[] = [
+  [0, 0.02],
+  [0.25, 0],
+  [0.5, 0.02],
+  [0.75, 0],
+];
+const WALK_SIDE: readonly Key[] = [
+  [0, 3],
+  [0.5, -3],
+  [0.9, 0],
+];
+const NOTICE: readonly Key[] = [
+  [0, 1],
+  [0.6, 0],
+];
+const POKE_SQUEEZE: readonly Key[] = [
+  [0, 1],
+  [0.25, 0],
+];
+const POKE_WOBBLE: readonly Key[] = [
+  [0.25, 5],
+  [0.5, -3],
+  [0.75, 0],
+];
+
 export const actionLayer = (action: CreatureAction, elapsedMs: number): CreatureLayer & { done: boolean } => {
   const dur = ACTION_MS[action];
   if (elapsedMs >= dur || elapsedMs < 0) return { ...NONE, done: elapsedMs >= dur };
@@ -144,6 +177,20 @@ export const actionLayer = (action: CreatureAction, elapsedMs: number): Creature
         u,
       );
       return { offsetY: 0, scale: squash(1 + s), tilt: [-s * 70, 0, 0], done: false };
+    }
+    case "walk": {
+      // Two little steps per cycle with a side-to-side waddle, as key poses like the rest.
+      const step = keyed(WALK_STEP, u);
+      return { offsetY: step * 0.6, scale: squash(1 + step), tilt: [0, 0, keyed(WALK_SIDE, u)], done: false };
+    }
+    case "notice": {
+      const k = keyed(NOTICE, u);
+      return { offsetY: k * 0.015, scale: squash(1 + k * 0.03), tilt: [-4 * k, 0, 0], done: false };
+    }
+    case "poke": {
+      // Squashed by the poke, then a small wobble back.
+      const squeeze = keyed(POKE_SQUEEZE, u);
+      return { offsetY: 0, scale: squash(1 - squeeze * 0.08), tilt: [0, 0, keyed(POKE_WOBBLE, u)], done: false };
     }
   }
 };
