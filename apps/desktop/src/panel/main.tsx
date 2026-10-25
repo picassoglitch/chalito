@@ -119,7 +119,10 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       const { sessions, events, notifications } = live.current;
       const learning = activity.load.loading(snap?.status, Date.now());
       const act = activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning });
-      const ctx = petContext(live.current, settings, { dnd, fullscreen: false, lowEnergy: false }, new Date(), act);
+      // The person reading the panel already sees replies: the pet doesn't perk at them (owner, 2026-10-25).
+      const panelFocused = document.hasFocus() && document.visibilityState === "visible";
+      const local = { dnd, fullscreen: false, lowEnergy: false, panelFocused };
+      const ctx = petContext(live.current, settings, local, new Date(), act);
       await sh.sendPetContext(ctx).catch(() => undefined);
       const idle = await sh.idleMs().catch(() => 0);
       reporter.update({ active: idle < IDLE_AFTER_MS, locked: false, fullscreen: false, dnd });

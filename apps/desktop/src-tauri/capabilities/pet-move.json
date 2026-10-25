@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "pet-move",
+  "description": "Pet only: the person drags it, it walks along the taskbar and returns to its saved spot.",
+  "windows": ["pet"],
+  "permissions": ["core:window:allow-set-position", "core:window:allow-start-dragging"]
+}

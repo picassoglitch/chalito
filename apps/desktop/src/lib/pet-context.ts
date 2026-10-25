@@ -5,7 +5,7 @@ import type { SettingsValues } from "@chalito/ui";
 
 /** What the panel (which holds the live connection) tells the pet window: the escalation context and
  * what the person's AI sessions are doing (busy, waiting, started, finished, failed, replies, alerts). */
-export type PetContext = Omit<BehaviourContext, "acked"> & { activity?: Activity };
+export type PetContext = Omit<BehaviourContext, "acked"> & { activity?: Activity; panelFocused?: boolean };
 
 const RANK: Record<Level, number> = { L0: 0, L1: 1, L2: 2, L3: 3, L4: 4 };
 const isLevel = (l: string): l is Level => l in RANK;
@@ -40,7 +40,7 @@ export const inQuietHours = (q: SettingsValues["quietHours"], at: Date): boolean
 export const petContext = (
   snap: Pick<Snapshot, "notifications">,
   settings: Pick<SettingsValues, "quietHours">,
-  local: { dnd: boolean; fullscreen: boolean; lowEnergy: boolean },
+  local: { dnd: boolean; fullscreen: boolean; lowEnergy: boolean; panelFocused?: boolean },
   at: Date,
   activity?: Activity,
 ): PetContext => ({

@@ -59,6 +59,17 @@ describe("modes and actions (movement only to show something)", () => {
     expect(actionLayer("slump", ACTION_MS.slump / 2).offsetY).toBeLessThan(0);
   });
 
+  it("mouse actions stay small: walk waddles both ways, notice perks up, poke squashes", () => {
+    const sample = (a: "walk" | "notice" | "poke") =>
+      Array.from({ length: 50 }, (_, i) => actionLayer(a, (i / 50) * ACTION_MS[a]));
+    const walk = sample("walk");
+    expect(Math.max(...walk.map((l) => l.tilt[2]))).toBeGreaterThan(2);
+    expect(Math.min(...walk.map((l) => l.tilt[2]))).toBeLessThan(-2);
+    expect(Math.max(...walk.map((l) => l.offsetY))).toBeLessThan(0.02);
+    expect(Math.max(...sample("notice").map((l) => l.offsetY))).toBeGreaterThan(0.01);
+    expect(Math.min(...sample("poke").map((l) => l.scale[1]))).toBeLessThan(0.95);
+  });
+
   it("layers compose over the rest pose", () => {
     const rest = creaturePose({ tag: "neutral", intensity: 1 }, 0);
     const c = composeCreature(rest, [modeLayer("working", 0), actionLayer("hop", 400)]);
@@ -119,6 +130,15 @@ describe("rig pose", () => {
     expect(p.armL).toBeLessThan(1);
     expect(p.headDrop).toBeGreaterThan(0.01);
     expect(p.lids).toBeGreaterThan(0.5);
+  });
+
+  it("walking swings the arms in turn; a poke tilts the head and squints", () => {
+    const at = (ms: number) => rigPose(input({ action: { name: "walk", elapsedMs: ms } }));
+    expect(at(ACTION_MS.walk / 4).armL).toBeGreaterThan(at(ACTION_MS.walk / 4).armR + 10);
+    expect(at((ACTION_MS.walk * 3) / 4).armR).toBeGreaterThan(at((ACTION_MS.walk * 3) / 4).armL + 10);
+    const poke = rigPose(input({ action: { name: "poke", elapsedMs: ACTION_MS.poke * 0.15 } }));
+    expect(poke.lids).toBeGreaterThan(0.5);
+    expect(poke.head).toBeGreaterThan(rigPose(input()).head);
   });
 
   it("the mouth opens with the voice", () => {

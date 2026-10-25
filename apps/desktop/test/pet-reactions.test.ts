@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { ActivityTracker, type Activity } from "@chalito/avatar";
 import { AvatarDriver } from "@chalito/avatar-three";
-import { petReaction, playReaction, type ReactionInput } from "../src/pet/reactions.js";
+import {
+  PERK_QUIET_MS,
+  PerkGate,
+  mouseMayPlay,
+  petReaction,
+  playReaction,
+  type ReactionInput,
+} from "../src/pet/reactions.js";
 
 const zero: Activity = { mode: "rest", done: 0, failed: 0, started: 0, messages: 0, alerts: 0 };
 const react = (now: Partial<Activity>, o: Partial<ReactionInput> = {}) =>
@@ -68,5 +75,58 @@ describe("each event triggers its own move (pet state logic)", () => {
       events: { s1: [{ eid: "e1", t: 1200, type: "message.assistant" }] },
     });
     expect(petReaction({ before: a1, now: a2, behaviour: "idle", quiet: false, playing: null })?.action).toBe("perk");
+  });
+});
+
+describe("perks at replies stay rare (owner, 2026-10-25)", () => {
+  it("only the first reply after 60 s without any perks; a steady stream never does", () => {
+    const g = new PerkGate();
+    expect(g.reply(0, false)).toBe(true);
+    g.perked(0);
+    expect(g.reply(5_000, false)).toBe(false);
+    // Replies every 30 s keep the burst alive past 60 s: still no second perk.
+    expect(g.reply(35_000, false)).toBe(false);
+    expect(g.reply(65_000, false)).toBe(false);
+    expect(g.reply(65_000 + PERK_QUIET_MS, false)).toBe(true);
+  });
+
+  it("at most one per 60 s, and none while the panel is focused", () => {
+    const g = new PerkGate();
+    expect(g.reply(0, true)).toBe(false); // reading the panel: no perk, and the burst has begun
+    expect(g.reply(10_000, false)).toBe(false);
+    expect(g.reply(10_000 + PERK_QUIET_MS, false)).toBe(true);
+    g.perked(10_000 + PERK_QUIET_MS);
+    const h = new PerkGate();
+    h.perked(100_000);
+    expect(h.reply(120_000, false)).toBe(false);
+  });
+
+  it("a turned-down perk is dropped; finishes, failures and other moves are unchanged", () => {
+    expect(react({ messages: 1 }, { perkOk: false })).toBeNull();
+    expect(react({ done: 1, messages: 1 }, { perkOk: false })?.action).toBe("hop");
+    expect(react({ failed: 1 }, { perkOk: false })?.action).toBe("slump");
+    expect(react({ messages: 1 })?.action).toBe("perk");
+  });
+});
+
+describe("mouse moves follow the reaction rules", () => {
+  const base = { playing: null, behaviour: "idle" as const, quiet: false };
+
+  it("never over an escalation's call", () => {
+    for (const behaviour of ["wave", "hop", "knock"] as const)
+      for (const a of ["walk", "notice", "poke"] as const) expect(mouseMayPlay(a, { ...base, behaviour })).toBe(false);
+  });
+
+  it("never cut a bigger move short; same-size moves may follow each other", () => {
+    for (const playing of ["slump", "hop", "go", "glance", "perk"] as const)
+      expect(mouseMayPlay("notice", { ...base, playing })).toBe(false);
+    expect(mouseMayPlay("walk", { ...base, playing: "walk" })).toBe(true);
+    expect(mouseMayPlay("poke", { ...base, playing: "wave" })).toBe(true);
+  });
+
+  it("the walk and the hover notice are muted in DND and quiet hours; a poke still answers the click", () => {
+    expect(mouseMayPlay("walk", { ...base, quiet: true })).toBe(false);
+    expect(mouseMayPlay("notice", { ...base, quiet: true })).toBe(false);
+    expect(mouseMayPlay("poke", { ...base, quiet: true })).toBe(true);
   });
 });

@@ -3,7 +3,9 @@ import { readEnv } from "../lib/session.js";
 import { shell } from "../lib/shell.js";
 import { companionCardSource } from "../lib/custom-card.js";
 import { ownCosmetics } from "./cosmetics.js";
+import { isTauri } from "@tauri-apps/api/core";
 import { startPet } from "./scene.js";
+import { tauriPetWindow } from "./window-api.js";
 
 const canvas = document.createElement("canvas");
 canvas.className = "pet-canvas";
@@ -16,4 +18,4 @@ const cosmetics = async () => {
   const d = await deps();
   return d ? ownCosmetics(d) : null;
 };
-startPet(canvas, shell(), cosmetics, companionCardSource(deps));
+startPet(canvas, shell(), cosmetics, companionCardSource(deps), isTauri() ? tauriPetWindow() : null);

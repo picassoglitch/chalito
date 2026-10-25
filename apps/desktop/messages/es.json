@@ -537,6 +537,9 @@
       "hint": "Así, si dejas la computadora encendida, Chalito vuelve solo después de reiniciar y sigue trabajando. También puedes cambiarlo desde el ícono de Chalito en la barra.",
       "failed": "No pude cambiarlo. Inténtalo otra vez."
     },
+    "petWalk": {
+      "label": "Que tu compañero camine de vez en cuando por la barra de tareas"
+    },
     "folders": {
       "title": "Carpetas donde Chalito puede trabajar",
       "hint": "Elige las carpetas de tus proyectos. Chalito solo trabaja dentro de ellas, y tu computadora te pedirá tu contraseña para agregar una.",
