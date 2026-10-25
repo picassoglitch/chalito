@@ -26,13 +26,18 @@ export const LiveGate = ({ children }: { children: ReactNode }) => {
   if (status === "loading") return <p aria-live="polite">{t("loading")}</p>;
   return (
     <div className="grid gap-3 rounded-lg border p-4" data-testid={`gate-${status}`}>
-      <p>{t(status)}</p>
+      {/* A device session with no keys left (e.g. revoked, then reloaded): only a new sign-in helps. */}
+      <p>{t(status === "unpaired" && !newDevice ? "needsSignIn" : status)}</p>
       {status === "unpaired" && newDevice ? (
-        <Link href="/vincular" data-testid="gate-link" className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white">
+        <button
+          data-testid="gate-link"
+          className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white"
+          onClick={() => void newDevice()}
+        >
           {t("link")}
-        </Link>
+        </button>
       ) : null}
-      {status === "signed_out" && hubLaunchUrl() ? (
+      {(status === "signed_out" || (status === "unpaired" && !newDevice)) && hubLaunchUrl() ? (
         <a
           className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white"
           href={hubLaunchUrl()!}

@@ -1,5 +1,5 @@
 import catalogJson from "../../../recipes/catalog.json" with { type: "json" };
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalView, ChalitoClient, NotificationView, Snapshot } from "@chalito/client";
 import { lintMessages } from "@chalito/brand";
@@ -537,6 +537,128 @@ describe("panel: inbox", () => {
   });
 });
 
+describe("panel: an approval pops up over any tab (ADR 0032)", () => {
+  it("on another tab: shown on top, decided there, and the panel is brought forward once per approval", async () => {
+    const f = fakeClient({ approvals: [approval({}), approval({ aid: "a2", details: { summary: "rm -rf dist" } })] });
+    const onNeedsYou = vi.fn();
+    const { container, rerender } = renderPanel({ client: f.client, initialTab: "settings", onNeedsYou }, "en");
+    const popup = container.querySelector('[data-section="approval-popup"]')!;
+    expect(popup.textContent).toContain("Chalito needs your approval");
+    expect(popup.querySelectorAll("[data-aid]")).toHaveLength(1);
+    expect(screen.getByText("See all 2 in the inbox")).toBeTruthy();
+    await waitFor(() => expect(onNeedsYou).toHaveBeenCalledTimes(1));
+    rerender(
+      <TextProviders locale="en">
+        <Panel
+          client={f.client}
+          ipc={unavailableIpc}
+          ptt={new PushToTalk(unavailableVoice)}
+          settings={DEFAULT_SETTINGS}
+          onSetting={() => undefined}
+          dnd={false}
+          onDnd={() => undefined}
+          hubPlansUrl="https://hub.example/planes"
+          phoneVerifier={{ start: async () => ({ ok: true }), check: async () => ({ ok: true }) }}
+          initialTab="settings"
+          onNeedsYou={onNeedsYou}
+        />
+      </TextProviders>,
+    );
+    expect(onNeedsYou).toHaveBeenCalledTimes(1);
+    fireEvent.click(popup.querySelector("[data-aid] button")!);
+    await waitFor(() => expect(f.decide).toHaveBeenCalledWith("a1", true));
+  });
+
+  it("a later approval brings the panel forward again; the same one never twice", async () => {
+    let snap = {
+      status: "live",
+      approvals: [approval({})],
+      sessions: [],
+      events: {},
+      drafts: {},
+    } as unknown as Snapshot;
+    snap = { ...snap, notifications: [], devices: [], devModeActive: false };
+    const listeners = new Set<() => void>();
+    const client = {
+      live: { subscribe: (l: () => void) => (listeners.add(l), () => listeners.delete(l)), getSnapshot: () => snap },
+      actions: { decide: vi.fn(async () => undefined), ackNotification: vi.fn(async () => undefined) },
+    } as unknown as Pick<ChalitoClient, "live" | "actions">;
+    const onNeedsYou = vi.fn();
+    renderPanel({ client, initialTab: "settings", onNeedsYou }, "en");
+    await waitFor(() => expect(onNeedsYou).toHaveBeenCalledTimes(1));
+    act(() => {
+      snap = { ...snap, approvals: [...snap.approvals, approval({ aid: "a2" })] };
+      listeners.forEach((l) => l());
+    });
+    await waitFor(() => expect(onNeedsYou).toHaveBeenCalledTimes(2));
+    act(() => {
+      snap = { ...snap, approvals: [...snap.approvals] };
+      listeners.forEach((l) => l());
+    });
+    expect(onNeedsYou).toHaveBeenCalledTimes(2);
+  });
+
+  it("each approval starts clean: B never inherits A's opened full input (R-M10)", async () => {
+    const cut = (aid: string) =>
+      approval({ aid, details: { summary: `Run ${aid}`, summaryTruncated: true, input: { command: aid } } });
+    let snap = {
+      status: "live",
+      approvals: [cut("a1"), cut("a2")],
+      sessions: [],
+      events: {},
+      drafts: {},
+      notifications: [],
+      devices: [],
+      devModeActive: false,
+    } as unknown as Snapshot;
+    const listeners = new Set<() => void>();
+    const decide = vi.fn(async (aid: string) => {
+      snap = { ...snap, approvals: snap.approvals.map((x) => (x.aid === aid ? { ...x, status: "denied" } : x)) };
+      listeners.forEach((l) => l());
+    });
+    const client = {
+      live: { subscribe: (l: () => void) => (listeners.add(l), () => listeners.delete(l)), getSnapshot: () => snap },
+      actions: { decide, ackNotification: vi.fn(async () => undefined) },
+    } as unknown as Pick<ChalitoClient, "live" | "actions">;
+    const { container } = renderPanel({ client, initialTab: "settings" }, "en");
+    const popup = () => container.querySelector('[data-section="approval-popup"]')!;
+    const details = popup().querySelector("details")!;
+    act(() => {
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+    });
+    expect(
+      within(popup() as HTMLElement)
+        .getByText("Approve")
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    fireEvent.click(within(popup() as HTMLElement).getByText("Deny"));
+    await waitFor(() => expect(popup().querySelector("[data-aid]")!.getAttribute("data-aid")).toBe("a2"));
+    expect(
+      within(popup() as HTMLElement)
+        .getByText("Approve")
+        .hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("'Later' moves on to the next one, and the inbox tab never shows it twice", () => {
+    const f = fakeClient({ approvals: [approval({}), approval({ aid: "a2" })] });
+    const { container } = renderPanel({ client: f.client, initialTab: "security" }, "en");
+    fireEvent.click(container.querySelector("[data-popup-later]")!);
+    expect(container.querySelector('[data-section="approval-popup"] [data-aid]')!.getAttribute("data-aid")).toBe("a2");
+    fireEvent.click(screen.getByText("Inbox"));
+    expect(container.querySelector('[data-section="approval-popup"]')).toBeNull();
+  });
+
+  it("expired or decided approvals don't pop up", () => {
+    const f = fakeClient({
+      approvals: [approval({ expiresAt: Date.now() - 1 }), approval({ aid: "a2", status: "denied" })],
+    });
+    const { container } = renderPanel({ client: f.client, initialTab: "rooms" }, "en");
+    expect(container.querySelector('[data-section="approval-popup"]')).toBeNull();
+  });
+});
+
 describe("panel: step-up capability", () => {
   const high = approval({ aid: "h1", risk: "HIGH", details: { summary: "git push --force" } });
   const low = approval({ aid: "l1", risk: "LOW", details: { summary: "ls" } });
@@ -569,14 +691,13 @@ describe("panel: sign-in screen", () => {
   it("walks the steps the controller reports", async () => {
     const flow = new SsoFlow("https://chalyb.com/launch");
     const opened: string[] = [];
-    let release: (d: unknown) => void = () => undefined;
+    let release: () => void = () => undefined;
     const controller = new SignInController({
       flow,
       openUrl: async (u) => void opened.push(u),
       exchange: async () => ({ ok: true, owner: "8a7a0d3c-5b5e-4a39-9d2b-2f8b1e0c4a11" }),
-      enroll: (_o, onDisplay) =>
+      enroll: () =>
         new Promise((resolve) => {
-          onDisplay({ shortCode: "KQ7RM" });
           release = () =>
             resolve({
               ok: true,
@@ -585,7 +706,6 @@ describe("panel: sign-in screen", () => {
               passkey: "unavailable",
               credential: null,
               agents: [],
-              droppedAgents: [],
             });
         }),
     });
@@ -594,8 +714,10 @@ describe("panel: sign-in screen", () => {
     await waitFor(() => expect(container.querySelector('[data-sign-in="browser"]')).not.toBeNull());
     const state = new URL(opened[0]!).searchParams.get("state")!;
     void controller.handleUrl(`chalito://auth/sso?token=t&state=${state}`);
-    expect(await screen.findByText("KQ7RM")).toBeTruthy();
-    release(null);
+    // ADR 0032 — signing in approves this computer: no code, no trusted device to open.
+    await waitFor(() => expect(container.querySelector('[data-sign-in="enrolling"]')).not.toBeNull());
+    expect(screen.queryByText(/trusted device/)).toBeNull();
+    release();
     expect(await screen.findByText(/HIGH or CRITICAL actions are approved from your phone/)).toBeTruthy();
   });
 

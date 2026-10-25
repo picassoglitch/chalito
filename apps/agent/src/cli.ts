@@ -644,12 +644,9 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
                 env: io.env,
                 secrets,
                 fetch: io.fetch,
-                // Windows has no OS prompt the agent can call (os-auth.ts); there the panel's
-                // per-launch IPC secret and its local "Sí, fui yo" are the local proof.
-                osAuth:
-                  io.platform === "win32"
-                    ? { verify: async () => true }
-                    : osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+                // ADR 0032 — signing in on the panel is the approval: no OS password prompt. Its
+                // per-launch IPC secret and the reverse check stay the local proof.
+                osAuth: { verify: async () => true },
                 now: io.now,
                 platform: io.platform,
                 ...(io.pairWatcher ? { watcher: io.pairWatcher } : {}),

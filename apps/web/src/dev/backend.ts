@@ -33,7 +33,7 @@ import {
   type BoxKeyPair,
   type SigningKeyPair,
 } from "@chalito/crypto";
-import type { ClientKeys, EndorseWatch, MesaApi } from "@chalito/client";
+import type { ClientKeys, MesaApi } from "@chalito/client";
 import {
   ApiError,
   type TrustedAgent,
@@ -573,7 +573,10 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
 
   // ---- this browser's keys (stub of packages/client-keys) ------------------------------
   const agentFingerprint = await fingerprint(agent.sign.publicKey);
-  const keys: ClientKeys & { trustedAgents(): TrustedAgent[] } = {
+  const keys: ClientKeys & {
+    trustedAgents(): TrustedAgent[];
+    trustIntroducedAgents(agents: readonly { deviceId: string }[], endorsedBy: string, now: number): Promise<string[]>;
+  } = {
     get deviceId() {
       return me.deviceId;
     },
@@ -586,6 +589,13 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       const r: Record<string, Uint8Array> = {};
       for (const [id, k] of Object.entries(recipients)) r[id] = await fromB64url(k);
       return sealJson(value, r, aad) as Promise<SealedEnvelope>;
+    },
+    // ADR 0032 — on connect, the account's computers from the directory (as client-keys does).
+    trustIntroducedAgents: async (agents, endorsedBy) => {
+      // Like client-keys: a computer confirmed by its glyph is never downgraded to "introduced".
+      if (mePairedWithAgent && meAgentVia === "glyph") return [];
+      await trustIntroduced(null, [...agents], endorsedBy);
+      return agents.map((a) => a.deviceId);
     },
     trustedAgentBoxKey: (id) => (id === agent.deviceId && mePairedWithAgent ? agent.pubBox : null),
     // ADR 0019: the same local-trust rule for the agent's signing key.
@@ -1016,12 +1026,21 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
           db.update("devices", (r) => r.device_id === id, { revoked: true, revoked_at: iso(Date.now()) });
           return { ok: true } as T;
         }
+        case "/v1/devices/signin":
         case "/v1/devices/endorsed": {
           needRole("user");
           const reg = b.registration as DeviceRegistration;
-          const e = b.endorsement as Endorsement;
-          const c = [...codes.values()].find((x) => x.registration.body.deviceId === reg.body.deviceId);
-          if (!c?.endorsement || c.endorsement.sig !== e.sig) throw fail(400, "endorsement_mismatch");
+          if (path === "/v1/devices/signin") {
+            // DEV/TEST: "chalito.dev.signin" = "404" (an api without the route) or "fail" (refused).
+            const mode = window.localStorage.getItem("chalito.dev.signin");
+            if (mode === "404") throw fail(404, "not_found");
+            if (mode === "fail") throw fail(403, "forbidden");
+            if (reg.body.owner !== OWNER) throw fail(403, "wrong_account");
+          } else {
+            const e = b.endorsement as Endorsement;
+            const c = [...codes.values()].find((x) => x.registration.body.deviceId === reg.body.deviceId);
+            if (!c?.endorsement || c.endorsement.sig !== e.sig) throw fail(400, "endorsement_mismatch");
+          }
           if (db.rows("devices").some((r) => r.device_id === reg.body.deviceId)) throw fail(409, "device_exists");
           const pub = await fromB64url(reg.body.pubSign);
           trusted.set(reg.body.deviceId, pub); // the agent verifies the endorsement locally
@@ -1049,14 +1068,6 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
       }
       throw fail(404, "not_found");
     },
-  };
-  // Realtime on chalito:pairing:<codeId>: a pointer on approve, and one on join (resync).
-  const endorseWatch: EndorseWatch = async (codeId, _token, onPointer) => {
-    const set = watchers.get(codeId) ?? new Set();
-    set.add(onPointer);
-    watchers.set(codeId, set);
-    setTimeout(onPointer, 0);
-    return () => set.delete(onPointer);
   };
   controls.endorse = {
     refusedByAgent: (id, reason) => refusedByAgent(id, reason),
@@ -1992,6 +2003,7 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
               sign: typeof keys.sign;
               deviceId: string;
               trustedAgents: () => TrustedAgent[];
+              trustIntroducedAgents: (typeof keys)["trustIntroducedAgents"];
             },
             // Like client-keys' passkeyStepUp: nothing without an enrolled passkey.
             // A revoke-all bundle (ADR 0020) is a passkey assertion, shaped like the real one.
@@ -2038,7 +2050,6 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
     avatar: () => avatarApi,
     account: () => account,
     balance: () => balanceApi,
-    endorseWatch,
     saveDeviceKeys,
     trustIntroduced,
     // The dev authenticator: a stand-in assertion over the challenge (the mock api checks the id).

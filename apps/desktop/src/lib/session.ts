@@ -5,11 +5,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   connect,
   createBrowserSupabase,
-  endorsementChannel,
   ensureSession,
   indexedDbStorage,
   must,
-  supabaseEndorseWatch,
   type ChalitoClient,
   type StepUpProvider,
 } from "@chalito/client";
@@ -17,11 +15,10 @@ import { SettingsStore, apiPhone, type SettingsDb } from "@chalito/client/settin
 import {
   DeviceClientKeys,
   KeyVault,
-  accountAgents,
+  newAccountAgents,
   deviceFingerprint,
   deviceLogin,
   keyFingerprint,
-  endorseGlyph,
   httpApi,
   passkeyStepUp,
   type DirectoryDevice,
@@ -125,18 +122,6 @@ export const createSession = async (
   const vault = await KeyVault.open("chalito-desktop-keys");
   const token = async () => (await sb.auth.getSession()).data.session?.access_token ?? null;
   const api = httpApi({ baseUrl: env.apiBase, token });
-  // /v1/endorse (fallback only, for an api without /v1/devices/signin): publish the registration,
-  // show the code and the glyph signed by this device's key, wait on chalito:pairing:<code> with
-  // the scoped watch token.
-  const channel = endorsementChannel({
-    api,
-    watch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseKey),
-    glyphFor: async (code) => {
-      const k = await vault.load();
-      return k ? endorseGlyph(k, code, { label: "Chalito (desktop)", now: Date.now() }) : null;
-    },
-  });
-
   const directory = async (owner: string): Promise<DirectoryDevice[]> => {
     const rows = await must<{ device_id: string; role: string; revoked: boolean; pub_sign: string; pub_box: string }[]>(
       "devices directory",
@@ -173,7 +158,7 @@ export const createSession = async (
     // Sign-in alone: the account's computers, from the directory (new ones since last time too).
     // Best effort: an unreadable directory only means waiting for the next launch.
     await directory(owner)
-      .then(accountAgents)
+      .then((dir) => newAccountAgents(dir, keys.trustedAgents()))
       .then((agents) => keys.trustIntroducedAgents(agents, SIGN_IN_INTRODUCER, Date.now()))
       .catch(() => undefined);
     const ownFingerprint = await deviceFingerprint(stored);
@@ -220,12 +205,11 @@ export const createSession = async (
         }
       : {}),
     exchange: (t) => exchange(t, { apiBase: env.apiBase, fetch: (...a) => fetch(...a), auth: sb.auth }),
-    enroll: async (owner, onDisplay, signal) => {
+    enroll: async (owner) => {
       const r = await enrollDesktop({
         owner,
         name: "Chalito (desktop)",
         keys: vault,
-        channel,
         userApi: api,
         deviceApi: async (customToken) => {
           const k = await vault.load();
@@ -235,14 +219,11 @@ export const createSession = async (
         },
         signer: (k) => DeviceClientKeys.create(k, vault),
         platformAuthenticator: () => platformAuthenticatorAvailable(),
-        // ADR 0018: the computers the endorsing client trusts, where the directory agrees.
         introduce: {
           directory: () => directory(owner),
           trust: async (k, agents, endorsedBy) =>
             (await DeviceClientKeys.create(k, vault)).trustIntroducedAgents(agents, endorsedBy, Date.now()),
         },
-        onDisplay,
-        signal,
       });
       if (r.ok) {
         saveStored({ owner, passkey: r.credential });

@@ -7,6 +7,7 @@ import {
   approveEndorsement,
   generateDeviceKeys,
   introducedAgents,
+  newAccountAgents,
   publicKeys,
   type ApiClient,
   type DirectoryDevice,
@@ -264,5 +265,30 @@ describe("R-L13: the endorser's passkey step-up is bound to the endorsement body
       ),
     ).rejects.toThrow();
     expect(posted).toBeNull();
+  });
+});
+
+describe("ADR 0032: computers from the directory on every connect", () => {
+  it("adds only computers not trusted yet: a later key swap for a known id never replaces its keys", async () => {
+    const [desk, laptop, tower, attacker] = await Promise.all([dev(), dev(), dev(), dev()]);
+    const keys = await DeviceClientKeys.create(desk.keys);
+    // First connect: the laptop comes in from the directory.
+    await keys.trustIntroducedAgents(
+      await newAccountAgents([row(laptop, "agent")], keys.trustedAgents()),
+      "sign_in",
+      NOW,
+    );
+    // Later the directory swaps the laptop's box key, and lists a new tower.
+    const swapped = row(laptop, "agent", { pubBox: attacker.pubBox });
+    const added = await newAccountAgents([swapped, row(tower, "agent")], keys.trustedAgents());
+    expect(added.map((a) => a.deviceId)).toEqual([tower.deviceId]);
+    await keys.trustIntroducedAgents(added, "sign_in", NOW);
+    expect(keys.trustedAgents().find((a) => a.deviceId === laptop.deviceId)?.pubBox).toBe(laptop.pubBox);
+    expect(
+      keys
+        .trustedAgents()
+        .map((a) => a.deviceId)
+        .sort(),
+    ).toEqual([laptop.deviceId, tower.deviceId].sort());
   });
 });

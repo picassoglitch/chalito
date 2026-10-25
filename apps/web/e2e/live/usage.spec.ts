@@ -52,7 +52,11 @@ test("above target says so; no usage and errors are explicit", async ({ page }) 
 });
 
 test("unpaired: the page asks to pair (the read needs a device) and calls nothing", async ({ page }) => {
-  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
+  // ADR 0032 — signing in approves a browser; only a refused sign-in leaves it unpaired.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("chalito.dev.paired", "0");
+    window.localStorage.setItem("chalito.dev.signin", "fail");
+  });
   await page.goto("/uso");
   await expect(page.getByTestId("gate-unpaired")).toBeVisible();
   await page.waitForFunction(() => !!(window as unknown as { __chalitoDev?: unknown }).__chalitoDev);

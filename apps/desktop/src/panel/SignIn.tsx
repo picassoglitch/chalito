@@ -1,10 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { useT } from "../lib/i18n.js";
 import type { SignInController } from "../lib/sign-in.js";
-import { GlyphView } from "./GlyphView.js";
-
-const shortCode = (d: unknown): string | null =>
-  typeof (d as { shortCode?: unknown } | null)?.shortCode === "string" ? (d as { shortCode: string }).shortCode : null;
 
 /** Signed out: sign in with the hub (system browser); that sign-in enrols this computer. */
 export const SignIn = ({ controller }: { controller: SignInController | null }) => {
@@ -34,26 +30,12 @@ export const SignIn = ({ controller }: { controller: SignInController | null }) 
       );
     case "exchanging":
       return <p className="muted">{t("signIn.exchanging")}</p>;
-    case "endorsing": {
-      // Signing in enrols this computer right away; a code only appears on the endorsement fallback.
-      if (s.display === null)
-        return (
-          <p className="muted" data-sign-in="enrolling">
-            {t("signIn.enrolling")}
-          </p>
-        );
-      const code = shortCode(s.display);
+    case "enrolling":
       return (
-        <div className="card" data-sign-in="endorsing">
-          <p>{t("signIn.endorsing")}</p>
-          <div className="row">
-            <GlyphView glyph={(s.display as { glyph?: unknown } | null)?.glyph} label={t("signIn.glyph")} />
-            {code && <code className="fingerprint">{code}</code>}
-          </div>
-          {cancel}
-        </div>
+        <p className="muted" data-sign-in="enrolling">
+          {t("signIn.enrolling")}
+        </p>
       );
-    }
     case "ready":
       return (
         <div className="card" data-sign-in="ready">

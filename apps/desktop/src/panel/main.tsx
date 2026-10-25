@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Snapshot } from "@chalito/client";
@@ -103,6 +103,12 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);
+  // ADR 0032 — something only the person can answer brings the panel forward; "No molestar" holds it.
+  const needsYou = useCallback(() => {
+    if (!dnd) void sh.showWindow("panel").catch(() => undefined);
+  }, [sh, dnd]);
+  // A pairing check only the person can answer comes forward even under DND: they just started it.
+  const pairingNeedsYou = useCallback(() => void sh.showWindow("panel").catch(() => undefined), [sh]);
   const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions" | "events">>({
     notifications: [],
     approvals: [],
@@ -159,6 +165,8 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       canStepUp={conn?.canStepUp ?? false}
       signIn={<SignIn controller={controller} />}
       autoPair={conn?.autoPair ?? null}
+      onNeedsYou={needsYou}
+      onPairingNeedsYou={pairingNeedsYou}
       {...(controller ? { startSignIn: () => void controller.start() } : {})}
       ipc={ipc}
       rooms={conn?.rooms ?? null}

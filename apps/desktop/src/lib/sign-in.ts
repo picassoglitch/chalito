@@ -6,7 +6,7 @@ export type SignInStep =
   /** `stale`: a link from an earlier attempt came back; the newest browser tab still works. */
   | { step: "browser"; stale?: true }
   | { step: "exchanging" }
-  | { step: "endorsing"; display: unknown }
+  | { step: "enrolling" }
   | { step: "ready"; owner: string; deviceId: string; passkey: "enrolled" | "unavailable" | "failed" }
   | {
       step: "error";
@@ -20,7 +20,7 @@ export interface SignInDeps {
   /** Debug builds only: the loopback redirect for this state. */
   devRedirect?: (state: string) => Promise<string>;
   exchange(token: string): Promise<ExchangeResult>;
-  enroll(owner: string, onDisplay: (d: unknown) => void, signal: AbortSignal): Promise<EnrollResult>;
+  enroll(owner: string): Promise<EnrollResult>;
 }
 
 /** Link rejections that must not disturb a sign-in in progress (forged or stray links). */
@@ -34,7 +34,7 @@ const IGNORABLE = new Set<AcceptError>([
 
 /**
  * The panel's sign-in, framework-free: open the hub in the browser → accept the callback
- * deep link → exchange → endorsement by a trusted client (+ passkey) → ready.
+ * deep link → exchange → the sign-in enrols this computer (ADR 0032, + passkey) → ready.
  */
 export class SignInController {
   #s: SignInStep = { step: "signed_out" };
@@ -95,8 +95,9 @@ export class SignInController {
     const x = await this.d.exchange(r.token);
     if (!x.ok) return this.#set({ step: "error", reason: x.reason });
     const abort = (this.#abort = new AbortController());
-    this.#set({ step: "endorsing", display: null });
-    const e = await this.d.enroll(x.owner, (display) => this.#set({ step: "endorsing", display }), abort.signal);
+    this.#set({ step: "enrolling" });
+    // A throw (keychain, storage) is an error to show, never a panel left on "enrolling".
+    const e = await this.d.enroll(x.owner).catch((): EnrollResult => ({ ok: false, reason: "failed" }));
     if (abort.signal.aborted) return;
     this.#abort = null;
     if (!e.ok) return this.#set({ step: "error", reason: e.reason });

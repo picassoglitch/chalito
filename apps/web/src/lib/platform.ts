@@ -1,4 +1,4 @@
-import { supabaseEndorseWatch, type BrowserSupabase, type EndorseWatch } from "@chalito/client";
+import type { BrowserSupabase } from "@chalito/client";
 import {
   assertWithServerChallenge,
   deviceLogin,
@@ -50,10 +50,8 @@ export interface Platform {
   account(token: () => Promise<string | null>): AccountApi;
   /** GET /v1/billing/balance (the hub balance in tokens) as whoever is signed in. */
   balance(token: () => Promise<string | null>): BalanceApi;
-  /** The api as whoever the bearer is (/v1/endorse: the person on a new browser, the device on a trusted one). */
+  /** The api as whoever the bearer is (/v1/devices/signin: the person; /v1/endorse: a trusted device). */
   api(token: () => Promise<string | null>): ApiClient;
-  /** Hears the endorsement pointer on `chalito:pairing:<codeId>` with the code's scoped watch token. */
-  endorseWatch: EndorseWatch;
   /** Stores a new identity for this browser (replacing the old one). */
   saveDeviceKeys(keys: RawDeviceKeys): Promise<void>;
   /** This device's passkey as an assertion over a given challenge (R-L13: bound to what it approves). */
@@ -81,7 +79,6 @@ export const productionPlatform = (): Platform => ({
   avatar: (token) => httpAvatar(env.apiBase, token),
   account: (token) => httpAccount(env.apiBase, token),
   balance: (token) => httpBalance(env.apiBase, token),
-  endorseWatch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseAnonKey),
   saveDeviceKeys,
   passkeyAssertion: (ref) => stepUpWithPasskey(ref),
   trustIntroduced: trustIntroducedAgents,

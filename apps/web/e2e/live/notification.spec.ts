@@ -32,3 +32,19 @@ test("an unknown notification says so and goes nowhere", async ({ page }) => {
   await expect(page.locator("main [role=alert]")).toContainText("Ese aviso ya no existe");
   await expect(page).toHaveURL(/\/n\/nope$/);
 });
+
+test("ADR 0032: a new browser opening /n/<nid> approves itself without bouncing to the hub sign-in", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("chalito.dev.paired", "0");
+    window.localStorage.setItem("chalito.dev.verifyDelayMs", "500");
+  });
+  const hub: string[] = [];
+  page.on("framenavigated", (f) => f.url().startsWith("https://hub.example") && hub.push(f.url()));
+  await page.route("https://hub.example/**", (r) => r.fulfill({ status: 200, body: "hub" }));
+  await page.goto("/n/n1");
+  await expect(page).toHaveURL(/\/a\/apr_med_1$/);
+  await expect(page.locator('[data-aid="apr_med_1"]')).toBeVisible();
+  expect(hub).toEqual([]);
+});

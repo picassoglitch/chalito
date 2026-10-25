@@ -525,11 +525,12 @@
       "loading": "Conectando…",
       "signed_out": "Entra con tu cuenta de Chalyb para ver tus sesiones y aprobaciones.",
       "signIn": "Entrar con Chalyb",
-      "unpaired": "Este navegador aún no es de confianza. Apruébalo desde un dispositivo de confianza o emparéjalo desde la app de escritorio.",
+      "unpaired": "No pudimos aprobar este navegador con tu sesión.",
       "error": "No pudimos conectar. Vuelve a intentarlo en un momento.",
-      "revoked": "Este dispositivo fue retirado de tu cuenta. Vuelve a emparejarlo desde un dispositivo de confianza.",
-      "repair": "Emparejar de nuevo",
-      "link": "Usar este navegador"
+      "revoked": "Este dispositivo fue retirado de tu cuenta. Entra de nuevo con Chalyb para volver a usarlo.",
+      "repair": "Entrar de nuevo",
+      "link": "Volver a intentar",
+      "needsSignIn": "Entra de nuevo con tu cuenta de Chalyb para usar este navegador. Al entrar, queda aprobado."
     },
     "devMode": {
       "banner": "Modo desarrollador ACTIVO.",
@@ -759,7 +760,7 @@
       "on": "Los avisos están activos en este dispositivo.",
       "denied": "Bloqueaste los avisos para este sitio. Actívalos en los ajustes de tu navegador.",
       "unsupported": "Este navegador no puede recibir avisos aquí.",
-      "needsPairing": "Vincula este navegador para recibir avisos en él.",
+      "needsPairing": "Entra con tu cuenta de Chalyb en este navegador para recibir avisos en él.",
       "loading": "Cargando…",
       "failed": "No pudimos activar los avisos. Inténtalo de nuevo.",
       "notification": {
@@ -794,7 +795,7 @@
       "title": "Eliminar mi cuenta de Chalito",
       "explain": "Borra tus compañeros, sesiones, dispositivos y ajustes de Chalito. Tu cuenta de Chalyb no cambia.",
       "start": "Eliminar mi cuenta…",
-      "needsPairing": "Para pedirlo, vincula este navegador como dispositivo.",
+      "needsPairing": "Para pedirlo, entra con tu cuenta de Chalyb en este navegador.",
       "needsPasskey": "Para pedirlo, este dispositivo necesita una passkey.",
       "setUpPasskey": "Crear passkey",
       "what": {
@@ -820,6 +821,11 @@
         "cancelled": "Listo: tu cuenta ya no se eliminará.",
         "export_failed": "No pudimos descargar tus datos. Inténtalo de nuevo."
       }
+    },
+    "popup": {
+      "title": "{count, plural, one {Chalito necesita tu aprobación} other {Chalito necesita # aprobaciones}}",
+      "all": "Ver todas",
+      "later": "Más tarde"
     }
   },
   "mcp": {
@@ -870,36 +876,20 @@
   "endorse": {
     "wait": {
       "title": "Usar este navegador",
-      "body": "Para ver y aprobar tus sesiones aquí, un dispositivo en el que ya confías tiene que aprobar este navegador.",
-      "nameLabel": "Nombre de este navegador",
-      "start": "Mostrar código",
+      "enrolling": "Aprobando este navegador con tu cuenta…",
       "loading": "Conectando…",
-      "signInFirst": "Primero entra con tu cuenta de Chalyb en este navegador.",
+      "signInFirst": "Entra con tu cuenta de Chalyb en este navegador. Al entrar, queda aprobado.",
       "signIn": "Entrar con Chalyb",
-      "unavailable": "No se puede añadir este navegador ahora. Vuelve a intentarlo en un momento.",
-      "waitingTitle": "Esperando aprobación",
-      "waitingBody": "En tu teléfono u otro navegador de confianza, abre Dispositivos → Añadir un dispositivo y escanea este anillo o escribe el código.",
-      "glyphLabel": "Anillo para escanear desde un dispositivo de confianza",
-      "orType": "o escribe este código:",
-      "fingerprint": "Huella de este navegador:",
-      "expiresIn": "Vence en {minutes}:{seconds}",
-      "whereToApprove": "Antes de aprobar, comprueba que la huella sea la misma en los dos dispositivos.",
-      "cancel": "Cancelar",
+      "retry": "Volver a intentar",
       "doneTitle": "Listo",
-      "doneBody": "Este navegador ya es de confianza. Para enviar instrucciones a una computadora, emparéjalo también con ella.",
+      "doneBody": "Este navegador ya está aprobado. Tus computadoras lo reconocen solas.",
       "doneCta": "Ir a la bandeja",
       "error": {
-        "expired": "El código venció. Muestra uno nuevo.",
-        "cancelled": "Se canceló.",
-        "unavailable": "No se puede añadir este navegador ahora. Vuelve a intentarlo en un momento.",
-        "endorsement_mismatch": "La aprobación no corresponde a este navegador. Vuelve a intentarlo.",
-        "endorser_not_trusted": "El dispositivo que aprobó ya no es de confianza.",
-        "device_exists": "Este navegador ya estaba registrado. Muestra un código nuevo.",
-        "rejected": "No se aceptó la aprobación. Vuelve a intentarlo.",
+        "unsupported": "El servidor de Chalito aún no permite aprobar con solo entrar. Vuelve a intentarlo en un momento.",
+        "device_exists": "Este navegador ya estaba registrado. Vuelve a intentarlo.",
+        "rejected": "Tu cuenta no aceptó este navegador. Vuelve a entrar con Chalyb e inténtalo de nuevo.",
         "failed": "Algo salió mal. Vuelve a intentarlo."
-      },
-      "doneIntroduced": "Ya puedes enviar instrucciones a {computers}: tu otro dispositivo te las presentó.",
-      "doneDropped": "{computer}: no pudimos confirmarla. Emparéjala con su anillo para enviarle instrucciones."
+      }
     },
     "add": {
       "title": "Añadir un dispositivo",
