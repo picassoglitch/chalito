@@ -623,5 +623,40 @@
     },
     "signInForLive": "Inicia sesión en Chalito para ver la conversación aquí; mientras, síguela en tu teléfono.",
     "terminal": "Tú (terminal)"
+  },
+  "copies": {
+    "title": "Hay otra copia de Chalito en esta computadora",
+    "intro": "Si dos copias de Chalito se abren a la vez, el inicio de sesión puede volver a la copia equivocada y quedarse dando vueltas.",
+    "this": "Esta copia: {path}",
+    "autostart": {
+      "other": "Al encender la computadora se abre otra copia: {path}",
+      "gone": "Al encender la computadora se intenta abrir una copia que ya no existe: {path}"
+    },
+    "handler": {
+      "other": "Los enlaces de inicio de sesión (chalito://) abren otra copia: {path}",
+      "gone": "Los enlaces de inicio de sesión (chalito://) apuntan a una copia que ya no existe: {path}"
+    },
+    "useThis": "Usar esta copia",
+    "running": {
+      "desktop": "Otra copia de Chalito está abierta: {path}",
+      "agent": "Quedó abierto un agente de Chalito sin su app: {path}"
+    },
+    "close": "Cerrar la otra copia",
+    "closeAgent": "Cerrar el agente",
+    "old": "Copia sin usar: {path}",
+    "oldVersion": "Copia sin usar (versión {version}): {path}",
+    "trash": "Mover a la papelera",
+    "trashHint": "Va a la papelera, no se borra: puedes recuperarla desde ahí.",
+    "done": {
+      "useThis": "Listo: Chalito se abrirá desde esta copia.",
+      "trash": "Listo: la moví a la papelera.",
+      "close": "Listo: le pedí que se cerrara."
+    },
+    "error": {
+      "running": "Esa es la copia que está abierta; no la toco.",
+      "not_a_copy": "Eso ya no parece una copia de Chalito, así que no lo toqué.",
+      "not_listed": "Esa copia ya no está abierta.",
+      "other": "No pude hacerlo. Inténtalo otra vez."
+    }
   }
 }

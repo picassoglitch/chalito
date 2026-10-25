@@ -118,7 +118,7 @@ pub mod xdg {
     }
 
     /// `key=value` pairs of the `[Desktop Entry]` group (other groups, like actions, ignored).
-    fn main_group(entry: &str) -> impl Iterator<Item = (&str, &str)> {
+    pub fn main_group(entry: &str) -> impl Iterator<Item = (&str, &str)> {
         let mut in_main = false;
         entry.lines().filter_map(move |l| {
             let l = l.trim();
@@ -179,7 +179,8 @@ pub mod xdg {
         Ok(matches!(state(dir)?, State::Live | State::Dangling))
     }
 
-    fn entry_for(target: &Path) -> io::Result<String> {
+    /// `target` quoted for an `Exec` line, escapes and all (also used for the chalito:// handler).
+    pub fn exec_value(target: &Path) -> io::Result<String> {
         let t = target.to_str().ok_or_else(|| io::Error::other("path is not UTF-8"))?;
         if t.contains(['\n', '\r']) {
             return Err(io::Error::other("path has a line break"));
@@ -191,7 +192,11 @@ pub mod xdg {
             }
             q.push(c);
         }
-        let exec = format!("\"{}\"", q.replace('%', "%%")).replace('\\', "\\\\");
+        Ok(format!("\"{}\"", q.replace('%', "%%")).replace('\\', "\\\\"))
+    }
+
+    fn entry_for(target: &Path) -> io::Result<String> {
+        let exec = exec_value(target)?;
         Ok(format!(
             "[Desktop Entry]\nType=Application\nVersion=1.0\nName=Chalito\nComment=Chalito startup script\nExec={exec}\nStartupNotify=false\nTerminal=false\n"
         ))
@@ -204,7 +209,8 @@ pub mod xdg {
         fs::rename(tmp, dir.join(ENTRY))
     }
 
-    fn write(dir: &Path, target: &Path) -> io::Result<()> {
+    /// Points the entry at `target` whatever it held (the panel's "Usar esta copia").
+    pub fn write(dir: &Path, target: &Path) -> io::Result<()> {
         put(dir, entry_for(target)?.as_bytes())
     }
 

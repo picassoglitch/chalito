@@ -8,8 +8,10 @@ import type { LocalAgentApi } from "../lib/local-agent.js";
 import type { ThisComputerApi } from "../lib/this-computer.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
+import type { CopiesApi } from "../lib/copies.js";
 import { Inbox } from "./Inbox.js";
 import { NewSession } from "./NewSession.js";
+import { OldCopies } from "./OldCopies.js";
 import { Rooms } from "./Rooms.js";
 import { ConnectComputer, type AutoPair } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
@@ -56,6 +58,8 @@ export interface PanelProps {
   firstTaskUrl?: string;
   /** Salas: the rooms list and join; null while signed out. */
   rooms?: RoomsSource | null;
+  /** Other copies of Chalito on this computer; null without the native side. */
+  copies?: CopiesApi | null;
   initialTab?: Tab;
 }
 
@@ -77,6 +81,7 @@ export const Panel = (p: PanelProps) => {
           <input type="checkbox" checked={p.dnd} onChange={(e) => p.onDnd(e.target.checked)} /> {t("dnd")}
         </label>
       </header>
+      {p.copies && <OldCopies api={p.copies} />}
       {p.localAgent && p.openUrl && (
         <ConnectComputer
           ipc={p.ipc}

@@ -2,6 +2,7 @@ mod agent;
 mod autostart;
 mod cli_install;
 mod computer;
+mod copies;
 mod hittest;
 mod ipc_client;
 #[cfg(debug_assertions)]
@@ -341,6 +342,108 @@ async fn pick_folder(app: AppHandle, window: tauri::Window) -> Result<Option<Str
     Ok(picked.and_then(|p| p.into_path().ok()).map(|p| p.display().to_string()))
 }
 
+/// Other copies of Chalito (copies.rs): what the panel's notice lists. Nothing in a dev build,
+/// which isn't a copy the person installed and would list every real AppImage as old.
+fn copies_report_now(app: &AppHandle) -> Result<copies::Report, String> {
+    if cfg!(debug_assertions) {
+        return Ok(copies::Report::default());
+    }
+    let mut r = copies_files(app)?;
+    r.instances = copies::others(&copies::processes(), std::process::id());
+    Ok(r)
+}
+
+#[cfg(target_os = "linux")]
+fn copies_ctx(app: &AppHandle) -> Result<copies::Ctx, String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    Ok(copies::Ctx::from_env(home, xdg_target()?))
+}
+
+#[cfg(target_os = "linux")]
+fn copies_files(app: &AppHandle) -> Result<copies::Report, String> {
+    Ok(copies_ctx(app)?.report())
+}
+
+/// macOS and Windows: installers manage the copies; only other running instances are checked.
+#[cfg(not(target_os = "linux"))]
+fn copies_files(_app: &AppHandle) -> Result<copies::Report, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    Ok(copies::Report { running: exe.display().to_string(), ..Default::default() })
+}
+
+#[cfg(target_os = "linux")]
+fn copies_trash_one(app: &AppHandle, path: &std::path::Path) -> Result<(), String> {
+    let found = copies_report_now(app)?;
+    let ctx = copies_ctx(app)?;
+    copies::may_trash(path, &ctx.running, &found.copies).map_err(|r| r.code().to_string())?;
+    copies::trash(path, &ctx.data_home).map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn copies_trash_one(_app: &AppHandle, _path: &std::path::Path) -> Result<(), String> {
+    Err(copies::Refusal::NotACopy.code().into())
+}
+
+/// Panel only: the notice's check, run again each time the panel asks.
+#[tauri::command]
+async fn copies_report(app: AppHandle, window: tauri::Window) -> Result<copies::Report, String> {
+    if window.label() != "panel" {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || copies_report_now(&app)).await.map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click: autostart (if on) and chalito:// links start this copy.
+#[tauri::command]
+async fn copies_use_this(app: AppHandle, window: tauri::Window) -> Result<copies::Report, String> {
+    if window.label() != "panel" || cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "linux")]
+        copies_ctx(&app)?.use_this().map_err(|e| e.to_string())?;
+        copies_report_now(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click: one old copy to the trash, after copies::may_trash.
+#[tauri::command]
+async fn copies_trash(app: AppHandle, window: tauri::Window, path: String) -> Result<copies::Report, String> {
+    if window.label() != "panel" {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        copies_trash_one(&app, std::path::Path::new(&path))?;
+        copies_report_now(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click: asks another Chalito process from the notice to quit.
+#[tauri::command]
+async fn copies_close(app: AppHandle, window: tauri::Window, pid: u32) -> Result<copies::Report, String> {
+    if window.label() != "panel" {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let listed = || copies_report_now(&app).is_ok_and(|r| r.instances.iter().any(|i| i.pid == pid));
+        if !listed() {
+            return Err("not_listed".to_string());
+        }
+        copies::terminate(pid).map_err(|e| e.to_string())?;
+        let start = std::time::Instant::now();
+        while listed() && start.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        copies_report_now(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Tray icon: open the panel, "Detener control" (enabled while a session has control) and
 /// "Iniciar con la computadora".
 fn build_tray(app: &AppHandle) -> tauri::Result<MenuItem<tauri::Wry>> {
@@ -516,6 +619,10 @@ pub fn run() {
         autostart_status,
         set_autostart,
         pick_folder,
+        copies_report,
+        copies_use_this,
+        copies_trash,
+        copies_close,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -533,7 +640,11 @@ pub fn run() {
         computer_open_settings,
         autostart_status,
         set_autostart,
-        pick_folder
+        pick_folder,
+        copies_report,
+        copies_use_this,
+        copies_trash,
+        copies_close
     ]);
     builder
         .setup(move |app| {
@@ -589,6 +700,18 @@ pub fn run() {
                 }
             };
             spawn_computer_poll(handle.clone(), computer_ui.clone(), stop_item);
+            // Other copies, in launch.log; the panel's notice shows the same and offers the fixes.
+            let h = handle.clone();
+            std::thread::spawn(move || match copies_report_now(&h) {
+                Ok(r) if r.autostart.needs_fix() || r.handler.needs_fix() || !r.instances.is_empty() => eprintln!(
+                    "copies: autostart {:?}, handler {:?}, {} other running",
+                    r.autostart,
+                    r.handler,
+                    r.instances.len()
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("copies: {e}"),
+            });
             Ok(())
         })
         .build(context)
