@@ -82,6 +82,16 @@ export class OfflineVoice {
     this.#chunks = [];
     const ep = createEndpointer(this.deps.endpointer);
     this.#set({ phase: "listening" });
+    // Armed before the mic opens: a start that hangs or a mic that never delivers can't listen forever.
+    setTimeout(() => {
+      if (run !== this.#run || this.#phase() !== "listening" || this.#chunks.length) return;
+      this.#held = false;
+      this.#stop?.();
+      this.#stop = null;
+      this.#set({ phase: "error", error: new MicSilentError() });
+    }, this.deps.noAudioMs ?? 2000);
+    // The endpointer's cap counts audio; this one counts the clock, for a mic that stalls midway.
+    setTimeout(() => void this.#finish(run, "spoke"), (this.deps.endpointer?.maxMs ?? COMMAND_ENDPOINTER.maxMs) + 2000);
     try {
       const stop = await this.deps.recorder.start((pcm, rate) => {
         if (run !== this.#run || this.#phase() !== "listening") return;
@@ -91,19 +101,9 @@ export class OfflineVoice {
         // While held, only the time cap ends it: a pause mid-sentence isn't the end.
         if (end === "max" || (end && !this.#held)) void this.#finish(run, end === "nothing" ? "nothing" : "spoke");
       });
+      // A late start (after a timer below ended the run) closes its mic right away.
       if (run !== this.#run || this.#phase() !== "listening") return stop();
       this.#stop = stop;
-      // A mic that never delivers (a suspended AudioContext) would leave a tap listening forever.
-      setTimeout(() => {
-        if (run !== this.#run || this.#phase() !== "listening" || this.#chunks.length) return;
-        this.#held = false;
-        this.#stop?.();
-        this.#stop = null;
-        this.#set({ phase: "error", error: new MicSilentError() });
-      }, this.deps.noAudioMs ?? 2000);
-      // The endpointer's cap counts audio; this one counts the clock, for a mic that stalls midway.
-      const capMs = (this.deps.endpointer?.maxMs ?? COMMAND_ENDPOINTER.maxMs) + 2000;
-      setTimeout(() => void this.#finish(run, "spoke"), capMs);
     } catch (e) {
       this.#held = false;
       if (run === this.#run) this.#set({ phase: "error", error: e });

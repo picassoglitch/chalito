@@ -40,8 +40,8 @@ export const micRecorder = (getUserMedia: GetUserMedia = defaultMic): Recorder =
     let ctx: AudioContext | null = null;
     try {
       const c = (ctx = new AudioContext());
-      // A global hotkey isn't a user gesture: the context may start suspended.
-      await c.resume();
+      // A global hotkey isn't a user gesture: the context may start suspended, and resume() may never settle.
+      await Promise.race([c.resume(), new Promise((ok) => setTimeout(ok, 1000))]);
       const src = c.createMediaStreamSource(stream);
       // ScriptProcessor: AudioWorklet isn't in every WebKitGTK the app runs on.
       const node = c.createScriptProcessor(2048, 1, 1);

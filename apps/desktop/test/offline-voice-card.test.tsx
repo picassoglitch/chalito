@@ -159,6 +159,22 @@ describe("offline voice controller", () => {
     expect(mic.open).toBe(false);
   });
 
+  it("a mic start that hangs still ends in an error, and the mic closes when it finally opens", async () => {
+    let open: (stop: () => void) => void = () => undefined;
+    const stop = vi.fn();
+    const voice = new OfflineVoice({
+      recorder: { start: () => new Promise((ok) => (open = ok)) },
+      engine: fakeEngine("x"),
+      now: () => 0,
+      noAudioMs: 30,
+    });
+    void voice.press();
+    void voice.release();
+    await waitFor(() => expect(voice.state.phase).toBe("error"));
+    open(stop);
+    await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+  });
+
   it("not a command: says what it heard", async () => {
     const { voice } = await heard("qué hora es");
     expect(voice.state).toEqual({ phase: "unknown", text: "qué hora es" });
@@ -381,6 +397,41 @@ describe("the choice card: nothing runs from voice alone", () => {
     fireEvent.click(button("Empezar"));
     expect(openNewSession).toHaveBeenCalledWith("tidy the logs");
     expect(ipc.codeStart).not.toHaveBeenCalled();
+  });
+
+  it("a slow 'where to start' on one card doesn't lock 'all' on the next", async () => {
+    let now = 0;
+    let said = "Nueva sesión para revisar el CI";
+    const mic = fakeMic();
+    const engine = { transcribe: async () => ({ text: said, language: null }), probe: async () => true };
+    const voice = new OfflineVoice({ recorder: mic.recorder, engine, now: () => now });
+    const talk = async () => {
+      await voice.press();
+      mic.say(0.3, 800);
+      now += 2000;
+      await voice.release();
+      await waitFor(() => expect(voice.state.phase).toBe("card"));
+    };
+    const { client } = fakeClient({ approvals: [approval()], sessions: [] });
+    const actions = panelVoiceActions({
+      client,
+      ipc: { codeApps: () => new Promise(() => undefined), codeStart: vi.fn() },
+      canStepUp: false,
+      openSession: vi.fn(),
+      openNewSession: vi.fn(),
+      pause: vi.fn(),
+      setDnd: vi.fn(),
+    });
+    render(
+      <TextProviders locale="es">
+        <VoiceCard voice={voice} actions={actions} />
+      </TextProviders>,
+    );
+    await act(talk);
+    act(() => voice.dismiss());
+    said = "Rechaza y pon no molestar";
+    await act(talk);
+    expect((button("Todo") as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("a double click decides once", async () => {

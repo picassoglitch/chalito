@@ -8,6 +8,7 @@ import { MicSilentError, type OfflineVoice } from "../lib/offline-voice/controll
 import {
   EngineFailedError,
   EngineNotLocalError,
+  EngineNotWhisperError,
   EngineTimeoutError,
   EngineUnreachableError,
 } from "../lib/offline-voice/engine.js";
@@ -40,6 +41,7 @@ export const voiceErrorText = (t: Translate, e: unknown): string => {
   if (e instanceof MicSilentError) return t("offlineVoice.micSilent");
   if (e instanceof EngineUnreachableError || e instanceof EngineNotLocalError) return t("offlineVoice.engineDown");
   if (e instanceof EngineTimeoutError) return t("offlineVoice.engineSlow");
+  if (e instanceof EngineNotWhisperError) return t("offlineVoice.notWhisper");
   if (e instanceof EngineFailedError) return t("offlineVoice.engineFailed", { status: e.status });
   return t("offlineVoice.failed");
 };
@@ -91,6 +93,7 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
     setDone(new Set());
     setError(null);
     setPlace(null);
+    setPlacing(false);
     if (!options.some((o) => o.kind === "newSession" && o.prompt)) return;
     let live = true;
     setPlacing(true);

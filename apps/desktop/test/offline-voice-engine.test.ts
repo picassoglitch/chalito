@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   EngineFailedError,
   EngineNotLocalError,
+  EngineNotWhisperError,
   EngineTimeoutError,
   EngineUnreachableError,
   confidence,
@@ -146,7 +147,7 @@ describe("whisper.cpp server engine (a fake server on 127.0.0.1)", () => {
     try {
       expect(await whisperServerEngine({ url, languages: ["es"] }).probe()).toBe(false);
       await expect(whisperServerEngine({ url, languages: ["es"] }).transcribe(speech)).rejects.toBeInstanceOf(
-        EngineFailedError,
+        EngineNotWhisperError,
       );
       redirect = true;
       // A redirect is refused, so the audio never follows it anywhere.

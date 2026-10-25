@@ -113,8 +113,32 @@ describe("voice intent rules: what isn't a command", () => {
     "I don't want to approve this",
   ])("a negated approval is a deny, never an approve: %s", (said) => expect(cmds(said)).toEqual([{ kind: "deny" }]));
 
-  it.each(["¿ya está aprobado?", "¿lo apruebo?", "should I approve it?"])("a question doesn't approve: %s", (said) =>
-    expect(cmds(said)).toEqual([]),
+  it.each(["¿ya está aprobado?", "¿lo apruebo?", "should I approve it?", "did you approve it?"])(
+    "asking about it doesn't approve: %s",
+    (said) => expect(cmds(said)).toEqual([]),
+  );
+
+  it.each([
+    ["Can you approve it?", "approve"],
+    ["¿Puedes aprobarlo?", "approve"],
+    ["Please reject it?", "deny"],
+  ] as const)("a polite request punctuated as a question still counts: %s", (said, kind) =>
+    expect(cmds(said)).toEqual([{ kind }]),
+  );
+
+  it.each([
+    "No, apruébalo",
+    "no no, aprueba",
+    "No hay problema, apruébalo",
+    "No problem, approve it",
+    "no sé, apruébalo",
+    "No pasa nada, autorízalo",
+    "I have no idea, just approve it",
+    "Not now. Approve it.",
+    "why not approve it",
+    "no me dejes esperando, apruébalo",
+  ])("a 'no' in another clause doesn't flip an approval: %s", (said) =>
+    expect(cmds(said)).toEqual([{ kind: "approve" }]),
   );
 
   it.each([
@@ -133,6 +157,11 @@ describe("voice intent rules: what isn't a command", () => {
     ["pause 5m", 5],
     ["pausa 1h", 60],
     ["silencio 20", 20],
+    ["silencio 20 por favor", 20],
+    ["pausa diez, chalito", 10],
+    ["pausa 5mins", 5],
+    ["pausa dieciocho minutos", 18],
+    ["pause for seventy minutes", 70],
   ])("durations: %s → %i min", (said, minutes) => expect(cmds(said)).toEqual([{ kind: "pause", minutes }]));
 
   it("an open said after another command is kept", () => {

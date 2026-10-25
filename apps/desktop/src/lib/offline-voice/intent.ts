@@ -45,8 +45,8 @@ const UNITS: Record<string, number> = {
   ...words("one two three four five six seven eight nine", 1),
 };
 const TEENS: Record<string, number> = {
-  ...words("diez once doce trece catorce quince", 10),
-  ...words("ten eleven twelve thirteen fourteen fifteen", 10),
+  ...words("diez once doce trece catorce quince dieciseis diecisiete dieciocho diecinueve", 10),
+  ...words("ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen", 10),
 };
 const TENS: Record<string, number> = {
   veinte: 20,
@@ -59,6 +59,10 @@ const TENS: Record<string, number> = {
   fifty: 50,
   sesenta: 60,
   sixty: 60,
+  setenta: 70,
+  seventy: 70,
+  ochenta: 80,
+  eighty: 80,
   noventa: 90,
   ninety: 90,
 };
@@ -69,7 +73,7 @@ const LEAD = new Set(["por", "durante", "unos", "unas", "for", "about", "like", 
 /** A spoken number at w[i]: "45", "cuarenta y cinco", "veinticinco", "twenty five", "1h". */
 const readNumber = (w: string[], i: number): { n: number; next: number; unit?: "h" | "m"; article?: true } | null => {
   const x = w[i] ?? "";
-  const glued = /^(\d{1,3})(h|hr|hrs|m|min)$/.exec(x);
+  const glued = /^(\d{1,3})(h|hr|hrs|m|min|mins)$/.exec(x);
   if (glued) return { n: Number(glued[1]), next: i + 1, unit: glued[2]!.startsWith("h") ? "h" : "m" };
   if (/^\d{1,3}$/.test(x)) return { n: Number(x), next: i + 1 };
   const veinti = /^veinti(\w+)$/.exec(x);
@@ -98,8 +102,8 @@ const duration = (w: string[]): { minutes: number; used: number } | null => {
   const unitWord = w[num.next] ?? "";
   const unit = num.unit ?? (HOUR_WORDS.has(unitWord) ? "h" : MINUTE_WORDS.has(unitWord) ? "m" : undefined);
   const used = num.unit || !unit ? num.next : num.next + 1;
-  // A bare number counts as minutes only when nothing follows it ("silencio 20"); "un rato" isn't one.
-  if (!unit && (num.article || w.slice(num.next).some(Boolean))) return null;
+  // A bare number is minutes ("silencio 20"); a bare article isn't a number ("un rato").
+  if (!unit && num.article) return null;
   return { minutes: unit === "h" ? num.n * 60 : num.n, used };
 };
 
@@ -113,12 +117,16 @@ const DND_ON = new RegExp(
 const PAUSE =
   /\b(?:pausa\w*|pause\w*|silencio|silence|callate|quiet|mute|snooze|shh+|hush|duermete|go to sleep)\b(?:\s(?:a|al|el|la|the|chalito|mascota|pet))*/;
 const DENY =
-  /\b(?:rechaza\w*|deniega\w*|niegalo|niegala|no (?:\w+ ){0,3}(?:apruebes|autorices|permitas|aceptes|dejes)|deny|reject|decline|refuse)\b/;
+  /\b(?:rechaza\w*|deniega\w*|niegalo|niegala|no (?:\w+ ){0,2}(?:apruebes|autorices|permitas|aceptes)|deny|reject|decline|refuse)\b/;
 const APPROVE =
   /\b(?:aprueba\w*|aprobar(?:lo|la|los|las)?|autoriza(?:lo|la|los|las|r)?|acepta(?:lo|la|los|las|r)?|permitelo|permitela|dale que si|approve|allow it|allow|accept|authorize|go ahead)\b/;
-/** "no / don't / never" a few words before an approve verb turns it into a deny. */
+/** "no / don't / never" a few words before an approve verb, in the same clause, turns it into a deny. */
 const NEGATED =
-  /\b(?:no|don t|dont|not|never|nunca|jamas|ni|can t|cant|cannot|won t|wont|shouldn t|shouldnt)\b(?:\s+\S+){0,5}\s*$/;
+  /\b(?:no|don t|dont|not|never|nunca|jamas|ni|can t|cant|cannot|won t|wont|shouldn t|shouldnt)\b(?:\s+\S+){0,3}\s*$/;
+const WHY_NOT = /\b(?:why not|por que no)\b/;
+/** Asking about it ("¿ya lo aprobaste?", "should I approve it?") rather than asking for it ("¿puedes aprobarlo?"). */
+const ABOUT_IT =
+  /\b(?:should i|shall i|do i|did i|did you|have you|has it|is it|was it|apruebo|apruebe|aprobaste|aprobo|ya)\b/;
 const NEW_SESSION =
   /\b(?:(?:abre|crea|inicia|iniciar|empieza|comienza|arranca)\s(?:una\s)?(?:nueva\s)?sesion|nueva sesion|(?:start|open|create|begin)\s(?:a\s)?(?:new\s)?session|new session)\b(?:\s(?:para|con|que|sobre|de|to|with|about|and|y|for))?/;
 const OPEN =
@@ -176,16 +184,36 @@ export const parseIntent = (raw: string): ParsedVoice => {
     const last = d && d.used ? tokens[d.used - 1]! : null;
     blank(pause.index, (last ? from + last.index + last[0].length : from) - pause.index);
   }
-  // A question ("¿ya lo aprobaste?") neither approves nor denies.
-  const asks = /[?¿]/.test(text);
-  const deny = asks ? null : DENY.exec(rest);
+  // `rest` index → the original text, where the punctuation still marks clauses and questions.
+  const orig = (i: number) => at[i - 1] ?? text.length;
+  const clauseBefore = (i: number) =>
+    fold(
+      text
+        .slice(0, orig(i))
+        .split(/[,.;:!?¡¿]/)
+        .pop() ?? "",
+    ).folded;
+  const sentenceOf = (i: number) => {
+    const o = orig(i);
+    const start = Math.max(...[".", "!", "?"].map((p) => text.lastIndexOf(p, o - 1))) + 1;
+    const ends = [".", "!", "?"].map((p) => text.indexOf(p, o)).filter((x) => x >= 0);
+    return text.slice(start, ends.length ? Math.min(...ends) + 1 : text.length);
+  };
+  const asksAbout = (i: number) => {
+    const s = sentenceOf(i);
+    return /[?¿]/.test(s) && ABOUT_IT.test(fold(s).folded);
+  };
+  const denyM = DENY.exec(rest);
+  const deny = denyM && !asksAbout(denyM.index) ? denyM : null;
   if (deny) {
     found.push({ index: deny.index, cmd: { kind: "deny" } });
     blank(deny.index, deny[0].length);
   }
-  const approve = deny || asks ? null : APPROVE.exec(rest);
+  const approveM = deny ? null : APPROVE.exec(rest);
+  const approve = approveM && !asksAbout(approveM.index) ? approveM : null;
   if (approve) {
-    const negated = NEGATED.test(rest.slice(0, approve.index));
+    const clause = clauseBefore(approve.index);
+    const negated = NEGATED.test(clause) && !WHY_NOT.test(clause);
     found.push({ index: approve.index, cmd: { kind: negated ? "deny" : "approve" } });
     blank(approve.index, approve[0].length);
   }

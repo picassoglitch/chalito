@@ -762,6 +762,7 @@
     "engineDown": "No encuentro el motor de voz local. Revisa que whisper.cpp esté corriendo en la dirección de Configuración.",
     "engineFailed": "El motor de voz local respondió con un error ({status}).",
     "engineSlow": "El motor de voz local tardó demasiado. Prueba un modelo más chico o un solo idioma.",
+    "notWhisper": "Algo responde en esa dirección, pero no es whisper.cpp. Revisa el puerto en Configuración.",
     "micMissing": "No encuentro un micrófono en esta computadora.",
     "micBusy": "El micrófono está ocupado por otra app. Ciérrala e inténtalo de nuevo.",
     "actionFailed": "No se pudo hacer: {reason}",

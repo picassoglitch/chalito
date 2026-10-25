@@ -143,7 +143,10 @@ export const Panel = (p: PanelProps) => {
             client={p.client}
             canStepUp={p.canStepUp ?? false}
             sid={codeSid}
-            onSid={setCodeSid}
+            onSid={(sid) => {
+              setCodeSid(sid);
+              setDraft(null);
+            }}
             {...(draft ? { draft } : {})}
           />
         )}

@@ -49,6 +49,14 @@ export class EngineFailedError extends Error {
   }
 }
 
+/** Something answers on that port, but not like whisper.cpp. */
+export class EngineNotWhisperError extends Error {
+  constructor() {
+    super("engine_not_whisper");
+    this.name = "EngineNotWhisperError";
+  }
+}
+
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
 /** The server URL if it's on this computer, else null: in this mode audio never leaves it. */
@@ -107,8 +115,7 @@ export const whisperServerEngine = (o: WhisperServerOptions): SpeechEngine => {
     const r = await call("/inference", { method: "POST", body: form });
     if (!r.ok) throw new EngineFailedError(r.status);
     const body: unknown = await r.json().catch(() => null);
-    // Another local service on that port answers, but not like whisper.cpp.
-    if (typeof (body as WhisperReply | null)?.text !== "string") throw new EngineFailedError(r.status);
+    if (typeof (body as WhisperReply | null)?.text !== "string") throw new EngineNotWhisperError();
     return body as WhisperReply;
   };
   return {

@@ -762,6 +762,7 @@
     "engineDown": "I can't find the local voice engine. Check that whisper.cpp is running at the address in Settings.",
     "engineFailed": "The local voice engine answered with an error ({status}).",
     "engineSlow": "The local voice engine took too long. Try a smaller model or a single language.",
+    "notWhisper": "Something answers at that address, but it isn't whisper.cpp. Check the port in Settings.",
     "micMissing": "I can't find a microphone on this computer.",
     "micBusy": "Another app is using the microphone. Close it and try again.",
     "actionFailed": "That didn't work: {reason}",
