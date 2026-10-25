@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { generateSigningKeyPair } from "@chalito/crypto";
 import { lineDiff, main, parseArgs, type CliIo } from "../src/cli.js";
 import { AnchorStore } from "../src/anchor.js";
@@ -241,6 +241,225 @@ describe("chalito CLI", () => {
     expect(await main(["run"], io as never)).toBe(0);
     expect(daemon).toBe(false);
     expect(host).toMatchObject({ secret: "ab".repeat(16), osOk: true });
+  });
+
+  describe("run, started by the desktop app: stops when the app is gone", () => {
+    const base = (c: ReturnType<typeof cli>, onGone: { fn: (() => void) | null }, err: string[]) => {
+      const input = new PassThrough();
+      input.end(`${"ab".repeat(16)}\n`);
+      return {
+        out: () => undefined,
+        err: (s: string) => void err.push(s),
+        tty: { input, output: new PassThrough() },
+        env: { CHALITO_IPC: "stdin", LANG: "en_US" },
+        home: c.home,
+        platform: "linux" as const,
+        secrets: c.secrets,
+        runner: { run: async () => ({ code: 0, stdout: "", stderr: "" }) },
+        fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+        now: Date.now,
+        execPath: "/x",
+        tmpdir: tmpdir(),
+        watchParent: (fn: () => void) => ((onGone.fn = fn), () => (onGone.fn = null)),
+      };
+    };
+
+    it("paired: the daemon stops (and frees the lock) instead of living on as an orphan", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      const err: string[] = [];
+      let stopped: string | undefined;
+      let finish = () => {};
+      const done = new Promise<void>((r) => (finish = r));
+      const io = {
+        ...base(c, onGone, err),
+        daemon: async () => {
+          running = true;
+          return {
+            done,
+            stop: async (why?: string) => {
+              stopped = why;
+              finish();
+            },
+          } as unknown as Daemon;
+        },
+      };
+      let running = false;
+      const run = main(["run"], io as never);
+      await vi.waitFor(() => expect(running).toBe(true));
+      expect(onGone.fn).not.toBeNull();
+      onGone.fn!();
+      expect(await run).toBe(0);
+      expect(stopped).toBe("parent_gone");
+      expect(err.join("")).toMatch(/desktop app closed|app de escritorio de Chalito se cerró/);
+      expect(onGone.fn).toBeNull();
+    });
+
+    it("paired, gone while the daemon is still starting: stopped as soon as it exists", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      let stopped: string | undefined;
+      let finish = () => {};
+      const done = new Promise<void>((r) => (finish = r));
+      const io = {
+        ...base(c, onGone, []),
+        daemon: async () => {
+          // The app dies before runDaemon resolves.
+          onGone.fn!();
+          return {
+            done,
+            stop: async (why?: string) => {
+              stopped = why;
+              finish();
+            },
+          } as unknown as Daemon;
+        },
+      };
+      expect(await main(["run"], io as never)).toBe(0);
+      expect(stopped).toBe("parent_gone");
+    });
+
+    it("a stop that hangs or fails after the app is gone still lets the agent exit", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      for (const stop of [() => new Promise<void>(() => {}), async () => Promise.reject(new Error("close failed"))]) {
+        const onGone: { fn: (() => void) | null } = { fn: null };
+        const err: string[] = [];
+        const io = {
+          ...base(c, onGone, err),
+          parentStopMs: 30,
+          daemon: async () => ({ done: new Promise<void>(() => {}), stop }) as unknown as Daemon,
+        };
+        const run = main(["run"], io as never);
+        await vi.waitFor(() => expect(onGone.fn).not.toBeNull());
+        onGone.fn!();
+        expect(await run).toBe(0);
+      }
+    });
+
+    it("the app dies before sending the secret: still watched from the start, the host ends", async () => {
+      const c = cli();
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      const input = new PassThrough();
+      let signal: AbortSignal | undefined;
+      const io = {
+        ...base(c, onGone, []),
+        tty: { input, output: new PassThrough() },
+        pairingHost: async (o: { signal?: AbortSignal }) => void (signal = o.signal),
+      };
+      const run = main(["run"], io as never);
+      await vi.waitFor(() => expect(onGone.fn).not.toBeNull());
+      onGone.fn!();
+      input.end(`${"ab".repeat(16)}\n`);
+      expect(await run).toBe(0);
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it("paired, the app dies while the secret is still pending: the daemon never starts", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      const input = new PassThrough();
+      let started = false;
+      const io = {
+        ...base(c, onGone, []),
+        tty: { input, output: new PassThrough() },
+        daemon: async () => ((started = true), { done: Promise.resolve() }) as unknown as Daemon,
+      };
+      const run = main(["run"], io as never);
+      await vi.waitFor(() => expect(onGone.fn).not.toBeNull());
+      onGone.fn!();
+      input.end(`${"ab".repeat(16)}\n`);
+      expect(await run).toBe(0);
+      expect(started).toBe(false);
+      expect(onGone.fn).toBeNull();
+    });
+
+    it("unpaired: the pairing host ends", async () => {
+      const c = cli();
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      let signal: AbortSignal | undefined;
+      const io = {
+        ...base(c, onGone, []),
+        pairingHost: async (o: { signal?: AbortSignal }) => {
+          signal = o.signal;
+          await new Promise<void>((r) => o.signal?.addEventListener("abort", () => r(), { once: true }));
+        },
+      };
+      const run = main(["run"], io as never);
+      await vi.waitFor(() => expect(signal).toBeDefined());
+      expect(signal?.aborted).toBe(false);
+      onGone.fn!();
+      expect(await run).toBe(0);
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it("started by the OS service (no desktop app): nothing watches the parent", async () => {
+      const c = cli();
+      let watched = false;
+      const io = {
+        ...base(c, { fn: null }, []),
+        env: {},
+        watchParent: () => ((watched = true), () => undefined),
+        daemon: async () => ({ done: Promise.resolve() }) as unknown as Daemon,
+      };
+      expect(await main(["run"], io as never)).toBe(0);
+      expect(watched).toBe(false);
+    });
   });
 
   describe("keys set", () => {

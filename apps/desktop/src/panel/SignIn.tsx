@@ -25,6 +25,7 @@ export const SignIn = ({ controller }: { controller: SignInController | null }) 
       return (
         <div className="card" data-sign-in="browser">
           <p>{t("signIn.browser")}</p>
+          {s.stale && <p role="status">{t("signIn.staleLink")}</p>}
           <div className="row">
             <button onClick={() => void controller.start()}>{t("signIn.reopen")}</button>
             {cancel}

@@ -66,11 +66,63 @@ describe("desktop sign-in controller", () => {
     expect(t.c.getSnapshot().step).toBe("ready");
   });
 
-  it("a link with no sign-in in progress does nothing", async () => {
+  it("a link with no sign-in in progress (app restarted) says so instead of staying silent", async () => {
     const t = setup();
     await t.c.handleUrl(t.link({ token: "tok", state: "s".repeat(43) }));
-    expect(t.c.getSnapshot().step).toBe("signed_out");
+    expect(t.c.getSnapshot()).toEqual({ step: "error", reason: "no_pending" });
     expect(t.deps.exchange).not.toHaveBeenCalled();
+    // Retrying from the panel starts a sign-in this launch can finish.
+    await t.c.start();
+    await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
+    expect(t.c.getSnapshot().step).toBe("ready");
+  });
+
+  it("the same link twice (double click on 'Abrir Chalito') while exchanging: no error, ends ready", async () => {
+    let release = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    const t = setup({
+      exchange: vi.fn(async () => {
+        await held;
+        return { ok: true as const, owner: OWNER };
+      }),
+    });
+    await t.c.start();
+    const link = t.link({ token: "tok", state: t.stateOf() });
+    const first = t.c.handleUrl(link);
+    await t.c.handleUrl(link);
+    release();
+    await first;
+    expect(t.steps).not.toContain("error");
+    expect(t.c.getSnapshot().step).toBe("ready");
+  });
+
+  it("Sign in clicked twice, the first tab finishes: a hint, and the newest tab still completes", async () => {
+    const t = setup();
+    await t.c.start();
+    const first = t.stateOf();
+    await t.c.start();
+    await t.c.handleUrl(t.link({ token: "old", state: first }));
+    expect(t.c.getSnapshot()).toEqual({ step: "browser", stale: true });
+    expect(t.deps.exchange).not.toHaveBeenCalled();
+    await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
+    expect(t.c.getSnapshot().step).toBe("ready");
+  });
+
+  it("a stray link doesn't replace a real error on screen", async () => {
+    const t = setup({ exchange: async () => ({ ok: false as const, reason: "token_replayed" as const }) });
+    await t.c.start();
+    await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
+    await t.c.handleUrl(t.link({ token: "tok", state: "s".repeat(43) }));
+    expect(t.c.getSnapshot()).toEqual({ step: "error", reason: "token_replayed" });
+  });
+
+  it("a stray link after signing in leaves the session alone", async () => {
+    const t = setup();
+    await t.c.start();
+    await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
+    await t.c.handleUrl(t.link({ token: "old", state: "s".repeat(43) }));
+    expect(t.c.getSnapshot().step).toBe("ready");
+    expect(t.c.lastIgnored).toBe("no_pending");
   });
 
   it.each([

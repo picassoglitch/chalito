@@ -203,6 +203,8 @@ export const runPairingHost = async (opts: {
   /** How often to notice a pairing done elsewhere (`chalito pair` in a terminal). */
   pollMs?: number;
   loopbackPorts?: readonly number[];
+  /** Ends the host early (the desktop app that started it is gone). */
+  signal?: AbortSignal;
 }): Promise<void> => {
   const release = (opts.lock ?? acquireInstanceLock)(opts.dir);
   // The pairing object exists before the loopback starts; the port only goes into the link.
@@ -230,9 +232,13 @@ export const runPairingHost = async (opts: {
     }, opts.pollMs ?? 5000);
   });
   try {
-    await Promise.race([pairing.done, pairedElsewhere]);
+    const aborted = new Promise<"aborted">((resolve) => {
+      if (opts.signal?.aborted) resolve("aborted");
+      opts.signal?.addEventListener("abort", () => resolve("aborted"), { once: true });
+    });
     // Let the panel read the final "paired" state before the socket goes away.
-    await new Promise((r) => setTimeout(r, 1500));
+    if ((await Promise.race([pairing.done, pairedElsewhere, aborted])) !== "aborted")
+      await new Promise((r) => setTimeout(r, 1500));
   } finally {
     clearInterval(timer);
     await loopback?.close().catch(() => undefined);

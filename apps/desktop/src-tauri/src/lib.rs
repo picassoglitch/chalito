@@ -161,6 +161,30 @@ fn place_indicator(w: &tauri::WebviewWindow) {
     }
 }
 
+/// Gap between the pet and the screen's right edge, in logical pixels.
+const PET_MARGIN: f64 = 24.0;
+
+/// Bottom-right of the work area, the window's bottom on the taskbar/dock: the pet stands on the
+/// desktop's edge, out of the way, instead of the middle where the window manager drops it.
+fn pet_spot(area: (i32, i32, u32, u32), window: (u32, u32), margin: i32) -> (i32, i32) {
+    let (ax, ay, aw, ah) = area;
+    let (ww, wh) = window;
+    let x = ax + (aw as i32 - ww as i32 - margin).max(0);
+    let y = ay + (ah as i32 - wh as i32).max(0);
+    (x, y)
+}
+
+fn place_pet(w: &tauri::WebviewWindow) {
+    if let (Ok(Some(m)), Ok(size), Ok(scale)) = (w.primary_monitor(), w.outer_size(), w.scale_factor()) {
+        let a = m.work_area();
+        // The window's pixels are at the scale it was made on; the work area's at the primary's.
+        let size = size.to_logical::<f64>(scale).to_physical::<u32>(m.scale_factor());
+        let margin = (PET_MARGIN * m.scale_factor()).round() as i32;
+        let (x, y) = pet_spot((a.position.x, a.position.y, a.size.width, a.size.height), (size.width, size.height), margin);
+        let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+}
+
 /// The hotkey is held only while computer control is enabled; (un)registered on the main thread.
 fn set_kill_hotkey(app: &AppHandle, on: bool) {
     let handle = app.clone();
@@ -513,6 +537,9 @@ pub fn run() {
     ]);
     builder
         .setup(move |app| {
+            if let Some(pet) = app.get_webview_window(PET) {
+                place_pet(&pet);
+            }
             spawn_cursor_poll(app.handle().clone(), state.clone());
             // Start with the computer: on by default the first time; the person's choice after that.
             // Release builds only: a dev build must not register itself to start at login.
@@ -591,6 +618,16 @@ mod tests {
         assert!(!super::has_updater(&empty));
         let set = HashMap::from([("updater".to_string(), serde_json::json!({ "pubkey": "dW50cnVzdGVk", "endpoints": [] }))]);
         assert!(super::has_updater(&set));
+    }
+
+    #[test]
+    fn pet_sits_bottom_right_on_the_work_area() {
+        // 1920×1080 with a 40 px taskbar at the bottom: feet on the taskbar, 24 px from the right.
+        assert_eq!(super::pet_spot((0, 0, 1920, 1040), (220, 260), 24), (1676, 780));
+        // A second monitor to the left, a top menu bar (macOS) shifting the work area down.
+        assert_eq!(super::pet_spot((-1440, 25, 1440, 875), (220, 260), 24), (-244, 640));
+        // A window wider or taller than the area stays inside it.
+        assert_eq!(super::pet_spot((0, 0, 200, 200), (220, 260), 24), (0, 0));
     }
 
     /// Run in CI with `cargo test --release`: the loopback must not exist in release builds.

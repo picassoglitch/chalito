@@ -1,14 +1,8 @@
 import { clamp, easeInOutCubic, easeOutCubic } from "./math.js";
 import type { CreaturePose } from "./gestures.js";
 
-/**
- * What the companion is doing, shown with movement (owner decision 2026-10-19: at rest it only
- * breathes and looks around; it moves to show something):
- *  - a mode lasts while it's true: `working` (an AI is busy on one of the person's computers) or
- *    `needs_you` (something waits for the person's answer);
- *  - an action plays once: `hop` (a task finished), `slump` (something failed), `wave` (hello),
- *    `cheer` (a big finish), `nod` (got it).
- */
+/** Movement only shows something (owner 2026-10-19): a mode lasts while true (an AI busy, an answer
+ * waiting); an action plays once (hop = done, slump = failed, wave, cheer, nod). */
 export type CreatureMode = "rest" | "working" | "needs_you";
 export type CreatureAction = "hop" | "slump" | "wave" | "cheer" | "nod";
 
@@ -40,10 +34,11 @@ const squash = (s: number): readonly [number, number, number] => {
 /** 0 → 1 → 0 over u in 0..1 (a bell). */
 const bell = (u: number) => Math.sin(Math.PI * clamp(u));
 
-/**
- * A mode's layer at time t (ms). `working`: leaning in a little with a small busy rhythm.
- * `needs_you`: leaning toward the person, with a small "hey" bounce every few seconds.
- */
+/** How many "hey" bounces needs_you makes when it starts; after them it only leans in. */
+export const NEEDS_YOU_BOUNCES = 2;
+
+/** A mode's layer `tMs` after it started: `working` leans in busily, `needs_you` leans toward the
+ * person after a couple of bounces, never jumping the whole wait (owner, 2026-10-25). */
 export const modeLayer = (mode: CreatureMode, tMs: number): CreatureLayer => {
   const t = tMs / 1000;
   switch (mode) {
@@ -52,9 +47,9 @@ export const modeLayer = (mode: CreatureMode, tMs: number): CreatureLayer => {
       return { offsetY: -0.004 + Math.abs(beat) * 0.003, scale: squash(1 - Math.abs(beat) * 0.006), tilt: [4, 0, 0] };
     }
     case "needs_you": {
-      // One small bounce (0.45 s) every 3.2 s.
+      // One small bounce (0.45 s) every 3.2 s, only the first few.
       const u = (t % 3.2) / 0.45;
-      const b = u < 1 ? bell(u) : 0;
+      const b = u < 1 && t < 3.2 * NEEDS_YOU_BOUNCES ? bell(u) : 0;
       return { offsetY: b * 0.025, scale: squash(1 + b * 0.03), tilt: [-3, 0, Math.sin(t * 1.3) * 2] };
     }
     default:

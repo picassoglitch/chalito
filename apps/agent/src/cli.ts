@@ -41,6 +41,7 @@ import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daem
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
 import { DeviceRevokedError } from "./device-auth.js";
 import { readIpcSecret } from "./ipc-server.js";
+import { watchParent } from "./parent-watch.js";
 import { DevMode, DevModeStore } from "./devmode.js";
 import { loadOrCreateIdentity } from "./identity.js";
 import { osAuthFor, type StatFn } from "./os-auth.js";
@@ -74,6 +75,10 @@ export interface CliIo {
   daemon?: (deps: DaemonDeps) => Promise<Daemon>;
   /** `chalito run` before pairing, from the desktop app (tests stub it). */
   pairingHost?: typeof runPairingHost;
+  /** How `chalito run` notices the desktop app that started it is gone (tests stub it). */
+  watchParent?: typeof watchParent;
+  /** How long a stop after the app is gone may take before exiting anyway (tests shorten it). */
+  parentStopMs?: number;
   pairWatcher?: PairingWatcher;
   /** Injected in tests: how OS-auth helpers (/usr/bin/pkexec, osascript) are checked for root ownership. */
   osStat?: StatFn;
@@ -193,6 +198,8 @@ const T = {
     shellTitle: "\n!!  ¿Activar la SHELL COMPLETA remota?  !!\nCon esto, una shell aprobada puede:\n",
     shellFinal: "\nConfirmación 4 de 4. ",
     deviceRevoked: "Esta computadora se quitó de tu cuenta de Chalito. Emparéjala de nuevo: `chalito pair`.\n",
+    parentGone:
+      "La app de escritorio de Chalito se cerró: este agente se detiene para que el siguiente pueda arrancar.\n",
     launchdStop: (code: number) =>
       `Servicio de launchd: termina con 0 (no ${code}) para que launchd no lo reinicie en bucle.\n`,
     terminalSecond: (n: number) => `\nConfirmación 2 de ${n}. `,
@@ -316,6 +323,7 @@ const T = {
     shellTitle: "\n!!  Turn on the remote FULL SHELL?  !!\nWith it, an approved shell can:\n",
     shellFinal: "\nConfirmation 4 of 4. ",
     deviceRevoked: "This computer was removed from your Chalito account. Pair it again: `chalito pair`.\n",
+    parentGone: "The Chalito desktop app closed: this agent stops so the next one can start.\n",
     launchdStop: (code: number) =>
       `launchd service: exiting 0 (not ${code}) so launchd doesn't restart it in a loop.\n`,
     terminalSecond: (n: number) => `\nConfirmation 2 of ${n}. `,
@@ -603,14 +611,34 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     switch (cmd) {
       case "run": {
         let d: Daemon;
+        let daemon: Daemon | null = null;
+        const parentGone = new AbortController();
+        let stopWatching = () => {};
+        const stopForParent = (dm: Daemon) =>
+          void dm.stop("parent_gone").catch((err: unknown) => io.err(`${String(err)}\n`));
+        // A stop that hangs must not keep the orphan (and its lock) alive: exit anyway.
+        const stopDeadline = new Promise<void>((resolve) =>
+          parentGone.signal.addEventListener("abort", () => setTimeout(resolve, io.parentStopMs ?? 10_000), {
+            once: true,
+          }),
+        );
         try {
           // Started by the desktop app: its per-launch IPC secret is the first line on stdin.
-          const ipcSecret = io.env.CHALITO_IPC === "stdin" ? await readIpcSecret(io.tty.input) : null;
+          const fromApp = io.env.CHALITO_IPC === "stdin";
+          // Before the secret's await: an app killed meanwhile must not become the baseline's "parent".
+          if (fromApp)
+            stopWatching = (io.watchParent ?? watchParent)(() => {
+              io.err(t.parentGone);
+              parentGone.abort();
+              if (daemon) stopForParent(daemon);
+            });
+          const ipcSecret = fromApp ? await readIpcSecret(io.tty.input) : null;
           // Not paired yet and started by the desktop app: serve the panel's pairing only (ADR 0028 §3).
           if (ipcSecret && !(cfg && isPaired(cfg))) {
             await (io.pairingHost ?? runPairingHost)({
               dir: ensureChalitoDir(dir),
               secret: ipcSecret,
+              signal: parentGone.signal,
               pair: {
                 dir: ensureChalitoDir(dir),
                 env: io.env,
@@ -629,9 +657,15 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
               },
               platform: io.platform,
             });
+            stopWatching();
             return 0;
           }
-          d = await (io.daemon ?? runDaemon)({
+          // Gone before the secret read ended (e.g. its 5 s timeout): nothing to start for.
+          if (parentGone.signal.aborted) {
+            stopWatching();
+            return 0;
+          }
+          d = daemon = await (io.daemon ?? runDaemon)({
             home: io.home,
             env: io.env,
             secrets,
@@ -639,7 +673,10 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
             now: io.now,
             ipcSecret,
           });
+          // Gone while the daemon was starting: stop it now that it can be stopped.
+          if (parentGone.signal.aborted) stopForParent(d);
         } catch (err) {
+          stopWatching();
           // Distinct codes so the desktop supervisor neither races another agent nor
           // restarts in a loop while a setup step is missing.
           let code: number;
@@ -662,7 +699,11 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           }
           return code;
         }
-        await d.done;
+        try {
+          await Promise.race([d.done, stopDeadline]);
+        } finally {
+          stopWatching();
+        }
         return 0;
       }
 

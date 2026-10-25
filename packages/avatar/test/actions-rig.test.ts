@@ -3,6 +3,7 @@ import { ActivityTracker, activityActions } from "../src/activity.js";
 import {
   ACTION_MS,
   CREATURE_ACTIONS,
+  NEEDS_YOU_BOUNCES,
   actionLayer,
   composeCreature,
   modeLayer,
@@ -20,12 +21,21 @@ describe("modes and actions (movement only to show something)", () => {
       for (let t = 0; t < 8000; t += 17) expect(vol(modeLayer(m, t))).toBeCloseTo(1, 6);
   });
 
-  it("needs_you bounces only now and then, not all the time", () => {
-    let up = 0;
-    let n = 0;
-    for (let t = 0; t < 32_000; t += 10, n++) if (modeLayer("needs_you", t).offsetY > 0.001) up++;
-    expect(up / n).toBeLessThan(0.2);
-    expect(up).toBeGreaterThan(0);
+  it("needs_you bounces a couple of times when it starts, then only leans in", () => {
+    const bounces = (from: number, to: number) => {
+      let n = 0;
+      let wasUp = false;
+      for (let t = from; t < to; t += 10) {
+        const up = modeLayer("needs_you", t).offsetY > 0.001;
+        if (up && !wasUp) n++;
+        wasUp = up;
+      }
+      return n;
+    };
+    expect(bounces(0, 3.2 * NEEDS_YOU_BOUNCES * 1000)).toBe(NEEDS_YOU_BOUNCES);
+    expect(bounces(3.2 * NEEDS_YOU_BOUNCES * 1000, 120_000)).toBe(0);
+    // Still leaning toward the person while it waits.
+    expect(modeLayer("needs_you", 60_000).tilt[0]).toBeLessThan(0);
   });
 
   for (const a of CREATURE_ACTIONS)
