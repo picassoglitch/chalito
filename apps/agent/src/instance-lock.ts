@@ -19,7 +19,7 @@ export const EXIT_NEEDS_SETUP = 78; // EX_CONFIG: an OnboardingError the person 
 
 export const lockPath = (dir: string): string => join(dir, "agent.lock");
 
-const alive = (pid: number): boolean => {
+export const isProcessAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;
@@ -38,7 +38,7 @@ export const acquireInstanceLock = (
   deps: { pid?: number; isAlive?: (pid: number) => boolean } = {},
 ): (() => void) => {
   const pid = deps.pid ?? process.pid;
-  const isAlive = deps.isAlive ?? alive;
+  const isAlive = deps.isAlive ?? isProcessAlive;
   const file = lockPath(dir);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

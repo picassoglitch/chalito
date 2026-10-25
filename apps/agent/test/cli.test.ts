@@ -243,6 +243,102 @@ describe("chalito CLI", () => {
     expect(host).toMatchObject({ secret: "ab".repeat(16), osOk: true });
   });
 
+  describe("run, started by the desktop app: stops when the app is gone", () => {
+    const base = (c: ReturnType<typeof cli>, onGone: { fn: (() => void) | null }, err: string[]) => {
+      const input = new PassThrough();
+      input.end(`${"ab".repeat(16)}\n`);
+      return {
+        out: () => undefined,
+        err: (s: string) => void err.push(s),
+        tty: { input, output: new PassThrough() },
+        env: { CHALITO_IPC: "stdin", LANG: "en_US" },
+        home: c.home,
+        platform: "linux" as const,
+        secrets: c.secrets,
+        runner: { run: async () => ({ code: 0, stdout: "", stderr: "" }) },
+        fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+        now: Date.now,
+        execPath: "/x",
+        tmpdir: tmpdir(),
+        watchParent: (fn: () => void) => ((onGone.fn = fn), () => (onGone.fn = null)),
+      };
+    };
+
+    it("paired: the daemon stops (and frees the lock) instead of living on as an orphan", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      const err: string[] = [];
+      let stopped: string | undefined;
+      let finish = () => {};
+      const done = new Promise<void>((r) => (finish = r));
+      const io = {
+        ...base(c, onGone, err),
+        daemon: async () =>
+          ({
+            done,
+            stop: async (why?: string) => {
+              stopped = why;
+              finish();
+            },
+          }) as unknown as Daemon,
+      };
+      const run = main(["run"], io as never);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(onGone.fn).not.toBeNull();
+      onGone.fn!();
+      expect(await run).toBe(0);
+      expect(stopped).toBe("parent_gone");
+      expect(err.join("")).toMatch(/desktop app closed|app de escritorio de Chalito se cerró/);
+      expect(onGone.fn).toBeNull();
+    });
+
+    it("unpaired: the pairing host ends", async () => {
+      const c = cli();
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      let signal: AbortSignal | undefined;
+      const io = {
+        ...base(c, onGone, []),
+        pairingHost: async (o: { signal?: AbortSignal }) => {
+          signal = o.signal;
+          await new Promise<void>((r) => o.signal?.addEventListener("abort", () => r(), { once: true }));
+        },
+      };
+      const run = main(["run"], io as never);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(signal?.aborted).toBe(false);
+      onGone.fn!();
+      expect(await run).toBe(0);
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it("started by the OS service (no desktop app): nothing watches the parent", async () => {
+      const c = cli();
+      let watched = false;
+      const io = {
+        ...base(c, { fn: null }, []),
+        env: {},
+        watchParent: () => ((watched = true), () => undefined),
+        daemon: async () => ({ done: Promise.resolve() }) as unknown as Daemon,
+      };
+      expect(await main(["run"], io as never)).toBe(0);
+      expect(watched).toBe(false);
+    });
+  });
+
   describe("keys set", () => {
     it("saves the key in the keychain, never prints it", async () => {
       const c = cli();

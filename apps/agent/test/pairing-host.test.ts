@@ -274,6 +274,31 @@ describe("pairing from the desktop panel", () => {
     expect(released).toBe(true);
   }, 10_000);
 
+  it("the host ends at once when the desktop app that started it is gone, and frees the lock", async () => {
+    const w = await world();
+    let released = false;
+    const gone = new AbortController();
+    const done = runPairingHost({
+      dir: w.dir,
+      secret: "ef".repeat(16),
+      pair: {
+        dir: w.dir,
+        env: {},
+        secrets: w.secrets,
+        fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }),
+        osAuth: { verify: async () => true },
+      },
+      lock: () => () => void (released = true),
+      signal: gone.signal,
+    });
+    const t0 = Date.now();
+    gone.abort();
+    await done;
+    expect(released).toBe(true);
+    // No 1.5 s "paired" grace: nobody is left to read it.
+    expect(Date.now() - t0).toBeLessThan(1000);
+  }, 10_000);
+
   it("once paired, the daemon has no pairing to start", async () => {
     const handlers = ipcHandlers({} as never);
     await expect(handlers.startPairing!({})).rejects.toThrow("already_paired");
