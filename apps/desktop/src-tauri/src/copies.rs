@@ -1,5 +1,6 @@
-//! Other copies of Chalito: where autostart and chalito:// point, other AppImages, other processes.
+//! Other copies of Chalito: where autostart and chalito:// point, other copies, other processes.
 //! Two copies ran at once and sign-in looped (owner, 2026-10-25); fixes run only on the person's click.
+//! Linux lives here; Windows and macOS add theirs in copies_windows.rs and copies_macos.rs.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 use std::collections::HashSet;
@@ -18,6 +19,12 @@ const AGENT_BIN: &str = "chalito-agent";
 const SCHEME_MIME: &str = "x-scheme-handler/chalito";
 /// `use_this` wrote the handler but the desktop still opens chalito:// with another copy.
 pub const HANDLER_NOT_SET: &str = "handler_not_set";
+/// `use_this` ran but an autostart entry it can't change (Windows HKLM) still starts another copy.
+pub const AUTOSTART_NOT_SET: &str = "autostart_not_set";
+/// That drive has no trash to move to (Windows: not a fixed disk); nothing was touched.
+pub const NO_TRASH: &str = "no_trash";
+/// The person said no in the OS's own dialog (Recycle Bin, UAC): nothing to report as a failure.
+pub const CANCELLED: &str = "cancelled";
 /// The handler file this app writes when it has to create one.
 pub const HANDLER_ID: &str = "chalito.desktop";
 /// `~/Applications/<folder>/<sub>/Chalito.AppImage` at most: AppImageLauncher and by-hand layouts.
@@ -47,22 +54,83 @@ impl Link {
 
 /// The mismatch decision. Reported, never fixed here: a test build opened once must not take over.
 pub fn link(target: Option<&Path>, is_running: bool, runnable: bool) -> Link {
+    link_abs(target, target.is_some_and(Path::is_absolute), is_running, runnable)
+}
+
+/// `link`, with "is it a full path" decided by the caller (`C:\…` isn't absolute to a Unix build).
+pub fn link_abs(target: Option<&Path>, absolute: bool, is_running: bool, runnable: bool) -> Link {
     match target {
         None => Link::None,
-        Some(t) if t.is_relative() => Link::None,
+        Some(_) if !absolute => Link::None,
         Some(_) if is_running => Link::Ours,
         Some(t) if runnable => Link::Other { path: t.display().to_string() },
         Some(t) => Link::Gone { path: t.display().to_string() },
     }
 }
 
-/// Another Chalito AppImage file.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+/// Several entries for one job (Windows HKCU and HKLM Run values): the one to fix, else ours.
+pub fn pick(links: impl IntoIterator<Item = Link>) -> Link {
+    let mut best = Link::None;
+    for l in links {
+        if l.needs_fix() {
+            return l;
+        }
+        if l == Link::Ours {
+            best = l;
+        }
+    }
+    best
+}
+
+/// What an old copy is: the trash guard checks each kind its own way.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CopyKind {
+    #[default]
+    Appimage,
+    /// A downloaded Windows installer (`*Chalito*setup*.exe`, `*Chalito*.msi`).
+    Installer,
+    /// Another `.app` bundle with Chalito's bundle id (macOS).
+    App,
+    Dmg,
+}
+
+/// Another copy: an AppImage, a downloaded installer or .dmg, or another .app bundle.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OldCopy {
     pub path: String,
     pub version: Option<String>,
     pub bytes: u64,
+    pub kind: CopyKind,
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    User,
+    Machine,
+}
+
+/// A Windows install (an uninstall registry entry) other than the one running.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Install {
+    /// `HKCU\Chalito` or `HKLM\Chalito`: what `copies_uninstall` gets back.
+    pub id: String,
+    pub scope: Scope,
+    pub location: Option<String>,
+    pub version: Option<String>,
+}
+
+/// Where the running app sits (macOS): from a mounted DMG or App Translocation it can't stay.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    #[default]
+    Ok,
+    Dmg,
+    Translocated,
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +158,10 @@ pub struct Report {
     pub handler: Link,
     pub copies: Vec<OldCopy>,
     pub instances: Vec<Instance>,
+    pub installs: Vec<Install>,
+    pub placement: Placement,
+    /// macOS: Downloads and Desktop weren't read (each asks for permission), only after a click.
+    pub ask_downloads: bool,
 }
 
 /// `*Chalito*.AppImage`, any case.
@@ -98,10 +170,15 @@ pub fn is_chalito_appimage(name: &str) -> bool {
     n.strip_suffix(".appimage").is_some_and(|stem| stem.contains("chalito"))
 }
 
-/// `UNSIGNED_Chalito_0.1.0-beta.2_amd64.AppImage` → `0.1.0-beta.2`; None when the name has none.
+fn appimage_kind(name: &str) -> Option<CopyKind> {
+    is_chalito_appimage(name).then_some(CopyKind::Appimage)
+}
+
+/// `UNSIGNED_Chalito_0.1.0-beta.2_amd64.AppImage` → `0.1.0-beta.2` (also `.exe`, `.msi`, `.dmg`).
 pub fn version_from_name(name: &str) -> Option<String> {
     let lower = name.to_ascii_lowercase();
-    let stem = &name[..lower.strip_suffix(".appimage").map_or(name.len(), str::len)];
+    let ext = [".appimage", ".exe", ".msi", ".dmg"].into_iter().find_map(|e| lower.strip_suffix(e));
+    let stem = &name[..ext.map_or(name.len(), str::len)];
     let b = stem.as_bytes();
     let starts_word = |i: usize| i == 0 || !b[i - 1].is_ascii_alphanumeric();
     let mut i = 0;
@@ -127,7 +204,7 @@ pub fn version_from_name(name: &str) -> Option<String> {
                 k += 1;
             }
             let pre = stem[end + 1..k].trim_end_matches('.');
-            let arch = ["x86", "amd64", "aarch64", "arm", "i686", "linux"].iter().any(|a| pre.to_ascii_lowercase().starts_with(a));
+            let arch = ["x86", "x64", "amd64", "aarch64", "arm", "i686", "linux", "universal", "setup", "darwin"].iter().any(|a| pre.to_ascii_lowercase().starts_with(a));
             if pre.starts_with(|c: char| c.is_ascii_alphabetic()) && !arch {
                 end += 1 + pre.len();
             }
@@ -177,45 +254,74 @@ fn canon(p: &Path) -> PathBuf {
 
 /// Chalito AppImages under `roots`, the running one left out. Regular files only (no symlinks).
 pub fn scan(roots: &[(PathBuf, usize)], running: &Path) -> Vec<OldCopy> {
+    scan_with(roots, running, appimage_kind, None)
+}
+
+/// A file name's kind when it's one of ours.
+pub type Matcher = fn(&str) -> Option<CopyKind>;
+/// A `.app` folder's version (`Some(None)`: ours, no version), or None when it isn't Chalito.
+pub type BundleCheck = fn(&Path) -> Option<Option<String>>;
+
+/// Files `files` matches (and `.app` bundles `bundle` accepts, macOS) under `roots`.
+pub fn scan_with(roots: &[(PathBuf, usize)], running: &Path, files: Matcher, bundle: Option<BundleCheck>) -> Vec<OldCopy> {
     let me = canon(running);
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (root, depth) in roots {
-        walk(root, *depth, &me, &mut seen, &mut out);
+        walk(root, *depth, &me, (files, bundle), &mut seen, &mut out);
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }
 
-fn walk(dir: &Path, depth: usize, me: &Path, seen: &mut HashSet<PathBuf>, out: &mut Vec<OldCopy>) {
+fn walk(
+    dir: &Path,
+    depth: usize,
+    me: &Path,
+    find: (Matcher, Option<BundleCheck>),
+    seen: &mut HashSet<PathBuf>,
+    out: &mut Vec<OldCopy>,
+) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for e in entries.take(MAX_ENTRIES).flatten() {
         let Ok(ft) = e.file_type() else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
         let path = e.path();
-        if ft.is_dir() {
-            if depth > 0 && !name.starts_with('.') {
-                walk(&path, depth - 1, me, seen, out);
+        if let (true, Some(check)) = (ft.is_dir() && is_app_name(&name), find.1) {
+            // A bundle is a copy or nothing: never walked into.
+            let Some(version) = check(&path) else { continue };
+            let c = canon(&path);
+            if c != me && !me.starts_with(&c) && seen.insert(c) {
+                out.push(OldCopy { path: path.display().to_string(), version, bytes: 0, kind: CopyKind::App });
             }
             continue;
         }
-        if !ft.is_file() || !is_chalito_appimage(&name) {
+        if ft.is_dir() {
+            if depth > 0 && !name.starts_with('.') {
+                walk(&path, depth - 1, me, find, seen, out);
+            }
             continue;
         }
+        let Some(kind) = ft.is_file().then(|| (find.0)(&name)).flatten() else { continue };
         let c = canon(&path);
         if c == me || !seen.insert(c) {
             continue;
         }
         let bytes = e.metadata().map_or(0, |m| m.len());
-        out.push(OldCopy { path: path.display().to_string(), version: version_from_name(&name), bytes });
+        out.push(OldCopy { path: path.display().to_string(), version: version_from_name(&name), bytes, kind });
     }
+}
+
+/// `Chalito.app`, `Chalito 2.APP`: a macOS bundle folder, by its name.
+pub fn is_app_name(name: &str) -> bool {
+    name.len() > 4 && name.to_ascii_lowercase().ends_with(".app")
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The copy this app runs from.
     Running,
-    /// Not a Chalito AppImage the scan found (a renamed file, a folder, anything else).
+    /// Not a copy the scan found (a renamed file, a folder, anything else).
     NotACopy,
 }
 
@@ -228,15 +334,24 @@ impl Refusal {
     }
 }
 
-/// The trash-safety guard: only a regular `*Chalito*.AppImage` file from a fresh scan, never ours.
+/// The trash-safety guard: only a copy from a fresh scan that is still what the scan saw, and
+/// never ours or the bundle ours runs inside.
 pub fn may_trash(path: &Path, running: &Path, found: &[OldCopy]) -> Result<(), Refusal> {
-    if canon(path) == canon(running) {
+    let (c, me) = (canon(path), canon(running));
+    if c == me || me.starts_with(&c) {
         return Err(Refusal::Running);
     }
-    let named = path.file_name().and_then(|n| n.to_str()).is_some_and(is_chalito_appimage);
-    let file = fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
-    let listed = found.iter().any(|c| Path::new(&c.path) == path);
-    if named && file && listed && path.is_absolute() {
+    let Some(copy) = found.iter().find(|c| Path::new(&c.path) == path) else { return Err(Refusal::NotACopy) };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let meta = fs::symlink_metadata(path).ok();
+    let file = meta.as_ref().is_some_and(fs::Metadata::is_file);
+    let still = match copy.kind {
+        CopyKind::Appimage => file && is_chalito_appimage(name),
+        CopyKind::Installer => file && crate::copies_windows::is_chalito_installer(name),
+        CopyKind::Dmg => file && crate::copies_macos::is_chalito_dmg(name),
+        CopyKind::App => meta.is_some_and(|m| m.is_dir()) && is_app_name(name),
+    };
+    if still && path.is_absolute() {
         Ok(())
     } else {
         Err(Refusal::NotACopy)
@@ -624,7 +739,7 @@ impl Ctx {
             autostart: self.link_for(auto.as_deref()),
             handler: self.link_for(handler.as_deref()),
             copies: scan(&roots, &self.running),
-            instances: Vec::new(),
+            ..Report::default()
         }
     }
 
@@ -793,12 +908,12 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(may_trash(&home.join("Desktop/Chalito.AppImage"), &running, &found), Err(Refusal::Running));
         let notes = home.join("Downloads/chalito-notes.txt");
-        assert_eq!(may_trash(&notes, &running, &[OldCopy { path: notes.display().to_string(), version: None, bytes: 0 }]), Err(Refusal::NotACopy));
+        assert_eq!(may_trash(&notes, &running, &[OldCopy { path: notes.display().to_string(), ..OldCopy::default() }]), Err(Refusal::NotACopy));
         assert_eq!(may_trash(&in_docs, &running, &found), Err(Refusal::NotACopy), "not from the scan");
         assert_eq!(may_trash(&home.join("Downloads/Chalito-dir.AppImage"), &running, &found), Err(Refusal::NotACopy));
         assert_eq!(may_trash(Path::new("relative/Chalito.AppImage"), &running, &found), Err(Refusal::NotACopy));
         // Each check on its own: listed by a (stale or forged) scan, still refused.
-        let listed = |p: &Path| vec![OldCopy { path: p.display().to_string(), version: None, bytes: 0 }];
+        let listed = |p: &Path| vec![OldCopy { path: p.display().to_string(), ..OldCopy::default() }];
         let dir = home.join("Downloads/Chalito-dir.AppImage");
         assert_eq!(may_trash(&dir, &running, &listed(&dir)), Err(Refusal::NotACopy));
         #[cfg(unix)]

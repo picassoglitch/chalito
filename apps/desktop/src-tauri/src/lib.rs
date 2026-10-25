@@ -3,6 +3,8 @@ mod autostart;
 mod cli_install;
 mod computer;
 mod copies;
+mod copies_macos;
+mod copies_windows;
 mod hittest;
 mod ipc_client;
 #[cfg(debug_assertions)]
@@ -364,11 +366,106 @@ fn copies_files(app: &AppHandle) -> Result<copies::Report, String> {
     Ok(copies_ctx(app)?.report())
 }
 
-/// macOS and Windows: installers manage the copies; only other running instances are checked.
 #[cfg(not(target_os = "linux"))]
+fn current_exe() -> Result<std::path::PathBuf, String> {
+    std::env::current_exe().map_err(|e| e.to_string())
+}
+
+/// Windows: what copies_windows.rs reads (registry, Downloads and Desktop known folders).
+#[cfg(windows)]
+fn copies_win(app: &AppHandle) -> Result<copies_windows::Inputs, String> {
+    let folders = [app.path().download_dir(), app.path().desktop_dir()].into_iter().flatten().collect();
+    Ok(copies_windows::os::inputs(current_exe()?, folders))
+}
+
+#[cfg(windows)]
+fn copies_files(app: &AppHandle) -> Result<copies::Report, String> {
+    Ok(copies_windows::report(&copies_win(app)?))
+}
+
+/// macOS asks for permission the first time an app reads Downloads or Desktop: that waits for the
+/// person's click ("Revisar Descargas y Escritorio"), then holds for the session.
+#[derive(Default)]
+struct CopiesDownloads(std::sync::atomic::AtomicBool);
+
+/// macOS: what copies_macos.rs reads (bundles, .dmg files, the LaunchAgent, LaunchServices).
+#[cfg(target_os = "macos")]
+fn copies_mac(app: &AppHandle, downloads: bool) -> Result<copies_macos::Inputs, String> {
+    let home = app.path().home_dir().map_err(|e| e.to_string())?;
+    let p = app.path();
+    let (dl, desk) = if downloads { (p.download_dir().ok(), p.desktop_dir().ok()) } else { (None, None) };
+    Ok(copies_macos::os::inputs(current_exe()?, home, dl, desk))
+}
+
+#[cfg(target_os = "macos")]
+fn copies_downloads_on(app: &AppHandle) -> bool {
+    app.try_state::<CopiesDownloads>().is_some_and(|s| s.0.load(Ordering::Relaxed))
+}
+
+#[cfg(target_os = "macos")]
+fn copies_files(app: &AppHandle) -> Result<copies::Report, String> {
+    Ok(copies_macos::report(&copies_mac(app, copies_downloads_on(app))?))
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 fn copies_files(_app: &AppHandle) -> Result<copies::Report, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    Ok(copies::Report { running: exe.display().to_string(), ..Default::default() })
+    Ok(copies::Report { running: current_exe()?.display().to_string(), ..Default::default() })
+}
+
+/// After "Usar esta copia": done only when chalito:// (and autostart, if it was on) read back as
+/// this copy. "None" isn't done either: the write didn't land or couldn't be read back.
+#[cfg(any(windows, target_os = "macos"))]
+fn copies_check_fixed(app: &AppHandle, before: &copies::Report) -> Result<(), String> {
+    let after = copies_files(app)?;
+    if after.handler != copies::Link::Ours {
+        Err(copies::HANDLER_NOT_SET.into())
+    } else if before.autostart != copies::Link::None && after.autostart != copies::Link::Ours {
+        Err(copies::AUTOSTART_NOT_SET.into())
+    } else {
+        Ok(())
+    }
+}
+
+/// The same writers the app already uses: the deep-link plugin's HKCU key and auto-launch's Run
+/// value (only when autostart is on). Reads first, writes after.
+#[cfg(windows)]
+fn copies_use_this_os(app: &AppHandle) -> Result<(), String> {
+    use tauri_plugin_deep_link::DeepLinkExt as _;
+    let before = copies_files(app)?;
+    app.deep_link().register("chalito").map_err(|e| e.to_string())?;
+    if before.autostart != copies::Link::None {
+        app.autolaunch().enable().map_err(|e| e.to_string())?;
+    }
+    copies_check_fixed(app, &before)
+}
+
+/// LaunchServices for chalito://, and auto-launch's LaunchAgent (only when autostart is on).
+/// From a DMG or a translocated path it refuses: those paths don't last.
+#[cfg(target_os = "macos")]
+fn copies_use_this_os(app: &AppHandle) -> Result<(), String> {
+    let before = copies_files(app)?;
+    if before.placement != copies::Placement::Ok {
+        return Err("bad_placement".into());
+    }
+    if let Some(bundle) = copies_macos::bundle_of(&current_exe()?) {
+        if let Err(e) = copies_macos::os::claim_handler(&bundle) {
+            eprintln!("copies: claiming chalito://: {e}");
+        }
+    }
+    if before.autostart != copies::Link::None {
+        app.autolaunch().enable().map_err(|e| e.to_string())?;
+    }
+    copies_check_fixed(app, &before)
+}
+
+#[cfg(target_os = "linux")]
+fn copies_use_this_os(app: &AppHandle) -> Result<(), String> {
+    copies_ctx(app)?.use_this().map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+fn copies_use_this_os(_app: &AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -381,9 +478,59 @@ fn copies_trash_one(app: &AppHandle, path: &std::path::Path) -> Result<(), Strin
     copies::trash(path, &ctx.data_home).map_err(|e| e.to_string())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+fn copies_trash_one(app: &AppHandle, path: &std::path::Path) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    let i = copies_win(app)?;
+    copies::may_trash(path, &i.running, &copies_windows::found(&i)).map_err(|r| r.code().to_string())?;
+    copies_windows::os::trash(path).map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn copies_trash_one(app: &AppHandle, path: &std::path::Path) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    let i = copies_mac(app, copies_downloads_on(app))?;
+    copies::may_trash(path, &i.running, &copies_macos::found(&i)).map_err(|r| r.code().to_string())?;
+    copies_macos::os::trash(path).map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 fn copies_trash_one(_app: &AppHandle, _path: &std::path::Path) -> Result<(), String> {
     Err(copies::Refusal::NotACopy.code().into())
+}
+
+/// Windows: that install's own uninstaller, visible, after copies_windows::may_uninstall.
+#[cfg(windows)]
+fn copies_uninstall_one(id: &str) -> Result<(), String> {
+    let running = copies_windows::running_forms(&current_exe()?);
+    let u = copies_windows::may_uninstall(id, &copies_windows::os::entries(), &running).map_err(|r| r.code().to_string())?;
+    copies_windows::os::launch(&u).map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn copies_uninstall_one(_id: &str) -> Result<(), String> {
+    Err(copies::Refusal::NotACopy.code().into())
+}
+
+#[cfg(target_os = "macos")]
+fn copies_show_applications_os(app: &AppHandle) -> Result<(), String> {
+    // The click is consent to look in Downloads and Desktop, where a translocated original sits.
+    let i = copies_mac(app, true)?;
+    let reveal = match copies_macos::report(&i).placement {
+        copies::Placement::Dmg => copies_macos::bundle_of(&i.running).into_iter().collect(),
+        copies::Placement::Translocated => copies_macos::originals(&i),
+        copies::Placement::Ok => Vec::new(),
+    };
+    copies_macos::os::show_applications(&reveal).map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn copies_show_applications_os(_app: &AppHandle) -> Result<(), String> {
+    Err("not allowed".into())
 }
 
 /// Panel only: the notice's check, run again each time the panel asks.
@@ -402,8 +549,7 @@ async fn copies_use_this(app: AppHandle, window: tauri::Window) -> Result<copies
         return Err("not allowed".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        #[cfg(target_os = "linux")]
-        copies_ctx(&app)?.use_this().map_err(|e| e.to_string())?;
+        copies_use_this_os(&app)?;
         copies_report_now(&app)
     })
     .await
@@ -418,6 +564,63 @@ async fn copies_trash(app: AppHandle, window: tauri::Window, path: String) -> Re
     }
     tauri::async_runtime::spawn_blocking(move || {
         copies_trash_one(&app, std::path::Path::new(&path))?;
+        copies_report_now(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click: opens the folder of a copy a fresh check still lists.
+#[tauri::command]
+async fn copies_reveal(app: AppHandle, window: tauri::Window, path: String) -> Result<copies::Report, String> {
+    if window.label() != "panel" || cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if !copies_files(&app)?.copies.iter().any(|c| c.path == path) {
+            return Err(copies::Refusal::NotACopy.code().to_string());
+        }
+        tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|e| e.to_string())?;
+        copies_report_now(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click (Windows): starts another install's own uninstaller.
+#[tauri::command]
+async fn copies_uninstall(app: AppHandle, window: tauri::Window, id: String) -> Result<copies::Report, String> {
+    if window.label() != "panel" || cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        copies_uninstall_one(&id)?;
+        copies_report_now(&app)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click (macOS): from now on the check reads Downloads and Desktop.
+#[tauri::command]
+async fn copies_scan_downloads(app: AppHandle, window: tauri::Window) -> Result<copies::Report, String> {
+    if window.label() != "panel" || cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    if let Some(s) = app.try_state::<CopiesDownloads>() {
+        s.0.store(true, Ordering::Relaxed);
+    }
+    tauri::async_runtime::spawn_blocking(move || copies_report_now(&app)).await.map_err(|e| e.to_string())?
+}
+
+/// Panel only, on the person's click (macOS): opens Applications so the app can be dragged there.
+#[tauri::command]
+async fn copies_show_applications(app: AppHandle, window: tauri::Window) -> Result<copies::Report, String> {
+    if window.label() != "panel" || cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        copies_show_applications_os(&app)?;
         copies_report_now(&app)
     })
     .await
@@ -598,7 +801,8 @@ pub fn run() {
         )
         .manage(state.clone())
         .manage(computer_ui.clone())
-        .manage(AutostartItem::default());
+        .manage(AutostartItem::default())
+        .manage(CopiesDownloads::default());
     // Linux writes its own XDG entry (autostart::xdg); the plugin would use ~/.config regardless.
     #[cfg(not(target_os = "linux"))]
     let builder =
@@ -631,6 +835,10 @@ pub fn run() {
         copies_use_this,
         copies_trash,
         copies_close,
+        copies_reveal,
+        copies_uninstall,
+        copies_show_applications,
+        copies_scan_downloads,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -652,7 +860,11 @@ pub fn run() {
         copies_report,
         copies_use_this,
         copies_trash,
-        copies_close
+        copies_close,
+        copies_reveal,
+        copies_uninstall,
+        copies_show_applications,
+        copies_scan_downloads
     ]);
     builder
         .setup(move |app| {
@@ -711,12 +923,21 @@ pub fn run() {
             // Other copies, in launch.log; the panel's notice shows the same and offers the fixes.
             let h = handle.clone();
             std::thread::spawn(move || match copies_report_now(&h) {
-                Ok(r) if r.autostart.needs_fix() || r.handler.needs_fix() || !r.instances.is_empty() => eprintln!(
-                    "copies: autostart {:?}, handler {:?}, {} other running",
-                    r.autostart,
-                    r.handler,
-                    r.instances.len()
-                ),
+                Ok(r) if r.autostart.needs_fix()
+                    || r.handler.needs_fix()
+                    || !r.instances.is_empty()
+                    || !r.installs.is_empty()
+                    || r.placement != copies::Placement::Ok =>
+                {
+                    eprintln!(
+                        "copies: autostart {:?}, handler {:?}, {} other running, {} other installs, placement {:?}",
+                        r.autostart,
+                        r.handler,
+                        r.instances.len(),
+                        r.installs.len(),
+                        r.placement
+                    )
+                }
                 Ok(_) => {}
                 Err(e) => eprintln!("copies: {e}"),
             });
