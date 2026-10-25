@@ -18,3 +18,9 @@ events:
   batchMs: 250
   # …or as soon as this many wait.
   batchMax: 32
+alerts:
+  # From Alux, by Omar: a running turn with no output this long raises a "stalled" alert…
+  stallTimeout: PT20M
+  # …and one command failing this many times among the last `stuckWindow` shell commands, a "stuck" one.
+  stuckFailures: 5
+  stuckWindow: 12
