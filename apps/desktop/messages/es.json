@@ -625,7 +625,7 @@
     "terminal": "Tú (terminal)"
   },
   "copies": {
-    "title": "Hay otra copia de Chalito en esta computadora",
+    "title": "Revisa las copias de Chalito",
     "intro": "Si dos copias de Chalito se abren a la vez, el inicio de sesión puede volver a la copia equivocada y quedarse dando vueltas.",
     "this": "Esta copia: {path}",
     "autostart": {
@@ -656,7 +656,9 @@
       "running": "Esa es la copia que está abierta; no la toco.",
       "not_a_copy": "Eso ya no parece una copia de Chalito, así que no lo toqué.",
       "not_listed": "Esa copia ya no está abierta.",
-      "other": "No pude hacerlo. Inténtalo otra vez."
+      "other": "No pude hacerlo. Inténtalo otra vez.",
+      "still_running": "Sigue abierta: ciérrala desde su propio ícono en la barra.",
+      "handler_not_set": "Cambié el archivo, pero tu escritorio sigue abriendo los enlaces chalito:// con otra copia. Revisa las aplicaciones predeterminadas de tu sistema."
     }
   }
 }

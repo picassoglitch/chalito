@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n.js";
 import { anythingFound, needsFix, type CopiesApi, type CopiesReport } from "../lib/copies.js";
 
-const REFUSALS = ["running", "not_a_copy", "not_listed"] as const;
+const REFUSALS = ["running", "not_a_copy", "not_listed", "still_running", "handler_not_set"] as const;
 
-type Notice = { kind: "done" | "error"; key: string };
+type Notice = { kind: "done" | "error"; key: string; detail?: string };
 
 // Two AppImages ran at once and sign-in looped (owner, 2026-10-25). Lists what the check found;
 // each fix runs only when the person clicks it.
@@ -15,7 +15,15 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
   const [notice, setNotice] = useState<Notice | null>(null);
 
   useEffect(() => {
-    void api.report().then(setReport, () => setReport(null));
+    const read = () =>
+      void api.report().then(setReport, (e: unknown) => {
+        console.warn("copies_report", e);
+        setReport(null);
+      });
+    read();
+    // The panel is hidden and shown, not recreated: read again when it comes back.
+    window.addEventListener("focus", read);
+    return () => window.removeEventListener("focus", read);
   }, [api]);
 
   const act = async (run: () => Promise<CopiesReport>, done: string) => {
@@ -25,9 +33,9 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
       setReport(await run());
       setNotice({ kind: "done", key: done });
     } catch (e) {
-      const code = REFUSALS.find((r) => r === e) ?? "other";
-      setNotice({ kind: "error", key: `copies.error.${code}` });
-      void api.report().then(setReport, () => {});
+      const code = REFUSALS.find((r) => r === e);
+      setNotice({ kind: "error", key: `copies.error.${code ?? "other"}`, ...(code ? {} : { detail: String(e) }) });
+      void api.report().then(setReport, (err: unknown) => console.warn("copies_report", err));
     } finally {
       setBusy(false);
     }
@@ -96,6 +104,7 @@ export const OldCopies = ({ api }: { api: CopiesApi }) => {
           {t(notice.key)}
         </p>
       )}
+      {notice?.detail && <p className="muted mono">{notice.detail}</p>}
     </section>
   );
 };

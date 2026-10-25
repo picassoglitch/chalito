@@ -625,7 +625,7 @@
     "terminal": "You (terminal)"
   },
   "copies": {
-    "title": "There's another copy of Chalito on this computer",
+    "title": "Check your copies of Chalito",
     "intro": "When two copies of Chalito open at once, sign-in can come back to the wrong one and go round in circles.",
     "this": "This copy: {path}",
     "autostart": {
@@ -656,7 +656,9 @@
       "running": "That's the copy that's open; I won't touch it.",
       "not_a_copy": "That no longer looks like a copy of Chalito, so I didn't touch it.",
       "not_listed": "That copy isn't open anymore.",
-      "other": "I couldn't do it. Try again."
+      "other": "I couldn't do it. Try again.",
+      "still_running": "It's still open: close it from its own tray icon.",
+      "handler_not_set": "I changed the file, but your desktop still opens chalito:// links with another copy. Check your system's default apps."
     }
   }
 }

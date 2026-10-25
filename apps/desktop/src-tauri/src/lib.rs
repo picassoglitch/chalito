@@ -373,9 +373,11 @@ fn copies_files(_app: &AppHandle) -> Result<copies::Report, String> {
 
 #[cfg(target_os = "linux")]
 fn copies_trash_one(app: &AppHandle, path: &std::path::Path) -> Result<(), String> {
-    let found = copies_report_now(app)?;
+    if cfg!(debug_assertions) {
+        return Err("not allowed".into());
+    }
     let ctx = copies_ctx(app)?;
-    copies::may_trash(path, &ctx.running, &found.copies).map_err(|r| r.code().to_string())?;
+    copies::may_trash(path, &ctx.running, &ctx.copies()).map_err(|r| r.code().to_string())?;
     copies::trash(path, &ctx.data_home).map_err(|e| e.to_string())
 }
 
@@ -429,7 +431,10 @@ async fn copies_close(app: AppHandle, window: tauri::Window, pid: u32) -> Result
         return Err("not allowed".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let listed = || copies_report_now(&app).is_ok_and(|r| r.instances.iter().any(|i| i.pid == pid));
+        let listed = || copies::others(&copies::processes(), std::process::id()).iter().any(|i| i.pid == pid);
+        if cfg!(debug_assertions) {
+            return Err("not allowed".to_string());
+        }
         if !listed() {
             return Err("not_listed".to_string());
         }
@@ -437,6 +442,9 @@ async fn copies_close(app: AppHandle, window: tauri::Window, pid: u32) -> Result
         let start = std::time::Instant::now();
         while listed() && start.elapsed() < Duration::from_secs(3) {
             std::thread::sleep(Duration::from_millis(200));
+        }
+        if listed() {
+            return Err("still_running".to_string());
         }
         copies_report_now(&app)
     })

@@ -16,6 +16,8 @@ use crate::autostart::xdg;
 const DESKTOP_BIN: &str = "chalito-desktop";
 const AGENT_BIN: &str = "chalito-agent";
 const SCHEME_MIME: &str = "x-scheme-handler/chalito";
+/// `use_this` wrote the handler but the desktop still opens chalito:// with another copy.
+pub const HANDLER_NOT_SET: &str = "handler_not_set";
 /// The handler file this app writes when it has to create one.
 pub const HANDLER_ID: &str = "chalito.desktop";
 /// `~/Applications/<folder>/<sub>/Chalito.AppImage` at most: AppImageLauncher and by-hand layouts.
@@ -125,7 +127,7 @@ pub fn version_from_name(name: &str) -> Option<String> {
                 k += 1;
             }
             let pre = stem[end + 1..k].trim_end_matches('.');
-            let arch = ["x86", "amd64", "aarch64", "arm", "i686"].iter().any(|a| pre.to_ascii_lowercase().starts_with(a));
+            let arch = ["x86", "amd64", "aarch64", "arm", "i686", "linux"].iter().any(|a| pre.to_ascii_lowercase().starts_with(a));
             if pre.starts_with(|c: char| c.is_ascii_alphabetic()) && !arch {
                 end += 1 + pre.len();
             }
@@ -255,8 +257,13 @@ pub fn trash(path: &Path, data_home: &Path) -> io::Result<()> {
 pub fn home_trash(path: &Path, data_home: &Path, deleted_at: &str) -> io::Result<PathBuf> {
     let files = data_home.join("Trash").join("files");
     let info = data_home.join("Trash").join("info");
-    fs::create_dir_all(&files)?;
-    fs::create_dir_all(&info)?;
+    for d in [&files, &info] {
+        let mut b = fs::DirBuilder::new();
+        b.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.create(d)?;
+    }
     let name = path.file_name().ok_or_else(|| io::Error::other("no file name"))?.to_string_lossy().into_owned();
     for n in 1..1000 {
         let slot = if n == 1 { name.clone() } else { format!("{name}.{n}") };
@@ -327,8 +334,8 @@ pub struct Proc {
     pub exe: PathBuf,
     /// The AppImage file it runs from, when it runs from one.
     pub image: Option<PathBuf>,
-    /// Its executable sits in an app bundle (next to chalito-desktop, or in a gone AppImage mount).
-    pub bundled: bool,
+    /// Its executable is inside an AppImage mount (`/tmp/.mount_…`), live or already unmounted.
+    pub in_mount: bool,
 }
 
 /// `chalito-desktop`, `chalito-agent.exe`, `… (deleted)` → the bare binary name, lowercase.
@@ -338,8 +345,8 @@ pub fn bin_name(exe: &Path) -> String {
     n.strip_suffix(".exe").unwrap_or(n).to_string()
 }
 
-/// Other Chalito apps, and agents left without one (PR #105 makes app-started agents exit with
-/// their app; an older build's may linger). The OS service's agent isn't bundled, so it's kept.
+/// Other Chalito apps, and AppImage agents whose app is gone (PR #105 makes them exit with it).
+/// The OS service and `chalito run` start the agent from elsewhere, so they're never listed.
 pub fn others(procs: &[Proc], me: u32) -> Vec<Instance> {
     let apps: HashSet<u32> = procs.iter().filter(|p| bin_name(&p.exe) == DESKTOP_BIN).map(|p| p.pid).collect();
     procs
@@ -349,7 +356,7 @@ pub fn others(procs: &[Proc], me: u32) -> Vec<Instance> {
             let path = p.image.as_ref().unwrap_or(&p.exe).display().to_string();
             match bin_name(&p.exe).as_str() {
                 DESKTOP_BIN => Some(Instance { pid: p.pid, kind: Kind::Desktop, path }),
-                AGENT_BIN if p.bundled && p.ppid != me && !apps.contains(&p.ppid) => {
+                AGENT_BIN if p.in_mount && p.ppid != me && !apps.contains(&p.ppid) => {
                     Some(Instance { pid: p.pid, kind: Kind::Agent, path })
                 }
                 _ => None,
@@ -384,10 +391,10 @@ pub fn parse_proc_lines(out: &str) -> Vec<(u32, u32, PathBuf)> {
         .collect()
 }
 
-fn bundled(exe: &Path) -> bool {
+/// An AppImage's sidecar: from its mount, or `… (deleted)` once the mount is gone.
+pub fn in_appimage_mount(exe: &Path) -> bool {
     let s = exe.to_string_lossy();
-    let sibling = exe.with_file_name(format!("{DESKTOP_BIN}{}", std::env::consts::EXE_SUFFIX));
-    s.ends_with(" (deleted)") || s.contains("/.mount_") || sibling.is_file()
+    s.ends_with(" (deleted)") || s.contains("/.mount_")
 }
 
 /// Chalito processes of this user (other users' exe links can't be read, so they're skipped).
@@ -408,7 +415,7 @@ pub fn processes() -> Vec<Proc> {
             let target =
                 crate::autostart::launch_target(environ_var(&env, "APPIMAGE"), environ_var(&env, "APPDIR"), exe.clone());
             let image = (target != exe).then_some(target);
-            Some(Proc { pid, ppid, bundled: bundled(&exe), exe, image })
+            Some(Proc { pid, ppid, in_mount: in_appimage_mount(&exe), exe, image })
         })
         .collect()
 }
@@ -433,7 +440,7 @@ pub fn processes() -> Vec<Proc> {
     parse_proc_lines(&String::from_utf8_lossy(&out.stdout))
         .into_iter()
         .filter(|(_, _, exe)| [DESKTOP_BIN, AGENT_BIN].contains(&bin_name(exe).as_str()))
-        .map(|(pid, ppid, exe)| Proc { pid, ppid, bundled: bundled(&exe), exe, image: None })
+        .map(|(pid, ppid, exe)| Proc { pid, ppid, in_mount: in_appimage_mount(&exe), exe, image: None })
         .collect()
 }
 
@@ -488,7 +495,14 @@ pub fn entry_program(entry: &str) -> Option<PathBuf> {
     if t.as_deref().is_some_and(|t| t.is_relative() || xdg::runnable(t)) {
         return t;
     }
-    let raw = xdg::main_group(entry).find_map(|(k, v)| (k == "Exec").then(|| PathBuf::from(v)));
+    // Hand-written handlers do the same, with a trailing field code: `Exec=/My Apps/Chalito.AppImage %U`.
+    let raw = xdg::main_group(entry).find_map(|(k, v)| (k == "Exec").then_some(v)).map(|v| {
+        let mut v = v.trim_end();
+        while let Some((head, _)) = v.rsplit_once(' ').filter(|(_, l)| l.starts_with('%') && l.len() == 2) {
+            v = head.trim_end();
+        }
+        PathBuf::from(v)
+    });
     match raw {
         Some(r) if r.is_absolute() && xdg::runnable(&r) => Some(r),
         _ => t,
@@ -508,6 +522,9 @@ pub fn with_exec(entry: &str, exec: &str) -> String {
                 done = true;
             }
             in_main = t == "[Desktop Entry]";
+        } else if in_main && t.split_once('=').is_some_and(|(k, _)| k.trim() == "TryExec") {
+            // A TryExec naming the old copy would hide the entry once that copy is trashed.
+            continue;
         } else if in_main && t.split_once('=').is_some_and(|(k, _)| k.trim() == "Exec") {
             if !done {
                 out.push(line.clone());
@@ -553,7 +570,7 @@ impl Ctx {
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home.join(".config"));
         Ctx {
-            autostart_dir: xdg::dir(&home, std::env::var_os("XDG_CONFIG_HOME").as_deref()),
+            autostart_dir: config.join("autostart"),
             data_home: data_home(&home, std::env::var_os("XDG_DATA_HOME").as_deref()),
             data_dirs: data_dirs(std::env::var("XDG_DATA_DIRS").ok().as_deref()),
             user_dirs: fs::read_to_string(config.join("user-dirs.dirs")).ok(),
@@ -582,6 +599,11 @@ impl Ctx {
         handler_file(&id, &self.data_home, &self.data_dirs)
     }
 
+    /// The other AppImages only (the trash guard's list), without the entries' links.
+    pub fn copies(&self) -> Vec<OldCopy> {
+        self.report().copies
+    }
+
     fn handler_target(&self) -> Option<PathBuf> {
         entry_program(&fs::read_to_string(self.handler_path()?).ok()?)
     }
@@ -607,10 +629,9 @@ impl Ctx {
     }
 
     /// "Usar esta copia": autostart (only if it's on) and the chalito:// handler start this copy.
+    /// Everything is read first, so a failure leaves both entries as they were.
     pub fn use_this(&self) -> io::Result<()> {
-        if matches!(xdg::state(&self.autostart_dir)?, xdg::State::Live | xdg::State::Dangling) {
-            xdg::write(&self.autostart_dir, &self.running)?;
-        }
+        let autostart_on = matches!(xdg::state(&self.autostart_dir)?, xdg::State::Live | xdg::State::Dangling);
         let exec = xdg::exec_value(&self.running)?;
         let apps = self.data_home.join("applications");
         let own = self.handler_path().filter(|p| p.starts_with(&apps));
@@ -618,15 +639,30 @@ impl Ctx {
             Some(p) => (p.clone(), with_exec(&fs::read_to_string(p)?, &exec)),
             None => (apps.join(HANDLER_ID), new_handler(&exec)),
         };
+        if autostart_on {
+            xdg::write(&self.autostart_dir, &self.running)?;
+        }
         fs::create_dir_all(&apps)?;
         let tmp = apps.join(format!(".{HANDLER_ID}.{}.tmp", std::process::id()));
         fs::write(&tmp, body)?;
-        fs::rename(&tmp, &file)?;
-        if self.os_tools {
-            if own.is_none() {
-                let _ = Command::new("xdg-mime").args(["default", HANDLER_ID, SCHEME_MIME]).status();
-            }
-            let _ = Command::new("update-desktop-database").arg(&apps).status();
+        if let Err(e) = fs::rename(&tmp, &file) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+        if !self.os_tools {
+            return Ok(());
+        }
+        if let Err(e) = Command::new("update-desktop-database").arg(&apps).status() {
+            eprintln!("copies: update-desktop-database: {e}");
+        }
+        let id = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        match Command::new("xdg-mime").args(["default", &id, SCHEME_MIME]).status() {
+            Ok(s) if s.success() => {}
+            r => eprintln!("copies: xdg-mime default {id}: {r:?}"),
+        }
+        // Said "done" while links still opened the other copy, the sign-in loop would stay.
+        if self.link_for(self.handler_target().as_deref()).needs_fix() {
+            return Err(io::Error::other(HANDLER_NOT_SET));
         }
         Ok(())
     }
@@ -654,8 +690,11 @@ mod tests {
         p.to_path_buf()
     }
 
-    fn paths(c: &[OldCopy]) -> Vec<String> {
-        c.iter().map(|c| c.path.clone()).collect()
+    /// Compared as paths, not strings: on Windows `join("a/b")` keeps the slash, read_dir doesn't.
+    fn paths(c: &[OldCopy]) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = c.iter().map(|c| PathBuf::from(&c.path)).collect();
+        v.sort();
+        v
     }
 
     #[cfg(unix)] // Windows paths have a drive; these are XDG paths.
@@ -693,6 +732,9 @@ mod tests {
         assert_eq!(v("Chalito.AppImage"), None);
         assert_eq!(v("Chalito.beta2.AppImage"), None);
         assert_eq!(v("Chalito_x86_64.AppImage"), None);
+        assert_eq!(v("Chalito-1.0.0-linux-x86_64.AppImage").as_deref(), Some("1.0.0"));
+        assert_eq!(v("Chalito_ñandú_0.3.0-beta.1.AppImage").as_deref(), Some("0.3.0-beta.1"));
+        assert_eq!(v("Chalito_ñ.AppImage"), None);
     }
 
     #[cfg(unix)] // Windows paths have a drive; these are XDG paths.
@@ -734,17 +776,17 @@ mod tests {
 
         let r = roots(&home, None, &[test.as_path()]);
         let found = scan(&r, &running);
-        let mut want: Vec<String> = [&beta2, &test, &dl, &two_deep].iter().map(|p| p.display().to_string()).collect();
+        let mut want = vec![beta2.clone(), test.clone(), dl.clone(), two_deep.clone()];
         want.sort();
         assert_eq!(paths(&found), want);
         for not in [&running, &deep, &in_docs, &hidden] {
-            assert!(!paths(&found).contains(&not.display().to_string()), "{}", not.display());
+            assert!(!paths(&found).contains(not), "{}", not.display());
         }
         let t = found.iter().find(|c| Path::new(&c.path) == test).unwrap();
         assert_eq!(t.version.as_deref(), Some("0.1.0-beta.2"));
         assert_eq!(t.bytes, 10);
         // Without the entry's folder in the roots, the test copy is out of reach.
-        assert!(!paths(&scan(&roots(&home, None, &[]), &running)).contains(&test.display().to_string()));
+        assert!(!paths(&scan(&roots(&home, None, &[]), &running)).contains(&test));
 
         assert_eq!(may_trash(&test, &running, &found), Ok(()));
         assert_eq!(may_trash(&running, &running, &found), Err(Refusal::Running));
@@ -755,6 +797,16 @@ mod tests {
         assert_eq!(may_trash(&in_docs, &running, &found), Err(Refusal::NotACopy), "not from the scan");
         assert_eq!(may_trash(&home.join("Downloads/Chalito-dir.AppImage"), &running, &found), Err(Refusal::NotACopy));
         assert_eq!(may_trash(Path::new("relative/Chalito.AppImage"), &running, &found), Err(Refusal::NotACopy));
+        // Each check on its own: listed by a (stale or forged) scan, still refused.
+        let listed = |p: &Path| vec![OldCopy { path: p.display().to_string(), version: None, bytes: 0 }];
+        let dir = home.join("Downloads/Chalito-dir.AppImage");
+        assert_eq!(may_trash(&dir, &running, &listed(&dir)), Err(Refusal::NotACopy));
+        #[cfg(unix)]
+        {
+            let link = home.join("Downloads/Chalito-link.AppImage");
+            std::os::unix::fs::symlink(&beta2, &link).unwrap();
+            assert_eq!(may_trash(&link, &running, &listed(&link)), Err(Refusal::NotACopy));
+        }
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -780,23 +832,27 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
-    fn proc(pid: u32, ppid: u32, exe: &str, bundled: bool) -> Proc {
-        Proc { pid, ppid, exe: PathBuf::from(exe), image: None, bundled }
+    fn proc(pid: u32, ppid: u32, exe: &str) -> Proc {
+        Proc { pid, ppid, exe: PathBuf::from(exe), image: None, in_mount: in_appimage_mount(Path::new(exe)) }
     }
 
     #[test]
     fn other_apps_and_orphaned_agents_are_found_ours_are_not() {
         let me = 100;
-        let mut other = proc(200, 1, "/tmp/.mount_ChalitX/usr/bin/chalito-desktop", true);
+        let mut other = proc(200, 1, "/tmp/.mount_ChalitX/usr/bin/chalito-desktop");
         other.image = Some(PathBuf::from("/home/ana/chalito-dl-test/UNSIGNED_Chalito_0.1.0-beta.2_amd64.AppImage"));
         let procs = vec![
-            proc(me, 1, "/tmp/.mount_ChalitY/usr/bin/chalito-desktop", true),
-            proc(101, me, "/tmp/.mount_ChalitY/usr/bin/chalito-agent", true),
+            proc(me, 1, "/tmp/.mount_ChalitY/usr/bin/chalito-desktop"),
+            proc(101, me, "/tmp/.mount_ChalitY/usr/bin/chalito-agent"),
             other,
-            proc(201, 200, "/tmp/.mount_ChalitX/usr/bin/chalito-agent", true),
-            proc(300, 1, "/tmp/.mount_ChalitZ/usr/bin/chalito-agent (deleted)", true),
-            proc(400, 1, "/home/ana/.local/bin/chalito-agent", false),
-            proc(500, 1, "C:/Program Files/Chalito/chalito-agent.exe", true),
+            proc(201, 200, "/tmp/.mount_ChalitX/usr/bin/chalito-agent"),
+            proc(300, 1, "/tmp/.mount_ChalitZ/usr/bin/chalito-agent (deleted)"),
+            proc(301, 999, "/tmp/.mount_ChalitW/usr/bin/chalito-agent"),
+            // The background service and `chalito run`: never orphans, whoever their parent is.
+            proc(400, 1, "/home/ana/.local/share/chalito/chalito-agent"),
+            proc(401, 1, "/usr/bin/chalito-agent"),
+            proc(500, 1, "/Applications/Chalito.app/Contents/MacOS/chalito-agent"),
+            proc(501, 77, "C:/Program Files/Chalito/chalito-agent.exe"),
         ];
         let got = others(&procs, me);
         assert_eq!(
@@ -804,7 +860,7 @@ mod tests {
             vec![
                 Instance { pid: 200, kind: Kind::Desktop, path: "/home/ana/chalito-dl-test/UNSIGNED_Chalito_0.1.0-beta.2_amd64.AppImage".into() },
                 Instance { pid: 300, kind: Kind::Agent, path: "/tmp/.mount_ChalitZ/usr/bin/chalito-agent (deleted)".into() },
-                Instance { pid: 500, kind: Kind::Agent, path: "C:/Program Files/Chalito/chalito-agent.exe".into() },
+                Instance { pid: 301, kind: Kind::Agent, path: "/tmp/.mount_ChalitW/usr/bin/chalito-agent".into() },
             ]
         );
         assert!(others(&procs[..2], me).is_empty());
@@ -853,7 +909,7 @@ mod tests {
 
     #[test]
     fn the_handler_entry_is_repointed_and_the_rest_kept() {
-        let owner = "[Desktop Entry]\nName=Chalito\nExec=/home/ana/Applications/chalito/Chalito.AppImage %U\nIcon=/x.png\nMimeType=x-scheme-handler/chalito;\n[Desktop Action New]\nExec=/other\n";
+        let owner = "[Desktop Entry]\nName=Chalito\nTryExec=/home/ana/Applications/chalito/Chalito.AppImage\nExec=/home/ana/Applications/chalito/Chalito.AppImage %U\nIcon=/x.png\nMimeType=x-scheme-handler/chalito;\n[Desktop Action New]\nExec=/other\n";
         let out = with_exec(owner, "\"/home/ana/New/Chalito.AppImage\"");
         assert_eq!(
             out,
@@ -867,41 +923,73 @@ mod tests {
         assert!(new_handler("/c").contains("MimeType=x-scheme-handler/chalito;"));
     }
 
+    fn ctx_for(d: &Path, running: &Path) -> Ctx {
+        let home = d.join("home");
+        Ctx {
+            autostart_dir: xdg::dir(&home, None),
+            home,
+            running: running.to_path_buf(),
+            data_home: d.join("share"),
+            data_dirs: vec![d.join("usr/share")],
+            user_dirs: None,
+            os_tools: false,
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn use_this_points_both_entries_at_the_running_copy() {
         let d = tmp("use-this");
         let home = d.join("home");
         let running = file_at(&home.join("Applications/chalito/Chalito.AppImage"));
-        let test = file_at(&home.join("chalito-dl-test/UNSIGNED_Chalito_0.1.0-beta.2_amd64.AppImage"));
-        let ctx = Ctx {
-            home: home.clone(),
-            running: running.clone(),
-            autostart_dir: xdg::dir(&home, None),
-            data_home: d.join("no-such-share"),
-            data_dirs: vec![],
-            user_dirs: None,
-            os_tools: false,
-        };
-        // tauri-plugin-autostart's entry, as found on the owner's machine.
+        // A space in the folder: tauri-plugin-autostart wrote such paths unquoted.
+        let test = file_at(&home.join("chalito dl test/UNSIGNED_Chalito_0.1.0-beta.2_amd64.AppImage"));
+        let ctx = ctx_for(&d, &running);
         fs::create_dir_all(&ctx.autostart_dir).unwrap();
         fs::write(ctx.autostart_dir.join(xdg::ENTRY), format!("[Desktop Entry]\nExec={} \nTerminal=false", test.display())).unwrap();
+        // The owner's handler, in the user's data folder, on the same old copy.
+        let user_handler = ctx.data_home.join("applications").join(HANDLER_ID);
+        fs::create_dir_all(user_handler.parent().unwrap()).unwrap();
+        let owner = format!("[Desktop Entry]\nName=Chalito\nTryExec={0}\nExec={0} %U\nIcon=/x/chalito.png\nMimeType=x-scheme-handler/chalito;\n", test.display());
+        fs::write(&user_handler, owner).unwrap();
         let r = ctx.report();
         assert_eq!(r.autostart, Link::Other { path: test.display().to_string() });
-        assert_eq!(r.handler, Link::None);
-        assert_eq!(paths(&r.copies), vec![test.display().to_string()]);
+        assert_eq!(r.handler, Link::Other { path: test.display().to_string() });
+        assert_eq!(paths(&r.copies), vec![test.clone()]);
 
-        let d2 = d.join("share");
-        let ctx = Ctx { data_home: d2.clone(), ..ctx };
         ctx.use_this().unwrap();
         let entry = fs::read_to_string(ctx.autostart_dir.join(xdg::ENTRY)).unwrap();
         assert_eq!(xdg::exec_target(&entry), Some(running.clone()));
-        let handler = fs::read_to_string(d2.join("applications").join(HANDLER_ID)).unwrap();
+        let handler = fs::read_to_string(&user_handler).unwrap();
         assert_eq!(entry_program(&handler), Some(running.clone()));
-        assert_eq!(ctx.link_for(Some(running.as_path())), Link::Ours);
+        assert!(handler.contains("Icon=/x/chalito.png") && !handler.contains("TryExec"), "{handler}");
+        let r = ctx.report();
+        assert_eq!((r.autostart, r.handler), (Link::Ours, Link::Ours));
         // Autostart switched off: "Usar esta copia" leaves it off.
         xdg::disable(&ctx.autostart_dir, &xdg::legacy_dir(&home)).unwrap();
         ctx.use_this().unwrap();
+        assert!(!ctx.autostart_dir.join(xdg::ENTRY).exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_system_handler_is_overridden_in_the_users_folder_never_edited() {
+        let d = tmp("use-this-system");
+        let running = file_at(&d.join("home/Applications/Chalito.AppImage"));
+        let other = file_at(&d.join("opt/chalito/chalito-desktop"));
+        let ctx = ctx_for(&d, &running);
+        let system = d.join("usr/share/applications").join(HANDLER_ID);
+        fs::create_dir_all(system.parent().unwrap()).unwrap();
+        let body = format!("[Desktop Entry]\nExec={} %u\n", other.display());
+        fs::write(&system, &body).unwrap();
+        assert_eq!(ctx.report().handler, Link::Other { path: other.display().to_string() });
+        ctx.use_this().unwrap();
+        assert_eq!(fs::read_to_string(&system).unwrap(), body);
+        let user = fs::read_to_string(ctx.data_home.join("applications").join(HANDLER_ID)).unwrap();
+        assert!(user.contains("MimeType=x-scheme-handler/chalito;"));
+        assert_eq!(ctx.report().handler, Link::Ours);
+        // Autostart was never on: still no entry.
         assert!(!ctx.autostart_dir.join(xdg::ENTRY).exists());
         let _ = fs::remove_dir_all(&d);
     }
