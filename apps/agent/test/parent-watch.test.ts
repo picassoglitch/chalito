@@ -71,12 +71,25 @@ describe("watchParent, real processes", () => {
     "a child whose parent exits notices within a poll or two",
     async () => {
       const mod = fileURLToPath(new URL("../src/parent-watch.ts", import.meta.url));
-      const child = `node --import tsx -e "import('${mod}').then((m) => m.watchParent(() => { console.log('gone'); process.exit(0); })); setInterval(() => {}, 1000)"`;
-      // The parent starts the child and exits, like a crashed desktop app (the interval stands in for the daemon).
-      const sh = spawn("sh", ["-c", `${child} & sleep 0.5; exit 0`], { stdio: ["ignore", "pipe", "inherit"] });
+      // "ready <pid>" (stderr, to the parent) once watching; "gone" goes to our stdout directly.
+      const child = `import('${mod}').then((m) => { m.watchParent(() => { console.log('gone'); process.exit(0); }); console.error('ready ' + process.pid); }); setInterval(() => {}, 1000);`;
+      // The parent waits for that, then exits like a crashed desktop app.
+      const parent = `const c = require('node:child_process').spawn(process.execPath, ['--import', 'tsx', '-e', process.argv[1]], { stdio: ['ignore', 'inherit', 'pipe'] }); c.stderr.on('data', (b) => { process.stdout.write(b); if (String(b).includes('ready')) process.exit(0); });`;
+      const p = spawn(process.execPath, ["-e", parent, child], { stdio: ["ignore", "pipe", "inherit"] });
       let out = "";
-      sh.stdout.on("data", (b: Buffer) => (out += b.toString()));
-      await vi.waitFor(() => expect(out).toContain("gone"), { timeout: 8000, interval: 100 });
+      p.stdout.on("data", (b: Buffer) => (out += b.toString()));
+      try {
+        await vi.waitFor(() => expect(out).toContain("gone"), { timeout: 8000, interval: 100 });
+      } finally {
+        const pid = Number(/ready (\d+)/.exec(out)?.[1]);
+        if (pid) {
+          try {
+            process.kill(pid);
+          } catch {
+            /* already gone */
+          }
+        }
+      }
     },
     10_000,
   );

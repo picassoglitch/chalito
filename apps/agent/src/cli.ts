@@ -660,6 +660,11 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
             stopWatching();
             return 0;
           }
+          // Gone while sending the secret: nothing to start for.
+          if (parentGone.signal.aborted) {
+            stopWatching();
+            return 0;
+          }
           d = daemon = await (io.daemon ?? runDaemon)({
             home: io.home,
             env: io.env,

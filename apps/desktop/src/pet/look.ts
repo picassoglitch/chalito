@@ -12,10 +12,8 @@ import {
   type RenderQuality,
 } from "@chalito/scene";
 
-/**
- * Where "auto" stands: settled on a level, or probing at alto until `probeSeconds` have passed
- * (software GL never probes: it is bajo straight away). Same rule as the room view.
- */
+/** Where "auto" stands: settled, or probing at alto for `probeSeconds` (software GL is bajo at
+ * once). Same rule as the room view. */
 export class QualityResolver {
   #level: QualityLevel = "alto";
   #probe: { start: number; frames: number } | null = null;
@@ -58,13 +56,8 @@ export class QualityResolver {
   }
 }
 
-/**
- * The pet's companion card at a render level: bajo is the flat card impostor (no gesture rig),
- * medio and alto run the avatar driver (breathing, lean, the actions, and the
- * cutout rig's arms, head, blinks and mouth when the card has one). The contact shadow shows at
- * every level: it's one plane, and without it the pet floats instead of standing on the desktop.
- * The driver keeps running either way so the pet's state stays in step.
- */
+/** The pet's card at a render level (bajo: flat impostor; medio/alto: driver and rig). The contact
+ * shadow shows at every level: without it the pet floats instead of standing on the desktop. */
 export class PetLook {
   readonly root = new THREE.Group();
   readonly card: CardAvatar;
