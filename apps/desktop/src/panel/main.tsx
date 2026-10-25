@@ -7,6 +7,7 @@ import { TextProviders, detectLocale } from "../lib/i18n.js";
 import { agentIpc, type AgentIpc } from "../lib/ipc.js";
 import { ActivityTracker } from "@chalito/avatar";
 import { LoadWatch, pendingAnswers, petContext } from "../lib/pet-context.js";
+import { PrFeed, withPrNews } from "../lib/prs.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
@@ -110,6 +111,13 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   });
   // One per connection, priming once its data has loaded: what happened before isn't news.
   const activity = useMemo(() => ({ tracker: new ActivityTracker(), load: new LoadWatch() }), [client]);
+  // PR news counts once per panel run; read on its own clock so the tick never waits on the agent.
+  const prFeed = useMemo(() => new PrFeed(() => ipc.prWatch()), [ipc]);
+  useEffect(() => {
+    void prFeed.refresh();
+    const id = setInterval(() => void prFeed.refresh(), SIGNAL_POLL_MS);
+    return () => clearInterval(id);
+  }, [prFeed]);
 
   useEffect(() => {
     const reporter = new PresenceReporter((p) => ipc.reportPresence(p), { onError: () => undefined });
@@ -118,7 +126,10 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       if (snap) live.current = snap;
       const { sessions, events, notifications } = live.current;
       const learning = activity.load.loading(snap?.status, Date.now());
-      const act = activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning });
+      const act = withPrNews(
+        activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning }),
+        prFeed.counts(Date.now()),
+      );
       // The person reading the panel already sees replies: the pet doesn't perk at them (owner, 2026-10-25).
       const panelFocused = document.hasFocus() && document.visibilityState === "visible";
       const local = { dnd, fullscreen: false, lowEnergy: false, panelFocused };
@@ -140,7 +151,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       window.removeEventListener("keydown", touch);
       void reporter.stop();
     };
-  }, [client, ipc, sh, settings, dnd, activity]);
+  }, [client, ipc, sh, settings, dnd, activity, prFeed]);
 
   return (
     <Panel

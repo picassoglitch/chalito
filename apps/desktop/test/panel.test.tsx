@@ -258,6 +258,8 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     codeStart: async () => ({ sid: "s1" }),
     codePrompt: async () => undefined,
     codeStop: async () => undefined,
+    prWatch: () => Promise.reject(new Error("agent_ipc_unavailable")),
+    setPrWatch: () => Promise.reject(new Error("agent_ipc_unavailable")),
     ...over,
   };
 };

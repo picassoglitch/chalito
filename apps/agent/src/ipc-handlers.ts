@@ -38,6 +38,7 @@ import type { AgentStore } from "./store.js";
 import type { CommandResult } from "./agent-core.js";
 import type { CodeService } from "./code/service.js";
 import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
+import { RepoPattern, type PrWatch } from "./prs/watch.js";
 
 /** The agent version the panel's `ping` sees. */
 export const AGENT_VERSION = "0.0.0";
@@ -82,6 +83,14 @@ const LinkAdd = z.object({
   link: z.record(z.string(), z.unknown()),
   answers: z.object({ confirm: z.boolean(), typed: z.string().max(200) }),
 });
+const PrWatchGet = z.object({ probe: z.boolean().optional() }).strict();
+const PrWatchSet = z
+  .object({
+    enabled: z.boolean().optional(),
+    allow: z.array(RepoPattern).max(50).optional(),
+    deny: z.array(RepoPattern).max(50).optional(),
+  })
+  .strict();
 const ForLink = z.object({ linkId: z.string().max(80) });
 const LinkSend = z.object({
   fromSid: SessionId,
@@ -156,7 +165,14 @@ export interface IpcDeps {
   home?: string;
   /** ADR 0031 §1: sessions started here ("Nueva sesión"); absent = the code calls answer `unavailable`. */
   code?: CodeService;
+  /** The person's GitHub PRs through their own `gh` (prs/watch.ts); absent = the PR calls answer `unavailable`. */
+  prs?: PrWatch;
 }
+
+const prsOf = (d: IpcDeps): PrWatch => {
+  if (!d.prs) throw new IpcError("unavailable");
+  return d.prs;
+};
 
 const codeOf = (d: IpcDeps): CodeService => {
   if (!d.code) throw new IpcError("unavailable");
@@ -192,17 +208,8 @@ const appCall = async (d: IpcDeps, run: (m: AppManager) => Promise<AppResult>) =
   return { ok: true };
 };
 
-/**
- * What the desktop panel asks of this agent (apps/desktop/src/lib/ipc.ts `AgentIpc`).
- *
- * Developer mode stays local-only with the CLI's rules: the agent asks the OS itself (password
- * or biometric) and re-checks the three answers, including the typed liability phrase. The panel
- * only carries the person's answers; it can't skip a step.
- *
- * This daemon only runs once the computer is paired, so there's never a pairing pending here: the
- * panel's pairing (startPairing / pendingPairing / confirmPairing) is served before that by
- * pairing-host.ts, and `chalito pair` keeps its own terminal.
- */
+/** The panel's calls (desktop lib/ipc.ts). Developer mode re-checks the OS and all three answers here;
+ * this daemon runs only once paired, so pairing calls are served earlier by pairing-host.ts. */
 export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   ping: async () => ({ version: AGENT_VERSION }),
 
@@ -259,11 +266,8 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     return state;
   },
 
-  /**
-   * The desktop app's poll (every 500 ms, from its native side): it shows the always-on-top
-   * indicator while `active` isn't empty and reports whether it is on screen. Actions wait for
-   * that report (computer/control.ts), so nothing acts without the indicator showing.
-   */
+  /** The native side's 500 ms poll: it shows the indicator while `active` isn't empty and reports it
+   * on screen; actions wait for that report (computer/control.ts). */
   computerStatus: async (params) => {
     const { indicatorShown } = parse(ComputerBeat, params ?? {});
     const computer = d.computer
@@ -281,9 +285,8 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
           pending: [...computer.pending, ...sc.pending.map(({ sid, label }) => ({ sid, label }))],
         }
       : computer;
-    // Remote terminals share the indicator, the heartbeat and the kill switch: open ones are
-    // listed as active (so the indicator shows them), and `terminal` says whether it's on (so the
-    // native side holds the hotkey while it is).
+    // Remote terminals share the indicator and kill switch: open ones count as active, and
+    // `terminal` says whether it's on so the native side holds the hotkey.
     const terminal = d.terminal
       ? indicatorShown === undefined
         ? d.terminal.status()
@@ -297,10 +300,7 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     };
   },
 
-  /**
-   * The kill switch (global hotkey, tray item, indicator button, panel): ends control, closes
-   * terminals and ends remote screen now.
-   */
+  /** The kill switch (hotkey, tray, indicator, panel): ends control, terminals and remote screen now. */
   computerKill: async (params) => {
     const { via } = parse(ComputerKill, params);
     const computer = d.computer ? await d.computer.kill(via) : 0;
@@ -452,9 +452,8 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     await d.store.updateDevice({ presence: { desktopActive }, lastSeenAt: d.now() });
   },
 
-  // "IA conectadas" (the catalog view): the same actions as the app.* commands, from this
-  // computer. Here the key arrives in plaintext over the local socket (never the network), and
-  // `installApp` is the person's local yes (the panel asks before calling it).
+  // "IA conectadas": the app.* commands from this computer. Keys come in plaintext over the local
+  // socket only, and `installApp` is the person's local yes (the panel asks first).
   apps: async () => {
     if (!d.apps) throw new IpcError("unavailable");
     const sessions = d.policy.get().apps?.sessions ?? {};
@@ -572,11 +571,8 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     return { changed };
   },
 
-  /**
-   * "Usar" / "se actualizó: confirmar": trust the app's CLI as the panel showed it (First Run C).
-   * Local only: this socket is the panel's (its per-launch secret); remote commands never pin over
-   * a pin.
-   */
+  /** "Usar" / "se actualizó: confirmar": trust the app's CLI as the panel showed it (First Run C).
+   * Local only (the panel's per-launch secret); remote commands never pin over a pin. */
   pinApp: async (params) => {
     const { appId, sha256 } = parse(PinApp, params);
     return appCall(d, (m) => m.pin(appId, sha256));
@@ -696,4 +692,6 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     const { fromSid, linkId, text } = parse(LinkSend, params);
     return linksOf(d).share({ fromSid, linkId, parts: [{ text }] });
   },
+  prWatch: async (params) => prsOf(d).view(parse(PrWatchGet, params ?? {}).probe === true),
+  setPrWatch: async (params) => prsOf(d).configure(parse(PrWatchSet, params)),
 });

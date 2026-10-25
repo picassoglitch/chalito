@@ -10,8 +10,9 @@ export interface RunResult {
 
 /** Runs OS commands (launchctl, systemctl, schtasks, pkexec, $EDITOR). Injected so tests never touch the OS. */
 export interface ProcessRunner {
-  /** `interactive` hands the terminal to the child (editors, auth prompts) and captures nothing. */
-  run(cmd: string, args: string[], opts?: { interactive?: boolean }): Promise<RunResult>;
+  /** `interactive` hands the terminal to the child (editors, auth prompts) and captures nothing.
+   * `timeoutMs` kills a child that runs longer and answers 124, like `timeout(1)`. */
+  run(cmd: string, args: string[], opts?: { interactive?: boolean; timeoutMs?: number }): Promise<RunResult>;
 }
 
 export const spawnRunner: ProcessRunner = {
@@ -20,11 +21,18 @@ export const spawnRunner: ProcessRunner = {
       const child = spawn(cmd, args, { stdio: opts.interactive ? "inherit" : ["ignore", "pipe", "pipe"] });
       let stdout = "";
       let stderr = "";
+      const timer = opts.timeoutMs
+        ? setTimeout(() => {
+            child.kill();
+            resolve({ code: 124, stdout, stderr: `${stderr}timeout` });
+          }, opts.timeoutMs)
+        : null;
+      timer?.unref?.();
       child.stdout?.on("data", (b: Buffer) => (stdout += b.toString()));
       child.stderr?.on("data", (b: Buffer) => (stderr += b.toString()));
       // ENOENT and friends: report like a shell would instead of throwing.
-      child.on("error", (err) => resolve({ code: 127, stdout, stderr: err.message }));
-      child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
+      child.on("error", (err) => (timer && clearTimeout(timer), resolve({ code: 127, stdout, stderr: err.message })));
+      child.on("close", (code) => (timer && clearTimeout(timer), resolve({ code: code ?? 1, stdout, stderr })));
     }),
 };
 
