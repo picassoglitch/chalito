@@ -396,6 +396,39 @@ describe("chalito CLI", () => {
       expect(signal?.aborted).toBe(true);
     });
 
+    it("paired, the app dies while the secret is still pending: the daemon never starts", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      const input = new PassThrough();
+      let started = false;
+      const io = {
+        ...base(c, onGone, []),
+        tty: { input, output: new PassThrough() },
+        daemon: async () => ((started = true), { done: Promise.resolve() }) as unknown as Daemon,
+      };
+      const run = main(["run"], io as never);
+      await vi.waitFor(() => expect(onGone.fn).not.toBeNull());
+      onGone.fn!();
+      input.end(`${"ab".repeat(16)}\n`);
+      expect(await run).toBe(0);
+      expect(started).toBe(false);
+      expect(onGone.fn).toBeNull();
+    });
+
     it("unpaired: the pairing host ends", async () => {
       const c = cli();
       const onGone: { fn: (() => void) | null } = { fn: null };

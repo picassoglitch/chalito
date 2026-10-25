@@ -660,7 +660,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
             stopWatching();
             return 0;
           }
-          // Gone while sending the secret: nothing to start for.
+          // Gone before the secret read ended (e.g. its 5 s timeout): nothing to start for.
           if (parentGone.signal.aborted) {
             stopWatching();
             return 0;

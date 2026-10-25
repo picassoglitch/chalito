@@ -74,20 +74,21 @@ describe("watchParent, real processes", () => {
       // "ready <pid>" (stderr, to the parent) once watching; "gone" goes to our stdout directly.
       const child = `import('${mod}').then((m) => { m.watchParent(() => { console.log('gone'); process.exit(0); }); console.error('ready ' + process.pid); }); setInterval(() => {}, 1000);`;
       // The parent waits for that, then exits like a crashed desktop app.
-      const parent = `const c = require('node:child_process').spawn(process.execPath, ['--import', 'tsx', '-e', process.argv[1]], { stdio: ['ignore', 'inherit', 'pipe'] }); c.stderr.on('data', (b) => { process.stdout.write(b); if (String(b).includes('ready')) process.exit(0); });`;
-      const p = spawn(process.execPath, ["-e", parent, child], { stdio: ["ignore", "pipe", "inherit"] });
+      const parent = `const c = require('node:child_process').spawn(process.execPath, ['--import', 'tsx', '-e', process.argv[1]], { stdio: ['ignore', 'inherit', 'pipe'] }); c.stderr.on('data', (b) => { process.stdout.write(b); if (String(b).includes('ready')) process.stdout.write('', () => process.exit(0)); });`;
+      // Its own process group, so a failed run can kill parent and child even before "ready".
+      const p = spawn(process.execPath, ["-e", parent, child], {
+        stdio: ["ignore", "pipe", "inherit"],
+        detached: true,
+      });
       let out = "";
       p.stdout.on("data", (b: Buffer) => (out += b.toString()));
       try {
         await vi.waitFor(() => expect(out).toContain("gone"), { timeout: 8000, interval: 100 });
       } finally {
-        const pid = Number(/ready (\d+)/.exec(out)?.[1]);
-        if (pid) {
-          try {
-            process.kill(pid);
-          } catch {
-            /* already gone */
-          }
+        try {
+          process.kill(-p.pid!, "SIGKILL");
+        } catch {
+          /* already gone */
         }
       }
     },
