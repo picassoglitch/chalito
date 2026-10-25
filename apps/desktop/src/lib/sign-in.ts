@@ -3,7 +3,8 @@ import type { AcceptError, ExchangeError, ExchangeResult, SsoFlow } from "./sso.
 
 export type SignInStep =
   | { step: "signed_out" }
-  | { step: "browser" }
+  /** `stale`: a link from an earlier attempt came back; the newest browser tab still works. */
+  | { step: "browser"; stale?: true }
   | { step: "exchanging" }
   | { step: "endorsing"; display: unknown }
   | { step: "ready"; owner: string; deviceId: string; passkey: "enrolled" | "unavailable" | "failed" }
@@ -75,10 +76,15 @@ export class SignInController {
   async handleUrl(url: string): Promise<void> {
     const r = this.d.flow.accept(url);
     if (!r.ok) {
-      // A link for a sign-in this launch never started (the app restarted, or another copy started
-      // it): tell the person instead of looking stuck, so they don't keep signing in (2026-10-25).
-      const idle = this.#s.step === "signed_out" || this.#s.step === "error";
+      // A link for a sign-in this launch never started (restart, another copy, cancelled): say so
+      // instead of looking stuck, so the person doesn't keep signing in (2026-10-25).
+      const s = this.#s;
+      // A real error (expired, enrolment failed) stays on screen; a stray link doesn't replace it.
+      const idle = s.step === "signed_out" || (s.step === "error" && s.reason === "no_pending");
       if (r.reason === "no_pending" && idle) return this.#set({ step: "error", reason: "no_pending" });
+      // Same while waiting on the browser (Sign in clicked twice, old tab finished): a hint, it carries on.
+      const stale = r.reason === "no_pending" || r.reason === "state_mismatch";
+      if (stale && this.#s.step === "browser" && !this.#s.stale) this.#set({ step: "browser", stale: true });
       if (IGNORABLE.has(r.reason)) {
         this.lastIgnored = r.reason;
         return;

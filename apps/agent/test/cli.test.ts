@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { generateSigningKeyPair } from "@chalito/crypto";
 import { lineDiff, main, parseArgs, type CliIo } from "../src/cli.js";
 import { AnchorStore } from "../src/anchor.js";
@@ -287,23 +287,113 @@ describe("chalito CLI", () => {
       const done = new Promise<void>((r) => (finish = r));
       const io = {
         ...base(c, onGone, err),
-        daemon: async () =>
-          ({
+        daemon: async () => {
+          running = true;
+          return {
             done,
             stop: async (why?: string) => {
               stopped = why;
               finish();
             },
-          }) as unknown as Daemon,
+          } as unknown as Daemon;
+        },
       };
+      let running = false;
       const run = main(["run"], io as never);
-      await new Promise((r) => setTimeout(r, 20));
+      await vi.waitFor(() => expect(running).toBe(true));
       expect(onGone.fn).not.toBeNull();
       onGone.fn!();
       expect(await run).toBe(0);
       expect(stopped).toBe("parent_gone");
       expect(err.join("")).toMatch(/desktop app closed|app de escritorio de Chalito se cerró/);
       expect(onGone.fn).toBeNull();
+    });
+
+    it("paired, gone while the daemon is still starting: stopped as soon as it exists", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      let stopped: string | undefined;
+      let finish = () => {};
+      const done = new Promise<void>((r) => (finish = r));
+      const io = {
+        ...base(c, onGone, []),
+        daemon: async () => {
+          // The app dies before runDaemon resolves.
+          onGone.fn!();
+          return {
+            done,
+            stop: async (why?: string) => {
+              stopped = why;
+              finish();
+            },
+          } as unknown as Daemon;
+        },
+      };
+      expect(await main(["run"], io as never)).toBe(0);
+      expect(stopped).toBe("parent_gone");
+    });
+
+    it("a stop that hangs or fails after the app is gone still lets the agent exit", async () => {
+      const c = cli();
+      const id = await loadOrCreateIdentity(c.secrets);
+      writeConfig(
+        c.dir,
+        {
+          ...readConfig(c.dir, {
+            CHALITO_API_BASE: "https://api.test",
+            SUPABASE_URL: "http://127.0.0.1:54321",
+            SUPABASE_PUBLISHABLE_KEY: "k",
+          }),
+          owner: "hub-user-1",
+          deviceId: id.deviceId,
+        },
+        id.sign,
+      );
+      for (const stop of [() => new Promise<void>(() => {}), async () => Promise.reject(new Error("close failed"))]) {
+        const onGone: { fn: (() => void) | null } = { fn: null };
+        const err: string[] = [];
+        const io = {
+          ...base(c, onGone, err),
+          parentStopMs: 30,
+          daemon: async () => ({ done: new Promise<void>(() => {}), stop }) as unknown as Daemon,
+        };
+        const run = main(["run"], io as never);
+        await vi.waitFor(() => expect(onGone.fn).not.toBeNull());
+        onGone.fn!();
+        expect(await run).toBe(0);
+      }
+    });
+
+    it("the app dies before sending the secret: still watched from the start, the host ends", async () => {
+      const c = cli();
+      const onGone: { fn: (() => void) | null } = { fn: null };
+      const input = new PassThrough();
+      let signal: AbortSignal | undefined;
+      const io = {
+        ...base(c, onGone, []),
+        tty: { input, output: new PassThrough() },
+        pairingHost: async (o: { signal?: AbortSignal }) => void (signal = o.signal),
+      };
+      const run = main(["run"], io as never);
+      await vi.waitFor(() => expect(onGone.fn).not.toBeNull());
+      onGone.fn!();
+      input.end(`${"ab".repeat(16)}\n`);
+      expect(await run).toBe(0);
+      expect(signal?.aborted).toBe(true);
     });
 
     it("unpaired: the pairing host ends", async () => {
@@ -318,7 +408,7 @@ describe("chalito CLI", () => {
         },
       };
       const run = main(["run"], io as never);
-      await new Promise((r) => setTimeout(r, 20));
+      await vi.waitFor(() => expect(signal).toBeDefined());
       expect(signal?.aborted).toBe(false);
       onGone.fn!();
       expect(await run).toBe(0);

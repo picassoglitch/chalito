@@ -37,7 +37,7 @@ const projectBounds = (obj: THREE.Object3D, camera: THREE.Camera) => {
  * The pet: a transparent three.js canvas with the companion's roster card (the placeholder until
  * it loads), the behaviour machine (focus only at L4) and the hit box for click-through. The
  * render-quality slider (render.yaml) applies here as in the room view: bajo is the flat card
- * impostor at 30 FPS without contact shadow; medio and alto run the driver's bob, squash and
+ * impostor at 30 FPS; medio and alto run the driver's bob, squash and
  * gestures; auto settles from the renderer and a short probe. The equipped cosmetics (from
  * `cosmetics`, once the panel is signed in) are placed on the card as in a room. When the companion
  * wears the person's own custom character (`myCard`), that card is drawn instead of the roster one

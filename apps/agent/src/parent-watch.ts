@@ -2,8 +2,8 @@ import { isProcessAlive } from "./instance-lock.js";
 
 export const PARENT_POLL_MS = 2000;
 
-/** `onGone` once the desktop app that started us exits: an orphan agent keeps the lock and blocks
- * the next launch's (2026-10-25). Unix re-parents orphans; Windows doesn't, so check it's alive. */
+/** `onGone` once the desktop app that started us exits: an orphan keeps the lock (2026-10-25).
+ * Windows doesn't re-parent, so the parent pid is checked; a reused pid there goes unnoticed. */
 export const watchParent = (
   onGone: () => void,
   deps: {

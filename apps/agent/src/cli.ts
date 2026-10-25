@@ -77,6 +77,8 @@ export interface CliIo {
   pairingHost?: typeof runPairingHost;
   /** How `chalito run` notices the desktop app that started it is gone (tests stub it). */
   watchParent?: typeof watchParent;
+  /** How long a stop after the app is gone may take before exiting anyway (tests shorten it). */
+  parentStopMs?: number;
   pairWatcher?: PairingWatcher;
   /** Injected in tests: how OS-auth helpers (/usr/bin/pkexec, osascript) are checked for root ownership. */
   osStat?: StatFn;
@@ -612,15 +614,25 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
         let daemon: Daemon | null = null;
         const parentGone = new AbortController();
         let stopWatching = () => {};
+        const stopForParent = (dm: Daemon) =>
+          void dm.stop("parent_gone").catch((err: unknown) => io.err(`${String(err)}\n`));
+        // A stop that hangs must not keep the orphan (and its lock) alive: exit anyway.
+        const stopDeadline = new Promise<void>((resolve) =>
+          parentGone.signal.addEventListener("abort", () => setTimeout(resolve, io.parentStopMs ?? 10_000), {
+            once: true,
+          }),
+        );
         try {
           // Started by the desktop app: its per-launch IPC secret is the first line on stdin.
-          const ipcSecret = io.env.CHALITO_IPC === "stdin" ? await readIpcSecret(io.tty.input) : null;
-          if (ipcSecret)
+          const fromApp = io.env.CHALITO_IPC === "stdin";
+          // Before the secret's await: an app killed meanwhile must not become the baseline's "parent".
+          if (fromApp)
             stopWatching = (io.watchParent ?? watchParent)(() => {
               io.err(t.parentGone);
               parentGone.abort();
-              void daemon?.stop("parent_gone");
+              if (daemon) stopForParent(daemon);
             });
+          const ipcSecret = fromApp ? await readIpcSecret(io.tty.input) : null;
           // Not paired yet and started by the desktop app: serve the panel's pairing only (ADR 0028 §3).
           if (ipcSecret && !(cfg && isPaired(cfg))) {
             await (io.pairingHost ?? runPairingHost)({
@@ -657,7 +669,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
             ipcSecret,
           });
           // Gone while the daemon was starting: stop it now that it can be stopped.
-          if (parentGone.signal.aborted) void d.stop("parent_gone");
+          if (parentGone.signal.aborted) stopForParent(d);
         } catch (err) {
           stopWatching();
           // Distinct codes so the desktop supervisor neither races another agent nor
@@ -683,7 +695,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           return code;
         }
         try {
-          await d.done;
+          await Promise.race([d.done, stopDeadline]);
         } finally {
           stopWatching();
         }

@@ -175,8 +175,10 @@ fn pet_spot(area: (i32, i32, u32, u32), window: (u32, u32), margin: i32) -> (i32
 }
 
 fn place_pet(w: &tauri::WebviewWindow) {
-    if let (Ok(Some(m)), Ok(size)) = (w.primary_monitor(), w.outer_size()) {
+    if let (Ok(Some(m)), Ok(size), Ok(scale)) = (w.primary_monitor(), w.outer_size(), w.scale_factor()) {
         let a = m.work_area();
+        // The window's pixels are at the scale it was made on; the work area's at the primary's.
+        let size = size.to_logical::<f64>(scale).to_physical::<u32>(m.scale_factor());
         let margin = (PET_MARGIN * m.scale_factor()).round() as i32;
         let (x, y) = pet_spot((a.position.x, a.position.y, a.size.width, a.size.height), (size.width, size.height), margin);
         let _ = w.set_position(tauri::PhysicalPosition::new(x, y));

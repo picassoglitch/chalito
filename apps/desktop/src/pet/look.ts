@@ -59,8 +59,8 @@ export class QualityResolver {
 }
 
 /**
- * The pet's companion card at a render level: bajo is the flat card impostor (no gesture rig, no
- * contact shadow), medio and alto run the avatar driver (breathing, lean, the actions, and the
+ * The pet's companion card at a render level: bajo is the flat card impostor (no gesture rig),
+ * medio and alto run the avatar driver (breathing, lean, the actions, and the
  * cutout rig's arms, head, blinks and mouth when the card has one). The contact shadow shows at
  * every level: it's one plane, and without it the pet floats instead of standing on the desktop.
  * The driver keeps running either way so the pet's state stays in step.
