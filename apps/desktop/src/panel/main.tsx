@@ -6,7 +6,7 @@ import type { PhoneVerifier } from "@chalito/ui";
 import { TextProviders, detectLocale } from "../lib/i18n.js";
 import { agentIpc, type AgentIpc } from "../lib/ipc.js";
 import { ActivityTracker } from "@chalito/avatar";
-import { pendingAnswers, petContext } from "../lib/pet-context.js";
+import { LoadWatch, pendingAnswers, petContext } from "../lib/pet-context.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
@@ -42,13 +42,8 @@ const loadDnd = () => {
   }
 };
 
-/**
- * The panel window owns the account connection and the agent IPC; the pet window only
- * renders. Every few seconds it recomputes the pet's context and the presence signals.
- * Until signed in (hub SSO in the system browser → chalito:// deep link → that sign-in enrols
- * this computer, which then connects itself), the panel opens at launch on the sign-in flow and settings stay on this
- * device; once connected, settings (and the pet's companion) come from the account.
- */
+/** Owns the account connection and agent IPC (the pet only renders); recomputes pet context and presence. Until
+ * signed in (hub SSO → chalito:// link enrols this computer) it opens on sign-in and settings stay on this device. */
 const App = ({ ipc }: { ipc: AgentIpc }) => {
   const sh = useMemo(shell, []);
   const [conn, setConn] = useState<Connected | null>(null);
@@ -105,18 +100,23 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);
-  const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions">>({
+  const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions" | "events">>({
     notifications: [],
     approvals: [],
     sessions: [],
+    events: {},
   });
-  const activity = useRef(new ActivityTracker());
+  // One per connection, priming once its data has loaded: what happened before isn't news.
+  const activity = useMemo(() => ({ tracker: new ActivityTracker(), load: new LoadWatch() }), [client]);
 
   useEffect(() => {
     const reporter = new PresenceReporter((p) => ipc.reportPresence(p), { onError: () => undefined });
     const tick = async () => {
-      if (client) live.current = client.live.getSnapshot();
-      const act = activity.current.update(live.current.sessions, pendingAnswers(live.current));
+      const snap = client?.live.getSnapshot();
+      if (snap) live.current = snap;
+      const { sessions, events, notifications } = live.current;
+      const learning = activity.load.loading(snap?.status, Date.now());
+      const act = activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning });
       const ctx = petContext(live.current, settings, { dnd, fullscreen: false, lowEnergy: false }, new Date(), act);
       await sh.sendPetContext(ctx).catch(() => undefined);
       const idle = await sh.idleMs().catch(() => 0);
@@ -135,7 +135,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       window.removeEventListener("keydown", touch);
       void reporter.stop();
     };
-  }, [client, ipc, sh, settings, dnd]);
+  }, [client, ipc, sh, settings, dnd, activity]);
 
   return (
     <Panel

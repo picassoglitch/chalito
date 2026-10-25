@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import { BehaviourMachine, activityActions, type Activity, type BehaviourOutput } from "@chalito/avatar";
-import { AvatarDriver, CreatureBinding, FrameLoop, createPlaceholder } from "@chalito/avatar-three";
+import { BehaviourMachine, type Activity, type BehaviourOutput } from "@chalito/avatar";
+import { AvatarDriver, CreatureBinding, FrameLoop, RetroStepper, createPlaceholder } from "@chalito/avatar-three";
 import type { EmotionTag } from "@chalito/protocol";
 import { RENDER_DEFAULTS, loadCardAssets, type QualityLevel, type SceneCosmetic } from "@chalito/scene";
 import { changedEnough, ndcToCanvas, toScreenHitBox, type Rect } from "../lib/hitbox.js";
@@ -11,6 +11,7 @@ import { PET_COSMETICS_REFRESH_MS, cosmeticsKey, watchCosmetics } from "./cosmet
 import type { CustomCardSource } from "@chalito/scene/custom-card";
 import { PetLook, QualityResolver } from "./look.js";
 import { CARD_WAIT_MS, loadLastDrawn, petCard, saveLastDrawn } from "./choice.js";
+import { petReaction, playReaction } from "./reactions.js";
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
 const ROSTER_BASE = "/roster/";
@@ -33,17 +34,8 @@ const projectBounds = (obj: THREE.Object3D, camera: THREE.Camera) => {
   };
 };
 
-/**
- * The pet: a transparent three.js canvas with the companion's roster card (the placeholder until
- * it loads), the behaviour machine (focus only at L4) and the hit box for click-through. The
- * render-quality slider (render.yaml) applies here as in the room view: bajo is the flat card
- * impostor at 30 FPS; medio and alto run the driver's bob, squash and
- * gestures; auto settles from the renderer and a short probe. The equipped cosmetics (from
- * `cosmetics`, once the panel is signed in) are placed on the card as in a room. When the companion
- * wears the person's own custom character (`myCard`), that card is drawn instead of the roster one
- * (its anchors place the cosmetics); if it won't load, the roster card is. Until it's known which
- * one it wears, the neutral placeholder stays (see choice.ts): never one character, then another.
- */
+/** The pet window: card (or custom card, see choice.ts), cosmetics, behaviour machine and click-through
+ * hit box. render.yaml levels apply as in the room view (bajo = flat impostor, medio/alto = driver). */
 export const startPet = (
   canvas: HTMLCanvasElement,
   sh: DesktopShell,
@@ -68,6 +60,8 @@ export const startPet = (
   /** What the hit box follows: the placeholder, then the card. */
   let pet: THREE.Object3D = placeholder;
   const driver = new AvatarDriver({ seed: 1 });
+  // Retro motion at every level (owner, 2026-10-25): poses step at 10 fps under any FPS cap.
+  const retro = new RetroStepper();
   const creature = new CreatureBinding(placeholder);
   let look: PetLook | null = null;
   /** What's drawn (or loading): companion card and its cosmetics. */
@@ -200,10 +194,15 @@ export const startPet = (
     const waiting = o.state === "hop" || o.state === "knock" || o.state === "wave";
     driver.setMode(waiting || act?.mode === "needs_you" ? "needs_you" : act?.mode === "working" ? "working" : "rest");
     if (act) {
-      for (const a of activityActions(lastActivity, act)) {
-        driver.playAction(a, now);
-        flash(a === "hop" ? "happy" : "sad", now, a === "hop" ? 2500 : 3500);
-      }
+      const quiet = ctx.dnd || ctx.quietHours;
+      const r = petReaction({
+        before: lastActivity,
+        now: act,
+        behaviour: o.state,
+        quiet,
+        playing: driver.actionAt(now),
+      });
+      if (r) playReaction(r, now, flash, driver);
       lastActivity = act;
     }
     if (faceUntil && now >= faceUntil) {
@@ -212,7 +211,7 @@ export const startPet = (
     }
     if (o.requestFocus && !out?.requestFocus) void sh.focusPet("L4").catch(() => undefined);
     out = o;
-    const frame = driver.frame(now);
+    const frame = retro.step(now, driver.frame(now));
     if (look) look.apply(frame, now);
     else creature.apply(frame);
     renderer.render(scene, camera);

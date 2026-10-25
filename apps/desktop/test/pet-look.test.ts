@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
+import { RETRO_HOLD_MS } from "@chalito/avatar";
 import { RENDER_DEFAULTS } from "@chalito/scene";
 import { PetLook, QualityResolver } from "../src/pet/look.js";
 
@@ -23,6 +24,13 @@ const frame = {
 };
 
 describe("pet render quality (render.yaml, same slider as the room)", () => {
+  it("bajo's bob steps too: held within a retro hold, snapped in the next", () => {
+    const look = new PetLook(assets, RENDER_DEFAULTS.levels.bajo);
+    const y = (t: number) => (look.apply(frame, t), look.card.root.position.y);
+    expect(y(1000 + 1)).toBe(y(1000 + RETRO_HOLD_MS - 1));
+    expect(y(1000 + RETRO_HOLD_MS * 2)).not.toBe(y(1000 + 1));
+  });
+
   it("a fixed level is used as is; auto on software GL is bajo at once", () => {
     const q = new QualityResolver(() => "ANGLE (NVIDIA)");
     expect(q.set("medio")).toBe("medio");

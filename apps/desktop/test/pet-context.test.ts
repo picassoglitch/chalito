@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { NotificationView } from "@chalito/client";
-import { inQuietHours, pendingLevel, petContext } from "../src/lib/pet-context.js";
+import { LOAD_GRACE_MS, LoadWatch, inQuietHours, pendingLevel, petContext } from "../src/lib/pet-context.js";
+
+describe("the live store's first load (what the pet's tracker only learns)", () => {
+  it("loading until live for LOAD_GRACE_MS; going offline starts it over", () => {
+    const w = new LoadWatch();
+    expect(w.loading(undefined, 0)).toBe(true);
+    expect(w.loading("connecting", 100)).toBe(true);
+    expect(w.loading("live", 200)).toBe(true);
+    expect(w.loading("live", 200 + LOAD_GRACE_MS - 1)).toBe(true);
+    expect(w.loading("live", 200 + LOAD_GRACE_MS)).toBe(false);
+    expect(w.loading("offline", 10_000)).toBe(true);
+    expect(w.loading("live", 11_000)).toBe(true);
+    expect(w.loading("live", 11_000 + LOAD_GRACE_MS)).toBe(false);
+  });
+});
 
 const n = (level: string, state: NotificationView["state"] = "pending"): NotificationView => ({
   nid: `${level}-${state}`,

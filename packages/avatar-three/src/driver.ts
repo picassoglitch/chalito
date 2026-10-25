@@ -15,6 +15,7 @@ import {
   sampleGesture,
   actionLayer,
   composeCreature,
+  fidgetLayer,
   modeLayer,
   rigPose,
   type AudioFrame,
@@ -55,11 +56,8 @@ const ZERO_VISEMES: VisemeWeights = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
 
 const addRot = (a: Rot | undefined, b: Rot): Rot => (a ? [a[0] + b[0], a[1] + b[1], a[2] + b[2]] : b);
 
-/**
- * Drives @chalito/avatar's pure pieces over time: the emotion blender, blinking, saccades,
- * look-at smoothing, breathing, gestures and streaming visemes. `frame(now)` is all a
- * three-vrm (or creature) binding needs.
- */
+/** Drives @chalito/avatar's pure pieces over time (emotion, blinks, saccades, look-at, breathing,
+ * gestures, visemes). `frame(now)` is all a three-vrm (or creature) binding needs. */
 export class AvatarDriver {
   readonly #blender: EmotionBlender;
   readonly #blink: BlinkScheduler;
@@ -112,6 +110,12 @@ export class AvatarDriver {
   /** A one-off movement that shows something happened (a finished task, an error, hello). */
   playAction(name: CreatureAction, now: number): void {
     this.#action = { name, start: now };
+  }
+
+  /** The action still playing at `now`, if any (so a small reaction doesn't cut a bigger one short). */
+  actionAt(now: number): CreatureAction | null {
+    const a = this.#action;
+    return a && now >= a.start && now - a.start < ACTION_MS[a.name] ? a.name : null;
   }
 
   stopGesture(): void {
@@ -172,6 +176,7 @@ export class AvatarDriver {
     this.#modeSince ??= now;
     const layers = [modeLayer(this.#mode, now - this.#modeSince)];
     if (action) layers.push(actionLayer(action.name, action.elapsedMs));
+    else if (this.#mode === "rest" && !this.#sleepy) layers.push(fidgetLayer(now));
     const creature = composeCreature(creaturePose(this.#emotion, now), layers);
     const mouth = Math.max(
       expressions.aa ?? 0,
