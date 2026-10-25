@@ -14,6 +14,7 @@ import { panelOnLaunch } from "../lib/launch.js";
 import { relayRevoked } from "../lib/revoked-relay.js";
 import { localAgent } from "../lib/local-agent.js";
 import { thisComputer } from "../lib/this-computer.js";
+import { copiesApi } from "../lib/copies.js";
 import { shell } from "../lib/shell.js";
 import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { UpdateController, tauriUpdater } from "../lib/updates.js";
@@ -77,6 +78,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
   const agentApi = useMemo(localAgent, []);
   const computerApi = useMemo(thisComputer, []);
+  const copies = useMemo(copiesApi, []);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);
   // Server-backed once the desktop has a session; this device's copy until then.
@@ -164,6 +166,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       updates={updates}
       localAgent={agentApi}
       thisComputer={computerApi}
+      copies={copies}
       openUrl={(url) => openUrl(url)}
       {...(FIRST_TASK_URL ? { firstTaskUrl: FIRST_TASK_URL } : {})}
     />

@@ -623,5 +623,42 @@
     },
     "signInForLive": "Sign in to Chalito to see the conversation here; meanwhile, follow it on your phone.",
     "terminal": "You (terminal)"
+  },
+  "copies": {
+    "title": "Check your copies of Chalito",
+    "intro": "When two copies of Chalito open at once, sign-in can come back to the wrong one and go round in circles.",
+    "this": "This copy: {path}",
+    "autostart": {
+      "other": "Starting the computer opens another copy: {path}",
+      "gone": "Starting the computer tries to open a copy that no longer exists: {path}"
+    },
+    "handler": {
+      "other": "Sign-in links (chalito://) open another copy: {path}",
+      "gone": "Sign-in links (chalito://) point at a copy that no longer exists: {path}"
+    },
+    "useThis": "Use this copy",
+    "running": {
+      "desktop": "Another copy of Chalito is open: {path}",
+      "agent": "A Chalito agent was left running without its app: {path}"
+    },
+    "close": "Close the other copy",
+    "closeAgent": "Close the agent",
+    "old": "Unused copy: {path}",
+    "oldVersion": "Unused copy (version {version}): {path}",
+    "trash": "Move to trash",
+    "trashHint": "It goes to the trash, not deleted: you can get it back from there.",
+    "done": {
+      "useThis": "Done: Chalito will open from this copy.",
+      "trash": "Done: moved to the trash.",
+      "close": "Done: asked it to close."
+    },
+    "error": {
+      "running": "That's the copy that's open; I won't touch it.",
+      "not_a_copy": "That no longer looks like a copy of Chalito, so I didn't touch it.",
+      "not_listed": "That copy isn't open anymore.",
+      "other": "I couldn't do it. Try again.",
+      "still_running": "It's still open: close it from its own tray icon.",
+      "handler_not_set": "I changed the file, but your desktop still opens chalito:// links with another copy. Check your system's default apps."
+    }
   }
 }
