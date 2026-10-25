@@ -164,6 +164,35 @@ describe("voice intent rules: what isn't a command", () => {
     ["pause for seventy minutes", 70],
   ])("durations: %s → %i min", (said, minutes) => expect(cmds(said)).toEqual([{ kind: "pause", minutes }]));
 
+  it.each([
+    ["Pon no molestar y apruébalo", [{ kind: "dnd", on: true }, { kind: "approve" }]],
+    ["Do not disturb and approve it", [{ kind: "dnd", on: true }, { kind: "approve" }]],
+    ["Turn off do not disturb and approve", [{ kind: "dnd", on: false }, { kind: "approve" }]],
+  ] as const)("the 'no' of 'no molestar' doesn't flip the next command: %s", (said, want) =>
+    expect(cmds(said)).toEqual(want),
+  );
+
+  it.each([
+    ["Don't reject it", []],
+    ["no lo rechaces", []],
+    ["Approve it, don't deny it", [{ kind: "approve" }]],
+    ["dont pause", []],
+  ] as const)("a negated deny or pause is never a deny or a pause: %s", (said, want) =>
+    expect(cmds(said)).toEqual(want),
+  );
+
+  it("'¿Me lo apruebas, porfa?' is a polite request; '¿ya lo aprobaste?' is asking about it", () => {
+    expect(cmds("¿Me lo apruebas, porfa?")).toEqual([{ kind: "approve" }]);
+    expect(cmds("¿Ya lo aprobaste?")).toEqual([]);
+  });
+
+  it.each([
+    ["pausa veintiún minutos", 21],
+    ["pause for 1.5 hours", 90],
+    ["pausa una hora y media", 90],
+    ["pause for an hour and a half", 90],
+  ])("more durations: %s → %i min", (said, minutes) => expect(cmds(said)).toEqual([{ kind: "pause", minutes }]));
+
   it("an open said after another command is kept", () => {
     expect(cmds("Aprueba y abre pagos")).toEqual([{ kind: "approve" }, { kind: "open", target: "pagos" }]);
   });

@@ -784,7 +784,7 @@
       "open": "Open the session “{label}”",
       "openNone": "Open a session: I didn't find any",
       "newSession": "Start a session in {app} · {workspace}: “{prompt}”",
-      "newSessionForm": "Open New session with: “{prompt}”",
+      "newSessionForm": "I didn't find an app and folder ready for “{prompt}”: open Sessions",
       "newForm": "Open New session",
       "pause": "Pause Chalito for {minutes} min (Do Not Disturb turns itself off)",
       "dndOn": "Turn on Do Not Disturb",

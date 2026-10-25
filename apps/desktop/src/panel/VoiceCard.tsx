@@ -101,7 +101,7 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
       .sessionPlace()
       .then(
         (p) => live && setPlace(p),
-        // Without the agent the option says it opens the form with the prompt, and does that.
+        // Without the agent the option says it found nowhere to start, and opens Sessions instead.
         (e: unknown) => console.warn("offline-voice: where to start a session", e),
       )
       .finally(() => live && setPlacing(false));
@@ -160,25 +160,28 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
   const click = async (picks: number[]) => {
     setBusy(true);
     const finished = new Set(done);
-    try {
-      for (const i of picks) {
+    let failure: unknown = null;
+    // One item failing ("all" with a gone approval) doesn't stop the others.
+    for (const i of picks) {
+      try {
         await run(i);
         finished.add(i);
         setDone(new Set(finished));
+      } catch (e) {
+        console.warn("offline-voice: card action", e);
+        failure ??= e;
       }
-      const left = options.filter((o, i) => runnable(o) && !finished.has(i));
-      if (!left.length) voice.dismiss();
-      else setError(null);
-    } catch (e) {
-      console.warn("offline-voice: card action", e);
-      setError(
-        e instanceof GoneError
-          ? t("offlineVoice.gone")
-          : t("offlineVoice.actionFailed", { reason: String((e as Error)?.message ?? e) }),
-      );
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
+    if (failure)
+      return setError(
+        failure instanceof GoneError
+          ? t("offlineVoice.gone")
+          : t("offlineVoice.actionFailed", { reason: String((failure as Error)?.message ?? failure) }),
+      );
+    const left = options.filter((o, i) => runnable(o) && !finished.has(i));
+    if (!left.length) voice.dismiss();
+    else setError(null);
   };
   const all = options.map((o, i) => (inAll(o) && !done.has(i) ? i : -1)).filter((i) => i >= 0);
   const blockNote = (o: CardOption) =>

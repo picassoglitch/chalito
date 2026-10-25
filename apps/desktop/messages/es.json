@@ -784,7 +784,7 @@
       "open": "Abrir la sesión «{label}»",
       "openNone": "Abrir una sesión: no encontré ninguna",
       "newSession": "Empezar una sesión en {app} · {workspace}: «{prompt}»",
-      "newSessionForm": "Abrir Nueva sesión con: «{prompt}»",
+      "newSessionForm": "No encontré una app y carpeta listas para «{prompt}»: abrir Sesiones",
       "newForm": "Abrir Nueva sesión",
       "pause": "Pausar a Chalito {minutes} min (No molestar se quita solo)",
       "dndOn": "Activar No molestar",

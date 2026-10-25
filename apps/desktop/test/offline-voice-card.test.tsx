@@ -175,6 +175,43 @@ describe("offline voice controller", () => {
     await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
   });
 
+  it("while held, the audio cap still ends it, without a release", async () => {
+    const mic = fakeMic();
+    const voice = new OfflineVoice({
+      recorder: mic.recorder,
+      engine: fakeEngine("siguiente"),
+      endpointer: { maxMs: 1000 },
+    });
+    await voice.press();
+    mic.say(0.3, 1500);
+    await waitFor(() => expect(voice.state.phase).toBe("card"));
+    expect(mic.open).toBe(false);
+  });
+
+  it("a mic that stalls midway is ended by the clock cap", async () => {
+    const mic = fakeMic();
+    const engine = fakeEngine("siguiente");
+    const voice = new OfflineVoice({ recorder: mic.recorder, engine, now: () => 0, endpointer: { maxMs: 50 } });
+    await voice.press();
+    await voice.release();
+    mic.say(0.3, 20);
+    await waitFor(() => expect(voice.state.phase).not.toBe("listening"), { timeout: 4000 });
+    expect(mic.open).toBe(false);
+  });
+
+  it("less than 0.3 s of audio isn't decoded", async () => {
+    let now = 0;
+    const mic = fakeMic();
+    const engine = fakeEngine("x");
+    const voice = new OfflineVoice({ recorder: mic.recorder, engine, now: () => now });
+    await voice.press();
+    mic.say(0.3, 200);
+    now = 1000;
+    await voice.release();
+    expect(voice.state.phase).toBe("nothing");
+    expect(engine.transcribe).not.toHaveBeenCalled();
+  });
+
   it("not a command: says what it heard", async () => {
     const { voice } = await heard("qué hora es");
     expect(voice.state).toEqual({ phase: "unknown", text: "qué hora es" });
@@ -298,6 +335,28 @@ describe("the choice card: nothing runs from voice alone", () => {
     await renderCard("Apruébalo", { approvals: [approval(o)], sessions: [] });
     expect((button("Aprobar") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(note)).toBeTruthy();
+  });
+
+  it("with a passkey on this device, a HIGH-risk approval can be approved from the card (decide does the step-up)", async () => {
+    const { decide } = await renderCard(
+      "Apruébalo",
+      { approvals: [approval({ risk: "HIGH" })], sessions: [] },
+      { canStepUp: true },
+    );
+    fireEvent.click(button("Aprobar"));
+    await waitFor(() => expect(decide).toHaveBeenCalledWith("a1", true));
+  });
+
+  it("'all' with a gone approval still does the rest, and says what didn't happen", async () => {
+    const { decide, setDnd, box } = await renderCard("Rechaza y pon no molestar", {
+      approvals: [approval()],
+      sessions: [],
+    });
+    box.snap = { approvals: [], sessions: [] };
+    fireEvent.click(button("Todo"));
+    expect((await screen.findByRole("alert")).textContent).toBe("Eso ya no está pendiente.");
+    expect(setDnd).toHaveBeenCalledWith(true);
+    expect(decide).not.toHaveBeenCalled();
   });
 
   it("with nothing pending, approve and deny can't be clicked", async () => {
@@ -597,6 +656,62 @@ describe("settings: 'Comandos de voz sin internet'", () => {
     expect(ov.probe).toHaveBeenCalledWith("http://localhost:9000");
   });
 
+  it("a bad hotkey isn't saved, and the last language can't be unticked", () => {
+    const ov = wiring({ settings: { ...DEFAULT_OFFLINE_VOICE, enabled: true, languages: ["es"] } });
+    renderSettings(ov);
+    const hotkey = screen.getByRole("textbox", { name: "Atajo para hablar" });
+    fireEvent.change(hotkey, { target: { value: "Space" } });
+    fireEvent.blur(hotkey);
+    expect(screen.getByRole("alert").textContent).toMatch(/teclas modificadoras/);
+    expect(ov.onSettings).not.toHaveBeenCalled();
+    expect((screen.getByRole("checkbox", { name: "Español" }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("checkbox", { name: "Inglés" }) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("in the real panel: a session that couldn't start from the card lands in the Sessions form with its prompt", async () => {
+    let now = 0;
+    const mic = fakeMic();
+    const voice = new OfflineVoice({
+      recorder: mic.recorder,
+      engine: fakeEngine("New session to tidy the logs"),
+      now: () => now,
+    });
+    const codeStart = vi.fn();
+    // The agent wasn't ready when the card asked; it is by the time the Sessions tab opens.
+    let calls = 0;
+    const codeApps = async () =>
+      calls++ ? { apps: ["claude-code"], workspaces: ["chalito"] } : { apps: [], workspaces: [] };
+    const ipc = { ...unavailableIpc, codeApps, codeStart };
+    render(
+      <TextProviders locale="es">
+        <Panel
+          client={null}
+          ipc={ipc}
+          ptt={new PushToTalk(unavailableVoice)}
+          settings={DEFAULT_SETTINGS}
+          onSetting={() => undefined}
+          dnd={false}
+          onDnd={() => undefined}
+          hubPlansUrl="https://hub.example/planes"
+          phoneVerifier={{ start: async () => ({ ok: true }), check: async () => ({ ok: true }) }}
+          offlineVoice={wiring({ voice, settings: { ...DEFAULT_OFFLINE_VOICE, enabled: true } })}
+        />
+      </TextProviders>,
+    );
+    await act(async () => {
+      await voice.press();
+      mic.say(0.3, 800);
+      now = 2000;
+      await voice.release();
+    });
+    const start = await screen.findByRole("button", { name: "Empezar" });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(start);
+    expect(screen.getByRole("tab", { selected: true }).textContent).toBe("Sesiones");
+    expect(codeStart).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByDisplayValue("tidy the logs")).toBeTruthy());
+  });
+
   it("without the wiring (other shells) there's no section", () => {
     render(
       <TextProviders locale="es">
@@ -652,6 +767,32 @@ describe("panel hook: the hotkey is held only while the mode is on", () => {
     hk.fire(false);
     expect(release).toHaveBeenCalled();
     expect(loadOfflineVoice().enabled).toBe(true);
+  });
+
+  it("turning it off releases the hotkey and closes a live mic; changing the hotkey swaps without a release", async () => {
+    const hk = fakeHotkey();
+    saveOfflineVoice({ ...DEFAULT_OFFLINE_VOICE, enabled: true });
+    const mic = fakeMic();
+    const voice = new OfflineVoice({ recorder: mic.recorder, engine: fakeEngine("x") });
+    const { result } = renderHook(() => useOfflineVoice(vi.fn(), vi.fn(), { hotkey: hk.hotkey, voice: () => voice }));
+    await waitFor(() => expect(hk.set).toHaveBeenCalledWith(DEFAULT_OFFLINE_VOICE.hotkey));
+    hk.set.mockClear();
+    act(() => result.current.onSettings({ ...result.current.settings, hotkey: "Alt+Shift+V" }));
+    await waitFor(() => expect(hk.set).toHaveBeenCalledWith("Alt+Shift+V"));
+    expect(hk.set).not.toHaveBeenCalledWith(null);
+    await act(async () => {
+      await voice.press();
+      mic.say(0.3, 300);
+    });
+    expect(mic.open).toBe(true);
+    act(() => result.current.onSettings({ ...result.current.settings, enabled: false }));
+    expect(result.current.voice).toBeNull();
+    await waitFor(() => expect(hk.set).toHaveBeenLastCalledWith(null));
+    expect(mic.open).toBe(false);
+    expect(voice.state.phase).toBe("idle");
+    const press = vi.spyOn(voice, "press");
+    hk.fire(true);
+    expect(press).not.toHaveBeenCalled();
   });
 
   it("a hotkey the OS won't give shows up for Settings", async () => {

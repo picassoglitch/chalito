@@ -50,21 +50,33 @@ pub fn on_shortcut(app: &AppHandle, hotkey: &VoiceHotkey, fired: &Shortcut, stat
 pub fn set(app: &AppHandle, hotkey: &VoiceHotkey, accel: Option<&str>, reserved: &[Shortcut]) -> Result<(), String> {
     let next = accel.map(|a| parse(a, reserved)).transpose()?;
     let mut held = hotkey.0.lock().map_err(|_| "voice hotkey lock poisoned".to_string())?;
-    if *held == next {
-        return Ok(());
-    }
     let gs = app.global_shortcut();
-    // New one first: if the OS refuses it, the person keeps the hotkey that worked.
-    if let Some(s) = next {
-        gs.register(s).map_err(|e| e.to_string())?;
+    *held = swap(*held, next, |s| gs.register(s).map_err(|e| e.to_string()), |s| {
+        gs.unregister(s).map_err(|e| e.to_string())
+    })?;
+    Ok(())
+}
+
+/// What the held shortcut becomes. The new one is registered first, so if the OS refuses it the
+/// person keeps the hotkey that worked; a failed release of the old one is only logged.
+pub fn swap(
+    held: Option<Shortcut>,
+    next: Option<Shortcut>,
+    register: impl FnOnce(Shortcut) -> Result<(), String>,
+    unregister: impl FnOnce(Shortcut) -> Result<(), String>,
+) -> Result<Option<Shortcut>, String> {
+    if held == next {
+        return Ok(held);
     }
-    if let Some(old) = *held {
-        if let Err(e) = gs.unregister(old) {
+    if let Some(s) = next {
+        register(s)?;
+    }
+    if let Some(old) = held {
+        if let Err(e) = unregister(old) {
             eprintln!("offline voice: hotkey unregister: {e}");
         }
     }
-    *held = next;
-    Ok(())
+    Ok(next)
 }
 
 #[tauri::command]
@@ -86,6 +98,36 @@ mod tests {
         assert!(parse("Ctrl+Shift+NotAKey", &[]).is_err());
         let kill = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Escape);
         assert!(parse("Control+Alt+Escape", &[kill]).is_err());
+    }
+
+    #[test]
+    fn swap_registers_new_before_old_and_keeps_the_old_one_if_refused() {
+        use std::cell::RefCell;
+        let a = parse("Alt+Shift+V", &[]).unwrap();
+        let b = parse("Alt+Shift+B", &[]).unwrap();
+        let log = RefCell::new(Vec::<String>::new());
+        let reg = |s: Shortcut| {
+            log.borrow_mut().push(format!("reg {:?}", s.key));
+            Ok(())
+        };
+        let unreg = |s: Shortcut| {
+            log.borrow_mut().push(format!("unreg {:?}", s.key));
+            Ok(())
+        };
+        // Unchanged: no OS calls.
+        assert_eq!(swap(Some(a), Some(a), reg, unreg), Ok(Some(a)));
+        assert!(log.borrow().is_empty());
+        // Swap: new first, then old.
+        assert_eq!(swap(Some(a), Some(b), reg, unreg), Ok(Some(b)));
+        assert_eq!(*log.borrow(), vec!["reg KeyB".to_string(), "unreg KeyV".to_string()]);
+        // Refused: error, and the old one is never released.
+        log.borrow_mut().clear();
+        let refuse = |_: Shortcut| Err("taken".to_string());
+        assert_eq!(swap(Some(a), Some(b), refuse, unreg), Err("taken".to_string()));
+        assert!(log.borrow().is_empty());
+        // Off: only a release.
+        assert_eq!(swap(Some(a), None, reg, unreg), Ok(None));
+        assert_eq!(*log.borrow(), vec!["unreg KeyV".to_string()]);
     }
 
     #[test]
