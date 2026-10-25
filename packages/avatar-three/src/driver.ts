@@ -71,6 +71,8 @@ export class AvatarDriver {
   #visemes: VisemeWeights = { ...ZERO_VISEMES };
   #sleepy = false;
   #mode: CreatureMode = "rest";
+  /** When the mode last changed (the first frame after setMode, so it needs no clock). */
+  #modeSince: number | null = null;
   #action: { name: CreatureAction; start: number } | null = null;
   #last: number | null = null;
 
@@ -98,7 +100,9 @@ export class AvatarDriver {
 
   /** What it's busy with while it lasts: rest, working (an AI is busy) or needs_you (an answer waits). */
   setMode(mode: CreatureMode): void {
+    if (mode === this.#mode) return;
     this.#mode = mode;
+    this.#modeSince = null;
   }
 
   get mode(): CreatureMode {
@@ -165,7 +169,8 @@ export class AvatarDriver {
 
     if (this.#action && now - this.#action.start >= ACTION_MS[this.#action.name]) this.#action = null;
     const action = this.#action ? { name: this.#action.name, elapsedMs: now - this.#action.start } : null;
-    const layers = [modeLayer(this.#mode, now)];
+    this.#modeSince ??= now;
+    const layers = [modeLayer(this.#mode, now - this.#modeSince)];
     if (action) layers.push(actionLayer(action.name, action.elapsedMs));
     const creature = composeCreature(creaturePose(this.#emotion, now), layers);
     const mouth = Math.max(

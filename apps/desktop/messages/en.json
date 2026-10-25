@@ -412,7 +412,7 @@
       "open_failed": "Couldn't open the browser.",
       "malformed": "Invalid link.",
       "wrong_target": "Invalid link.",
-      "no_pending": "No sign-in in progress.",
+      "no_pending": "That link is from an earlier sign-in (Chalito restarted or another copy is open). Try again from here.",
       "state_mismatch": "Invalid link.",
       "duplicate_param": "Invalid link."
     },

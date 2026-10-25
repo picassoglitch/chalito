@@ -75,6 +75,10 @@ export class SignInController {
   async handleUrl(url: string): Promise<void> {
     const r = this.d.flow.accept(url);
     if (!r.ok) {
+      // A link for a sign-in this launch never started (the app restarted, or another copy started
+      // it): tell the person instead of looking stuck, so they don't keep signing in (2026-10-25).
+      const idle = this.#s.step === "signed_out" || this.#s.step === "error";
+      if (r.reason === "no_pending" && idle) return this.#set({ step: "error", reason: "no_pending" });
       if (IGNORABLE.has(r.reason)) {
         this.lastIgnored = r.reason;
         return;

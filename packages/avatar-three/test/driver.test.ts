@@ -24,6 +24,26 @@ describe("AvatarDriver", () => {
     }
   });
 
+  it("needs_you bounces when it starts, not while it lasts, and again when it comes back", () => {
+    const d = new AvatarDriver({ seed: 1 });
+    const peak = (from: number, to: number) => {
+      let m = 0;
+      for (let t = from; t < to; t += 20) m = Math.max(m, d.frame(t).creature.offsetY);
+      return m;
+    };
+    d.frame(0);
+    // Long after the app started: the bounce counts from when the mode began, not from t = 0.
+    d.setMode("needs_you");
+    expect(peak(100_000, 101_000)).toBeGreaterThan(0.015);
+    expect(peak(110_000, 140_000)).toBeLessThan(0.01);
+    d.setMode("needs_you");
+    expect(peak(140_000, 141_000)).toBeLessThan(0.01);
+    d.setMode("rest");
+    d.frame(141_000);
+    d.setMode("needs_you");
+    expect(peak(142_000, 143_000)).toBeGreaterThan(0.015);
+  });
+
   it("VRM0 caps never ask for `surprised`", () => {
     const d = new AvatarDriver({ seed: 1, caps: VRM0_CAPS });
     d.setEmotion({ tag: "surprised", intensity: 1 }, 0);

@@ -54,9 +54,10 @@ export const startPet = (
   renderer.setClearColor(0x000000, 0);
 
   const scene = new THREE.Scene();
+  // Eye level, feet near the window's bottom edge: placed on the taskbar it stands on the desktop.
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
-  camera.position.set(0, 0.6, 3.2);
-  camera.lookAt(0, 0.45, 0);
+  camera.position.set(0, 0.62, 2.6);
+  camera.lookAt(0, 0.62, 0);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 2.2));
   const sun = new THREE.DirectionalLight(0xffffff, 1.4);
   sun.position.set(1, 2, 2);

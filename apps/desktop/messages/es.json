@@ -412,7 +412,7 @@
       "open_failed": "No se pudo abrir el navegador.",
       "malformed": "Enlace no válido.",
       "wrong_target": "Enlace no válido.",
-      "no_pending": "No hay un inicio de sesión en curso.",
+      "no_pending": "Ese enlace es de un inicio de sesión anterior (Chalito se reinició o hay otra copia abierta). Vuelve a intentarlo desde aquí.",
       "state_mismatch": "Enlace no válido.",
       "duplicate_param": "Enlace no válido."
     },

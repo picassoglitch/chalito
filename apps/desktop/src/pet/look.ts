@@ -61,7 +61,8 @@ export class QualityResolver {
 /**
  * The pet's companion card at a render level: bajo is the flat card impostor (no gesture rig, no
  * contact shadow), medio and alto run the avatar driver (breathing, lean, the actions, and the
- * cutout rig's arms, head, blinks and mouth when the card has one), alto adds the contact shadow.
+ * cutout rig's arms, head, blinks and mouth when the card has one). The contact shadow shows at
+ * every level: it's one plane, and without it the pet floats instead of standing on the desktop.
  * The driver keeps running either way so the pet's state stays in step.
  */
 export class PetLook {
@@ -84,7 +85,7 @@ export class PetLook {
   setLevel(level: LevelSettings): void {
     this.#level = level;
     const shadow = this.card.root.getObjectByName("shadow");
-    if (shadow) shadow.visible = level.shadows;
+    if (shadow) shadow.visible = true;
     if (level.impostors) {
       this.card.root.scale.set(1, 1, 1);
       this.card.root.rotation.set(0, 0, 0);

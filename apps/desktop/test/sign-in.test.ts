@@ -66,11 +66,24 @@ describe("desktop sign-in controller", () => {
     expect(t.c.getSnapshot().step).toBe("ready");
   });
 
-  it("a link with no sign-in in progress does nothing", async () => {
+  it("a link with no sign-in in progress (app restarted) says so instead of staying silent", async () => {
     const t = setup();
     await t.c.handleUrl(t.link({ token: "tok", state: "s".repeat(43) }));
-    expect(t.c.getSnapshot().step).toBe("signed_out");
+    expect(t.c.getSnapshot()).toEqual({ step: "error", reason: "no_pending" });
     expect(t.deps.exchange).not.toHaveBeenCalled();
+    // Retrying from the panel starts a sign-in this launch can finish.
+    await t.c.start();
+    await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
+    expect(t.c.getSnapshot().step).toBe("ready");
+  });
+
+  it("a stray link after signing in leaves the session alone", async () => {
+    const t = setup();
+    await t.c.start();
+    await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
+    await t.c.handleUrl(t.link({ token: "old", state: "s".repeat(43) }));
+    expect(t.c.getSnapshot().step).toBe("ready");
+    expect(t.c.lastIgnored).toBe("no_pending");
   });
 
   it.each([

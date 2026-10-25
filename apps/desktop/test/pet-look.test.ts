@@ -61,10 +61,10 @@ describe("pet render quality (render.yaml, same slider as the room)", () => {
     expect(new PetLook(assets, RENDER_DEFAULTS.levels.alto).card.skin).toBeNull();
   });
 
-  it("bajo is the flat impostor without contact shadow; alto runs the rig with the shadow", () => {
+  it("bajo is the flat impostor, alto runs the rig; both stand on a contact shadow", () => {
     const look = new PetLook(assets, RENDER_DEFAULTS.levels.bajo);
     const shadow = look.card.root.getObjectByName("shadow")!;
-    expect(shadow.visible).toBe(false);
+    expect(shadow.visible).toBe(true);
     look.apply(frame, 1000);
     expect(look.card.root.scale.toArray()).toEqual([1, 1, 1]);
     expect(look.card.root.rotation.z).toBe(0);
