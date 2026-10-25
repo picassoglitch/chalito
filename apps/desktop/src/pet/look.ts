@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { steppedTime } from "@chalito/avatar";
 import { CreatureBinding, RIG_REST, createCardAvatar, type AvatarFrame, type CardAvatar } from "@chalito/avatar-three";
 import { EMOTION_DRAWING } from "@chalito/roster";
 import type { EmotionTag } from "@chalito/protocol";
@@ -95,8 +96,8 @@ export class PetLook {
   apply(frame: AvatarFrame, now: number): void {
     this.card.tick(now / 1000);
     if (this.#level.impostors) {
-      // The impostor only breathes: a small bob, no squash, lean or turn.
-      this.card.root.position.set(0, Math.sin((now / 1000) * 2.2) * 0.012, 0);
+      // The impostor only breathes: a small bob, stepped like every level's motion (owner, 2026-10-25).
+      this.card.root.position.set(0, Math.sin((steppedTime(now) / 1000) * 2.2) * 0.012, 0);
       return;
     }
     this.#binding.apply(frame);

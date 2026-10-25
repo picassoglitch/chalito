@@ -1,13 +1,10 @@
 import { clamp } from "./math.js";
-import { ACTION_MS, type CreatureAction, type CreatureMode } from "./actions.js";
+import { ACTION_MS, fidgetAt, type CreatureAction, type CreatureMode } from "./actions.js";
 import type { Gaze } from "./idle.js";
+import { keyed } from "./retro.js";
 
-/**
- * Cutout rigs (2026-10-19): a card can be split into parts (body, arms, head, eyelids, mouth) so
- * the companion moves its arms, tilts its head, blinks and talks. A part is a full-card image
- * (transparent outside the part), turned about its pivot (card space, 0..1 from the top left).
- * A card without a rig keeps moving as one piece.
- */
+/** Cutout rigs (2026-10-19): each part is a full-card image turned about its pivot (card space, 0..1
+ * from the top left) so arms, head, lids and mouth move. A card without a rig moves as one piece. */
 export type RigPartId = "body" | "armL" | "armR" | "head" | "lids" | "mouth";
 export const RIG_PART_IDS: readonly RigPartId[] = ["body", "armL", "armR", "head", "lids", "mouth"];
 
@@ -73,12 +70,8 @@ export const rigSrcFor = (part: RigPart, drawing: string): string | null => {
   return part.src[drawing] ?? part.src.neutral ?? null;
 };
 
-/**
- * A rig's pose for one frame, renderer-free. Arms: how far each is raised, in degrees (0 hangs
- * down, 90 straight out to its side, 180 straight up). Head: tilt in degrees (positive leans to
- * the card's left as seen) and a drop (card heights, positive = down). Lids 0..1 (closed above
- * 0.5), mouth 0..1 open.
- */
+/** A rig pose, renderer-free. Arms: degrees raised (0 down, 90 out, 180 up). Head: tilt in degrees (+ leans
+ * to the card's left as seen), drop in card heights (+ down). Lids 0..1 (closed above 0.5), mouth 0..1. */
 export interface RigPose {
   armL: number;
   armR: number;
@@ -133,6 +126,30 @@ export const rigPose = (i: RigInput): RigPose => {
     const k = u < 1 ? hold(u, 0.25, 0.75) : 0;
     pose.armR = Math.max(pose.armR, 70 * k);
     pose.head -= 3 * k;
+  } else if (!i.sleepy && !i.action) {
+    const f = fidgetAt(i.tMs);
+    if (f?.kind === "scratch")
+      pose.armL = Math.max(
+        pose.armL,
+        keyed(
+          [
+            [0.05, 45],
+            [0.3, 38],
+            [0.45, 45],
+            [0.75, 0],
+          ],
+          f.u,
+        ),
+      );
+    else if (f)
+      pose.head +=
+        keyed(
+          [
+            [0.05, 9],
+            [0.75, 0],
+          ],
+          f.u,
+        ) * (f.kind === "look_left" ? 1 : -1);
   }
 
   if (i.action) {
@@ -165,6 +182,83 @@ export const rigPose = (i: RigInput): RigPose => {
       }
       case "nod":
         pose.headDrop += Math.max(0, Math.sin(u * Math.PI * 2)) * 0.01 * bell(u);
+        break;
+      case "go":
+        // A fist pump: up, a little dip, up again, down.
+        pose.armR = Math.max(
+          pose.armR,
+          keyed(
+            [
+              [0.2, 110],
+              [0.45, 80],
+              [0.55, 110],
+              [0.8, 0],
+            ],
+            u,
+          ),
+        );
+        pose.head -= keyed(
+          [
+            [0.2, 4],
+            [0.8, 0],
+          ],
+          u,
+        );
+        break;
+      case "glance":
+        // Looks aside and lifts a hand: a small "hey".
+        pose.head += keyed(
+          [
+            [0.08, -9],
+            [0.45, -6],
+            [0.6, -9],
+            [0.8, 0],
+          ],
+          u,
+        );
+        pose.armR = Math.max(
+          pose.armR,
+          keyed(
+            [
+              [0.25, 50],
+              [0.4, 65],
+              [0.55, 50],
+              [0.8, 0],
+            ],
+            u,
+          ),
+        );
+        break;
+      case "perk":
+        // Head up, arms out a little, eyes wide open.
+        pose.headDrop -= keyed(
+          [
+            [0.06, 0.008],
+            [0.7, 0],
+          ],
+          u,
+        );
+        pose.armL = Math.max(
+          pose.armL,
+          keyed(
+            [
+              [0.06, 28],
+              [0.7, 0],
+            ],
+            u,
+          ),
+        );
+        pose.armR = Math.max(
+          pose.armR,
+          keyed(
+            [
+              [0.06, 28],
+              [0.7, 0],
+            ],
+            u,
+          ),
+        );
+        if (u < 0.7) pose.lids = 0;
         break;
     }
   }

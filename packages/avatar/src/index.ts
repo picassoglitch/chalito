@@ -7,3 +7,4 @@ export * from "./visemes.js";
 export * from "./actions.js";
 export * from "./rig.js";
 export * from "./activity.js";
+export * from "./retro.js";

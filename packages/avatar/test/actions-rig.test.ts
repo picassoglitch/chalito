@@ -6,6 +6,7 @@ import {
   NEEDS_YOU_BOUNCES,
   actionLayer,
   composeCreature,
+  fidgetAt,
   modeLayer,
   type CreatureLayer,
 } from "../src/actions.js";
@@ -81,6 +82,7 @@ const input = (o: Partial<RigInput> = {}): RigInput => ({
 describe("rig pose", () => {
   it("at rest the arms hang (a breath of movement) and the eyes follow the blink", () => {
     for (let t = 0; t < 10_000; t += 50) {
+      if (fidgetAt(t)) continue; // the occasional look-around has its own test (retro.test.ts)
       const p = rigPose(input({ tMs: t }));
       expect(p.armL).toBeLessThan(5);
       expect(p.armR).toBeLessThan(5);
@@ -178,7 +180,7 @@ describe("activity from the person's sessions", () => {
       ],
       0,
     );
-    expect(a0).toEqual({ mode: "working", done: 0, failed: 0 });
+    expect(a0).toEqual({ mode: "working", done: 0, failed: 0, started: 0, messages: 0, alerts: 0 });
     const a1 = tr.update(
       [
         { sid: "a", state: "completed" },
@@ -186,7 +188,7 @@ describe("activity from the person's sessions", () => {
       ],
       0,
     );
-    expect(a1).toEqual({ mode: "rest", done: 1, failed: 0 });
+    expect(a1).toMatchObject({ mode: "rest", done: 1, failed: 0 });
     expect(activityActions(a0, a1)).toEqual(["hop"]);
     const a2 = tr.update(
       [
@@ -196,7 +198,7 @@ describe("activity from the person's sessions", () => {
       0,
     );
     expect(activityActions(a1, a2)).toEqual([]);
-    const a3 = tr.update([{ sid: "c", state: "failed" }], 0);
+    const a3 = tr.update([{ sid: "c", state: "failed", updatedAt: Date.now() + 60_000 }], 0);
     expect(a3.failed).toBe(1);
     expect(activityActions(a2, a3)).toEqual(["slump"]);
   });
@@ -206,6 +208,6 @@ describe("activity from the person's sessions", () => {
     expect(tr.update([{ sid: "a", state: "running" }], 1).mode).toBe("needs_you");
     expect(tr.update([{ sid: "a", state: "waiting_approval" }], 0).mode).toBe("needs_you");
     expect(tr.update([], 0).mode).toBe("rest");
-    expect(activityActions(null, { mode: "rest", done: 3, failed: 1 })).toEqual([]);
+    expect(activityActions(null, { mode: "rest", done: 3, failed: 1, started: 2, messages: 4, alerts: 1 })).toEqual([]);
   });
 });

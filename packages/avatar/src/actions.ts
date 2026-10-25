@@ -1,12 +1,22 @@
-import { clamp, easeInOutCubic, easeOutCubic } from "./math.js";
+import { clamp, easeInOutCubic, easeOutCubic, rng } from "./math.js";
 import type { CreaturePose } from "./gestures.js";
+import { keyed } from "./retro.js";
 
 /** Movement only shows something (owner 2026-10-19): a mode lasts while true (an AI busy, an answer
- * waiting); an action plays once (hop = done, slump = failed, wave, cheer, nod). */
+ * waiting); an action plays once (hop = done, slump = failed, go = started, glance = alert, perk = message). */
 export type CreatureMode = "rest" | "working" | "needs_you";
-export type CreatureAction = "hop" | "slump" | "wave" | "cheer" | "nod";
+export type CreatureAction = "hop" | "slump" | "wave" | "cheer" | "nod" | "go" | "glance" | "perk";
 
-export const CREATURE_ACTIONS: readonly CreatureAction[] = ["hop", "slump", "wave", "cheer", "nod"];
+export const CREATURE_ACTIONS: readonly CreatureAction[] = [
+  "hop",
+  "slump",
+  "wave",
+  "cheer",
+  "nod",
+  "go",
+  "glance",
+  "perk",
+];
 
 export const ACTION_MS: Record<CreatureAction, number> = {
   hop: 700,
@@ -14,6 +24,9 @@ export const ACTION_MS: Record<CreatureAction, number> = {
   wave: 2000,
   cheer: 1400,
   nod: 900,
+  go: 900,
+  glance: 1300,
+  perk: 800,
 };
 
 /** A layer over the rest pose: offsets add, scale multiplies, tilt adds (degrees). */
@@ -86,7 +99,84 @@ export const actionLayer = (action: CreatureAction, elapsedMs: number): Creature
       return { offsetY: 0, scale: [1, 1, 1], tilt: [0, 0, Math.sin(u * Math.PI * 6) * 2 * bell(u)], done: false };
     case "nod":
       return { offsetY: 0, scale: [1, 1, 1], tilt: [Math.sin(u * Math.PI * 2) * 6 * bell(u), 0, 0], done: false };
+    case "go": {
+      // Crouch, pop up leaning forward, hold, settle; it barely leaves the ground (the finish owns the hop).
+      const s = keyed(
+        [
+          [0, -0.06],
+          [0.2, 0.05],
+          [0.55, 0.02],
+          [0.8, 0],
+        ],
+        u,
+      );
+      const lean = keyed(
+        [
+          [0.2, 7],
+          [0.55, 4],
+          [0.8, 0],
+        ],
+        u,
+      );
+      return { offsetY: Math.max(0, s) * 0.2, scale: squash(1 + s), tilt: [lean, 0, 0], done: false };
+    }
+    case "glance": {
+      // A sideways look held a beat, a second look, back.
+      const side = keyed(
+        [
+          [0.08, 6],
+          [0.45, 4],
+          [0.6, 6],
+          [0.8, 0],
+        ],
+        u,
+      );
+      return { offsetY: 0, scale: [1, 1, 1], tilt: [-side / 3, 0, side], done: false };
+    }
+    case "perk": {
+      // Stretches up, leaning back as if it heard something, then settles.
+      const s = keyed(
+        [
+          [0.06, 0.06],
+          [0.45, 0.03],
+          [0.7, 0],
+        ],
+        u,
+      );
+      return { offsetY: 0, scale: squash(1 + s), tilt: [-s * 70, 0, 0], done: false };
+    }
   }
+};
+
+/** At rest it looks around or fidgets now and then (owner, 2026-10-25): alive, never a jump. */
+export const FIDGET_EVERY_MS = 11_000;
+export const FIDGET_MS = 1600;
+export type Fidget = "look_left" | "look_right" | "scratch";
+const FIDGETS: readonly Fidget[] = ["look_left", "look_right", "scratch"];
+
+/** The fidget playing `tMs` in (one per FIDGET_EVERY_MS, at a seeded moment) and how far in, or null. */
+export const fidgetAt = (tMs: number): { kind: Fidget; u: number } | null => {
+  const n = Math.floor(tMs / FIDGET_EVERY_MS);
+  const r = rng(0x5eed + n);
+  const start = n * FIDGET_EVERY_MS + r() * (FIDGET_EVERY_MS - FIDGET_MS);
+  const u = (tMs - start) / FIDGET_MS;
+  if (!(u >= 0 && u < 1)) return null;
+  return { kind: FIDGETS[Math.floor(r() * FIDGETS.length)]!, u };
+};
+
+/** The body's part of a fidget: a small tilt toward where it looks. */
+export const fidgetLayer = (tMs: number): CreatureLayer => {
+  const f = fidgetAt(tMs);
+  if (!f || f.kind === "scratch") return NONE;
+  const side =
+    keyed(
+      [
+        [0.05, 3],
+        [0.75, 0],
+      ],
+      f.u,
+    ) * (f.kind === "look_left" ? 1 : -1);
+  return { offsetY: 0, scale: [1, 1, 1], tilt: [0, 0, side] };
 };
 
 /** The rest pose with a mode and an action on top. */
