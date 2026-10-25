@@ -11,6 +11,9 @@ import type { RoomsSource } from "../lib/rooms-source.js";
 import type { CopiesApi } from "../lib/copies.js";
 import type { OwnSessionsFeed } from "../lib/own-sessions.js";
 import { OwnSessions, OwnSessionsSettings } from "./OwnSessions.js";
+import type { MeetingWatch } from "../lib/meetings.js";
+import { CalendarSettings } from "./CalendarSettings.js";
+import { Meetings } from "./Meetings.js";
 import { Inbox } from "./Inbox.js";
 import { NewSession } from "./NewSession.js";
 import { OldCopies } from "./OldCopies.js";
@@ -69,6 +72,8 @@ export interface PanelProps {
   copies?: CopiesApi | null;
   /** Voice commands without internet (this device's setting). */
   offlineVoice?: OfflineVoiceWiring;
+  /** Meeting warnings and follow-ups from the agent; absent outside the app. */
+  meetings?: MeetingWatch;
   initialTab?: Tab;
 }
 
@@ -130,6 +135,16 @@ export const Panel = (p: PanelProps) => {
         {...(p.openUrl ? { openUrl: p.openUrl } : {})}
       />
       <main role="tabpanel">
+        {tab === "inbox" && p.meetings && (
+          <Meetings
+            watch={p.meetings}
+            {...(p.openUrl ? { openUrl: p.openUrl } : {})}
+            onSession={(sid) => {
+              setCodeSid(sid);
+              setTab("sessions");
+            }}
+          />
+        )}
         {tab === "inbox" &&
           (p.client ? (
             <Inbox
@@ -184,6 +199,7 @@ export const Panel = (p: PanelProps) => {
           />
         )}
         {tab === "settings" && p.thisComputer && <ThisComputer api={p.thisComputer} ipc={p.ipc} />}
+        {tab === "settings" && p.meetings && <CalendarSettings watch={p.meetings} />}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
         {tab === "ai" && <Apps ipc={p.ipc} />}
         {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}

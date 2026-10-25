@@ -7,7 +7,7 @@ import type { SettingsValues } from "@chalito/ui";
  * what the person's AI sessions are doing (busy, waiting, started, finished, failed, replies, alerts). */
 export type PetContext = Omit<BehaviourContext, "acked"> & { activity?: Activity; panelFocused?: boolean };
 
-const RANK: Record<Level, number> = { L0: 0, L1: 1, L2: 2, L3: 3, L4: 4 };
+export const RANK: Record<Level, number> = { L0: 0, L1: 1, L2: 2, L3: 3, L4: 4 };
 const isLevel = (l: string): l is Level => l in RANK;
 
 /** The highest level among pending notifications, or null when nothing waits. */
