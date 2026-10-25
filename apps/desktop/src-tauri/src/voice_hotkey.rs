@@ -11,16 +11,54 @@ pub const PTT_EVENT: &str = "chalito://voice-ptt";
 #[derive(Default)]
 pub struct VoiceHotkey(Mutex<Option<Shortcut>>);
 
-/// Needs a modifier (a bare key would be taken from every other app) and can't be a reserved one.
+/// The same grammar the panel checks (`validHotkey` in settings.ts): modifiers, then one plain key.
+const MODIFIERS: &[&str] = &["commandorcontrol", "cmdorctrl", "control", "ctrl", "alt", "option", "shift", "super", "command", "cmd"];
+const KEYS: &[&str] = &[
+    "space", "period", "comma", "slash", "semicolon", "quote", "backquote", "minus", "equal", "enter", "tab",
+];
+
+/// Combos the OS or every app already uses (both Control and Super, for CommandOrControl).
+const SYSTEM: &[&str] = &[
+    "Super+Space", "Control+Space", "Alt+Space", "Alt+Tab", "Super+Tab", "Control+Tab", "Alt+F4",
+    "Super+Q", "Super+W", "Super+L", "Super+D", "Super+H", "Super+M", "Control+Q", "Control+W",
+    "Control+C", "Control+V", "Control+X", "Control+Z", "Control+A", "Control+S",
+    "Super+C", "Super+V", "Super+X", "Super+Z", "Super+A", "Super+S",
+];
+
+fn plain_key(k: &str) -> bool {
+    let k = k.to_ascii_lowercase();
+    let f = k.strip_prefix('f').and_then(|n| n.parse::<u8>().ok());
+    (k.len() == 1 && k.chars().all(|c| c.is_ascii_alphanumeric()))
+        || matches!(f, Some(1..=12))
+        || KEYS.contains(&k.as_str())
+}
+
+/// Needs a modifier (a bare key would be taken from every other app), and can't be a system combo
+/// or one Chalito already holds.
 pub fn parse(accel: &str, reserved: &[Shortcut]) -> Result<Shortcut, String> {
-    let s: Shortcut = accel.trim().parse().map_err(|e| format!("{e}"))?;
-    if s.mods.is_empty() {
-        return Err("the shortcut needs a modifier key".into());
+    let parts: Vec<String> = accel.split('+').map(|p| p.trim().to_ascii_lowercase()).collect();
+    let (key, mods) = parts.split_last().ok_or("empty shortcut")?;
+    if mods.is_empty() || !mods.iter().all(|m| MODIFIERS.contains(&m.as_str())) || !plain_key(key) {
+        return Err("use one or more modifier keys and one plain key".into());
     }
-    if reserved.iter().any(|r| r.mods == s.mods && r.key == s.key) {
+    let s: Shortcut = accel.trim().parse().map_err(|e| format!("{e}"))?;
+    let same = |r: &Shortcut| r.mods == s.mods && r.key == s.key;
+    if reserved.iter().any(same) {
         return Err("that shortcut is already used by Chalito".into());
     }
+    if SYSTEM.iter().filter_map(|c| c.parse::<Shortcut>().ok()).any(|r| same(&r)) {
+        return Err("your system or other apps already use that shortcut".into());
+    }
     Ok(s)
+}
+
+/// Only the panel turns the hotkey on or off, like the other panel commands.
+pub fn may_set(window_label: &str) -> Result<(), String> {
+    if window_label == "panel" {
+        Ok(())
+    } else {
+        Err("unavailable".into())
+    }
 }
 
 /// What to tell the panel when a shortcut fires, if it's the voice one.
@@ -80,7 +118,13 @@ pub fn swap(
 }
 
 #[tauri::command]
-pub fn set_voice_hotkey(app: AppHandle, hotkey: State<'_, VoiceHotkey>, accel: Option<String>) -> Result<(), String> {
+pub fn set_voice_hotkey(
+    app: AppHandle,
+    window: tauri::Window,
+    hotkey: State<'_, VoiceHotkey>,
+    accel: Option<String>,
+) -> Result<(), String> {
+    may_set(window.label())?;
     set(&app, &hotkey, accel.as_deref(), &[crate::kill_hotkey()])
 }
 
@@ -98,6 +142,31 @@ mod tests {
         assert!(parse("Ctrl+Shift+NotAKey", &[]).is_err());
         let kill = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Escape);
         assert!(parse("Control+Alt+Escape", &[kill]).is_err());
+    }
+
+    #[test]
+    fn only_the_panel_window_may_set_it() {
+        assert!(may_set("panel").is_ok());
+        for w in ["pet", "room", "indicator", ""] {
+            assert!(may_set(w).is_err(), "{w}");
+        }
+    }
+
+    #[test]
+    fn refuses_keys_outside_the_panel_grammar() {
+        for bad in ["Ctrl+Escape", "Ctrl+Shift+Banana", "Shift", "Ctrl+", "+V", "Hyper+V", "Ctrl+F13", "Ctrl+ArrowUp"] {
+            assert!(parse(bad, &[]).is_err(), "{bad}");
+        }
+        for good in ["CommandOrControl+Shift+Space", "Alt+F9", "Ctrl+Alt+7", "Shift+Alt+Period"] {
+            assert!(parse(good, &[]).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn refuses_system_combos() {
+        for sys in ["CommandOrControl+Space", "Alt+Tab", "Super+L", "Control+C", "Cmd+Q", "Alt+F4", "Super+Space"] {
+            assert!(parse(sys, &[]).is_err(), "{sys}");
+        }
     }
 
     #[test]

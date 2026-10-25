@@ -34,11 +34,33 @@ const MODIFIERS = new Set([
 const KEY_RE =
   /^(?:[a-z]|[0-9]|f(?:[1-9]|1[0-2])|space|period|comma|slash|semicolon|quote|backquote|minus|equal|enter|tab)$/;
 
+const CANON: Record<string, string> = {
+  control: "ctrl",
+  ctrl: "ctrl",
+  alt: "alt",
+  option: "alt",
+  shift: "shift",
+  super: "super",
+  command: "super",
+  cmd: "super",
+};
+/** Combos the OS or every app already uses; the native side refuses the same list (voice_hotkey.rs). */
+const SYSTEM = new Set(
+  "super+space ctrl+space alt+space alt+tab super+tab ctrl+tab alt+f4 super+q super+w super+l super+d super+h super+m ctrl+q ctrl+w ctrl+c ctrl+v ctrl+x ctrl+z ctrl+a ctrl+s super+c super+v super+x super+z super+a super+s".split(
+    " ",
+  ),
+);
+
 /** One or more modifiers and one key: a bare key would be taken from every other app. */
 export const validHotkey = (s: string): boolean => {
   const parts = s.split("+").map((p) => p.trim().toLowerCase());
   const key = parts.pop() ?? "";
-  return parts.length > 0 && parts.every((p) => MODIFIERS.has(p)) && KEY_RE.test(key);
+  if (!(parts.length > 0 && parts.every((p) => MODIFIERS.has(p)) && KEY_RE.test(key))) return false;
+  // CommandOrControl is Super on macOS and Control elsewhere: refuse it if either is a system combo.
+  const variants = ["ctrl", "super"].map((cmd) =>
+    [...new Set(parts.map((p) => CANON[p] ?? cmd))].sort().concat(key).join("+"),
+  );
+  return !variants.some((v) => SYSTEM.has(v));
 };
 
 const clean = (v: Partial<OfflineVoiceSettings>): OfflineVoiceSettings => {

@@ -579,6 +579,8 @@ describe("settings: off by default, per device", () => {
     expect(validHotkey("Alt+F9")).toBe(true);
     expect(validHotkey("Space")).toBe(false);
     expect(validHotkey("Shift+Banana")).toBe(false);
+    for (const sys of ["CommandOrControl+Space", "Alt+Tab", "Cmd+Q", "Control+C", "Super+L", "Alt+F4"])
+      expect(validHotkey(sys), sys).toBe(false);
   });
 });
 
