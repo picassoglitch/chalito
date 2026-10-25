@@ -37,33 +37,73 @@ const fold = (s: string): { folded: string; at: number[] } => {
   return { folded, at };
 };
 
-const NUM: Record<string, number> = {
-  un: 1,
-  uno: 1,
-  one: 1,
-  dos: 2,
-  two: 2,
-  cinco: 5,
-  five: 5,
-  diez: 10,
-  ten: 10,
-  quince: 15,
-  fifteen: 15,
+const words = (list: string, from: number) => Object.fromEntries(list.split(" ").map((w, i) => [w, from + i] as const));
+/** "un/una/a/an" count only before a unit ("una hora"), never alone ("un rato"). */
+const ARTICLE: Record<string, number> = { un: 1, una: 1, a: 1, an: 1 };
+const UNITS: Record<string, number> = {
+  ...words("uno dos tres cuatro cinco seis siete ocho nueve", 1),
+  ...words("one two three four five six seven eight nine", 1),
+};
+const TEENS: Record<string, number> = {
+  ...words("diez once doce trece catorce quince", 10),
+  ...words("ten eleven twelve thirteen fourteen fifteen", 10),
+};
+const TENS: Record<string, number> = {
   veinte: 20,
   twenty: 20,
   treinta: 30,
   thirty: 30,
   cuarenta: 40,
   forty: 40,
+  cincuenta: 50,
+  fifty: 50,
   sesenta: 60,
   sixty: 60,
+  noventa: 90,
+  ninety: 90,
 };
-const N = `\\d{1,3}|${Object.keys(NUM).join("|")}`;
-const DURATION = new RegExp(
-  `(?:\\s(?:por|durante|unos|for|about))*\\s(?:(${N})\\s?(?:min|mins|minuto|minutos|minute|minutes)?|(media hora|half an hour|half hour)|(una hora|an hour|one hour|1 hora))(?=\\s|$)`,
-);
+const HOUR_WORDS = new Set(["hora", "horas", "hour", "hours", "h", "hr", "hrs"]);
+const MINUTE_WORDS = new Set(["min", "mins", "minuto", "minutos", "minute", "minutes", "m"]);
+const LEAD = new Set(["por", "durante", "unos", "unas", "for", "about", "like", "around", "some", "like"]);
 
-const DND_WORDS = "(?:no molestar|no me molestes|do not disturb|dont disturb|dnd)";
+/** A spoken number at w[i]: "45", "cuarenta y cinco", "veinticinco", "twenty five", "1h". */
+const readNumber = (w: string[], i: number): { n: number; next: number; unit?: "h" | "m"; article?: true } | null => {
+  const x = w[i] ?? "";
+  const glued = /^(\d{1,3})(h|hr|hrs|m|min)$/.exec(x);
+  if (glued) return { n: Number(glued[1]), next: i + 1, unit: glued[2]!.startsWith("h") ? "h" : "m" };
+  if (/^\d{1,3}$/.test(x)) return { n: Number(x), next: i + 1 };
+  const veinti = /^veinti(\w+)$/.exec(x);
+  if (veinti && UNITS[veinti[1]!] !== undefined) return { n: 20 + UNITS[veinti[1]!]!, next: i + 1 };
+  if (TENS[x] !== undefined) {
+    const t = TENS[x]!;
+    if (w[i + 1] === "y" && UNITS[w[i + 2] ?? ""] !== undefined) return { n: t + UNITS[w[i + 2]!]!, next: i + 3 };
+    if (UNITS[w[i + 1] ?? ""] !== undefined) return { n: t + UNITS[w[i + 1]!]!, next: i + 2 };
+    return { n: t, next: i + 1 };
+  }
+  if (TEENS[x] !== undefined) return { n: TEENS[x]!, next: i + 1 };
+  if (UNITS[x] !== undefined) return { n: UNITS[x]!, next: i + 1 };
+  if (ARTICLE[x] !== undefined) return { n: 1, next: i + 1, article: true };
+  return null;
+};
+
+/** How long a pause the words right after "pausa" ask for, and how many of them that took. */
+const duration = (w: string[]): { minutes: number; used: number } | null => {
+  let i = 0;
+  while (LEAD.has(w[i] ?? "")) i++;
+  if (w[i] === "media" && w[i + 1] === "hora") return { minutes: 30, used: i + 2 };
+  if (w[i] === "half" && w[i + 1] === "an" && w[i + 2] === "hour") return { minutes: 30, used: i + 3 };
+  if (w[i] === "half" && w[i + 1] === "hour") return { minutes: 30, used: i + 2 };
+  const num = readNumber(w, i);
+  if (!num) return null;
+  const unitWord = w[num.next] ?? "";
+  const unit = num.unit ?? (HOUR_WORDS.has(unitWord) ? "h" : MINUTE_WORDS.has(unitWord) ? "m" : undefined);
+  const used = num.unit || !unit ? num.next : num.next + 1;
+  // A bare number counts as minutes only when nothing follows it ("silencio 20"); "un rato" isn't one.
+  if (!unit && (num.article || w.slice(num.next).some(Boolean))) return null;
+  return { minutes: unit === "h" ? num.n * 60 : num.n, used };
+};
+
+const DND_WORDS = "(?:no molestar|no me molestes|do not disturb|dont disturb|don t disturb|dnd)";
 const DND_OFF = new RegExp(
   `\\b(?:desactiva\\w*|quita\\w*|apaga\\w*|deshabilita\\w*|termina\\w*|turn off|switch off|disable|end|stop)(?:\\s(?:el|la|modo|mode|the))*\\s${DND_WORDS}\\b|\\b${DND_WORDS}\\s(?:off|apagado|desactivado|fuera)\\b`,
 );
@@ -73,9 +113,12 @@ const DND_ON = new RegExp(
 const PAUSE =
   /\b(?:pausa\w*|pause\w*|silencio|silence|callate|quiet|mute|snooze|shh+|hush|duermete|go to sleep)\b(?:\s(?:a|al|el|la|the|chalito|mascota|pet))*/;
 const DENY =
-  /\b(?:rechaza\w*|deniega\w*|niegalo|niegala|no (?:lo |la )?(?:apruebes|aprobar|autorices|permitas|aceptes)|deny|reject|decline|refuse|don t (?:approve|allow)|dont (?:approve|allow)|do not (?:approve|allow))\b/;
+  /\b(?:rechaza\w*|deniega\w*|niegalo|niegala|no (?:\w+ ){0,3}(?:apruebes|autorices|permitas|aceptes|dejes)|deny|reject|decline|refuse)\b/;
 const APPROVE =
-  /\b(?:aprueba\w*|aprob\w*|autoriza\w*|acepta\w*|permitelo|permitela|dale que si|approve|allow it|allow|accept|authorize|go ahead)\b/;
+  /\b(?:aprueba\w*|aprobar(?:lo|la|los|las)?|autoriza(?:lo|la|los|las|r)?|acepta(?:lo|la|los|las|r)?|permitelo|permitela|dale que si|approve|allow it|allow|accept|authorize|go ahead)\b/;
+/** "no / don't / never" a few words before an approve verb turns it into a deny. */
+const NEGATED =
+  /\b(?:no|don t|dont|not|never|nunca|jamas|ni|can t|cant|cannot|won t|wont|shouldn t|shouldnt)\b(?:\s+\S+){0,5}\s*$/;
 const NEW_SESSION =
   /\b(?:(?:abre|crea|inicia|iniciar|empieza|comienza|arranca)\s(?:una\s)?(?:nueva\s)?sesion|nueva sesion|(?:start|open|create|begin)\s(?:a\s)?(?:new\s)?session|new session)\b(?:\s(?:para|con|que|sobre|de|to|with|about|and|y|for))?/;
 const OPEN =
@@ -86,14 +129,6 @@ const FILLER = new Set(
     " ",
   ),
 );
-
-const minutesOf = (m: RegExpMatchArray | null): number => {
-  if (!m) return 15;
-  if (m[2]) return 30;
-  if (m[3]) return 60;
-  const n = NUM[m[1]!] ?? Number(m[1]);
-  return Math.min(Math.max(n, 1), 240);
-};
 
 const trimFiller = (s: string): string => {
   const w = s.split(/\s+/).filter(Boolean);
@@ -133,27 +168,32 @@ export const parseIntent = (raw: string): ParsedVoice => {
   }
   const pause = PAUSE.exec(rest);
   if (pause) {
-    const tail = rest.slice(pause.index + pause[0].length);
-    const d = DURATION.exec(` ${tail}`);
-    const near = d && d.index <= 1 ? d : null;
-    found.push({ index: pause.index, cmd: { kind: "pause", minutes: minutesOf(near) } });
-    const end = pause.index + pause[0].length + (near ? near.index - 1 + near[0].length : 0);
-    blank(pause.index, end - pause.index);
+    const from = pause.index + pause[0].length;
+    const tokens = [...rest.slice(from).matchAll(/\S+/g)];
+    const d = duration(tokens.map((t) => t[0]));
+    const minutes = d ? Math.min(Math.max(d.minutes, 1), 240) : 15;
+    found.push({ index: pause.index, cmd: { kind: "pause", minutes } });
+    const last = d && d.used ? tokens[d.used - 1]! : null;
+    blank(pause.index, (last ? from + last.index + last[0].length : from) - pause.index);
   }
-  const deny = DENY.exec(rest);
+  // A question ("¿ya lo aprobaste?") neither approves nor denies.
+  const asks = /[?¿]/.test(text);
+  const deny = asks ? null : DENY.exec(rest);
   if (deny) {
     found.push({ index: deny.index, cmd: { kind: "deny" } });
     blank(deny.index, deny[0].length);
   }
-  const approve = deny ? null : APPROVE.exec(rest);
+  const approve = deny || asks ? null : APPROVE.exec(rest);
   if (approve) {
-    found.push({ index: approve.index, cmd: { kind: "approve" } });
+    const negated = NEGATED.test(rest.slice(0, approve.index));
+    found.push({ index: approve.index, cmd: { kind: negated ? "deny" : "approve" } });
     blank(approve.index, approve[0].length);
   }
   const open = OPEN.exec(rest);
-  const opensSomething = open && (/sesion|session|chat|siguiente|proxima|next/.test(open[0]) || !found.length);
+  const target = open ? trimFiller(rest.slice(open.index + open[0].length).replace(/\s+/g, " ")) : "";
+  const opensSomething =
+    open && (/sesion|session|chat|siguiente|proxima|next/.test(open[0]) || !found.length || target);
   if (open && opensSomething) {
-    const target = trimFiller(rest.slice(open.index + open[0].length).replace(/\s+/g, " "));
     found.push({
       index: open.index,
       cmd: { kind: "open", target: target && !/^(?:siguiente|proxima|next|pendiente)$/.test(target) ? target : null },

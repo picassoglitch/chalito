@@ -15,7 +15,7 @@ import {
 } from "../src/lib/offline-voice/settings.js";
 import type { VoiceHotkey } from "../src/lib/offline-voice/native.js";
 import { Panel } from "../src/panel/Panel.js";
-import { VoiceCard, panelVoiceActions, type OfflineVoiceWiring } from "../src/panel/VoiceCard.js";
+import { OfflineVoiceButton, VoiceCard, panelVoiceActions, type OfflineVoiceWiring } from "../src/panel/VoiceCard.js";
 import { useOfflineVoice } from "../src/panel/use-offline-voice.js";
 
 afterEach(() => {
@@ -146,6 +146,17 @@ describe("offline voice controller", () => {
     expect(voice.state.phase).toBe("error");
     await voice.release();
     expect(voice.state.phase).toBe("error");
+  });
+
+  it("a mic that opens but never sends audio ends in an error and closes, instead of listening forever", async () => {
+    const mic = fakeMic();
+    const voice = new OfflineVoice({ recorder: mic.recorder, engine: fakeEngine("x"), now: () => 0, noAudioMs: 30 });
+    await voice.press();
+    await voice.release();
+    expect(voice.state.phase).toBe("listening");
+    await waitFor(() => expect(voice.state.phase).toBe("error"));
+    expect((voice.state as { error: Error }).error.name).toBe("MicSilentError");
+    expect(mic.open).toBe(false);
   });
 
   it("not a command: says what it heard", async () => {
@@ -348,6 +359,53 @@ describe("the choice card: nothing runs from voice alone", () => {
     expect(openSession).toHaveBeenCalledWith("new1");
   });
 
+  it("starts where the card said, even if the first app changed since", async () => {
+    const codeStart = vi.fn(async () => ({ sid: "new1" }));
+    let apps = ["claude-code"];
+    const ipc = { codeApps: async () => ({ apps, workspaces: ["chalito"] }), codeStart };
+    await renderCard("Nueva sesión para revisar el CI", { approvals: [], sessions: [] }, { ipc });
+    await screen.findByText(/en claude-code · chalito/);
+    apps = ["codex"];
+    fireEvent.click(button("Empezar"));
+    await waitFor(() => expect(codeStart).toHaveBeenCalledWith(expect.objectContaining({ appId: "claude-code" })));
+  });
+
+  it("nowhere to start it: the form opens with the dictated prompt in it", async () => {
+    const ipc = { codeApps: async () => ({ apps: [], workspaces: [] }), codeStart: vi.fn() };
+    const { openNewSession } = await renderCard(
+      "New session to tidy the logs",
+      { approvals: [], sessions: [] },
+      { ipc },
+    );
+    await waitFor(() => expect((button("Empezar") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button("Empezar"));
+    expect(openNewSession).toHaveBeenCalledWith("tidy the logs");
+    expect(ipc.codeStart).not.toHaveBeenCalled();
+  });
+
+  it("a double click decides once", async () => {
+    const { decide } = await renderCard("Recházalo", { approvals: [approval()], sessions: [] });
+    decide.mockImplementation(() => new Promise(() => undefined));
+    fireEvent.click(button("Rechazar"));
+    await waitFor(() => expect((button("Rechazar") as HTMLButtonElement).disabled).toBe(true));
+    fireEvent.click(button("Rechazar"));
+    expect(decide).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape closes the card, and the keyboard lands on it", async () => {
+    const { voice } = await renderCard("Pon no molestar", { approvals: [], sessions: [] });
+    expect(document.activeElement).toBe(screen.getByRole("heading"));
+    fireEvent.keyDown(screen.getByRole("heading"), { key: "Escape" });
+    expect(voice.state.phase).toBe("idle");
+  });
+
+  it("an action that fails says so in words, not a raw code", async () => {
+    const { decide } = await renderCard("Recházalo", { approvals: [approval()], sessions: [] });
+    decide.mockRejectedValueOnce(new Error("network down"));
+    fireEvent.click(button("Rechazar"));
+    expect((await screen.findByRole("alert")).textContent).toBe("No se pudo hacer: network down");
+  });
+
   it("pause and DND off go through the panel's own switches", async () => {
     const a = await renderCard("Pausa 20 minutos", { approvals: [], sessions: [] });
     fireEvent.click(button("Pausar"));
@@ -356,6 +414,25 @@ describe("the choice card: nothing runs from voice alone", () => {
     const b = await renderCard("Quita no molestar", { approvals: [], sessions: [] });
     fireEvent.click(button("Hacerlo"));
     expect(b.setDnd).toHaveBeenCalledWith(false);
+  });
+
+  it("the on-screen button lets go even when the pointer is cancelled or released elsewhere", () => {
+    const voice = new OfflineVoice({ recorder: fakeMic().recorder, engine: fakeEngine("x") });
+    const press = vi.spyOn(voice, "press").mockResolvedValue();
+    const release = vi.spyOn(voice, "release").mockResolvedValue();
+    render(
+      <TextProviders locale="es">
+        <OfflineVoiceButton voice={voice} />
+      </TextProviders>,
+    );
+    const b = button(/comando/);
+    fireEvent.pointerDown(b, { pointerId: 1 });
+    expect(press).toHaveBeenCalledTimes(1);
+    fireEvent.pointerCancel(b, { pointerId: 1 });
+    expect(release).toHaveBeenCalledTimes(1);
+    fireEvent.pointerDown(b, { pointerId: 2 });
+    fireEvent.lostPointerCapture(b, { pointerId: 2 });
+    expect(release).toHaveBeenCalledTimes(2);
   });
 
   it("a mic refusal says how to fix it", async () => {
@@ -438,11 +515,19 @@ describe("settings: 'Comandos de voz sin internet'", () => {
   });
 
   it("a refused mic leaves it off and says why", async () => {
-    const ov = wiring({ askMic: vi.fn(async () => Promise.reject(new Error("NotAllowedError"))) });
+    const refused = new DOMException("denied", "NotAllowedError");
+    const ov = wiring({ askMic: vi.fn(async () => Promise.reject(refused)) });
     renderSettings(ov);
     fireEvent.click(screen.getByRole("checkbox", { name: "Comandos de voz sin internet" }));
-    expect((await screen.findByRole("alert")).textContent).toMatch(/micrófono/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/permiso para usar el micrófono/);
     expect(ov.onSettings).not.toHaveBeenCalled();
+  });
+
+  it("no mic at all isn't reported as a permission problem", async () => {
+    const ov = wiring({ askMic: vi.fn(async () => Promise.reject(new DOMException("none", "NotFoundError"))) });
+    renderSettings(ov);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Comandos de voz sin internet" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("No encuentro un micrófono en esta computadora.");
   });
 
   it("only takes an address on this computer, and tests it", async () => {
@@ -558,5 +643,35 @@ describe("panel hook: the hotkey is held only while the mode is on", () => {
     act(() => result.current.cancelPause());
     act(() => vi.advanceTimersByTime(10 * 60_000));
     expect(setDnd).toHaveBeenLastCalledWith(true);
+  });
+
+  it("a restart mid-pause still turns DND off on time; a pause that ended while closed clears at once", () => {
+    vi.useFakeTimers();
+    const first = vi.fn();
+    const a = renderHook(() => useOfflineVoice(first, vi.fn(), { hotkey: fakeHotkey().hotkey }));
+    act(() => a.result.current.pause(20));
+    a.unmount();
+    act(() => vi.advanceTimersByTime(5 * 60_000));
+    const second = vi.fn();
+    renderHook(() => useOfflineVoice(second, vi.fn(), { hotkey: fakeHotkey().hotkey }));
+    act(() => vi.advanceTimersByTime(15 * 60_000 - 1));
+    expect(second).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(second).toHaveBeenCalledWith(false);
+    cleanup();
+    localStorage.setItem("chalito-desktop-dnd-until", String(Date.now() - 1000));
+    const third = vi.fn();
+    renderHook(() => useOfflineVoice(third, vi.fn(), { hotkey: fakeHotkey().hotkey }));
+    act(() => vi.advanceTimersByTime(0));
+    expect(third).toHaveBeenCalledWith(false);
+  });
+
+  it("a hotkey listener that fails to attach is reported, not swallowed", async () => {
+    const hk = fakeHotkey();
+    hk.hotkey.onPtt = () => Promise.reject(new Error("no event bridge"));
+    saveOfflineVoice({ ...DEFAULT_OFFLINE_VOICE, enabled: true });
+    const voice = new OfflineVoice({ recorder: fakeMic().recorder, engine: fakeEngine("x") });
+    const { result } = renderHook(() => useOfflineVoice(vi.fn(), vi.fn(), { hotkey: hk.hotkey, voice: () => voice }));
+    await waitFor(() => expect(result.current.hotkeyError).toMatch(/no event bridge/));
   });
 });

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   EngineFailedError,
   EngineNotLocalError,
+  EngineTimeoutError,
   EngineUnreachableError,
   confidence,
   loopbackUrl,
@@ -131,6 +132,44 @@ describe("whisper.cpp server engine (a fake server on 127.0.0.1)", () => {
       expect(await e.probe()).toBe(false);
     }
     expect(f).not.toHaveBeenCalled();
+  });
+
+  it("'Probar' needs a whisper.cpp answer, not just any server on the port", async () => {
+    let redirect = false;
+    const other = createServer((req, res) => {
+      if (req.url === "/elsewhere") return res.end(JSON.stringify({ text: "leaked" }));
+      if (redirect) return res.writeHead(307, { location: "/elsewhere" }).end();
+      res.end("<html>some other app</html>");
+    });
+    await new Promise<void>((ok) => other.listen(0, "127.0.0.1", ok));
+    const url = `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
+    try {
+      expect(await whisperServerEngine({ url, languages: ["es"] }).probe()).toBe(false);
+      await expect(whisperServerEngine({ url, languages: ["es"] }).transcribe(speech)).rejects.toBeInstanceOf(
+        EngineFailedError,
+      );
+      redirect = true;
+      // A redirect is refused, so the audio never follows it anywhere.
+      await expect(whisperServerEngine({ url, languages: ["es"] }).transcribe(speech)).rejects.toBeInstanceOf(
+        EngineUnreachableError,
+      );
+    } finally {
+      await new Promise<void>((ok) => other.close(() => ok()));
+    }
+  });
+
+  it("a server that's up but too slow says so, instead of 'not running'", async () => {
+    const slow = createServer(() => undefined);
+    await new Promise<void>((ok) => slow.listen(0, "127.0.0.1", ok));
+    const url = `http://127.0.0.1:${(slow.address() as AddressInfo).port}`;
+    try {
+      await expect(
+        whisperServerEngine({ url, languages: ["es"], timeoutMs: 50 }).transcribe(speech),
+      ).rejects.toBeInstanceOf(EngineTimeoutError);
+    } finally {
+      slow.closeAllConnections();
+      await new Promise<void>((ok) => slow.close(() => ok()));
+    }
   });
 
   it("loopback addresses only", () => {

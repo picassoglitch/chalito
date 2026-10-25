@@ -37,19 +37,28 @@ export const askMicPermission = async (getUserMedia: GetUserMedia = defaultMic):
 export const micRecorder = (getUserMedia: GetUserMedia = defaultMic): Recorder => ({
   async start(onFrame) {
     const stream = await getUserMedia();
-    const ctx = new AudioContext();
-    const src = ctx.createMediaStreamSource(stream);
-    // ScriptProcessor: AudioWorklet isn't in every WebKitGTK the app runs on.
-    const node = ctx.createScriptProcessor(2048, 1, 1);
-    node.onaudioprocess = (e) => onFrame(new Float32Array(e.inputBuffer.getChannelData(0)), ctx.sampleRate);
-    src.connect(node);
-    node.connect(ctx.destination);
-    return () => {
-      node.onaudioprocess = null;
-      node.disconnect();
-      src.disconnect();
+    let ctx: AudioContext | null = null;
+    try {
+      const c = (ctx = new AudioContext());
+      // A global hotkey isn't a user gesture: the context may start suspended.
+      await c.resume();
+      const src = c.createMediaStreamSource(stream);
+      // ScriptProcessor: AudioWorklet isn't in every WebKitGTK the app runs on.
+      const node = c.createScriptProcessor(2048, 1, 1);
+      node.onaudioprocess = (e) => onFrame(new Float32Array(e.inputBuffer.getChannelData(0)), c.sampleRate);
+      src.connect(node);
+      node.connect(c.destination);
+      return () => {
+        node.onaudioprocess = null;
+        node.disconnect();
+        src.disconnect();
+        for (const t of stream.getTracks()) t.stop();
+        void c.close();
+      };
+    } catch (e) {
       for (const t of stream.getTracks()) t.stop();
-      void ctx.close();
-    };
+      void ctx?.close();
+      throw e;
+    }
   },
 });

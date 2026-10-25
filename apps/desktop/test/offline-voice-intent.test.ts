@@ -97,6 +97,52 @@ describe("voice intent rules: what isn't a command", () => {
     ]);
   });
 
+  it.each([
+    "No autorizar",
+    "no aceptar",
+    "Don't accept it",
+    "don't authorize that",
+    "do not go ahead",
+    "never approve that",
+    "no lo vayas a aprobar",
+    "I don't want you to approve it",
+    "no los apruebes",
+    "no me lo apruebes",
+    "I can't allow that",
+    "I won't approve it",
+    "I don't want to approve this",
+  ])("a negated approval is a deny, never an approve: %s", (said) => expect(cmds(said)).toEqual([{ kind: "deny" }]));
+
+  it.each(["¿ya está aprobado?", "¿lo apruebo?", "should I approve it?"])("a question doesn't approve: %s", (said) =>
+    expect(cmds(said)).toEqual([]),
+  );
+
+  it.each([
+    ["pausa dos horas", 120],
+    ["pause for two hours", 120],
+    ["pausa 2 horas", 120],
+    ["pausa por 1 hora", 60],
+    ["pause one hour", 60],
+    ["pause for an hour", 60],
+    ["pausa una hora", 60],
+    ["pausa un rato", 15],
+    ["pause for twenty five minutes", 25],
+    ["pausa cuarenta y cinco minutos", 45],
+    ["pausa veinticinco minutos", 25],
+    ["pausa tres minutos", 3],
+    ["pause 5m", 5],
+    ["pausa 1h", 60],
+    ["silencio 20", 20],
+  ])("durations: %s → %i min", (said, minutes) => expect(cmds(said)).toEqual([{ kind: "pause", minutes }]));
+
+  it("an open said after another command is kept", () => {
+    expect(cmds("Aprueba y abre pagos")).toEqual([{ kind: "approve" }, { kind: "open", target: "pagos" }]);
+  });
+
+  it("don't disturb, with the apostrophe whisper writes", () => {
+    expect(cmds("Don't disturb me")).toEqual([{ kind: "dnd", on: true }]);
+  });
+
   it("caps a pause at four hours", () => {
     expect(cmds("pausa 900 minutos")).toEqual([{ kind: "pause", minutes: 240 }]);
   });

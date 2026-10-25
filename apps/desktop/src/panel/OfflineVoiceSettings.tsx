@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useT } from "../lib/i18n.js";
 import { loopbackUrl } from "../lib/offline-voice/engine.js";
 import { LANGUAGES, validHotkey, type OfflineVoiceSettings as Values } from "../lib/offline-voice/settings.js";
+import { voiceErrorText } from "./VoiceCard.js";
 
 /** "Comandos de voz sin internet": off until the person turns it on, which is the only time the mic is asked for. */
 export const OfflineVoiceSettings = ({
@@ -19,7 +20,7 @@ export const OfflineVoiceSettings = ({
   hotkeyError?: string | null;
 }) => {
   const t = useT();
-  const [micError, setMicError] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
   const [url, setUrl] = useState(value.serverUrl);
   const [hotkey, setHotkey] = useState(value.hotkey);
   const [probed, setProbed] = useState<"ok" | "down" | null>(null);
@@ -27,13 +28,14 @@ export const OfflineVoiceSettings = ({
   const hotkeyOk = validHotkey(hotkey);
 
   const toggle = async (on: boolean) => {
-    setMicError(false);
+    setMicError(null);
     if (!on) return onChange({ ...value, enabled: false });
     try {
       await askMic();
       onChange({ ...value, enabled: true });
-    } catch {
-      setMicError(true);
+    } catch (e) {
+      console.warn("offline-voice: mic permission", e);
+      setMicError(voiceErrorText(t, e));
     }
   };
 
@@ -45,7 +47,7 @@ export const OfflineVoiceSettings = ({
         {t("offlineVoice.settings.toggle")}
       </label>
       <p className="muted">{t("offlineVoice.settings.privacy")}</p>
-      {micError && <p role="alert">{t("offlineVoice.micDenied")}</p>}
+      {micError && <p role="alert">{micError}</p>}
       {value.enabled && (
         <>
           <p className="muted">{t("offlineVoice.settings.engineNote")}</p>

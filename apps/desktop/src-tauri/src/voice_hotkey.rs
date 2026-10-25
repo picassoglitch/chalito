@@ -34,9 +34,14 @@ pub fn ptt_payload(current: Option<&Shortcut>, fired: &Shortcut, state: Shortcut
 
 /// Called from the plugin's one handler for every shortcut.
 pub fn on_shortcut(app: &AppHandle, hotkey: &VoiceHotkey, fired: &Shortcut, state: ShortcutState) {
-    let current = hotkey.0.lock().ok().and_then(|g| *g);
+    let current = match hotkey.0.lock() {
+        Ok(g) => *g,
+        Err(_) => return eprintln!("offline voice: hotkey lock poisoned"),
+    };
     if let Some(p) = ptt_payload(current.as_ref(), fired, state) {
-        let _ = app.emit_to("panel", PTT_EVENT, p);
+        if let Err(e) = app.emit_to("panel", PTT_EVENT, p) {
+            eprintln!("offline voice: ptt {p}: {e}");
+        }
     }
 }
 
@@ -49,13 +54,16 @@ pub fn set(app: &AppHandle, hotkey: &VoiceHotkey, accel: Option<&str>, reserved:
         return Ok(());
     }
     let gs = app.global_shortcut();
-    if let Some(old) = held.take() {
-        let _ = gs.unregister(old);
-    }
+    // New one first: if the OS refuses it, the person keeps the hotkey that worked.
     if let Some(s) = next {
         gs.register(s).map_err(|e| e.to_string())?;
-        *held = Some(s);
     }
+    if let Some(old) = *held {
+        if let Err(e) = gs.unregister(old) {
+            eprintln!("offline voice: hotkey unregister: {e}");
+        }
+    }
+    *held = next;
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 import { concat, downsample, SPEECH_RATE } from "./audio.js";
 import type { SpeechEngine } from "./engine.js";
 import { parseIntent, type VoiceCommand } from "./intent.js";
-import { createEndpointer, rms, type EndpointerOptions } from "./vad.js";
+import { COMMAND_ENDPOINTER, createEndpointer, rms, type EndpointerOptions } from "./vad.js";
 
 /** The microphone: calls `onFrame` with mono samples until the returned stop is called. */
 export interface Recorder {
@@ -17,6 +17,13 @@ export type OfflineVoiceState =
   | { phase: "unknown"; text: string }
   | { phase: "nothing" }
   | { phase: "error"; error: unknown };
+
+export class MicSilentError extends Error {
+  constructor() {
+    super("mic_silent");
+    this.name = "MicSilentError";
+  }
+}
 
 /** Shorter than this, audio isn't worth decoding. */
 const MIN_AUDIO_S = 0.3;
@@ -41,6 +48,8 @@ export class OfflineVoice {
       engine: SpeechEngine;
       now?: () => number;
       endpointer?: Partial<EndpointerOptions>;
+      /** No audio at all this long after the mic opened is an error. */
+      noAudioMs?: number;
     },
   ) {}
 
@@ -59,6 +68,7 @@ export class OfflineVoice {
 
   #set(s: OfflineVoiceState) {
     this.#state = s;
+    if (s.phase === "error") console.warn("offline-voice:", s.error);
     for (const l of this.#listeners) l();
   }
 
@@ -83,6 +93,17 @@ export class OfflineVoice {
       });
       if (run !== this.#run || this.#phase() !== "listening") return stop();
       this.#stop = stop;
+      // A mic that never delivers (a suspended AudioContext) would leave a tap listening forever.
+      setTimeout(() => {
+        if (run !== this.#run || this.#phase() !== "listening" || this.#chunks.length) return;
+        this.#held = false;
+        this.#stop?.();
+        this.#stop = null;
+        this.#set({ phase: "error", error: new MicSilentError() });
+      }, this.deps.noAudioMs ?? 2000);
+      // The endpointer's cap counts audio; this one counts the clock, for a mic that stalls midway.
+      const capMs = (this.deps.endpointer?.maxMs ?? COMMAND_ENDPOINTER.maxMs) + 2000;
+      setTimeout(() => void this.#finish(run, "spoke"), capMs);
     } catch (e) {
       this.#held = false;
       if (run === this.#run) this.#set({ phase: "error", error: e });

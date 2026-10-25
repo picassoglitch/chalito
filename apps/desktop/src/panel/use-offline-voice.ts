@@ -5,6 +5,24 @@ import { askMicPermission, micRecorder, voiceHotkey, type VoiceHotkey } from "..
 import { loadOfflineVoice, saveOfflineVoice, type OfflineVoiceSettings } from "../lib/offline-voice/settings.js";
 import type { OfflineVoiceWiring } from "./VoiceCard.js";
 
+const PAUSE_KEY = "chalito-desktop-dnd-until";
+const stored = (): number | null => {
+  try {
+    const v = Number(localStorage.getItem(PAUSE_KEY));
+    return v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+};
+const store = (until: number | null) => {
+  try {
+    if (until === null) localStorage.removeItem(PAUSE_KEY);
+    else localStorage.setItem(PAUSE_KEY, String(until));
+  } catch (e) {
+    console.warn("offline-voice: pause not saved", e);
+  }
+};
+
 /** Offline voice for the panel: the controller while the mode is on, the hotkey only then, and timed pauses. */
 export const useOfflineVoice = (
   setDnd: (on: boolean) => void,
@@ -31,18 +49,24 @@ export const useOfflineVoice = (
 
   useEffect(() => {
     if (!voice) {
-      void hotkey.set(null).catch(() => undefined);
+      void hotkey.set(null).catch((e: unknown) => console.warn("offline-voice: hotkey release", e));
       return;
     }
     let alive = true;
+    const failed = (e: unknown) => {
+      console.warn("offline-voice: hotkey", e);
+      if (alive) setHotkeyError(String(e));
+    };
     // The native side swaps the old hotkey for the new one, so no release in the cleanup.
-    hotkey.set(settings.hotkey).then(
-      () => alive && setHotkeyError(null),
-      (e: unknown) => alive && setHotkeyError(String(e)),
-    );
-    const off = hotkey.onPtt((down) => void (down ? voice.press() : voice.release()));
+    hotkey.set(settings.hotkey).then(() => alive && setHotkeyError(null), failed);
+    const off = hotkey
+      .onPtt((down) => void (down ? voice.press() : voice.release()))
+      .catch((e: unknown) => {
+        failed(e);
+        return () => undefined;
+      });
     const unsub = voice.subscribe(() => {
-      if (["card", "unknown", "error"].includes(voice.state.phase)) showPanel();
+      if (["card", "unknown", "nothing", "error"].includes(voice.state.phase)) showPanel();
     });
     return () => {
       alive = false;
@@ -56,20 +80,39 @@ export const useOfflineVoice = (
   const cancelPause = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
+    store(null);
   }, []);
+  const arm = useCallback(
+    (until: number) => {
+      if (timer.current) clearTimeout(timer.current);
+      store(until);
+      timer.current = setTimeout(
+        () => {
+          timer.current = null;
+          store(null);
+          setDnd(false);
+        },
+        Math.max(0, until - Date.now()),
+      );
+    },
+    [setDnd],
+  );
   // "Pausa a Chalito 20 minutos": Do Not Disturb that turns itself off (Alux's "quiet 20").
   const pause = useCallback(
     (minutes: number) => {
-      cancelPause();
       setDnd(true);
-      timer.current = setTimeout(() => {
-        timer.current = null;
-        setDnd(false);
-      }, minutes * 60_000);
+      arm(Date.now() + minutes * 60_000);
     },
-    [cancelPause, setDnd],
+    [arm, setDnd],
   );
-  useEffect(() => cancelPause, [cancelPause]);
+  // The end is saved, so a restart mid-pause still turns DND off on time.
+  useEffect(() => {
+    const until = stored();
+    if (until !== null) arm(until);
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [arm]);
 
   return {
     voice,

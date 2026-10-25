@@ -1,9 +1,8 @@
 import type { ApprovalView, SessionView, Snapshot } from "@chalito/client";
-import { needsStepUp } from "../stepup.js";
+import { approvalSummary, approveBlock, type ApproveBlock } from "../approval-rules.js";
 import type { VoiceCommand } from "./intent.js";
 
-/** Why the card can't approve from here; the Inbox row says the same and offers the same way out. */
-export type ApproveBlock = "nothing" | "unverified" | "phoneOnly" | "openFull";
+export type { ApproveBlock };
 
 export interface PendingItem {
   aid: string;
@@ -27,18 +26,12 @@ export type CardOption =
   | { kind: "pause"; minutes: number }
   | { kind: "dnd"; on: boolean };
 
-const summary = (a: ApprovalView): string =>
-  typeof a.details?.summary === "string"
-    ? a.details.summary
-    : typeof a.details?.tool === "string"
-      ? a.details.tool
-      : a.origin;
-
 const fold = (s: string) => s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
 const labelOf = (s: SessionView): string => s.label ?? s.card?.label ?? s.adapter ?? s.sid.slice(0, 8);
-/** What a spoken name can match: the label, its folder and its goal. */
-const words = (s: SessionView): string => fold(`${labelOf(s)} ${s.card?.workspaceLabel ?? ""} ${s.card?.goal ?? ""}`);
+/** What a spoken name can match, word by word: the label, its folder and its goal. */
+const words = (s: SessionView): Set<string> =>
+  new Set(fold(`${labelOf(s)} ${s.card?.workspaceLabel ?? ""} ${s.card?.goal ?? ""}`).split(/[^\p{L}\p{N}]+/u));
 
 /** Named: every spoken word in its name. Unnamed: the first session waiting on the person, else the latest. */
 export const pickSession = (
@@ -46,10 +39,14 @@ export const pickSession = (
   target: string | null,
 ): SessionTarget | null => {
   const sessions = [...snap.sessions].sort((a, b) => b.updatedAt - a.updatedAt);
-  const said = target ? fold(target).split(/\s+/).filter(Boolean) : [];
+  const said = target
+    ? fold(target)
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter(Boolean)
+    : [];
   const waiting = new Set(snap.approvals.filter((a) => a.status === "pending").map((a) => a.sid));
   const s = said.length
-    ? sessions.find((x) => said.every((w) => words(x).includes(w)))
+    ? sessions.find((x) => said.every((w) => words(x).has(w)))
     : (sessions.find((x) => waiting.has(x.sid)) ?? sessions[0]);
   return s ? { sid: s.sid, label: labelOf(s) } : null;
 };
@@ -57,19 +54,10 @@ export const pickSession = (
 export const pendingItem = (snap: Pick<Snapshot, "approvals">): { view: ApprovalView; item: PendingItem } | null => {
   const pending = snap.approvals.filter((a) => a.status === "pending");
   const a = pending[0];
-  return a ? { view: a, item: { aid: a.aid, summary: summary(a), risk: a.risk, more: pending.length - 1 } } : null;
+  return a
+    ? { view: a, item: { aid: a.aid, summary: approvalSummary(a), risk: a.risk, more: pending.length - 1 } }
+    : null;
 };
-
-export const approveBlock = (a: ApprovalView | undefined, canStepUp: boolean): ApproveBlock | null =>
-  !a
-    ? "nothing"
-    : !a.verified
-      ? "unverified"
-      : needsStepUp(a) && !canStepUp
-        ? "phoneOnly"
-        : a.details?.summaryTruncated === true
-          ? "openFull"
-          : null;
 
 export const cardOptions = (
   commands: readonly VoiceCommand[],

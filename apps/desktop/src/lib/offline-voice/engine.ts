@@ -34,6 +34,14 @@ export class EngineUnreachableError extends Error {
   }
 }
 
+/** It's running but too slow for this model (each language waits its turn). */
+export class EngineTimeoutError extends Error {
+  constructor() {
+    super("engine_timeout");
+    this.name = "EngineTimeoutError";
+  }
+}
+
 export class EngineFailedError extends Error {
   constructor(readonly status: number) {
     super(`engine_failed:${status}`);
@@ -82,35 +90,46 @@ export const whisperServerEngine = (o: WhisperServerOptions): SpeechEngine => {
   const call = async (path: string, init?: RequestInit): Promise<Response> => {
     if (!base) throw new EngineNotLocalError(o.url);
     try {
-      return await f(new URL(path, base), { ...init, signal: AbortSignal.timeout(timeout) });
+      // No redirects: a local process can't bounce the audio to an origin the CSP allows.
+      return await f(new URL(path, base), { ...init, redirect: "error", signal: AbortSignal.timeout(timeout) });
     } catch (e) {
-      throw new EngineUnreachableError(e);
+      throw (e as { name?: unknown } | null)?.name === "TimeoutError"
+        ? new EngineTimeoutError()
+        : new EngineUnreachableError(e);
     }
+  };
+  const decode = async (audio: Uint8Array<ArrayBuffer>, language: string | null): Promise<WhisperReply> => {
+    const form = new FormData();
+    form.append("file", new Blob([audio], { type: "audio/wav" }), "voice.wav");
+    form.append("response_format", "verbose_json");
+    form.append("temperature", "0.0");
+    if (language) form.append("language", language);
+    const r = await call("/inference", { method: "POST", body: form });
+    if (!r.ok) throw new EngineFailedError(r.status);
+    const body: unknown = await r.json().catch(() => null);
+    // Another local service on that port answers, but not like whisper.cpp.
+    if (typeof (body as WhisperReply | null)?.text !== "string") throw new EngineFailedError(r.status);
+    return body as WhisperReply;
   };
   return {
     async probe() {
       try {
-        return (await call("/")).ok;
-      } catch {
+        await decode(wav(new Float32Array(SPEECH_RATE / 2)), o.languages[0] ?? null);
+        return true;
+      } catch (e) {
+        console.warn("offline-voice: probe failed", e);
         return false;
       }
     },
     async transcribe(pcm, rate = SPEECH_RATE) {
       const audio = wav(pcm, rate);
-      const once = async (language: string | null): Promise<WhisperReply & { tried: string | null }> => {
-        const form = new FormData();
-        form.append("file", new Blob([audio], { type: "audio/wav" }), "voice.wav");
-        form.append("response_format", "verbose_json");
-        form.append("temperature", "0.0");
-        if (language) form.append("language", language);
-        const r = await call("/inference", { method: "POST", body: form });
-        if (!r.ok) throw new EngineFailedError(r.status);
-        return { ...((await r.json()) as WhisperReply), tried: language };
-      };
+      const once = async (language: string | null) => ({ ...(await decode(audio, language)), tried: language });
       const langs = o.languages.length > 1 ? o.languages : [o.languages[0] ?? null];
       const results = [];
       // The server decodes one request at a time; parallel calls would only queue.
       for (const l of langs) results.push(await once(l));
+      if (results.length > 1 && results.every((r) => confidence(r) === -Infinity || confidence(r) === -9))
+        console.warn("offline-voice: no avg_logprob in the replies; kept the first language");
       const best = mostConfident(results);
       return { text: String(best.text ?? "").trim(), language: best.tried ?? best.language ?? null };
     },

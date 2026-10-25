@@ -73,6 +73,8 @@ export const Panel = (p: PanelProps) => {
   const [tab, setTab] = useState<Tab>(p.initialTab ?? "inbox");
   const [codeSid, setCodeSid] = useState<string | null>(null);
   const ov = p.offlineVoice;
+  // A fresh object per dictation, so saying the same prompt twice still fills the form.
+  const [draft, setDraft] = useState<{ prompt: string } | null>(null);
   const voiceActions = panelVoiceActions({
     client: p.client,
     ipc: p.ipc,
@@ -81,8 +83,9 @@ export const Panel = (p: PanelProps) => {
       setCodeSid(sid);
       setTab("sessions");
     },
-    openNewSession: () => {
+    openNewSession: (prompt) => {
       setCodeSid(null);
+      setDraft(prompt ? { prompt } : null);
       setTab("sessions");
     },
     pause: (m) => ov?.pause(m),
@@ -135,7 +138,14 @@ export const Panel = (p: PanelProps) => {
           ))}
         {tab === "inbox" && <PrList ipc={p.ipc} {...(p.openUrl ? { openUrl: p.openUrl } : {})} />}
         {tab === "sessions" && (
-          <NewSession ipc={p.ipc} client={p.client} canStepUp={p.canStepUp ?? false} sid={codeSid} onSid={setCodeSid} />
+          <NewSession
+            ipc={p.ipc}
+            client={p.client}
+            canStepUp={p.canStepUp ?? false}
+            sid={codeSid}
+            onSid={setCodeSid}
+            {...(draft ? { draft } : {})}
+          />
         )}
         {tab === "rooms" &&
           (p.rooms ? <Rooms source={p.rooms} /> : (p.signIn ?? <p className="muted">{t("offline")}</p>))}
@@ -166,6 +176,9 @@ export const Panel = (p: PanelProps) => {
         {tab === "security" && <Security ipc={p.ipc} />}
         {tab === "voice" && <Voice ptt={p.ptt} />}
         {tab === "voice" && ov?.voice && <OfflineVoiceButton voice={ov.voice} />}
+        {tab === "voice" && ov?.voice && ov.hotkeyError && (
+          <p role="alert">{t("offlineVoice.settings.hotkeyTaken", { reason: ov.hotkeyError })}</p>
+        )}
       </main>
     </div>
   );

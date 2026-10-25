@@ -1,12 +1,19 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ChalitoClient, Snapshot } from "@chalito/client";
 import type { Translate } from "@chalito/ui";
 import { useT } from "../lib/i18n.js";
 import type { AgentIpc } from "../lib/ipc.js";
 import { cardOptions, inAll, runnable, type CardOption } from "../lib/offline-voice/card.js";
-import type { OfflineVoice } from "../lib/offline-voice/controller.js";
-import { EngineFailedError, EngineNotLocalError, EngineUnreachableError } from "../lib/offline-voice/engine.js";
+import { MicSilentError, type OfflineVoice } from "../lib/offline-voice/controller.js";
+import {
+  EngineFailedError,
+  EngineNotLocalError,
+  EngineTimeoutError,
+  EngineUnreachableError,
+} from "../lib/offline-voice/engine.js";
 import type { OfflineVoiceSettings } from "../lib/offline-voice/settings.js";
+
+class GoneError extends Error {}
 
 /** What a confirmed card can do: the same calls the panel's own buttons make. */
 export interface VoiceActions {
@@ -16,19 +23,27 @@ export interface VoiceActions {
   openSession(sid: string): void;
   /** Where a new session would start (the Sessions tab's first app and folder), or null if nowhere. */
   sessionPlace(): Promise<{ app: string; workspace: string } | null>;
-  startSession(prompt: string): Promise<void>;
-  openNewSession(): void;
+  /** Starts it exactly where the card said it would. */
+  startSession(prompt: string, where: { app: string; workspace: string }): Promise<void>;
+  /** The Sessions tab's form, with the dictated prompt already in it. */
+  openNewSession(prompt?: string): void;
   pause(minutes: number): void;
   setDnd(on: boolean): void;
 }
 
-const errorText = (t: Translate, e: unknown): string => {
+/** The mic's or the engine's failure in words the person can act on (also used by Settings). */
+export const voiceErrorText = (t: Translate, e: unknown): string => {
   const name = (e as { name?: unknown } | null)?.name;
   if (name === "NotAllowedError" || name === "SecurityError") return t("offlineVoice.micDenied");
+  if (name === "NotFoundError" || name === "OverconstrainedError") return t("offlineVoice.micMissing");
+  if (name === "NotReadableError" || name === "AbortError") return t("offlineVoice.micBusy");
+  if (e instanceof MicSilentError) return t("offlineVoice.micSilent");
   if (e instanceof EngineUnreachableError || e instanceof EngineNotLocalError) return t("offlineVoice.engineDown");
+  if (e instanceof EngineTimeoutError) return t("offlineVoice.engineSlow");
   if (e instanceof EngineFailedError) return t("offlineVoice.engineFailed", { status: e.status });
   return t("offlineVoice.failed");
 };
+const errorText = voiceErrorText;
 
 const optionText = (t: Translate, o: CardOption, place: { app: string; workspace: string } | null): string => {
   switch (o.kind) {
@@ -67,16 +82,26 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
   const [done, setDone] = useState<Set<number>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [place, setPlace] = useState<{ app: string; workspace: string } | null>(null);
+  const [placing, setPlacing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // The hotkey brings the card up from anywhere: put the keyboard on it.
+  useEffect(() => heading.current?.focus(), [options]);
   useEffect(() => {
     setDone(new Set());
     setError(null);
     setPlace(null);
     if (!options.some((o) => o.kind === "newSession" && o.prompt)) return;
     let live = true;
-    actions.sessionPlace().then(
-      (p) => live && setPlace(p),
-      () => undefined,
-    );
+    setPlacing(true);
+    actions
+      .sessionPlace()
+      .then(
+        (p) => live && setPlace(p),
+        // Without the agent the option says it opens the form with the prompt, and does that.
+        (e: unknown) => console.warn("offline-voice: where to start a session", e),
+      )
+      .finally(() => live && setPlacing(false));
     return () => void (live = false);
   }, [options]);
 
@@ -94,8 +119,8 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
               : errorText(t, state.error);
     const settled = state.phase !== "listening" && state.phase !== "transcribing";
     return (
-      <section className="card voice-card row" data-offline-voice={state.phase} aria-live="polite">
-        <span role={state.phase === "error" ? "alert" : undefined}>{line}</span>
+      <section className="card voice-card row" data-offline-voice={state.phase}>
+        {state.phase === "error" ? <span role="alert">{line}</span> : <span aria-live="polite">{line}</span>}
         <button type="button" onClick={() => voice.dismiss()}>
           {settled ? t("offlineVoice.close") : t("offlineVoice.cancel")}
         </button>
@@ -110,7 +135,7 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
       case "deny": {
         const aid = o.item?.aid;
         const still = aid && actions.snapshot().approvals.some((a) => a.aid === aid && a.status === "pending");
-        if (!still) throw new Error(t("offlineVoice.gone"));
+        if (!still) throw new GoneError();
         await actions.decide(aid, o.kind === "approve");
         break;
       }
@@ -118,8 +143,8 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
         if (o.session) actions.openSession(o.session.sid);
         break;
       case "newSession":
-        if (o.prompt && place) await actions.startSession(o.prompt);
-        else actions.openNewSession();
+        if (o.prompt && place) await actions.startSession(o.prompt, place);
+        else actions.openNewSession(o.prompt);
         break;
       case "pause":
         actions.pause(o.minutes);
@@ -130,16 +155,26 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
     }
   };
   const click = async (picks: number[]) => {
+    setBusy(true);
+    const finished = new Set(done);
     try {
       for (const i of picks) {
         await run(i);
-        setDone((d) => new Set(d).add(i));
+        finished.add(i);
+        setDone(new Set(finished));
       }
-      const left = options.filter((o, i) => runnable(o) && !done.has(i) && !picks.includes(i));
+      const left = options.filter((o, i) => runnable(o) && !finished.has(i));
       if (!left.length) voice.dismiss();
       else setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      console.warn("offline-voice: card action", e);
+      setError(
+        e instanceof GoneError
+          ? t("offlineVoice.gone")
+          : t("offlineVoice.actionFailed", { reason: String((e as Error)?.message ?? e) }),
+      );
+    } finally {
+      setBusy(false);
     }
   };
   const all = options.map((o, i) => (inAll(o) && !done.has(i) ? i : -1)).filter((i) => i >= 0);
@@ -147,8 +182,15 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
     o.kind === "approve" && o.block && o.block !== "nothing" ? t(`offlineVoice.block.${o.block}`) : null;
 
   return (
-    <section className="card voice-card stack" data-offline-voice="card" aria-labelledby="voice-card-title">
-      <h2 id="voice-card-title">{options.length > 1 ? t("offlineVoice.which") : t("offlineVoice.confirm")}</h2>
+    <section
+      className="card voice-card stack"
+      data-offline-voice="card"
+      aria-labelledby="voice-card-title"
+      onKeyDown={(e) => e.key === "Escape" && voice.dismiss()}
+    >
+      <h2 id="voice-card-title" tabIndex={-1} ref={heading}>
+        {options.length > 1 ? t("offlineVoice.which") : t("offlineVoice.confirm")}
+      </h2>
       <p className="muted">{t("offlineVoice.heard", { text: state.text })}</p>
       {error && <p role="alert">{error}</p>}
       <ul className="list">
@@ -159,7 +201,11 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
             {done.has(i) ? (
               <span className="pill">{t("offlineVoice.done")}</span>
             ) : (
-              <button type="button" disabled={!runnable(o)} onClick={() => void click([i])}>
+              <button
+                type="button"
+                disabled={busy || !runnable(o) || (o.kind === "newSession" && placing)}
+                onClick={() => void click([i])}
+              >
                 {t(`offlineVoice.button.${o.kind}`)}
               </button>
             )}
@@ -168,7 +214,7 @@ export const VoiceCard = ({ voice, actions }: { voice: OfflineVoice; actions: Vo
       </ul>
       <div className="row">
         {all.length > 1 && (
-          <button type="button" onClick={() => void click(all)}>
+          <button type="button" disabled={busy || placing} onClick={() => void click(all)}>
             {options.some((o) => o.kind === "approve") ? t("offlineVoice.allButApprove") : t("offlineVoice.all")}
           </button>
         )}
@@ -188,7 +234,7 @@ export const panelVoiceActions = (p: {
   ipc: Pick<AgentIpc, "codeApps" | "codeStart">;
   canStepUp: boolean;
   openSession: (sid: string) => void;
-  openNewSession: () => void;
+  openNewSession: (prompt?: string) => void;
   pause: (minutes: number) => void;
   setDnd: (on: boolean) => void;
 }): VoiceActions => {
@@ -202,9 +248,7 @@ export const panelVoiceActions = (p: {
     decide: (aid, allow) => (p.client ? p.client.actions.decide(aid, allow) : Promise.reject(new Error("offline"))),
     openSession: p.openSession,
     sessionPlace: place,
-    startSession: async (prompt) => {
-      const where = await place();
-      if (!where) return p.openNewSession();
+    startSession: async (prompt, where) => {
       const r = await p.ipc.codeStart({
         appId: where.app,
         workspaceLabel: where.workspace,
@@ -241,8 +285,15 @@ export const OfflineVoiceButton = ({ voice }: { voice: OfflineVoice }) => {
       className={`ptt ptt-${state.phase}`}
       data-offline-voice-ptt
       aria-pressed={state.phase === "listening"}
-      onPointerDown={() => void voice.press()}
+      onPointerDown={(e) => {
+        // Captured, so letting go off the button still ends the hold.
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+        void voice.press();
+      }}
       onPointerUp={() => void voice.release()}
+      onPointerCancel={() => void voice.release()}
+      onLostPointerCapture={() => void voice.release()}
+      onBlur={() => void voice.release()}
       onKeyDown={(e) => e.key === " " && !e.repeat && void voice.press()}
       onKeyUp={(e) => e.key === " " && void voice.release()}
     >
