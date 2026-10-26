@@ -7,6 +7,7 @@ mod copies_macos;
 mod copies_windows;
 mod hittest;
 mod ipc_client;
+mod voice_hotkey;
 #[cfg(debug_assertions)]
 mod loopback;
 
@@ -796,13 +797,17 @@ pub fn run() {
                     if event.state() == ShortcutState::Pressed && shortcut == &kill_hotkey() {
                         computer_kill(app, "hotkey");
                     }
+                    if let Some(v) = app.try_state::<voice_hotkey::VoiceHotkey>() {
+                        voice_hotkey::on_shortcut(app, &v, shortcut, event.state());
+                    }
                 })
                 .build(),
         )
         .manage(state.clone())
         .manage(computer_ui.clone())
         .manage(AutostartItem::default())
-        .manage(CopiesDownloads::default());
+        .manage(CopiesDownloads::default())
+        .manage(voice_hotkey::VoiceHotkey::default());
     // Linux writes its own XDG entry (autostart::xdg); the plugin would use ~/.config regardless.
     #[cfg(not(target_os = "linux"))]
     let builder =
@@ -839,6 +844,7 @@ pub fn run() {
         copies_uninstall,
         copies_show_applications,
         copies_scan_downloads,
+        voice_hotkey::set_voice_hotkey,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -864,7 +870,8 @@ pub fn run() {
         copies_reveal,
         copies_uninstall,
         copies_show_applications,
-        copies_scan_downloads
+        copies_scan_downloads,
+        voice_hotkey::set_voice_hotkey
     ]);
     builder
         .setup(move |app| {

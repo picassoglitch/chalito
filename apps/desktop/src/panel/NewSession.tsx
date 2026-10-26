@@ -90,6 +90,7 @@ export const NewSession = ({
   canStepUp = false,
   sid,
   onSid,
+  draft,
 }: {
   ipc: AgentIpc;
   client: Client | null;
@@ -97,6 +98,8 @@ export const NewSession = ({
   /** The session this tab follows; kept by the panel so switching tabs doesn't lose it. */
   sid: string | null;
   onSid: (sid: string | null) => void;
+  /** A prompt dictated by voice: fills the form, never starts it. */
+  draft?: { prompt: string };
 }) => {
   const t = useT();
   const [setup, setSetup] = useState<{ apps: string[]; workspaces: string[] } | null>(null);
@@ -104,7 +107,10 @@ export const NewSession = ({
   const [appId, setAppId] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [mode, setMode] = useState<CodeMode>("default");
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(draft?.prompt ?? "");
+  useEffect(() => {
+    if (draft) setPrompt(draft.prompt);
+  }, [draft]);
   const [next, setNext] = useState("");
   const [busy, setBusy] = useState(false);
 

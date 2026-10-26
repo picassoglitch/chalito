@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Snapshot } from "@chalito/client";
@@ -21,6 +21,7 @@ import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { UpdateController, tauriUpdater } from "../lib/updates.js";
 import { Panel } from "./Panel.js";
 import { SignIn } from "./SignIn.js";
+import { useOfflineVoice } from "./use-offline-voice.js";
 import { DEFAULT_SSO_START_URL, createSession, firstTaskUrl, readEnv, type Connected } from "../lib/session.js";
 import type { SignInController } from "../lib/sign-in.js";
 
@@ -103,6 +104,16 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);
+  const applyDnd = useCallback((on: boolean) => {
+    setDnd(on);
+    try {
+      localStorage.setItem("chalito-desktop-dnd", on ? "1" : "0");
+    } catch {
+      // Not persisted; still applies for this run.
+    }
+  }, []);
+  const showPanel = useCallback(() => void sh.showWindow("panel").catch(() => undefined), [sh]);
+  const offlineVoice = useOfflineVoice(applyDnd, showPanel);
   const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions" | "events">>({
     notifications: [],
     approvals: [],
@@ -168,13 +179,10 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       settingsError={view.error}
       dnd={dnd}
       onDnd={(on) => {
-        setDnd(on);
-        try {
-          localStorage.setItem("chalito-desktop-dnd", on ? "1" : "0");
-        } catch {
-          // Not persisted; still applies for this run.
-        }
+        offlineVoice.cancelPause();
+        applyDnd(on);
       }}
+      offlineVoice={offlineVoice}
       hubPlansUrl={HUB_PLANS_URL}
       phoneVerifier={offlinePhoneVerifier}
       updates={updates}
