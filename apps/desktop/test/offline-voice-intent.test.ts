@@ -181,6 +181,16 @@ describe("voice intent rules: what isn't a command", () => {
     expect(cmds(said)).toEqual(want),
   );
 
+  it.each([
+    "No creo que sea buena idea aprobarlo",
+    "I don't think we should really approve that",
+    "apruébalo no",
+    "approve it? no!",
+    "approve it, nope",
+  ])("a 'no' anywhere around an approve never offers Approve: %s", (said) =>
+    expect(cmds(said).some((c) => c.kind === "approve")).toBe(false),
+  );
+
   it("'¿Me lo apruebas, porfa?' is a polite request; '¿ya lo aprobaste?' is asking about it", () => {
     expect(cmds("¿Me lo apruebas, porfa?")).toEqual([{ kind: "approve" }]);
     expect(cmds("¿Ya lo aprobaste?")).toEqual([]);

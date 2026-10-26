@@ -6,6 +6,8 @@ import { loadOfflineVoice, saveOfflineVoice, type OfflineVoiceSettings } from ".
 import type { OfflineVoiceWiring } from "./VoiceCard.js";
 
 const PAUSE_KEY = "chalito-desktop-dnd-until";
+/** The parser's cap on a spoken pause (240 min). */
+const MAX_PAUSE_MS = 240 * 60_000;
 const stored = (): number | null => {
   try {
     const v = Number(localStorage.getItem(PAUSE_KEY));
@@ -108,7 +110,8 @@ export const useOfflineVoice = (
   // The end is saved, so a restart mid-pause still turns DND off on time.
   useEffect(() => {
     const until = stored();
-    if (until !== null) arm(until);
+    // A saved end can't hold DND longer than the longest pause, whatever was written there.
+    if (until !== null) arm(Math.min(until, Date.now() + MAX_PAUSE_MS));
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };

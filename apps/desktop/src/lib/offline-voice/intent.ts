@@ -134,9 +134,13 @@ const DENY =
   /\b(?:rechaza\w*|rechac\w*|deniega\w*|niegalo|niegala|no (?:\w+ ){0,2}(?:apruebes|autorices|permitas|aceptes)|deny|reject|decline|refuse)\b/;
 const APPROVE =
   /\b(?:aprueba\w*|aprobar(?:lo|la|los|las)?|autoriza(?:lo|la|los|las|r)?|acepta(?:lo|la|los|las|r)?|permitelo|permitela|dale que si|approve|allow it|allow|accept|authorize|go ahead)\b/;
-/** "no / don't / never" a few words before an approve verb, in the same clause, turns it into a deny. */
-const NEGATED =
-  /\b(?:no|don t|dont|not|never|nunca|jamas|ni|can t|cant|cannot|won t|wont|shouldn t|shouldnt)\b(?:\s+\S+){0,3}\s*$/;
+const NEG_WORDS = "no|don t|dont|not|never|nunca|jamas|ni|can t|cant|cannot|won t|wont|shouldn t|shouldnt";
+/** "no / don't / never" right before an approve verb (3 words, same clause) turns it into a deny. */
+const NEGATED = new RegExp(`\\b(?:${NEG_WORDS})\\b(?:\\s+\\S+){0,3}\\s*$`);
+/** Any negation earlier in the clause ("no creo que sea buena idea aprobarlo"): too unsure to offer it. */
+const NEG_IN_CLAUSE = new RegExp(`\\b(?:${NEG_WORDS})\\b`);
+/** A "no" right after the verb ("apruébalo no", "approve it? no!") takes it back. */
+const TAKEN_BACK = /^\s*(?:\S+\s+){0,2}(?:no|not|nope|nah)\b/;
 const WHY_NOT = /\b(?:why not|por que no)\b/;
 /** Asking about it ("¿ya lo aprobaste?", "should I approve it?") rather than asking for it ("¿puedes aprobarlo?"). */
 const ABOUT_IT =
@@ -202,13 +206,18 @@ export const parseIntent = (raw: string): ParsedVoice => {
     const clause = clauseBefore(i);
     return NEGATED.test(clause) && !WHY_NOT.test(clause);
   };
+  const hedgedAt = (i: number) => {
+    const clause = clauseBefore(i);
+    return NEG_IN_CLAUSE.test(clause) && !WHY_NOT.test(clause);
+  };
+  const takenBack = (end: number) => TAKEN_BACK.test(fold(text.slice(orig(end))).folded.replace(DND_ANY, " "));
   const pause = PAUSE.exec(rest);
   if (pause) {
     const from = pause.index + pause[0].length;
     const tokens = [...rest.slice(from).matchAll(/\S+/g)];
     const d = duration(tokens.map((t) => t[0]));
     const minutes = d ? Math.min(Math.max(d.minutes, 1), 240) : 15;
-    if (!negatedAt(pause.index)) found.push({ index: pause.index, cmd: { kind: "pause", minutes } });
+    if (!hedgedAt(pause.index)) found.push({ index: pause.index, cmd: { kind: "pause", minutes } });
     const last = d && d.used ? tokens[d.used - 1]! : null;
     blank(pause.index, (last ? from + last.index + last[0].length : from) - pause.index);
   }
@@ -224,13 +233,16 @@ export const parseIntent = (raw: string): ParsedVoice => {
   };
   const denyM = DENY.exec(rest);
   // "Don't reject it" isn't a deny; it isn't clearly an approve either, so it offers nothing.
-  const deny = denyM && !asksAbout(denyM.index) && !negatedAt(denyM.index) ? denyM : null;
+  const deny = denyM && !asksAbout(denyM.index) && !hedgedAt(denyM.index) ? denyM : null;
   if (denyM) blank(denyM.index, denyM[0].length);
   if (deny) found.push({ index: deny.index, cmd: { kind: "deny" } });
   const approveM = deny ? null : APPROVE.exec(rest);
   const approve = approveM && !asksAbout(approveM.index) ? approveM : null;
   if (approve) {
-    found.push({ index: approve.index, cmd: { kind: negatedAt(approve.index) ? "deny" : "approve" } });
+    const end = approve.index + approve[0].length;
+    // Never an Approve card when a "no" is anywhere near it: a deny if it's plainly negated, else nothing.
+    const kind = negatedAt(approve.index) ? "deny" : hedgedAt(approve.index) || takenBack(end) ? null : "approve";
+    if (kind) found.push({ index: approve.index, cmd: { kind } });
     blank(approve.index, approve[0].length);
   }
   const open = OPEN.exec(rest);

@@ -860,6 +860,17 @@ describe("panel hook: the hotkey is held only while the mode is on", () => {
     expect(third).toHaveBeenCalledWith(false);
   });
 
+  it("a saved pause end far in the future still ends DND within the longest pause", () => {
+    vi.useFakeTimers();
+    localStorage.setItem("chalito-desktop-dnd-until", String(Date.now() + 365 * 24 * 60 * 60_000));
+    const setDnd = vi.fn();
+    renderHook(() => useOfflineVoice(setDnd, vi.fn(), { hotkey: fakeHotkey().hotkey }));
+    act(() => vi.advanceTimersByTime(240 * 60_000 - 1));
+    expect(setDnd).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(setDnd).toHaveBeenCalledWith(false);
+  });
+
   it("a hotkey listener that fails to attach is reported, not swallowed", async () => {
     const hk = fakeHotkey();
     hk.hotkey.onPtt = () => Promise.reject(new Error("no event bridge"));
