@@ -41,6 +41,7 @@ export const ConnectComputer = ({
   auto = null,
   signedIn = auto !== null,
   pollMs = PAIRING_POLL_MS,
+  onNeedsYou,
 }: {
   ipc: AgentIpc;
   openUrl: (url: string) => Promise<void>;
@@ -50,6 +51,8 @@ export const ConnectComputer = ({
   /** The panel is signed in (shown when it isn't: signing in is what connects this computer). */
   signedIn?: boolean;
   pollMs?: number;
+  /** ADR 0032 — a check only the person can answer (an unknown approver, replacing the account). */
+  onNeedsYou?: () => void;
 }) => {
   const t = useT();
   const [notPaired, setNotPaired] = useState(false);
@@ -144,6 +147,17 @@ export const ConnectComputer = ({
       void openUrl(p.computer.approveUrl).catch(() => undefined);
     }
   }, [p, openUrl, auto, ipc]);
+
+  // The same condition the reverse check and the replace prompt below render on.
+  const asks =
+    (p?.state === "claimed" && !!p.claimer && (!auto || askReverse === p.pairingId)) ||
+    (p?.state === "replace" && !!p.replacePhrase);
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    if (!asks || !p || asked.current === `${p.pairingId}:${p.state}`) return;
+    asked.current = `${p.pairingId}:${p.state}`;
+    onNeedsYou?.();
+  }, [asks, p, onNeedsYou]);
 
   const act = async (run: () => Promise<unknown>) => {
     setBusy(true);

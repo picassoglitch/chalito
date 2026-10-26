@@ -391,8 +391,7 @@
     "reopen": "Open again",
     "cancel": "Cancel",
     "exchanging": "Checking…",
-    "endorsing": "Open Chalito on a trusted device (your phone) and approve this computer with this code.",
-    "ready": "Done: this computer is now trusted.",
+    "ready": "All set: signing in approved this computer.",
     "noPasskey": "This computer has no passkey: HIGH or CRITICAL actions are approved from your phone.",
     "retry": "Try again",
     "errors": {
@@ -402,10 +401,6 @@
       "token_replayed": "That link was already used. Sign in again.",
       "bad_response": "Unexpected server response.",
       "verify_failed": "Couldn't open your session.",
-      "channel_unavailable": "This computer can't be approved from another device yet.",
-      "cancelled": "Cancelled.",
-      "endorsement_mismatch": "The approval doesn't match this computer.",
-      "endorser_not_trusted": "The approving device isn't trusted.",
       "device_exists": "This computer is already registered.",
       "rejected": "The server refused the registration.",
       "failed": "Something went wrong. Try again.",
@@ -414,9 +409,9 @@
       "wrong_target": "Invalid link.",
       "no_pending": "That link doesn't match a sign-in started here. Try again from here.",
       "state_mismatch": "Invalid link.",
-      "duplicate_param": "Invalid link."
+      "duplicate_param": "Invalid link.",
+      "unsupported": "The Chalito server doesn't support approving this computer by sign-in yet. Try again in a moment."
     },
-    "glyph": "Code to scan with your phone",
     "petHint": "To open this panel again, tap your companion on the screen.",
     "staleLink": "That link was from an earlier attempt. Finish in the newest browser tab, or open it again.",
     "enrolling": "Signing this computer in…"
@@ -750,5 +745,10 @@
     },
     "commentsOne": "1 new comment",
     "retry": "Try again"
+  },
+  "popup": {
+    "title": "Chalito needs your approval",
+    "all": "See all {count} in the inbox",
+    "later": "Later"
   }
 }

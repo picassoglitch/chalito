@@ -128,3 +128,12 @@ body.pet {
 .providers h3 {
   margin: 0 0 4px;
 }
+
+/* ADR 0032 — a waiting approval stays on top of whatever tab is open. */
+.popup {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  border: 2px solid var(--fg);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+}

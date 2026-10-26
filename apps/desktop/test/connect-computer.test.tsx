@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TextProviders } from "../src/lib/i18n.js";
 import { IpcUnavailableError, unavailableIpc, type AgentIpc, type PendingPairing } from "../src/lib/ipc.js";
 import type { AgentStatus } from "../src/lib/local-agent.js";
@@ -48,7 +48,13 @@ const fakeAgent = () => {
 
 const renderConnect = (
   ipc: AgentIpc,
-  opts: { status?: AgentStatus["state"]; locale?: "es" | "en"; opened?: string[]; auto?: AutoPair | null } = {},
+  opts: {
+    status?: AgentStatus["state"];
+    locale?: "es" | "en";
+    opened?: string[];
+    auto?: AutoPair | null;
+    onNeedsYou?: () => void;
+  } = {},
 ) =>
   render(
     <TextProviders locale={opts.locale ?? "es"}>
@@ -58,6 +64,7 @@ const renderConnect = (
         agentStatus={async () => ({ state: opts.status ?? "not_paired" }) as AgentStatus}
         pollMs={20}
         auto={opts.auto ?? null}
+        {...(opts.onNeedsYou ? { onNeedsYou: opts.onNeedsYou } : {})}
       />
     </TextProviders>,
   );
@@ -100,8 +107,11 @@ describe("Conectar esta computadora", () => {
   it("changing account needs the typed phrase", async () => {
     const a = fakeAgent();
     a.set(view({ state: "replace", replacePhrase: "REEMPLAZAR" }));
-    renderConnect(a.ipc);
+    const onNeedsYou = vi.fn();
+    renderConnect(a.ipc, { onNeedsYou });
     const go = (await screen.findByRole("button", { name: "Cambiar de cuenta" })) as HTMLButtonElement;
+    // ADR 0032 — replacing the account is the person's call: the panel comes forward for it.
+    expect(onNeedsYou).toHaveBeenCalledTimes(1);
     expect(go.disabled).toBe(true);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "REEMPLAZAR" } });
     expect(go.disabled).toBe(false);
@@ -153,7 +163,8 @@ describe("Conectar esta computadora, signed in (sign-in alone)", () => {
     const a = fakeAgent();
     const { auto, claims } = autoFor(a);
     const opened: string[] = [];
-    renderConnect(a.ipc, { auto, opened });
+    const onNeedsYou = vi.fn();
+    renderConnect(a.ipc, { auto, opened, onNeedsYou });
     await waitFor(() => expect(a.calls).toContainEqual(["confirmPairing", "p1", true]));
     expect(a.calls.filter((c) => c[0] === "startPairing")).toHaveLength(1);
     expect(claims).toHaveLength(1);
@@ -163,14 +174,19 @@ describe("Conectar esta computadora, signed in (sign-in alone)", () => {
     a.set(view({ state: "paired" }));
     await new Promise((r) => setTimeout(r, 80));
     expect(a.calls.filter((c) => c[0] === "confirmPairing")).toHaveLength(1);
+    expect(onNeedsYou).not.toHaveBeenCalled();
   });
 
   it("an approver that isn't one of the account's devices is never confirmed by itself: the person answers", async () => {
     const a = fakeAgent();
     const { auto } = autoFor(a, "99aa 88bb");
-    renderConnect(a.ipc, { auto: { ...auto, isAccountClient: async () => false } });
+    const onNeedsYou = vi.fn();
+    renderConnect(a.ipc, { auto: { ...auto, isAccountClient: async () => false }, onNeedsYou });
     expect(await screen.findByRole("button", { name: "Sí, fui yo" })).toBeTruthy();
     expect(a.calls.some((c) => c[0] === "confirmPairing")).toBe(false);
+    // ADR 0032 — the panel comes forward for it, once.
+    await new Promise((r) => setTimeout(r, 80));
+    expect(onNeedsYou).toHaveBeenCalledTimes(1);
   });
 
   it("another device the person signed in on (the hub's approval page) is confirmed by itself", async () => {

@@ -11,8 +11,7 @@ const setup = (over: Partial<SignInDeps> = {}) => {
     flow,
     openUrl: async (u) => void opened.push(u),
     exchange: vi.fn(async () => ({ ok: true as const, owner: OWNER })),
-    enroll: vi.fn(async (_o: string, onDisplay: (d: unknown) => void) => {
-      onDisplay({ shortCode: "ABCDE" });
+    enroll: vi.fn(async (_o: string) => {
       return {
         ok: true as const,
         deviceId: "dev1",
@@ -20,7 +19,6 @@ const setup = (over: Partial<SignInDeps> = {}) => {
         passkey: "unavailable" as const,
         credential: null,
         agents: [],
-        droppedAgents: [],
       };
     }),
     ...over,
@@ -34,14 +32,15 @@ const setup = (over: Partial<SignInDeps> = {}) => {
 };
 
 describe("desktop sign-in controller", () => {
-  it("browser → callback → exchange → endorsement → ready", async () => {
+  it("browser → callback → exchange → the sign-in enrols this computer → ready, no code shown", async () => {
     const t = setup();
     await t.c.start();
     expect(t.opened).toHaveLength(1);
     expect(new URL(t.opened[0]!).searchParams.get("redirect_uri")).toBe("chalito://auth/sso");
     await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
     expect(t.deps.exchange).toHaveBeenCalledWith("tok");
-    expect(t.steps).toEqual(["browser", "exchanging", "endorsing", "endorsing", "ready"]);
+    expect(t.steps).toEqual(["browser", "exchanging", "enrolling", "ready"]);
+    expect(t.deps.enroll).toHaveBeenCalledWith(OWNER);
     expect(t.c.getSnapshot()).toEqual({ step: "ready", owner: OWNER, deviceId: "dev1", passkey: "unavailable" });
   });
 
@@ -131,10 +130,11 @@ describe("desktop sign-in controller", () => {
       { exchange: async () => ({ ok: false as const, reason: "token_replayed" as const }) },
       "token_replayed",
     ],
+    ["sign-in refused", { enroll: async () => ({ ok: false as const, reason: "rejected" as const }) }, "rejected"],
     [
-      "endorsement refused",
-      { enroll: async () => ({ ok: false as const, reason: "endorser_not_trusted" as const }) },
-      "endorser_not_trusted",
+      "api without the sign-in route",
+      { enroll: async () => ({ ok: false as const, reason: "unsupported" as const }) },
+      "unsupported",
     ],
     ["browser didn't open", { openUrl: () => Promise.reject(new Error("no browser")) }, "open_failed"],
   ] as const)("%s → error", async (_n, over, reason) => {
@@ -144,6 +144,13 @@ describe("desktop sign-in controller", () => {
     expect(t.c.getSnapshot()).toEqual({ step: "error", reason });
   });
 
+  it("an enrolment that throws (keychain, storage) is an error, never stuck on enrolling", async () => {
+    const t = setup({ enroll: () => Promise.reject(new Error("keychain")) });
+    await t.c.start();
+    await t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
+    expect(t.c.getSnapshot()).toEqual({ step: "error", reason: "failed" });
+  });
+
   it("a link without a token ends the attempt", async () => {
     const t = setup();
     await t.c.start();
@@ -151,21 +158,16 @@ describe("desktop sign-in controller", () => {
     expect(t.c.getSnapshot()).toEqual({ step: "error", reason: "missing_token" });
   });
 
-  it("cancel during the endorsement wait aborts it and returns to signed out", async () => {
-    let signal: AbortSignal | null = null;
-    const t = setup({
-      enroll: (_o, _d, s) => {
-        signal = s;
-        return new Promise((resolve) => s.addEventListener("abort", () => resolve({ ok: false, reason: "cancelled" })));
-      },
-    });
+  it("cancel while enrolling returns to signed out, and a late result is ignored", async () => {
+    let finish: (r: Awaited<ReturnType<SignInDeps["enroll"]>>) => void = () => undefined;
+    const t = setup({ enroll: () => new Promise((resolve) => (finish = resolve)) });
     await t.c.start();
     const done = t.c.handleUrl(t.link({ token: "tok", state: t.stateOf() }));
     await Promise.resolve();
     await Promise.resolve();
     t.c.cancel();
+    finish({ ok: true, deviceId: "dev1", customToken: "h", passkey: "unavailable", credential: null, agents: [] });
     await done;
-    expect(signal!.aborted).toBe(true);
     expect(t.c.getSnapshot().step).toBe("signed_out");
   });
 });

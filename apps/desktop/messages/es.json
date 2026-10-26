@@ -391,8 +391,7 @@
     "reopen": "Abrir de nuevo",
     "cancel": "Cancelar",
     "exchanging": "Verificando…",
-    "endorsing": "Abre Chalito en un dispositivo de confianza (tu teléfono) y aprueba este equipo con este código.",
-    "ready": "Listo: este equipo ya es de confianza.",
+    "ready": "Listo: este equipo quedó aprobado al iniciar sesión.",
     "noPasskey": "Este equipo no tiene llave de acceso: las acciones de riesgo ALTO o CRÍTICO se aprueban desde tu teléfono.",
     "retry": "Intentar de nuevo",
     "errors": {
@@ -402,10 +401,6 @@
       "token_replayed": "Ese enlace ya se usó. Inicia sesión de nuevo.",
       "bad_response": "Respuesta inesperada del servidor.",
       "verify_failed": "No se pudo abrir tu sesión.",
-      "channel_unavailable": "Aún no se puede aprobar este equipo desde otro dispositivo.",
-      "cancelled": "Cancelado.",
-      "endorsement_mismatch": "La aprobación no corresponde a este equipo.",
-      "endorser_not_trusted": "El dispositivo que aprobó no es de confianza.",
       "device_exists": "Este equipo ya está registrado.",
       "rejected": "El servidor rechazó el registro.",
       "failed": "Algo falló. Vuelve a intentarlo.",
@@ -414,9 +409,9 @@
       "wrong_target": "Enlace no válido.",
       "no_pending": "Ese enlace no corresponde a un inicio de sesión abierto en esta ventana. Vuelve a intentarlo desde aquí.",
       "state_mismatch": "Enlace no válido.",
-      "duplicate_param": "Enlace no válido."
+      "duplicate_param": "Enlace no válido.",
+      "unsupported": "El servidor de Chalito aún no permite aprobar este equipo al iniciar sesión. Vuelve a intentarlo en un momento."
     },
-    "glyph": "Código para escanear con tu teléfono",
     "petHint": "Para volver a abrir este panel, toca a tu compañero en la pantalla.",
     "staleLink": "Ese enlace era de un intento anterior. Termina en la pestaña más reciente del navegador o vuelve a abrirla.",
     "enrolling": "Entrando con este equipo…"
@@ -750,5 +745,10 @@
     },
     "commentsOne": "1 comentario nuevo",
     "retry": "Reintentar"
+  },
+  "popup": {
+    "title": "Chalito necesita tu aprobación",
+    "all": "Ver las {count} en la bandeja",
+    "later": "Más tarde"
   }
 }

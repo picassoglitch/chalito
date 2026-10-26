@@ -150,7 +150,11 @@ test("tienda without a companion: items can be bought but not worn; it points to
 });
 
 test("tienda unpaired (the person's session) still works; EN at /en/tienda", async ({ page }) => {
-  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
+  // ADR 0032 — only a refused sign-in keeps the person's own session.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("chalito.dev.paired", "0");
+    window.localStorage.setItem("chalito.dev.signin", "fail");
+  });
   await page.goto("/en/tienda");
   await expect(page.getByRole("heading", { name: "Store" })).toBeVisible();
   await expect(page.getByTestId("store-item")).toHaveCount(28);

@@ -9,6 +9,7 @@ import type { ThisComputerApi } from "../lib/this-computer.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import type { CopiesApi } from "../lib/copies.js";
+import { ApprovalPopup } from "./ApprovalPopup.js";
 import { Inbox } from "./Inbox.js";
 import { NewSession } from "./NewSession.js";
 import { OldCopies } from "./OldCopies.js";
@@ -38,6 +39,10 @@ export interface PanelProps {
   startSignIn?: () => void;
   /** Signed in: connects this computer by itself (owner decision 2026-10-19). */
   autoPair?: AutoPair | null;
+  /** ADR 0032 — an approval is waiting: bring the panel forward. */
+  onNeedsYou?: () => void;
+  /** ADR 0032 — a pairing check only the person can answer (not held back by DND). */
+  onPairingNeedsYou?: () => void;
   ipc: AgentIpc;
   ptt: PushToTalk;
   /** null while loading. */
@@ -90,6 +95,16 @@ export const Panel = (p: PanelProps) => {
           agentStatus={() => p.localAgent!.status()}
           auto={p.client ? (p.autoPair ?? null) : null}
           signedIn={p.client !== null}
+          {...(p.onPairingNeedsYou ? { onNeedsYou: p.onPairingNeedsYou } : {})}
+        />
+      )}
+      {p.client && (
+        <ApprovalPopup
+          client={p.client}
+          canStepUp={p.canStepUp ?? false}
+          hidden={tab === "inbox"}
+          {...(p.onNeedsYou ? { onNew: p.onNeedsYou } : {})}
+          onOpenInbox={() => setTab("inbox")}
         />
       )}
       <SetupChecklist
