@@ -279,7 +279,7 @@ export interface OwnSessionView {
   since: number;
   detail: string | null;
   /** A generic line the panel words itself; `detail` is then only its argument (a tool, a reason). */
-  detailKey: "question" | "approval" | "stopped" | "tool" | null;
+  detailKey: "question" | "approval" | "stopped" | "tool" | "apiError" | null;
   level: "L1" | "L2" | "L3" | null;
   reviewing: boolean;
   guessed: boolean;

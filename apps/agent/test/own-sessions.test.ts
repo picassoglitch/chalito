@@ -320,6 +320,35 @@ describe("review round: what a busy or idle session really is", () => {
     expect([aborted?.event, aborted?.detailKey, aborted?.detail]).toEqual(["error", "stopped", "error"]);
   });
 
+  it("a prompt-type slash command starts a turn; an API error with no text is a key, not English", () => {
+    const done = L({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Listo." }] },
+      timestamp: "2026-10-25T10:01:00Z",
+    });
+    const cmd = L({
+      type: "user",
+      message: { content: "<command-message>review</command-message>\n<command-name>/review</command-name>" },
+      timestamp: "2026-10-25T10:02:00Z",
+    });
+    const expanded = L({
+      type: "user",
+      isMeta: true,
+      message: { content: [{ type: "text", text: "Revisa el PR abierto…" }] },
+      timestamp: "2026-10-25T10:02:00.100Z",
+    });
+    const t = parseClaudeTail([prompt, done, cmd, expanded].join("\n"));
+    expect([t.state, t.since]).toEqual(["working", Date.parse("2026-10-25T10:02:00Z")]);
+    const err = L({
+      type: "assistant",
+      isApiErrorMessage: true,
+      message: { content: [] },
+      timestamp: "2026-10-25T10:03:00Z",
+    });
+    const e = parseClaudeTail([prompt, err].join("\n"));
+    expect([e.state, e.detail, e.detailKey]).toEqual(["error", null, "apiError"]);
+  });
+
   it("a guessed approval stays at L1; a session silent for 30 min stops calling", () => {
     expect(levelFor("approval", 3600, false, { guessed: true })).toBe("L1");
     expect(levelFor("question", 3600, false, { quietS: 30 * 60 })).toBeNull();

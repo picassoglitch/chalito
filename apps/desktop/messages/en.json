@@ -738,7 +738,9 @@
       "stopped": "It stopped.",
       "stoppedWith": "It stopped: {x}",
       "tool": "Waiting on a tool.",
-      "toolWith": "Waiting on: {x}"
+      "toolWith": "Waiting on: {x}",
+      "apiError": "An API call failed.",
+      "apiErrorWith": "An API call failed: {x}"
     },
     "closed": "That session is already closed. It was in:",
     "stale": "Couldn't read the sessions a moment ago; what you see may be out of date."

@@ -78,6 +78,7 @@ export class OwnSessionsFeed {
   #seen = new Set<string>();
   #subs = new Set<() => void>();
   #at = -Infinity;
+  #seq = 0;
 
   constructor(
     private readonly ipc: Pick<AgentIpc, "ownSessions">,
@@ -100,10 +101,14 @@ export class OwnSessionsFeed {
     const now = this.now();
     if (!force && now - this.#at < MIN_REFRESH_MS) return this.#snap;
     this.#at = now;
+    // Replies can come back out of order; only the newest read (or toggle) may land.
+    const n = ++this.#seq;
     try {
       const r = await this.ipc.ownSessions();
+      if (n !== this.#seq) return this.#snap;
       this.#set({ enabled: r.enabled, sessions: r.sessions, error: null }, true);
     } catch (e) {
+      if (n !== this.#seq) return this.#snap;
       // Only a missing agent means "unknown"; any other failure keeps what the person last saw and its toggle.
       if (e instanceof IpcUnavailableError) this.#set({ enabled: null, sessions: [], error: null }, true);
       else this.#set({ ...this.#snap, error: e instanceof Error ? e.message : "internal" }, false);
@@ -113,6 +118,7 @@ export class OwnSessionsFeed {
 
   /** The agent confirmed a toggle: show it now, even if the next read fails. */
   confirmed(enabled: boolean): void {
+    this.#seq++;
     this.#set({ ...this.#snap, enabled, ...(enabled ? {} : { sessions: [] }) }, true);
   }
 

@@ -738,7 +738,9 @@
       "stopped": "Se detuvo.",
       "stoppedWith": "Se detuvo: {x}",
       "tool": "Esperando una herramienta.",
-      "toolWith": "Esperando: {x}"
+      "toolWith": "Esperando: {x}",
+      "apiError": "Falló una llamada a la API.",
+      "apiErrorWith": "Falló una llamada a la API: {x}"
     },
     "closed": "Esa sesión ya se cerró. Estaba en:",
     "stale": "No pude leer las sesiones hace un momento; lo que ves puede estar desactualizado."

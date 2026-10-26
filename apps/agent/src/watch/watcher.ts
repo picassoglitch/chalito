@@ -226,7 +226,13 @@ export class OwnSessionWatcher {
     writeGate(this.paths, on);
     if (on) return;
     this.#reset();
-    for (const f of [ledgerPath(this.paths), `${ledgerPath(this.paths)}.1`]) rmSync(f, { force: true });
+    // The watch is already off; a ledger that can't be removed (Windows lock, antivirus) is only logged.
+    for (const f of [ledgerPath(this.paths), `${ledgerPath(this.paths)}.1`])
+      try {
+        rmSync(f, { force: true });
+      } catch (e) {
+        this.#warn("watch.ledger_not_removed", errCode(e));
+      }
   }
 
   #reset(): void {
@@ -304,7 +310,11 @@ export class OwnSessionWatcher {
   #pollClaude(now: number): OwnSessionView[] {
     const out: OwnSessionView[] = [];
     const live = new Set(this.#claudeFiles);
-    for (const p of this.#claude.keys()) if (!live.has(p)) this.#claude.delete(p);
+    for (const p of this.#claude.keys())
+      if (!live.has(p)) {
+        this.#claude.delete(p);
+        this.#skippedLogged.delete(p);
+      }
     for (const p of this.#claudeFiles) {
       let st: { size: number; mtimeMs: number };
       try {
@@ -361,6 +371,7 @@ export class OwnSessionWatcher {
     for (const [p, r] of this.#rollouts) {
       if (live.has(p)) continue;
       this.#rollouts.delete(p);
+      if (r.meta.id) this.#parents.delete(r.meta.id);
       if (r.meta.id && !existsSync(p)) this.#codex.delete(r.meta.id); // archived: the rollout moved away
     }
     // Learn every new thread's parent before reading any tail, so verdicts resolve to the root chat.
@@ -406,7 +417,6 @@ export class OwnSessionWatcher {
     for (const s of this.#codex.values()) {
       if (now - s.last > this.#staleMs) {
         this.#codex.delete(s.id);
-        this.#parents.delete(s.id);
         continue;
       }
       const cur = codexNow(s, now);

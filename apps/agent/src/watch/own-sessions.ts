@@ -7,7 +7,7 @@ export type OwnSource = "claude" | "codex";
 export type OwnState = "working" | "question" | "approval" | "error" | "finished";
 export type OwnLevel = "L1" | "L2" | "L3";
 /** Generic lines the panel words in the person's language; `detail` then carries only the argument. */
-export type OwnDetailKey = "question" | "approval" | "stopped" | "tool";
+export type OwnDetailKey = "question" | "approval" | "stopped" | "tool" | "apiError";
 
 /** What leaves the agent: derived state only, never transcript lines. */
 export interface OwnSessionView {
@@ -121,10 +121,12 @@ export const parseClaudeTail = (text: string): ClaudeTail => {
   const pending = new Map<string, { name: string; at: number }>();
   let question: { id: string; detail: string | null; at: number } | null = null;
   let since: number | null = null;
+  let commandAt: number | null = null;
   const set = (state: OwnState, at: number, detail: string | null) => {
     if (since === null || out.state !== state) since = at;
     out.state = state;
     out.detail = detail;
+    out.detailKey = null;
   };
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
@@ -146,8 +148,22 @@ export const parseClaudeTail = (text: string): ClaudeTail => {
     const message = obj(d.message);
     const content = message.content;
     if (d.type === "user") {
-      if (d.isMeta === true || d.isCompactSummary === true || d.isVisibleInTranscriptOnly === true) continue;
       const blocks = arr(content).map(obj);
+      const said =
+        typeof content === "string"
+          ? content
+          : blocks
+              .filter((b) => b.type === "text")
+              .map((b) => str(b.text) ?? "")
+              .join(" ");
+      // A prompt-type slash command logs its expanded prompt as a meta line: that starts the turn.
+      if (d.isMeta === true && commandAt !== null && said.trim()) {
+        pending.clear();
+        question = null;
+        set("working", commandAt, null);
+      }
+      if (d.isMeta === true || d.isCompactSummary === true || d.isVisibleInTranscriptOnly === true) continue;
+      commandAt = /^<command-(name|message)>/.test(said.trim()) ? at : null;
       const results = blocks.filter((b) => b.type === "tool_result");
       if (results.length) {
         for (const r of results) {
@@ -158,13 +174,6 @@ export const parseClaudeTail = (text: string): ClaudeTail => {
         set("working", at, null);
         continue;
       }
-      const said =
-        typeof content === "string"
-          ? content
-          : blocks
-              .filter((b) => b.type === "text")
-              .map((b) => str(b.text) ?? "")
-              .join(" ");
       if (LOCAL_COMMAND.test(said.trim())) continue;
       if (INTERRUPTED.test(said.trim())) {
         pending.clear();
@@ -184,7 +193,8 @@ export const parseClaudeTail = (text: string): ClaudeTail => {
       .join(" ");
     if (d.isApiErrorMessage === true) {
       pending.clear();
-      set("error", at, oneLine(text || "API error"));
+      set("error", at, text.trim() ? oneLine(text) : null);
+      if (!text.trim()) out.detailKey = "apiError";
       continue;
     }
     const calls = blocks.filter((b) => b.type === "tool_use");

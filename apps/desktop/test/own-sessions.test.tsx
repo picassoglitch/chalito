@@ -138,6 +138,19 @@ describe("the feed", () => {
     expect(feed.seen.has(alertId(vs[0]!))).toBe(true);
   });
 
+  it("an older read that answers late can't undo a toggle", async () => {
+    let release: (v: { enabled: boolean; sessions: OwnSessionView[] }) => void = () => undefined;
+    const ipc = ipcWith([], false, {
+      ownSessions: vi.fn(() => new Promise<{ enabled: boolean; sessions: OwnSessionView[] }>((r) => (release = r))),
+    });
+    const feed = new OwnSessionsFeed(ipc);
+    const slow = feed.refresh();
+    feed.confirmed(true);
+    release({ enabled: false, sessions: [] });
+    await slow;
+    expect(feed.getSnapshot().enabled).toBe(true);
+  });
+
   it("live-store bursts reuse a fresh read; a forced one asks again", async () => {
     let now = 0;
     const ipc = ipcWith([]);
