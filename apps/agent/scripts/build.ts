@@ -8,9 +8,10 @@
  * `@napi-rs/keyring-*` package installed, or the addon won't be embedded.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { embeddedConfigDefine } from "./embedded-config.js";
 
 export const TARGETS = {
   "x86_64-unknown-linux-gnu": "bun-linux-x64",
@@ -51,6 +52,9 @@ const triples: Triple[] =
             throw new Error(`Unknown target ${targetArg}; use one of ${Object.keys(TARGETS).join(", ")}, host, all`);
           })();
 
+const configDir = resolve(root, "../../packages/config");
+const configFiles = embeddedConfigDefine((f) => readFileSync(join(configDir, f), "utf8"));
+
 mkdirSync(join(root, "dist"), { recursive: true });
 for (const triple of triples) {
   const outfile = join(root, "dist", `chalito-agent-${triple}${triple.includes("windows") ? ".exe" : ""}`);
@@ -69,6 +73,8 @@ for (const triple of triples) {
       `__CHALITO_REMOTE_SCREEN__=${process.env.CHALITO_BUILD_REMOTE_SCREEN === "1"}`,
       "--define",
       `__CHALITO_REMOTE_TERMINAL__=${process.env.CHALITO_BUILD_REMOTE_TERMINAL === "1"}`,
+      "--define",
+      `__CHALITO_CONFIG_FILES__=${configFiles}`,
       `--target=${TARGETS[triple]}`,
       entry,
       "--outfile",

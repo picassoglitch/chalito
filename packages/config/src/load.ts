@@ -18,8 +18,20 @@ import {
 /** Directory holding the YAML files (packages/config). */
 export const CONFIG_DIR = fileURLToPath(new URL("../", import.meta.url));
 
+/** Files a compiled agent carries inside it (apps/agent/scripts/build.ts): it has no packages/config on
+ * disk, and reading one crashed it at start (2026-10-27). Keys are paths relative to CONFIG_DIR. */
+declare const __CHALITO_CONFIG_FILES__: Record<string, string> | undefined;
+const EMBEDDED: Record<string, string> | undefined =
+  typeof __CHALITO_CONFIG_FILES__ !== "undefined" ? __CHALITO_CONFIG_FILES__ : undefined;
+
+/** A config file's text: the embedded copy when reading the default dir, else from disk. */
+export const readConfigFile = (file: string, dir = CONFIG_DIR, embedded = EMBEDDED): string => {
+  const inside = dir === CONFIG_DIR ? embedded?.[file] : undefined;
+  return inside ?? readFileSync(new URL(file, `file://${dir.endsWith("/") ? dir : `${dir}/`}`), "utf8");
+};
+
 const load = <S extends z.ZodTypeAny>(schema: S, file: string, dir = CONFIG_DIR): z.infer<S> => {
-  const raw = parse(readFileSync(new URL(file, `file://${dir.endsWith("/") ? dir : `${dir}/`}`), "utf8"), {
+  const raw = parse(readConfigFile(file, dir), {
     merge: true,
   });
   const result = schema.safeParse(raw);
@@ -49,10 +61,7 @@ export interface LiabilityText {
 
 /** Developer-mode liability clause (brief §5 M3). Its version must match the ToS clause (M15). */
 export const loadLiabilityText = (locale: "es" | "en", dir = CONFIG_DIR): LiabilityText => {
-  const raw = readFileSync(
-    new URL(`legal/devmode-liability.${locale}.md`, `file://${dir.endsWith("/") ? dir : `${dir}/`}`),
-    "utf8",
-  );
+  const raw = readConfigFile(`legal/devmode-liability.${locale}.md`, dir);
   // A Windows checkout may have CRLF line endings.
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n(?:\r?\n)?([\s\S]*)$/.exec(raw);
   if (!match) throw new Error(`devmode-liability.${locale}.md: missing front matter`);
