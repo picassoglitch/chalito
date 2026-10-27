@@ -2,7 +2,8 @@
  * The pet window is transparent and full of nothing: clicks must fall through to whatever
  * is underneath except on the avatar itself. Tauri can't hit-test per pixel (D-006), so the
  * webview sends the avatar's screen-space box and the Rust side polls the cursor against it
- * (~30 Hz) and toggles `set_ignore_cursor_events`.
+ * (~30 Hz) and toggles `set_ignore_cursor_events`. On Linux the box becomes the window's input
+ * region instead (hittest.rs).
  */
 
 /** A rectangle in some pixel space: x, y = top-left. */
