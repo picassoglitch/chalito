@@ -295,6 +295,31 @@ export const rigPose = (i: RigInput): RigPose => {
         pose.head += 5 * keyed(POKE_TILT, u);
         pose.lids = Math.max(pose.lids, 0.7 * keyed(POKE_SQUINT, u));
         break;
+      case "spin": {
+        // Arms out for balance while it turns.
+        const k = hold(u, 0.1, 0.85);
+        pose.armL = Math.max(pose.armL, 75 * k);
+        pose.armR = Math.max(pose.armR, 75 * k);
+        break;
+      }
+      case "giggle": {
+        // Eyes squeezed, mouth open, a hand to the mouth.
+        const k = hold(u, 0.1, 0.8);
+        pose.lids = Math.max(pose.lids, 0.75 * k);
+        pose.mouth = Math.max(pose.mouth, 0.6 * k * (0.6 + 0.4 * Math.abs(Math.sin(u * Math.PI * 10))));
+        pose.armR = Math.max(pose.armR, 55 * k);
+        break;
+      }
+      case "dizzy": {
+        // Head lolls in circles, eyes half shut, arms flop.
+        const k = Math.min(1, u / 0.1) * (1 - u);
+        pose.head += Math.sin(u * Math.PI * 6) * 8 * k;
+        pose.lids = Math.max(pose.lids, 0.5 * k);
+        pose.mouth = Math.max(pose.mouth, 0.25 * k);
+        pose.armL = 20 * k + Math.sin(u * Math.PI * 6) * 15 * k;
+        pose.armR = 20 * k - Math.sin(u * Math.PI * 6) * 15 * k;
+        break;
+      }
     }
   }
   return pose;

@@ -79,7 +79,10 @@ export class PetMotion {
   #ownUntil = -Infinity;
   #movedEvents = false;
   #refreshedAt = -Infinity;
-  #poked = false;
+  /** The pointer is over the character (its own events: the global cursor can be stale on XWayland). */
+  #inside = false;
+  /** Where the last press landed on the canvas (CSS px): the point it hangs from while dragged. */
+  #grab: { x: number; y: number } | null = null;
   /** Launch placement running: the WM's own first moves aren't the person's. */
   #placing = false;
   /** The person grabbed or moved it: launch placement backs off. */
@@ -104,6 +107,15 @@ export class PetMotion {
 
   get walking(): boolean {
     return this.#walk !== null;
+  }
+
+  /** The window's position (physical px), as last seen. */
+  get position(): Spot | null {
+    return this.#pos;
+  }
+
+  get grab(): { x: number; y: number } | null {
+    return this.#grab;
   }
 
   /** Puts the shown window on its saved spot, else the work area's bottom-right corner, using its real size. */
@@ -156,6 +168,7 @@ export class PetMotion {
       if (e.button !== 0) return;
       if (this.#drag) this.#endDrag(this.#clock());
       this.#press.down(e.screenX, e.screenY);
+      this.#grab = { x: e.clientX, y: e.clientY };
       try {
         el.setPointerCapture(e.pointerId);
       } catch {
@@ -163,24 +176,47 @@ export class PetMotion {
       }
     };
     const move = (e: PointerEvent) => {
+      this.#inside = true;
+      this.#pointerAt(e);
       if (this.#press.move(e.screenX, e.screenY) === "drag") this.#beginDrag();
     };
     const up = () => {
       if (this.#press.up() !== "click") return;
-      if (this.#reactions.poke(this.#clock())) this.#poked = true;
+      // The click is the reaction this hover: no notice right after it to cut the trick short.
+      this.#reactions.poke(this.#clock());
       this.opts.onClick();
     };
     const cancel = () => this.#press.cancel();
+    const enter = (e: PointerEvent) => {
+      this.#inside = true;
+      this.#pointerAt(e);
+    };
+    const leave = () => {
+      this.#inside = false;
+    };
     el.addEventListener("pointerdown", down);
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
     el.addEventListener("pointercancel", cancel);
+    el.addEventListener("pointerenter", enter);
+    el.addEventListener("pointerleave", leave);
     return () => {
       el.removeEventListener("pointerdown", down);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
       el.removeEventListener("pointercancel", cancel);
+      el.removeEventListener("pointerenter", enter);
+      el.removeEventListener("pointerleave", leave);
     };
+  }
+
+  /** The pointer over the character, from its own events (physical px like the polled cursor). */
+  #pointerAt(e: PointerEvent): void {
+    const dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
+    const c = { x: Math.round(e.screenX * dpr), y: Math.round(e.screenY * dpr) };
+    const prev = this.#cursor;
+    if (!prev || Math.abs(c.x - prev.x) >= 2 || Math.abs(c.y - prev.y) >= 2) this.#cursorMovedAt = this.#clock();
+    this.#cursor = c;
   }
 
   update(now: number, i: MotionInput): MotionOutput {
@@ -189,13 +225,11 @@ export class PetMotion {
     if (watching) this.#pollCursor(now);
     if (this.#drag && now - this.#drag.lastMoveAt > DRAG_QUIET_MS) this.#endDrag(now);
     if (!this.#walk && !this.#drag && now - this.#refreshedAt > SCREENS_REFRESH_MS) void this.#refreshScreens(now);
-    const hovering = !this.#drag && !!this.#cursor && contains(i.hit, this.#cursor.x, this.#cursor.y);
+    const hovering =
+      !this.#drag && (this.#inside || (!!this.#cursor && contains(i.hit, this.#cursor.x, this.#cursor.y)));
 
     let play: CreatureAction | null = null;
-    if (this.#poked) {
-      this.#poked = false;
-      play = "poke";
-    } else if (this.#reactions.hover(hovering, now, calm(i.state) && !this.#walk && !i.actionPlaying)) play = "notice";
+    if (this.#reactions.hover(hovering, now, calm(i.state) && !this.#walk && !i.actionPlaying)) play = "notice";
 
     const walkPlay = this.#stepWalk(now, i, hovering);
     play ??= walkPlay;

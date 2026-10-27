@@ -42,6 +42,8 @@ libc = "0.2"
 # The pet's input region (apply_input_region). Already in the build through tauri's Linux webview.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# Idle time from GNOME/KDE (idle_os.rs). Already in the build through tauri-plugin-single-instance.
+zbus = "5.9"
 
 # Other copies (copies_windows.rs): reads the uninstall entries, Run value and chalito:// handler.
 # Already in the build through tauri-plugin-autostart and tauri-plugin-deep-link.

@@ -6,7 +6,20 @@ import { keyed, type Key } from "./retro.js";
  * an action plays once (hop done, slump failed, go started, glance alert, perk message; walk/notice/poke: mouse). */
 export type CreatureMode = "rest" | "working" | "needs_you";
 export type CreatureAction =
-  "hop" | "slump" | "wave" | "cheer" | "nod" | "go" | "glance" | "perk" | "walk" | "notice" | "poke";
+  | "hop"
+  | "slump"
+  | "wave"
+  | "cheer"
+  | "nod"
+  | "go"
+  | "glance"
+  | "perk"
+  | "walk"
+  | "notice"
+  | "poke"
+  | "spin"
+  | "giggle"
+  | "dizzy";
 
 export const CREATURE_ACTIONS: readonly CreatureAction[] = [
   "hop",
@@ -20,6 +33,9 @@ export const CREATURE_ACTIONS: readonly CreatureAction[] = [
   "walk",
   "notice",
   "poke",
+  "spin",
+  "giggle",
+  "dizzy",
 ];
 
 export const ACTION_MS: Record<CreatureAction, number> = {
@@ -35,6 +51,10 @@ export const ACTION_MS: Record<CreatureAction, number> = {
   walk: 520,
   notice: 650,
   poke: 480,
+  // Click tricks (owner, 2026-10-26): a click makes it do something, a burst of clicks makes it dizzy.
+  spin: 900,
+  giggle: 1000,
+  dizzy: 1800,
 };
 
 /** A layer over the rest pose: offsets add, scale multiplies, tilt adds (degrees). */
@@ -191,6 +211,36 @@ export const actionLayer = (action: CreatureAction, elapsedMs: number): Creature
       // Squashed by the poke, then a small wobble back.
       const squeeze = keyed(POKE_SQUEEZE, u);
       return { offsetY: 0, scale: squash(1 - squeeze * 0.08), tilt: [0, 0, keyed(POKE_WOBBLE, u)], done: false };
+    }
+    case "spin": {
+      // A paper-card flip on the spot: a small hop and one full turn.
+      return {
+        offsetY: bell(u) * 0.05,
+        scale: squash(1 + 0.04 * bell(u)),
+        tilt: [0, 360 * easeInOutCubic(u), 0],
+        done: false,
+      };
+    }
+    case "giggle": {
+      // Quick little shakes, as if laughing, fading out.
+      const shake = Math.sin(u * Math.PI * 10) * (1 - u);
+      return {
+        offsetY: Math.abs(shake) * 0.012,
+        scale: squash(1 + shake * 0.03),
+        tilt: [0, 0, shake * 4],
+        done: false,
+      };
+    }
+    case "dizzy": {
+      // Wobbles around in a slowing circle, then steadies.
+      const k = Math.min(1, u / 0.1) * (1 - easeOutCubic(u));
+      const a = u * Math.PI * 6;
+      return {
+        offsetY: -0.01 * k,
+        scale: squash(1 - 0.03 * k),
+        tilt: [Math.cos(a) * 6 * k, 0, Math.sin(a) * 10 * k],
+        done: false,
+      };
     }
   }
 };

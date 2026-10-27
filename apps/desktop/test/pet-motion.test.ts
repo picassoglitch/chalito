@@ -186,7 +186,7 @@ describe("pet motion: launch placement after the window is shown (GNOME/mutter)"
 });
 
 describe("pet motion: press, drag and click", () => {
-  it("a press without movement is a click: acks once and plays a poke", async () => {
+  it("a press without movement is a click: reported once, the scene picks the trick", async () => {
     const { m, at, onClick, w } = setup();
     await m.start();
     const el = document.createElement("div");
@@ -196,8 +196,7 @@ describe("pet motion: press, drag and click", () => {
     press(el, "pointerup", 102, 101);
     expect(onClick).toHaveBeenCalledTimes(1);
     expect(w.drags).toBe(0);
-    expect(at(10).play).toBe("poke");
-    expect(at(20).play).toBeNull();
+    expect(at(10).play).toBeNull();
   });
 
   it("moving past the threshold drags the window, no click; letting go saves the spot", async () => {
@@ -276,6 +275,31 @@ describe("pet motion: cursor and hover", () => {
     await flush();
     busy.at(10, { state: "knock" });
     expect(busy.at(10 + HOVER_DWELL_MS, { state: "knock" }).play).toBeNull();
+  });
+
+  it("notices the pointer from its own events when the global cursor is stale (XWayland)", async () => {
+    const { m, w, at } = setup();
+    await m.start();
+    w.cursor = { x: 5, y: 5 };
+    const el = document.createElement("div");
+    m.attach(el);
+    at(0);
+    await flush();
+    el.dispatchEvent(new MouseEvent("pointerenter", { screenX: HIT.x + 10, screenY: HIT.y + 10 }));
+    expect(at(10).play).toBeNull();
+    expect(at(10 + HOVER_DWELL_MS).play).toBe("notice");
+    el.dispatchEvent(new MouseEvent("pointerleave"));
+    at(20 + HOVER_DWELL_MS);
+    expect(at(30 + 2 * HOVER_DWELL_MS).play).toBeNull();
+  });
+
+  it("remembers where it was grabbed, for hanging from that point", async () => {
+    const { m } = setup();
+    await m.start();
+    const el = document.createElement("div");
+    m.attach(el);
+    el.dispatchEvent(new MouseEvent("pointerdown", { button: 0, clientX: 110, clientY: 60 }));
+    expect(m.grab).toEqual({ x: 110, y: 60 });
   });
 });
 
