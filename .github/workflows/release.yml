@@ -106,9 +106,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 22.04: the AppImage runs on distributions with an older glibc too.
+          # 24.04: the AppImage bundles the runner's WebKitGTK; 22.04's 2.50.4 leaves old frames behind the
+          # transparent pet (2026-10-26). Needs glibc 2.39+ (Ubuntu 24.04, Debian 13, Fedora 40).
           - os: linux
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
             bundle: src-tauri/target/release/bundle
           - os: windows
             runner: windows-latest
