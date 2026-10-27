@@ -54,14 +54,17 @@ const TARGETS: Record<Os, string[]> = {
   macos: ["app", "dmg"],
 };
 
-/** The origins a CSP's `connect-src` lists. */
-export const connectSrc = (csp: string): string[] =>
+/** The sources a CSP directive lists (empty when it's absent). */
+const directive = (csp: string, name: string): string[] =>
   (
     csp
       .split(";")
       .map((d) => d.trim().split(/\s+/))
-      .find(([name]) => name === "connect-src") ?? []
+      .find(([n]) => n === name) ?? []
   ).slice(1);
+
+/** The origins a CSP's `connect-src` lists. */
+export const connectSrc = (csp: string): string[] => directive(csp, "connect-src");
 
 /** A connect-src entry that is an api host: `https://api.…`, or a Cloud Run `https://….run.app`. */
 const API_HOST = /^https:\/\/(?:api\.[^/]+|[^/]+\.run\.app)$/;
@@ -72,6 +75,10 @@ const API_HOST = /^https:\/\/(?:api\.[^/]+|[^/]+\.run\.app)$/;
  * every request (ADR 0028 §A). `where` names the CSP in the error: tauri.conf.json's or the overlay's.
  */
 export const checkCsp = (csp: string, apiBase: string, where = "tauri.conf.json CSP") => {
+  // libsodium (device keys, sealing) is WebAssembly: without this the sign-in hangs enrolling (2026-10-27).
+  const scripts = directive(csp, "script-src");
+  const wasm = (scripts.length ? scripts : directive(csp, "default-src")).includes("'wasm-unsafe-eval'");
+  if (!wasm) throw new Error(`${where} script-src doesn't allow 'wasm-unsafe-eval' (libsodium)`);
   const origin = new URL(apiBase).origin;
   const src = connectSrc(csp);
   if (!src.includes(origin)) throw new Error(`${where} connect-src doesn't allow ${origin}`);
