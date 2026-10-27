@@ -76,6 +76,26 @@ pub fn backoff(attempt: u32) -> Duration {
     Duration::from_secs(1u64 << attempt.min(16)).min(MAX_BACKOFF)
 }
 
+/// The public app config this build's panel was made with (release.yml, "Public app config"). The agent
+/// needs the same api and Supabase to pair: it has no config file before that (2026-10-27: pairing failed).
+const BUILT_WIRING: [(&str, Option<&str>); 3] = [
+    ("CHALITO_API_BASE", option_env!("VITE_CHALITO_API_BASE")),
+    ("SUPABASE_URL", option_env!("VITE_SUPABASE_URL")),
+    ("SUPABASE_PUBLISHABLE_KEY", option_env!("VITE_SUPABASE_PUBLISHABLE_KEY")),
+];
+
+/// The variables to give the agent: all the built ones, or none when any endpoint is already set
+/// (a local stack wins whole: its Supabase must not mix with the built api or key).
+pub fn wiring_env(built: &[(&str, Option<&str>)], has: impl Fn(&str) -> bool) -> Vec<(String, String)> {
+    if built.iter().any(|&(k, _)| has(k)) || has("SUPABASE_ANON_KEY") {
+        return Vec::new();
+    }
+    built
+        .iter()
+        .filter_map(|&(k, v)| v.filter(|v| !v.is_empty()).map(|v| (k.to_string(), v.to_string())))
+        .collect()
+}
+
 /// What the supervisor does after the agent exits.
 #[derive(Debug, PartialEq, Eq)]
 pub enum AfterExit {
@@ -233,6 +253,9 @@ impl Supervisor {
         let log = open_log(log_dir)?;
         let mut cmd = Command::new(bin);
         cmd.arg("run").stdout(log.try_clone()?).stderr(log);
+        for (k, v) in wiring_env(&BUILT_WIRING, |k| std::env::var_os(k).is_some_and(|v| !v.is_empty())) {
+            cmd.env(k, v);
+        }
         if self.inner.secret.is_some() {
             cmd.env("CHALITO_IPC", "stdin").stdin(Stdio::piped());
         } else {
@@ -320,6 +343,21 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn the_agent_gets_the_wiring_it_was_built_with_unless_already_set() {
+        let built = [("CHALITO_API_BASE", Some("https://api.example")), ("SUPABASE_URL", Some("")), ("SUPABASE_PUBLISHABLE_KEY", None)];
+        assert_eq!(wiring_env(&built, |_| false), vec![("CHALITO_API_BASE".to_string(), "https://api.example".to_string())]);
+        assert!(wiring_env(&built, |k| k == "CHALITO_API_BASE").is_empty());
+    }
+
+    #[test]
+    fn a_local_stack_wins_whole_instead_of_mixing_with_the_built_wiring() {
+        let built = [("CHALITO_API_BASE", Some("https://api.example")), ("SUPABASE_URL", Some("https://x.supabase.co"))];
+        assert!(wiring_env(&built, |k| k == "SUPABASE_URL").is_empty());
+        assert!(wiring_env(&built, |k| k == "SUPABASE_ANON_KEY").is_empty());
+        assert_eq!(wiring_env(&built, |_| false).len(), 2);
     }
 
     #[test]
