@@ -32,7 +32,7 @@ describe("compiled agent binary", () => {
       const run = spawnSync(bin, [], { cwd: dir, encoding: "utf8" });
       expect([0, 2], run.stderr).toContain(run.status);
       const report = JSON.parse(run.stdout.trim());
-      expect(report).toMatchObject({ smoke: "chalito-agent", addonLoaded: true, sodium: true });
+      expect(report).toMatchObject({ smoke: "chalito-agent", addonLoaded: true, sodium: true, config: "ok" });
       // Remote terminal: Bun's built-in PTY works inside the compiled binary (no addon to embed).
       if (process.platform !== "win32") expect(report).toMatchObject({ pty: "ok", ptyBackend: "bun" });
       expect(report.keyring).toBe(run.status === 0 ? "ok" : "unavailable");
