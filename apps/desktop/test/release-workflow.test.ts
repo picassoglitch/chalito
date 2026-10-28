@@ -39,6 +39,11 @@ describe("release workflow", () => {
     expect(draft).toContain("contents: write");
   });
 
+  it("builds the Linux release on Ubuntu 24.04: 22.04's bundled WebKitGTK leaves pet trails", () => {
+    const linux = /- os: linux\n\s*runner: (\S+)/.exec(code);
+    expect(linux?.[1]).toBe("ubuntu-24.04");
+  });
+
   it("dry runs never create a release", () => {
     expect(code).toMatch(/name: Draft release\n\s*if: needs\.meta\.outputs\.dry_run != 'true'/);
   });
