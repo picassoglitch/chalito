@@ -11,6 +11,7 @@ const ctxArb = fc.record({
   fullscreen: fc.boolean(),
   dnd: fc.boolean(),
   quietHours: fc.boolean(),
+  away: fc.boolean(),
   lowEnergy: fc.boolean(),
   acked: fc.boolean(),
 });
@@ -25,15 +26,20 @@ describe("L0–L4 behaviour", () => {
     expect(at({ level: "L4" })).toMatchObject({ state: "knock", anchor: "center", requestFocus: true });
   });
 
-  it("rest poses: sleepy in quiet hours, tired (yawning) when out of credits", () => {
-    expect(at({ quietHours: true })).toMatchObject({ state: "sleepy" });
+  it("rest poses: sleepy when the person is away, tired (yawning) when out of credits", () => {
+    expect(at({ away: true })).toMatchObject({ state: "sleepy" });
     expect(at({ lowEnergy: true })).toMatchObject({ state: "tired", gesture: "yawn" });
-    expect(at({ quietHours: true, lowEnergy: true }).state).toBe("sleepy");
+    expect(at({ away: true, lowEnergy: true }).state).toBe("sleepy");
+  });
+
+  it("quiet hours only mute: the pet stays awake while the person is around", () => {
+    expect(at({ quietHours: true })).toMatchObject({ state: "idle" });
+    expect(at({ level: "L3", quietHours: true })).toMatchObject({ state: "idle", damped: true, effectiveLevel: "L0" });
   });
 
   it("damping: DND and quiet hours hold L0–L3 at rest, fullscreen at a glance; L4 always passes", () => {
     expect(at({ level: "L3", dnd: true })).toMatchObject({ state: "idle", damped: true, effectiveLevel: "L0" });
-    expect(at({ level: "L3", quietHours: true })).toMatchObject({ state: "sleepy", damped: true });
+    expect(at({ level: "L3", quietHours: true, away: true })).toMatchObject({ state: "sleepy", damped: true });
     expect(at({ level: "L3", fullscreen: true })).toMatchObject({
       state: "glance",
       damped: true,

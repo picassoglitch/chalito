@@ -35,6 +35,9 @@ const RANK: Record<CreatureAction, number> = {
   walk: 0,
   notice: 0,
   poke: 0,
+  spin: 0,
+  giggle: 0,
+  dizzy: 0,
 };
 
 /** Moves that only get attention: muted in Do Not Disturb and quiet hours, like the escalations. */

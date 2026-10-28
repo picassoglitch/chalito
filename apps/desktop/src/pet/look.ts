@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { steppedTime } from "@chalito/avatar";
 import { CreatureBinding, RIG_REST, createCardAvatar, type AvatarFrame, type CardAvatar } from "@chalito/avatar-three";
 import { EMOTION_DRAWING } from "@chalito/roster";
+import { hangRig, rotateAbout } from "./hang.js";
 import type { EmotionTag } from "@chalito/protocol";
 import {
   RENDER_DEFAULTS,
@@ -93,15 +94,27 @@ export class PetLook {
     this.card.setDrawing(EMOTION_DRAWING[tag]);
   }
 
-  apply(frame: AvatarFrame, now: number): void {
+  /** `hang`: swinging from the mouse around `pivot` (card space); `holding` while still held (arms up). */
+  apply(
+    frame: AvatarFrame,
+    now: number,
+    hang: { angle: number; pivot: { x: number; y: number }; holding: boolean } | null = null,
+  ): void {
     this.card.tick(now / 1000);
+    const root = this.card.root;
     if (this.#level.impostors) {
       // The impostor only breathes: a small bob, stepped like every level's motion (owner, 2026-10-25).
-      this.card.root.position.set(0, Math.sin((steppedTime(now) / 1000) * 2.2) * 0.012, 0);
-      return;
+      root.position.set(0, Math.sin((steppedTime(now) / 1000) * 2.2) * 0.012, 0);
+      root.rotation.set(0, 0, 0);
+    } else {
+      this.#binding.apply(frame);
+      this.card.applyRig(hang?.holding ? hangRig(frame.rig) : frame.rig);
     }
-    this.#binding.apply(frame);
-    this.card.applyRig(frame.rig);
+    if (hang) {
+      const p = rotateAbout(root.position, hang.pivot, hang.angle);
+      root.position.set(p.x, p.y, root.position.z);
+      root.rotation.z += hang.angle;
+    }
   }
 
   dispose(): void {

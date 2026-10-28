@@ -5,8 +5,8 @@ import type { EmotionGesture } from "./emotion.js";
  * The pet's attention behaviour for escalation levels L0–L4 (brief §5 M7):
  *   L0 idle → L1 glance → L2 wave at the screen edge → L3 hop near the cursor → L4 centre "knock".
  * Damped in fullscreen, Do Not Disturb and quiet hours; it never steals focus except at L4.
- * In quiet hours the idle pose is "sleepy"; when credits ran out it's "tired" (the M12
- * in-character recharge).
+ * Away from the computer the idle pose is "sleepy" (the person's activity, not the clock: owner,
+ * 2026-10-26); when credits ran out it's "tired" (the M12 in-character recharge).
  */
 export type BehaviourState = "idle" | "sleepy" | "tired" | "glance" | "wave" | "hop" | "knock";
 export type Anchor = "home" | "edge" | "near_cursor" | "center";
@@ -17,6 +17,8 @@ export interface BehaviourContext {
   fullscreen: boolean;
   dnd: boolean;
   quietHours: boolean;
+  /** No input on this computer for a while (idle time, not quiet hours): it dozes off. */
+  away?: boolean;
   /** Out of credits: the companion is "tired" until recharged. */
   lowEnergy: boolean;
   /** The user acknowledged (clicked the pet, opened the panel, acked elsewhere). */
@@ -51,8 +53,7 @@ export const effectiveLevel = (ctx: BehaviourContext): { level: Level | null; da
   return { level: BY_RANK[r]!, damped: r < RANK[ctx.level] };
 };
 
-const restState = (ctx: BehaviourContext): BehaviourState =>
-  ctx.quietHours ? "sleepy" : ctx.lowEnergy ? "tired" : "idle";
+const restState = (ctx: BehaviourContext): BehaviourState => (ctx.away ? "sleepy" : ctx.lowEnergy ? "tired" : "idle");
 
 const forLevel = (level: Level | null, ctx: BehaviourContext): Omit<BehaviourOutput, "effectiveLevel" | "damped"> => {
   switch (level) {

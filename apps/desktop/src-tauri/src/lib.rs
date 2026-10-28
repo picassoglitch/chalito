@@ -6,6 +6,7 @@ mod copies;
 mod copies_macos;
 mod copies_windows;
 mod hittest;
+mod idle_os;
 mod ipc_client;
 mod voice_hotkey;
 #[cfg(debug_assertions)]
@@ -110,10 +111,13 @@ fn touch_activity(state: State<'_, SharedState>) {
     }
 }
 
-/// Milliseconds since the cursor last moved (the presence reporter's idle signal).
+/// Milliseconds since the last input (the presence reporter's idle signal, the pet's sleepiness): the
+/// cursor poll, or the desktop's own count where it sees more (idle_os.rs). Off the main thread: D-Bus.
 #[tauri::command]
-fn idle_ms(state: State<'_, SharedState>) -> u64 {
-    state.lock().map_or(u64::MAX, |s| s.activity.idle_ms(now_ms()))
+async fn idle_ms(state: State<'_, SharedState>) -> Result<u64, String> {
+    let poll = state.lock().map_or(u64::MAX, |s| s.activity.idle_ms(now_ms()));
+    let os = tauri::async_runtime::spawn_blocking(idle_os::idle_ms).await.ok().flatten();
+    Ok(idle_os::combine(poll, os))
 }
 
 /// The bundled agent's state (agent.rs), for the panel.
