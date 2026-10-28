@@ -42,6 +42,12 @@ describe("release workflow", () => {
   it("builds the Linux release on Ubuntu 24.04: 22.04's bundled WebKitGTK leaves pet trails", () => {
     const linux = /- os: linux\n\s*runner: (\S+)/.exec(code);
     expect(linux?.[1]).toBe("ubuntu-24.04");
+    // 24.04 links against glibc 2.39: the packages must refuse an older system instead of failing at start.
+    const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
+      bundle: { linux: { deb: { depends: string[] }; rpm: { depends: string[] } } };
+    };
+    expect(conf.bundle.linux.deb.depends).toContain("libc6 (>= 2.39)");
+    expect(conf.bundle.linux.rpm.depends).toContain("glibc >= 2.39");
   });
 
   it("dry runs never create a release", () => {

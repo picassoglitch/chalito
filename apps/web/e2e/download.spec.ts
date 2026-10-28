@@ -53,10 +53,9 @@ test("/descargar offers the installers from the api's signed manifest, with a ma
   await expect(panel.getByRole("heading", { level: 1 })).toHaveText("Descarga Chalito para tu computadora");
   await expect(panel).toContainText("Versión 1.2.0");
   await panel.getByRole("radio", { name: "Linux" }).click();
-  await expect(panel.getByRole("link", { name: "AppImage (cualquier distribución)" })).toHaveAttribute(
-    "href",
-    "https://storage.example/signed/appimage",
-  );
+  await expect(
+    panel.getByRole("link", { name: "AppImage (Ubuntu 24.04, Debian 13, Fedora 40 o más nuevo)" }),
+  ).toHaveAttribute("href", "https://storage.example/signed/appimage");
   await expect(panel.locator("[data-kind=deb]")).toHaveCount(0);
   await panel.getByRole("radio", { name: "macOS" }).click();
   await expect(panel.locator("[data-unsigned]")).toBeVisible();
