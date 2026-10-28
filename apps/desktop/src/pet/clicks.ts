@@ -24,8 +24,10 @@ export class ClickTracker {
     this.#recent = this.#recent.filter((t) => now - t < BURST_MS);
     this.#recent.push(now);
     if (this.#recent.length >= BURST_CLICKS) {
+      // A click right after the dizzy starts over: it can't pair with the burst's last click into a double.
       this.#recent = [];
       this.#doubleAt = null;
+      this.#last = -Infinity;
       return "dizzy";
     }
     if (this.#doubleAt !== null) {

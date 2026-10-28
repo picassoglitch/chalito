@@ -191,11 +191,17 @@ export const startPet = (
   let lastTrick: ReturnType<typeof pickTrick> | null = null;
   /** Away or drowsy from the computer's idle time (sleep.ts); a click or any input wakes it. */
   let rest: Rest = "awake";
-  const pollIdle = () =>
+  /** Bumped by a waking click, so an idle reply already in flight can't put it back to sleep. */
+  let wakeSeq = 0;
+  const calling = () => !!out && (out.state === "wave" || out.state === "hop" || out.state === "knock");
+  const pollIdle = () => {
+    const seq = wakeSeq;
     void sh.idleMs().then(
       (ms) => {
+        if (seq !== wakeSeq) return;
         const next = restFromIdle(ms);
-        if (wokeUp(rest, next)) {
+        // Coming back perks it up, but like other attention moves not in DND/quiet hours or over a call.
+        if (wokeUp(rest, next) && !ctx.dnd && !ctx.quietHours && !calling()) {
           const now = performance.now();
           flash("surprised", now, 1500);
           driver.playAction("perk", now);
@@ -204,21 +210,24 @@ export const startPet = (
       },
       () => undefined,
     );
+  };
   const idleTimer = setInterval(pollIdle, IDLE_POLL_MS);
   pollIdle();
   /** One click a trick, a burst dizzy, a double click the dashboard (clicks.ts). While it calls for the
    * person (an answer or approval waits) a click still opens the dashboard at once. */
   const onClick = () => {
     const now = performance.now();
-    if (out && (out.state === "wave" || out.state === "hop" || out.state === "knock")) return ack();
+    if (calling()) return ack();
+    const r = clicks.click(now);
     if (rest !== "awake") {
+      // The waking click still counts toward a double click, so a double click on a sleeping pet opens the dashboard.
       rest = "awake";
+      wakeSeq++;
       void sh.touchActivity().catch(() => undefined);
       flash("surprised", now, 1500);
       driver.playAction("perk", now);
       return;
     }
-    const r = clicks.click(now);
     if (r === "dizzy") {
       flash("surprised", now, 2000);
       driver.playAction("dizzy", now);
