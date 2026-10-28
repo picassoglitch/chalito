@@ -145,6 +145,53 @@ describe("turn finished, end to end", () => {
   });
 });
 
+describe("calmer alerts, end to end (from Alux, by Omar)", () => {
+  it("a stuck alert: two pushes, never WhatsApp or a call", async () => {
+    const h = withUser();
+    const alert = item({
+      nid: "al_s1_1",
+      source: "agent_alert",
+      level: "L2",
+      urgency: "normal",
+      coalesceKey: "alert:s1:1",
+      sid: "s1",
+    });
+    expect((await h.publish({ v: 1, type: "notify", uid: UID, item: alert })).status).toBe(204);
+    await drive(h);
+    expect(cap.whatsapp.length + cap.calls.length + cap.sms.length).toBe(0);
+    // Two pushes (L1 now, L2 at +5), each to both subscriptions.
+    expect(h.pushed.filter((p) => p.nid === "al_s1_1").map((p) => p.level)).toEqual(["L1", "L1", "L2", "L2"]);
+    expect(h.store.notifications.get(`${UID}/al_s1_1`)).toMatchObject({ source: "agent_alert", level: "L2" });
+  });
+
+  it("seen rests the row the desktop watches; 2 h later one L1 re-nudge brings it back, desktop only", async () => {
+    const h = withUser();
+    await h.publish({ v: 1, type: "notify", uid: UID, item: item() });
+    h.setClock(NOON_MX + MIN);
+    expect((await h.publish({ v: 1, type: "seen", uid: UID, sid: "s1" })).status).toBe(204);
+    expect(h.store.notifications.get(`${UID}/n1`)).toMatchObject({ state: "snoozed" });
+    const phone = cap.push.length + cap.whatsapp.length + cap.calls.length;
+    await drive(h);
+    expect(cap.push.length + cap.whatsapp.length + cap.calls.length).toBe(phone);
+    expect(h.store.notifications.get(`${UID}/n1`)).toMatchObject({ state: "pending", level: "L1" });
+  });
+
+  it("waiting parks it (acked) and snooze_alert rests one alert", async () => {
+    const h = withUser();
+    await h.publish({ v: 1, type: "notify", uid: UID, item: item() });
+    await h.publish({ v: 1, type: "waiting", uid: UID, sid: "s1", on: true });
+    expect(h.store.notifications.get(`${UID}/n1`)).toMatchObject({ state: "acked", ackedVia: "app" });
+    await h.publish({
+      v: 1,
+      type: "notify",
+      uid: UID,
+      item: item({ nid: "n2", coalesceKey: "session:s2", deepLink: "/s/s2" }),
+    });
+    expect((await h.publish({ v: 1, type: "snooze_alert", uid: UID, nid: "n2" })).status).toBe(204);
+    expect(h.store.notifications.get(`${UID}/n2`)).toMatchObject({ state: "snoozed" });
+  });
+});
+
 describe("a full L4 ladder, end to end", () => {
   it("push → re-push → WhatsApp → call → SMS, each through its provider", async () => {
     const h = withUser();

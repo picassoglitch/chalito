@@ -13,6 +13,7 @@ import {
   Level,
   NotificationId,
   NotificationSource,
+  SessionId,
   Urgency,
 } from "@chalito/protocol";
 import type { EscalationEvent } from "@chalito/escalation";
@@ -37,11 +38,8 @@ export interface AppConfig {
   metaVerifyToken: string;
   /** Cloud Scheduler → POST /tasks/drain-usage (Google OIDC). */
   drain?: OidcExpectation;
-  /**
-   * The database's notify outbox (migration 20261004003050): pg_net pokes on
-   * POST /internal/notify-poke (HMAC with NOTIFY_POKE_SECRET) and Cloud Scheduler's
-   * POST /tasks/drain-notify (Google OIDC). Unset: both routes are 404.
-   */
+  /** The notify outbox (migration 20261004003050): pg_net pokes on /internal/notify-poke (HMAC, NOTIFY_POKE_SECRET),
+   * Cloud Scheduler on /tasks/drain-notify (Google OIDC). Unset: both routes are 404. */
   notify?: { store: NotifyOutboxStore; pokeSecret: string; drain: OidcExpectation };
   /** OpenAI Realtime calls (ADR 0005/0011). Unset: DTMF 1 tells the user to open the app. */
   voice?: VoiceConfig;
@@ -74,6 +72,7 @@ const Item = z.object({
   createdAt: EpochMs,
   approvalExpiresAt: EpochMs.optional(),
   mesaStartsAt: EpochMs.optional(),
+  sid: SessionId.optional(),
 });
 
 export const NotifierMessage = z.discriminatedUnion("type", [
@@ -85,9 +84,15 @@ export const NotifierMessage = z.discriminatedUnion("type", [
     via: Channel.or(z.literal("app")),
     nid: NotificationId.optional(),
     coalesceKey: z.string().max(128).optional(),
+    sid: SessionId.optional(),
+    sources: z.array(NotificationSource).max(16).optional(),
     all: z.boolean().optional(),
   }),
   z.object({ v: z.literal(1), type: z.literal("approval_expired"), uid: Id, nid: NotificationId }),
+  // The person's app (chalito.notification_action): opened a session, parked it, postponed one alert.
+  z.object({ v: z.literal(1), type: z.literal("seen"), uid: Id, sid: SessionId }),
+  z.object({ v: z.literal(1), type: z.literal("waiting"), uid: Id, sid: SessionId, on: z.boolean() }),
+  z.object({ v: z.literal(1), type: z.literal("snooze_alert"), uid: Id, nid: NotificationId }),
 ]);
 
 /** A room event on `room-events`: a metadata nudge only (rooms are end-to-end encrypted). */
@@ -116,10 +121,18 @@ const toEvent = (m: z.infer<typeof NotifierMessage>): EscalationEvent => {
         via: m.via,
         ...(m.nid ? { nid: m.nid } : {}),
         ...(m.coalesceKey ? { coalesceKey: m.coalesceKey } : {}),
+        ...(m.sid ? { sid: m.sid } : {}),
+        ...(m.sources ? { sources: m.sources } : {}),
         ...(m.all ? { all: true } : {}),
       };
     case "approval_expired":
       return { type: "approval_expired", nid: m.nid };
+    case "seen":
+      return { type: "seen", sid: m.sid };
+    case "waiting":
+      return { type: "waiting", sid: m.sid, on: m.on };
+    case "snooze_alert":
+      return { type: "snooze_alert", nid: m.nid };
   }
 };
 
@@ -140,11 +153,8 @@ const sameSecret = (got: string | undefined, want: string) => {
   return timingSafeEqual(a, b);
 };
 
-/**
- * Desktop and call voice share the month's minutes, and a call's own seconds are billed only when
- * it closes: each drain (every minute) ends the calls that have used what was left. Twilio's
- * timeLimit (minutes left at DTMF 1) still bounds a call when nothing else is talking.
- */
+/** Desktop and call voice share the month's minutes and a call is billed when it closes, so each drain ends calls
+ * that used up what was left. Twilio's timeLimit (minutes left at DTMF 1) still bounds a lone call. */
 export const endCallsAtCap = async (deps: NotifierDeps) => {
   if (!deps.billing || !deps.caps) return 0;
   let ended = 0;
@@ -389,10 +399,9 @@ export const createApp = (deps: NotifierDeps, cfg: AppConfig, verifyOidc: OidcVe
   });
 
   // ---- OpenAI Realtime SIP (Standard Webhooks signature) -----------------------------
-  /**
-   * realtime.call.incoming: accept only calls carrying a valid X-Chalito-Ref (our own DTMF-1
-   * bridge), with the briefing context and the two call tools; reject everything else.
-   */
+
+  /** realtime.call.incoming: only calls with a valid X-Chalito-Ref (our DTMF-1 bridge) are accepted, with the
+   * briefing context and the two call tools; everything else is rejected. */
   app.post("/webhooks/openai", async (c) => {
     const raw = await c.req.text();
     const v = cfg.voice;
