@@ -208,6 +208,23 @@ describe("panel cards", () => {
     await waitFor(() => expect(screen.queryByText("Visto")).toBeNull());
   });
 
+  it("a session whose terminal closed: no alert, no pet reaction, and the card says so", async () => {
+    const tracker = new ActivityTracker();
+    const asking = [view({ state: "question", level: "L1" })];
+    const before = tracker.update(ownSessionLikes(asking), 0, { now: 1 });
+    tracker.update(ownSessionLikes(asking), 0, { now: 2 });
+    const closed = [view({ state: "closed", since: 50 })];
+    const after = tracker.update(ownSessionLikes(closed), 0, { notifications: ownNotices(closed, new Set()), now: 60 });
+    expect(activityActions(before, after)).toEqual([]);
+    expect(after.mode).toBe("rest");
+    expect(ownLevel(closed, new Set())).toBeNull();
+    const feed = new OwnSessionsFeed(ipcWith(closed));
+    await feed.refresh();
+    show(<OwnSessions feed={feed} ipc={unavailableIpc} />);
+    expect(screen.getByText("Se cerró sin terminar")).toBeTruthy();
+    expect(screen.queryByText("Visto")).toBeNull();
+  });
+
   it("a guessed Claude approval and a Codex review say what they are", async () => {
     const feed = new OwnSessionsFeed(
       ipcWith([

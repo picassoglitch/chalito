@@ -137,6 +137,33 @@ const firstLine = (path: string): string | null => {
   }
 };
 
+const newest = (files: { p: string; m: number }[]): string[] =>
+  files
+    .sort((a, b) => b.m - a.m)
+    .slice(0, MAX_FILES)
+    .map((f) => f.p);
+
+/** Session ids with a live pid file, or null when Claude keeps none here (older versions): then we can't tell. */
+const claudeRunning = (dir: string): Set<string> | null => {
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".json"));
+  } catch {
+    return null;
+  }
+  const ids = new Set<string>();
+  for (const n of names) {
+    try {
+      const s = JSON.parse(readFileSync(join(dir, n), "utf8")) as { sessionId?: unknown };
+      if (typeof s.sessionId === "string") ids.add(s.sessionId);
+    } catch {
+      // being written: counts as unknown, not as closed
+      return null;
+    }
+  }
+  return ids;
+};
+
 const list = (dir: string): string[] => {
   try {
     return readdirSync(dir);
@@ -167,8 +194,14 @@ const QUIET_WORKING_MS = 30 * 60 * 1000;
 const LIST_EVERY_MS = 30_000;
 /** The pet tick and the panel both ask; one read serves both. */
 const CACHE_MS = 2_000;
-const CLAUDE_TAIL_BYTES = 512 * 1024;
-const ROLLOUT_SEED_BYTES = 1_000_000;
+const CLAUDE_TAIL_BYTES = 256 * 1024;
+const ROLLOUT_SEED_BYTES = 256 * 1024;
+/** Bounds the synchronous reads: only the most recently written sessions of each tool are followed. */
+export const MAX_FILES = 40;
+/** Day folders older than this aren't listed; a rollout lives in the folder of the day it started. */
+const ROLLOUT_DAYS = 8;
+/** Claude writes its pid file a moment after the transcript starts; give it that long. */
+const PID_GRACE_MS = 30_000;
 
 /** Read-only: the tools' files are only ever opened for reading, and not at all while the opt-in is off. */
 export class OwnSessionWatcher {
@@ -274,7 +307,7 @@ export class OwnSessionWatcher {
   }
 
   #listClaude(now: number): string[] {
-    const out: string[] = [];
+    const out: { p: string; m: number }[] = [];
     for (const d of list(this.paths.claudeProjects)) {
       const dir = join(this.paths.claudeProjects, d);
       // Only <project>/<session>.jsonl: subagent transcripts sit one level deeper.
@@ -282,29 +315,30 @@ export class OwnSessionWatcher {
         if (!n.endsWith(".jsonl")) continue;
         const p = join(dir, n);
         const m = mtimeOf(p);
-        if (m !== null && now - m < this.#staleMs) out.push(p);
+        if (m !== null && now - m < this.#staleMs) out.push({ p, m });
       }
     }
-    return out;
+    return newest(out);
   }
 
   #listRollouts(now: number): string[] {
     const root = join(this.paths.codexHome, "sessions");
-    const out: string[] = [];
+    const out: { p: string; m: number }[] = [];
     const digits = (dir: string) => list(dir).filter((n) => /^\d+$/.test(n));
-    // Rollouts stay in the folder of the day they started, so every day folder is a candidate.
+    const oldest = now - ROLLOUT_DAYS * DAY_MS;
     for (const y of digits(root))
       for (const m of digits(join(root, y)))
         for (const d of digits(join(root, y, m))) {
+          if (Date.UTC(Number(y), Number(m) - 1, Number(d) + 1) < oldest) continue;
           const dir = join(root, y, m, d);
           for (const n of list(dir)) {
             if (!n.startsWith("rollout-") || !n.endsWith(".jsonl")) continue;
             const p = join(dir, n);
             const mt = mtimeOf(p);
-            if (mt !== null && now - mt < this.#staleMs) out.push(p);
+            if (mt !== null && now - mt < this.#staleMs) out.push({ p, m: mt });
           }
         }
-    return out;
+    return newest(out);
   }
 
   #pollClaude(now: number): OwnSessionView[] {
@@ -315,6 +349,7 @@ export class OwnSessionWatcher {
         this.#claude.delete(p);
         this.#skippedLogged.delete(p);
       }
+    const running = claudeRunning(this.paths.claudeSessions);
     for (const p of this.#claudeFiles) {
       let st: { size: number; mtimeMs: number };
       try {
@@ -343,8 +378,11 @@ export class OwnSessionWatcher {
       const t = hit.tail;
       const id = t.id ?? basename(p, ".jsonl");
       const last = Math.max(t.last, hit.mtime);
-      const cur = claudeNow(t, now, hit.mtime);
+      let cur = claudeNow(t, now, hit.mtime);
       if (cur.state === "working" && now - last > QUIET_WORKING_MS) continue;
+      // Its terminal is gone: whatever it was waiting for, nobody can answer it any more.
+      if (cur.state !== "finished" && running && !running.has(id) && now - last > PID_GRACE_MS)
+        cur = { state: "closed", since: last, detail: null, detailKey: null, guessed: false };
       const waited = Math.max(0, (now - cur.since) / 1000);
       const quietS = Math.max(0, (now - last) / 1000);
       out.push({
@@ -420,7 +458,8 @@ export class OwnSessionWatcher {
         continue;
       }
       const cur = codexNow(s, now);
-      if (cur.state === "working" && now - s.last > QUIET_WORKING_MS) continue;
+      // Silent this long while "working" or "approval": Codex quit or the turn died; drop the card.
+      if ((cur.state === "working" || cur.state === "approval") && now - s.last > QUIET_WORKING_MS) continue;
       // Opened in the Codex app after the turn ended (5 s margin for the app's own write).
       const seen =
         cur.state === "finished" &&

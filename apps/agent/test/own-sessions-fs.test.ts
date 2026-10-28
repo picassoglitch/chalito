@@ -21,7 +21,14 @@ import { ipcHandlers, type IpcDeps } from "../src/ipc-handlers.js";
 import type { ProcessRunner } from "../src/runner.js";
 import { recordHook } from "../src/watch/hook.js";
 import { claudePid, openOwnSession } from "../src/watch/open.js";
-import { OwnSessionWatcher, ledgerPath, watchEnabled, watchPaths, type WatchPaths } from "../src/watch/watcher.js";
+import {
+  MAX_FILES,
+  OwnSessionWatcher,
+  ledgerPath,
+  watchEnabled,
+  watchPaths,
+  type WatchPaths,
+} from "../src/watch/watcher.js";
 
 const fixture = (name: string) => readFileSync(join(import.meta.dirname, "fixtures", "watch", name), "utf8");
 const CLAUDE_ID = "7f3e2a10-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
@@ -272,6 +279,55 @@ describe("watching the person's own sessions (real files in a temp home)", () =>
     w.setEnabled(false);
     expect(existsSync(ledgerPath(paths))).toBe(false);
     expect(snapshot(join(home, ".codex"))).toEqual(before);
+  });
+
+  it("a manual approval with nothing after it: L3 at 6 min, quiet at 11, card gone at 31", () => {
+    const { paths, day } = fakeHome();
+    const t0 = Date.parse("2026-10-25T17:20:00Z");
+    appendFileSync(
+      join(day, `rollout-2026-10-25T17-00-00-${CODEX_ID}.jsonl`),
+      `${JSON.stringify({ timestamp: "2026-10-25T17:19:00.000Z", type: "event_msg", payload: { type: "task_started" } })}\n`,
+    );
+    let now = t0;
+    const w = watcher(paths, () => now);
+    w.setEnabled(true);
+    recordHook(JSON.stringify({ hook_event_name: "PermissionRequest", session_id: CODEX_ID }), paths, t0);
+    const codex = () => w.poll().find((s) => s.source === "codex");
+    now = t0 + 6 * 60_000;
+    expect([codex()?.state, codex()?.level]).toEqual(["approval", "L3"]);
+    now = t0 + 11 * 60_000;
+    expect([codex()?.state, codex()?.level]).toEqual(["approval", null]);
+    now = t0 + 31 * 60_000;
+    expect(codex()).toBeUndefined();
+  });
+
+  it("a Claude session whose terminal closed shows as closed, not as still asking", () => {
+    const { home, paths } = fakeHome();
+    const sessions = join(home, ".claude", "sessions");
+    mkdirSync(sessions);
+    writeFileSync(join(sessions, "4242.json"), JSON.stringify({ pid: 4242, sessionId: "someone-else" }));
+    const w = watcher(paths);
+    w.setEnabled(true);
+    const q = w.poll().find((v) => v.id === QUESTION_ID)!;
+    expect([q.state, q.level]).toEqual(["closed", null]);
+    expect(w.poll().find((v) => v.id === CLAUDE_ID)!.state).toBe("finished");
+    writeFileSync(join(sessions, "4343.json"), JSON.stringify({ pid: 4343, sessionId: QUESTION_ID }));
+    const again = watcher(paths);
+    expect(again.poll().find((v) => v.id === QUESTION_ID)!.state).toBe("question");
+  });
+
+  it("follows only the newest sessions of each tool", () => {
+    const { paths, proj } = fakeHome();
+    for (let i = 0; i < MAX_FILES + 5; i++) {
+      const f = join(proj, `old-${i}.jsonl`);
+      writeFileSync(f, fixture("claude-finished.jsonl").replaceAll(CLAUDE_ID, `old-${i}`));
+      touch(f, NOW - 3600_000 - i * 1000);
+    }
+    const w = watcher(paths);
+    w.setEnabled(true);
+    const ids = w.poll().map((v) => v.id);
+    expect(ids).toContain(CLAUDE_ID);
+    expect(ids.filter((id) => id.startsWith("old-")).length).toBe(MAX_FILES - 2);
   });
 
   it("honours CLAUDE_CONFIG_DIR and CODEX_HOME", () => {

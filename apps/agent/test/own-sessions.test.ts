@@ -349,6 +349,28 @@ describe("review round: what a busy or idle session really is", () => {
     expect([e.state, e.detail, e.detailKey]).toEqual(["error", null, "apiError"]);
   });
 
+  it("a calm pet: anything Codex writes after an approval request means it was answered", () => {
+    const sessions = new Map<string, CodexSession>();
+    reduceCodex(sessions, { session: "c", event: "settings", reviewer: "user", ts: 1_000 });
+    reduceCodex(sessions, { session: "c", event: "notify", detailKey: "approval", ts: 10_000 });
+    reduceCodex(sessions, { session: "c", event: "activity", ts: 9_000 }); // written before the request
+    expect(sessions.get("c")!.state).toBe("approval");
+    reduceCodex(sessions, { session: "c", event: "activity", ts: 12_000 });
+    expect(sessions.get("c")!.state).toBe("working");
+    const meta: RolloutMeta = { id: "c", user: true };
+    const begin = codexEvent(
+      JSON.stringify({ timestamp: "2026-10-25T10:00:00Z", type: "event_msg", payload: { type: "exec_command_begin" } }),
+      meta,
+    );
+    expect(begin?.event).toBe("activity");
+  });
+
+  it("an approval nobody answers stops calling after 10 min of silence; a question keeps calling until 30", () => {
+    expect(levelFor("approval", 9 * 60, false, { quietS: 9 * 60 })).toBe("L3");
+    expect(levelFor("approval", 10 * 60, false, { quietS: 10 * 60 })).toBeNull();
+    expect(levelFor("question", 10 * 60, false, { quietS: 10 * 60 })).toBe("L3");
+  });
+
   it("a guessed approval stays at L1; a session silent for 30 min stops calling", () => {
     expect(levelFor("approval", 3600, false, { guessed: true })).toBe("L1");
     expect(levelFor("question", 3600, false, { quietS: 30 * 60 })).toBeNull();

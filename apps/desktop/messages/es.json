@@ -832,7 +832,8 @@
       "guessed": "Parece esperar tu aprobación",
       "reviewing": "Codex lo está revisando",
       "error": "Se detuvo con un error",
-      "finished": "Terminó"
+      "finished": "Terminó",
+      "closed": "Se cerró sin terminar"
     },
     "observed": "Solo la estás viendo desde aquí: Chalito no puede aprobar ni responder esta sesión. Hazlo donde la abriste.",
     "open": "Abrir",

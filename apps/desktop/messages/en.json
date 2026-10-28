@@ -832,7 +832,8 @@
       "guessed": "Looks like it's waiting for your approval",
       "reviewing": "Codex is reviewing it",
       "error": "Stopped with an error",
-      "finished": "Finished"
+      "finished": "Finished",
+      "closed": "Closed before it finished"
     },
     "observed": "You're only watching this from here: Chalito can't approve or answer this session. Do it where you started it.",
     "open": "Open",

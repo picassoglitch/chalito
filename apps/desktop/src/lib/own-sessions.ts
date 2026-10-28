@@ -21,6 +21,8 @@ const STATE: Record<OwnSessionView["state"], string> = {
   approval: "waiting_approval",
   error: "failed",
   finished: "completed",
+  // Not a protocol state: the pet neither celebrates nor mourns a closed terminal.
+  closed: "closed",
 };
 
 const RANK: Record<Level, number> = { L0: 0, L1: 1, L2: 2, L3: 3, L4: 4 };

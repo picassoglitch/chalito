@@ -276,7 +276,7 @@ export interface OwnSessionView {
   id: string;
   cwd: string | null;
   title: string | null;
-  state: "working" | "question" | "approval" | "error" | "finished";
+  state: "working" | "question" | "approval" | "error" | "finished" | "closed";
   since: number;
   detail: string | null;
   /** A generic line the panel words itself; `detail` is then only its argument (a tool, a reason). */

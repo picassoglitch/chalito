@@ -4,7 +4,8 @@ import { redact } from "@chalito/redact";
 // Adapted from Alux by Omar (homiomar): sacbe pet/feed.js, pet/titles.js, pet/codexread.js.
 
 export type OwnSource = "claude" | "codex";
-export type OwnState = "working" | "question" | "approval" | "error" | "finished";
+/** `closed`: the session's process is gone while it still looked busy or waiting (Claude's pid file left). */
+export type OwnState = "working" | "question" | "approval" | "error" | "finished" | "closed";
 export type OwnLevel = "L1" | "L2" | "L3";
 /** Generic lines the panel words in the person's language; `detail` then carries only the argument. */
 export type OwnDetailKey = "question" | "approval" | "stopped" | "tool" | "apiError";
@@ -332,7 +333,8 @@ export const codexEvent = (line: string, meta: RolloutMeta, parents = new Map<st
   if (d.type !== "event_msg") return null;
   const t = p.type;
   if (t === "task_started") return { ...base, event: "prompt" };
-  if (t === "item_completed" || t === "token_count") return { ...base, event: "activity" };
+  if (t === "item_completed" || t === "token_count" || t === "exec_command_begin")
+    return { ...base, event: "activity" };
   if (t === "task_complete" || (t === "turn_aborted" && p.reason === "interrupted")) {
     const msg = str(p.last_agent_message);
     return { ...base, event: "turn_done", ...(msg ? { detail: oneLine(msg) } : {}) };
@@ -426,6 +428,10 @@ export const reduceCodex = (sessions: Map<string, CodexSession>, ev: CodexEvent 
     case "tool":
       if (s.state === "approval" || (s.state === "finished" && ev.ts > s.since)) to("working", null);
       break;
+    case "activity":
+      // Anything Codex writes after the request means it was answered (allowed, denied, or the turn moved on).
+      if (s.state === "approval" && ev.ts > s.since) to("working", null);
+      break;
     case "review":
       if (s.state === "approval" && ev.outcome && ev.ts >= s.since) to("working", null);
       break;
@@ -488,12 +494,14 @@ export const levelFor = (
   o: { guessed?: boolean; quietS?: number } = {},
 ): OwnLevel | null => {
   if (!NEEDS.has(state) || reviewing) return null;
-  if ((o.quietS ?? 0) >= QUIET_NEEDS_S) return null;
+  if ((o.quietS ?? 0) >= (state === "approval" ? QUIET_APPROVAL_S : QUIET_NEEDS_S)) return null;
   if (o.guessed) return "L1";
   return waitedS >= ESCALATE_S[2] ? "L3" : waitedS >= ESCALATE_S[1] ? "L2" : "L1";
 };
 /** A session that asked and then went silent this long was most likely closed. */
 export const QUIET_NEEDS_S = 30 * 60;
+/** An approval nobody answered and nothing followed: the tool was killed or Codex quit (owner wants a calm pet). */
+export const QUIET_APPROVAL_S = 10 * 60;
 
 /** Most urgent first: sessions that want the person, longest wait first; then the rest, newest first. */
 export const rank = (views: OwnSessionView[]): OwnSessionView[] =>
