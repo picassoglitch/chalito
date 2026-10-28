@@ -59,6 +59,28 @@ describe("pet clicks", () => {
     expect(dbl.due(1150 + DOUBLE_CLICK_MS)).toBe("dashboard");
   });
 
+  it("a call or a drag cancels a click still waiting: no trick or dashboard after it", () => {
+    const single = new ClickTracker();
+    single.click(1000);
+    single.cancel();
+    expect(single.due(5000)).toBeNull();
+    const dbl = new ClickTracker();
+    dbl.click(1000);
+    dbl.click(1100);
+    dbl.cancel();
+    expect(dbl.due(5000)).toBeNull();
+  });
+
+  it("a single not yet settled by the frame loop still gets its trick when the next click comes", () => {
+    const c = new ClickTracker();
+    expect(c.click(1000)).toBeNull();
+    expect(c.click(1000 + DOUBLE_CLICK_MS + 50)).toBe("trick");
+    expect(c.due(5000)).toBe("trick");
+    const woke = new ClickTracker();
+    woke.click(1000, true);
+    expect(woke.click(2000)).toBeNull();
+  });
+
   it("picks every trick over time and never the same one twice in a row", () => {
     let seed = 7;
     const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;

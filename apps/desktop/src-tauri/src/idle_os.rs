@@ -8,7 +8,8 @@ pub fn idle_ms() -> Option<u64> {
     use std::sync::OnceLock;
     use std::time::Duration;
     static BUS: OnceLock<Option<zbus::blocking::Connection>> = OnceLock::new();
-    // A hung desktop answers late or never: give up fast rather than hold a blocking thread for zbus's 25 s.
+    // A hung desktop answers late or never: give up fast
+    // rather than hold a blocking thread for zbus's 25 s default.
     let bus = BUS
         .get_or_init(|| {
             zbus::blocking::connection::Builder::session()
@@ -57,7 +58,10 @@ pub fn idle_ms() -> Option<u64> {
     extern "system" {
         fn GetTickCount() -> u32;
     }
-    let mut info = LastInputInfo { cb_size: std::mem::size_of::<LastInputInfo>() as u32, dw_time: 0 };
+    let mut info = LastInputInfo {
+        cb_size: std::mem::size_of::<LastInputInfo>() as u32,
+        dw_time: 0,
+    };
     // SAFETY: `info` is a valid LASTINPUTINFO with cbSize set, as the call requires.
     if unsafe { GetLastInputInfo(&mut info) } == 0 {
         return None;
@@ -76,7 +80,8 @@ pub fn idle_ms() -> Option<u64> {
         fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
     }
     // SAFETY: a pure query with constant arguments.
-    let s = unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT) };
+    let s =
+        unsafe { CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT) };
     (s.is_finite() && s >= 0.0).then(|| (s * 1000.0) as u64)
 }
 

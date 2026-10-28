@@ -38,8 +38,15 @@ export class ClickTracker {
       this.#pending = { kind: "double", at: now };
       return null;
     }
+    // The frame loop settles clicks every frame; if it hasn't yet, the old single still gets its trick.
+    const late: ClickResult = p?.kind === "single" ? "trick" : null;
     this.#pending = { kind: silent ? "silent" : "single", at: now };
-    return null;
+    return late;
+  }
+
+  /** Forget a click still waiting: a call or a drag took over, so its trick or dashboard no longer fits. */
+  cancel(): void {
+    this.#pending = null;
   }
 
   /** Once per settled click, when its window has passed: a trick, the dashboard, or nothing. */

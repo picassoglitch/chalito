@@ -222,7 +222,10 @@ export const startPet = (
    * While it calls for the person (an answer or approval waits) a click still opens the dashboard at once. */
   const onClick = () => {
     const now = performance.now();
-    if (calling()) return ack();
+    if (calling()) {
+      clicks.cancel();
+      return ack();
+    }
     const waking = rest !== "awake";
     // The waking click plays nothing itself but still pairs: a double click on a sleeping pet opens the dashboard.
     const r = clicks.click(now, waking);
@@ -272,6 +275,7 @@ export const startPet = (
 
   let loop: FrameLoop | null = null;
   const tick = (now: number) => {
+    if (calling()) clicks.cancel();
     const clicked = clicks.due(now);
     if (clicked === "dashboard") ack();
     else if (clicked === "trick") playTrick(now);
@@ -333,6 +337,7 @@ export const startPet = (
       flash("surprised", now, 60_000);
       rest = "awake";
       idle.invalidate();
+      clicks.cancel();
     } else if (!dragging && hung) {
       hung = false;
       faceUntil = now;
