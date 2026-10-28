@@ -15,7 +15,7 @@ import { PerkGate, mouseMayPlay, petReaction, playReaction } from "./reactions.j
 import { PetMotion, type PetWindowApi } from "./motion.js";
 import { ClickTracker, pickTrick } from "./clicks.js";
 import { Pendulum } from "./hang.js";
-import { IDLE_POLL_MS, restFromIdle, wokeUp, type Rest } from "./sleep.js";
+import { IDLE_POLL_MS, IdlePoll, restFromIdle, wokeUp, type Rest } from "./sleep.js";
 import { loadPetWalk } from "../lib/pet-prefs.js";
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
@@ -191,14 +191,14 @@ export const startPet = (
   let lastTrick: ReturnType<typeof pickTrick> | null = null;
   /** Away or drowsy from the computer's idle time (sleep.ts); a click or any input wakes it. */
   let rest: Rest = "awake";
-  /** Bumped by a waking click, so an idle reply already in flight can't put it back to sleep. */
-  let wakeSeq = 0;
+  const idle = new IdlePoll();
   const calling = () => !!out && (out.state === "wave" || out.state === "hop" || out.state === "knock");
   const pollIdle = () => {
-    const seq = wakeSeq;
+    const token = idle.start();
+    if (token === null) return;
     void sh.idleMs().then(
       (ms) => {
-        if (seq !== wakeSeq) return;
+        if (!idle.land(token)) return;
         const next = restFromIdle(ms);
         // Coming back perks it up, but like other attention moves not in DND/quiet hours or over a call.
         if (wokeUp(rest, next) && !ctx.dnd && !ctx.quietHours && !calling()) {
@@ -208,22 +208,27 @@ export const startPet = (
         }
         rest = next;
       },
-      () => undefined,
+      () => void idle.land(token),
     );
+  };
+  const playTrick = (now: number) => {
+    lastTrick = pickTrick(lastTrick, Math.random);
+    flash("happy", now, 1500);
+    driver.playAction(lastTrick, now);
   };
   const idleTimer = setInterval(pollIdle, IDLE_POLL_MS);
   pollIdle();
-  /** One click a trick, a burst dizzy, a double click the dashboard (clicks.ts). While it calls for the
-   * person (an answer or approval waits) a click still opens the dashboard at once. */
+  /** One click a trick, a burst dizzy, a double click the dashboard (clicks.ts; settled in the frame loop).
+   * While it calls for the person (an answer or approval waits) a click still opens the dashboard at once. */
   const onClick = () => {
     const now = performance.now();
     if (calling()) return ack();
-    const r = clicks.click(now);
-    if (rest !== "awake") {
-      // The waking click still counts toward a double click:
-      // a double click on a sleeping pet opens the dashboard.
+    const waking = rest !== "awake";
+    // The waking click plays nothing itself but still pairs: a double click on a sleeping pet opens the dashboard.
+    const r = clicks.click(now, waking);
+    if (waking) {
       rest = "awake";
-      wakeSeq++;
+      idle.invalidate();
       void sh.touchActivity().catch(() => undefined);
       flash("surprised", now, 1500);
       driver.playAction("perk", now);
@@ -232,11 +237,7 @@ export const startPet = (
     if (r === "dizzy") {
       flash("surprised", now, 2000);
       driver.playAction("dizzy", now);
-    } else if (r === "trick") {
-      lastTrick = pickTrick(lastTrick, Math.random);
-      flash("happy", now, 1500);
-      driver.playAction(lastTrick, now);
-    }
+    } else if (r === "trick") playTrick(now);
   };
   const motion = win
     ? new PetMotion(win, {
@@ -271,7 +272,9 @@ export const startPet = (
 
   let loop: FrameLoop | null = null;
   const tick = (now: number) => {
-    if (clicks.due(now)) ack();
+    const clicked = clicks.due(now);
+    if (clicked === "dashboard") ack();
+    else if (clicked === "trick") playTrick(now);
     const o = machine.update({ ...ctx, acked, away: rest === "away" }, now);
     acked = false;
     const act = ctx.activity ?? null;
@@ -329,7 +332,7 @@ export const startPet = (
       pivot = g ? grabPoint(g) : null;
       flash("surprised", now, 60_000);
       rest = "awake";
-      wakeSeq++;
+      idle.invalidate();
     } else if (!dragging && hung) {
       hung = false;
       faceUntil = now;

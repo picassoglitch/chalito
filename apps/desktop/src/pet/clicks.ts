@@ -8,44 +8,46 @@ export const DOUBLE_CLICK_MS = 300;
 export const BURST_CLICKS = 4;
 export const BURST_MS = 2000;
 
+/** What a click returns at once: dizzy, or a trick for a third quick click; null while it may still pair. */
 export type ClickResult = "trick" | "dizzy" | null;
+/** What a settled click turns into once the double-click window has passed (`due`). */
+export type Settled = "trick" | "dashboard" | null;
 
-/** Single, double and burst clicks. A double opens the dashboard only once no third click follows within
- * DOUBLE_CLICK_MS (`due`): someone clicking fast is playing, not asking for the dashboard. */
+/** Single, double and burst clicks. A lone click's trick waits out DOUBLE_CLICK_MS, so a double click
+ * opens the dashboard without a trick first; a third quick click means play, not the dashboard. */
 export class ClickTracker {
   #recent: number[] = [];
-  #last = -Infinity;
-  #doubleAt: number | null = null;
+  /** The click waiting for its window: a single (maybe silent: it only woke the pet) or a double. */
+  #pending: { kind: "single" | "silent" | "double"; at: number } | null = null;
 
-  /** A click at `now`: a trick, dizzy, or null when it may be the second half of a double click. */
-  click(now: number): ClickResult {
-    const prev = this.#last;
-    this.#last = now;
+  /** A click at `now`. `silent`: it woke the pet, so on its own it plays nothing, but it can still pair. */
+  click(now: number, silent = false): ClickResult {
     this.#recent = this.#recent.filter((t) => now - t < BURST_MS);
     this.#recent.push(now);
     if (this.#recent.length >= BURST_CLICKS) {
-      // A click right after the dizzy starts over: it can't pair with the burst's last click into a double.
       this.#recent = [];
-      this.#doubleAt = null;
-      this.#last = -Infinity;
+      this.#pending = null;
       return "dizzy";
     }
-    if (this.#doubleAt !== null) {
-      this.#doubleAt = null;
-      return "trick";
-    }
-    if (now - prev < DOUBLE_CLICK_MS) {
-      this.#doubleAt = now;
+    const p = this.#pending;
+    if (p && now - p.at < DOUBLE_CLICK_MS) {
+      if (p.kind === "double") {
+        this.#pending = null;
+        return "trick";
+      }
+      this.#pending = { kind: "double", at: now };
       return null;
     }
-    return "trick";
+    this.#pending = { kind: silent ? "silent" : "single", at: now };
+    return null;
   }
 
-  /** True once, when a double click stood alone long enough to count. */
-  due(now: number): boolean {
-    if (this.#doubleAt === null || now - this.#doubleAt < DOUBLE_CLICK_MS) return false;
-    this.#doubleAt = null;
-    return true;
+  /** Once per settled click, when its window has passed: a trick, the dashboard, or nothing. */
+  due(now: number): Settled {
+    const p = this.#pending;
+    if (!p || now - p.at < DOUBLE_CLICK_MS) return null;
+    this.#pending = null;
+    return p.kind === "double" ? "dashboard" : p.kind === "single" ? "trick" : null;
   }
 }
 

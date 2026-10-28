@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AWAY_AFTER_MS, DROWSY_AFTER_MS, restFromIdle, wokeUp } from "../src/pet/sleep.js";
+import { AWAY_AFTER_MS, DROWSY_AFTER_MS, IdlePoll, restFromIdle, wokeUp } from "../src/pet/sleep.js";
 
 describe("pet sleep follows the person, not the clock", () => {
   it("awake while used, drowsy after a few idle minutes, asleep when away", () => {
@@ -21,5 +21,33 @@ describe("pet sleep follows the person, not the clock", () => {
     expect(wokeUp("drowsy", "awake")).toBe(true);
     expect(wokeUp("awake", "awake")).toBe(false);
     expect(wokeUp("awake", "drowsy")).toBe(false);
+  });
+});
+
+describe("idle polls", () => {
+  it("one at a time: a poll that hasn't answered blocks the next", () => {
+    const p = new IdlePoll();
+    const a = p.start();
+    expect(a).not.toBeNull();
+    expect(p.start()).toBeNull();
+    expect(p.land(a!)).toBe(true);
+    expect(p.start()).not.toBeNull();
+  });
+
+  it("a reply that lands after something woke the pet is dropped, and frees the next poll", () => {
+    const p = new IdlePoll();
+    const a = p.start()!;
+    p.invalidate();
+    expect(p.start()).toBeNull();
+    expect(p.land(a)).toBe(false);
+    const b = p.start()!;
+    expect(p.land(b)).toBe(true);
+  });
+
+  it("a failed poll frees the next one too", () => {
+    const p = new IdlePoll();
+    const a = p.start()!;
+    p.land(a);
+    expect(p.start()).not.toBeNull();
   });
 });
