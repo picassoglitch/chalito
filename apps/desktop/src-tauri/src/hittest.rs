@@ -1,6 +1,8 @@
 //! Click-through for the transparent pet window (D-006). Tauri has no per-pixel hit test,
 //! so a thread polls the global cursor (~30 Hz) against the avatar's screen-space hit box
-//! (sent by the webview) and toggles `set_ignore_cursor_events`. Everything here is pure so
+//! (sent by the webview) and toggles `set_ignore_cursor_events`. On Linux the hit box becomes the
+//! window's input region instead: XWayland only sees the pointer over its own windows, so polling
+//! never saw it reach a click-through pet (2026-10-26). Everything here is pure so
 //! it can be unit-tested without a window.
 
 use serde::Deserialize;
@@ -48,6 +50,19 @@ impl ClickThrough {
     }
 }
 
+/// The hit box (physical screen px) as a window-local input region in GDK's logical px: rounded
+/// outward so the edge stays clickable, clipped to the window. None when nothing of it is inside.
+pub fn local_region(hit: &Rect, inner: (f64, f64), scale: f64, size: (f64, f64)) -> Option<(i32, i32, i32, i32)> {
+    if scale.is_nan() || scale <= 0.0 {
+        return None;
+    }
+    let x0 = ((hit.x - inner.0) / scale).floor().max(0.0);
+    let y0 = ((hit.y - inner.1) / scale).floor().max(0.0);
+    let x1 = ((hit.x + hit.width - inner.0) / scale).ceil().min(size.0);
+    let y1 = ((hit.y + hit.height - inner.1) / scale).ceil().min(size.1);
+    (x1 > x0 && y1 > y0).then_some((x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
+}
+
 /// The pet takes focus only at escalation level L4 (the "knock"); everything below is
 /// glance/wave/hop without stealing focus.
 pub fn may_focus(level: &str) -> bool {
@@ -91,6 +106,28 @@ mod tests {
     use super::*;
 
     const BOX: Rect = Rect { x: 100.0, y: 200.0, width: 50.0, height: 80.0 };
+
+    #[test]
+    fn the_hit_box_becomes_a_window_local_region_in_logical_px() {
+        let hit = Rect { x: 1100.0, y: 650.0, width: 200.0, height: 300.0 };
+        // Window at physical (1000, 600), scale 2: local logical (50, 25), 100x150.
+        assert_eq!(local_region(&hit, (1000.0, 600.0), 2.0, (220.0, 260.0)), Some((50, 25, 100, 150)));
+    }
+
+    #[test]
+    fn fractional_edges_round_outward_and_the_window_clips() {
+        let hit = Rect { x: 10.5, y: -20.0, width: 300.0, height: 30.7 };
+        assert_eq!(local_region(&hit, (0.0, 0.0), 1.0, (220.0, 260.0)), Some((10, 0, 210, 11)));
+    }
+
+    #[test]
+    fn a_box_outside_the_window_or_a_bad_scale_gives_no_region() {
+        let hit = Rect { x: 5000.0, y: 5000.0, width: 10.0, height: 10.0 };
+        assert_eq!(local_region(&hit, (0.0, 0.0), 1.0, (220.0, 260.0)), None);
+        let inside = Rect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 };
+        assert_eq!(local_region(&inside, (0.0, 0.0), 0.0, (220.0, 260.0)), None);
+        assert_eq!(local_region(&inside, (0.0, 0.0), f64::NAN, (220.0, 260.0)), None);
+    }
 
     #[test]
     fn contains_is_half_open() {
