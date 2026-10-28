@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 // timeout and timed out under full-suite load.
 import { checkCsp } from "../scripts/release/plan.js";
 import { DEFAULT_SSO_START_URL } from "../src/lib/session.js";
+import { MIN_GLIBC } from "../src/lib/updates.js";
 
 /** Guards on .github/workflows/release.yml: drafts only, and only from a tag or a manual dry run. */
 // Windows checkouts may convert line endings: match on LF regardless.
@@ -44,10 +45,12 @@ describe("release workflow", () => {
     expect(linux?.[1]).toBe("ubuntu-24.04");
     // 24.04 links against glibc 2.39: the packages must refuse an older system instead of failing at start.
     const conf = JSON.parse(readFileSync(join(__dirname, "../src-tauri/tauri.conf.json"), "utf8")) as {
-      bundle: { linux: { deb: { depends: string[] }; rpm: { depends: string[] } } };
+      bundle: { linux: { deb: { depends: string[] }; rpm?: { depends?: string[] } } };
     };
-    expect(conf.bundle.linux.deb.depends).toContain("libc6 (>= 2.39)");
-    expect(conf.bundle.linux.rpm.depends).toContain("glibc >= 2.39");
+    // The updater's floor and the .deb's are one number.
+    expect(conf.bundle.linux.deb.depends).toContain(`libc6 (>= ${MIN_GLIBC})`);
+    // tauri-bundler makes each rpm entry a capability name: "glibc >= 2.39" would be a package nobody provides.
+    for (const d of conf.bundle.linux.rpm?.depends ?? []) expect(d).not.toMatch(/[<>=]/);
   });
 
   it("dry runs never create a release", () => {

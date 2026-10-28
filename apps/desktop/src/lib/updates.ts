@@ -16,11 +16,27 @@ export interface FoundUpdate {
 export interface UpdaterApi {
   check(): Promise<FoundUpdate | null>;
   relaunch(): Promise<void>;
+  /** This system's glibc version, or null off glibc (Windows, macOS, musl). */
+  libcVersion?(): Promise<string | null>;
 }
+
+/** The Linux release builds on Ubuntu 24.04, so it needs glibc 2.39. The .deb's libc6 floor must match
+ * (release-workflow.test.ts). Older systems keep the version they have instead of one that won't start. */
+export const MIN_GLIBC = "2.39";
+
+/** True when `version` ("2.35") is at least `min`; an unreadable version passes, as off glibc. */
+export const glibcAtLeast = (version: string | null, min = MIN_GLIBC): boolean => {
+  const parse = (v: string) => v.split(".").map((n) => Number.parseInt(n, 10));
+  const [a, b] = [parse(version ?? ""), parse(min)];
+  if (!version || a.some(Number.isNaN)) return true;
+  for (let i = 0; i < b.length; i++) if ((a[i] ?? 0) !== b[i]) return (a[i] ?? 0) > (b[i] ?? 0);
+  return true;
+};
 
 export const tauriUpdater: UpdaterApi = {
   check: async () => (await import("@tauri-apps/plugin-updater")).check(),
   relaunch: async () => (await import("@tauri-apps/plugin-process")).relaunch(),
+  libcVersion: async () => (await import("@tauri-apps/api/core")).invoke<string | null>("libc_version"),
 };
 
 export type UpdateState =
@@ -31,6 +47,7 @@ export type UpdateState =
   | { step: "downloading"; version: string; received: number; total: number | null }
   | { step: "ready"; version: string }
   | { step: "unavailable" }
+  | { step: "tooOld"; version: string; needs: string }
   | { step: "error" };
 
 export class UpdateController {
@@ -53,6 +70,7 @@ export class UpdateController {
       const u = await this.api.check();
       await this.#found?.close?.().catch(() => undefined);
       this.#found = u;
+      if (u && !(await this.#libcOk())) return this.#set({ step: "tooOld", version: u.version, needs: MIN_GLIBC });
       this.#set(u ? { step: "available", version: u.version, notes: u.body ?? "" } : { step: "current" });
     } catch (err) {
       // No updater in this build (dev / plain debug) vs. a real failure (offline, bad manifest).
@@ -65,6 +83,7 @@ export class UpdateController {
   async install(): Promise<void> {
     const u = this.#found;
     if (!u || this.#s.step !== "available") return;
+    if (!(await this.#libcOk())) return this.#set({ step: "tooOld", version: u.version, needs: MIN_GLIBC });
     let received = 0;
     let total: number | null = null;
     this.#set({ step: "downloading", version: u.version, received, total });
@@ -83,6 +102,10 @@ export class UpdateController {
 
   relaunch(): Promise<void> {
     return this.api.relaunch();
+  }
+
+  async #libcOk(): Promise<boolean> {
+    return glibcAtLeast((await this.api.libcVersion?.().catch(() => null)) ?? null);
   }
 
   #set(s: UpdateState): void {

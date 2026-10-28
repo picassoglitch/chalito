@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TextProviders } from "../src/lib/i18n.js";
-import { UpdateController, type FoundUpdate, type UpdaterApi } from "../src/lib/updates.js";
+import { MIN_GLIBC, UpdateController, glibcAtLeast, type FoundUpdate, type UpdaterApi } from "../src/lib/updates.js";
 import { Updates } from "../src/panel/Updates.js";
 
 afterEach(cleanup);
@@ -70,6 +70,47 @@ describe("update controller", () => {
     expect(c.getSnapshot().step).toBe("error");
   });
 
+  it("a Linux older than the build's glibc is told so and never downloads it", async () => {
+    const install = vi.fn(async () => undefined);
+    const c = new UpdateController({
+      ...api(async () => found({ downloadAndInstall: install })),
+      libcVersion: async () => "2.35",
+    });
+    await c.check();
+    expect(c.getSnapshot()).toEqual({ step: "tooOld", version: "1.3.0", needs: MIN_GLIBC });
+    await c.install();
+    expect(install).not.toHaveBeenCalled();
+    const ok = new UpdateController({ ...api(async () => found()), libcVersion: async () => "2.39" });
+    await ok.check();
+    expect(ok.getSnapshot().step).toBe("available");
+  });
+
+  it("the gate also holds at install time (the system can't change, but the check can be skipped)", async () => {
+    const install = vi.fn(async () => undefined);
+    let libc = "2.41";
+    const c = new UpdateController({
+      ...api(async () => found({ downloadAndInstall: install })),
+      libcVersion: async () => libc,
+    });
+    await c.check();
+    libc = "2.31";
+    await c.install();
+    expect(install).not.toHaveBeenCalled();
+    expect(c.getSnapshot().step).toBe("tooOld");
+  });
+
+  it("compares glibc versions numerically; off glibc (null) or unreadable passes", () => {
+    expect(MIN_GLIBC).toBe("2.39");
+    expect(glibcAtLeast("2.39")).toBe(true);
+    expect(glibcAtLeast("2.41")).toBe(true);
+    expect(glibcAtLeast("3.0")).toBe(true);
+    expect(glibcAtLeast("2.35")).toBe(false);
+    expect(glibcAtLeast("2.4")).toBe(false);
+    expect(glibcAtLeast("1.99")).toBe(false);
+    expect(glibcAtLeast(null)).toBe(true);
+    expect(glibcAtLeast("weird")).toBe(true);
+  });
+
   it("install without an update does nothing; a new check releases the old one", async () => {
     const first = found();
     let n = 0;
@@ -95,5 +136,17 @@ describe("updates screen", () => {
     fireEvent.click(await screen.findByText("Download and install"));
     fireEvent.click(await screen.findByText("Restart now"));
     expect(a.relaunch).toHaveBeenCalled();
+  });
+
+  it("tells an old Linux why it won't update", async () => {
+    const c = new UpdateController({ ...api(async () => found()), libcVersion: async () => "2.35" });
+    render(
+      <TextProviders locale="en">
+        <Updates updates={c} />
+      </TextProviders>,
+    );
+    fireEvent.click(screen.getByText("Check for updates"));
+    expect((await screen.findByRole("alert")).textContent).toContain("needs a newer Linux (glibc 2.39");
+    expect(screen.queryByText("Download and install")).toBeNull();
   });
 });
