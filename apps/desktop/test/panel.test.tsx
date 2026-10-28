@@ -261,6 +261,8 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     ownSessions: async () => ({ enabled: false, sessions: [] }),
     setOwnSessions: async (enabled) => ({ enabled }),
     openOwnSession: async () => ({ opened: false, id: "x", cwd: null }),
+    prWatch: () => Promise.reject(new Error("agent_ipc_unavailable")),
+    setPrWatch: () => Promise.reject(new Error("agent_ipc_unavailable")),
     ...over,
   };
 };

@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
 import type { AgentLink, AppConnectionDoc, DevModeToggle, LinkMode, Recipe, RecipeInstall } from "@chalito/protocol";
+import type { PrWatchSettings, PrWatchView } from "./prs.js";
 
 // Local-only surfaces over the agent's per-user socket (ADR 0004, ipc-server.ts, src-tauri ipc_client.rs):
 // a remote surface can never enable Developer mode or confirm a pairing. Outside Tauri, `unavailableIpc`.
@@ -390,6 +391,10 @@ export interface AgentIpc {
   ownSessions(): Promise<{ enabled: boolean; sessions: OwnSessionView[] }>;
   setOwnSessions(enabled: boolean): Promise<{ enabled: boolean }>;
   openOwnSession(key: string): Promise<OwnOpenResult>;
+  /** The person's GitHub PRs through their own `gh` (off until they turn it on). */
+  /** `probe` (Settings only) also asks whether `gh` is signed in while the watch is off. */
+  prWatch(o?: { probe?: boolean }): Promise<PrWatchView>;
+  setPrWatch(c: PrWatchSettings): Promise<PrWatchView>;
 }
 
 export type CodeMode = "default" | "plan" | "acceptEdits";
@@ -466,6 +471,8 @@ export const unavailableIpc: AgentIpc = {
   ownSessions: unavailable,
   setOwnSessions: unavailable,
   openOwnSession: unavailable,
+  prWatch: unavailable,
+  setPrWatch: unavailable,
 };
 
 /** Mirrors the agent's check, so the button stays disabled until all three are given. */
@@ -551,6 +558,8 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     ownSessions: () => call("ownSessions"),
     setOwnSessions: (enabled) => call("ownSessionsSet", { enabled }),
     openOwnSession: (key) => call("ownSessionOpen", { key }),
+    prWatch: (o) => call("prWatch", o?.probe ? { probe: true } : undefined),
+    setPrWatch: (c) => call("setPrWatch", { ...c }),
   };
 };
 

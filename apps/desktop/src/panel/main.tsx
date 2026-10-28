@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Snapshot } from "@chalito/client";
@@ -15,6 +15,7 @@ import {
   ownNotices,
   ownSessionLikes,
 } from "../lib/own-sessions.js";
+import { PrFeed, withPrNews } from "../lib/prs.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
@@ -28,6 +29,7 @@ import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { UpdateController, tauriUpdater } from "../lib/updates.js";
 import { Panel } from "./Panel.js";
 import { SignIn } from "./SignIn.js";
+import { useOfflineVoice } from "./use-offline-voice.js";
 import { DEFAULT_SSO_START_URL, createSession, firstTaskUrl, readEnv, type Connected } from "../lib/session.js";
 import type { SignInController } from "../lib/sign-in.js";
 
@@ -110,6 +112,16 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);
+  const applyDnd = useCallback((on: boolean) => {
+    setDnd(on);
+    try {
+      localStorage.setItem("chalito-desktop-dnd", on ? "1" : "0");
+    } catch {
+      // Not persisted; still applies for this run.
+    }
+  }, []);
+  const showPanel = useCallback(() => void sh.showWindow("panel").catch(() => undefined), [sh]);
+  const offlineVoice = useOfflineVoice(applyDnd, showPanel);
   const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions" | "events">>({
     notifications: [],
     approvals: [],
@@ -118,9 +130,21 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   });
   // One per connection, priming once its data has loaded: what happened before isn't news.
   const activity = useMemo(() => ({ tracker: new ActivityTracker(), load: new LoadWatch() }), [client]);
+  // PR news counts once per panel run; read on its own clock so the tick never waits on the agent.
+  const prFeed = useMemo(() => new PrFeed(() => ipc.prWatch()), [ipc]);
+  useEffect(() => {
+    void prFeed.refresh();
+    const id = setInterval(() => void prFeed.refresh(), SIGNAL_POLL_MS);
+    return () => clearInterval(id);
+  }, [prFeed]);
+  // Sessions the person started outside Chalito: their own clock and tracker, like the PR feed.
   const ownFeed = useMemo(() => new OwnSessionsFeed(ipc), [ipc]);
-  // Observed sessions don't depend on the account connection, so they keep their own tracker.
   const ownTracker = useMemo(() => new ActivityTracker(), [ownFeed]);
+  useEffect(() => {
+    void ownFeed.refresh();
+    const id = setInterval(() => void ownFeed.refresh(), SIGNAL_POLL_MS);
+    return () => clearInterval(id);
+  }, [ownFeed]);
 
   useEffect(() => {
     const reporter = new PresenceReporter((p) => ipc.reportPresence(p), { onError: () => undefined });
@@ -129,12 +153,15 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       if (snap) live.current = snap;
       const { sessions, events, notifications } = live.current;
       const learning = activity.load.loading(snap?.status, Date.now());
-      const own = await ownFeed.refresh();
+      const own = ownFeed.getSnapshot();
       const ownAct = ownTracker.update(ownSessionLikes(own.sessions), 0, {
         notifications: ownNotices(own.sessions, ownFeed.seen),
       });
       const act = mergeActivity(
-        activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning }),
+        withPrNews(
+          activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning }),
+          prFeed.counts(Date.now()),
+        ),
         ownAct,
       );
       // The person reading the panel already sees replies: the pet doesn't perk at them (owner, 2026-10-25).
@@ -159,7 +186,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       window.removeEventListener("keydown", touch);
       void reporter.stop();
     };
-  }, [client, ipc, sh, settings, dnd, activity, ownFeed, ownTracker]);
+  }, [client, ipc, sh, settings, dnd, activity, prFeed, ownFeed, ownTracker]);
 
   return (
     <Panel
@@ -177,13 +204,10 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       settingsError={view.error}
       dnd={dnd}
       onDnd={(on) => {
-        setDnd(on);
-        try {
-          localStorage.setItem("chalito-desktop-dnd", on ? "1" : "0");
-        } catch {
-          // Not persisted; still applies for this run.
-        }
+        offlineVoice.cancelPause();
+        applyDnd(on);
       }}
+      offlineVoice={offlineVoice}
       hubPlansUrl={HUB_PLANS_URL}
       phoneVerifier={offlinePhoneVerifier}
       updates={updates}

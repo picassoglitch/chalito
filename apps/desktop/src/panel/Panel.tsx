@@ -14,6 +14,7 @@ import { OwnSessions, OwnSessionsSettings } from "./OwnSessions.js";
 import { Inbox } from "./Inbox.js";
 import { NewSession } from "./NewSession.js";
 import { OldCopies } from "./OldCopies.js";
+import { PrList, PrSettings } from "./Prs.js";
 import { Rooms } from "./Rooms.js";
 import { ConnectComputer, type AutoPair } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
@@ -25,6 +26,8 @@ import { Settings } from "./Settings.js";
 import { ThisComputer } from "./ThisComputer.js";
 import { Updates } from "./Updates.js";
 import { Voice } from "./Voice.js";
+import { OfflineVoiceButton, VoiceCard, panelVoiceActions, type OfflineVoiceWiring } from "./VoiceCard.js";
+import { OfflineVoiceSettings } from "./OfflineVoiceSettings.js";
 
 const TABS = ["inbox", "sessions", "rooms", "settings", "ai", "security", "voice"] as const;
 export type Tab = (typeof TABS)[number];
@@ -64,6 +67,8 @@ export interface PanelProps {
   rooms?: RoomsSource | null;
   /** Other copies of Chalito on this computer; null without the native side. */
   copies?: CopiesApi | null;
+  /** Voice commands without internet (this device's setting). */
+  offlineVoice?: OfflineVoiceWiring;
   initialTab?: Tab;
 }
 
@@ -71,6 +76,25 @@ export const Panel = (p: PanelProps) => {
   const t = useT();
   const [tab, setTab] = useState<Tab>(p.initialTab ?? "inbox");
   const [codeSid, setCodeSid] = useState<string | null>(null);
+  const ov = p.offlineVoice;
+  // A fresh object per dictation, so saying the same prompt twice still fills the form.
+  const [draft, setDraft] = useState<{ prompt: string } | null>(null);
+  const voiceActions = panelVoiceActions({
+    client: p.client,
+    ipc: p.ipc,
+    canStepUp: p.canStepUp ?? false,
+    openSession: (sid) => {
+      setCodeSid(sid);
+      setTab("sessions");
+    },
+    openNewSession: (prompt) => {
+      setCodeSid(null);
+      setDraft(prompt ? { prompt } : null);
+      setTab("sessions");
+    },
+    pause: (m) => ov?.pause(m),
+    setDnd: p.onDnd,
+  });
   return (
     <div className="panel-shell">
       <header className="row">
@@ -85,6 +109,7 @@ export const Panel = (p: PanelProps) => {
           <input type="checkbox" checked={p.dnd} onChange={(e) => p.onDnd(e.target.checked)} /> {t("dnd")}
         </label>
       </header>
+      {ov?.voice && <VoiceCard voice={ov.voice} actions={voiceActions} />}
       {p.copies && <OldCopies api={p.copies} />}
       {p.localAgent && p.openUrl && (
         <ConnectComputer
@@ -116,8 +141,19 @@ export const Panel = (p: PanelProps) => {
             (p.signIn ?? <p className="muted">{t("offline")}</p>)
           ))}
         {tab === "inbox" && p.ownFeed && <OwnSessions feed={p.ownFeed} ipc={p.ipc} />}
+        {tab === "inbox" && <PrList ipc={p.ipc} {...(p.openUrl ? { openUrl: p.openUrl } : {})} />}
         {tab === "sessions" && (
-          <NewSession ipc={p.ipc} client={p.client} canStepUp={p.canStepUp ?? false} sid={codeSid} onSid={setCodeSid} />
+          <NewSession
+            ipc={p.ipc}
+            client={p.client}
+            canStepUp={p.canStepUp ?? false}
+            sid={codeSid}
+            onSid={(sid) => {
+              setCodeSid(sid);
+              setDraft(null);
+            }}
+            {...(draft ? { draft } : {})}
+          />
         )}
         {tab === "rooms" &&
           (p.rooms ? <Rooms source={p.rooms} /> : (p.signIn ?? <p className="muted">{t("offline")}</p>))}
@@ -137,6 +173,16 @@ export const Panel = (p: PanelProps) => {
             {...(p.localAgent ? { cliCommand: () => p.localAgent!.cliStatus().then((c) => c.command) } : {})}
           />
         )}
+        {tab === "settings" && <PrSettings ipc={p.ipc} />}
+        {tab === "settings" && ov && (
+          <OfflineVoiceSettings
+            value={ov.settings}
+            onChange={ov.onSettings}
+            askMic={ov.askMic}
+            probe={ov.probe}
+            hotkeyError={ov.hotkeyError}
+          />
+        )}
         {tab === "settings" && p.thisComputer && <ThisComputer api={p.thisComputer} ipc={p.ipc} />}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
         {tab === "ai" && <Apps ipc={p.ipc} />}
@@ -144,6 +190,10 @@ export const Panel = (p: PanelProps) => {
         {tab === "security" && p.client && <SecurityNotices client={p.client} />}
         {tab === "security" && <Security ipc={p.ipc} />}
         {tab === "voice" && <Voice ptt={p.ptt} />}
+        {tab === "voice" && ov?.voice && <OfflineVoiceButton voice={ov.voice} />}
+        {tab === "voice" && ov?.voice && ov.hotkeyError && (
+          <p role="alert">{t("offlineVoice.settings.hotkeyTaken", { reason: ov.hotkeyError })}</p>
+        )}
       </main>
     </div>
   );
