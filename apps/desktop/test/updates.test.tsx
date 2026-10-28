@@ -148,5 +148,6 @@ describe("updates screen", () => {
     fireEvent.click(screen.getByText("Check for updates"));
     expect((await screen.findByRole("alert")).textContent).toContain("needs a newer Linux (glibc 2.39");
     expect(screen.queryByText("Download and install")).toBeNull();
+    expect(screen.getByText("Check for updates")).toBeTruthy();
   });
 });

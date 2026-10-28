@@ -37,7 +37,12 @@ export const Updates = ({ updates }: { updates: UpdateController }) => {
           <button onClick={() => void updates.relaunch()}>{t("updates.relaunch")}</button>
         </>
       )}
-      {s.step === "tooOld" && <p role="alert">{t("updates.tooOld", { version: s.version, needs: s.needs })}</p>}
+      {s.step === "tooOld" && (
+        <>
+          <p role="alert">{t("updates.tooOld", { version: s.version, needs: s.needs })}</p>
+          {check}
+        </>
+      )}
       {s.step === "unavailable" && <p className="muted">{t("updates.unavailable")}</p>}
       {s.step === "error" && (
         <>
