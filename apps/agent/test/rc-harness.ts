@@ -1,8 +1,9 @@
 // ADR 0031 tests: a real AgentCore (real gate, approvals, sealing) with a scripted adapter, a phone
 // that signs commands and decisions, and optional links between two such agents.
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { afterAll } from "vitest";
 import type { AdapterEvent, SessionAdapter, SessionHandle, SessionStartOptions } from "@chalito/adapters";
 import { SESSIONS_DEFAULTS, loadLiabilityText } from "@chalito/config";
 import {
@@ -30,8 +31,18 @@ import { createLogger } from "../src/redact.js";
 import { MemoryStore } from "../src/store.js";
 
 export const OWNER = "hub-user-1";
+// Every temp folder these tests make is removed when the importing file ends: hundreds per run filled /tmp.
+const made: string[] = [];
+export const tempDir = (prefix: string) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  made.push(dir);
+  return dir;
+};
+afterAll(() => {
+  for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+});
 // Real folders (realpath'd: macOS /var → /private/var), so path checks behave the same on every OS.
-const ROOT = realpathSync(mkdtempSync(join(tmpdir(), "chalito-rc-")));
+const ROOT = realpathSync(tempDir("chalito-rc-"));
 export const HOME = join(ROOT, "home");
 export const WS = join(HOME, "code", "chalito");
 mkdirSync(WS, { recursive: true });
@@ -129,7 +140,7 @@ export const agentFor = async (
   const holder: PolicyHolder = { get: () => policy, set: async (p) => void (policy = p) };
   const liability = loadLiabilityText("es");
   const devMode = new DevMode({
-    store: new DevModeStore(mkdtempSync(join(tmpdir(), "chalito-rc-")), self.sign, self.id),
+    store: new DevModeStore(tempDir("chalito-rc-"), self.sign, self.id),
     osAuth: { verify: async () => true },
     prompter: {
       first: async () => true,

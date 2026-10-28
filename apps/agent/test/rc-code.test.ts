@@ -1,6 +1,6 @@
 // ADR 0031 §1–2: sessions typed at the computer. `chalito code` runs against a real code.sock served
 // by a real AgentCore (gate, approvals, sealing); the phone side signs real commands and decisions.
-import { mkdtempSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import { LinkTools } from "../src/links/index.js";
 import { LOCAL_CLI_RECORD_MAX, pruneRecords } from "../src/session-registry.js";
 import { codeService } from "../src/code/service.js";
 import { ipcHandlers } from "../src/ipc-handlers.js";
-import { WS, agentFor, waitFor } from "./rc-harness.js";
+import { WS, agentFor, tempDir, waitFor } from "./rc-harness.js";
 
 const SETUP: DeviceSetup = { adapters: ["claude-code"], workspaces: 1, labels: ["chalito"] };
 const servers: CodeServer[] = [];
@@ -37,7 +37,7 @@ const rig = async (o: { maxLive?: number } = {}) => {
     () => SETUP,
     "local",
   );
-  const path = join(mkdtempSync(join(tmpdir(), "chalito-code-")), "code.sock");
+  const path = join(tempDir("chalito-code-"), "code.sock");
   servers.push(await startCodeServer({ path, code }));
   return { ...a, code, panel, path };
 };
@@ -422,7 +422,7 @@ describe("chalito code from the command line", () => {
       err: (s: string) => void (err += s),
       tty: { input: new PassThrough(), output: new PassThrough() },
       env: { CHALITO_SESSION: "s1" },
-      home: mkdtempSync(join(tmpdir(), "chalito-home-")),
+      home: tempDir("chalito-home-"),
       platform: "linux",
       secrets: {
         get: async () => {
@@ -745,7 +745,7 @@ describe("chalito code on Windows (owner 2026-10-22)", () => {
 
   it("on Windows the command line checks who serves the pipe, and without that check says to use the panel", async () => {
     const { main } = await import("../src/cli.js");
-    const home = mkdtempSync(join(tmpdir(), "chalito-home-"));
+    const home = tempDir("chalito-home-");
     const io = (winPipeSecurity: () => Promise<WinPipeSecurity | null>, sink: { err: string }) =>
       ({
         out: () => undefined,
