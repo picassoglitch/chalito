@@ -97,6 +97,18 @@ describe("Conectar esta computadora", () => {
     await waitFor(() => expect(a.calls).toContainEqual(["confirmPairing", "p1", true]));
   });
 
+  it("a failure that isn't the password prompt shows its code, not the password message", async () => {
+    const a = fakeAgent();
+    a.set(view({ state: "failed", computer: null, error: "pairing_failed" }));
+    renderConnect(a.ipc, { locale: "en" });
+    expect(await screen.findByText("Something failed (pairing_failed). Try again.")).toBeTruthy();
+    expect(screen.queryByText(/password prompt/)).toBeNull();
+    cleanup();
+    a.set(view({ state: "failed", computer: null, error: "os_auth_failed" }));
+    renderConnect(a.ipc, { locale: "en" });
+    expect(await screen.findByText(/password prompt was cancelled/)).toBeTruthy();
+  });
+
   it("changing account needs the typed phrase", async () => {
     const a = fakeAgent();
     a.set(view({ state: "replace", replacePhrase: "REEMPLAZAR" }));

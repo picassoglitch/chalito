@@ -183,7 +183,14 @@ export const ConnectComputer = ({
       )}
 
       {!live && p?.state === "paired" && <p data-done>{t("connect.paired")}</p>}
-      {!live && p && p.state !== "paired" && <p role="status">{t(`connect.ended.${p.state}`)}</p>}
+      {!live && p && p.state !== "paired" && (
+        <p role="status">
+          {/* A failure that isn't the password prompt shows its code, not "the prompt was cancelled". */}
+          {p.state === "failed" && p.error && p.error !== "os_auth_failed"
+            ? t("connect.error", { code: p.error })
+            : t(`connect.ended.${p.state}`)}
+        </p>
+      )}
       {!live && !unavailable && !autoBusy && p?.state !== "paired" && (
         <>
           <p>{t("connect.intro")}</p>
