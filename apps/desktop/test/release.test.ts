@@ -116,8 +116,22 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
     expect(releasePlan({ ...BASE, os: "windows", env: {}, updaterPubkey: PUB }).label).toBe("unsigned");
   });
 
+  it("refuses a build whose CSP blocks libsodium's WebAssembly (sign-in would hang enrolling)", () => {
+    const connect = "connect-src 'self' https://api.chalito.chalyb.com";
+    const api = "https://api.chalito.chalyb.com";
+    expect(() => checkCsp(`default-src 'self'; ${connect}`, api)).toThrow(/wasm-unsafe-eval/);
+    expect(() => checkCsp(`default-src 'self' 'wasm-unsafe-eval'; script-src 'self'; ${connect}`, api)).toThrow(
+      /wasm-unsafe-eval/,
+    );
+    expect(() => checkCsp(`default-src 'self' 'wasm-unsafe-eval'; ${connect}`, api)).not.toThrow();
+    expect(() => checkCsp(`default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; ${connect}`, api)).not.toThrow();
+    // The shipped config passes.
+    expect(() => checkCsp(CONF.app.security.csp, api)).not.toThrow();
+  });
+
   it("refuses a build whose CSP doesn't allow its api, or allows another api", () => {
-    const csp = "default-src 'self'; connect-src 'self' https://api.chalito.chalyb.com https://*.supabase.co";
+    const csp =
+      "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://api.chalito.chalyb.com https://*.supabase.co";
     expect(() => checkCsp(csp, "https://api.chalito.chalyb.com/")).not.toThrow();
     expect(() => checkCsp(csp, "https://chalito-x.a.run.app")).toThrow(/doesn't allow/);
     expect(() => checkCsp(`${csp} https://api.other.example`, "https://api.chalito.chalyb.com")).toThrow(/another api/);
@@ -128,7 +142,7 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
     // …but a build against a run.app api is fine when the CSP lists exactly that one.
     expect(() =>
       checkCsp(
-        "connect-src 'self' https://chalito-x-uc.a.run.app https://*.supabase.co",
+        "script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://chalito-x-uc.a.run.app https://*.supabase.co",
         "https://chalito-x-uc.a.run.app",
       ),
     ).not.toThrow();
@@ -157,11 +171,14 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
       /updater endpoint not on/,
     );
     expect(() => checkOverlay(BASE.csp, up([]), api)).toThrow(/no updater endpoint/);
-    const overlayCsp = { ...up([`${api}/r.json`]), app: { security: { csp: "connect-src 'self'" } } };
+    const overlayCsp = {
+      ...up([`${api}/r.json`]),
+      app: { security: { csp: "script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'" } },
+    };
     expect(() => checkOverlay(BASE.csp, overlayCsp, api)).toThrow(/^release overlay CSP connect-src doesn't allow/);
-    expect(() => checkOverlay("connect-src 'self'", up([`${api}/r.json`]), api)).toThrow(
-      /^tauri\.conf\.json CSP connect-src doesn't allow/,
-    );
+    expect(() =>
+      checkOverlay("script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'", up([`${api}/r.json`]), api),
+    ).toThrow(/^tauri\.conf\.json CSP connect-src doesn't allow/);
   });
 
   it("refuses a bad version, a missing key or a non-https api", () => {
