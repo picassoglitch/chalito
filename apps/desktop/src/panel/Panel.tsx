@@ -16,7 +16,6 @@ import { OwnSessions, OwnSessionsSettings } from "./OwnSessions.js";
 import type { MeetingWatch } from "../lib/meetings.js";
 import { CalendarSettings } from "./CalendarSettings.js";
 import { Meetings } from "./Meetings.js";
-import { Credits } from "./Credits.js";
 import { Inbox } from "./Inbox.js";
 import { NewSession } from "./NewSession.js";
 import { OldCopies } from "./OldCopies.js";
@@ -232,7 +231,6 @@ export const Panel = (p: PanelProps) => {
         {tab === "settings" && p.thisComputer && <ThisComputer api={p.thisComputer} ipc={p.ipc} />}
         {tab === "settings" && p.meetings && <CalendarSettings watch={p.meetings} />}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
-        {tab === "settings" && <Credits {...(p.openUrl ? { openUrl: p.openUrl } : {})} />}
         {tab === "ai" && <Apps ipc={p.ipc} />}
         {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}
         {tab === "security" && p.client && <SecurityNotices client={p.client} />}

@@ -941,10 +941,5 @@
     "notWaiting": "Ya no",
     "open": "Abrir sesión",
     "unavailable": "Esto necesita una versión más nueva. Actualiza o reinicia Chalito."
-  },
-  "credits": {
-    "title": "Créditos",
-    "line": "Partes de Chalyb vienen de Alux, de Omar (homiomar). ¡Gracias, Omar!",
-    "link": "Ver créditos"
   }
 }

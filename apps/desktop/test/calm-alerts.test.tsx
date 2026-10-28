@@ -15,7 +15,6 @@ import { TextProviders } from "../src/lib/i18n.js";
 import { WaitingOn, alertReason, noticeSid } from "../src/lib/alert-notice.js";
 import { unavailableIpc } from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
-import { CREDITS_URL } from "../src/panel/Credits.js";
 import { Panel, type PanelProps } from "../src/panel/Panel.js";
 import { petReaction } from "../src/pet/reactions.js";
 
@@ -252,23 +251,6 @@ describe("panel: opening a session counts as seen", () => {
     const f = fakeClient({ notifications: [notice()] });
     renderPanel({ client: f.client });
     expect(f.alerts.seen).not.toHaveBeenCalled();
-  });
-});
-
-describe("panel: credits", () => {
-  it("Ajustes shows Omar's credit and opens CREDITS.md in the browser", () => {
-    const openUrl = vi.fn(async () => undefined);
-    renderPanel({ initialTab: "settings", openUrl });
-    expect(screen.getByText("Partes de Chalyb vienen de Alux, de Omar (homiomar). ¡Gracias, Omar!")).toBeTruthy();
-    fireEvent.click(screen.getByText("Ver créditos"));
-    expect(openUrl).toHaveBeenCalledWith(CREDITS_URL);
-    expect(CREDITS_URL).toBe("https://github.com/picassoglitch/chalito/blob/main/CREDITS.md");
-  });
-
-  it("in English", () => {
-    renderPanel({ initialTab: "settings" }, "en");
-    expect(screen.getByText("Credits")).toBeTruthy();
-    expect((screen.getByText("See credits") as HTMLAnchorElement).href).toBe(CREDITS_URL);
   });
 });
 
