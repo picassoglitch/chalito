@@ -220,7 +220,8 @@ export const startPet = (
     if (calling()) return ack();
     const r = clicks.click(now);
     if (rest !== "awake") {
-      // The waking click still counts toward a double click, so a double click on a sleeping pet opens the dashboard.
+      // The waking click still counts toward a double click:
+      // a double click on a sleeping pet opens the dashboard.
       rest = "awake";
       wakeSeq++;
       void sh.touchActivity().catch(() => undefined);
@@ -328,6 +329,7 @@ export const startPet = (
       pivot = g ? grabPoint(g) : null;
       flash("surprised", now, 60_000);
       rest = "awake";
+      wakeSeq++;
     } else if (!dragging && hung) {
       hung = false;
       faceUntil = now;
