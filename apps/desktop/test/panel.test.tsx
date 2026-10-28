@@ -1,6 +1,6 @@
 import catalogJson from "../../../recipes/catalog.json" with { type: "json" };
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ApprovalView, ChalitoClient, NotificationView, Snapshot } from "@chalito/client";
 import { lintMessages } from "@chalito/brand";
 import type { Locale } from "@chalito/protocol";
@@ -47,6 +47,13 @@ const renderPanel = (p: Partial<PanelProps> & { initialTab?: Tab }, locale: Loca
   );
 
 describe("panel: settings parity with the PWA", () => {
+  // The first render pays the one-time start; on a busy Windows runner that pushed the (es) case
+  // past 5 s while (en), the same work, took 0.1 s. It happens here, under its own budget.
+  beforeAll(() => {
+    renderPanel({ initialTab: "settings" });
+    cleanup();
+  }, 30_000);
+
   it.each(["es", "en"] as const)("renders every registered setting in the desktop shell (%s)", (locale) => {
     const { container } = renderPanel({ initialTab: "settings" }, locale);
     expect(container.querySelector('[data-shell="desktop"]')).not.toBeNull();

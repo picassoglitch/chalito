@@ -5,8 +5,8 @@
 //! nonce it was started with, then closes. Release builds contain none of this: CI greps the
 //! release binary for `MARKER` (and the debug binary, to prove the grep works).
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
@@ -16,6 +16,7 @@ pub const MARKER: &str = "CHALITO_DEV_SSO_LOOPBACK";
 pub const EVENT: &str = "chalito://sso-callback";
 const WAIT: Duration = Duration::from_secs(10 * 60);
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const LINGER: Duration = Duration::from_secs(2);
 
 fn is_state(s: &str) -> bool {
     (22..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -51,9 +52,9 @@ pub fn callback_from_request_line(line: &str, state: &str) -> Result<String, &'s
 }
 
 /// The request line, after draining the headers (closing a socket with unread data resets
-/// the connection on Linux, and the browser would show an error instead of the page).
+/// the connection, and the browser would show an error instead of the page).
 fn read_request(stream: &TcpStream) -> std::io::Result<String> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut reader = BufReader::new(stream);
     let mut first = String::new();
     reader.read_line(&mut first)?;
     let mut header = String::new();
@@ -66,18 +67,35 @@ fn read_request(stream: &TcpStream) -> std::io::Result<String> {
     Ok(first)
 }
 
-fn respond(mut stream: TcpStream, ok: bool) {
+fn respond(stream: TcpStream, ok: bool) {
     let (status, text) = if ok {
         ("200 OK", "Listo. Vuelve a Chalito. / Done. Go back to Chalito.")
     } else {
         ("400 Bad Request", "Solicitud no válida. / Invalid request.")
     };
     let body = format!("<!doctype html><meta charset=utf-8><title>Chalito</title><p>{text}</p><!-- {MARKER} -->");
-    let _ = write!(
-        stream,
+    let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
         body.len()
     );
+    let _ = (&stream).write_all(response.as_bytes());
+    close_gracefully(&stream);
+}
+
+/// FIN first, then read until the client closes: closing while bytes are in flight resets the
+/// connection on Windows (os error 10054) and the client loses the response.
+fn close_gracefully(stream: &TcpStream) {
+    let _ = stream.shutdown(Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(LINGER));
+    let deadline = Instant::now() + LINGER;
+    let mut sink = [0u8; 512];
+    let mut reader = stream;
+    while Instant::now() < deadline {
+        match reader.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
 }
 
 /// Starts the one-shot listener; returns its port. The webview builds the redirect URI.
@@ -95,10 +113,10 @@ pub fn sso_loopback(app: AppHandle, state: String) -> Result<u16, String> {
             match listener.accept() {
                 Ok((stream, peer)) => {
                     // Exactly one request, whatever it is: the listener is dropped after this.
+                    let _ = stream.set_nonblocking(false);
                     if !peer.ip().is_loopback() {
                         return respond(stream, false);
                     }
-                    let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
                     let result = match read_request(&stream) {
                         Ok(line) => callback_from_request_line(&line, &state),
@@ -161,9 +179,8 @@ mod tests {
         assert!(!is_state(&"a".repeat(129)));
     }
 
-    #[test]
-    fn serves_exactly_one_request_then_closes() {
-        // The same accept-once shape as sso_loopback, without a Tauri app.
+    /// One accept-once exchange, the same shape as sso_loopback without a Tauri app; its port.
+    fn one_exchange() -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let t = std::thread::spawn(move || {
@@ -180,10 +197,21 @@ mod tests {
         )
         .unwrap();
         let mut resp = String::new();
-        std::io::Read::read_to_string(&mut c, &mut resp).unwrap();
+        c.read_to_string(&mut resp).unwrap();
+        drop(c);
         assert!(resp.starts_with("HTTP/1.1 200 OK"));
         assert!(resp.contains(MARKER));
         assert!(t.join().unwrap().is_ok());
+        port
+    }
+
+    #[test]
+    fn serves_exactly_one_request_then_closes() {
+        // Many rounds: the reset on close hit about one CI run in three on Windows.
+        let mut port = 0;
+        for _ in 0..200 {
+            port = one_exchange();
+        }
         // The listener is gone: a second request can't connect.
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
     }

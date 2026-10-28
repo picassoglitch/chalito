@@ -1,8 +1,8 @@
 // D-070: the panel's link flow against the real agent IPC handlers and link manager, with
 // `invokeIpc` going through `ipcHandlers` as the native side would carry it.
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { deriveDeviceId, generateBoxKeyPair, generateSigningKeyPair, toB64url } from "@chalito/crypto";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { deriveDeviceId, generateBoxKeyPair, generateSigningKeyPair, ready, toB64url } from "@chalito/crypto";
 import { keyFingerprint } from "@chalito/client-keys";
 import type { Locale } from "@chalito/protocol";
 import { ipcHandlers } from "../../agent/src/ipc-handlers.js";
@@ -118,6 +118,14 @@ const passChallenge = async (phrase = LINK_COPY.es.phrase) => {
 };
 
 describe("panel → agent: making hand-off links (D-070)", () => {
+  // One-time start (libsodium's WASM, the first render) out of the first test: on a busy Windows
+  // runner it pushed that test past 5 s while the same work took ~0.2 s in the next ones.
+  beforeAll(async () => {
+    await ready();
+    renderLinks(unavailableIpc);
+    cleanup();
+  }, 30_000);
+
   it("a same-computer hand-off link: challenge, OS check, then it's listed as local", async () => {
     const a = await computer("dev_a1");
     renderLinks(a.ipc);

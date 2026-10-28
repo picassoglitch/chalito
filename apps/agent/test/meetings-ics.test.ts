@@ -409,17 +409,23 @@ describe("review round 3: hostile rule sizes, zone names and the poll budget", (
   });
 
   it("the offset memo stays exact around transitions that aren't on a quarter hour", () => {
+    // One reference formatter per zone, not per call: 8,000 new formatters took over 5 s on a busy runner.
+    const reference = new Map<string, Intl.DateTimeFormat>();
     const fresh = (t: number, tz: string) => {
-      const f = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        hourCycle: "h23",
-        year: "numeric",
-        month: "numeric",
-        day: "numeric",
-        hour: "numeric",
-        minute: "numeric",
-        second: "numeric",
-      });
+      let f = reference.get(tz);
+      if (!f) {
+        f = new Intl.DateTimeFormat("en-US", {
+          timeZone: tz,
+          hourCycle: "h23",
+          year: "numeric",
+          month: "numeric",
+          day: "numeric",
+          hour: "numeric",
+          minute: "numeric",
+          second: "numeric",
+        });
+        reference.set(tz, f);
+      }
       const p = Object.fromEntries(f.formatToParts(new Date(t)).map((x) => [x.type, Number(x.value)]));
       return Date.UTC(p.year!, p.month! - 1, p.day!, p.hour!, p.minute!, p.second!) - Math.floor(t / 1000) * 1000;
     };
