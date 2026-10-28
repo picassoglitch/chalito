@@ -16,6 +16,8 @@ import {
   ownSessionLikes,
 } from "../lib/own-sessions.js";
 import { PrFeed, withPrNews } from "../lib/prs.js";
+import { MeetingWatch, withMeetingLevel } from "../lib/meetings.js";
+import { meetingsIpc } from "../lib/meetings-ipc.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
@@ -89,6 +91,8 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const agentApi = useMemo(localAgent, []);
   const computerApi = useMemo(thisComputer, []);
   const copies = useMemo(copiesApi, []);
+  const meetings = useMemo(() => new MeetingWatch(meetingsIpc()), []);
+  useEffect(() => meetings.start(), [meetings]);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);
   // Server-backed once the desktop has a session; this device's copy until then.
@@ -168,7 +172,8 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       const panelFocused = document.hasFocus() && document.visibilityState === "visible";
       const local = { dnd, fullscreen: false, lowEnergy: false, panelFocused };
       const base = petContext(live.current, settings, local, new Date(), act);
-      const ctx = { ...base, level: maxLevel(base.level, ownLevel(own.sessions, ownFeed.seen)) };
+      const withOwn = { ...base, level: maxLevel(base.level, ownLevel(own.sessions, ownFeed.seen)) };
+      const ctx = withMeetingLevel(withOwn, meetings.level());
       await sh.sendPetContext(ctx).catch(() => undefined);
       const idle = await sh.idleMs().catch(() => 0);
       reporter.update({ active: idle < IDLE_AFTER_MS, locked: false, fullscreen: false, dnd });
@@ -176,17 +181,19 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     void tick();
     const id = setInterval(() => void tick(), SIGNAL_POLL_MS);
     const unsub = client?.live.subscribe(() => void tick());
+    const unsubMeetings = meetings.subscribe(() => void tick());
     const offAck = sh.onPetAck(() => void sh.showWindow("panel"));
     const touch = () => void sh.touchActivity().catch(() => undefined);
     window.addEventListener("keydown", touch);
     return () => {
       clearInterval(id);
       unsub?.();
+      unsubMeetings();
       void offAck.then((f) => f());
       window.removeEventListener("keydown", touch);
       void reporter.stop();
     };
-  }, [client, ipc, sh, settings, dnd, activity, prFeed, ownFeed, ownTracker]);
+  }, [client, ipc, sh, settings, dnd, activity, prFeed, ownFeed, ownTracker, meetings]);
 
   return (
     <Panel
@@ -214,6 +221,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       localAgent={agentApi}
       thisComputer={computerApi}
       copies={copies}
+      meetings={meetings}
       openUrl={(url) => openUrl(url)}
       {...(FIRST_TASK_URL ? { firstTaskUrl: FIRST_TASK_URL } : {})}
     />

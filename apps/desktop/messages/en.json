@@ -870,5 +870,64 @@
     },
     "closed": "That session is already closed. It was in:",
     "stale": "Couldn't read the sessions a moment ago; what you see may be out of date."
+  },
+  "meetings": {
+    "untitled": "Untitled meeting",
+    "warnings": {
+      "title": "Meetings",
+      "startsIn": "Starts in {minutes} min ({time})",
+      "join": "Join",
+      "ok": "Got it",
+      "agentDown": "The local agent isn't answering: meeting warnings may fail until it's back.",
+      "calendarStale": "I couldn't read your calendar recently: warnings use the last copy I have.",
+      "joinFailed": "I couldn't open the meeting link. Open it from your calendar."
+    },
+    "followUps": {
+      "title": "Follow-ups from your meetings",
+      "intro": "“Yes” opens a new session that only drafts: it doesn't create, post or send anything without your OK.",
+      "type": {
+        "ticket": "Ticket",
+        "investigate": "Investigate",
+        "remind": "Ask"
+      },
+      "from": "From “{meeting}”",
+      "due": "you left it for later",
+      "yes": "Yes",
+      "later": "Later",
+      "no": "No",
+      "error": {
+        "no_app": "Connect an AI in “Connected AI” to open the session.",
+        "no_workspace": "Add a folder in Settings → This computer to open the session.",
+        "other": "I couldn't open the session. Try again."
+      }
+    },
+    "calendar": {
+      "title": "Meetings",
+      "intro": "Chalito warns you 10 and 2 minutes before each meeting, without covering your screen. If you're already on a Zoom call, it doesn't interrupt.",
+      "label": "Your calendar's private link (iCal, .ics)",
+      "hint": "In Google Calendar: Settings → your calendar → “Secret address in iCal format”. It's kept in your system's keychain.",
+      "save": "Save",
+      "saved": "Done: calendar connected.",
+      "connected": "Calendar connected.",
+      "remove": "Remove calendar",
+      "removed": "Calendar removed.",
+      "error": {
+        "bad_url": "That link won't work: it must start with https:// or webcal://.",
+        "fetch_failed": "I couldn't read the calendar. Check the link and your connection.",
+        "not_calendar": "That link doesn't return an iCal calendar.",
+        "unavailable": "The local agent isn't answering.",
+        "link_rejected": "The calendar rejected the link: it may have changed. Copy the secret link again.",
+        "too_large": "That calendar is over 5 MB; I can't read it.",
+        "local_address": "Local addresses aren't allowed: the link must point to a public calendar server.",
+        "keychain": "I couldn't save the link in your system's keychain. On Linux, use a session with gnome-keyring or KWallet.",
+        "internal": "Something failed in the local agent. Try again."
+      },
+      "unsupported": "Repeating meetings I can't read yet (no warnings for them): {count}."
+    },
+    "granola": {
+      "title": "Granola follow-ups",
+      "optIn": "After each meeting, read the Granola notes and suggest follow-ups",
+      "soon": "Coming soon: after each meeting, Chalito will read your Granola notes and suggest the follow-ups."
+    }
   }
 }

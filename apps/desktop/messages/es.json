@@ -870,5 +870,64 @@
     },
     "closed": "Esa sesión ya se cerró. Estaba en:",
     "stale": "No pude leer las sesiones hace un momento; lo que ves puede estar desactualizado."
+  },
+  "meetings": {
+    "untitled": "Reunión sin título",
+    "warnings": {
+      "title": "Reuniones",
+      "startsIn": "Empieza en {minutes} min ({time})",
+      "join": "Unirme",
+      "ok": "Entendido",
+      "agentDown": "El agente local no responde: los avisos de reuniones pueden fallar hasta que vuelva.",
+      "calendarStale": "No pude leer tu calendario hace poco: los avisos usan la última copia que tengo.",
+      "joinFailed": "No pude abrir el enlace de la reunión. Ábrelo desde tu calendario."
+    },
+    "followUps": {
+      "title": "Pendientes de tus reuniones",
+      "intro": "«Sí» abre una sesión nueva que solo redacta: no crea, publica ni envía nada sin tu OK.",
+      "type": {
+        "ticket": "Ticket",
+        "investigate": "Investigar",
+        "remind": "Preguntar"
+      },
+      "from": "De «{meeting}»",
+      "due": "lo dejaste para luego",
+      "yes": "Sí",
+      "later": "Luego",
+      "no": "No",
+      "error": {
+        "no_app": "Conecta una IA en «IA conectadas» para abrir la sesión.",
+        "no_workspace": "Agrega una carpeta en Ajustes → Esta computadora para abrir la sesión.",
+        "other": "No pude abrir la sesión. Inténtalo otra vez."
+      }
+    },
+    "calendar": {
+      "title": "Reuniones",
+      "intro": "Chalito te avisa 10 y 2 minutos antes de cada reunión, sin cubrir tu pantalla. Si ya estás en una llamada de Zoom, no te interrumpe.",
+      "label": "Enlace privado de tu calendario (iCal, .ics)",
+      "hint": "En Google Calendar: Configuración → tu calendario → «Dirección secreta en formato iCal». Se guarda en el llavero de tu sistema.",
+      "save": "Guardar",
+      "saved": "Listo: calendario conectado.",
+      "connected": "Calendario conectado.",
+      "remove": "Quitar calendario",
+      "removed": "Quité el calendario.",
+      "error": {
+        "bad_url": "Ese enlace no sirve: debe empezar con https:// o webcal://.",
+        "fetch_failed": "No pude leer el calendario. Revisa el enlace y tu conexión.",
+        "not_calendar": "Ese enlace no devuelve un calendario iCal.",
+        "unavailable": "El agente local no responde.",
+        "link_rejected": "El calendario rechazó el enlace: quizá cambió. Copia el enlace secreto otra vez.",
+        "too_large": "Ese calendario pesa más de 5 MB; no puedo leerlo.",
+        "local_address": "No se permiten direcciones locales: el enlace debe ser de un servidor público de calendario.",
+        "keychain": "No pude guardar el enlace en el llavero de tu sistema. En Linux, abre una sesión con gnome-keyring o KWallet.",
+        "internal": "Algo falló en el agente local. Inténtalo otra vez."
+      },
+      "unsupported": "Reuniones repetidas que no puedo leer todavía (y no te avisaré de ellas): {count}."
+    },
+    "granola": {
+      "title": "Seguimientos de Granola",
+      "optIn": "Después de cada reunión, leer las notas de Granola y proponerme los pendientes",
+      "soon": "Próximamente: después de cada reunión, Chalito leerá tus notas de Granola y te propondrá los pendientes."
+    }
   }
 }
