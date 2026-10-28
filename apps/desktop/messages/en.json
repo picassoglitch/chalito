@@ -822,5 +822,53 @@
       "badHotkey": "Use one or more modifier keys and one key, for example CommandOrControl+Shift+Space.",
       "hotkeyTaken": "I couldn't use that shortcut ({reason}). Try another."
     }
+  },
+  "own": {
+    "title": "Sessions you started",
+    "state": {
+      "working": "Working",
+      "question": "Asked you a question",
+      "approval": "Waiting for your approval",
+      "guessed": "Looks like it's waiting for your approval",
+      "reviewing": "Codex is reviewing it",
+      "error": "Stopped with an error",
+      "finished": "Finished",
+      "closed": "Closed before it finished"
+    },
+    "observed": "You're only watching this from here: Chalito can't approve or answer this session. Do it where you started it.",
+    "open": "Open",
+    "seen": "Seen",
+    "openFallback": "Couldn't bring it to the front. It's in:",
+    "settings": {
+      "title": "Sessions I started",
+      "label": "Watch sessions I started",
+      "hint": "Chalito reads the local logs of the AI sessions you started on this computer, to tell you when one asks you something, waits for your approval, fails or finishes. Read only: it changes nothing and none of it leaves your computer.",
+      "unavailable": "The local agent isn't answering, so this isn't available right now.",
+      "failed": "Couldn't change it. Try again."
+    },
+    "hook": {
+      "title": "Codex approval alerts (optional)",
+      "why": "Codex doesn't write down when it's waiting for your approval. With this hook, Codex tells Chalito.",
+      "steps": "Copy this into ~/.codex/hooks.json (or add it to the hooks you already have) and restart Codex. Chalito never edits your ~/.codex folder.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "note": "The hook prints nothing and decides nothing: Codex keeps asking you as usual. It runs on every approval and every tool Codex uses, and only notes on your computer that an approval is pending, while this option is on.",
+      "noCommand": "Couldn't find the chalito command on this computer. Install it first (Security › This computer's agent › Install the chalito command) or the hook won't work.",
+      "copyFailed": "Couldn't copy it. Select the text and copy it by hand."
+    },
+    "detail": {
+      "question": "It has a question for you.",
+      "questionWith": "It has a question for you: {x}",
+      "approval": "It asks for your permission.",
+      "approvalWith": "It asks for your permission to use {x}.",
+      "stopped": "It stopped.",
+      "stoppedWith": "It stopped: {x}",
+      "tool": "Waiting on a tool.",
+      "toolWith": "Waiting on: {x}",
+      "apiError": "An API call failed.",
+      "apiErrorWith": "An API call failed: {x}"
+    },
+    "closed": "That session is already closed. It was in:",
+    "stale": "Couldn't read the sessions a moment ago; what you see may be out of date."
   }
 }

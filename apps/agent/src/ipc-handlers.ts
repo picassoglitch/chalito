@@ -38,6 +38,7 @@ import type { AgentStore } from "./store.js";
 import type { CommandResult } from "./agent-core.js";
 import type { CodeService } from "./code/service.js";
 import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
+import { ownSessionHandlers, type OwnSessionsDeps } from "./watch/ipc.js";
 import { RepoPattern, type PrWatch } from "./prs/watch.js";
 
 /** The agent version the panel's `ping` sees. */
@@ -165,6 +166,8 @@ export interface IpcDeps {
   home?: string;
   /** ADR 0031 §1: sessions started here ("Nueva sesión"); absent = the code calls answer `unavailable`. */
   code?: CodeService;
+  /** Sessions the person started outside Chalito (opt-in, read-only); absent = those calls answer `unavailable`. */
+  ownSessions?: OwnSessionsDeps | null;
   /** The person's GitHub PRs through their own `gh` (prs/watch.ts); absent = the PR calls answer `unavailable`. */
   prs?: PrWatch;
 }
@@ -212,6 +215,7 @@ const appCall = async (d: IpcDeps, run: (m: AppManager) => Promise<AppResult>) =
  * this daemon runs only once paired, so pairing calls are served earlier by pairing-host.ts. */
 export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   ping: async () => ({ version: AGENT_VERSION }),
+  ...ownSessionHandlers(d.ownSessions),
 
   startPairing: async () => {
     throw new IpcError("already_paired");

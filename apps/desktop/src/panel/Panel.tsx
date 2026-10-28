@@ -9,6 +9,8 @@ import type { ThisComputerApi } from "../lib/this-computer.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import type { CopiesApi } from "../lib/copies.js";
+import type { OwnSessionsFeed } from "../lib/own-sessions.js";
+import { OwnSessions, OwnSessionsSettings } from "./OwnSessions.js";
 import { Inbox } from "./Inbox.js";
 import { NewSession } from "./NewSession.js";
 import { OldCopies } from "./OldCopies.js";
@@ -41,6 +43,8 @@ export interface PanelProps {
   /** Signed in: connects this computer by itself (owner decision 2026-10-19). */
   autoPair?: AutoPair | null;
   ipc: AgentIpc;
+  /** Sessions the person started outside Chalito (opt-in); absent in tests that don't need them. */
+  ownFeed?: OwnSessionsFeed;
   ptt: PushToTalk;
   /** null while loading. */
   settings: SettingsValues | null;
@@ -136,6 +140,7 @@ export const Panel = (p: PanelProps) => {
           ) : (
             (p.signIn ?? <p className="muted">{t("offline")}</p>)
           ))}
+        {tab === "inbox" && p.ownFeed && <OwnSessions feed={p.ownFeed} ipc={p.ipc} />}
         {tab === "inbox" && <PrList ipc={p.ipc} {...(p.openUrl ? { openUrl: p.openUrl } : {})} />}
         {tab === "sessions" && (
           <NewSession
@@ -159,6 +164,13 @@ export const Panel = (p: PanelProps) => {
             onChange={p.onSetting}
             hubPlansUrl={p.hubPlansUrl}
             phoneVerifier={p.phoneVerifier}
+          />
+        )}
+        {tab === "settings" && p.ownFeed && (
+          <OwnSessionsSettings
+            feed={p.ownFeed}
+            ipc={p.ipc}
+            {...(p.localAgent ? { cliCommand: () => p.localAgent!.cliStatus().then((c) => c.command) } : {})}
           />
         )}
         {tab === "settings" && <PrSettings ipc={p.ipc} />}

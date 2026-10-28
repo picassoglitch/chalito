@@ -7,6 +7,14 @@ import { TextProviders, detectLocale } from "../lib/i18n.js";
 import { agentIpc, type AgentIpc } from "../lib/ipc.js";
 import { ActivityTracker } from "@chalito/avatar";
 import { LoadWatch, pendingAnswers, petContext } from "../lib/pet-context.js";
+import {
+  OwnSessionsFeed,
+  mergeActivity,
+  maxLevel,
+  ownLevel,
+  ownNotices,
+  ownSessionLikes,
+} from "../lib/own-sessions.js";
 import { PrFeed, withPrNews } from "../lib/prs.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
@@ -129,6 +137,14 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     const id = setInterval(() => void prFeed.refresh(), SIGNAL_POLL_MS);
     return () => clearInterval(id);
   }, [prFeed]);
+  // Sessions the person started outside Chalito: their own clock and tracker, like the PR feed.
+  const ownFeed = useMemo(() => new OwnSessionsFeed(ipc), [ipc]);
+  const ownTracker = useMemo(() => new ActivityTracker(), [ownFeed]);
+  useEffect(() => {
+    void ownFeed.refresh();
+    const id = setInterval(() => void ownFeed.refresh(), SIGNAL_POLL_MS);
+    return () => clearInterval(id);
+  }, [ownFeed]);
 
   useEffect(() => {
     const reporter = new PresenceReporter((p) => ipc.reportPresence(p), { onError: () => undefined });
@@ -137,14 +153,22 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       if (snap) live.current = snap;
       const { sessions, events, notifications } = live.current;
       const learning = activity.load.loading(snap?.status, Date.now());
-      const act = withPrNews(
-        activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning }),
-        prFeed.counts(Date.now()),
+      const own = ownFeed.getSnapshot();
+      const ownAct = ownTracker.update(ownSessionLikes(own.sessions), 0, {
+        notifications: ownNotices(own.sessions, ownFeed.seen),
+      });
+      const act = mergeActivity(
+        withPrNews(
+          activity.tracker.update(sessions, pendingAnswers(live.current), { events, notifications, learning }),
+          prFeed.counts(Date.now()),
+        ),
+        ownAct,
       );
       // The person reading the panel already sees replies: the pet doesn't perk at them (owner, 2026-10-25).
       const panelFocused = document.hasFocus() && document.visibilityState === "visible";
       const local = { dnd, fullscreen: false, lowEnergy: false, panelFocused };
-      const ctx = petContext(live.current, settings, local, new Date(), act);
+      const base = petContext(live.current, settings, local, new Date(), act);
+      const ctx = { ...base, level: maxLevel(base.level, ownLevel(own.sessions, ownFeed.seen)) };
       await sh.sendPetContext(ctx).catch(() => undefined);
       const idle = await sh.idleMs().catch(() => 0);
       reporter.update({ active: idle < IDLE_AFTER_MS, locked: false, fullscreen: false, dnd });
@@ -162,7 +186,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       window.removeEventListener("keydown", touch);
       void reporter.stop();
     };
-  }, [client, ipc, sh, settings, dnd, activity, prFeed]);
+  }, [client, ipc, sh, settings, dnd, activity, prFeed, ownFeed, ownTracker]);
 
   return (
     <Panel
@@ -172,6 +196,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       autoPair={conn?.autoPair ?? null}
       {...(controller ? { startSignIn: () => void controller.start() } : {})}
       ipc={ipc}
+      ownFeed={ownFeed}
       rooms={conn?.rooms ?? null}
       ptt={ptt}
       settings={view.values}
