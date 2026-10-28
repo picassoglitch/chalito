@@ -143,25 +143,34 @@ const newest = (files: { p: string; m: number }[]): string[] =>
     .slice(0, MAX_FILES)
     .map((f) => f.p);
 
-/** Session ids with a live pid file, or null when Claude keeps none here (older versions): then we can't tell. */
-const claudeRunning = (dir: string): Set<string> | null => {
+/** Session id → pid from Claude's pid files, or null when the folder can't be read or a file is mid-write. */
+const claudePids = (dir: string): Map<string, number> | null => {
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith(".json"));
   } catch {
     return null;
   }
-  const ids = new Set<string>();
+  const ids = new Map<string, number>();
   for (const n of names) {
     try {
-      const s = JSON.parse(readFileSync(join(dir, n), "utf8")) as { sessionId?: unknown };
-      if (typeof s.sessionId === "string") ids.add(s.sessionId);
+      const s = JSON.parse(readFileSync(join(dir, n), "utf8")) as { sessionId?: unknown; pid?: unknown };
+      if (typeof s.sessionId === "string" && typeof s.pid === "number") ids.set(s.sessionId, s.pid);
     } catch {
-      // being written: counts as unknown, not as closed
       return null;
     }
   }
   return ids;
+};
+
+/** `kill(pid, 0)` checks without signalling; EPERM means it runs as someone else, so it's alive. */
+export const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return errCode(e) === "EPERM";
+  }
 };
 
 const list = (dir: string): string[] => {
@@ -186,6 +195,8 @@ export interface WatcherOptions {
   log?: (msg: string, meta: Record<string, unknown>) => void;
   /** Sessions untouched for longer drop off the list. */
   staleMs?: number;
+  /** Tests stand in for the OS process table. */
+  isAlive?: (pid: number) => boolean;
 }
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -200,8 +211,6 @@ const ROLLOUT_SEED_BYTES = 256 * 1024;
 export const MAX_FILES = 40;
 /** Day folders older than this aren't listed; a rollout lives in the folder of the day it started. */
 const ROLLOUT_DAYS = 8;
-/** Claude writes its pid file a moment after the transcript starts; give it that long. */
-const PID_GRACE_MS = 30_000;
 
 /** Read-only: the tools' files are only ever opened for reading, and not at all while the opt-in is off. */
 export class OwnSessionWatcher {
@@ -223,12 +232,16 @@ export class OwnSessionWatcher {
   #skippedLogged = new Map<string, number>();
   #lastError: string | null = null;
   #cache: { at: number; views: OwnSessionView[] } | null = null;
+  /** Claude sessions whose pid file we've seen: only those can be known to have closed. */
+  #pidSeen = new Map<string, number>();
+  readonly #isAlive: (pid: number) => boolean;
 
   constructor(o: WatcherOptions) {
     this.paths = o.paths;
     this.#now = o.now ?? Date.now;
     this.#log = o.log ?? (() => undefined);
     this.#staleMs = o.staleMs ?? DAY_MS;
+    this.#isAlive = o.isAlive ?? pidAlive;
   }
 
   get enabled(): boolean {
@@ -281,6 +294,7 @@ export class OwnSessionWatcher {
     this.#cache = null;
     this.#titles = { at: 0, names: new Map() };
     this.#read = { mtime: 0, unread: null };
+    this.#pidSeen.clear();
   }
 
   /** The sessions right now, most urgent first; [] while the opt-in is off. */
@@ -349,7 +363,8 @@ export class OwnSessionWatcher {
         this.#claude.delete(p);
         this.#skippedLogged.delete(p);
       }
-    const running = claudeRunning(this.paths.claudeSessions);
+    const pids = claudePids(this.paths.claudeSessions);
+    if (pids) for (const [id, pid] of pids) this.#pidSeen.set(id, pid);
     for (const p of this.#claudeFiles) {
       let st: { size: number; mtimeMs: number };
       try {
@@ -380,8 +395,10 @@ export class OwnSessionWatcher {
       const last = Math.max(t.last, hit.mtime);
       let cur = claudeNow(t, now, hit.mtime);
       if (cur.state === "working" && now - last > QUIET_WORKING_MS) continue;
-      // Its terminal is gone: whatever it was waiting for, nobody can answer it any more.
-      if (cur.state !== "finished" && running && !running.has(id) && now - last > PID_GRACE_MS)
+      // Many runs (SDK, `-p`) never write a pid file: only a pid file that went away, or a dead pid, means closed.
+      const seenPid = this.#pidSeen.get(id);
+      const gone = seenPid !== undefined && (pids ? !pids.has(id) : false);
+      if (cur.state !== "finished" && seenPid !== undefined && (gone || !this.#isAlive(seenPid)))
         cur = { state: "closed", since: last, detail: null, detailKey: null, guessed: false };
       const waited = Math.max(0, (now - cur.since) / 1000);
       const quietS = Math.max(0, (now - last) / 1000);

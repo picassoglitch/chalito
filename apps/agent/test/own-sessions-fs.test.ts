@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   utimesSync,
   writeFileSync,
@@ -25,6 +26,7 @@ import {
   MAX_FILES,
   OwnSessionWatcher,
   ledgerPath,
+  pidAlive,
   watchEnabled,
   watchPaths,
   type WatchPaths,
@@ -301,19 +303,45 @@ describe("watching the person's own sessions (real files in a temp home)", () =>
     expect(codex()).toBeUndefined();
   });
 
-  it("a Claude session whose terminal closed shows as closed, not as still asking", () => {
-    const { home, paths } = fakeHome();
-    const sessions = join(home, ".claude", "sessions");
-    mkdirSync(sessions);
-    writeFileSync(join(sessions, "4242.json"), JSON.stringify({ pid: 4242, sessionId: "someone-else" }));
-    const w = watcher(paths);
-    w.setEnabled(true);
-    const q = w.poll().find((v) => v.id === QUESTION_ID)!;
-    expect([q.state, q.level]).toEqual(["closed", null]);
-    expect(w.poll().find((v) => v.id === CLAUDE_ID)!.state).toBe("finished");
-    writeFileSync(join(sessions, "4343.json"), JSON.stringify({ pid: 4343, sessionId: QUESTION_ID }));
-    const again = watcher(paths);
-    expect(again.poll().find((v) => v.id === QUESTION_ID)!.state).toBe("question");
+  describe("a Claude session whose terminal closed", () => {
+    const setup = (alive: Set<number>) => {
+      const { home, paths } = fakeHome();
+      const sessions = join(home, ".claude", "sessions");
+      mkdirSync(sessions);
+      writeFileSync(join(sessions, "4242.json"), JSON.stringify({ pid: 4242, sessionId: "someone-else" }));
+      let now = NOW;
+      const w = new OwnSessionWatcher({ paths, now: () => now, isAlive: (pid) => alive.has(pid) });
+      w.setEnabled(true);
+      const q = () => {
+        now += 3000;
+        return w.poll().find((v) => v.id === QUESTION_ID)!;
+      };
+      return { sessions, q };
+    };
+
+    it("never had a pid file (SDK, -p runs): the transcript decides, as before", () => {
+      const { q } = setup(new Set([4242]));
+      expect([q().state, q().level]).toEqual(["question", "L3"]);
+    });
+
+    it("its pid file was seen and then went away: closed, no alert", () => {
+      const { sessions, q } = setup(new Set([4242, 4343]));
+      writeFileSync(join(sessions, "4343.json"), JSON.stringify({ pid: 4343, sessionId: QUESTION_ID }));
+      expect(q().state).toBe("question");
+      rmSync(join(sessions, "4343.json"));
+      expect([q().state, q().level]).toEqual(["closed", null]);
+    });
+
+    it("its pid file is there but the process is dead: closed", () => {
+      const { sessions, q } = setup(new Set([4242]));
+      writeFileSync(join(sessions, "4343.json"), JSON.stringify({ pid: 4343, sessionId: QUESTION_ID }));
+      expect([q().state, q().level]).toEqual(["closed", null]);
+    });
+
+    it("pidAlive: this process is alive, a pid that can't exist isn't", () => {
+      expect(pidAlive(process.pid)).toBe(true);
+      expect(pidAlive(2 ** 30)).toBe(false);
+    });
   });
 
   it("follows only the newest sessions of each tool", () => {

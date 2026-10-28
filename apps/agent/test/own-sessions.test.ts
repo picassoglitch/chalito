@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   APPROVAL_GUESS_S,
+  EXEC_MARGIN_MS,
   REVIEW_S,
   claudeNow,
   codexEvent,
@@ -349,20 +350,30 @@ describe("review round: what a busy or idle session really is", () => {
     expect([e.state, e.detail, e.detailKey]).toEqual(["error", null, "apiError"]);
   });
 
-  it("a calm pet: anything Codex writes after an approval request means it was answered", () => {
-    const sessions = new Map<string, CodexSession>();
-    reduceCodex(sessions, { session: "c", event: "settings", reviewer: "user", ts: 1_000 });
-    reduceCodex(sessions, { session: "c", event: "notify", detailKey: "approval", ts: 10_000 });
-    reduceCodex(sessions, { session: "c", event: "activity", ts: 9_000 }); // written before the request
-    expect(sessions.get("c")!.state).toBe("approval");
-    reduceCodex(sessions, { session: "c", event: "activity", ts: 12_000 });
-    expect(sessions.get("c")!.state).toBe("working");
+  it("only a sign the approval was answered clears it: never token counts or items", () => {
+    const fresh = () => {
+      const sessions = new Map<string, CodexSession>();
+      reduceCodex(sessions, { session: "c", event: "settings", reviewer: "user", ts: 1_000 });
+      reduceCodex(sessions, { session: "c", event: "notify", detailKey: "approval", ts: 10_000 });
+      return sessions;
+    };
+    const s = fresh();
+    reduceCodex(s, { session: "c", event: "activity", ts: 10_300 }); // token_count 300 ms later
+    reduceCodex(s, { session: "c", event: "activity", ts: 60_000 });
+    expect(codexNow(s.get("c")!, 4 * 60_000).state).toBe("approval");
+    reduceCodex(s, { session: "c", event: "exec", ts: 11_000 }); // inside the margin
+    expect(s.get("c")!.state).toBe("approval");
+    reduceCodex(s, { session: "c", event: "exec", ts: 10_000 + EXEC_MARGIN_MS + 1 });
+    expect(s.get("c")!.state).toBe("working");
+    for (const ev of ["tool", "turn_done", "prompt"] as const) {
+      const t = fresh();
+      reduceCodex(t, { session: "c", event: ev, ts: 20_000 });
+      expect(t.get("c")!.state, ev).not.toBe("approval");
+    }
     const meta: RolloutMeta = { id: "c", user: true };
-    const begin = codexEvent(
-      JSON.stringify({ timestamp: "2026-10-25T10:00:00Z", type: "event_msg", payload: { type: "exec_command_begin" } }),
-      meta,
-    );
-    expect(begin?.event).toBe("activity");
+    const line = (type: string) =>
+      codexEvent(JSON.stringify({ timestamp: "2026-10-25T10:00:00Z", type: "event_msg", payload: { type } }), meta);
+    expect([line("exec_command_begin")?.event, line("token_count")?.event]).toEqual(["exec", "activity"]);
   });
 
   it("an approval nobody answers stops calling after 10 min of silence; a question keeps calling until 30", () => {

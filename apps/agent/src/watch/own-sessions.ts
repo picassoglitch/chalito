@@ -243,6 +243,7 @@ export const claudeNow = (
 export type CodexEventName =
   | "start"
   | "prompt"
+  | "exec"
   | "turn_done"
   | "notify"
   | "tool"
@@ -333,8 +334,9 @@ export const codexEvent = (line: string, meta: RolloutMeta, parents = new Map<st
   if (d.type !== "event_msg") return null;
   const t = p.type;
   if (t === "task_started") return { ...base, event: "prompt" };
-  if (t === "item_completed" || t === "token_count" || t === "exec_command_begin")
-    return { ...base, event: "activity" };
+  // A command starting proves an approval was given; tokens and items don't (they can land while it waits).
+  if (t === "exec_command_begin") return { ...base, event: "exec" };
+  if (t === "item_completed" || t === "token_count") return { ...base, event: "activity" };
   if (t === "task_complete" || (t === "turn_aborted" && p.reason === "interrupted")) {
     const msg = str(p.last_agent_message);
     return { ...base, event: "turn_done", ...(msg ? { detail: oneLine(msg) } : {}) };
@@ -428,9 +430,9 @@ export const reduceCodex = (sessions: Map<string, CodexSession>, ev: CodexEvent 
     case "tool":
       if (s.state === "approval" || (s.state === "finished" && ev.ts > s.since)) to("working", null);
       break;
-    case "activity":
-      // Anything Codex writes after the request means it was answered (allowed, denied, or the turn moved on).
-      if (s.state === "approval" && ev.ts > s.since) to("working", null);
+    case "exec":
+      // The margin keeps a command that started just before the hook fired from answering it.
+      if (s.state === "approval" && ev.ts > s.since + EXEC_MARGIN_MS) to("working", null);
       break;
     case "review":
       if (s.state === "approval" && ev.outcome && ev.ts >= s.since) to("working", null);
@@ -449,6 +451,9 @@ export const reduceCodex = (sessions: Map<string, CodexSession>, ev: CodexEvent 
   }
   sessions.set(ev.session, s);
 };
+
+/** How long after an approval request a command start must come to count as its answer. */
+export const EXEC_MARGIN_MS = 2_000;
 
 /** Unknown reviewer counts as auto: the setting can arrive after the request, and it is the default. */
 const autoReviewed = (s: CodexSession) => s.reviewer === null || s.reviewer === "auto_review";
