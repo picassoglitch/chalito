@@ -67,7 +67,8 @@ fn read_request(stream: &TcpStream) -> std::io::Result<String> {
     Ok(first)
 }
 
-fn respond(stream: TcpStream, ok: bool) {
+/// Writes the whole response, then FIN. The caller drains afterwards (see `drain`).
+fn respond(mut stream: &TcpStream, ok: bool) {
     let (status, text) = if ok {
         ("200 OK", "Listo. Vuelve a Chalito. / Done. Go back to Chalito.")
     } else {
@@ -78,21 +79,23 @@ fn respond(stream: TcpStream, ok: bool) {
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
         body.len()
     );
-    let _ = (&stream).write_all(response.as_bytes());
-    close_gracefully(&stream);
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.shutdown(Shutdown::Write);
 }
 
-/// FIN first, then read until the client closes: closing while bytes are in flight resets the
-/// connection on Windows (os error 10054) and the client loses the response.
-fn close_gracefully(stream: &TcpStream) {
-    let _ = stream.shutdown(Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(LINGER));
+/// Reads until the client closes (or LINGER passes) before dropping the socket: closing with
+/// bytes in flight resets the connection on Windows (os error 10054) and the client loses the response.
+fn drain(stream: TcpStream) {
     let deadline = Instant::now() + LINGER;
     let mut sink = [0u8; 512];
-    let mut reader = stream;
-    while Instant::now() < deadline {
-        match reader.read(&mut sink) {
-            Ok(0) | Err(_) => break,
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        // set_read_timeout(Some(ZERO)) is an error, so stop before it.
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            return;
+        }
+        match (&stream).read(&mut sink) {
+            Ok(0) | Err(_) => return,
             Ok(_) => {}
         }
     }
@@ -115,18 +118,20 @@ pub fn sso_loopback(app: AppHandle, state: String) -> Result<u16, String> {
                     // Exactly one request, whatever it is: the listener is dropped after this.
                     let _ = stream.set_nonblocking(false);
                     if !peer.ip().is_loopback() {
-                        return respond(stream, false);
+                        respond(&stream, false);
+                        return drain(stream);
                     }
                     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
                     let result = match read_request(&stream) {
                         Ok(line) => callback_from_request_line(&line, &state),
                         Err(_) => Err("read"),
                     };
-                    respond(stream, result.is_ok());
+                    respond(&stream, result.is_ok());
+                    // Emit before draining: the drain can take up to LINGER and login shouldn't wait.
                     if let Ok(url) = result {
                         let _ = app.emit_to("panel", EVENT, url);
                     }
-                    return;
+                    return drain(stream);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(100));
@@ -187,7 +192,8 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             let line = read_request(&stream).unwrap();
             let r = callback_from_request_line(&line, S);
-            respond(stream, r.is_ok());
+            respond(&stream, r.is_ok());
+            drain(stream);
             r
         });
         let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
