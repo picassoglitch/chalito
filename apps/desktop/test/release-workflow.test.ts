@@ -46,7 +46,7 @@ describe("release workflow", () => {
   });
 
   it.skipIf(process.platform === "win32")(
-    "the bridge guard's script, run for real: refuses only the bridge off 22.04",
+    "the bridge guard's script, run for real: refuses only the bridge off 22.04 or with the .deb glibc floor",
     () => {
       const step = yml.slice(yml.indexOf("name: The bridge release builds on Ubuntu 22.04"));
       const body = step.slice(step.indexOf("run: |\n") + "run: |\n".length).split("\n");
@@ -58,9 +58,16 @@ describe("release workflow", () => {
         .join("\n");
       const dir = mkdtempSync(join(tmpdir(), "chalito-bridge-guard-"));
       try {
-        const run = (version: string, os: string) => {
+        const CONF = "apps/desktop/src-tauri/tauri.conf.json";
+        expect(script).toContain(CONF);
+        const floor = JSON.stringify({ bundle: { linux: { deb: { depends: ["libc6 (>= 2.39)"] } } } });
+        const run = (version: string, os: string, conf = JSON.stringify({ bundle: {} })) => {
           writeFileSync(join(dir, "os-release"), `VERSION="${os} LTS"\nVERSION_ID="${os}"\n`);
-          return spawnSync("bash", ["-e", "-c", script.replaceAll("/etc/os-release", join(dir, "os-release"))], {
+          writeFileSync(join(dir, "tauri.conf.json"), conf);
+          const s = script
+            .replaceAll("/etc/os-release", join(dir, "os-release"))
+            .replaceAll(CONF, join(dir, "tauri.conf.json"));
+          return spawnSync("bash", ["-e", "-c", s], {
             cwd: join(__dirname, "../../.."),
             env: { ...process.env, VERSION: version },
             encoding: "utf8",
@@ -73,6 +80,10 @@ describe("release workflow", () => {
         ]);
         expect(run(LEGACY_BRIDGE_VERSION, "22.04").status).toBe(0);
         expect(run("0.1.0-beta.14", "24.04").status).toBe(0);
+        // A bridge .deb with the 24.04 floor would refuse the very systems the bridge is for.
+        const floored = run(LEGACY_BRIDGE_VERSION, "22.04", floor);
+        expect([floored.status, floored.stdout]).toEqual([1, expect.stringContaining("drop the .deb glibc floor")]);
+        expect(run("0.1.0-beta.14", "24.04", floor).status).toBe(0);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

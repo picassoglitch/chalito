@@ -133,6 +133,9 @@ jobs:
           if [ "$VERSION" = "$bridge" ] && [ "$os" != "22.04" ]; then
             echo "::error::$bridge is the bridge release: build it on Ubuntu 22.04, not $os"; exit 1
           fi
+          if [ "$VERSION" = "$bridge" ] && grep -q '"libc6 (>=' apps/desktop/src-tauri/tauri.conf.json; then
+            echo "::error::$bridge is the bridge release: drop the .deb glibc floor from tauri.conf.json"; exit 1
+          fi
       # Signing inputs, exported ONLY when set. A missing secret is an empty string, and the Tauri
       # bundler treats a set-but-empty variable as present (`var_os("APPLE_CERTIFICATE")` →
       # Some(""): it would import an empty certificate and fail the unsigned build). The plan

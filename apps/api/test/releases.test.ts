@@ -272,7 +272,7 @@ describe("legacy latest.json is frozen at the bridge release", () => {
       expect(manifestFiles(v)).toEqual([UPDATER_MANIFEST]);
   });
 
-  it("real release CLI, both channels: an old client on any OS reaches the bridge and nothing later", async () => {
+  it("real release CLI, both channels: the stored latest.json offers every OS the bridge and nothing later", async () => {
     // What beta.12 and earlier uploaded, then every release from the bridge on, as the workflow runs it.
     const bucket: Record<string, unknown> = { [`beta/${LEGACY_MANIFEST}`]: at("0.1.0-beta.12") };
     const publish = (ch: "stable" | "beta", v: string) => {

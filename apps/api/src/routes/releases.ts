@@ -61,7 +61,7 @@ export const releasesRoutes = (deps: Deps, store: ReleaseStore) => {
     c.header("Cache-Control", "private, max-age=60");
     return c.json({ ...m.data, platforms, downloads });
   };
-  // One bucket per caller across both manifests: they're the same data, so 30 a minute in total.
+  // One bucket per caller across both manifests (the same data): a burst of 30, then about 60 a minute.
   const limit = rateLimit({ capacity: 30, refillPerSec: 1, now: deps.now });
   app.get(`/:channel/${UPDATER_MANIFEST}`, limit, serve(UPDATER_MANIFEST, LEGACY_MANIFEST));
   app.get(`/:channel/${LEGACY_MANIFEST}`, limit, serve(LEGACY_MANIFEST));
