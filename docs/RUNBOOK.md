@@ -160,9 +160,11 @@ The updater only moves forward (`docs/THREAT_MODEL.md`). To pull a bad release:
 2. Re-point `latest-v2.json` in the private bucket to the previous version, signed with the updater key. Leave `latest.json` alone: it stays frozen at the bridge release (0.1.0-beta.13).
 3. Raise the minimum supported version in the api once a fixed release exists.
 
-If the bridge release itself is bad (it won't start, or it refuses updates it should take), older installs can only reach a fix through `latest.json`:
-1. Build the fix on Ubuntu 22.04 as the next beta, with `LEGACY_BRIDGE_VERSION` raised to that version in `packages/releases/src/manifest.ts`. The workflow refuses a bridge built anywhere else.
-2. Upload its `latest.json` to `…/beta/latest.json` once, as for the first bridge (OPS §6), and its `latest-v2.json` as usual.
+If the bridge release itself is bad (it won't start, or it refuses updates it should take):
+1. Installs that already run the bridge read `latest-v2.json`. If the bridge refuses updates, or doesn't start, no upload reaches them: they reinstall from `/descargar`.
+2. Installs older than the bridge read only `latest.json`. To move them to a fixed bridge, build the fix as the next beta on Ubuntu 22.04: set the Linux `runner:` in `.github/workflows/release.yml` back to `ubuntu-22.04` for that tag, and raise `LEGACY_BRIDGE_VERSION` in `packages/releases/src/manifest.ts` to that version. The workflow refuses a bridge built anywhere else.
+3. Update what names the old bridge: the tests in `apps/api/test/releases.test.ts` that treat that version as a later release, the bridge version in this section, OPS §6, GO_LIVE 9.5, QA_PLAN and ADR 0014.
+4. Upload its `latest.json` to `…/beta/latest.json` once, as for the first bridge (OPS §6), and its `latest-v2.json` as usual.
 
 The signed-updater release pipeline is M14 and is **not yet built** (`apps/desktop` has no updater config yet).
 

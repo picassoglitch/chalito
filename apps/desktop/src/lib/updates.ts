@@ -43,7 +43,10 @@ export const glibcAtLeast = (version: string, min = MIN_GLIBC): boolean => {
  * that can't start is worse than staying on this one. Off Linux there is no glibc to check. */
 export const libcGate = async (api: UpdaterApi): Promise<"ok" | "tooOld" | "unknown"> => {
   if (!api.libcVersion) return api.onLinux ? "unknown" : "ok";
-  const v = await api.libcVersion().catch(() => null);
+  const v = await api.libcVersion().catch((err: unknown) => {
+    console.warn("[updates] libc_version failed:", err instanceof Error ? err.message : err);
+    return null;
+  });
   if (v === null || parseVersion(v) === null) return api.onLinux ? "unknown" : "ok";
   return glibcAtLeast(v) ? "ok" : "tooOld";
 };

@@ -219,6 +219,29 @@ describe.each(ENDPOINTS)("GET /releases/:channel/%s", (file) => {
     expect(res2.status).toBe(503);
     spy.mockRestore();
   });
+
+  it("a failing read never falls back: v2 erroring answers 503 without touching latest.json", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const deps = { now: Date.now } as unknown as Deps;
+    const reads: string[] = [];
+    const store = (v2: "throws" | "absent"): ReleaseStore => ({
+      manifest: async (_ch, f) => {
+        reads.push(f);
+        if (f === UPDATER_MANIFEST && v2 === "absent") return null;
+        throw new Error("releases manifest: HTTP 500");
+      },
+      signedUrl: async (o) => o,
+    });
+    const get = (v2: "throws" | "absent") =>
+      new Hono().route("/releases", releasesRoutes(deps, store(v2))).request(`/releases/beta/${UPDATER_MANIFEST}`);
+    expect((await get("throws")).status).toBe(503);
+    expect(reads).toEqual([UPDATER_MANIFEST]);
+    // v2 not uploaded yet and the legacy read failing: still 503, never a 404 or a 500.
+    reads.length = 0;
+    expect((await get("absent")).status).toBe(503);
+    expect(reads).toEqual([UPDATER_MANIFEST, LEGACY_MANIFEST]);
+    spy.mockRestore();
+  });
 });
 
 describe("legacy latest.json is frozen at the bridge release", () => {
@@ -259,6 +282,7 @@ describe("legacy latest.json is frozen at the bridge release", () => {
     };
     expect(publish("beta", LEGACY_BRIDGE_VERSION)).toEqual([LEGACY_MANIFEST, UPDATER_MANIFEST].sort());
     expect(publish("beta", "0.1.0-beta.14")).toEqual([UPDATER_MANIFEST]);
+    expect(publish("beta", "0.1.0-beta.15")).toEqual([UPDATER_MANIFEST]);
     expect(publish("stable", "0.1.0")).toEqual([UPDATER_MANIFEST]);
     expect(publish("stable", "1.0.0")).toEqual([UPDATER_MANIFEST]);
     const store: ReleaseStore = {
@@ -271,7 +295,7 @@ describe("legacy latest.json is frozen at the bridge release", () => {
     expect(legacy.version).toBe(LEGACY_BRIDGE_VERSION);
     expect(Object.keys(legacy.platforms).sort()).toEqual([...UPDATER_PLATFORMS].sort());
     for (const p of Object.values(legacy.platforms)) expect(p.url).toContain(`/beta/${LEGACY_BRIDGE_VERSION}/`);
-    expect((await get(`/releases/beta/${UPDATER_MANIFEST}`)).version).toBe("0.1.0-beta.14");
+    expect((await get(`/releases/beta/${UPDATER_MANIFEST}`)).version).toBe("0.1.0-beta.15");
     // No stable install exists (every tag so far is a beta): stable starts on v2 and never gets a legacy file.
     expect((await app.request(`/releases/stable/${LEGACY_MANIFEST}`)).status).toBe(404);
     expect((await get(`/releases/stable/${UPDATER_MANIFEST}`)).version).toBe("1.0.0");
