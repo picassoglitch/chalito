@@ -11,6 +11,8 @@ export type Channel = z.infer<typeof Channel>;
 /** Tauri updater targets (`{os}-{arch}`). The universal macOS build serves both darwin keys. */
 export const UPDATER_PLATFORMS = ["linux-x86_64", "windows-x86_64", "darwin-aarch64", "darwin-x86_64"] as const;
 export const UpdaterPlatform = z.enum(UPDATER_PLATFORMS);
+export type UpdaterPlatform = z.infer<typeof UpdaterPlatform>;
+
 /** The manifest every build from the bridge on asks for, and /descargar reads. Each release writes it. */
 export const UPDATER_MANIFEST = "latest-v2.json";
 /** The manifest builds before the bridge ask for. It stays frozen at the bridge release: older builds
@@ -21,7 +23,6 @@ export const LEGACY_BRIDGE_VERSION = "0.1.0-beta.13";
 /** The manifest files a release writes: the bridge also writes the legacy one, later releases never do. */
 export const manifestFiles = (version: string): string[] =>
   version === LEGACY_BRIDGE_VERSION ? [UPDATER_MANIFEST, LEGACY_MANIFEST] : [UPDATER_MANIFEST];
-export type UpdaterPlatform = z.infer<typeof UpdaterPlatform>;
 
 export const DOWNLOAD_OSES = ["windows", "macos", "linux"] as const;
 export const DownloadOs = z.enum(DOWNLOAD_OSES);
