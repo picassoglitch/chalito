@@ -74,13 +74,20 @@ describe("classification with 200 repos in the workspace", { timeout: 30_000 }, 
     loop();
     const warm = { ...calls };
     for (const k of Object.keys(calls) as (keyof typeof calls)[]) calls[k] = 0;
-    for (let b = 0; b < 5; b++) loop();
+    const ms: number[] = [];
+    for (let b = 0; b < 5; b++) {
+      const t0 = performance.now();
+      loop();
+      ms.push(performance.now() - t0);
+    }
     counting = false;
 
     // The counter sees the warm-up's per-folder lookups, so the zeros below are real.
     expect(warm.statSync).toBeGreaterThan(0);
     // 2,500 calls over 200 repos: no folder walk, no config read, no stat of any kind.
     expect(calls).toEqual({ readdirSync: 0, statSync: 0, readFileSync: 0, lstatSync: 0 });
+    // A loose bound for in-memory slowdowns (about 0.1 ms per call locally): a busy runner stays far under it.
+    expect(ms.sort((a, b) => a - b)[2]! / n).toBeLessThan(10);
     expect(write("group9/repo199/hooks-199/x").tier).toBe("HIGH");
     expect(write("group9/repo199/src/hooks/useX.ts").tier).toBe("MED");
   });

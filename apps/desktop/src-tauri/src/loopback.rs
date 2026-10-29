@@ -83,8 +83,8 @@ fn respond(mut stream: &TcpStream, ok: bool) {
     let _ = stream.shutdown(Shutdown::Write);
 }
 
-/// Reads until the client closes (or LINGER passes) before dropping the socket: closing with
-/// bytes in flight resets the connection on Windows (os error 10054) and the client loses the response.
+/// Reads until the client closes (or LINGER passes): dropping a socket with unread received data
+/// sends RST (os error 10054 on Windows) and the client can lose the response.
 fn drain(stream: TcpStream) {
     let deadline = Instant::now() + LINGER;
     let mut sink = [0u8; 512];
@@ -185,7 +185,8 @@ mod tests {
     }
 
     /// One accept-once exchange, the same shape as sso_loopback without a Tauri app; its port.
-    fn one_exchange() -> u16 {
+    /// `extra` bytes follow the request, left unread by read_request until the drain.
+    fn one_exchange(extra: usize) -> u16 {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let t = std::thread::spawn(move || {
@@ -202,6 +203,7 @@ mod tests {
             "GET /auth/sso?token=x&state={S} HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: test\r\nAccept: */*\r\n\r\n"
         )
         .unwrap();
+        c.write_all(&vec![b'x'; extra]).unwrap();
         let mut resp = String::new();
         c.read_to_string(&mut resp).unwrap();
         drop(c);
@@ -214,10 +216,11 @@ mod tests {
     #[test]
     fn serves_exactly_one_request_then_closes() {
         // Many rounds: the reset on close hit about one CI run in three on Windows.
-        let mut port = 0;
         for _ in 0..200 {
-            port = one_exchange();
+            one_exchange(0);
         }
+        // More than BufReader's 8 KiB: without the drain this resets on Linux too.
+        let port = one_exchange(16 * 1024);
         // The listener is gone: a second request can't connect.
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
     }
