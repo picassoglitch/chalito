@@ -47,7 +47,7 @@ const MANIFEST = {
 };
 
 test("/descargar offers the installers from the api's signed manifest, with a manual OS switch", async ({ page }) => {
-  await page.route(`${API}/releases/stable/latest.json`, (r) => r.fulfill({ json: MANIFEST }));
+  await page.route(`${API}/releases/stable/latest-v2.json`, (r) => r.fulfill({ json: MANIFEST }));
   await page.goto("/descargar");
   const panel = page.getByTestId("download");
   await expect(panel.getByRole("heading", { level: 1 })).toHaveText("Descarga Chalito para tu computadora");
@@ -65,7 +65,7 @@ test("/descargar offers the installers from the api's signed manifest, with a ma
 });
 
 test("no release yet: says so (EN at /en/download)", async ({ page }) => {
-  await page.route(`${API}/releases/stable/latest.json`, (r) =>
+  await page.route(`${API}/releases/stable/latest-v2.json`, (r) =>
     r.fulfill({ status: 404, json: { error: "not_found" } }),
   );
   await page.goto("/en/download");

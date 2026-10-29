@@ -16,27 +16,44 @@ export interface FoundUpdate {
 export interface UpdaterApi {
   check(): Promise<FoundUpdate | null>;
   relaunch(): Promise<void>;
-  /** This system's glibc version, or null off glibc (Windows, macOS, musl). */
+  /** This system's glibc version, or null off glibc (Windows, macOS). */
   libcVersion?(): Promise<string | null>;
+  /** True on Linux, where every build is glibc: there, not knowing the version blocks the update. */
+  onLinux?: boolean;
 }
 
-/** The Linux release builds on Ubuntu 24.04, so it needs glibc 2.39. The .deb's libc6 floor must match
- * (release-workflow.test.ts). Older systems keep the version they have instead of one that won't start. */
+/** The glibc the Linux builds this one may be offered need: from 0.1.0-beta.14 they build on Ubuntu
+ * 24.04 (2.39). Older systems keep the version they have instead of one that won't start. */
 export const MIN_GLIBC = "2.39";
 
-/** True when `version` ("2.35") is at least `min`; an unreadable version passes, as off glibc. */
-export const glibcAtLeast = (version: string | null, min = MIN_GLIBC): boolean => {
-  const parse = (v: string) => v.split(".").map((n) => Number.parseInt(n, 10));
-  const [a, b] = [parse(version ?? ""), parse(min)];
-  if (!version || a.some(Number.isNaN)) return true;
+/** "2.39" as [2, 39], or null when it isn't a version. */
+const parseVersion = (v: string): number[] | null => {
+  const parts = v.split(".").map((n) => Number.parseInt(n, 10));
+  return parts.some(Number.isNaN) ? null : parts;
+};
+
+/** True when `version` ("2.35") is at least `min`. */
+export const glibcAtLeast = (version: string, min = MIN_GLIBC): boolean => {
+  const [a, b] = [parseVersion(version) ?? [0], parseVersion(min) ?? [0]];
   for (let i = 0; i < b.length; i++) if ((a[i] ?? 0) !== b[i]) return (a[i] ?? 0) > (b[i] ?? 0);
   return true;
+};
+
+/** Whether this system may install a build that needs MIN_GLIBC. Fails closed on Linux: a build
+ * that can't start is worse than staying on this one. Off Linux there is no glibc to check. */
+export const libcGate = async (api: UpdaterApi): Promise<"ok" | "tooOld" | "unknown"> => {
+  if (!api.libcVersion) return api.onLinux ? "unknown" : "ok";
+  const v = await api.libcVersion().catch(() => null);
+  if (v === null || parseVersion(v) === null) return api.onLinux ? "unknown" : "ok";
+  return glibcAtLeast(v) ? "ok" : "tooOld";
 };
 
 export const tauriUpdater: UpdaterApi = {
   check: async () => (await import("@tauri-apps/plugin-updater")).check(),
   relaunch: async () => (await import("@tauri-apps/plugin-process")).relaunch(),
   libcVersion: async () => (await import("@tauri-apps/api/core")).invoke<string | null>("libc_version"),
+  onLinux:
+    typeof navigator !== "undefined" && /linux/i.test(navigator.userAgent) && !/android/i.test(navigator.userAgent),
 };
 
 export type UpdateState =
@@ -48,6 +65,7 @@ export type UpdateState =
   | { step: "ready"; version: string }
   | { step: "unavailable" }
   | { step: "tooOld"; version: string; needs: string }
+  | { step: "libcUnknown"; version: string }
   | { step: "error" };
 
 export class UpdateController {
@@ -70,7 +88,7 @@ export class UpdateController {
       const u = await this.api.check();
       await this.#found?.close?.().catch(() => undefined);
       this.#found = u;
-      if (u && !(await this.#libcOk())) return this.#set({ step: "tooOld", version: u.version, needs: MIN_GLIBC });
+      if (u && (await this.#blocked(u.version))) return;
       this.#set(u ? { step: "available", version: u.version, notes: u.body ?? "" } : { step: "current" });
     } catch (err) {
       // No updater in this build (dev / plain debug) vs. a real failure (offline, bad manifest).
@@ -83,7 +101,7 @@ export class UpdateController {
   async install(): Promise<void> {
     const u = this.#found;
     if (!u || this.#s.step !== "available") return;
-    if (!(await this.#libcOk())) return this.#set({ step: "tooOld", version: u.version, needs: MIN_GLIBC });
+    if (await this.#blocked(u.version)) return;
     let received = 0;
     let total: number | null = null;
     this.#set({ step: "downloading", version: u.version, received, total });
@@ -104,8 +122,12 @@ export class UpdateController {
     return this.api.relaunch();
   }
 
-  async #libcOk(): Promise<boolean> {
-    return glibcAtLeast((await this.api.libcVersion?.().catch(() => null)) ?? null);
+  /** Sets the reason and returns true when this system can't take `version` (libcGate). */
+  async #blocked(version: string): Promise<boolean> {
+    const g = await libcGate(this.api);
+    if (g === "tooOld") this.#set({ step: "tooOld", version, needs: MIN_GLIBC });
+    if (g === "unknown") this.#set({ step: "libcUnknown", version });
+    return g !== "ok";
   }
 
   #set(s: UpdateState): void {

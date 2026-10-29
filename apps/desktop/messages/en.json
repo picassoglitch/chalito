@@ -433,6 +433,7 @@
     "ready": "Version {version} is ready. Restart Chalito to use it.",
     "relaunch": "Restart now",
     "unavailable": "This build doesn't update itself.",
+    "libcUnknown": "Couldn't check which Linux this computer has (its glibc version), so version {version} won't install: it might not start. Chalito keeps working as it is.",
     "tooOld": "Version {version} needs a newer Linux (glibc {needs} or later, like Ubuntu 24.04, Debian 13 or Fedora 40). Chalito keeps working as it is.",
     "error": "Couldn't update. Try again later."
   },

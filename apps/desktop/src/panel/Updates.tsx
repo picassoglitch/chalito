@@ -43,6 +43,12 @@ export const Updates = ({ updates }: { updates: UpdateController }) => {
           {check}
         </>
       )}
+      {s.step === "libcUnknown" && (
+        <>
+          <p role="alert">{t("updates.libcUnknown", { version: s.version })}</p>
+          {check}
+        </>
+      )}
       {s.step === "unavailable" && <p className="muted">{t("updates.unavailable")}</p>}
       {s.step === "error" && (
         <>

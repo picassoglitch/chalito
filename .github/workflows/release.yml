@@ -1,12 +1,12 @@
 # Desktop releases (ADR 0014, M14). Produces DRAFT GitHub releases only: nothing here ever
-# publishes. Promoting a draft and uploading latest.json to the releases bucket is the owner's
+# publishes. Promoting a draft and uploading the manifest to the releases bucket is the owner's
 # go (docs/OPS.md, "M14: downloadable apps").
 #
 #   - push of a `v*` tag → build, sign what can be signed, draft release
 #   - workflow_dispatch  → the same build as a dry run: artifacts only, no release
 #
 # Signing secrets may not exist yet. Every signing step skips cleanly without them and the
-# build is LABELLED unsigned (UNSIGNED_ file names, `unsigned` in latest.json, draft notes).
+# build is LABELLED unsigned (UNSIGNED_ file names, `unsigned` in the manifest, draft notes).
 # Without the real updater key, one THROWAWAY key is generated for the run (never committed,
 # never usable to update real installs) so the updater artifacts and manifest are still checked.
 name: Release
@@ -124,6 +124,16 @@ jobs:
       CHANNEL: ${{ needs.meta.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
+      # The frozen latest.json serves the bridge to every older install: it must run on their glibc.
+      - name: The bridge release builds on Ubuntu 22.04
+        if: matrix.os == 'linux'
+        run: |
+          bridge=$(sed -n 's/^export const LEGACY_BRIDGE_VERSION = "\(.*\)";$/\1/p' packages/releases/src/manifest.ts)
+          [ -n "$bridge" ] || { echo "::error::LEGACY_BRIDGE_VERSION not found"; exit 1; }
+          os=$(. /etc/os-release && echo "$VERSION_ID")
+          if [ "$VERSION" = "$bridge" ] && [ "$os" != "22.04" ]; then
+            echo "::error::$bridge is the bridge release: build it on Ubuntu 22.04, not $os"; exit 1
+          fi
       # Signing inputs, exported ONLY when set. A missing secret is an empty string, and the Tauri
       # bundler treats a set-but-empty variable as present (`var_os("APPLE_CERTIFICATE")` →
       # Some(""): it would import an empty certificate and fail the unsigned build). The plan
@@ -383,11 +393,12 @@ jobs:
           pattern: release-*
           path: ${{ runner.temp }}/dist
           merge-multiple: true
-      - name: latest.json
+      # latest-v2.json always; the frozen legacy latest.json only for the bridge (LEGACY_BRIDGE_VERSION).
+      - name: Manifest
         run: |
           pnpm --filter @chalito/desktop release manifest --channel "$CHANNEL" --version "$VERSION" \
-            --in "$RUNNER_TEMP/dist" --out "$RUNNER_TEMP/dist/latest.json"
-          cat "$RUNNER_TEMP/dist/latest.json"
+            --in "$RUNNER_TEMP/dist" --out-dir "$RUNNER_TEMP/dist"
+          cat "$RUNNER_TEMP"/dist/latest*.json
       - name: Draft notes
         env:
           KIND: ${{ needs.meta.outputs.updater_key }}
@@ -395,7 +406,7 @@ jobs:
           {
             echo "Chalito $VERSION ($CHANNEL). DRAFT: publishing is the owner's go (docs/OPS.md)."
             echo
-            node -e 'const m=require(process.argv[1]);for(const [os,u] of Object.entries(m.unsigned??{})) if(u) console.log(`- ${os}: UNSIGNED build`)' "$RUNNER_TEMP/dist/latest.json"
+            node -e 'const m=require(process.argv[1]);for(const [os,u] of Object.entries(m.unsigned??{})) if(u) console.log(`- ${os}: UNSIGNED build`)' "$RUNNER_TEMP/dist/latest-v2.json"
             [ "$KIND" = test ] && echo "- updater: signed with a THROWAWAY test key; do not publish this draft"
             for f in "$RUNNER_TEMP"/dist/UNWIRED-*.txt; do
               if [ -e "$f" ]; then echo "- $(basename "$f" .txt | sed 's/^UNWIRED-//'): UNWIRED build (no account config); never ship"; fi
@@ -414,7 +425,7 @@ jobs:
         if: needs.meta.outputs.dry_run == 'true'
         with:
           name: dry-run-latest
-          path: ${{ runner.temp }}/dist/latest.json
+          path: ${{ runner.temp }}/dist/latest*.json
           retention-days: 14
       # A draft only. There is deliberately no step that publishes or un-drafts a release.
       - name: Draft release

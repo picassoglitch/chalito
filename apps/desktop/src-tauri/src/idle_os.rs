@@ -9,7 +9,7 @@ pub fn idle_ms() -> Option<u64> {
     use std::time::Duration;
     static BUS: OnceLock<Option<zbus::blocking::Connection>> = OnceLock::new();
     // A hung desktop answers late or never: give up fast rather than hold a blocking thread
-    // (zbus has no timeout of its own; the D-Bus daemon's limit is 25 s).
+    // (zbus has no timeout of its own).
     let bus = BUS
         .get_or_init(|| {
             zbus::blocking::connection::Builder::session()

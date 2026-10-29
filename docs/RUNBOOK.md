@@ -157,8 +157,12 @@ The screens are part of the hub, so this rolls back the whole hub (Chalyb's Verc
 
 The updater only moves forward (`docs/THREAT_MODEL.md`). To pull a bad release:
 1. Unpublish the GitHub draft or release.
-2. Re-point `latest.json` in the private bucket to the previous version, signed with the updater key.
+2. Re-point `latest-v2.json` in the private bucket to the previous version, signed with the updater key. Leave `latest.json` alone: it stays frozen at the bridge release (0.1.0-beta.13).
 3. Raise the minimum supported version in the api once a fixed release exists.
+
+If the bridge release itself is bad (it won't start, or it refuses updates it should take), older installs can only reach a fix through `latest.json`:
+1. Build the fix on Ubuntu 22.04 as the next beta, with `LEGACY_BRIDGE_VERSION` raised to that version in `packages/releases/src/manifest.ts`. The workflow refuses a bridge built anywhere else.
+2. Upload its `latest.json` to `…/beta/latest.json` once, as for the first bridge (OPS §6), and its `latest-v2.json` as usual.
 
 The signed-updater release pipeline is M14 and is **not yet built** (`apps/desktop` has no updater config yet).
 

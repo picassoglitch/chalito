@@ -1,12 +1,7 @@
 import { z } from "zod";
 
 /**
- * The release manifest (`latest.json`), one per channel in the private `releases` bucket
- * (ADR 0014). Its `version / notes / pub_date / platforms` part is exactly Tauri's static
- * updater format; `downloads` and `unsigned` are Chalito's additions for /descargar (the
- * updater ignores unknown top-level fields). URLs are OBJECT PATHS in the bucket
- * (`stable/1.2.0/Chalito_1.2.0_amd64.AppImage`): the api's /releases route swaps them for
- * short-lived signed URLs, so the bucket is never public.
+ * Tauri's static updater format plus `downloads`/`unsigned` for /descargar; URLs are bucket object paths (ADR 0014).
  */
 
 export const CHANNELS = ["stable", "beta"] as const;
@@ -16,9 +11,16 @@ export type Channel = z.infer<typeof Channel>;
 /** Tauri updater targets (`{os}-{arch}`). The universal macOS build serves both darwin keys. */
 export const UPDATER_PLATFORMS = ["linux-x86_64", "windows-x86_64", "darwin-aarch64", "darwin-x86_64"] as const;
 export const UpdaterPlatform = z.enum(UPDATER_PLATFORMS);
-/** The updater endpoint builds from the Ubuntu 24.04 one on ask for: the full manifest. Older builds
- * ask for latest.json, which leaves out what they can't run (apps/api/src/routes/releases.ts). */
+/** The manifest every build from the bridge on asks for, and /descargar reads. Each release writes it. */
 export const UPDATER_MANIFEST = "latest-v2.json";
+/** The manifest builds before the bridge ask for. It stays frozen at the bridge release: older builds
+ * have no glibc gate, so they must only ever reach a build that has one (the bridge), never later ones. */
+export const LEGACY_MANIFEST = "latest.json";
+export const LEGACY_BRIDGE_VERSION = "0.1.0-beta.13";
+
+/** The manifest files a release writes: the bridge also writes the legacy one, later releases never do. */
+export const manifestFiles = (version: string): string[] =>
+  version === LEGACY_BRIDGE_VERSION ? [UPDATER_MANIFEST, LEGACY_MANIFEST] : [UPDATER_MANIFEST];
 export type UpdaterPlatform = z.infer<typeof UpdaterPlatform>;
 
 export const DOWNLOAD_OSES = ["windows", "macos", "linux"] as const;

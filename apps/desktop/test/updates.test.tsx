@@ -1,7 +1,14 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TextProviders } from "../src/lib/i18n.js";
-import { MIN_GLIBC, UpdateController, glibcAtLeast, type FoundUpdate, type UpdaterApi } from "../src/lib/updates.js";
+import {
+  MIN_GLIBC,
+  UpdateController,
+  glibcAtLeast,
+  libcGate,
+  type FoundUpdate,
+  type UpdaterApi,
+} from "../src/lib/updates.js";
 import { Updates } from "../src/panel/Updates.js";
 
 afterEach(cleanup);
@@ -107,8 +114,33 @@ describe("update controller", () => {
     expect(glibcAtLeast("2.35")).toBe(false);
     expect(glibcAtLeast("2.4")).toBe(false);
     expect(glibcAtLeast("1.99")).toBe(false);
-    expect(glibcAtLeast(null)).toBe(true);
-    expect(glibcAtLeast("weird")).toBe(true);
+  });
+
+  it("on Linux, a glibc version it can't read blocks the update instead of risking a build that won't start", async () => {
+    const install = vi.fn(async () => undefined);
+    const c = new UpdateController({
+      ...api(async () => found({ downloadAndInstall: install })),
+      onLinux: true,
+      libcVersion: () => Promise.reject(new Error("command libc_version not found")),
+    });
+    await c.check();
+    expect(c.getSnapshot()).toEqual({ step: "libcUnknown", version: "1.3.0" });
+    await c.install();
+    expect(install).not.toHaveBeenCalled();
+  });
+
+  it("the gate: Linux fails closed, Windows and macOS have no glibc to check", async () => {
+    const boom = () => Promise.reject(new Error("x"));
+    expect(await libcGate({ ...api(async () => null), onLinux: true, libcVersion: boom })).toBe("unknown");
+    expect(await libcGate({ ...api(async () => null), onLinux: true, libcVersion: async () => null })).toBe("unknown");
+    expect(await libcGate({ ...api(async () => null), onLinux: true, libcVersion: async () => "weird" })).toBe(
+      "unknown",
+    );
+    expect(await libcGate({ ...api(async () => null), onLinux: true })).toBe("unknown");
+    expect(await libcGate({ ...api(async () => null), onLinux: true, libcVersion: async () => "2.35" })).toBe("tooOld");
+    expect(await libcGate({ ...api(async () => null), onLinux: true, libcVersion: async () => "2.39" })).toBe("ok");
+    expect(await libcGate({ ...api(async () => null), onLinux: false, libcVersion: boom })).toBe("ok");
+    expect(await libcGate({ ...api(async () => null), libcVersion: async () => null })).toBe("ok");
   });
 
   it("install without an update does nothing; a new check releases the old one", async () => {
@@ -147,6 +179,19 @@ describe("updates screen", () => {
     );
     fireEvent.click(screen.getByText("Check for updates"));
     expect((await screen.findByRole("alert")).textContent).toContain("needs a newer Linux (glibc 2.39");
+    expect(screen.queryByText("Download and install")).toBeNull();
+    expect(screen.getByText("Check for updates")).toBeTruthy();
+  });
+
+  it("tells a Linux whose glibc it couldn't read why it won't update", async () => {
+    const c = new UpdateController({ ...api(async () => found()), onLinux: true, libcVersion: async () => null });
+    render(
+      <TextProviders locale="en">
+        <Updates updates={c} />
+      </TextProviders>,
+    );
+    fireEvent.click(screen.getByText("Check for updates"));
+    expect((await screen.findByRole("alert")).textContent).toContain("Couldn't check which Linux this computer has");
     expect(screen.queryByText("Download and install")).toBeNull();
     expect(screen.getByText("Check for updates")).toBeTruthy();
   });
