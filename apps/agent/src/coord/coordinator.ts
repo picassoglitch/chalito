@@ -92,8 +92,10 @@ export type GitRun = (cwd: string, args: string[], env?: Record<string, string>)
  * here (filter and merge drivers, includes, credential helpers, …) are checked against the plan's
  * start instead (`DANGEROUS_CONFIG`).
  */
+// One empty hooks folder per process: a new one per nodeGit() left ~90 behind per test run.
+let noHooks: string | null = null;
 export const nodeGit = (): GitRun => {
-  const hooks = mkdtempSync(join(tmpdir(), "chalito-nohooks-"));
+  const hooks = (noHooks ??= mkdtempSync(join(tmpdir(), "chalito-nohooks-")));
   const forced = [
     `core.hooksPath=${hooks}`,
     "core.fsmonitor=false",
