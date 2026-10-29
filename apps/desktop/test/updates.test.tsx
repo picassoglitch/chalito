@@ -106,7 +106,7 @@ describe("update controller", () => {
     expect(c.getSnapshot().step).toBe("tooOld");
   });
 
-  it("compares glibc versions numerically; off glibc (null) or unreadable passes", () => {
+  it("compares glibc versions numerically, part by part (2.4 < 2.39 < 3.0)", () => {
     expect(MIN_GLIBC).toBe("2.39");
     expect(glibcAtLeast("2.39")).toBe(true);
     expect(glibcAtLeast("2.41")).toBe(true);

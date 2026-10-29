@@ -161,8 +161,13 @@ The updater only moves forward (`docs/THREAT_MODEL.md`). To pull a bad release:
 3. Raise the minimum supported version in the api once a fixed release exists.
 
 If the bridge release itself is bad (it won't start, or it refuses updates it should take):
-1. Installs that already run the bridge read `latest-v2.json`. If the bridge refuses updates, or doesn't start, no upload reaches them: they reinstall from `/descargar`.
-2. Installs older than the bridge read only `latest.json`. To move them to a fixed bridge, build the fix as the next beta on Ubuntu 22.04: set the Linux `runner:` in `.github/workflows/release.yml` back to `ubuntu-22.04` for that tag, and raise `LEGACY_BRIDGE_VERSION` in `packages/releases/src/manifest.ts` to that version. The workflow refuses a bridge built anywhere else.
+1. Installs that already run the bridge read `latest-v2.json`. If the bridge refuses updates, or doesn't start, no upload reaches them: they reinstall from `/descargar`. Bridge users on glibc older than 2.39 stay on the bridge: after the 24.04 move `/descargar` has only 24.04 builds.
+2. Installs older than the bridge read only `latest.json`. To move them to a fixed bridge, build the fix as the next beta for 22.04. For that tag:
+   - set the Linux `runner:` in `.github/workflows/release.yml` back to `ubuntu-22.04`;
+   - drop the `.deb` `libc6 (>= 2.39)` floor from `apps/desktop/src-tauri/tauri.conf.json`, and relax the 24.04 runner assertion in `apps/desktop/test/release-workflow.test.ts`;
+   - raise `LEGACY_BRIDGE_VERSION` in `packages/releases/src/manifest.ts` to that version.
+
+   The workflow refuses a bridge built on another runner or with the floor.
 3. Update what names the old bridge: the tests in `apps/api/test/releases.test.ts` that treat that version as a later release, the bridge version in this section, OPS §6, GO_LIVE 9.5, QA_PLAN and ADR 0014.
 4. Upload its `latest.json` to `…/beta/latest.json` once, as for the first bridge (OPS §6), and its `latest-v2.json` as usual.
 
