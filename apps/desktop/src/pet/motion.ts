@@ -49,6 +49,8 @@ const WALK_SEND_MS = 33;
 const OWN_MOVE_GRACE_MS = 400;
 const SCREENS_REFRESH_MS = 30_000;
 export const PLACE_RECHECK_MS = 700;
+/** Physical px: an offset this small after placement is a window frame, not a late WM placement. */
+const FRAME_SLACK = 64;
 /** A walk that hasn't arrived this long after it should have (a stuck move call) is dropped. */
 const WALK_SLACK_MS = 2000;
 const WALK_LOOK_YAW = 20;
@@ -76,6 +78,8 @@ export class PetMotion {
     null;
   #moveBusy = false;
   #own: Spot | null = null;
+  /** The launch spot last asked for, to see how far off the WM put it. */
+  #asked: Spot | null = null;
   #ownUntil = -Infinity;
   #movedEvents = false;
   #refreshedAt = -Infinity;
@@ -131,10 +135,10 @@ export class PetMotion {
     this.#movedEvents = off !== null;
     this.#placing = true;
     try {
-      await this.#place();
+      await this.#place(false);
       // Mutter ignores Rust's pre-map placement and may place a fresh window late: check once more.
       await this.#sleep(PLACE_RECHECK_MS);
-      if (!this.#stopped && !this.#touched) await this.#place();
+      if (!this.#stopped && !this.#touched) await this.#place(true);
     } catch (e) {
       console.warn("pet: launch placement failed; leaving it where the OS put it", e);
     } finally {
@@ -143,7 +147,9 @@ export class PetMotion {
     this.#home = this.#pos?.x ?? null;
   }
 
-  async #place(): Promise<void> {
+  /** `correct`: a WM that put the frame, not the client, where we asked lands a frame's height off;
+   * ask again shifted by that offset (owner's WM places the client; ICCCM says the frame). */
+  async #place(correct: boolean): Promise<void> {
     const [screens, size, pos] = await Promise.all([this.api.screens(), this.api.size(), this.api.position()]);
     this.#screens = screens;
     this.#size = size;
@@ -151,7 +157,18 @@ export class PetMotion {
     this.#refreshedAt = this.#clock();
     const spot = launchSpot(loadSpot(setupKey(screens), this.opts.storage), size, screens, pos);
     if (!spot || this.#touched || (spot.x === pos.x && spot.y === pos.y)) return;
-    await this.#setPosition(spot.x, spot.y);
+    const asked = this.#asked;
+    const dx = asked ? pos.x - asked.x : 0;
+    const dy = asked ? pos.y - asked.y : 0;
+    const shifted =
+      correct &&
+      asked?.x === spot.x &&
+      asked.y === spot.y &&
+      Math.abs(dx) <= FRAME_SLACK &&
+      Math.abs(dy) <= FRAME_SLACK;
+    const target = shifted ? { x: spot.x - dx, y: spot.y - dy } : spot;
+    this.#asked = shifted ? null : spot;
+    await this.#setPosition(target.x, target.y);
     this.#pos = spot;
     this.opts.onMoved();
   }

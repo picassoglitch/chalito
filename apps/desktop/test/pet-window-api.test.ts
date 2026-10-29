@@ -13,6 +13,8 @@ const wm = {
   client: { x: 900, y: 400 },
   moved: null as ((p: { x: number; y: number }) => void) | null,
   failReads: false,
+  /** ICCCM's rule instead of the owner's WM: a move puts the frame's corner where asked. */
+  placesFrame: false,
 };
 const frameOf = (c: { x: number; y: number }) => ({ x: c.x, y: c.y - FRAME_TOP });
 /** The person dragging the window, or our own setPosition: the client moves, the event says the frame. */
@@ -43,7 +45,7 @@ vi.mock("@tauri-apps/api/window", async (importOriginal) => {
       outerPosition: async () => frameOf(wm.client),
       innerSize: async () => ({ ...CLIENT }),
       outerSize: async () => ({ width: CLIENT.width, height: CLIENT.height + FRAME_TOP }),
-      setPosition: async (p: { x: number; y: number }) => moveClient(p.x, p.y),
+      setPosition: async (p: { x: number; y: number }) => moveClient(p.x, p.y + (wm.placesFrame ? FRAME_TOP : 0)),
       startDragging: async () => undefined,
       onMoved: async (cb: (e: { payload: { x: number; y: number } }) => void) => {
         wm.moved = (p) => cb({ payload: p });
@@ -92,6 +94,7 @@ beforeEach(() => {
   wm.client = { x: 900, y: 400 };
   wm.moved = null;
   wm.failReads = false;
+  wm.placesFrame = false;
 });
 
 describe("pet placement through the Tauri window API (frame taller than the client)", () => {
@@ -166,5 +169,22 @@ describe("pet placement through the Tauri window API (frame taller than the clie
     expect(seen).toEqual([]);
     expect(warn).toHaveBeenCalledWith("pet: window position unavailable after a move", expect.any(Error));
     warn.mockRestore();
+  });
+
+  it("puts a spot saved by older builds (the frame's corner, 37 px up) back on the floor", async () => {
+    const storage = memory();
+    storage.setItem("chalito-pet-spot", JSON.stringify({ "0,0,1920x1080": { x: 600, y: 783 } }));
+    const { motion } = launch(storage);
+    await motion.start();
+    motion.stop();
+    expect(wm.client).toEqual({ x: 600, y: CORNER.y });
+  });
+
+  it("corrects once when the WM puts the frame, not the client, where it was asked", async () => {
+    wm.placesFrame = true;
+    const { motion } = launch();
+    await motion.start();
+    motion.stop();
+    expect(wm.client).toEqual(CORNER);
   });
 });

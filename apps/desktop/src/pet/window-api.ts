@@ -15,8 +15,8 @@ export const tauriPetWindow = (): PetWindowApi => {
       const p = await cursorPosition();
       return { x: p.x, y: p.y };
     },
-    // The client area everywhere: on X11 setPosition places the client but outer* report the frame
-    // (owner's is 37 px taller, all above), and mixing the two floated the pet 37 px up.
+    // The client area everywhere: on the owner's X11 WM setPosition places the client but outer*
+    // report the frame (37 px taller, all above); mixing the two floated the pet 37 px up.
     position: async () => {
       const p = await w.innerPosition();
       return { x: p.x, y: p.y };

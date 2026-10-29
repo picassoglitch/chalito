@@ -197,7 +197,8 @@ fn computer_open_settings(window: tauri::Window, pane: String) -> Result<(), Str
 
 /// Top centre of the primary screen.
 fn place_indicator(w: &tauri::WebviewWindow) {
-    if let (Ok(Some(m)), Ok(size)) = (w.primary_monitor(), w.outer_size()) {
+    // inner_size: before mapping, tao's outer_size on Linux is a position (see place_pet).
+    if let (Ok(Some(m)), Ok(size)) = (w.primary_monitor(), w.inner_size()) {
         let x = m.position().x + (m.size().width as i32 - size.width as i32) / 2;
         let _ = w.set_position(tauri::PhysicalPosition::new(x, m.position().y + 24));
     }
@@ -217,7 +218,7 @@ fn pet_spot(area: (i32, i32, u32, u32), window: (u32, u32), margin: i32) -> (i32
 }
 
 fn place_pet(w: &tauri::WebviewWindow) {
-    // The client size: a move places the client on X11, so the frame's extra height must not count
+    // The client size: the owner's X11 WM places the client on a move, so the frame mustn't count
     // (it floated the pet 37 px up). Before mapping, tao's outer_size isn't a size at all.
     if let (Ok(Some(m)), Ok(size), Ok(scale)) = (w.primary_monitor(), w.inner_size(), w.scale_factor()) {
         let a = m.work_area();
