@@ -1,6 +1,9 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LEGACY_BRIDGE_VERSION } from "@chalito/releases";
 import { describe, expect, it } from "vitest";
 // Static, not `await import()` in a test: the cold transform counted against the 5s test
 // timeout and timed out under full-suite load.
@@ -32,11 +35,74 @@ describe("release workflow", () => {
     expect(code).toMatch(/already published; not touching it/);
   });
 
+  it("the bridge release (LEGACY_BRIDGE_VERSION) refuses to build on anything but Ubuntu 22.04", () => {
+    const desktop = code.slice(code.indexOf("\n  desktop:"));
+    const guard = desktop.slice(desktop.indexOf("The bridge release builds on Ubuntu 22.04"));
+    expect(guard).toContain("if: matrix.os == 'linux'");
+    expect(guard).toMatch(/LEGACY_BRIDGE_VERSION = .*packages\/releases\/src\/manifest\.ts/);
+    expect(guard).toMatch(/"\$os" != "22\.04"[^\n]*\n[^\n]*exit 1/);
+    // Before the build: a wrong-runner bridge never produces artifacts.
+    expect(desktop.indexOf("The bridge release builds on Ubuntu 22.04")).toBeLessThan(desktop.indexOf("pnpm install"));
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "the bridge guard's script, run for real: refuses only the bridge off 22.04 or with the .deb glibc floor",
+    () => {
+      const step = yml.slice(yml.indexOf("name: The bridge release builds on Ubuntu 22.04"));
+      const body = step.slice(step.indexOf("run: |\n") + "run: |\n".length).split("\n");
+      const script = body
+        .slice(
+          0,
+          body.findIndex((l) => !l.startsWith("          ")),
+        )
+        .join("\n");
+      const dir = mkdtempSync(join(tmpdir(), "chalito-bridge-guard-"));
+      try {
+        const CONF = "apps/desktop/src-tauri/tauri.conf.json";
+        expect(script).toContain(CONF);
+        const floor = JSON.stringify({ bundle: { linux: { deb: { depends: ["libc6 (>= 2.39)"] } } } });
+        const run = (version: string, os: string, conf = JSON.stringify({ bundle: {} })) => {
+          writeFileSync(join(dir, "os-release"), `VERSION="${os} LTS"\nVERSION_ID="${os}"\n`);
+          writeFileSync(join(dir, "tauri.conf.json"), conf);
+          const s = script
+            .replaceAll("/etc/os-release", join(dir, "os-release"))
+            .replaceAll(CONF, join(dir, "tauri.conf.json"));
+          return spawnSync("bash", ["-e", "-c", s], {
+            cwd: join(__dirname, "../../.."),
+            env: { ...process.env, VERSION: version },
+            encoding: "utf8",
+          });
+        };
+        const off = run(LEGACY_BRIDGE_VERSION, "24.04");
+        expect([off.status, off.stdout]).toEqual([
+          1,
+          expect.stringContaining(`${LEGACY_BRIDGE_VERSION} is the bridge`),
+        ]);
+        expect(run(LEGACY_BRIDGE_VERSION, "22.04").status).toBe(0);
+        expect(run("0.1.0-beta.14", "24.04").status).toBe(0);
+        // A bridge .deb with the 24.04 floor would refuse the very systems the bridge is for.
+        const floored = run(LEGACY_BRIDGE_VERSION, "22.04", floor);
+        expect([floored.status, floored.stdout]).toEqual([1, expect.stringContaining("drop the .deb glibc floor")]);
+        expect(run("0.1.0-beta.14", "24.04", floor).status).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("the default token is read-only; only the draft job can write", () => {
     expect(yml).toMatch(/\npermissions:\n {2}contents: read\n/);
     expect((code.match(/contents: write/g) ?? []).length).toBe(1);
     const draft = code.slice(code.indexOf("\n  draft:"));
     expect(draft).toContain("contents: write");
+  });
+
+  it("every release writes latest-v2.json; the frozen legacy latest.json comes only from the CLI's bridge check", () => {
+    const step = code.slice(code.indexOf("- name: Manifest"), code.indexOf("- name: Draft notes"));
+    expect(step).toContain("release manifest");
+    expect(step).toContain('--out-dir "$RUNNER_TEMP/dist"');
+    expect(step).not.toMatch(/--out "|latest\.json"/);
+    expect(code).toContain('"$RUNNER_TEMP/dist/latest-v2.json"');
   });
 
   it("dry runs never create a release", () => {

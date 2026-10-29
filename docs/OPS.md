@@ -165,7 +165,7 @@ A URL on another port keeps the session behaviour (startup `role`, prepared stat
 - Add the DNS record it prints (a `CNAME` to `ghs.googlehosted.com.`) at the `chalyb.com` DNS host, and wait for the managed certificate.
 - Check: `curl -fsS https://api.chalito.chalyb.com/health`.
 
-Until these are done, tag builds still produce DRAFT releases, labelled unsigned (`UNSIGNED_` file names, `unsigned` in latest.json, a note in the draft). Nothing is ever published automatically.
+Until these are done, tag builds still produce DRAFT releases, labelled unsigned (`UNSIGNED_` file names, `unsigned` in latest-v2.json, a note in the draft). Nothing is ever published automatically.
 
 **1. Updater signing key (required before any real release).**
 - On a trusted machine: `pnpm --filter @chalito/desktop exec tauri signer generate -w ~/.tauri/chalito-updater.key` (use a strong password).
@@ -204,12 +204,13 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 - A tag release refuses to build without them. A dry run builds anyway, warns, names its artifacts `release-<os>-unwired`, adds `UNWIRED-<os>.txt`, and says so in the summary.
 
 **6. Dry run, then a release (owner's go).**
-- Actions → Release → "Run workflow" builds everything, verifies every updater signature, checks the labels, and produces artifacts plus a `latest.json`. No release is created.
-- To release: push a tag `vX.Y.Z` (or `vX.Y.Z-beta.N` for the beta channel). The workflow creates a DRAFT GitHub release with all installers and `latest.json`.
+- Actions → Release → "Run workflow" builds everything, verifies every updater signature, checks the labels, and produces artifacts plus a `latest-v2.json`. No release is created.
+- To release: push a tag `vX.Y.Z` (or `vX.Y.Z-beta.N` for the beta channel). The workflow creates a DRAFT GitHub release with all installers and `latest-v2.json`. The bridge release (0.1.0-beta.13) also carries `latest.json`.
 - Publishing is manual and needs the owner's go:
   - check the draft;
   - upload its files to `gs://<project>-chalito-releases/<channel>/<version>/`;
-  - upload `latest.json` to `gs://<project>-chalito-releases/<channel>/latest.json` (this is what makes installed apps update);
+  - upload `latest-v2.json` to `gs://<project>-chalito-releases/<channel>/latest-v2.json` (this is what makes installed apps update, and what /descargar shows);
+  - only for the bridge release (0.1.0-beta.13): also upload its `latest.json` to `gs://<project>-chalito-releases/<channel>/latest.json`. Builds before the bridge ask for that file; it stays frozen at the bridge so they never get a later build. Never upload `latest.json` again;
   - publish the GitHub draft.
 - Never publish a draft that says "THROWAWAY test key", "UNWIRED", or (for a public release) "UNSIGNED".
 
