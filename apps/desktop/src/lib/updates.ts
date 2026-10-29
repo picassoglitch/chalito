@@ -1,6 +1,6 @@
 /**
  * In-app updates (ADR 0014): the Tauri updater checks the api's signed-URL manifest
- * (/releases/{channel}/latest.json), downloads, verifies the minisign signature against the
+ * (/releases/{channel}/latest-v2.json), downloads, verifies the minisign signature against the
  * public key baked into the build (mandatory, can't be disabled) and installs; then relaunch.
  * Only release builds carry an updater: elsewhere `check` fails and the screen says so.
  */

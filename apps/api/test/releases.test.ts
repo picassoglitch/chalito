@@ -5,7 +5,7 @@ import type { ReleaseManifest } from "@chalito/releases";
 import { createApp } from "../src/app.js";
 import { MemoryAudit, type Deps } from "../src/deps.js";
 import { v4SignedUrl, type ReleaseStore } from "../src/releases/gcs.js";
-import { SIGNED_URL_TTL_SEC, releasesRoutes } from "../src/routes/releases.js";
+import { LEGACY_HIDDEN, SIGNED_URL_TTL_SEC, releasesRoutes } from "../src/routes/releases.js";
 
 const SIGNER = "chalito-release-signer@chalyb-prod.iam.gserviceaccount.com";
 
@@ -97,10 +97,10 @@ const setup = (manifest: unknown) => {
   return { app, store, signed };
 };
 
-describe("GET /releases/:channel/latest.json", () => {
-  it("serves the manifest with signed URLs and drops anything outside the channel", async () => {
+describe("GET /releases/:channel/latest-v2.json and latest.json", () => {
+  it("v2 serves the manifest with signed URLs and drops anything outside the channel", async () => {
     const s = setup(MANIFEST);
-    const res = await s.app.request("/releases/stable/latest.json");
+    const res = await s.app.request("/releases/stable/latest-v2.json");
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("private, max-age=60");
     const body = (await res.json()) as ReleaseManifest;
@@ -112,6 +112,24 @@ describe("GET /releases/:channel/latest.json", () => {
     ]);
     expect(body.unsigned).toEqual({ linux: true });
     expect(s.signed.every(([o, ttl]) => o.startsWith("stable/") && ttl === SIGNED_URL_TTL_SEC)).toBe(true);
+  });
+
+  it("the legacy latest.json offers no Linux update (older Linux builds can't run it) but keeps the rest", async () => {
+    const full = {
+      ...MANIFEST,
+      platforms: {
+        ...MANIFEST.platforms,
+        "windows-x86_64": { signature: "w", url: "stable/1.2.0/Chalito_x64-setup.exe" },
+        "darwin-aarch64": { signature: "m", url: "stable/1.2.0/Chalito.app.tar.gz" },
+      },
+    };
+    const legacy = (await (await setup(full).app.request("/releases/stable/latest.json")).json()) as ReleaseManifest;
+    expect(Object.keys(legacy.platforms).sort()).toEqual(["darwin-aarch64", "windows-x86_64"]);
+    expect(LEGACY_HIDDEN).toEqual(["linux-x86_64"]);
+    // The download page still lists the Linux files: only the updater entry is hidden.
+    expect(legacy.downloads?.linux?.length).toBe(1);
+    const v2 = (await (await setup(full).app.request("/releases/stable/latest-v2.json")).json()) as ReleaseManifest;
+    expect(Object.keys(v2.platforms).sort()).toEqual(["darwin-aarch64", "linux-x86_64", "windows-x86_64"]);
   });
 
   it("unknown channel 404, no release 404, malformed manifest 503", async () => {

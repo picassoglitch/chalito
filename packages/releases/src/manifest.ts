@@ -16,6 +16,9 @@ export type Channel = z.infer<typeof Channel>;
 /** Tauri updater targets (`{os}-{arch}`). The universal macOS build serves both darwin keys. */
 export const UPDATER_PLATFORMS = ["linux-x86_64", "windows-x86_64", "darwin-aarch64", "darwin-x86_64"] as const;
 export const UpdaterPlatform = z.enum(UPDATER_PLATFORMS);
+/** The updater endpoint builds from the Ubuntu 24.04 one on ask for: the full manifest. Older builds
+ * ask for latest.json, which leaves out what they can't run (apps/api/src/routes/releases.ts). */
+export const UPDATER_MANIFEST = "latest-v2.json";
 export type UpdaterPlatform = z.infer<typeof UpdaterPlatform>;
 
 export const DOWNLOAD_OSES = ["windows", "macos", "linux"] as const;

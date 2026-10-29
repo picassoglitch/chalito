@@ -209,7 +209,7 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 - Publishing is manual and needs the owner's go:
   - check the draft;
   - upload its files to `gs://<project>-chalito-releases/<channel>/<version>/`;
-  - upload `latest.json` to `gs://<project>-chalito-releases/<channel>/latest.json` (this is what makes installed apps update);
+  - upload `latest.json` to `gs://<project>-chalito-releases/<channel>/latest.json` (this is what makes installed apps update). The api serves it in full as `latest-v2.json`, which builds from the Ubuntu 24.04 one on ask for, and as `latest.json` without the Linux update for older builds, which can't run it;
   - publish the GitHub draft.
 - Never publish a draft that says "THROWAWAY test key", "UNWIRED", or (for a public release) "UNSIGNED".
 
