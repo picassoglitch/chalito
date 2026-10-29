@@ -1,6 +1,9 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LEGACY_BRIDGE_VERSION } from "@chalito/releases";
 import { describe, expect, it } from "vitest";
 // Static, not `await import()` in a test: the cold transform counted against the 5s test
 // timeout and timed out under full-suite load.
@@ -42,6 +45,40 @@ describe("release workflow", () => {
     // Before the build: a wrong-runner bridge never produces artifacts.
     expect(desktop.indexOf("The bridge release builds on Ubuntu 22.04")).toBeLessThan(desktop.indexOf("pnpm install"));
   });
+
+  it.skipIf(process.platform === "win32")(
+    "the bridge guard's script, run for real: refuses only the bridge off 22.04",
+    () => {
+      const step = yml.slice(yml.indexOf("name: The bridge release builds on Ubuntu 22.04"));
+      const body = step.slice(step.indexOf("run: |\n") + "run: |\n".length).split("\n");
+      const script = body
+        .slice(
+          0,
+          body.findIndex((l) => !l.startsWith("          ")),
+        )
+        .join("\n");
+      const dir = mkdtempSync(join(tmpdir(), "chalito-bridge-guard-"));
+      try {
+        const run = (version: string, os: string) => {
+          writeFileSync(join(dir, "os-release"), `VERSION="${os} LTS"\nVERSION_ID="${os}"\n`);
+          return spawnSync("bash", ["-e", "-c", script.replaceAll("/etc/os-release", join(dir, "os-release"))], {
+            cwd: join(__dirname, "../../.."),
+            env: { ...process.env, VERSION: version },
+            encoding: "utf8",
+          });
+        };
+        const off = run(LEGACY_BRIDGE_VERSION, "24.04");
+        expect([off.status, off.stdout]).toEqual([
+          1,
+          expect.stringContaining(`${LEGACY_BRIDGE_VERSION} is the bridge`),
+        ]);
+        expect(run(LEGACY_BRIDGE_VERSION, "22.04").status).toBe(0);
+        expect(run("0.1.0-beta.14", "24.04").status).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("the default token is read-only; only the draft job can write", () => {
     expect(yml).toMatch(/\npermissions:\n {2}contents: read\n/);
