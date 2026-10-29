@@ -16,13 +16,15 @@
 - **macOS:** Developer ID signing + notarization with **App Store Connect API keys** (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`) rather than an Apple ID password. The bun-compiled sidecar gets hardened-runtime JIT entitlements and is signed with the app.
   - Brief deviation: `APPLE_APP_SPECIFIC_PASSWORD` is not a Tauri variable; it is `APPLE_PASSWORD`. Recorded as D-011.
 - **Linux:** AppImage GPG signature (`SIGN=1`) plus published checksums. deb/rpm repos are out of scope in beta; downloads only.
-- **Updates:** Tauri updater with a **static `latest.json`** per channel (`stable`, `beta`) in the private `releases` bucket.
-  - The app fetches it through `api` (`GET /releases/{channel}/latest.json`), which returns short-lived **signed URLs**. There are no public buckets.
+- **Updates:** Tauri updater with a **static manifest** per channel (`stable`, `beta`) in the private `releases` bucket.
+  - The app fetches it through `api` (`GET /releases/{channel}/latest-v2.json`), which returns short-lived **signed URLs**. There are no public buckets.
+  - Builds before 0.1.0-beta.13 ask for `latest.json`. That file is frozen at 0.1.0-beta.13 (the bridge, `LEGACY_BRIDGE_VERSION`), the first build with the v2 endpoint and the glibc gate, so an old install never reaches a later build its system may not run (2026-10-28, the Linux build moving to Ubuntu 24.04).
+  - The bridge is a beta release, and only the beta channel gets a frozen `latest.json`. No stable install exists (every tag so far is a beta), so the stable channel starts on `latest-v2.json` and never writes `latest.json`; a stable request for it answers 404 (2026-10-28).
   - The updater public key is in `tauri.conf.json`. The private key and password live only in GitHub Actions secrets.
 - **CI:** a matrix on ubuntu/windows/macos runners.
   - PRs build unsigned artifacts.
   - Tags build signed **draft** releases, when the secrets exist.
-  - Publishing (promoting the draft and updating `latest.json`) needs the owner's go.
+  - Publishing (promoting the draft and updating `latest-v2.json`) needs the owner's go.
 
 ## Consequences
 - Linux Wayland: click-through polling needs `cursorPosition()`, which returns (0,0) on native Wayland. The app sets `GDK_BACKEND=x11` (XWayland) for the pet window, and native Wayland is best effort (D-006).

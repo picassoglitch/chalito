@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { DOWNLOAD_OSES, ReleaseManifest, type DownloadOs } from "./manifest.js";
+import { DOWNLOAD_OSES, ReleaseManifest, UPDATER_MANIFEST, type DownloadOs } from "./manifest.js";
 import { detectPlatform, type DetectedPlatform, type NavigatorLike } from "./detect.js";
 
 /** `t(key, values)` over this package's messages (es/en), e.g. next-intl's `useTranslations("download")`. */
@@ -15,7 +15,9 @@ export const fetchManifest = async (
   f: typeof fetch = fetch,
 ): Promise<ReleaseManifest | null> => {
   try {
-    const res = await f(`${apiBase.replace(/\/+$/, "")}/releases/${channel}/latest.json`, { credentials: "omit" });
+    const res = await f(`${apiBase.replace(/\/+$/, "")}/releases/${channel}/${UPDATER_MANIFEST}`, {
+      credentials: "omit",
+    });
     if (!res.ok) return null;
     const m = ReleaseManifest.safeParse(await res.json());
     return m.success ? m.data : null;

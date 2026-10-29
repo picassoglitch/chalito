@@ -59,8 +59,8 @@ export const v4SignedUrl = async (o: {
 };
 
 export interface ReleaseStore {
-  /** The channel's latest.json (parsed JSON), or null when there is none. */
-  manifest(channel: string): Promise<unknown>;
+  /** A manifest file of the channel (`latest-v2.json`, `latest.json`) as parsed JSON, or null when absent. */
+  manifest(channel: string, file: string): Promise<unknown>;
   /** A short-lived signed download URL for an object in the releases bucket. */
   signedUrl(object: string, expiresSec: number): Promise<string>;
 }
@@ -80,8 +80,8 @@ export class GcsReleaseStore implements ReleaseStore {
   ) {}
 
   /** Read through a signed URL too: the api itself holds no role on the bucket. */
-  async manifest(channel: string): Promise<unknown> {
-    const res = await fetch(await this.signedUrl(`${channel}/latest.json`, 60));
+  async manifest(channel: string, file: string): Promise<unknown> {
+    const res = await fetch(await this.signedUrl(`${channel}/${file}`, 60));
     if (res.status === 404) return null;
     if (!res.ok) throw new Error(`releases manifest: HTTP ${res.status}`);
     return res.json();

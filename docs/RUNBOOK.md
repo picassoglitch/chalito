@@ -157,7 +157,7 @@ The screens are part of the hub, so this rolls back the whole hub (Chalyb's Verc
 
 The updater only moves forward (`docs/THREAT_MODEL.md`). To pull a bad release:
 1. Unpublish the GitHub draft or release.
-2. Re-point `latest.json` in the private bucket to the previous version, signed with the updater key.
+2. Re-point `latest-v2.json` in the private bucket to the previous version, signed with the updater key. Leave `latest.json` alone: it stays frozen at the bridge release (0.1.0-beta.13).
 3. Raise the minimum supported version in the api once a fixed release exists.
 
 The signed-updater release pipeline is M14 and is **not yet built** (`apps/desktop` has no updater config yet).

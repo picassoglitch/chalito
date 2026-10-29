@@ -39,6 +39,14 @@ describe("release workflow", () => {
     expect(draft).toContain("contents: write");
   });
 
+  it("every release writes latest-v2.json; the frozen legacy latest.json comes only from the CLI's bridge check", () => {
+    const step = code.slice(code.indexOf("- name: Manifest"), code.indexOf("- name: Draft notes"));
+    expect(step).toContain("release manifest");
+    expect(step).toContain('--out-dir "$RUNNER_TEMP/dist"');
+    expect(step).not.toMatch(/--out "|latest\.json"/);
+    expect(code).toContain('"$RUNNER_TEMP/dist/latest-v2.json"');
+  });
+
   it("dry runs never create a release", () => {
     expect(code).toMatch(/name: Draft release\n\s*if: needs\.meta\.outputs\.dry_run != 'true'/);
   });

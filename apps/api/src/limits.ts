@@ -152,4 +152,5 @@ export const API_ROUTES: RouteTable = {
 
   // Desktop updater manifest (signed URLs to the private releases bucket)
   "GET /releases/:channel/latest.json": user(30, 1, 0),
+  "GET /releases/:channel/latest-v2.json": user(30, 1, 0),
 };
