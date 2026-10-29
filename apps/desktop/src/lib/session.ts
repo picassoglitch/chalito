@@ -119,10 +119,18 @@ export interface Connected {
 export const createSession = async (
   env: DesktopEnv,
   onConnected: (c: Connected) => void,
-): Promise<{ controller: SignInController; dispose: () => void }> => {
+  openVault: () => Promise<KeyVault> = () => KeyVault.open("chalito-desktop-keys"),
+): Promise<{
+  controller: SignInController;
+  dispose: () => void;
+  /** This computer has a saved sign-in, and `restored` is trying it. */
+  restoring: boolean;
+  /** Settles once this device's saved sign-in (if any) has connected (true) or given up (false). */
+  restored: Promise<boolean>;
+}> => {
   const storage = indexedDbStorage({ dbName: "chalito-desktop" });
   const sb = createBrowserSupabase(env.supabaseUrl, env.supabaseKey, storage);
-  const vault = await KeyVault.open("chalito-desktop-keys");
+  const vault = await openVault();
   const token = async () => (await sb.auth.getSession()).data.session?.access_token ?? null;
   const api = httpApi({ baseUrl: env.apiBase, token });
   // /v1/endorse (fallback only, for an api without /v1/devices/signin): publish the registration,
@@ -262,9 +270,19 @@ export const createSession = async (
     if (import.meta.env.DEV) unlisten.push(await listen<string>("chalito://sso-callback", (e) => handle([e.payload])));
   }
 
-  // Already enrolled: sign in as this device straight away.
+  // Already enrolled: sign in as this device in the background. Awaiting it kept the panel without a
+  // controller ("isn't configured") while it ran, or for good when the saved keys failed to load.
   const stored = loadStored();
-  if (stored && (await vault.load())) await connectAs(stored.owner, stored.passkey).catch(() => undefined);
+  const restored = stored
+    ? (async () => {
+        if (!(await vault.load())) return false;
+        await connectAs(stored.owner, stored.passkey);
+        return true;
+      })().catch((e: unknown) => {
+        console.warn("saved sign-in", e);
+        return false;
+      })
+    : Promise.resolve(false);
 
-  return { controller, dispose: () => unlisten.forEach((f) => f()) };
+  return { controller, dispose: () => unlisten.forEach((f) => f()), restoring: stored !== null, restored };
 };
