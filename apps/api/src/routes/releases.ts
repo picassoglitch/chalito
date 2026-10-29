@@ -8,9 +8,8 @@ import type { ReleaseStore } from "../releases/gcs.js";
 /** Long enough for a slow download to start; short enough that links don't get shared around. */
 export const SIGNED_URL_TTL_SEC = 15 * 60;
 
-/**
- * Public manifests with signed URLs; latest.json stays frozen at the bridge so old builds can reach v2 (ADR 0014).
- */
+/** Public manifests, each artifact path swapped for a short-lived signed URL; paths outside the channel are
+ * dropped, never signed. latest.json stays frozen at the bridge release (ADR 0014). */
 export const releasesRoutes = (deps: Deps, store: ReleaseStore) => {
   const app = new Hono();
   /** `fallback`: v2 serves the legacy file until the bridge release uploads the first latest-v2.json. */

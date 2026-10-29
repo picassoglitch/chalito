@@ -166,8 +166,6 @@ If the bridge release itself is bad (it won't start, or it refuses updates it sh
 3. Update what names the old bridge: the tests in `apps/api/test/releases.test.ts` that treat that version as a later release, the bridge version in this section, OPS §6, GO_LIVE 9.5, QA_PLAN and ADR 0014.
 4. Upload its `latest.json` to `…/beta/latest.json` once, as for the first bridge (OPS §6), and its `latest-v2.json` as usual.
 
-The signed-updater release pipeline is M14 and is **not yet built** (`apps/desktop` has no updater config yet).
-
 ---
 
 ## 3. Rotate keys
