@@ -32,6 +32,16 @@ describe("release workflow", () => {
     expect(code).toMatch(/already published; not touching it/);
   });
 
+  it("the bridge release (LEGACY_BRIDGE_VERSION) refuses to build on anything but Ubuntu 22.04", () => {
+    const desktop = code.slice(code.indexOf("\n  desktop:"));
+    const guard = desktop.slice(desktop.indexOf("The bridge release builds on Ubuntu 22.04"));
+    expect(guard).toContain("if: matrix.os == 'linux'");
+    expect(guard).toMatch(/LEGACY_BRIDGE_VERSION = .*packages\/releases\/src\/manifest\.ts/);
+    expect(guard).toMatch(/"\$os" != "22\.04"[^\n]*\n[^\n]*exit 1/);
+    // Before the build: a wrong-runner bridge never produces artifacts.
+    expect(desktop.indexOf("The bridge release builds on Ubuntu 22.04")).toBeLessThan(desktop.indexOf("pnpm install"));
+  });
+
   it("the default token is read-only; only the draft job can write", () => {
     expect(yml).toMatch(/\npermissions:\n {2}contents: read\n/);
     expect((code.match(/contents: write/g) ?? []).length).toBe(1);

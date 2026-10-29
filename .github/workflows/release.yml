@@ -123,6 +123,16 @@ jobs:
       CHANNEL: ${{ needs.meta.outputs.channel }}
     steps:
       - uses: actions/checkout@v4
+      # The frozen latest.json serves the bridge to every older install: it must run on their glibc.
+      - name: The bridge release builds on Ubuntu 22.04
+        if: matrix.os == 'linux'
+        run: |
+          bridge=$(sed -n 's/^export const LEGACY_BRIDGE_VERSION = "\(.*\)";$/\1/p' packages/releases/src/manifest.ts)
+          [ -n "$bridge" ] || { echo "::error::LEGACY_BRIDGE_VERSION not found"; exit 1; }
+          os=$(. /etc/os-release && echo "$VERSION_ID")
+          if [ "$VERSION" = "$bridge" ] && [ "$os" != "22.04" ]; then
+            echo "::error::$bridge is the bridge release: build it on Ubuntu 22.04, not $os"; exit 1
+          fi
       # Signing inputs, exported ONLY when set. A missing secret is an empty string, and the Tauri
       # bundler treats a set-but-empty variable as present (`var_os("APPLE_CERTIFICATE")` →
       # Some(""): it would import an empty certificate and fail the unsigned build). The plan
