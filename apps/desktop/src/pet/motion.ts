@@ -5,7 +5,7 @@ import { PressTracker, Reactions, cursorGaze, eyePoint, followWeight, scaleGaze 
 import { launchSpot, loadSpot, saveSpot, screenAt, setupKey, type Screen, type Spot } from "./spot.js";
 import { WalkPlanner, mayWalk, onFloor, walkAt, walkMs, xBounds, type WalkGate } from "./walk.js";
 
-/** The pet window as motion needs it; positions and sizes in PHYSICAL px (the window's outer frame). */
+/** The pet window as motion needs it; positions and sizes in PHYSICAL px (the client area, as moves place it). */
 export interface PetWindowApi {
   cursor(): Promise<Spot>;
   position(): Promise<Spot>;

@@ -217,7 +217,9 @@ fn pet_spot(area: (i32, i32, u32, u32), window: (u32, u32), margin: i32) -> (i32
 }
 
 fn place_pet(w: &tauri::WebviewWindow) {
-    if let (Ok(Some(m)), Ok(size), Ok(scale)) = (w.primary_monitor(), w.outer_size(), w.scale_factor()) {
+    // The client size: a move places the client on X11, so the frame's extra height must not count
+    // (it floated the pet 37 px up). Before mapping, tao's outer_size isn't a size at all.
+    if let (Ok(Some(m)), Ok(size), Ok(scale)) = (w.primary_monitor(), w.inner_size(), w.scale_factor()) {
         let a = m.work_area();
         // The window's pixels are at the scale it was made on; the work area's at the primary's.
         let size = size.to_logical::<f64>(scale).to_physical::<u32>(m.scale_factor());
@@ -1033,6 +1035,8 @@ mod tests {
         assert_eq!(super::pet_spot((0, 0, 1920, 1040), (220, 260), 24), (1676, 780));
         // A second monitor to the left, a top menu bar (macOS) shifting the work area down.
         assert_eq!(super::pet_spot((-1440, 25, 1440, 875), (220, 260), 24), (-244, 640));
+        // The owner's X11 screen: _NET_WORKAREA 67,32,1853,1048 and the 220×260 client: feet at y 1080.
+        assert_eq!(super::pet_spot((67, 32, 1853, 1048), (220, 260), 24), (1676, 820));
         // A window wider or taller than the area stays inside it.
         assert_eq!(super::pet_spot((0, 0, 200, 200), (220, 260), 24), (0, 0));
     }
