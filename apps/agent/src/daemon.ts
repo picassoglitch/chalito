@@ -55,6 +55,9 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
+import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
+import { openOwnSession } from "./watch/open.js";
+import { meetingsFeature } from "./meetings/ipc.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
@@ -148,13 +151,8 @@ export const ACP_AUTH_MISSING = {
       : "Gemini CLI is pinned but your Gemini API key is missing. Save it with `chalito keys set google`.",
 } as const;
 
-/**
- * Whether the CLI's own sign-in (the person's plan) may be used for this provider:
- * `providers.yaml: <provider>.subscriptionLocal` is `on` or `approved`. `owner_only` and `off`
- * (and an unreadable providers.yaml) mean API key only. `owner_only` fails closed on the device:
- * the agent has no server-signed proof yet that this account is on the Chalito team, and anything
- * it read locally (an env var, a file) the person could set themselves.
- */
+/** CLI sign-in only when `subscriptionLocal` is `on`/`approved`; `owner_only` fails closed here, since
+ * the device has no server-signed team proof and anything local the person could set themselves. */
 export const signInAllowed = (provider: Provider, load: typeof loadProviders = loadProviders): boolean => {
   try {
     const s = load().providers[provider]?.subscriptionLocal;
@@ -194,10 +192,7 @@ export interface DaemonDeps {
   watchFiles?: boolean;
   /** One agent per computer (instance-lock.ts); returns the release function. */
   lock?: (dir: string) => () => void;
-  /**
-   * The per-launch secret from the desktop app that started this agent (ipc-server.ts). Without
-   * one (the OS service, a terminal) there is no IPC server.
-   */
+  /** The per-launch secret from the desktop app that started this agent (ipc-server.ts); none, no IPC server. */
   ipcSecret?: string | null;
   /** Defaults to ~/.chalito/agent.sock (a named pipe on Windows). */
   ipcPath?: string;
@@ -223,10 +218,8 @@ export interface DaemonDeps {
   catalogFetch?: CatalogFetch | false;
   /** Remote terminal's PTY layer (terminal/pty.ts in production; a fake in tests). */
   ptyBackend?: () => PtyBackend;
-  /**
-   * The recipes remote terminal may open, by app id. Defaults to the engine's catalog (curated,
-   * and custom recipes enabled on this computer); the raw shell is its own local toggle.
-   */
+  /** Recipes remote terminal may open, by app id: default the engine's catalog (curated, and custom ones
+   * enabled here); the raw shell is its own local toggle. */
   terminalRecipes?: (appId: string) => Recipe | null;
   /** Remote screen's WebRTC peer (screen/peer.ts werift in production; a fake in tests). */
   screenPeer?: PeerFactory;
@@ -234,10 +227,8 @@ export interface DaemonDeps {
   prRunner?: ProcessRunner;
   /** Finds the person's `gh`; default PATH plus the installers' folders. */
   ghPath?: () => string | null;
-  /**
-   * The recipes remote screen and the computer MCP may launch. Defaults to the engine's catalog
-   * (curated, and custom recipes enabled on this computer).
-   */
+  /** Recipes remote screen and the computer MCP may launch: default the engine's catalog (curated, and custom
+   * ones enabled here). */
   recipes?: () => readonly LaunchableRecipe[];
   /** How the app drivers start programs (drivers/launcher.ts); tests pass a fake. */
   appLauncher?: (ctx: AppDriverContext) => Launcher;
@@ -274,10 +265,8 @@ export interface AdapterInput {
   apiKey: ClaudeAuth | null;
   /** The pinned Claude Code, or null when its pin is missing or failed (Codex may still run). */
   claudePath: string | null;
-  /**
-   * The pinned Codex with the BYO OpenAI key or, where providers.yaml allows it for this person,
-   * their own `codex login` in Chalito's CODEX_HOME. Absent unless the pin checks out.
-   */
+  /** The pinned Codex with the BYO OpenAI key or, where providers.yaml allows it, their own `codex login`
+   * in Chalito's CODEX_HOME. Absent unless the pin checks out. */
   codex?: {
     path: string;
     apiKey?: string;
@@ -418,10 +407,7 @@ export const CATALOG_REFRESH_MS = 6 * 60 * 60 * 1000;
 /** Presence: lastSeenAt every 5 min while running (the database skips broadcasts for last_seen-only updates). */
 export const PRESENCE_HEARTBEAT_MS = 5 * 60 * 1000;
 
-/**
- * sessions.yaml (M16 A); the compiled-in defaults when the file isn't there (the single-file
- * agent build) or doesn't validate.
- */
+/** sessions.yaml (M16 A); the compiled-in defaults when the file is missing (single-file build) or invalid. */
 let sessionsCache: ReturnType<typeof loadSessions> | null = null;
 export const sessionsConfig = (log?: { warn(m: string, meta?: Record<string, unknown>): void }) => {
   if (sessionsCache) return sessionsCache;
@@ -701,9 +687,8 @@ const startDaemon = async (
   /** Legacy alias: what used to be `providers.activeMode(provider)`. */
   const activeMode = (p: Provider) => apps.activeMode(PROVIDER_APP[p]);
 
-  // Run exactly the pinned binaries, never a PATH lookup. Each provider authenticates the way the
-  // person connected it: a keychain key, or (where providers.yaml allows it for them) the
-  // provider's own sign-in in Chalito's profile for that CLI.
+  // Exactly the pinned binaries, never a PATH lookup; each provider authenticates as the person connected
+  // it: a keychain key, or (where providers.yaml allows) its own sign-in in Chalito's profile for that CLI.
   const resolveAdapters = async (c: PairedConfig) => {
     const pin = await checkClaudePin(c.claude);
     const claudeProblem = pin.ok
@@ -768,9 +753,8 @@ const startDaemon = async (
     return { claudeProblem, claudePath, apiKey, codex, grok, gemini };
   };
 
-  // Fail fast, before touching the cloud. Claude Code's pin failing is fatal only when no other
-  // coding agent is usable, and only for an agent the desktop app didn't start: the app's panel
-  // is where the person installs and connects a provider, so that agent keeps running without one.
+  // Fail fast, before the cloud. A failed Claude Code pin is fatal only with no other coding agent and no
+  // desktop app: the app's panel is where the person connects a provider, so that agent keeps running.
   const resolved = await resolveAdapters(cfg);
   const { claudeProblem, claudePath, apiKey, codex, grok, gemini } = resolved;
   if (claudeProblem && !codex && !grok && !gemini && !deps.ipcSecret) throw new OnboardingError(claudeProblem);
@@ -819,9 +803,8 @@ const startDaemon = async (
         "PROCESSOR_ARCHITECTURE",
         "PROCESSOR_ARCHITEW6432",
       ]),
-      // What git in the sessions reads: their HOME, XDG, PATH and GIT_CONFIG_* (git-hooks.ts fails
-      // closed on the command-line ones).
-      // GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n go with GIT_CONFIG_COUNT.
+      // What git in the sessions reads: HOME, XDG, PATH and GIT_CONFIG_* (git-hooks.ts fails closed on the
+      // command-line ones); GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n go with GIT_CONFIG_COUNT.
       ...Object.fromEntries(Object.entries(claudeEnv(env, "")).filter(([k]) => /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k))),
       ...pickEnv(claudeEnv(env, ""), [
         "HOME",
@@ -884,9 +867,8 @@ const startDaemon = async (
     registry: deps.sessionRegistry ?? new FileSessionRegistry(dir, log),
   };
 
-  // Computer control (computer/control.ts): only when the desktop app started this agent, since
-  // the app shows the on-screen indicator and holds the kill switch. The broker socket is what
-  // the per-session MCP server talks to.
+  // Computer control (computer/control.ts): only when the desktop app started this agent, as it shows the
+  // indicator and holds the kill switch. The per-session MCP server talks to the broker socket.
   const auditAgent = (type: string, meta: Record<string, unknown>) => {
     log.info(type, meta);
     void signedInStore
@@ -902,9 +884,8 @@ const startDaemon = async (
       );
   };
   let broker: Broker | null = null;
-  // Launchable apps (recipes) behind the engine's driver hook: web-app (managed browser
-  // profile) and desktop-app (open / focus).
-  // `app.launch` reaches them through the registry too (rebuildDrivers → AppManager.launch).
+  // Launchable apps behind the engine's driver hook: web-app (managed browser profile) and desktop-app
+  // (open / focus); `app.launch` reaches them through the registry too (rebuildDrivers → AppManager.launch).
   registerAppDrivers(deps.appLauncher, deps.home ?? homedir());
   const appLauncher = new AppLauncher({
     recipes: deps.recipes ?? (() => catalog.entries().flatMap((e) => (!e.custom || e.enabled ? [e.recipe] : []))),
@@ -939,10 +920,8 @@ const startDaemon = async (
     });
     coreDeps.computer = computer;
 
-    // Remote terminal (terminal/control.ts): also only with the desktop app, which shows the
-    // indicator and holds the kill switch it shares with computer control.
-    // The recipe comes from the engine's catalog on this computer (a custom one only once enabled
-    // here), never from the remote command, which only names it; its driver from the registry.
+    // Remote terminal: only with the desktop app (indicator, shared kill switch). The recipe comes from this
+    // computer's catalog (custom ones once enabled here), never from the remote command, which only names it.
     const recipes = deps.terminalRecipes ?? usableRecipe;
     if (terminalOn) {
       terminal = new TerminalControl({
@@ -1157,9 +1136,8 @@ const startDaemon = async (
       )
     : null;
 
-  // Engine: every usable app's drivers (drivers/registry.ts). Session adapters for apps beyond the
-  // built-in four go to the core by app id; launchers back `app.launch`. Built with only what the
-  // person set up here: the pinned (else detected) CLI, the keychain key or the app's own sign-in.
+  // Engine: every usable app's drivers; adapters beyond the built-in four go to the core by app id, launchers
+  // back `app.launch`. Built only from what was set up here: pinned/detected CLI, keychain key or own sign-in.
   const rebuildDrivers = async (): Promise<Record<string, SessionAdapter>> => {
     const next = new Map<string, { kind: RecipeKind; driver: Driver }[]>();
     const appAdapters: Record<string, SessionAdapter> = {};
@@ -1496,6 +1474,8 @@ const startDaemon = async (
   // The desktop panel's local IPC (only with the app's secret).
   let ipc: IpcServer | null = null;
   if (deps.ipcSecret) {
+    const ownPaths = watchPaths(dir, env, deps.home ?? homedir());
+    const ownWatcher = new OwnSessionWatcher({ paths: ownPaths, log: (m, meta) => log.warn(m, meta) });
     try {
       ipc = await startIpcServer({
         path: deps.ipcPath ?? ipcPath(dir),
@@ -1524,7 +1504,17 @@ const startDaemon = async (
           audit: auditAgent,
           chalitoDir: dir,
           code,
+          ownSessions: {
+            watcher: ownWatcher,
+            open: (v) => openOwnSession(v, { platform: process.platform, run: spawnRunner, paths: ownPaths }),
+          },
           ...(prs ? { prs } : {}),
+          meetings: meetingsFeature({
+            secrets,
+            code,
+            locale: () => cfg.locale,
+            warn: (event, meta) => log.warn(event, meta),
+          }),
         }),
         onError: (method, err) =>
           log.warn("ipc.request_failed", { method, error: err instanceof Error ? err.message : "error" }),

@@ -1,10 +1,7 @@
 import { useState, useSyncExternalStore } from "react";
 import type { ApprovalView, ChalitoClient } from "@chalito/client";
 import { useT } from "../lib/i18n.js";
-import { needsStepUp } from "../lib/stepup.js";
-
-const summary = (d: Record<string, unknown> | null, fallback: string): string =>
-  typeof d?.summary === "string" ? d.summary : typeof d?.tool === "string" ? d.tool : fallback;
+import { approvalSummary, approveBlock } from "../lib/approval-rules.js";
 
 /**
  * Pending approvals and notices from the live store, the same rows the PWA shows. Without a
@@ -30,10 +27,11 @@ export const ApprovalRow = ({
 }) => {
   const t = useT();
   const truncated = a.details?.summaryTruncated === true;
+  const block = approveBlock(a, canStepUp);
   const [expanded, setExpanded] = useState(false);
   return (
     <li data-aid={a.aid} data-verified={a.verified} className={`card risk-${a.risk.toLowerCase()}`}>
-      <strong>{summary(a.details, a.origin)}</strong>
+      <strong>{approvalSummary(a)}</strong>
       {!a.verified && (
         <span className="warn" data-unverified>
           {t("inbox.unverified")}
@@ -47,7 +45,7 @@ export const ApprovalRow = ({
         </details>
       )}
       <div className="row">
-        {!a.verified ? null : needsStepUp(a) && !canStepUp ? (
+        {block === "unverified" ? null : block === "phoneOnly" ? (
           <span className="muted" data-phone-only>
             {t("inbox.approveOnPhone")}
           </span>

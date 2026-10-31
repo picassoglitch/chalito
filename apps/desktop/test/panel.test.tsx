@@ -258,6 +258,9 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     codeStart: async () => ({ sid: "s1" }),
     codePrompt: async () => undefined,
     codeStop: async () => undefined,
+    ownSessions: async () => ({ enabled: false, sessions: [] }),
+    setOwnSessions: async (enabled) => ({ enabled }),
+    openOwnSession: async () => ({ opened: false, id: "x", cwd: null }),
     prWatch: () => Promise.reject(new Error("agent_ipc_unavailable")),
     setPrWatch: () => Promise.reject(new Error("agent_ipc_unavailable")),
     ...over,
@@ -684,8 +687,35 @@ describe("panel: step-up capability", () => {
 
 describe("panel: sign-in screen", () => {
   it("not configured in this build", () => {
-    renderPanel({ signIn: <SignIn controller={null} /> }, "en");
+    renderPanel({ signIn: <SignIn setup={{ state: "unconfigured" }} /> }, "en");
     expect(screen.getByText(/isn't configured/)).toBeTruthy();
+  });
+
+  it("says it is getting ready, not 'isn't configured', while the session starts", () => {
+    renderPanel({ signIn: <SignIn setup={{ state: "starting" }} /> }, "en");
+    expect(screen.getByText("Getting sign-in ready…")).toBeTruthy();
+    expect(screen.queryByText(/isn't configured/)).toBeNull();
+  });
+
+  it("offers no new sign-in while this computer's saved sign-in reconnects", () => {
+    const controller = new SignInController({
+      flow: new SsoFlow("https://chalyb.com/launch"),
+      openUrl: async () => undefined,
+      exchange: async () => ({ ok: false, reason: "exchange_failed" }),
+      enroll: async () => ({ ok: false, reason: "failed" }),
+    });
+    renderPanel({ signIn: <SignIn setup={{ state: "ready", controller, restoring: true }} /> }, "es");
+    expect(screen.getByText("Reconectando esta computadora con tu cuenta…")).toBeTruthy();
+    expect(screen.queryByText("Iniciar sesión")).toBeNull();
+  });
+
+  it.each([
+    ["en", "Sign-in couldn't start on this computer: UnknownError: IDB open failed."],
+    ["es", "El inicio de sesión no pudo arrancar en esta computadora: UnknownError: IDB open failed."],
+  ] as const)("shows why the session couldn't start (%s)", (lang, text) => {
+    renderPanel({ signIn: <SignIn setup={{ state: "failed", detail: "UnknownError: IDB open failed" }} /> }, lang);
+    expect(screen.getByRole("alert").textContent).toContain(text);
+    expect(screen.queryByText(/isn't configured|no tiene configurado/)).toBeNull();
   });
 
   it("walks the steps the controller reports", async () => {
@@ -709,7 +739,10 @@ describe("panel: sign-in screen", () => {
             });
         }),
     });
-    const { container } = renderPanel({ signIn: <SignIn controller={controller} /> }, "en");
+    const { container } = renderPanel(
+      { signIn: <SignIn setup={{ state: "ready", controller, restoring: false }} /> },
+      "en",
+    );
     fireEvent.click(screen.getByText("Sign in"));
     await waitFor(() => expect(container.querySelector('[data-sign-in="browser"]')).not.toBeNull());
     const state = new URL(opened[0]!).searchParams.get("state")!;
@@ -728,7 +761,7 @@ describe("panel: sign-in screen", () => {
       exchange: async () => ({ ok: false, reason: "exchange_failed" }),
       enroll: async () => ({ ok: false, reason: "failed" }),
     });
-    renderPanel({ signIn: <SignIn controller={controller} /> }, "en");
+    renderPanel({ signIn: <SignIn setup={{ state: "ready", controller, restoring: false }} /> }, "en");
     fireEvent.click(screen.getByText("Sign in"));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Couldn't open the browser.");
     expect(screen.getByText("Try again")).toBeTruthy();

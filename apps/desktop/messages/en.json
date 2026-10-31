@@ -387,6 +387,9 @@
     "intro": "Sign in with your Chalyb account to see what's pending here.",
     "start": "Sign in",
     "notConfigured": "Sign-in isn't configured in this build.",
+    "starting": "Getting sign-in ready…",
+    "restoring": "Reconnecting this computer to your account…",
+    "setupFailed": "Sign-in couldn't start on this computer: {detail}. Close Chalito and open it again; if it keeps happening, send us this message.",
     "browser": "Finish signing in in your browser. You'll come back here automatically.",
     "reopen": "Open again",
     "cancel": "Cancel",
@@ -428,6 +431,8 @@
     "ready": "Version {version} is ready. Restart Chalito to use it.",
     "relaunch": "Restart now",
     "unavailable": "This build doesn't update itself.",
+    "libcUnknown": "Couldn't check which Linux this computer has (its glibc version), so version {version} won't install: it might not start. Chalito keeps working as it is.",
+    "tooOld": "Version {version} needs a newer Linux (glibc {needs} or later, like Ubuntu 24.04, Debian 13 or Fedora 40). Chalito keeps working as it is.",
     "error": "Couldn't update. Try again later."
   },
   "rooms": {
@@ -750,5 +755,184 @@
     "title": "Chalito needs your approval",
     "all": "See all {count} in the inbox",
     "later": "Later"
+  },
+  "offlineVoice": {
+    "hold": "Hold to give a command (offline)",
+    "listening": "Listening… let go or stop talking to finish.",
+    "transcribing": "Working out what you said, on your computer…",
+    "heardNothing": "I didn't hear anything. Try again.",
+    "unknown": "I heard “{text}”, but it isn't a command I know.",
+    "micDenied": "Chalito isn't allowed to use the microphone. Allow it in your system settings.",
+    "micSilent": "The microphone sent no sound. Check that it isn't muted or in use by another app.",
+    "engineDown": "I can't find the local voice engine. Check that whisper.cpp is running at the address in Settings.",
+    "engineFailed": "The local voice engine answered with an error ({status}).",
+    "engineSlow": "The local voice engine took too long. Try a smaller model or a single language.",
+    "notWhisper": "Something answers at that address, but it isn't whisper.cpp. Check the port in Settings.",
+    "micMissing": "I can't find a microphone on this computer.",
+    "micBusy": "Another app is using the microphone. Close it and try again.",
+    "actionFailed": "That didn't work: {reason}",
+    "failed": "Something went wrong with the voice command. Try again.",
+    "close": "Close",
+    "cancel": "Cancel",
+    "which": "This, this, or all?",
+    "confirm": "Do this?",
+    "heard": "I heard: “{text}”",
+    "done": "Done",
+    "all": "All",
+    "allButApprove": "All but approving",
+    "gone": "That isn't pending anymore.",
+    "nothingPending": "nothing is pending",
+    "more": "and {n} more in the inbox",
+    "do": {
+      "approve": "Approve",
+      "deny": "Deny",
+      "open": "Open the session “{label}”",
+      "openNone": "Open a session: I didn't find any",
+      "newSession": "Start a session in {app} · {workspace}: “{prompt}”",
+      "newSessionForm": "I didn't find an app and folder ready for “{prompt}”: open Sessions",
+      "newForm": "Open New session",
+      "pause": "Pause Chalito for {minutes} min (Do Not Disturb turns itself off)",
+      "dndOn": "Turn on Do Not Disturb",
+      "dndOff": "Turn off Do Not Disturb"
+    },
+    "button": {
+      "approve": "Approve",
+      "deny": "Deny",
+      "open": "Open",
+      "newSession": "Start",
+      "pause": "Pause",
+      "dnd": "Do it"
+    },
+    "block": {
+      "unverified": "Unverified: it can only be denied.",
+      "phoneOnly": "Approve it from your phone.",
+      "openFull": "Open it in full in the inbox before approving."
+    },
+    "settings": {
+      "title": "Offline voice commands",
+      "toggle": "Offline voice commands",
+      "privacy": "Free and on your computer: microphone audio never leaves it. It only listens while you hold the shortcut, or for a few seconds after you tap it, and every command asks for a click before it does anything.",
+      "engineNote": "For now you need whisper.cpp (“whisper-server”) running on this computer. Chalito will bundle it later.",
+      "server": "Local voice engine address",
+      "notLocal": "It has to be an address on this computer (http://127.0.0.1:… or http://localhost:…).",
+      "probe": "Test",
+      "probeOk": "The voice engine answers.",
+      "languages": "Languages you speak",
+      "lang": {
+        "es": "Spanish",
+        "en": "English"
+      },
+      "hotkey": "Shortcut to talk",
+      "hotkeyHelp": "Hold it while you talk, or tap it once and talk. Example: CommandOrControl+Shift+Space.",
+      "badHotkey": "Use one or more modifier keys and one key, for example CommandOrControl+Shift+Space.",
+      "hotkeyTaken": "I couldn't use that shortcut ({reason}). Try another."
+    }
+  },
+  "own": {
+    "title": "Sessions you started",
+    "state": {
+      "working": "Working",
+      "question": "Asked you a question",
+      "approval": "Waiting for your approval",
+      "guessed": "Looks like it's waiting for your approval",
+      "reviewing": "Codex is reviewing it",
+      "error": "Stopped with an error",
+      "finished": "Finished",
+      "closed": "Closed before it finished"
+    },
+    "observed": "You're only watching this from here: Chalito can't approve or answer this session. Do it where you started it.",
+    "open": "Open",
+    "seen": "Seen",
+    "openFallback": "Couldn't bring it to the front. It's in:",
+    "settings": {
+      "title": "Sessions I started",
+      "label": "Watch sessions I started",
+      "hint": "Chalito reads the local logs of the AI sessions you started on this computer, to tell you when one asks you something, waits for your approval, fails or finishes. Read only: it changes nothing and none of it leaves your computer.",
+      "unavailable": "The local agent isn't answering, so this isn't available right now.",
+      "failed": "Couldn't change it. Try again."
+    },
+    "hook": {
+      "title": "Codex approval alerts (optional)",
+      "why": "Codex doesn't write down when it's waiting for your approval. With this hook, Codex tells Chalito.",
+      "steps": "Copy this into ~/.codex/hooks.json (or add it to the hooks you already have) and restart Codex. Chalito never edits your ~/.codex folder.",
+      "copy": "Copy",
+      "copied": "Copied",
+      "note": "The hook prints nothing and decides nothing: Codex keeps asking you as usual. It runs on every approval and every tool Codex uses, and only notes on your computer that an approval is pending, while this option is on.",
+      "noCommand": "Couldn't find the chalito command on this computer. Install it first (Security › This computer's agent › Install the chalito command) or the hook won't work.",
+      "copyFailed": "Couldn't copy it. Select the text and copy it by hand."
+    },
+    "detail": {
+      "question": "It has a question for you.",
+      "questionWith": "It has a question for you: {x}",
+      "approval": "It asks for your permission.",
+      "approvalWith": "It asks for your permission to use {x}.",
+      "stopped": "It stopped.",
+      "stoppedWith": "It stopped: {x}",
+      "tool": "Waiting on a tool.",
+      "toolWith": "Waiting on: {x}",
+      "apiError": "An API call failed.",
+      "apiErrorWith": "An API call failed: {x}"
+    },
+    "closed": "That session is already closed. It was in:",
+    "stale": "Couldn't read the sessions a moment ago; what you see may be out of date."
+  },
+  "meetings": {
+    "untitled": "Untitled meeting",
+    "warnings": {
+      "title": "Meetings",
+      "startsIn": "Starts in {minutes} min ({time})",
+      "join": "Join",
+      "ok": "Got it",
+      "agentDown": "The local agent isn't answering: meeting warnings may fail until it's back.",
+      "calendarStale": "I couldn't read your calendar recently: warnings use the last copy I have.",
+      "joinFailed": "I couldn't open the meeting link. Open it from your calendar."
+    },
+    "followUps": {
+      "title": "Follow-ups from your meetings",
+      "intro": "“Yes” opens a new session that only drafts: it doesn't create, post or send anything without your OK.",
+      "type": {
+        "ticket": "Ticket",
+        "investigate": "Investigate",
+        "remind": "Ask"
+      },
+      "from": "From “{meeting}”",
+      "due": "you left it for later",
+      "yes": "Yes",
+      "later": "Later",
+      "no": "No",
+      "error": {
+        "no_app": "Connect an AI in “Connected AI” to open the session.",
+        "no_workspace": "Add a folder in Settings → This computer to open the session.",
+        "other": "I couldn't open the session. Try again."
+      }
+    },
+    "calendar": {
+      "title": "Meetings",
+      "intro": "Chalito warns you 10 and 2 minutes before each meeting, without covering your screen. If you're already on a Zoom call, it doesn't interrupt.",
+      "label": "Your calendar's private link (iCal, .ics)",
+      "hint": "In Google Calendar: Settings → your calendar → “Secret address in iCal format”. It's kept in your system's keychain.",
+      "save": "Save",
+      "saved": "Done: calendar connected.",
+      "connected": "Calendar connected.",
+      "remove": "Remove calendar",
+      "removed": "Calendar removed.",
+      "error": {
+        "bad_url": "That link won't work: it must start with https:// or webcal://.",
+        "fetch_failed": "I couldn't read the calendar. Check the link and your connection.",
+        "not_calendar": "That link doesn't return an iCal calendar.",
+        "unavailable": "The local agent isn't answering.",
+        "link_rejected": "The calendar rejected the link: it may have changed. Copy the secret link again.",
+        "too_large": "That calendar is over 5 MB; I can't read it.",
+        "local_address": "Local addresses aren't allowed: the link must point to a public calendar server.",
+        "keychain": "I couldn't save the link in your system's keychain. On Linux, use a session with gnome-keyring or KWallet.",
+        "internal": "Something failed in the local agent. Try again."
+      },
+      "unsupported": "Repeating meetings I can't read yet (no warnings for them): {count}."
+    },
+    "granola": {
+      "title": "Granola follow-ups",
+      "optIn": "After each meeting, read the Granola notes and suggest follow-ups",
+      "soon": "Coming soon: after each meeting, Chalito will read your Granola notes and suggest the follow-ups."
+    }
   }
 }

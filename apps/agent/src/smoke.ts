@@ -1,13 +1,15 @@
 /**
  * Smoke entry for the compiled agent binary (ADR 0004): proves the `@napi-rs/keyring`
  * native addon and libsodium's wasm both load inside a `bun build --compile` executable, and that
- * remote terminal's PTY layer (terminal/pty.ts) round-trips through a real PTY there (`pty`).
+ * remote terminal's PTY layer (terminal/pty.ts) round-trips through a real PTY there (`pty`), and that the
+ * config files the daemon reads at start are inside it (`config`).
  *
  * Exit codes: 0 = addon loaded and a keychain round-trip worked; 2 = addon loaded but no
  * persistent keychain backend is reachable (e.g. headless Linux without a Secret Service);
- * 1 = something is actually broken (addon missing, wasm failed, round-trip mismatch).
+ * 1 = something is actually broken (addon missing, wasm failed, round-trip mismatch, config missing).
  */
 import type { Entry as KeyringEntry } from "@napi-rs/keyring";
+import { loadLiabilityText, loadProviders, loadSessions } from "@chalito/config";
 import { tmpdir } from "node:os";
 import { loadOrCreateIdentity } from "./identity.js";
 import { loadPtyBackend } from "./terminal/pty.js";
@@ -15,10 +17,10 @@ import { KeyringStore, MemorySecretStore } from "./secrets.js";
 
 const SMOKE_SERVICE = "com.chalito.agent.smoke";
 
-let pty: Record<string, unknown> = {};
+let extra: Record<string, unknown> = {};
 
 const report = (code: 0 | 1 | 2, fields: Record<string, unknown>): never => {
-  process.stdout.write(`${JSON.stringify({ smoke: "chalito-agent", ...fields, ...pty })}\n`);
+  process.stdout.write(`${JSON.stringify({ smoke: "chalito-agent", ...fields, ...extra })}\n`);
   process.exit(code);
 };
 
@@ -49,8 +51,22 @@ const ptyCheck = async (): Promise<Record<string, unknown>> => {
   }
 };
 
+/** The files a paired agent reads at start: a compiled agent without them crash-looped (2026-10-27). */
+const configCheck = (): Record<string, unknown> => {
+  try {
+    loadLiabilityText("es");
+    loadLiabilityText("en");
+    loadProviders();
+    loadSessions();
+    return { config: "ok" };
+  } catch (err) {
+    return { config: "missing", configError: err instanceof Error ? err.message.slice(0, 160) : "error" };
+  }
+};
+
 const main = async () => {
-  pty = await ptyCheck();
+  extra = { ...(await ptyCheck()), ...configCheck() };
+  if (extra.config !== "ok") return report(1, {});
   let Entry: typeof KeyringEntry;
   try {
     ({ Entry } = await import("@napi-rs/keyring"));

@@ -421,7 +421,7 @@ Usa la beta del borrador de release (o el artefacto de un dry run de `release.ym
   - Automático: `apps/desktop/test/release.test.ts` "refuses a build whose CSP doesn't allow its api"; `release-workflow.test.ts` "CHALITO_API_BASE is set once…".
 - [ ] **I-5 Actualizaciones** · BLOQUEADO hasta la llave del updater y `releases.tf`
   - Pasos: instala la versión N, publica N+1 en el mismo canal, abre Ajustes → Actualizaciones.
-  - Esperado: encuentra N+1 en `https://api.chalito.chalyb.com/releases/<canal>/latest.json`, la descarga y reinicia.
+  - Esperado: encuentra N+1 en `https://api.chalito.chalyb.com/releases/<canal>/latest-v2.json`, la descarga y reinicia. Una versión anterior a 0.1.0-beta.13 pide `latest.json`, congelado en 0.1.0-beta.13: se actualiza a esa y, desde ahí, sigue por `latest-v2.json`.
 - [ ] **I-6 Página de descarga** · LISTO
   - Esperado: `/descargar` detecta tu sistema y muestra un botón principal con los otros abajo, y las sumas SHA-256. Sin release publicada dice "Muy pronto", nunca texto roto.
 
@@ -857,7 +857,7 @@ Use the beta from the draft release (or a `release.yml` dry-run artifact). Note 
   - Automated: `apps/desktop/test/release.test.ts` "refuses a build whose CSP doesn't allow its api"; `release-workflow.test.ts` "CHALITO_API_BASE is set once…".
 - [ ] **I-5 Updates** · BLOCKED until the updater key and `releases.tf`
   - Steps: install version N, publish N+1 on the same channel, open Ajustes → Actualizaciones.
-  - Expected: it finds N+1 at `https://api.chalito.chalyb.com/releases/<channel>/latest.json`, downloads it and restarts.
+  - Expected: it finds N+1 at `https://api.chalito.chalyb.com/releases/<channel>/latest-v2.json`, downloads it and restarts. A version older than 0.1.0-beta.13 asks for `latest.json`, frozen at 0.1.0-beta.13: it updates to that one, then continues through `latest-v2.json`.
 - [ ] **I-6 Download page** · READY
   - Expected: `/descargar` detects your OS and shows one main button with the others below, plus the SHA-256 sums. With no published release it says "Muy pronto", never broken text.
 

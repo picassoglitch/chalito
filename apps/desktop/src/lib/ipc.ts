@@ -2,18 +2,8 @@ import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
 import type { AgentLink, AppConnectionDoc, DevModeToggle, LinkMode, Recipe, RecipeInstall } from "@chalito/protocol";
 import type { PrWatchSettings, PrWatchView } from "./prs.js";
 
-/**
- * Local-only surfaces, reached through the agent's IPC (ADR 0004: the agent is a user
- * service; the desktop app talks to it on this machine). They are local on purpose: a
- * remote surface (PWA, phone) can never enable Developer mode or confirm a pairing for this
- * computer. The agent serves them on a per-user local socket (apps/agent/src/ipc-server.ts),
- * reached through the native side's `agent_ipc` command with the per-launch secret the app gave
- * the agent it started (src-tauri/src/ipc_client.rs). Outside Tauri, `unavailableIpc`.
- *
- * Shapes follow the agent: `runPair`'s reverse fingerprint check (apps/agent/src/pair.ts)
- * and `DevMode.enableToggle`'s three confirmations (apps/agent/src/devmode.ts), with the
- * panel rendering what the CLI renders on a TTY today.
- */
+// Local-only surfaces over the agent's per-user socket (ADR 0004, ipc-server.ts, src-tauri ipc_client.rs):
+// a remote surface can never enable Developer mode or confirm a pairing. Outside Tauri, `unavailableIpc`.
 
 /** Where pairing from the panel is (apps/agent/src/pairing-host.ts `PairingView`). */
 export type PairingPhase =
@@ -102,19 +92,14 @@ export interface AppView {
   supported: boolean;
   /** The official install for this OS, if any. */
   install: RecipeInstall | null;
-  /**
-   * Whether the person allowed this app's sessions on this computer (off until allowed here,
-   * owner decision 2026-10-06). Null for the four former providers (policy.adapters decides).
-   */
+  /** Sessions allowed on this computer (off until allowed here, owner 2026-10-06); null = policy.adapters decides. */
   sessions: boolean | null;
   /** Apps with a CLI here: whether Chalito trusts it (apps/agent/src/apps/manager.ts AppPinView). */
   pin?: AppPinView | null;
 }
 
-/**
- * `pinned`: it runs. `not_pinned`: found, not trusted yet ("Usar"). `changed`: it updated itself
- * ("se actualizó: confirmar"). `missing`: the trusted file is gone. `unsafe`: anyone can change it.
- */
+/** `pinned` runs; `not_pinned` awaits "Usar"; `changed` updated itself; `missing` is gone; `unsafe` is
+ * writable by anyone. */
 export interface AppPinView {
   state: "pinned" | "not_pinned" | "changed" | "missing" | "unsafe";
   path: string | null;
@@ -284,16 +269,37 @@ export interface LinkChallenge {
 
 export type LinkAddResult = { ok: true; link: AgentLink } | { ok: false; reason: string };
 
+/** A session the person started outside Chalito, as the agent derives it (apps/agent/src/watch). */
+export interface OwnSessionView {
+  key: string;
+  source: "claude" | "codex";
+  id: string;
+  cwd: string | null;
+  title: string | null;
+  state: "working" | "question" | "approval" | "error" | "finished" | "closed";
+  since: number;
+  detail: string | null;
+  /** A generic line the panel words itself; `detail` is then only its argument (a tool, a reason). */
+  detailKey: "question" | "approval" | "stopped" | "tool" | "apiError" | null;
+  level: "L1" | "L2" | "L3" | null;
+  reviewing: boolean;
+  guessed: boolean;
+  seen: boolean;
+}
+
+export type OwnOpenResult = ({ opened: true; via: "terminal" | "codex" } | { opened: false }) & {
+  id: string;
+  cwd: string | null;
+};
+
 export interface AgentIpc {
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
   /** "Conectar esta computadora": starts pairing (or returns the one in progress). Unpaired agents only. */
   startPairing(kind?: "desktop" | "laptop"): Promise<PendingPairing>;
   pendingPairing(): Promise<PendingPairing | null>;
-  /**
-   * The local verdict: at the reverse check, `match` is "Sí, fui yo"; while waiting, `false`
-   * cancels the code; when replacing an account, `typed` carries the phrase.
-   */
+  /** The local verdict: `match` is "Sí, fui yo" (false while waiting cancels); `typed` carries the
+   * replace-account phrase. */
   confirmPairing(pairingId: string, match: boolean, typed?: string): Promise<PendingPairing | void>;
   policy(): Promise<PolicyView>;
   devMode(): Promise<DevModeState>;
@@ -307,10 +313,8 @@ export interface AgentIpc {
   apps(): Promise<AppsView>;
   /** Saves the key in this computer's keychain (it goes over the local socket only). */
   connectAppKey(appId: string, key: string): Promise<void>;
-  /**
-   * Starts the app's own sign-in here (its CLI login opens the browser; a desktop or web app just
-   * opens, and the person signs in there). Rejects with `blocked_by_policy`.
-   */
+  /** Starts the app's own sign-in here (CLI login opens the browser; apps just open). Rejects with
+   * `blocked_by_policy`. */
   signinApp(appId: string): Promise<void>;
   disconnectApp(appId: string): Promise<void>;
   /** The person's local yes: the app's official install (or its official download page). */
@@ -319,10 +323,8 @@ export interface AgentIpc {
   declineAppInstall(appId: string): Promise<void>;
   /** Opens the app on this computer. */
   launchApp(appId: string): Promise<void>;
-  /**
-   * "Usar" / "se actualizó: confirmar": trust the app's CLI as shown (local only). The agent hashes
-   * it again and refuses with `pin_mismatch` if it no longer matches `sha256`.
-   */
+  /** "Usar" / "se actualizó: confirmar": trust the CLI as shown; the agent re-hashes it and refuses with
+   * `pin_mismatch` if it no longer matches `sha256`. */
   pinApp(appId: string, sha256: string): Promise<void>;
   /** The folders Chalito may work in. */
   workspaces(): Promise<{ workspaces: Workspace[] }>;
@@ -337,10 +339,8 @@ export interface AgentIpc {
   appSessionsChallenge(appId: string): Promise<CustomChallenge>;
   enableAppSessions(appId: string, answers: { review: boolean; typed: string }): Promise<SessionsEnableResult>;
   disableAppSessions(appId: string): Promise<void>;
-  /**
-   * Computer control. Reading the state here doesn't count as the indicator's heartbeat (the
-   * native side sends that); enabling asks the OS in the agent and re-checks the answers.
-   */
+  /** Computer control: reading isn't the indicator's heartbeat (the native side sends it); enabling asks
+   * the OS in the agent and re-checks the answers. */
   computerStatus(): Promise<ComputerStatus>;
   /** Coordinator mode: turned on only here (the agent asks the OS, then the person's yes). */
   coordinatorStatus(): Promise<CoordinatorStatus>;
@@ -355,10 +355,8 @@ export interface AgentIpc {
   /** Native, not the agent: macOS Screen Recording / Accessibility, Wayland on Linux. */
   computerPermissions(): Promise<ComputerPermissions>;
   openComputerSettings(pane: "screenRecording" | "accessibility"): Promise<void>;
-  /**
-   * Remote terminal. Enabling asks the OS in the agent and re-checks the answers; the raw shell
-   * has its own, stronger confirmation. Open terminals stop with the computer-control kill switch.
-   */
+  /** Remote terminal: enabling asks the OS and re-checks the answers (raw shell: stronger); open terminals
+   * stop with the computer-control kill switch. */
   terminalStatus(): Promise<TerminalStatus>;
   terminalChallenge(): Promise<TerminalChallenge>;
   enableRemoteTerminal(answers: TerminalAnswers): Promise<TerminalEnableResult>;
@@ -372,10 +370,8 @@ export interface AgentIpc {
   /** `control` drops back to view only; `all` turns remote screen off. */
   disableScreen(what: "control" | "all"): Promise<void>;
   closeScreen(sid: string): Promise<void>;
-  /**
-   * Agent-to-agent links (ADR 0022 §3, D-070): a hand-off link is made only here. The agent asks
-   * the OS, then re-checks the confirmation and the typed phrase.
-   */
+  /** Agent-to-agent links (ADR 0022 §3, D-070): hand-off links are made only here, after the OS check, the
+   * confirmation and the typed phrase. */
   links(): Promise<LinksView>;
   linkChallenge(mode: LinkMode): Promise<LinkChallenge>;
   addLink(link: LinkSpec, answers: { confirm: boolean; typed: string }): Promise<LinkAddResult>;
@@ -391,6 +387,10 @@ export interface AgentIpc {
   }): Promise<{ sid: string }>;
   codePrompt(sid: string, text: string): Promise<void>;
   codeStop(sid: string): Promise<void>;
+  /** "Ver sesiones que abrí yo": off by default; read-only, and nothing of it leaves this computer. */
+  ownSessions(): Promise<{ enabled: boolean; sessions: OwnSessionView[] }>;
+  setOwnSessions(enabled: boolean): Promise<{ enabled: boolean }>;
+  openOwnSession(key: string): Promise<OwnOpenResult>;
   /** The person's GitHub PRs through their own `gh` (off until they turn it on). */
   /** `probe` (Settings only) also asks whether `gh` is signed in while the watch is off. */
   prWatch(o?: { probe?: boolean }): Promise<PrWatchView>;
@@ -468,6 +468,9 @@ export const unavailableIpc: AgentIpc = {
   codeStart: unavailable,
   codePrompt: unavailable,
   codeStop: unavailable,
+  ownSessions: unavailable,
+  setOwnSessions: unavailable,
+  openOwnSession: unavailable,
   prWatch: unavailable,
   setPrWatch: unavailable,
 };
@@ -552,6 +555,9 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     codeStart: (i) => call("codeStart", { ...i }),
     codePrompt: async (sid, text) => void (await call("codePrompt", { sid, text })),
     codeStop: async (sid) => void (await call("codeStop", { sid })),
+    ownSessions: () => call("ownSessions"),
+    setOwnSessions: (enabled) => call("ownSessionsSet", { enabled }),
+    openOwnSession: (key) => call("ownSessionOpen", { key }),
     prWatch: (o) => call("prWatch", o?.probe ? { probe: true } : undefined),
     setPrWatch: (c) => call("setPrWatch", { ...c }),
   };

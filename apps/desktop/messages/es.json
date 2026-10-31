@@ -387,6 +387,9 @@
     "intro": "Inicia sesión con tu cuenta de Chalyb para ver tus pendientes aquí.",
     "start": "Iniciar sesión",
     "notConfigured": "Esta compilación no tiene configurado el inicio de sesión.",
+    "starting": "Preparando el inicio de sesión…",
+    "restoring": "Reconectando esta computadora con tu cuenta…",
+    "setupFailed": "El inicio de sesión no pudo arrancar en esta computadora: {detail}. Cierra Chalito y ábrelo de nuevo; si sigue pasando, envíanos este mensaje.",
     "browser": "Termina de iniciar sesión en tu navegador. Volverás aquí automáticamente.",
     "reopen": "Abrir de nuevo",
     "cancel": "Cancelar",
@@ -428,6 +431,8 @@
     "ready": "La versión {version} está lista. Reinicia Chalito para usarla.",
     "relaunch": "Reiniciar ahora",
     "unavailable": "Esta compilación no se actualiza sola.",
+    "libcUnknown": "No se pudo comprobar qué Linux tiene este equipo (su versión de glibc), así que la versión {version} no se instala: podría no arrancar. Chalito sigue funcionando como está.",
+    "tooOld": "La versión {version} necesita un Linux más nuevo (glibc {needs} o posterior, como Ubuntu 24.04, Debian 13 o Fedora 40). Chalito sigue funcionando como está.",
     "error": "No se pudo actualizar. Inténtalo más tarde."
   },
   "rooms": {
@@ -750,5 +755,184 @@
     "title": "Chalito necesita tu aprobación",
     "all": "Ver las {count} en la bandeja",
     "later": "Más tarde"
+  },
+  "offlineVoice": {
+    "hold": "Mantén presionado para dar un comando (sin internet)",
+    "listening": "Te escucho… suelta o deja de hablar para terminar.",
+    "transcribing": "Entendiendo lo que dijiste, en tu computadora…",
+    "heardNothing": "No te oí. Vuelve a intentarlo.",
+    "unknown": "Oí «{text}», pero no es un comando que conozca.",
+    "micDenied": "Chalito no tiene permiso para usar el micrófono. Dale permiso en la configuración de tu sistema.",
+    "micSilent": "El micrófono no mandó sonido. Revisa que no esté silenciado ni lo esté usando otra app.",
+    "engineDown": "No encuentro el motor de voz local. Revisa que whisper.cpp esté corriendo en la dirección de Configuración.",
+    "engineFailed": "El motor de voz local respondió con un error ({status}).",
+    "engineSlow": "El motor de voz local tardó demasiado. Prueba un modelo más chico o un solo idioma.",
+    "notWhisper": "Algo responde en esa dirección, pero no es whisper.cpp. Revisa el puerto en Configuración.",
+    "micMissing": "No encuentro un micrófono en esta computadora.",
+    "micBusy": "El micrófono está ocupado por otra app. Ciérrala e inténtalo de nuevo.",
+    "actionFailed": "No se pudo hacer: {reason}",
+    "failed": "Algo falló con el comando de voz. Inténtalo de nuevo.",
+    "close": "Cerrar",
+    "cancel": "Cancelar",
+    "which": "¿Esto, esto o todo?",
+    "confirm": "¿Hago esto?",
+    "heard": "Oí: «{text}»",
+    "done": "Hecho",
+    "all": "Todo",
+    "allButApprove": "Todo menos aprobar",
+    "gone": "Eso ya no está pendiente.",
+    "nothingPending": "no hay nada pendiente",
+    "more": "y {n} más en la bandeja",
+    "do": {
+      "approve": "Aprobar",
+      "deny": "Rechazar",
+      "open": "Abrir la sesión «{label}»",
+      "openNone": "Abrir una sesión: no encontré ninguna",
+      "newSession": "Empezar una sesión en {app} · {workspace}: «{prompt}»",
+      "newSessionForm": "No encontré una app y carpeta listas para «{prompt}»: abrir Sesiones",
+      "newForm": "Abrir Nueva sesión",
+      "pause": "Pausar a Chalito {minutes} min (No molestar se quita solo)",
+      "dndOn": "Activar No molestar",
+      "dndOff": "Quitar No molestar"
+    },
+    "button": {
+      "approve": "Aprobar",
+      "deny": "Rechazar",
+      "open": "Abrir",
+      "newSession": "Empezar",
+      "pause": "Pausar",
+      "dnd": "Hacerlo"
+    },
+    "block": {
+      "unverified": "Sin verificar: solo se puede rechazar.",
+      "phoneOnly": "Apruébalo desde tu teléfono.",
+      "openFull": "Ábrelo completo en la bandeja antes de aprobar."
+    },
+    "settings": {
+      "title": "Comandos de voz sin internet",
+      "toggle": "Comandos de voz sin internet",
+      "privacy": "Gratis y en tu computadora: el audio del micrófono nunca sale de ella. Solo escucha mientras mantienes el atajo, o unos segundos después de tocarlo, y cada comando te pide un clic antes de hacer algo.",
+      "engineNote": "Por ahora necesitas whisper.cpp («whisper-server») corriendo en esta computadora. Chalito lo traerá incluido más adelante.",
+      "server": "Dirección del motor de voz local",
+      "notLocal": "Tiene que ser una dirección de esta computadora (http://127.0.0.1:… o http://localhost:…).",
+      "probe": "Probar",
+      "probeOk": "El motor de voz responde.",
+      "languages": "Idiomas que hablas",
+      "lang": {
+        "es": "Español",
+        "en": "Inglés"
+      },
+      "hotkey": "Atajo para hablar",
+      "hotkeyHelp": "Mantenlo presionado mientras hablas, o tócalo una vez y habla. Ejemplo: CommandOrControl+Shift+Space.",
+      "badHotkey": "Usa una o más teclas modificadoras y una tecla, por ejemplo CommandOrControl+Shift+Space.",
+      "hotkeyTaken": "No pude usar ese atajo ({reason}). Prueba otro."
+    }
+  },
+  "own": {
+    "title": "Sesiones que abriste tú",
+    "state": {
+      "working": "Trabajando",
+      "question": "Te hizo una pregunta",
+      "approval": "Espera tu aprobación",
+      "guessed": "Parece esperar tu aprobación",
+      "reviewing": "Codex lo está revisando",
+      "error": "Se detuvo con un error",
+      "finished": "Terminó",
+      "closed": "Se cerró sin terminar"
+    },
+    "observed": "Solo la estás viendo desde aquí: Chalito no puede aprobar ni responder esta sesión. Hazlo donde la abriste.",
+    "open": "Abrir",
+    "seen": "Visto",
+    "openFallback": "No pude traerla al frente. Está en:",
+    "settings": {
+      "title": "Sesiones que abrí yo",
+      "label": "Ver sesiones que abrí yo",
+      "hint": "Chalito lee los registros locales de las sesiones de IA que abriste tú en esta computadora, para avisarte cuando una te pregunta algo, espera tu aprobación, falla o termina. Solo lee: no cambia nada y nada de esto sale de tu computadora.",
+      "unavailable": "El agente local no responde, así que esto no está disponible ahora.",
+      "failed": "No se pudo cambiar. Inténtalo otra vez."
+    },
+    "hook": {
+      "title": "Avisos de aprobación de Codex (opcional)",
+      "why": "Codex no deja por escrito cuándo espera tu aprobación. Con este hook, Codex se lo cuenta a Chalito.",
+      "steps": "Copia esto en ~/.codex/hooks.json (o súmalo a los hooks que ya tengas) y reinicia Codex. Chalito nunca edita tu carpeta ~/.codex.",
+      "copy": "Copiar",
+      "copied": "Copiado",
+      "note": "El hook no imprime nada y no decide nada: Codex te sigue preguntando como siempre. Corre en cada aprobación y en cada herramienta que Codex usa, y solo anota en tu computadora que hay una aprobación pendiente, mientras esta opción esté activada.",
+      "noCommand": "No encontré el comando chalito en esta computadora. Instálalo primero (Seguridad › Agente de esta computadora › Instalar el comando chalito) o el hook no va a funcionar.",
+      "copyFailed": "No pude copiarlo. Selecciona el texto y cópialo a mano."
+    },
+    "detail": {
+      "question": "Tiene una pregunta para ti.",
+      "questionWith": "Tiene una pregunta para ti: {x}",
+      "approval": "Pide tu permiso.",
+      "approvalWith": "Pide tu permiso para usar {x}.",
+      "stopped": "Se detuvo.",
+      "stoppedWith": "Se detuvo: {x}",
+      "tool": "Esperando una herramienta.",
+      "toolWith": "Esperando: {x}",
+      "apiError": "Falló una llamada a la API.",
+      "apiErrorWith": "Falló una llamada a la API: {x}"
+    },
+    "closed": "Esa sesión ya se cerró. Estaba en:",
+    "stale": "No pude leer las sesiones hace un momento; lo que ves puede estar desactualizado."
+  },
+  "meetings": {
+    "untitled": "Reunión sin título",
+    "warnings": {
+      "title": "Reuniones",
+      "startsIn": "Empieza en {minutes} min ({time})",
+      "join": "Unirme",
+      "ok": "Entendido",
+      "agentDown": "El agente local no responde: los avisos de reuniones pueden fallar hasta que vuelva.",
+      "calendarStale": "No pude leer tu calendario hace poco: los avisos usan la última copia que tengo.",
+      "joinFailed": "No pude abrir el enlace de la reunión. Ábrelo desde tu calendario."
+    },
+    "followUps": {
+      "title": "Pendientes de tus reuniones",
+      "intro": "«Sí» abre una sesión nueva que solo redacta: no crea, publica ni envía nada sin tu OK.",
+      "type": {
+        "ticket": "Ticket",
+        "investigate": "Investigar",
+        "remind": "Preguntar"
+      },
+      "from": "De «{meeting}»",
+      "due": "lo dejaste para luego",
+      "yes": "Sí",
+      "later": "Luego",
+      "no": "No",
+      "error": {
+        "no_app": "Conecta una IA en «IA conectadas» para abrir la sesión.",
+        "no_workspace": "Agrega una carpeta en Ajustes → Esta computadora para abrir la sesión.",
+        "other": "No pude abrir la sesión. Inténtalo otra vez."
+      }
+    },
+    "calendar": {
+      "title": "Reuniones",
+      "intro": "Chalito te avisa 10 y 2 minutos antes de cada reunión, sin cubrir tu pantalla. Si ya estás en una llamada de Zoom, no te interrumpe.",
+      "label": "Enlace privado de tu calendario (iCal, .ics)",
+      "hint": "En Google Calendar: Configuración → tu calendario → «Dirección secreta en formato iCal». Se guarda en el llavero de tu sistema.",
+      "save": "Guardar",
+      "saved": "Listo: calendario conectado.",
+      "connected": "Calendario conectado.",
+      "remove": "Quitar calendario",
+      "removed": "Quité el calendario.",
+      "error": {
+        "bad_url": "Ese enlace no sirve: debe empezar con https:// o webcal://.",
+        "fetch_failed": "No pude leer el calendario. Revisa el enlace y tu conexión.",
+        "not_calendar": "Ese enlace no devuelve un calendario iCal.",
+        "unavailable": "El agente local no responde.",
+        "link_rejected": "El calendario rechazó el enlace: quizá cambió. Copia el enlace secreto otra vez.",
+        "too_large": "Ese calendario pesa más de 5 MB; no puedo leerlo.",
+        "local_address": "No se permiten direcciones locales: el enlace debe ser de un servidor público de calendario.",
+        "keychain": "No pude guardar el enlace en el llavero de tu sistema. En Linux, abre una sesión con gnome-keyring o KWallet.",
+        "internal": "Algo falló en el agente local. Inténtalo otra vez."
+      },
+      "unsupported": "Reuniones repetidas que no puedo leer todavía (y no te avisaré de ellas): {count}."
+    },
+    "granola": {
+      "title": "Seguimientos de Granola",
+      "optIn": "Después de cada reunión, leer las notas de Granola y proponerme los pendientes",
+      "soon": "Próximamente: después de cada reunión, Chalito leerá tus notas de Granola y te propondrá los pendientes."
+    }
   }
 }

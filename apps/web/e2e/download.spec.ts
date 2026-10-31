@@ -47,16 +47,15 @@ const MANIFEST = {
 };
 
 test("/descargar offers the installers from the api's signed manifest, with a manual OS switch", async ({ page }) => {
-  await page.route(`${API}/releases/stable/latest.json`, (r) => r.fulfill({ json: MANIFEST }));
+  await page.route(`${API}/releases/stable/latest-v2.json`, (r) => r.fulfill({ json: MANIFEST }));
   await page.goto("/descargar");
   const panel = page.getByTestId("download");
   await expect(panel.getByRole("heading", { level: 1 })).toHaveText("Descarga Chalito para tu computadora");
   await expect(panel).toContainText("Versión 1.2.0");
   await panel.getByRole("radio", { name: "Linux" }).click();
-  await expect(panel.getByRole("link", { name: "AppImage (cualquier distribución)" })).toHaveAttribute(
-    "href",
-    "https://storage.example/signed/appimage",
-  );
+  await expect(
+    panel.getByRole("link", { name: "AppImage (Ubuntu 24.04, Debian 13, Fedora 40 o más nuevo)" }),
+  ).toHaveAttribute("href", "https://storage.example/signed/appimage");
   await expect(panel.locator("[data-kind=deb]")).toHaveCount(0);
   await panel.getByRole("radio", { name: "macOS" }).click();
   await expect(panel.locator("[data-unsigned]")).toBeVisible();
@@ -66,7 +65,7 @@ test("/descargar offers the installers from the api's signed manifest, with a ma
 });
 
 test("no release yet: says so (EN at /en/download)", async ({ page }) => {
-  await page.route(`${API}/releases/stable/latest.json`, (r) =>
+  await page.route(`${API}/releases/stable/latest-v2.json`, (r) =>
     r.fulfill({ status: 404, json: { error: "not_found" } }),
   );
   await page.goto("/en/download");

@@ -6,7 +6,9 @@ mod copies;
 mod copies_macos;
 mod copies_windows;
 mod hittest;
+mod idle_os;
 mod ipc_client;
+mod voice_hotkey;
 #[cfg(debug_assertions)]
 mod loopback;
 
@@ -46,10 +48,41 @@ fn now_ms() -> u64 {
 
 /// The avatar's hit box in physical screen pixels, or null while it isn't drawn.
 #[tauri::command]
-fn set_hit_box(state: State<'_, SharedState>, rect: Option<Rect>) {
+fn set_hit_box(app: AppHandle, state: State<'_, SharedState>, rect: Option<Rect>) {
     if let Ok(mut s) = state.lock() {
         s.hit = rect;
     }
+    #[cfg(target_os = "linux")]
+    apply_input_region(&app, state.inner());
+    #[cfg(not(target_os = "linux"))]
+    let _ = app;
+}
+
+/// Linux: clicks land only inside the hit box, set as the window's input region (hittest.rs).
+#[cfg(target_os = "linux")]
+fn apply_input_region(app: &AppHandle, state: &SharedState) {
+    use gtk::prelude::WidgetExt as _;
+    let Some(pet) = app.get_webview_window(PET) else { return };
+    // Before the GDK window is realized there is nothing to shape (tao panics there too).
+    if !pet.is_visible().unwrap_or(false) {
+        return;
+    }
+    let (Ok(inner), Ok(scale), Ok(size)) = (pet.inner_position(), pet.scale_factor(), pet.inner_size()) else {
+        return;
+    };
+    let logical = (f64::from(size.width) / scale, f64::from(size.height) / scale);
+    let (win, state) = (pet.clone(), state.clone());
+    let _ = pet.run_on_main_thread(move || {
+        // Read the box when this runs, in queue order: an older call can't overwrite a newer box.
+        let hit = state.lock().ok().and_then(|s| s.hit);
+        let region = hit.and_then(|h| hittest::local_region(&h, (f64::from(inner.x), f64::from(inner.y)), scale, logical));
+        let Some(gdk) = win.gtk_window().ok().and_then(|w| w.window()) else { return };
+        let shape = match region {
+            Some((x, y, w, h)) => gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(x, y, w, h)),
+            None => gtk::cairo::Region::create(),
+        };
+        gdk.input_shape_combine_region(&shape, 0, 0);
+    });
 }
 
 /// L4 "knock": bring the pet forward and take focus. Refused below L4.
@@ -59,9 +92,12 @@ fn focus_pet(app: AppHandle, state: State<'_, SharedState>, level: String) -> Re
         return Err("focus is only taken at L4".into());
     }
     let pet = app.get_webview_window(PET).ok_or("no pet window")?;
-    pet.set_ignore_cursor_events(false).map_err(|e| e.to_string())?;
-    if let Ok(mut s) = state.lock() {
-        s.click.assume(false);
+    // Linux keeps the hit box as its input region: clearing it would block the whole window.
+    if cfg!(not(target_os = "linux")) {
+        pet.set_ignore_cursor_events(false).map_err(|e| e.to_string())?;
+        if let Ok(mut s) = state.lock() {
+            s.click.assume(false);
+        }
     }
     pet.set_focusable(true).map_err(|e| e.to_string())?;
     pet.set_focus().map_err(|e| e.to_string())
@@ -75,10 +111,28 @@ fn touch_activity(state: State<'_, SharedState>) {
     }
 }
 
-/// Milliseconds since the cursor last moved (the presence reporter's idle signal).
+/// Milliseconds since the last input (the presence reporter's idle signal, the pet's sleepiness): the
+/// cursor poll, or the desktop's own count where it sees more (idle_os.rs). Off the main thread: D-Bus.
 #[tauri::command]
-fn idle_ms(state: State<'_, SharedState>) -> u64 {
-    state.lock().map_or(u64::MAX, |s| s.activity.idle_ms(now_ms()))
+async fn idle_ms(state: State<'_, SharedState>) -> Result<u64, String> {
+    let poll = state.lock().map_or(u64::MAX, |s| s.activity.idle_ms(now_ms()));
+    let os = tauri::async_runtime::spawn_blocking(idle_os::idle_ms).await.ok().flatten();
+    Ok(idle_os::combine(poll, os))
+}
+
+/// This system's glibc version ("2.39"), or None off glibc. The updater refuses a build that needs a newer one.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[tauri::command]
+fn libc_version() -> Option<String> {
+    // SAFETY: gnu_get_libc_version returns a static NUL-terminated string.
+    let v = unsafe { std::ffi::CStr::from_ptr(libc::gnu_get_libc_version()) };
+    v.to_str().ok().map(str::to_owned)
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+#[tauri::command]
+fn libc_version() -> Option<String> {
+    None
 }
 
 /// The bundled agent's state (agent.rs), for the panel.
@@ -736,14 +790,23 @@ async fn install_cli(app: AppHandle, window: tauri::Window) -> Result<cli_instal
     .map_err(|_| cli_install::InstallError::Failed)?
 }
 
-/// ~30 Hz: read the global cursor, toggle click-through on change, note activity.
+/// ~30 Hz: read the global cursor, toggle click-through on change (not on Linux), note activity.
 fn spawn_cursor_poll(app: AppHandle, state: SharedState) {
+    #[cfg(target_os = "linux")]
+    let mut shaped = false;
     std::thread::spawn(move || loop {
         std::thread::sleep(POLL);
         let Some(pet) = app.get_webview_window(PET) else { continue };
         // Toggling before the GDK window is realized can panic on Linux (tao): wait until shown.
         if !pet.is_visible().unwrap_or(false) {
             continue;
+        }
+        // Linux: shape the window once even if the webview never sends a box (WebGL failed),
+        // or the whole transparent window would swallow clicks on the desktop.
+        #[cfg(target_os = "linux")]
+        if !shaped {
+            shaped = true;
+            apply_input_region(&app, &state);
         }
         let cursor = pet.cursor_position().ok().map(|p| (p.x, p.y));
         let change = match state.lock() {
@@ -754,7 +817,8 @@ fn spawn_cursor_poll(app: AppHandle, state: SharedState) {
             }
             Err(_) => None,
         };
-        if let Some(ignore) = change {
+        // Linux: the input region does it (apply_input_region); the poll only tracks activity.
+        if let (Some(ignore), false) = (change, cfg!(target_os = "linux")) {
             let _ = pet.set_ignore_cursor_events(ignore);
         }
     });
@@ -796,13 +860,17 @@ pub fn run() {
                     if event.state() == ShortcutState::Pressed && shortcut == &kill_hotkey() {
                         computer_kill(app, "hotkey");
                     }
+                    if let Some(v) = app.try_state::<voice_hotkey::VoiceHotkey>() {
+                        voice_hotkey::on_shortcut(app, &v, shortcut, event.state());
+                    }
                 })
                 .build(),
         )
         .manage(state.clone())
         .manage(computer_ui.clone())
         .manage(AutostartItem::default())
-        .manage(CopiesDownloads::default());
+        .manage(CopiesDownloads::default())
+        .manage(voice_hotkey::VoiceHotkey::default());
     // Linux writes its own XDG entry (autostart::xdg); the plugin would use ~/.config regardless.
     #[cfg(not(target_os = "linux"))]
     let builder =
@@ -821,6 +889,7 @@ pub fn run() {
         focus_pet,
         touch_activity,
         idle_ms,
+        libc_version,
         agent_status,
         agent_ipc,
         cli_status,
@@ -839,6 +908,7 @@ pub fn run() {
         copies_uninstall,
         copies_show_applications,
         copies_scan_downloads,
+        voice_hotkey::set_voice_hotkey,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -847,6 +917,7 @@ pub fn run() {
         focus_pet,
         touch_activity,
         idle_ms,
+        libc_version,
         agent_status,
         agent_ipc,
         cli_status,
@@ -864,7 +935,8 @@ pub fn run() {
         copies_reveal,
         copies_uninstall,
         copies_show_applications,
-        copies_scan_downloads
+        copies_scan_downloads,
+        voice_hotkey::set_voice_hotkey
     ]);
     builder
         .setup(move |app| {
@@ -961,6 +1033,13 @@ fn has_updater(plugins: &std::collections::HashMap<String, serde_json::Value>) -
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn libc_version_reads_glibc() {
+        let v = super::libc_version().expect("glibc");
+        assert_eq!(v.split('.').next().and_then(|m| m.parse::<u32>().ok()), Some(2), "{v}");
+    }
+
     #[test]
     fn updater_only_with_a_public_key() {
         use std::collections::HashMap;

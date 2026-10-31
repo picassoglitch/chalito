@@ -13,6 +13,9 @@ import { PetLook, QualityResolver } from "./look.js";
 import { CARD_WAIT_MS, loadLastDrawn, petCard, saveLastDrawn } from "./choice.js";
 import { PerkGate, mouseMayPlay, petReaction, playReaction } from "./reactions.js";
 import { PetMotion, type PetWindowApi } from "./motion.js";
+import { ClickTracker, pickTrick } from "./clicks.js";
+import { Pendulum } from "./hang.js";
+import { IDLE_POLL_MS, IdlePoll, restFromIdle, wokeUp, type Rest } from "./sleep.js";
 import { loadPetWalk } from "../lib/pet-prefs.js";
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
@@ -184,14 +187,82 @@ export const startPet = (
     acked = true;
     void sh.sendPetAck();
   };
+  const clicks = new ClickTracker();
+  let lastTrick: ReturnType<typeof pickTrick> | null = null;
+  /** Away or drowsy from the computer's idle time (sleep.ts); a click or any input wakes it. */
+  let rest: Rest = "awake";
+  const idle = new IdlePoll();
+  const calling = () => !!out && (out.state === "wave" || out.state === "hop" || out.state === "knock");
+  const pollIdle = () => {
+    const token = idle.start();
+    if (token === null) return;
+    void sh.idleMs().then(
+      (ms) => {
+        if (!idle.land(token)) return;
+        const next = restFromIdle(ms);
+        // Coming back perks it up, but like other attention moves not in DND/quiet hours or over a call.
+        if (wokeUp(rest, next) && !ctx.dnd && !ctx.quietHours && !calling()) {
+          const now = performance.now();
+          flash("surprised", now, 1500);
+          driver.playAction("perk", now);
+        }
+        rest = next;
+      },
+      () => void idle.land(token),
+    );
+  };
+  const playTrick = (now: number) => {
+    lastTrick = pickTrick(lastTrick, Math.random);
+    flash("happy", now, 1500);
+    driver.playAction(lastTrick, now);
+  };
+  const idleTimer = setInterval(pollIdle, IDLE_POLL_MS);
+  pollIdle();
+  /** One click a trick, a burst dizzy, a double click the dashboard (clicks.ts; settled in the frame loop).
+   * While it calls for the person (an answer or approval waits) a click still opens the dashboard at once. */
+  const onClick = () => {
+    const now = performance.now();
+    if (calling()) {
+      clicks.cancel();
+      return ack();
+    }
+    const waking = rest !== "awake";
+    // The waking click plays nothing itself but still pairs: a double click on a sleeping pet opens the dashboard.
+    const r = clicks.click(now, waking);
+    if (waking) {
+      rest = "awake";
+      idle.invalidate();
+      void sh.touchActivity().catch(() => undefined);
+      flash("surprised", now, 1500);
+      driver.playAction("perk", now);
+      return;
+    }
+    if (r === "dizzy") {
+      flash("surprised", now, 2000);
+      driver.playAction("dizzy", now);
+    } else if (r === "trick") playTrick(now);
+  };
   const motion = win
     ? new PetMotion(win, {
         storage: localStorage,
         walkEnabled: () => walkOn,
         onMoved: refreshGeometry,
-        onClick: ack,
+        onClick,
       })
     : null;
+  const pendulum = new Pendulum();
+  /** The grab point in the card's space while it hangs from the mouse, null when it stands. */
+  let pivot: { x: number; y: number } | null = null;
+  let hung = false;
+  let lastFrame: number | null = null;
+  const raycaster = new THREE.Raycaster();
+  const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  const grabPoint = (g: { x: number; y: number }) => {
+    const ndc = new THREE.Vector2((g.x / window.innerWidth) * 2 - 1, -(g.y / window.innerHeight) * 2 + 1);
+    raycaster.setFromCamera(ndc, camera);
+    const p = new THREE.Vector3();
+    return raycaster.ray.intersectPlane(plane, p) ? { x: p.x, y: p.y } : null;
+  };
 
   const resize = () => {
     renderer.setSize(window.innerWidth, window.innerHeight, false);
@@ -204,7 +275,11 @@ export const startPet = (
 
   let loop: FrameLoop | null = null;
   const tick = (now: number) => {
-    const o = machine.update({ ...ctx, acked }, now);
+    if (calling()) clicks.cancel();
+    const clicked = clicks.due(now);
+    if (clicked === "dashboard") ack();
+    else if (clicked === "trick") playTrick(now);
+    const o = machine.update({ ...ctx, acked, away: rest === "away" }, now);
     acked = false;
     const act = ctx.activity ?? null;
     if (o.state !== out?.state) {
@@ -215,7 +290,7 @@ export const startPet = (
       if (o.state === "knock" || o.state === "hop") emotion("excited", o.state === "knock" ? 1 : 0.7, now);
       else if (o.state === "glance") emotion("surprised", 0.4, now);
       else if (o.state === "sleepy") emotion("tired", 1, now);
-      else if (now >= faceUntil) emotion("neutral", 1, now);
+      else if (now >= faceUntil) emotion(rest === "drowsy" ? "tired" : "neutral", rest === "drowsy" ? 0.6 : 1, now);
     }
     // Busy while an AI works, leaning in while something waits for the person.
     const waiting = o.state === "hop" || o.state === "knock" || o.state === "wave";
@@ -236,7 +311,7 @@ export const startPet = (
     }
     if (faceUntil && now >= faceUntil) {
       faceUntil = 0;
-      emotion(o.state === "sleepy" ? "tired" : "neutral", 1, now);
+      emotion(o.state === "sleepy" || rest === "drowsy" ? "tired" : "neutral", 1, now);
     }
     if (o.requestFocus && !out?.requestFocus) void sh.focusPet("L4").catch(() => undefined);
     out = o;
@@ -250,7 +325,29 @@ export const startPet = (
       if (m.play && mouseMayPlay(m.play, { playing, behaviour: o.state, quiet })) driver.playAction(m.play, now);
     }
     const frame = retro.step(now, driver.frame(now));
-    if (look) look.apply(frame, now);
+    // Held by the mouse it hangs from the grab point and swings with the drag (hang.ts); let go, it lands.
+    const dt = lastFrame === null ? 0 : (now - lastFrame) / 1000;
+    lastFrame = now;
+    const dragging = motion?.dragging ?? false;
+    if (dragging && !hung) {
+      hung = true;
+      pendulum.reset();
+      const g = motion?.grab;
+      pivot = g ? grabPoint(g) : null;
+      flash("surprised", now, 60_000);
+      rest = "awake";
+      idle.invalidate();
+      clicks.cancel();
+    } else if (!dragging && hung) {
+      hung = false;
+      faceUntil = now;
+      driver.playAction("hop", now);
+    }
+    const pos = motion?.position;
+    if (pivot && pos) pendulum.step(pos.x / Math.max(geometry.scale, 0.01), dt);
+    if (!hung && pivot && pendulum.settled) pivot = null;
+    const hang = pivot ? { angle: pendulum.angle, pivot, holding: hung } : null;
+    if (look) look.apply(frame, now, hang);
     else creature.apply(frame);
     renderer.render(scene, camera);
     const settled = quality.frame(now);
@@ -270,16 +367,17 @@ export const startPet = (
   applySettings();
   window.addEventListener("storage", onStorage);
 
-  // Presses only arrive over the avatar (click-through elsewhere): a click acks and opens the panel.
+  // Presses only arrive over the avatar (click-through elsewhere).
   const detachPress = motion
     ? motion.attach(canvas)
-    : (canvas.addEventListener("click", ack), () => canvas.removeEventListener("click", ack));
+    : (canvas.addEventListener("click", onClick), () => canvas.removeEventListener("click", onClick));
   void motion?.start();
   const offCtx = sh.onPetContext((c) => (ctx = c));
 
   return () => {
     loop?.stop();
     motion?.stop();
+    clearInterval(idleTimer);
     detachPress();
     clearTimeout(cardWait);
     wear.stop();
