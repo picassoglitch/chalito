@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // whose outer frame (297 px) is 37 px taller than its 260 px client, all of it above the client.
 const WORK = { x: 67, y: 32, width: 1853, height: 1048 };
 const CLIENT = { width: 220, height: 260 };
-const FRAME_TOP = 37;
+let FRAME_TOP = 37;
 const CORNER = { x: WORK.x + WORK.width - CLIENT.width - 24, y: WORK.y + WORK.height - CLIENT.height };
 
 /** The WM as tao reports it there: setPosition places the client, move events carry the frame's corner. */
@@ -15,6 +15,11 @@ const wm = {
   failReads: false,
   /** ICCCM's rule instead of the owner's WM: a move puts the frame's corner where asked. */
   placesFrame: false,
+  /** Where the WM moves the window right after our first setPosition (a late placement). */
+  lateTo: null as { x: number; y: number } | null,
+  scale: 1,
+  /** When set, position reads wait here until the test releases them (in any order). */
+  held: null as (() => void)[] | null,
 };
 const frameOf = (c: { x: number; y: number }) => ({ x: c.x, y: c.y - FRAME_TOP });
 /** The person dragging the window, or our own setPosition: the client moves, the event says the frame. */
@@ -30,7 +35,9 @@ vi.mock("@tauri-apps/api/window", async (importOriginal) => {
     position: { x: 0, y: 0 },
     size: { width: 1920, height: 1080 },
     workArea: { position: { x: WORK.x, y: WORK.y }, size: { width: WORK.width, height: WORK.height } },
-    scaleFactor: 1,
+    get scaleFactor() {
+      return wm.scale;
+    },
   };
   return {
     ...real,
@@ -40,12 +47,19 @@ vi.mock("@tauri-apps/api/window", async (importOriginal) => {
     getCurrentWindow: () => ({
       innerPosition: async () => {
         if (wm.failReads) throw new Error("window gone");
-        return { ...wm.client };
+        const at = { ...wm.client };
+        if (wm.held) await new Promise<void>((r) => wm.held!.push(r));
+        return at;
       },
       outerPosition: async () => frameOf(wm.client),
       innerSize: async () => ({ ...CLIENT }),
       outerSize: async () => ({ width: CLIENT.width, height: CLIENT.height + FRAME_TOP }),
-      setPosition: async (p: { x: number; y: number }) => moveClient(p.x, p.y + (wm.placesFrame ? FRAME_TOP : 0)),
+      setPosition: async (p: { x: number; y: number }) => {
+        moveClient(p.x, p.y + (wm.placesFrame ? FRAME_TOP : 0));
+        const late = wm.lateTo;
+        wm.lateTo = null;
+        if (late) moveClient(late.x, late.y);
+      },
       startDragging: async () => undefined,
       onMoved: async (cb: (e: { payload: { x: number; y: number } }) => void) => {
         wm.moved = (p) => cb({ payload: p });
@@ -95,6 +109,10 @@ beforeEach(() => {
   wm.moved = null;
   wm.failReads = false;
   wm.placesFrame = false;
+  wm.lateTo = null;
+  wm.scale = 1;
+  FRAME_TOP = 37;
+  wm.held = null;
 });
 
 describe("pet placement through the Tauri window API (frame taller than the client)", () => {
@@ -186,5 +204,80 @@ describe("pet placement through the Tauri window API (frame taller than the clie
     await motion.start();
     motion.stop();
     expect(wm.client).toEqual(CORNER);
+  });
+
+  it("keeps that correction for its walks on a frame-placing WM, so it stays on the floor and walks again", async () => {
+    wm.placesFrame = true;
+    const { motion, at } = launch();
+    await motion.start();
+    expect(at(WALK.firstAfterMs).play).toBe("walk");
+    for (let t = WALK.firstAfterMs; t < WALK.firstAfterMs + 10_000; t += 40) {
+      at(t);
+      await flush();
+    }
+    expect(motion.walking).toBe(false);
+    expect(wm.client.y).toBe(CORNER.y);
+    expect(at(WALK.firstAfterMs + 120_000).play).toBe("walk");
+    motion.stop();
+  });
+
+  it("doesn't shift when the late WM placement is farther off than a frame, and walks stay on the floor", async () => {
+    // Mutter placing a fresh window late, elsewhere: ask for the spot again, keep no offset.
+    wm.lateTo = { x: 300, y: 200 };
+    const { motion, at } = launch();
+    await motion.start();
+    expect(wm.client).toEqual(CORNER);
+    expect(at(WALK.firstAfterMs).play).toBe("walk");
+    for (let t = WALK.firstAfterMs; t < WALK.firstAfterMs + 10_000; t += 40) {
+      at(t);
+      await flush();
+    }
+    expect(wm.client.y).toBe(CORNER.y);
+    motion.stop();
+  });
+
+  it("on a HiDPI screen (scale 2) takes a 74 px physical title bar for a frame too", async () => {
+    wm.placesFrame = true;
+    wm.scale = 2;
+    FRAME_TOP = 74;
+    const { motion } = launch();
+    await motion.start();
+    motion.stop();
+    // Feet on the floor; the 2 × 24 px margin from the right.
+    expect(wm.client).toEqual({ x: WORK.x + WORK.width - CLIENT.width - 48, y: CORNER.y });
+  });
+
+  it("doesn't keep a small WM nudge up as a frame offset (an Alt-drag during the recheck)", async () => {
+    // The WM moves the client 20 px up right after placement: not a frame, which only pushes it down.
+    wm.lateTo = { x: CORNER.x, y: CORNER.y - 20 };
+    const { motion, at } = launch();
+    await motion.start();
+    expect(wm.client).toEqual(CORNER);
+    expect(at(WALK.firstAfterMs).play).toBe("walk");
+    for (let t = WALK.firstAfterMs; t < WALK.firstAfterMs + 10_000; t += 40) {
+      at(t);
+      await flush();
+    }
+    expect(wm.client.y).toBe(CORNER.y);
+    motion.stop();
+  });
+
+  it("drops a position read that comes back after a newer one, and any after unlisten", async () => {
+    wm.held = [];
+    const seen: { x: number; y: number }[] = [];
+    const off = await tauriPetWindow().onMoved((p) => seen.push(p));
+    moveClient(500, 700);
+    moveClient(510, 710);
+    const [older, newer] = wm.held;
+    newer!();
+    await flush();
+    older!();
+    await flush();
+    expect(seen).toEqual([{ x: 510, y: 710 }]);
+    moveClient(520, 720);
+    off();
+    wm.held[2]!();
+    await flush();
+    expect(seen).toEqual([{ x: 510, y: 710 }]);
   });
 });

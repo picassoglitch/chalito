@@ -43,12 +43,26 @@ export const tauriPetWindow = (): PetWindowApi => {
     startDragging: () => w.startDragging(),
     // The payload is the frame's corner on X11 (tao sends root_origin), not the client's that
     // setPosition takes, so re-read the client position.
-    onMoved: (cb) =>
-      w.onMoved(() => {
+    onMoved: async (cb) => {
+      // Reads resolve on a thread pool, so drop one older than a reply already handed on, and any after unlisten.
+      let asked = 0;
+      let handed = 0;
+      let live = true;
+      const off = await w.onMoved(() => {
+        const n = ++asked;
         w.innerPosition().then(
-          (p) => cb({ x: p.x, y: p.y }),
+          (p) => {
+            if (!live || n < handed) return;
+            handed = n;
+            cb({ x: p.x, y: p.y });
+          },
           (err: unknown) => console.warn("pet: window position unavailable after a move", err),
         );
-      }),
+      });
+      return () => {
+        live = false;
+        off();
+      };
+    },
   };
 };

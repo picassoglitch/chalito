@@ -49,7 +49,8 @@ const WALK_SEND_MS = 33;
 const OWN_MOVE_GRACE_MS = 400;
 const SCREENS_REFRESH_MS = 30_000;
 export const PLACE_RECHECK_MS = 700;
-/** Physical px: an offset this small after placement is a window frame, not a late WM placement. */
+/** Logical px: a client this little down/right of where we asked is a frame's title bar and border, not a
+ * WM move (a user's Alt-drag or a nudge goes any way, and mustn't be kept as an offset). */
 const FRAME_SLACK = 64;
 /** A walk that hasn't arrived this long after it should have (a stuck move call) is dropped. */
 const WALK_SLACK_MS = 2000;
@@ -80,6 +81,8 @@ export class PetMotion {
   #own: Spot | null = null;
   /** The launch spot last asked for, to see how far off the WM put it. */
   #asked: Spot | null = null;
+  /** Client minus asked position on a WM that places the frame; every move asks this much less. */
+  #frame: Spot = { x: 0, y: 0 };
   #ownUntil = -Infinity;
   #movedEvents = false;
   #refreshedAt = -Infinity;
@@ -148,7 +151,7 @@ export class PetMotion {
   }
 
   /** `correct`: a WM that put the frame, not the client, where we asked lands a frame's height off;
-   * ask again shifted by that offset (owner's WM places the client; ICCCM says the frame). */
+   * keep that offset for all later moves (owner's WM places the client; ICCCM says the frame). */
   async #place(correct: boolean): Promise<void> {
     const [screens, size, pos] = await Promise.all([this.api.screens(), this.api.size(), this.api.position()]);
     this.#screens = screens;
@@ -160,15 +163,12 @@ export class PetMotion {
     const asked = this.#asked;
     const dx = asked ? pos.x - asked.x : 0;
     const dy = asked ? pos.y - asked.y : 0;
+    const slack = FRAME_SLACK * (screenAt(screens, spot.x + size.width / 2, spot.y + size.height / 2)?.scale ?? 1);
     const shifted =
-      correct &&
-      asked?.x === spot.x &&
-      asked.y === spot.y &&
-      Math.abs(dx) <= FRAME_SLACK &&
-      Math.abs(dy) <= FRAME_SLACK;
-    const target = shifted ? { x: spot.x - dx, y: spot.y - dy } : spot;
+      correct && asked?.x === spot.x && asked.y === spot.y && dx >= 0 && dy > 0 && dx <= slack && dy <= slack;
+    if (shifted) this.#frame = { x: dx, y: dy };
     this.#asked = shifted ? null : spot;
-    await this.#setPosition(target.x, target.y);
+    await this.#setPosition(spot.x, spot.y);
     this.#pos = spot;
     this.opts.onMoved();
   }
@@ -287,11 +287,11 @@ export class PetMotion {
     this.opts.onMoved();
   }
 
-  /** Moves the window ourselves; the echoed move event isn't taken for the person dragging it. */
+  /** Moves the window's client area ourselves; the echoed move event isn't taken for the person dragging it. */
   async #setPosition(x: number, y: number): Promise<void> {
     this.#own = { x, y };
     this.#ownUntil = this.#clock() + OWN_MOVE_GRACE_MS;
-    await this.api.setPosition(x, y);
+    await this.api.setPosition(x - this.#frame.x, y - this.#frame.y);
     if (!this.#movedEvents) {
       this.#pos = { x, y };
       this.opts.onMoved();
