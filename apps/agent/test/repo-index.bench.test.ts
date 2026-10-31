@@ -5,7 +5,7 @@ import type * as NodeFs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /** First Run C perf: 200 repos, classification reads a ready index (no folder walk, no per-repo stat). */
-// Counted in file-system calls, not milliseconds: a busy CI runner pushed a 0.1 ms call past 1 ms.
+// Counted in readdir/stat/lstat/read calls, not ms: a busy CI runner pushed a 0.1 ms call past 1 ms.
 
 const calls = { readdirSync: 0, statSync: 0, readFileSync: 0, lstatSync: 0 };
 let counting = false;
@@ -39,7 +39,7 @@ afterEach(() => {
 
 // 200 repos on disk and 3,000 classifications, by design: seconds on a loaded runner.
 describe("classification with 200 repos in the workspace", { timeout: 30_000 }, () => {
-  it("makes no file-system call per classification after warm-up: no folder walk, no per-repo stat", async () => {
+  it("makes no readdir, stat or read per classification after warm-up: no folder walk, no per-repo stat", async () => {
     home = realpathSync(mkdtempSync(join(tmpdir(), "chalito-bench-")));
     const ws = join(home, "ws");
     for (let i = 0; i < 200; i++) {
