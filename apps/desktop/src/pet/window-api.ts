@@ -15,12 +15,14 @@ export const tauriPetWindow = (): PetWindowApi => {
       const p = await cursorPosition();
       return { x: p.x, y: p.y };
     },
+    // The client area everywhere: on the owner's X11 WM setPosition places the client but outer*
+    // report the frame (37 px taller, all above); mixing the two floated the pet 37 px up.
     position: async () => {
-      const p = await w.outerPosition();
+      const p = await w.innerPosition();
       return { x: p.x, y: p.y };
     },
     size: async () => {
-      const s = await w.outerSize();
+      const s = await w.innerSize();
       return { width: s.width, height: s.height };
     },
     screens: async () => {
@@ -39,6 +41,28 @@ export const tauriPetWindow = (): PetWindowApi => {
     },
     setPosition: (x, y) => w.setPosition(new PhysicalPosition(x, y)),
     startDragging: () => w.startDragging(),
-    onMoved: (cb) => w.onMoved((e) => cb({ x: e.payload.x, y: e.payload.y })),
+    // The payload is the frame's corner on X11 (tao sends root_origin), not the client's that
+    // setPosition takes, so re-read the client position.
+    onMoved: async (cb) => {
+      // Reads resolve on a thread pool, so drop one older than a reply already handed on, and any after unlisten.
+      let asked = 0;
+      let handed = 0;
+      let live = true;
+      const off = await w.onMoved(() => {
+        const n = ++asked;
+        w.innerPosition().then(
+          (p) => {
+            if (!live || n < handed) return;
+            handed = n;
+            cb({ x: p.x, y: p.y });
+          },
+          (err: unknown) => console.warn("pet: window position unavailable after a move", err),
+        );
+      });
+      return () => {
+        live = false;
+        off();
+      };
+    },
   };
 };

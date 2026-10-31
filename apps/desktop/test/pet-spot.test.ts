@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_SETUPS,
   clampInto,
+  FLOOR_SNAP,
   cornerSpot,
   launchSpot,
   loadSpot,
@@ -107,5 +108,27 @@ describe("launch spot", () => {
     expect(launchSpot(null, WIN, [laptop, leftMonitor], { x: -1000, y: 500 })).toEqual(cornerSpot(leftMonitor, WIN));
     expect(launchSpot(null, WIN, [laptop, leftMonitor], { x: 9000, y: 9000 })).toEqual(cornerSpot(laptop, WIN));
     expect(launchSpot(null, WIN, [], here)).toBeNull();
+  });
+
+  it("a saved spot up to FLOOR_SNAP logical px above the floor goes onto it; higher ones stay put", () => {
+    const here = { x: 1000, y: 700 };
+    // Floor y = 1040 - 260 = 780. Older builds saved the frame's corner, 37 px higher.
+    expect(launchSpot({ x: 400, y: 780 - 37 }, WIN, [laptop], here)).toEqual({ x: 400, y: 780 });
+    expect(launchSpot({ x: 400, y: 780 - FLOOR_SNAP }, WIN, [laptop], here)).toEqual({ x: 400, y: 780 });
+    expect(launchSpot({ x: 400, y: 780 - FLOOR_SNAP - 1 }, WIN, [laptop], here)).toEqual({ x: 400, y: 731 });
+    expect(launchSpot({ x: 400, y: 300 }, WIN, [laptop], here)).toEqual({ x: 400, y: 300 });
+    // Below the floor is already clamped onto it.
+    expect(launchSpot({ x: 400, y: 900 }, WIN, [laptop], here)).toEqual({ x: 400, y: 780 });
+  });
+
+  it("the snap is in logical px and uses the floor of the screen the spot is on", () => {
+    const here = { x: 1000, y: 700 };
+    const hidpi = { ...laptop, scale: 2 };
+    const big = { width: 440, height: 520 };
+    // Floor y = 1040 - 520 = 520; 2 × FLOOR_SNAP physical px still snaps, one more doesn't.
+    expect(launchSpot({ x: 400, y: 520 - 2 * FLOOR_SNAP }, big, [hidpi], here)).toEqual({ x: 400, y: 520 });
+    expect(launchSpot({ x: 400, y: 520 - 2 * FLOOR_SNAP - 1 }, big, [hidpi], here)).toEqual({ x: 400, y: 423 });
+    // On the left monitor the floor is -175 + 1415 - 260 = 980, not the laptop's 780.
+    expect(launchSpot({ x: -1000, y: 950 }, WIN, [laptop, leftMonitor], here)).toEqual({ x: -1000, y: 980 });
   });
 });

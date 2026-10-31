@@ -61,7 +61,19 @@ export const cornerSpot = (screen: Screen, win: { width: number; height: number 
   };
 };
 
-/** Launch spot: the saved one if still on a screen, else the primary screen's corner. */
+/** Saved spots near the floor go onto it, in logical px: older builds saved the frame's corner,
+ * up to a title bar (37 px on the owner's X11) above where the pet stood. */
+export const FLOOR_SNAP = 48;
+
+const snapToFloor = (spot: Spot, win: { width: number; height: number }, screens: readonly Screen[]): Spot => {
+  const s = screenAt(screens, spot.x + win.width / 2, spot.y + win.height / 2);
+  if (!s) return spot;
+  const floor = s.work.y + s.work.height - win.height;
+  return Math.abs(spot.y - floor) <= FLOOR_SNAP * s.scale ? { x: spot.x, y: floor } : spot;
+};
+
+/** Launch spot: the saved one if still on a screen (snapped onto a floor it nearly touches), else the
+ * primary screen's corner. */
 export const launchSpot = (
   saved: Spot | null,
   win: { width: number; height: number },
@@ -69,7 +81,7 @@ export const launchSpot = (
   current: Spot,
 ): Spot | null => {
   const ok = validSpot(saved, win, screens);
-  if (ok) return ok;
+  if (ok) return snapToFloor(ok, win, screens);
   const s =
     screens.find((x) => x.primary) ??
     screenAt(screens, current.x + win.width / 2, current.y + win.height / 2) ??

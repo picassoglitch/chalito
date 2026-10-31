@@ -5,7 +5,7 @@ import { PressTracker, Reactions, cursorGaze, eyePoint, followWeight, scaleGaze 
 import { launchSpot, loadSpot, saveSpot, screenAt, setupKey, type Screen, type Spot } from "./spot.js";
 import { WalkPlanner, mayWalk, onFloor, walkAt, walkMs, xBounds, type WalkGate } from "./walk.js";
 
-/** The pet window as motion needs it; positions and sizes in PHYSICAL px (the window's outer frame). */
+/** The pet window as motion needs it; positions and sizes in PHYSICAL px (the client area, as moves place it). */
 export interface PetWindowApi {
   cursor(): Promise<Spot>;
   position(): Promise<Spot>;
@@ -49,6 +49,9 @@ const WALK_SEND_MS = 33;
 const OWN_MOVE_GRACE_MS = 400;
 const SCREENS_REFRESH_MS = 30_000;
 export const PLACE_RECHECK_MS = 700;
+/** Logical px: a client this little down/right of where we asked is a frame's title bar and border, not a
+ * WM move (a user's Alt-drag or a nudge goes any way, and mustn't be kept as an offset). */
+const FRAME_SLACK = 64;
 /** A walk that hasn't arrived this long after it should have (a stuck move call) is dropped. */
 const WALK_SLACK_MS = 2000;
 const WALK_LOOK_YAW = 20;
@@ -76,6 +79,10 @@ export class PetMotion {
     null;
   #moveBusy = false;
   #own: Spot | null = null;
+  /** The launch spot last asked for, to see how far off the WM put it. */
+  #asked: Spot | null = null;
+  /** Client minus asked position on a WM that places the frame; every move asks this much less. */
+  #frame: Spot = { x: 0, y: 0 };
   #ownUntil = -Infinity;
   #movedEvents = false;
   #refreshedAt = -Infinity;
@@ -131,10 +138,10 @@ export class PetMotion {
     this.#movedEvents = off !== null;
     this.#placing = true;
     try {
-      await this.#place();
+      await this.#place(false);
       // Mutter ignores Rust's pre-map placement and may place a fresh window late: check once more.
       await this.#sleep(PLACE_RECHECK_MS);
-      if (!this.#stopped && !this.#touched) await this.#place();
+      if (!this.#stopped && !this.#touched) await this.#place(true);
     } catch (e) {
       console.warn("pet: launch placement failed; leaving it where the OS put it", e);
     } finally {
@@ -143,7 +150,9 @@ export class PetMotion {
     this.#home = this.#pos?.x ?? null;
   }
 
-  async #place(): Promise<void> {
+  /** `correct`: a WM that put the frame, not the client, where we asked lands a frame's height off;
+   * keep that offset for all later moves (owner's WM places the client; ICCCM says the frame). */
+  async #place(correct: boolean): Promise<void> {
     const [screens, size, pos] = await Promise.all([this.api.screens(), this.api.size(), this.api.position()]);
     this.#screens = screens;
     this.#size = size;
@@ -151,6 +160,14 @@ export class PetMotion {
     this.#refreshedAt = this.#clock();
     const spot = launchSpot(loadSpot(setupKey(screens), this.opts.storage), size, screens, pos);
     if (!spot || this.#touched || (spot.x === pos.x && spot.y === pos.y)) return;
+    const asked = this.#asked;
+    const dx = asked ? pos.x - asked.x : 0;
+    const dy = asked ? pos.y - asked.y : 0;
+    const slack = FRAME_SLACK * (screenAt(screens, spot.x + size.width / 2, spot.y + size.height / 2)?.scale ?? 1);
+    const shifted =
+      correct && asked?.x === spot.x && asked.y === spot.y && dx >= 0 && dy > 0 && dx <= slack && dy <= slack;
+    if (shifted) this.#frame = { x: dx, y: dy };
+    this.#asked = shifted ? null : spot;
     await this.#setPosition(spot.x, spot.y);
     this.#pos = spot;
     this.opts.onMoved();
@@ -270,11 +287,11 @@ export class PetMotion {
     this.opts.onMoved();
   }
 
-  /** Moves the window ourselves; the echoed move event isn't taken for the person dragging it. */
+  /** Moves the window's client area ourselves; the echoed move event isn't taken for the person dragging it. */
   async #setPosition(x: number, y: number): Promise<void> {
     this.#own = { x, y };
     this.#ownUntil = this.#clock() + OWN_MOVE_GRACE_MS;
-    await this.api.setPosition(x, y);
+    await this.api.setPosition(x - this.#frame.x, y - this.#frame.y);
     if (!this.#movedEvents) {
       this.#pos = { x, y };
       this.opts.onMoved();
