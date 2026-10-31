@@ -80,14 +80,14 @@ Lo que el código no permite hacer hoy desde el producto. Los puntos marcados PA
   - Pasos: en el teléfono, usa "Agregar a pantalla de inicio" / "Instalar app".
   - Esperado: el ícono "Chalito" abre `/inicio` en ventana propia, sin barra del navegador.
   - Automático: `apps/web/e2e/pwa.spec.ts` "the manifest makes the app installable", "the page links the manifest and registers the service worker".
-- [ ] **W-6 Agregar un segundo navegador** · LISTO
-  - Pasos: en un navegador nuevo, entra y abre `/vincular`. Escribe un nombre y toca "Mostrar código". En el teléfono, ve a `/dispositivos` → "Añadir un dispositivo", escribe el código ("Buscar") o usa "Escanear anillo". Compara la huella y toca "Aprobar".
+- [ ] **W-6 Agregar un segundo navegador** (ADR 0032)
+  - Pasos: en un navegador nuevo, entra con tu cuenta de Chalyb y abre `/bandeja`.
   - Esperado:
-    - En el teléfono: "Al aprobar, te pediremos tu passkey.", y luego "Listo: {nombre} ya es de confianza."
-    - En el navegador nuevo: "Listo" con "Ir a la bandeja".
-    - Con "No es mío" no se firma nada.
-    - Si dejas pasar el tiempo: "El código venció. Muestra uno nuevo."
-  - Automático: `apps/web/e2e/live/endorse.spec.ts` (7 pruebas); `apps/web/test/endorse.test.ts`; `apps/api/test/endorse.test.ts` (R-L13); ensayo §3 "the phone approves with its passkey; the browser enrols…"; pgTAP `12_endorse_codes`, `16_endorsement_broadcast`.
+    - La bandeja abre sola: sin código, sin aprobar desde otro dispositivo.
+    - Tus otros dispositivos reciben el aviso de seguridad del navegador nuevo.
+    - Si el servidor lo rechaza, `/vincular` dice por qué y ofrece "Volver a intentar".
+    - Desde `/dispositivos` → "Añadir un dispositivo" aún se puede aprobar el código que muestra una app vieja.
+  - Automático: `apps/web/e2e/live/endorse.spec.ts`; `apps/web/test/sign-in-enrol.test.ts`; `apps/web/test/endorse.test.ts`; `apps/desktop/test/signin-flow.e2e.test.ts` (api real).
 - [ ] **W-7 Enlace de aviso `/n/<id>`** · PARCIAL (el aviso lo crea el operador o una aprobación)
   - Pasos: abre el enlace de un aviso, primero con sesión iniciada y luego sin sesión.
   - Esperado:

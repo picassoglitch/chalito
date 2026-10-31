@@ -248,6 +248,9 @@ export const introducedAgents = async (
  * directory lists them, for a client the person signed in on. Each id must derive from its key and
  * the fingerprint is computed here, never taken from the listing.
  */
+/** `endorsedBy` recorded for computers a sign-in client trusts from the account's directory (ADR 0029). */
+export const SIGN_IN_INTRODUCER = "sign_in";
+
 export const accountAgents = async (directory: readonly DirectoryDevice[]): Promise<IntroducedAgent[]> => {
   const agents: IntroducedAgent[] = [];
   for (const d of directory) {
@@ -261,4 +264,14 @@ export const accountAgents = async (directory: readonly DirectoryDevice[]): Prom
     }
   }
   return agents;
+};
+
+// ADR 0032 — on connect, only computers not trusted yet: the directory must never replace a known
+// id's keys (its pubBox isn't bound to the id).
+export const newAccountAgents = async (
+  directory: readonly DirectoryDevice[],
+  trusted: readonly { deviceId: string }[],
+): Promise<IntroducedAgent[]> => {
+  const known = new Set(trusted.map((a) => a.deviceId));
+  return (await accountAgents(directory)).filter((a) => !known.has(a.deviceId));
 };

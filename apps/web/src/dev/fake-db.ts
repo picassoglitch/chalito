@@ -237,6 +237,9 @@ export class FakeDb {
         const s = this.tokenHashes.get(token_hash);
         this.tokenHashes.delete(token_hash); // single use
         if (!s) return { data: { session: null }, error: { message: "Token has expired or is invalid" } };
+        // DEV/TEST: "chalito.dev.verifyDelayMs" holds the network round trip, so a switch shows its gap.
+        const delay = Number(globalThis.localStorage?.getItem("chalito.dev.verifyDelayMs") ?? 0);
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
         this.setSession(s);
         return { data: { session: s }, error: null };
       },
