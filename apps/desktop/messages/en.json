@@ -934,5 +934,17 @@
       "optIn": "After each meeting, read the Granola notes and suggest follow-ups",
       "soon": "Coming soon: after each meeting, Chalito will read your Granola notes and suggest the follow-ups."
     }
+  },
+  "alerts": {
+    "stuck": "Looks stuck: `{cmd}` failed {count} times",
+    "stuckPlain": "Looks stuck: a command keeps failing",
+    "stalled": "Looks stalled: nothing new for a while",
+    "snooze": "Snooze 30 min",
+    "waiting": "Waiting on someone",
+    "waitingTitle": "Waiting on someone",
+    "waitingHint": "No more nudges until the session changes.",
+    "notWaiting": "Not anymore",
+    "open": "Open session",
+    "unavailable": "This needs a newer version. Update or restart Chalito."
   }
 }

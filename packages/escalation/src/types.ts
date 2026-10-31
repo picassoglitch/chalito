@@ -23,6 +23,8 @@ export interface EscalationItem {
   approvalExpiresAt?: number;
   /** Mesa starting: when it starts (snooze re-calls a minute before). */
   mesaStartsAt?: number;
+  /** The coding session behind it, if any ("/s/<sid>" links name it too): "seen" and "waiting" act per session. */
+  sid?: string;
 }
 
 export type EscalationEvent =
@@ -30,8 +32,22 @@ export type EscalationEvent =
   | { type: "notify"; item: EscalationItem }
   /** A scheduled ladder step fired (Cloud Tasks). */
   | { type: "tick"; nid: string }
-  /** Acknowledged anywhere: one ladder by nid or coalesceKey, or everything pending. */
-  | { type: "ack"; via: Channel | "app"; nid?: string; coalesceKey?: string; all?: boolean }
+  /** Acknowledged anywhere: one ladder by nid or coalesceKey, a session's (optionally some sources only), or all. */
+  | {
+      type: "ack";
+      via: Channel | "app";
+      nid?: string;
+      coalesceKey?: string;
+      sid?: string;
+      sources?: NotificationSource[];
+      all?: boolean;
+    }
+  /** The session was opened in the app: its alerts rest, with one gentle re-nudge later if still open. */
+  | { type: "seen"; sid: string }
+  /** "Esperando a alguien": the session's alerts rest until it changes again; `on: false` undoes it. */
+  | { type: "waiting"; sid: string; on: boolean }
+  /** "Posponer" on one alert in the app. */
+  | { type: "snooze_alert"; nid: string }
   /** DTMF 2 on a call. */
   | { type: "snooze"; nid: string }
   /** The approval behind a ladder expired (or was denied by expiry). */
@@ -70,6 +86,12 @@ export interface Ladder {
   nextAt: number | null;
   ackedAt: number | null;
   ackedVia: Channel | "app" | null;
+  /** Resting (state snoozed) until nextAt: opened in the app, or postponed there. */
+  hold?: { kind: "seen" | "snooze"; since: number };
+  /** The one re-nudge after a "seen" went out; the next "seen" acks it for good. */
+  renudged?: boolean;
+  /** Parked by "Esperando a alguien" at this time (state acked until undone). */
+  waitingSince?: number;
 }
 
 export interface SentRecord {

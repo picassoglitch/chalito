@@ -934,5 +934,17 @@
       "optIn": "Después de cada reunión, leer las notas de Granola y proponerme los pendientes",
       "soon": "Próximamente: después de cada reunión, Chalito leerá tus notas de Granola y te propondrá los pendientes."
     }
+  },
+  "alerts": {
+    "stuck": "Parece atorado: `{cmd}` falló {count} veces",
+    "stuckPlain": "Parece atorado: un comando sigue fallando",
+    "stalled": "Parece detenido: lleva un rato sin mostrar nada",
+    "snooze": "Posponer 30 min",
+    "waiting": "Esperando a alguien",
+    "waitingTitle": "Esperando a alguien",
+    "waitingHint": "No te avisa de nuevo hasta que la sesión cambie.",
+    "notWaiting": "Ya no",
+    "open": "Abrir sesión",
+    "unavailable": "Esto necesita una versión más nueva. Actualiza o reinicia Chalito."
   }
 }

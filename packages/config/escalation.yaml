@@ -21,6 +21,13 @@ approvalTtlMs: 600000
 snoozeMs: 600000
 mesaRecallLeadMs: 60000
 
+# Calmer alerts (from Alux, by Omar). Opening a session in the app counts as seen; one that still
+# needs you gets one gentle re-nudge (at most L1) this long after, waiting while fresher alerts are out.
+renudgeMs: 7200000
+renudgeRetryMs: 300000
+# "Posponer" on one alert in the app.
+alertSnoozeMs: 1800000
+
 sms:
   # SMS is the last rung; off unless the user turns it on for these countries (D-013: SMS to MX
   # costs ~21x a WhatsApp utility message).

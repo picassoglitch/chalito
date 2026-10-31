@@ -139,6 +139,17 @@ export const AgentEvent = z.discriminatedUnion("type", [
     tokCached: z.number().int().nonnegative().default(0),
   }),
   z.object({ ...base, type: z.literal("card.updated"), cardVersion: z.number().int().nonnegative() }),
+  /** Stuck (`count` failures of one command among its last tool calls) or stalled (no output for a while); `turn`
+   * (the turn's start) keys it so it alerts once per turn. From Alux, by Omar. `ct` opens to `{cmd}`. */
+  z.object({
+    ...base,
+    type: z.literal("agent.alert"),
+    kind: z.enum(["stuck", "stalled"]),
+    turn: EpochMs,
+    count: z.number().int().positive().optional(),
+    ct: SealedEnvelope.optional(),
+  }),
+
   /** "IA de Chalyb" refused the next request (ADR 0030): the hub shows the recharge chip and "Usar mi clave". */
   z.object({ ...base, type: z.literal("session.blocked"), reason: z.enum(["out_of_energy", "daily_cap"]) }),
   // ---- SCREEN (screen.ts): a screen session's own stream ------------------------------------

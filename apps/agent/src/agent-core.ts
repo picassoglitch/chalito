@@ -38,6 +38,7 @@ import {
 } from "@chalito/protocol";
 import { SESSIONS_DEFAULTS, type SessionsConfig } from "@chalito/config";
 import { outsideTaskSid, sealJson } from "@chalito/crypto";
+import { AlertWatcher, type AgentAlert } from "./alerts/watch.js";
 import { ApprovalManager, type ApprovalOutcome } from "./approvals.js";
 import { CallLinePublisher } from "./call-lines.js";
 import { CardBuilder } from "./card.js";
@@ -165,7 +166,7 @@ export interface AgentCoreDeps {
   /** Build flags (features.ts). Absent = off: `screen.*` and `terminal.*` are refused and audited. */
   remote?: { screen?: boolean; terminal?: boolean };
   /** M16 A: idle-close, live cap and delta flushing (packages/config sessions.yaml). */
-  sessionsConfig?: Pick<SessionsConfig, "session" | "live">;
+  sessionsConfig?: Pick<SessionsConfig, "session" | "live"> & Partial<Pick<SessionsConfig, "alerts">>;
   /** M16 A: where sessions are remembered for resume (~/.chalito/sessions.json); absent = memory only. */
   registry?: SessionRegistry;
   /** Agent-to-agent links (links/manager.ts, ADR 0022 §3); absent = `link.*` commands are refused. */
@@ -291,6 +292,14 @@ export class AgentCore {
   readonly coordinator: Coordinator;
   /** Adapter events for the coordinator, per session. */
   readonly #observers = new Map<string, (e: AdapterEvent) => void>();
+  /** Stuck and stall alerts (from Alux, by Omar). */
+  readonly #alerts = new AlertWatcher({
+    config: () => this.d.sessionsConfig?.alerts ?? SESSIONS_DEFAULTS.alerts,
+    now: () => this.d.now(),
+    schedule: (fn, ms) => this.#schedule(fn, ms),
+    raise: (sid, alert) =>
+      void this.#raiseAlert(sid, alert).catch((err: unknown) => this.#writeFailed("session.alert_failed", err)),
+  });
   /** Coordinator helpers by session: their marker and worktree, kept for a revive. */
   readonly #coordOf = new Map<string, { coord: SessionCoord; cwd: string }>();
   /**
@@ -1350,7 +1359,7 @@ export class AgentCore {
         ...(resume?.providerSessionId ? { resume: resume.providerSessionId } : {}),
         ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
         gate: this.#gate(session),
-        askUser: async (q) => {
+        askUser: async (q, signal) => {
           const first = q.questions[0]?.question ?? null;
           await this.#event(session, {
             type: "question.asked",
@@ -1365,12 +1374,25 @@ export class AgentCore {
             sessionLabel: session.label,
             question: first,
           });
-          const answers = await new Promise<Record<string, string | string[]>>((resolve) =>
-            session.questions.set(q.questionId, resolve),
-          );
-          await this.callLines.remove(`${sid}_${q.questionId}`);
-          card.question(undefined);
-          return answers;
+          // An interrupt (or the turn moving on) abandons the question: settle it, or the wait never ends.
+          const asked = new Promise<Record<string, string | string[]>>((resolve, reject) => {
+            const abandon = () => {
+              session.questions.delete(q.questionId);
+              reject(signal.reason instanceof Error ? signal.reason : new Error("question abandoned"));
+            };
+            if (signal.aborted) return abandon();
+            session.questions.set(q.questionId, (answers) => {
+              signal.removeEventListener("abort", abandon);
+              resolve(answers);
+            });
+            signal.addEventListener("abort", abandon, { once: true });
+          });
+          try {
+            return await this.#alerts.whileWaiting(sid, asked);
+          } finally {
+            await this.callLines.remove(`${sid}_${q.questionId}`);
+            card.question(undefined);
+          }
         },
         // Never an unhandled rejection: one would take the whole agent process down.
         onEvent: (e) =>
@@ -1378,6 +1400,7 @@ export class AgentCore {
       });
     } catch (err) {
       // Nothing runs: forget the live session (a resumable one goes back to waiting).
+      this.#alerts.forget(sid);
       this.d.computer?.end(sid);
       this.d.linkTools?.end(sid);
       if (this.sessions.get(sid) === session) this.sessions.delete(sid);
@@ -1739,6 +1762,7 @@ export class AgentCore {
   #suspend(s: Session, reason: "idle" | "session_limit" | "agent_stop" | "agent_revoked" | "transferred"): void {
     if (s.closing) return;
     s.closing = true;
+    this.#alerts.forget(s.sid);
     s.idleTimer?.clear();
     s.idleTimer = undefined;
     s.draft?.throttle.discard();
@@ -1983,44 +2007,47 @@ export class AgentCore {
     // the promise: the resolution below must not remove the call line before it was published,
     // or a fast decision leaves a stale plaintext line behind (seen over Supabase round-trips).
     let announced: Promise<void> = Promise.resolve();
-    const outcome = await this.#requestApproval({
-      sid: s.sid,
-      risk: input.risk,
-      stepUp: input.stepUp,
-      origin: input.origin,
-      ...(input.kind ? { kind: input.kind } : {}),
-      details: input.details,
-      onRequested: (requested, expiresAt) => {
-        aid = requested;
-        this.#local(s.sid, {
-          type: "approval",
-          aid: requested,
-          risk: input.risk,
-          stepUp: input.stepUp,
-          summary: approvalSummary(input.details.toolName, input.details.input).summary,
-        });
-        announced = (async () => {
-          s.card.approvalPending(requested, true);
-          await this.#event(s, {
-            type: "approval.requested",
+    const outcome = await this.#alerts.whileWaiting(
+      s.sid,
+      this.#requestApproval({
+        sid: s.sid,
+        risk: input.risk,
+        stepUp: input.stepUp,
+        origin: input.origin,
+        ...(input.kind ? { kind: input.kind } : {}),
+        details: input.details,
+        onRequested: (requested, expiresAt) => {
+          aid = requested;
+          this.#local(s.sid, {
+            type: "approval",
             aid: requested,
             risk: input.risk,
-            expiresAt,
-            urgency: input.risk === "HIGH" ? "high" : "normal",
+            stepUp: input.stepUp,
+            summary: approvalSummary(input.details.toolName, input.details.input).summary,
           });
-          await this.#publishCard(s);
-          await this.callLines.publish(`${s.sid}_${requested}`, {
-            notificationId: `a_${requested}`,
-            sid: s.sid,
-            sessionLabel: s.label,
-            question: null,
+          announced = (async () => {
+            s.card.approvalPending(requested, true);
+            await this.#event(s, {
+              type: "approval.requested",
+              aid: requested,
+              risk: input.risk,
+              expiresAt,
+              urgency: input.risk === "HIGH" ? "high" : "normal",
+            });
+            await this.#publishCard(s);
+            await this.callLines.publish(`${s.sid}_${requested}`, {
+              notificationId: `a_${requested}`,
+              sid: s.sid,
+              sessionLabel: s.label,
+              question: null,
+            });
+          })().catch((err: unknown) => {
+            if (isRevokedRefusal(err)) return this.#onRevoked(err);
+            this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" });
           });
-        })().catch((err: unknown) => {
-          if (isRevokedRefusal(err)) return this.#onRevoked(err);
-          this.d.log.error("approval.announce_failed", { error: err instanceof Error ? err.message : "error" });
-        });
-      },
-    });
+        },
+      }),
+    );
     await announced;
     // Revoked meanwhile: the sweep already denied it and removed its call line; write nothing.
     if (this.#revoked) return outcome;
@@ -2098,6 +2125,7 @@ export class AgentCore {
     if (s.closing || this.#revoked || this.sessions.get(s.sid) !== s) return;
     s.lastActiveAt = this.d.now();
     this.#observers.get(s.sid)?.(e);
+    this.#alerts.observe(s.sid, e);
     // Hand-off tasks (links/manager.ts): projection, budget, the result back to the sender.
     if (this.d.links)
       void this.d.links
@@ -2227,6 +2255,22 @@ export class AgentCore {
         error: err instanceof Error ? err.message : "error",
       });
     });
+  }
+
+  /** A stuck or stalled turn: an `agent.alert` event, which the database turns into one alert per turn. */
+  async #raiseAlert(sid: string, a: AgentAlert): Promise<void> {
+    const s = this.sessions.get(sid);
+    if (!s || s.closing) return;
+    const ct = a.cmd ? await this.sealer.seal({ cmd: a.cmd }, `event:${sid}`) : undefined;
+    await this.#event(s, {
+      type: "agent.alert",
+      urgency: a.kind === "stuck" ? "normal" : "low",
+      kind: a.kind,
+      turn: a.turn,
+      ...(a.count ? { count: a.count } : {}),
+      ...(ct ? { ct } : {}),
+    });
+    this.d.log.warn("session.alert", { sid, kind: a.kind, ...(a.count ? { count: a.count } : {}) });
   }
 
   /** One flushed delta: sealed, numbered, sent in order (broadcast only). */

@@ -24,6 +24,8 @@ export const NotificationSource = z.enum([
   "devmode",
   "security",
   "reminder",
+  /** A coding session looks stuck (the same command keeps failing) or stalled (no output for a while). */
+  "agent_alert",
 ]);
 export type NotificationSource = z.infer<typeof NotificationSource>;
 
