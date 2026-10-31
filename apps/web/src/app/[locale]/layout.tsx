@@ -10,6 +10,7 @@ import { DevModeBanner } from "@/components/DevModeBanner";
 import { Footer } from "@/components/Footer";
 import { Nav } from "@/components/Nav";
 import { StepUpHost } from "@/components/StepUpHost";
+import { ApprovalPopup } from "@/components/ApprovalPopup";
 import { TestModeBanner } from "@/components/TestModeBanner";
 import { ServiceWorker } from "@/components/ServiceWorker";
 import { UiBridge } from "@/components/UiBridge";
@@ -59,6 +60,7 @@ export default async function LocaleLayout({
               <TestModeBanner />
               <DevModeBanner />
               <Nav />
+              <ApprovalPopup />
               <main className="mx-auto max-w-3xl px-4 py-6">{children}</main>
               <Footer />
               <StepUpHost />

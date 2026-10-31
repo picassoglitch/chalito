@@ -160,6 +160,7 @@ const harness = async (
     );
   const prompt = (sid: string, text: string) =>
     command(async (cid) => ({ type: "session.prompt", sid, promptCt: await sealed(cid, text) }));
+  const interrupt = (sid: string) => command(async () => ({ type: "session.interrupt", sid }));
   const resume = (sid: string, text?: string) =>
     command(async (cid) => ({ type: "session.resume", sid, ...(text ? { promptCt: await sealed(cid, text) } : {}) }));
   const states = (sid: string) =>
@@ -174,6 +175,7 @@ const harness = async (
     clock: c,
     start,
     prompt,
+    interrupt,
     resume,
     states,
     open,
@@ -551,5 +553,96 @@ describe("IA de Chalyb credential expiry (ADR 0030)", () => {
     if (!p.ok) throw new Error(JSON.stringify(p));
     await waitFor(() => issued.length === 2);
     await waitFor(() => h.store.events.filter((e) => e.type === "message.assistant").length === 2);
+  });
+});
+
+describe("stuck and stall alerts (from Alux, by Omar)", () => {
+  const failing = (n: number) =>
+    Array.from({ length: n }, () => ({ tool: "Bash", input: { command: "pnpm test" }, fail: true }));
+  const alerts = (h: Awaited<ReturnType<typeof harness>>, sid: string) =>
+    h.store.events.filter(
+      (e): e is Extract<AgentEvent, { type: "agent.alert" }> => e.sid === sid && e.type === "agent.alert",
+    );
+
+  it("the same command failing 5 times in a turn writes one sealed stuck alert for that turn", async () => {
+    const h = await harness({ turns: [[...failing(7), { say: "sigo intentando" }], [...failing(5)]] });
+    const sid = (await h.start()).sid!;
+    await waitFor(() => h.states(sid).includes("idle"));
+    await waitFor(() => alerts(h, sid).length === 1);
+    const [a] = alerts(h, sid);
+    const turnStart = h.store.events.find(
+      (e) => e.sid === sid && e.type === "session.state" && e.state === "running",
+    )!.t;
+    expect(a).toMatchObject({ kind: "stuck", count: 5, turn: turnStart, urgency: "normal" });
+    // The command is sealed to the person's devices: only their device opens it.
+    expect(await h.open(a as never)).toEqual({ cmd: "pnpm test" });
+    expect(JSON.stringify(a)).not.toContain("pnpm test");
+    // A new turn that goes in circles again alerts again, once, keyed on its own start.
+    h.clock.advance(MIN);
+    await h.prompt(sid, "otra vez");
+    await waitFor(() => h.states(sid).filter((s) => s === "idle").length === 2);
+    await waitFor(() => alerts(h, sid).length === 2);
+    expect(alerts(h, sid)[1]!.turn).toBeGreaterThan(turnStart);
+  });
+
+  it("four failures stay quiet", async () => {
+    const h = await harness({ turns: [[...failing(4), { say: "listo" }]] });
+    const sid = (await h.start()).sid!;
+    await waitFor(() => h.states(sid).includes("idle"));
+    // Sealing is async: give a wrong alert time to land before checking there is none.
+    await waitFor(() => h.store.events.some((e) => e.sid === sid && e.type === "message.assistant"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(alerts(h, sid)).toEqual([]);
+  });
+
+  it("an open question is the person's turn: 25 quiet minutes waiting on it never stall", async () => {
+    const ask = { questions: [{ question: "¿Hago push?", options: [{ label: "Sí" }] }] };
+    const h = await harness({ turns: [[{ tool: "AskUserQuestion", input: ask }, { say: "listo" }]] });
+    const sid = (await h.start()).sid!;
+    await waitFor(() => h.store.events.some((e) => e.sid === sid && e.type === "question.asked"));
+    h.clock.advance(25 * MIN);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(alerts(h, sid)).toEqual([]);
+  });
+
+  it("a question abandoned by an interrupt doesn't switch stall detection off for the session", async () => {
+    let resume!: () => void;
+    const pause = new Promise<void>((r) => (resume = r));
+    const ask = { questions: [{ question: "¿Hago push?", options: [{ label: "Sí" }] }] };
+    const h = await harness({
+      turns: [
+        [{ tool: "AskUserQuestion", input: ask }, { say: "listo" }],
+        [{ say: "sigo" }, { pause }, { say: "ya" }],
+      ],
+    });
+    const sid = (await h.start()).sid!;
+    await waitFor(() => h.store.events.some((e) => e.sid === sid && e.type === "question.asked"));
+    await h.interrupt(sid);
+    await waitFor(() => h.states(sid).includes("idle"));
+    h.clock.advance(MIN);
+    await h.prompt(sid, "sigue");
+    await waitFor(() => h.store.events.some((e) => e.sid === sid && e.type === "message.assistant"));
+    h.clock.advance(20 * MIN);
+    await waitFor(() => alerts(h, sid).length === 1);
+    expect(alerts(h, sid)[0]).toMatchObject({ kind: "stalled" });
+    resume();
+  });
+
+  it("a running turn with no output for 20 minutes writes one stalled alert", async () => {
+    let resume!: () => void;
+    const pause = new Promise<void>((r) => (resume = r));
+    const h = await harness({ turns: [[{ say: "empiezo" }, { pause }, { say: "listo" }]] });
+    const sid = (await h.start()).sid!;
+    await waitFor(() => h.store.events.some((e) => e.sid === sid && e.type === "message.assistant"));
+    h.clock.advance(19 * MIN);
+    expect(alerts(h, sid)).toEqual([]);
+    h.clock.advance(1 * MIN);
+    await waitFor(() => alerts(h, sid).length === 1);
+    expect(alerts(h, sid)[0]).toMatchObject({ kind: "stalled", urgency: "low" });
+    expect((alerts(h, sid)[0] as { ct?: unknown }).ct).toBeUndefined();
+    h.clock.advance(60 * MIN);
+    resume();
+    await waitFor(() => h.states(sid).includes("idle"));
+    expect(alerts(h, sid)).toHaveLength(1);
   });
 });

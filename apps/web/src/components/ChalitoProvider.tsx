@@ -13,19 +13,18 @@ import {
   type RevokeAllResult,
   type Snapshot,
 } from "@chalito/client";
-import type { EndorseTarget } from "@chalito/client-keys";
+import { newAccountAgents, type EndorseTarget } from "@chalito/client-keys";
 import type { PhoneVerifier } from "@chalito/ui";
 import type { DeviceKeys } from "@/lib/keys";
 import {
   approveTarget,
+  browserName,
   resolveTarget,
-  waitForEndorsement,
   type AddError,
   type DirectoryRow,
   type Resolved,
-  type WaitError,
-  type Waiting,
 } from "@/lib/endorse";
+import { SIGN_IN_INTRODUCER, enrolBySignIn, type SignInEnrolError } from "@/lib/sign-in-enrol";
 import { markEndorsed, passkeyRef } from "@/lib/keys";
 import type { McpApi } from "@/lib/mcp";
 import type { AccountApi } from "@/lib/account";
@@ -62,11 +61,10 @@ interface Ctx {
   assertPasskey: (() => Promise<Record<string, unknown>>) | null;
   /** Whether a session's or device's card is shared with connected apps (chalito.mcp_sharing, RLS read). */
   readSharing: ((scope: "session" | "device", target: string) => Promise<boolean>) | null;
-  /**
-   * "Esperando aprobación": this browser is signed in as the person but not trusted yet. Opens a
-   * code for a trusted device to approve; on success this browser signs in as itself. Null otherwise.
-   */
-  newDevice: ((name: string) => Promise<Waiting | { error: WaitError }>) | null;
+  /** ADR 0032 — retries the sign-in approval after it failed (`enrolError`); null otherwise. */
+  newDevice: (() => Promise<void>) | null;
+  /** Why signing in didn't approve this browser; null unless status is "unpaired" after a try. */
+  enrolError: SignInEnrolError | null;
   /** "Añadir un dispositivo": a trusted (ready) browser endorses another one. Null otherwise. */
   addDevice: AddDevice | null;
   /** Token usage (/uso), read as this device; null until paired. */
@@ -181,6 +179,7 @@ const INITIAL: Ctx = {
   assertPasskey: null,
   readSharing: null,
   newDevice: null,
+  enrolError: null,
   addDevice: null,
   usage: null,
   store: null,
@@ -258,40 +257,35 @@ const readDirectory = async (db: unknown, owner: string): Promise<DirectoryRow[]
   }));
 };
 
-const newDevice =
-  (platform: Platform, owner: string, token: () => Promise<string | null>) =>
-  async (name: string): Promise<Waiting | { error: WaitError }> => {
-    const w = await waitForEndorsement({
-      api: platform.api(token),
-      watch: platform.endorseWatch,
-      save: (k) => platform.saveDeviceKeys(k),
-      owner,
-      name,
-      // Read with the person's session, before this browser switches to its own.
-      directory: () => readDirectory(platform.db, owner),
-      trustIntroduced: (k, agents, by) => platform.trustIntroduced(k, agents, by),
+// ADR 0032 — the sign-in approves this browser, which then switches to its own device session;
+// that auth change reruns the connection, which now finds trusted keys.
+const enrolThisBrowser = async (
+  platform: Platform,
+  owner: string,
+  token: () => Promise<string | null>,
+): Promise<SignInEnrolError | null> => {
+  const r = await enrolBySignIn({
+    api: platform.api(token),
+    save: (k) => platform.saveDeviceKeys(k),
+    owner,
+    name: browserName(navigator.userAgent, navigator.language?.startsWith("en") ? "en" : "es"),
+    // Read with the person's session, before this browser switches to its own.
+    directory: () => readDirectory(platform.db, owner),
+    trust: (k, agents, by) => platform.trustIntroduced(k, agents, by),
+  });
+  if (!r.ok) return r.reason;
+  markEndorsed(r.deviceId);
+  try {
+    await ensureSession(platform.db.auth as never, {
+      kind: "device",
+      deviceId: r.deviceId,
+      login: async () => r.customToken,
     });
-    if ("error" in w) return w;
-    return {
-      ...w,
-      // Enrolled: from now on this browser is its own device user, not the person's session. The
-      // auth change reruns the connection, which now finds trusted keys.
-      result: w.result.then(async (r) => {
-        if (!r.ok) return r;
-        markEndorsed(r.deviceId);
-        try {
-          await ensureSession(platform.db.auth as never, {
-            kind: "device",
-            deviceId: r.deviceId,
-            login: async () => r.customToken,
-          });
-        } catch {
-          return { ok: false, reason: "failed" } as const;
-        }
-        return r;
-      }),
-    };
-  };
+  } catch {
+    return "failed";
+  }
+  return null;
+};
 
 const addDevice = (
   platform: Platform,
@@ -322,6 +316,8 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
   const [session, setSession] = useState<SessionState>({ status: "loading" });
   /** Once the device sign-in starts, session churn (its own sign-out/sign-in) must not restart it. */
   const deviceMode = useRef(false);
+  /** One sign-in approval at a time: session churn must not enrol this browser twice. */
+  const enrolling = useRef(false);
   const clientRef = useRef<ChalitoClient | null>(null);
   const keysRef = useRef<DeviceKeys | null>(null);
   /** The companion card source handed out last (replaced, and stopped, when the account changes). */
@@ -365,6 +361,8 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     if (!platform || deviceMode.current || session.status === "loading") return;
+    // ADR 0032 — the swap to the device session signs the person out first: not a sign-out to act on.
+    if (enrolling.current && session.status === "signed_out") return;
     let alive = true;
     const done = (c: Omit<Ctx, "session">) => alive && setCtx((prev) => ({ ...c, session: prev.session }));
     void (async () => {
@@ -392,13 +390,41 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
         readCompanion: () => readCompanion(platform.db, owner),
       };
       const keys = await platform.loadDeviceKeys();
-      if (!keys)
-        return done({
-          ...INITIAL,
-          ...base,
-          status: "unpaired",
-          newDevice: isPersonSession(session.session) ? newDevice(platform, owner, token) : null,
-        });
+      if (!keys) {
+        if (!isPersonSession(session.session)) return done({ ...INITIAL, ...base, status: "unpaired" });
+        if (enrolling.current) return;
+        const attempt = async (): Promise<void> => {
+          // One at a time: a second click must not enrol (and save keys) twice.
+          if (enrolling.current) return;
+          enrolling.current = true;
+          // Not gated on `alive`: a retry from an earlier run (token refresh since) must still show.
+          setCtx((prev) => ({ ...INITIAL, ...base, status: "loading", session: prev.session }));
+          // Enrolled already (only its device sign-in failed): reconnect with those keys, never a second device.
+          if (await platform.loadDeviceKeys().catch(() => null)) {
+            enrolling.current = false;
+            return setSession((s) => ({ ...s }));
+          }
+          // A throw (storage blocked, key generation) is a failure to show, never a page left loading.
+          const error = await enrolThisBrowser(platform, owner, token)
+            .catch((): SignInEnrolError => "failed")
+            .finally(() => (enrolling.current = false));
+          // Approved: the device session's auth change reruns this effect with the new keys.
+          if (error)
+            setCtx((prev) =>
+              prev.status === "loading"
+                ? {
+                    ...INITIAL,
+                    ...base,
+                    status: "unpaired",
+                    enrolError: error,
+                    newDevice: attempt,
+                    session: prev.session,
+                  }
+                : prev,
+            );
+        };
+        return attempt();
+      }
       keysRef.current = keys;
       deviceMode.current = true;
       try {
@@ -412,6 +438,11 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           create: () => platform.db,
         });
         clientRef.current = client;
+        // ADR 0032 — computers added to the account since last time. Best effort: retried next connect.
+        void readDirectory(platform.db, owner)
+          .then((dir) => newAccountAgents(dir, keys.keys.trustedAgents()))
+          .then((agents) => keys.keys.trustIntroducedAgents(agents, SIGN_IN_INTRODUCER, Date.now()))
+          .catch(() => undefined);
         done({
           ...base,
           status: "ready",
@@ -438,6 +469,7 @@ export const ChalitoProvider = ({ children }: { children: ReactNode }) => {
           },
           assertPasskey: () => platform.assertPasskey(token),
           newDevice: null,
+          enrolError: null,
           addDevice: addDevice(platform, keys, owner, token),
           rooms: {
             db: platform.db,

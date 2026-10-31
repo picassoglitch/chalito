@@ -1,7 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AlertActionsUnavailable } from "@chalito/client";
 import type { ChalitoClient } from "@chalito/client";
 import type { PhoneVerifier, SettingContext, SettingsValues } from "@chalito/ui";
 import { useT } from "../lib/i18n.js";
+import { WaitingOn } from "../lib/alert-notice.js";
 import type { AgentIpc } from "../lib/ipc.js";
 import type { PushToTalk } from "../lib/voice.js";
 import type { LocalAgentApi } from "../lib/local-agent.js";
@@ -9,6 +11,7 @@ import type { ThisComputerApi } from "../lib/this-computer.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import type { CopiesApi } from "../lib/copies.js";
+import { ApprovalPopup } from "./ApprovalPopup.js";
 import type { OwnSessionsFeed } from "../lib/own-sessions.js";
 import { OwnSessions, OwnSessionsSettings } from "./OwnSessions.js";
 import type { MeetingWatch } from "../lib/meetings.js";
@@ -36,7 +39,7 @@ const TABS = ["inbox", "sessions", "rooms", "settings", "ai", "security", "voice
 export type Tab = (typeof TABS)[number];
 
 export interface PanelProps {
-  client: Pick<ChalitoClient, "live" | "actions"> | null;
+  client: (Pick<ChalitoClient, "live" | "actions"> & Partial<Pick<ChalitoClient, "alerts">>) | null;
   /** This device holds a passkey for HIGH/CRITICAL step-up. */
   canStepUp?: boolean;
   /** Shown instead of the "not connected" note while signed out (the sign-in flow). */
@@ -45,6 +48,10 @@ export interface PanelProps {
   startSignIn?: () => void;
   /** Signed in: connects this computer by itself (owner decision 2026-10-19). */
   autoPair?: AutoPair | null;
+  /** ADR 0032 — an approval is waiting: bring the panel forward. */
+  onNeedsYou?: () => void;
+  /** ADR 0032 — a pairing check only the person can answer (not held back by DND). */
+  onPairingNeedsYou?: () => void;
   ipc: AgentIpc;
   /** Sessions the person started outside Chalito (opt-in); absent in tests that don't need them. */
   ownFeed?: OwnSessionsFeed;
@@ -77,6 +84,14 @@ export interface PanelProps {
   initialTab?: Tab;
 }
 
+const localStore = (): Storage | null => {
+  try {
+    return localStorage;
+  } catch {
+    return null;
+  }
+};
+
 export const Panel = (p: PanelProps) => {
   const t = useT();
   const [tab, setTab] = useState<Tab>(p.initialTab ?? "inbox");
@@ -100,6 +115,16 @@ export const Panel = (p: PanelProps) => {
     pause: (m) => ov?.pause(m),
     setDnd: p.onDnd,
   });
+  const waiting = useMemo(() => new WaitingOn(localStore()), []);
+  const alerts = p.client?.alerts;
+  // Opening a session here counts as seen: its alerts rest, with one gentle re-nudge later (from Alux, by Omar).
+  useEffect(() => {
+    if (tab === "sessions" && codeSid && alerts)
+      void alerts.seen(codeSid).catch((e: unknown) => {
+        // A missing function is reported once by the client, which then stops calling it.
+        if (!(e instanceof AlertActionsUnavailable)) console.warn("alerts.seen failed", codeSid, e);
+      });
+  }, [tab, codeSid, alerts]);
   return (
     <div className="panel-shell">
       <header className="row">
@@ -123,6 +148,16 @@ export const Panel = (p: PanelProps) => {
           agentStatus={() => p.localAgent!.status()}
           auto={p.client ? (p.autoPair ?? null) : null}
           signedIn={p.client !== null}
+          {...(p.onPairingNeedsYou ? { onNeedsYou: p.onPairingNeedsYou } : {})}
+        />
+      )}
+      {p.client && (
+        <ApprovalPopup
+          client={p.client}
+          canStepUp={p.canStepUp ?? false}
+          hidden={tab === "inbox"}
+          {...(p.onNeedsYou ? { onNew: p.onNeedsYou } : {})}
+          onOpenInbox={() => setTab("inbox")}
         />
       )}
       <SetupChecklist
@@ -151,6 +186,16 @@ export const Panel = (p: PanelProps) => {
               client={p.client}
               canStepUp={p.canStepUp ?? false}
               {...(p.rooms ? { onOpenRoom: (id: string) => void p.rooms!.open(id) } : {})}
+              {...(alerts
+                ? {
+                    alerts,
+                    waiting,
+                    onOpenSession: (sid: string) => {
+                      setCodeSid(sid);
+                      setTab("sessions");
+                    },
+                  }
+                : {})}
             />
           ) : (
             (p.signIn ?? <p className="muted">{t("offline")}</p>)

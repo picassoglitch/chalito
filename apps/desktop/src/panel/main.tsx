@@ -21,7 +21,6 @@ import { meetingsIpc } from "../lib/meetings-ipc.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
-import { panelOnLaunch } from "../lib/launch.js";
 import { relayRevoked } from "../lib/revoked-relay.js";
 import { localAgent } from "../lib/local-agent.js";
 import { thisComputer } from "../lib/this-computer.js";
@@ -32,8 +31,8 @@ import { UpdateController, tauriUpdater } from "../lib/updates.js";
 import { Panel } from "./Panel.js";
 import { SignIn } from "./SignIn.js";
 import { useOfflineVoice } from "./use-offline-voice.js";
-import { DEFAULT_SSO_START_URL, createSession, firstTaskUrl, readEnv, type Connected } from "../lib/session.js";
-import type { SignInController } from "../lib/sign-in.js";
+import { DEFAULT_SSO_START_URL, firstTaskUrl, readEnv } from "../lib/session.js";
+import { useAccountSession } from "./use-account-session.js";
 
 const IDLE_AFTER_MS = 2 * 60 * 1000;
 const SIGNAL_POLL_MS = 5_000;
@@ -59,32 +58,9 @@ const loadDnd = () => {
  * signed in (hub SSO → chalito:// link enrols this computer) it opens on sign-in and settings stay on this device. */
 const App = ({ ipc }: { ipc: AgentIpc }) => {
   const sh = useMemo(shell, []);
-  const [conn, setConn] = useState<Connected | null>(null);
-  const [controller, setController] = useState<SignInController | null>(null);
-  useEffect(() => {
-    const env = readEnv();
-    if (!env) {
-      if (panelOnLaunch({ configured: false, connected: false })) void sh.showWindow("panel").catch(() => undefined);
-      return;
-    }
-    let dispose: (() => void) | null = null;
-    let alive = true;
-    let connected = false;
-    void createSession(env, (c) => {
-      connected = true;
-      if (alive) setConn(c);
-    }).then((s) => {
-      if (!alive) return s.dispose();
-      dispose = s.dispose;
-      setController(s.controller);
-      // createSession has already tried this device's saved sign-in: not connected means setup.
-      if (panelOnLaunch({ configured: true, connected })) void sh.showWindow("panel").catch(() => undefined);
-    });
-    return () => {
-      alive = false;
-      dispose?.();
-    };
-  }, [sh]);
+  const showPanel = useCallback(() => void sh.showWindow("panel").catch(() => undefined), [sh]);
+  const { conn, setup } = useAccountSession(showPanel);
+  const controller = setup.state === "ready" && !setup.restoring ? setup.controller : null;
   const client = conn?.client ?? null;
   const ptt = useMemo(() => new PushToTalk(conn?.voice ?? unavailableVoice), [conn]);
   const updates = useMemo(() => new UpdateController(tauriUpdater), []);
@@ -116,6 +92,12 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);
+  // ADR 0032 — something only the person can answer brings the panel forward; "No molestar" holds it.
+  const needsYou = useCallback(() => {
+    if (!dnd) showPanel();
+  }, [showPanel, dnd]);
+  // A pairing check only the person can answer comes forward even under DND: they just started it.
+  const pairingNeedsYou = showPanel;
   const applyDnd = useCallback((on: boolean) => {
     setDnd(on);
     try {
@@ -124,7 +106,6 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       // Not persisted; still applies for this run.
     }
   }, []);
-  const showPanel = useCallback(() => void sh.showWindow("panel").catch(() => undefined), [sh]);
   const offlineVoice = useOfflineVoice(applyDnd, showPanel);
   const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions" | "events">>({
     notifications: [],
@@ -199,8 +180,10 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     <Panel
       client={client}
       canStepUp={conn?.canStepUp ?? false}
-      signIn={<SignIn controller={controller} />}
+      signIn={<SignIn setup={setup} />}
       autoPair={conn?.autoPair ?? null}
+      onNeedsYou={needsYou}
+      onPairingNeedsYou={pairingNeedsYou}
       {...(controller ? { startSignIn: () => void controller.start() } : {})}
       ipc={ipc}
       ownFeed={ownFeed}

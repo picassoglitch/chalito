@@ -98,7 +98,7 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
     expect(p.overlay).toMatchObject({
       version: "1.2.0-beta.1",
       bundle: { targets: ["app", "dmg"], createUpdaterArtifacts: true, externalBin: ["binaries/chalito-agent"] },
-      plugins: { updater: { pubkey: PUB, endpoints: ["https://api.chalito.chalyb.com/releases/beta/latest.json"] } },
+      plugins: { updater: { pubkey: PUB, endpoints: ["https://api.chalito.chalyb.com/releases/beta/latest-v2.json"] } },
     });
     expect(
       (releasePlan({ ...BASE, os: "linux", env: {}, updaterPubkey: PUB }).overlay.bundle as { targets: string[] })
@@ -157,7 +157,8 @@ describe("release plan: signing hooks skip cleanly without secrets", () => {
       const env = os === "windows" ? all(WINDOWS_SIGNING) : {};
       const { overlay } = releasePlan({ ...BASE, os, env, updaterPubkey: PUB });
       const endpoints = (overlay.plugins as { updater: { endpoints: string[] } }).updater.endpoints;
-      expect(endpoints).toEqual(["https://api.chalito.chalyb.com/releases/beta/latest.json"]);
+      // Builds from here on ask for the full manifest; latest.json stays the legacy view for older ones.
+      expect(endpoints).toEqual(["https://api.chalito.chalyb.com/releases/beta/latest-v2.json"]);
       const csp = (overlay.app as { security?: { csp?: string } } | undefined)?.security?.csp ?? BASE.csp;
       for (const e of endpoints) expect(connectSrc(csp)).toContain(new URL(e).origin);
     },

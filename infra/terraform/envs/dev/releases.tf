@@ -1,7 +1,7 @@
 # ---- Desktop releases (ADR 0014, M14) -------------------------------------------
 # The private `releases` bucket is module.storage's (uniform access, public access prevention
 # enforced, versioned). Downloads and the updater manifest are served only as short-lived V4
-# signed URLs (api GET /releases/{channel}/latest.json), signed as this dedicated account
+# signed URLs (api GET /releases/{channel}/latest-v2.json), signed as this dedicated account
 # through IAM Credentials signBlob: no service-account key file exists anywhere.
 #
 # Code only: applying it is an owner OPS step (docs/OPS.md, "M14: downloadable apps").

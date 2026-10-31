@@ -22,6 +22,9 @@ test("approve from the phone releases the session; HIGH needs step-up and cancel
   await page.getByRole("button", { name: "Crear passkey" }).click();
   await expect(page.getByTestId("passkey-enrolled")).toBeVisible();
   await page.getByRole("link", { name: "Bandeja" }).click();
+  // ADR 0032 — /dispositivos shows this approval in the pop-up too: be on the inbox before acting.
+  await expect(page).toHaveURL(/\/bandeja$/);
+  await expect(page.getByTestId("approval-popup")).toHaveCount(0);
   await expect(high.getByTestId("needs-passkey")).toHaveCount(0);
 
   // HIGH: the step-up dialog; cancel → nothing written.
