@@ -85,6 +85,9 @@ export interface GitResult {
 }
 export type GitRun = (cwd: string, args: string[], env?: Record<string, string>) => Promise<GitResult>;
 
+// One empty hooks folder per process (per test file under vitest): one per nodeGit() left ~90 per test run.
+let noHooks: string | null = null;
+
 /**
  * git as the coordinator runs it (security review, 2026-10-19): hooks off, no fsmonitor, no
  * untracked cache, no external diff or pager or askpass, no system config or attributes, no
@@ -92,8 +95,6 @@ export type GitRun = (cwd: string, args: string[], env?: Record<string, string>)
  * here (filter and merge drivers, includes, credential helpers, …) are checked against the plan's
  * start instead (`DANGEROUS_CONFIG`).
  */
-// One empty hooks folder per process: a new one per nodeGit() left ~90 behind per test run.
-let noHooks: string | null = null;
 export const nodeGit = (): GitRun => {
   const hooks = (noHooks ??= mkdtempSync(join(tmpdir(), "chalito-nohooks-")));
   const forced = [

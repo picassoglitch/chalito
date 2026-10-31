@@ -1,7 +1,7 @@
 // ADR 0031 §4: moving a session between two of the owner's computers. Two real agents relay through
 // a memory cloud over a real hand-off link; both workspaces are real clones of one bare origin.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -791,6 +791,14 @@ describe("transfer (ADR 0031 §4)", () => {
     it("git runs in the C locale, so its messages match", async () => {
       const r = await nodeGit()(tmpdir(), ["-c", "alias.e=!env", "e"]);
       expect(r.out).toMatch(/^LC_ALL=C$/m);
+    });
+
+    it("every nodeGit() points hooks at the same empty folder, so the runs leave one behind, not one each", async () => {
+      const hooks = async () => (await nodeGit()(tmpdir(), ["config", "--get", "core.hooksPath"])).out.trim();
+      const first = await hooks();
+      expect(first).not.toBe("");
+      expect(await hooks()).toBe(first);
+      expect(readdirSync(first)).toEqual([]);
     });
 
     it("finds the owner's per-host credential helper (gh auth setup-git form), proxy and CA", async () => {
