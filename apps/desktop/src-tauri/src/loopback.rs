@@ -92,7 +92,12 @@ fn drain(stream: TcpStream) -> (usize, bool) {
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         // set_read_timeout(Some(ZERO)) is an error, so stop before it.
-        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+        if left.is_zero() {
+            return (read, false);
+        }
+        // macOS refuses setsockopt once both directions are shut (our FIN, then the client's). The
+        // rest is buffered by then, so read it without blocking.
+        if stream.set_read_timeout(Some(left)).is_err() && stream.set_nonblocking(true).is_err() {
             return (read, false);
         }
         match (&stream).read(&mut sink) {
@@ -232,6 +237,21 @@ mod tests {
         assert!(drained >= 8 * 1024, "{drained}");
         // The listener is gone: a second request can't connect.
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+
+    #[test]
+    fn the_drain_still_reads_to_eof_when_the_client_closed_first() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut c = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        c.write_all(&vec![b'x'; 16 * 1024]).unwrap();
+        respond(&stream, true);
+        let mut resp = String::new();
+        c.read_to_string(&mut resp).unwrap();
+        drop(c);
+        // Both directions are shut before the drain starts: the path macOS CI took.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(drain(stream), (16 * 1024, true));
     }
 
     #[test]
