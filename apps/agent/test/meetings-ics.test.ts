@@ -408,7 +408,8 @@ describe("review round 3: hostile rule sizes, zone names and the poll budget", (
     expect(zoneAliasCount()).toBeLessThanOrEqual(1024);
   });
 
-  it("the offset memo stays exact around transitions that aren't on a quarter hour", () => {
+  // Every zone × 20 instants, by design: ~0.3 s here; main CI on Oct 31 took 5.08 s before the cached formatters.
+  it("the offset memo stays exact around transitions that aren't on a quarter hour", { timeout: 30_000 }, () => {
     // One reference formatter per zone, not per call: 8,000 new formatters took over 5 s on a busy runner.
     const reference = new Map<string, Intl.DateTimeFormat>();
     const fresh = (t: number, tz: string) => {
