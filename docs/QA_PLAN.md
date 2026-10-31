@@ -80,14 +80,14 @@ Lo que el código no permite hacer hoy desde el producto. Los puntos marcados PA
   - Pasos: en el teléfono, usa "Agregar a pantalla de inicio" / "Instalar app".
   - Esperado: el ícono "Chalito" abre `/inicio` en ventana propia, sin barra del navegador.
   - Automático: `apps/web/e2e/pwa.spec.ts` "the manifest makes the app installable", "the page links the manifest and registers the service worker".
-- [ ] **W-6 Agregar un segundo navegador** · LISTO
-  - Pasos: en un navegador nuevo, entra y abre `/vincular`. Escribe un nombre y toca "Mostrar código". En el teléfono, ve a `/dispositivos` → "Añadir un dispositivo", escribe el código ("Buscar") o usa "Escanear anillo". Compara la huella y toca "Aprobar".
+- [ ] **W-6 Agregar un segundo navegador** (ADR 0032)
+  - Pasos: en un navegador nuevo, entra con tu cuenta de Chalyb y abre `/bandeja`.
   - Esperado:
-    - En el teléfono: "Al aprobar, te pediremos tu passkey.", y luego "Listo: {nombre} ya es de confianza."
-    - En el navegador nuevo: "Listo" con "Ir a la bandeja".
-    - Con "No es mío" no se firma nada.
-    - Si dejas pasar el tiempo: "El código venció. Muestra uno nuevo."
-  - Automático: `apps/web/e2e/live/endorse.spec.ts` (7 pruebas); `apps/web/test/endorse.test.ts`; `apps/api/test/endorse.test.ts` (R-L13); ensayo §3 "the phone approves with its passkey; the browser enrols…"; pgTAP `12_endorse_codes`, `16_endorsement_broadcast`.
+    - La bandeja abre sola: sin código, sin aprobar desde otro dispositivo.
+    - Tus otros dispositivos reciben el aviso de seguridad del navegador nuevo.
+    - Si el servidor lo rechaza, `/vincular` dice por qué y ofrece "Volver a intentar".
+    - Desde `/dispositivos` → "Añadir un dispositivo" aún se puede aprobar el código que muestra una app vieja.
+  - Automático: `apps/web/e2e/live/endorse.spec.ts`; `apps/web/test/sign-in-enrol.test.ts`; `apps/web/test/endorse.test.ts`; `apps/desktop/test/signin-flow.e2e.test.ts` (api real).
 - [ ] **W-7 Enlace de aviso `/n/<id>`** · PARCIAL (el aviso lo crea el operador o una aprobación)
   - Pasos: abre el enlace de un aviso, primero con sesión iniciada y luego sin sesión.
   - Esperado:
@@ -421,7 +421,7 @@ Usa la beta del borrador de release (o el artefacto de un dry run de `release.ym
   - Automático: `apps/desktop/test/release.test.ts` "refuses a build whose CSP doesn't allow its api"; `release-workflow.test.ts` "CHALITO_API_BASE is set once…".
 - [ ] **I-5 Actualizaciones** · BLOQUEADO hasta la llave del updater y `releases.tf`
   - Pasos: instala la versión N, publica N+1 en el mismo canal, abre Ajustes → Actualizaciones.
-  - Esperado: encuentra N+1 en `https://api.chalito.chalyb.com/releases/<canal>/latest.json`, la descarga y reinicia.
+  - Esperado: encuentra N+1 en `https://api.chalito.chalyb.com/releases/<canal>/latest-v2.json`, la descarga y reinicia. Una versión anterior a 0.1.0-beta.13 pide `latest.json`, congelado en 0.1.0-beta.13: se actualiza a esa y, desde ahí, sigue por `latest-v2.json`.
 - [ ] **I-6 Página de descarga** · LISTO
   - Esperado: `/descargar` detecta tu sistema y muestra un botón principal con los otros abajo, y las sumas SHA-256. Sin release publicada dice "Muy pronto", nunca texto roto.
 
@@ -857,7 +857,7 @@ Use the beta from the draft release (or a `release.yml` dry-run artifact). Note 
   - Automated: `apps/desktop/test/release.test.ts` "refuses a build whose CSP doesn't allow its api"; `release-workflow.test.ts` "CHALITO_API_BASE is set once…".
 - [ ] **I-5 Updates** · BLOCKED until the updater key and `releases.tf`
   - Steps: install version N, publish N+1 on the same channel, open Ajustes → Actualizaciones.
-  - Expected: it finds N+1 at `https://api.chalito.chalyb.com/releases/<channel>/latest.json`, downloads it and restarts.
+  - Expected: it finds N+1 at `https://api.chalito.chalyb.com/releases/<channel>/latest-v2.json`, downloads it and restarts. A version older than 0.1.0-beta.13 asks for `latest.json`, frozen at 0.1.0-beta.13: it updates to that one, then continues through `latest-v2.json`.
 - [ ] **I-6 Download page** · READY
   - Expected: `/descargar` detects your OS and shows one main button with the others below, plus the SHA-256 sums. With no published release it says "Muy pronto", never broken text.
 

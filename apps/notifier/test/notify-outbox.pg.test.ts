@@ -170,6 +170,54 @@ if (!url) {
       expect(r.every((x) => x.status === "pending")).toBe(true);
     });
 
+    it("stuck/stall alerts, the session ack on a new prompt and the app's calm actions parse as notifier messages (from Alux, by Omar)", async () => {
+      const { u, dev } = await user("nb-calm");
+      const turn = 1_761_400_000_000;
+      await admin`insert into chalito.session_events (owner, sid, eid, device_id, seq, t, type, doc) values
+        (${u}, 'sa', 'al1', ${dev}, 1, now(), 'agent.alert', ${admin.json({ kind: "stalled", turn })}),
+        (${u}, 'sa', 'al2', ${dev}, 2, now(), 'agent.alert', ${admin.json({ kind: "stuck", turn, count: 5 })}),
+        (${u}, 'sa', 'p1', ${dev}, 3, now(), 'message.user', '{}')`;
+      await approval(u, dev, "apr_calm", "MED");
+      const client = `dv_${randomUUID().slice(0, 8)}`;
+      const authUser = randomUUID();
+      await admin`insert into chalito.devices (owner, device_id, role, kind, platform, name, pub_sign, pub_box, fingerprint, enrolled_via, auth_user_id)
+                  values (${u}, ${client}, 'client', 'phone', 'ios', 'Phone', 'p', 'p', 'f', 'first_client', ${authUser})`;
+      await admin.begin(async (tx) => {
+        const claims = {
+          role: "authenticated",
+          sub: authUser,
+          app_metadata: { chalito: { owner: u, device_id: client, role: "client" } },
+        };
+        await tx`select set_config('request.jwt.claims', ${JSON.stringify(claims)}, true)`;
+        await tx`set local role authenticated`;
+        await tx`select chalito.notification_action('seen', 'sa')`;
+        await tx`select chalito.notification_action('waiting', 'sa')`;
+        await tx`select chalito.notification_action('snooze', null, ${`al_sa_${turn}`})`;
+      });
+      const msgs = (await rows(u)).map((x) => NotifierMessage.parse(x.message));
+      const items = msgs.flatMap((m) => (m.type === "notify" && m.item.source === "agent_alert" ? [m.item] : []));
+      expect(items.map((i) => [i.level, i.coalesceKey, i.nid, i.sid])).toEqual([
+        ["L1", `alert:sa:${turn}`, `al_sa_${turn}`, "sa"],
+        ["L2", `alert:sa:${turn}`, `al_sa_${turn}`, "sa"],
+      ]);
+      expect(msgs).toContainEqual({
+        v: 1,
+        type: "ack",
+        uid: u,
+        via: "app",
+        sid: "sa",
+        sources: ["agent_alert", "session_question"],
+      });
+      expect(msgs.find((m) => m.type === "notify" && m.item.source === "approval")).toMatchObject({
+        item: { sid: "s1" },
+      });
+      expect(msgs.filter((m) => ["seen", "waiting", "snooze_alert"].includes(m.type))).toEqual([
+        { v: 1, type: "seen", uid: u, sid: "sa" },
+        { v: 1, type: "waiting", uid: u, sid: "sa", on: true },
+        { v: 1, type: "snooze_alert", uid: u, nid: `al_sa_${turn}` },
+      ]);
+    });
+
     it("a room message nudges each other member once; presence doesn't", async () => {
       const mom = await user("nb-mom");
       const kid = await user("nb-kid");

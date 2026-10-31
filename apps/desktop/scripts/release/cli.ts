@@ -7,8 +7,8 @@
  *   sidecar  --os <os> --agent-dist <dir>   puts the agent binaries in src-tauri/binaries (lipo on macOS)
  *   collect  --os <os> --bundle <dir> --out <dir> --label <l> --pubkey-file <f>
  *            verifies updater signatures, copies labelled artifacts, writes <out>/artifacts-<os>.json
- *   manifest --channel <c> --version <v> --in <dir> --out <file>
- *            merges artifacts-*.json into latest.json
+ *   manifest --channel <c> --version <v> --in <dir> --out-dir <dir>
+ *            merges artifacts-*.json into latest-v2.json (and latest.json for the bridge release only)
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -23,7 +23,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { BuiltArtifact, DownloadOs } from "@chalito/releases";
+import { manifestFiles, type BuiltArtifact, type DownloadOs } from "@chalito/releases";
 import { collectArtifacts, mergeManifest, type FoundFile } from "./collect.js";
 import { releasePlan, type Os, type Plan } from "./plan.js";
 import { sidecarPlan } from "./sidecar.js";
@@ -128,8 +128,10 @@ switch (cmd) {
       pubDate: new Date(),
       parts,
     });
-    writeFileSync(arg("out"), `${JSON.stringify(m, null, 2)}\n`);
-    console.log(`latest.json: ${Object.keys(m.platforms).join(", ")}`);
+    for (const f of manifestFiles(m.version)) {
+      writeFileSync(join(arg("out-dir"), f), `${JSON.stringify(m, null, 2)}\n`);
+      console.log(`${f}: ${Object.keys(m.platforms).join(", ")}`);
+    }
     break;
   }
   default:

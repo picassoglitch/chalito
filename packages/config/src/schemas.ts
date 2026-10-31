@@ -264,6 +264,9 @@ export const EscalationConfig = z.object({
   approvalTtlMs: z.number().int().positive(),
   snoozeMs: z.number().int().positive(),
   mesaRecallLeadMs: z.number().int().nonnegative(),
+  renudgeMs: z.number().int().positive(),
+  renudgeRetryMs: z.number().int().positive(),
+  alertSnoozeMs: z.number().int().positive(),
   sms: z.object({ defaultOffCountries: z.array(z.string().regex(/^[A-Z]{2}$/)) }),
   voices: z.object({ es: z.string().min(1), en: z.string().min(1) }),
   whatsapp: z.object({
@@ -312,6 +315,14 @@ export const SessionsConfig = z.object({
     batchMs: z.number().int().min(0).max(2000),
     batchMax: z.number().int().min(1).max(64),
   }),
+  /** Stuck and stall alerts (from Alux, by Omar). */
+  alerts: z.object({
+    /** A running turn with no output this long is stalled. */
+    stallTimeout: IsoTimeDuration,
+    /** This many failures of one command among the last `stuckWindow` shell commands is stuck (as in Alux). */
+    stuckFailures: z.number().int().min(2).max(50),
+    stuckWindow: z.number().int().min(2).max(100),
+  }),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -324,4 +335,5 @@ export const SESSIONS_DEFAULTS: SessionsConfig = {
   session: { idleTimeout: 30 * 60 * 1000, maxLivePerDevice: 6 },
   live: { deltaFlushMs: 150, deltaFlushChars: 512 },
   events: { batchMs: 250, batchMax: 32 },
+  alerts: { stallTimeout: 20 * 60 * 1000, stuckFailures: 5, stuckWindow: 12 },
 };

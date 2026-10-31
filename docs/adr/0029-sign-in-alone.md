@@ -1,6 +1,6 @@
 # ADR 0029: Sign-in alone approves a device
 
-Status: accepted (owner decision 2026-10-19)
+Status: accepted (owner decision 2026-10-19); extended by [ADR 0032](0032-sign-in-approves-everywhere.md)
 
 ## Context
 
@@ -32,7 +32,8 @@ account's devices and computers. Until now ADR 0006 held that nothing the cloud 
   local IPC, claims the code with the short code the agent gave it (the api counts it as typed),
   and answers the reverse check only when the approver the agent reports is the panel's own key.
   Any other approver still needs the person's "Sí, fui yo".
-- The endorsement (`/v1/devices/endorsed`) stays as the fallback for an api without the route.
+- The endorsement (`/v1/devices/endorsed`) stays as the fallback for an api without the route
+  (removed from the desktop by ADR 0032; it remains only for a trusted device approving an older app).
 
 ## Consequences
 
@@ -41,4 +42,5 @@ account's devices and computers. Until now ADR 0006 held that nothing the cloud 
   person's signal.
 - The OS password prompt before pairing (`os-auth.ts`) is unchanged: on Linux, pkexec can fail with
   no polkit agent for a process started without a terminal, which shows as "Couldn't verify it's
-  you on this computer". Removing or fixing it is a separate decision.
+  you on this computer". Removing or fixing it is a separate decision (ADR 0032 removed it for the
+  pairing the desktop app starts).

@@ -17,7 +17,8 @@ import { loopbackOrigins, startPairingLoopback } from "./pairing-loopback.js";
  *
  * The local reverse check stays local: the trusted list is written only after the person clicks
  * "Sí, fui yo" in the panel (confirmPairing match: true), and replacing an account still needs the
- * typed phrase. OS authentication runs first, as in the CLI (the system prompt on macOS and Linux).
+ * typed phrase. No OS password prompt here (ADR 0032): the panel's sign-in is the approval; the
+ * CLI's `chalito pair` still asks for it.
  *
  * While a code waits, the loopback endpoint (pairing-loopback.ts) lets the approval page in this
  * computer's browser prove it is here (one tap, ADR 0028 §4); anything else types the code.

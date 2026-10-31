@@ -216,15 +216,17 @@ describe("chalito CLI", () => {
     input.end(`${"ab".repeat(16)}\n`);
     let host: { dir: string; secret: string; osOk: boolean } | null = null;
     let daemon = false;
+    const ran: string[] = [];
     const io = {
       out: () => undefined,
       err: () => undefined,
       tty: { input, output: new PassThrough() },
       env: { CHALITO_IPC: "stdin" },
       home: c.home,
-      platform: "win32" as const,
+      // ADR 0032 — Linux too: no pkexec prompt before the panel's pairing.
+      platform: "linux" as const,
       secrets: c.secrets,
-      runner: { run: async () => ({ code: 0, stdout: "", stderr: "" }) },
+      runner: { run: async (cmd: string) => (ran.push(cmd), { code: 1, stdout: "", stderr: "" }) },
       fetch: async () => ({ ok: true, status: 200, json: async () => ({}) }),
       now: Date.now,
       execPath: "/x",
@@ -241,6 +243,7 @@ describe("chalito CLI", () => {
     expect(await main(["run"], io as never)).toBe(0);
     expect(daemon).toBe(false);
     expect(host).toMatchObject({ secret: "ab".repeat(16), osOk: true });
+    expect(ran).toEqual([]);
   });
 
   describe("run, started by the desktop app: stops when the app is gone", () => {

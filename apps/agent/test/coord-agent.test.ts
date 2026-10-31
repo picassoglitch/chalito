@@ -87,8 +87,9 @@ const harness = async (turns: FakeStep[][], policyOver: Partial<Policy> = {}) =>
     locale: () => "es",
     now: Date.now,
     log: createLogger(() => undefined),
-    setTimer: (fn) => {
-      timers.push(fn);
+    // The approval timeouts (10 min) are what these tests fire; the 20-min stall watch isn't driven here.
+    setTimer: (fn, ms) => {
+      if (ms <= 10 * 60_000) timers.push(fn);
       return { clear: () => undefined };
     },
   });

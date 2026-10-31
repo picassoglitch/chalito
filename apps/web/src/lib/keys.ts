@@ -13,7 +13,7 @@ import type { GlyphPayload, IntroducedAgent } from "@chalito/protocol";
 import { unwrapKeyring } from "@chalito/rooms";
 
 export interface DeviceKeys {
-  keys: ClientKeys & Pick<DeviceClientKeys, "sign" | "deviceId" | "trustedAgents">;
+  keys: ClientKeys & Pick<DeviceClientKeys, "sign" | "deviceId" | "trustedAgents" | "trustIntroducedAgents">;
   /** WebAuthn step-up for HIGH and CRITICAL decisions (assertion bound to the decision, D-019). */
   stepUp: StepUpProvider;
   /** Opens this device's sealed copies of a room key (epoch → key); the secret key never leaves here. */
@@ -50,7 +50,7 @@ export const savePasskeyRef = (ref: { credentialId: string; rpId: string }): voi
   window.localStorage.setItem(PASSKEY_REF_KEY, JSON.stringify({ credentialId: ref.credentialId, rpId: ref.rpId }));
 
 /**
- * Set once a trusted device endorsed this browser's current identity (/v1/devices/endorsed): it
+ * Set once this browser's current identity is enrolled (by sign-in, ADR 0032, or an endorsement): it
  * is a client of the account even before it pairs with a computer. Public identifiers only.
  */
 export const ENDORSED_KEY = "chalito.endorsed.v1";
@@ -107,7 +107,7 @@ export const enrollPasskey = async (
 /**
  * This browser's device keys from packages/client-keys: libsodium secrets in IndexedDB, wrapped
  * by a non-extractable WebCrypto key. Null until this browser is enrolled and paired with at least
- * one computer, or endorsed by a trusted device. Never a stub here: the dev/test stub lives in src/dev. The step-up reads the passkey
+ * one computer, or enrolled by sign-in. Never a stub here: the dev/test stub lives in src/dev. The step-up reads the passkey
  * reference when a decision is made, so enrolling mid-session works; without a passkey it yields
  * null and the UI asks to enrol instead of sending an unbound allow.
  */

@@ -6,9 +6,9 @@
   "kinds": {
     "nsis": "Installer (.exe)",
     "dmg": "Disk image (.dmg, Apple silicon and Intel)",
-    "appimage": "AppImage (any distribution)",
-    "deb": ".deb package (Debian, Ubuntu)",
-    "rpm": ".rpm package (Fedora, openSUSE)"
+    "appimage": "AppImage (Ubuntu 24.04, Debian 13, Fedora 40 or newer)",
+    "deb": ".deb package (Ubuntu 24.04, Debian 13 or newer)",
+    "rpm": ".rpm package (Fedora 40 or newer, openSUSE Tumbleweed)"
   },
   "version": "Version {version}",
   "size": "{mb} MB",
