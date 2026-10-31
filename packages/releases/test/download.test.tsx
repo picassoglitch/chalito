@@ -99,7 +99,7 @@ describe("/descargar panel", () => {
   it("fetchManifest reads the api's signed manifest and rejects junk", async () => {
     const ok = vi.fn(async () => new Response(JSON.stringify(M)));
     expect(await fetchManifest("https://api.example/", "stable", ok as unknown as typeof fetch)).toEqual(M);
-    expect(ok).toHaveBeenCalledWith("https://api.example/releases/stable/latest.json", { credentials: "omit" });
+    expect(ok).toHaveBeenCalledWith("https://api.example/releases/stable/latest-v2.json", { credentials: "omit" });
     const junk = vi.fn(async () => new Response(JSON.stringify({ nope: 1 })));
     expect(await fetchManifest("https://api.example", "stable", junk as unknown as typeof fetch)).toBeNull();
     const missing = vi.fn(async () => new Response("", { status: 404 }));

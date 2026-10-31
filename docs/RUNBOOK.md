@@ -157,10 +157,19 @@ The screens are part of the hub, so this rolls back the whole hub (Chalyb's Verc
 
 The updater only moves forward (`docs/THREAT_MODEL.md`). To pull a bad release:
 1. Unpublish the GitHub draft or release.
-2. Re-point `latest.json` in the private bucket to the previous version, signed with the updater key.
+2. Re-point `latest-v2.json` in the private bucket to the previous version, signed with the updater key. Leave `latest.json` alone: it stays frozen at the bridge release (0.1.0-beta.13).
 3. Raise the minimum supported version in the api once a fixed release exists.
 
-The signed-updater release pipeline is M14 and is **not yet built** (`apps/desktop` has no updater config yet).
+If the bridge release itself is bad (it won't start, or it refuses updates it should take):
+1. Installs that already run the bridge read `latest-v2.json`. If the bridge refuses updates, or doesn't start, no upload reaches them: they reinstall from `/descargar`. Bridge users on glibc older than 2.39 stay on the bridge: after the 24.04 move `/descargar` has only 24.04 builds.
+2. Installs older than the bridge read only `latest.json`. To move them to a fixed bridge, build the fix as the next beta for 22.04. For that tag:
+   - set the Linux `runner:` in `.github/workflows/release.yml` back to `ubuntu-22.04`;
+   - drop the `.deb` `libc6 (>= 2.39)` floor from `apps/desktop/src-tauri/tauri.conf.json`, and relax the 24.04 runner assertion in `apps/desktop/test/release-workflow.test.ts`;
+   - raise `LEGACY_BRIDGE_VERSION` in `packages/releases/src/manifest.ts` to that version.
+
+   The workflow refuses a bridge built on another runner or with the floor.
+3. Update what names the old bridge: the tests in `apps/api/test/releases.test.ts` that treat that version as a later release, the bridge version in this section, OPS §6, GO_LIVE 9.5, QA_PLAN and ADR 0014.
+4. Upload its `latest.json` to `…/beta/latest.json` once, as for the first bridge (OPS §6), and its `latest-v2.json` as usual.
 
 ---
 

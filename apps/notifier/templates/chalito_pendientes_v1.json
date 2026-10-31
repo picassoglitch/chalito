@@ -42,7 +42,8 @@
         "trial": "prueba",
         "devmode": "modo desarrollador",
         "security": "seguridad",
-        "reminder": "recordatorios"
+        "reminder": "recordatorios",
+        "agent_alert": "agentes atorados"
       },
       "en": {
         "approval": "approvals",
@@ -55,7 +56,8 @@
         "trial": "trial",
         "devmode": "developer mode",
         "security": "security",
-        "reminder": "reminders"
+        "reminder": "reminders",
+        "agent_alert": "stuck agents"
       }
     },
     "urgency": {

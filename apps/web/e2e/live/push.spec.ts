@@ -64,9 +64,15 @@ test("a blocked prompt says how to undo it and stores nothing", async ({ page })
 
 test("an unpaired browser is told to link first", async ({ page }) => {
   await stubPush(page, "granted");
-  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
+  // ADR 0032 — signing in approves a browser; only a refused sign-in leaves it unpaired.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("chalito.dev.paired", "0");
+    window.localStorage.setItem("chalito.dev.signin", "fail");
+  });
   await page.goto("/ajustes");
-  await expect(page.getByTestId("push-optin")).toContainText("Vincula este navegador para recibir avisos en él.");
+  await expect(page.getByTestId("push-optin")).toContainText(
+    "Entra con tu cuenta de Chalyb en este navegador para recibir avisos en él.",
+  );
   await expect(page.getByRole("button", { name: "Activar avisos en este dispositivo" })).toHaveCount(0);
 });
 

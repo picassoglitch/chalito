@@ -36,7 +36,9 @@ export type { PairingDisplay, ScanResult, ClaimRequest } from "./pairing.js";
 export { deviceLogin } from "./device-login.js";
 export {
   EndorseError,
+  SIGN_IN_INTRODUCER,
   accountAgents,
+  newAccountAgents,
   approveEndorsement,
   endorseGlyph,
   introducedAgents,

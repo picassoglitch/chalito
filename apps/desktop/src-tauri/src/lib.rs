@@ -120,6 +120,21 @@ async fn idle_ms(state: State<'_, SharedState>) -> Result<u64, String> {
     Ok(idle_os::combine(poll, os))
 }
 
+/// This system's glibc version ("2.39"), or None off glibc. The updater refuses a build that needs a newer one.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[tauri::command]
+fn libc_version() -> Option<String> {
+    // SAFETY: gnu_get_libc_version returns a static NUL-terminated string.
+    let v = unsafe { std::ffi::CStr::from_ptr(libc::gnu_get_libc_version()) };
+    v.to_str().ok().map(str::to_owned)
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+#[tauri::command]
+fn libc_version() -> Option<String> {
+    None
+}
+
 /// The bundled agent's state (agent.rs), for the panel.
 #[tauri::command]
 fn agent_status(sup: State<'_, Supervisor>) -> agent::Status {
@@ -877,6 +892,7 @@ pub fn run() {
         focus_pet,
         touch_activity,
         idle_ms,
+        libc_version,
         agent_status,
         agent_ipc,
         cli_status,
@@ -904,6 +920,7 @@ pub fn run() {
         focus_pet,
         touch_activity,
         idle_ms,
+        libc_version,
         agent_status,
         agent_ipc,
         cli_status,
@@ -1019,6 +1036,13 @@ fn has_updater(plugins: &std::collections::HashMap<String, serde_json::Value>) -
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn libc_version_reads_glibc() {
+        let v = super::libc_version().expect("glibc");
+        assert_eq!(v.split('.').next().and_then(|m| m.parse::<u32>().ok()), Some(2), "{v}");
+    }
+
     #[test]
     fn updater_only_with_a_public_key() {
         use std::collections::HashMap;

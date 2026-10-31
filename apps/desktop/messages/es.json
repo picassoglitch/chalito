@@ -387,12 +387,14 @@
     "intro": "Inicia sesión con tu cuenta de Chalyb para ver tus pendientes aquí.",
     "start": "Iniciar sesión",
     "notConfigured": "Esta compilación no tiene configurado el inicio de sesión.",
+    "starting": "Preparando el inicio de sesión…",
+    "restoring": "Reconectando esta computadora con tu cuenta…",
+    "setupFailed": "El inicio de sesión no pudo arrancar en esta computadora: {detail}. Cierra Chalito y ábrelo de nuevo; si sigue pasando, envíanos este mensaje.",
     "browser": "Termina de iniciar sesión en tu navegador. Volverás aquí automáticamente.",
     "reopen": "Abrir de nuevo",
     "cancel": "Cancelar",
     "exchanging": "Verificando…",
-    "endorsing": "Abre Chalito en un dispositivo de confianza (tu teléfono) y aprueba este equipo con este código.",
-    "ready": "Listo: este equipo ya es de confianza.",
+    "ready": "Listo: este equipo quedó aprobado al iniciar sesión.",
     "noPasskey": "Este equipo no tiene llave de acceso: las acciones de riesgo ALTO o CRÍTICO se aprueban desde tu teléfono.",
     "retry": "Intentar de nuevo",
     "errors": {
@@ -402,10 +404,6 @@
       "token_replayed": "Ese enlace ya se usó. Inicia sesión de nuevo.",
       "bad_response": "Respuesta inesperada del servidor.",
       "verify_failed": "No se pudo abrir tu sesión.",
-      "channel_unavailable": "Aún no se puede aprobar este equipo desde otro dispositivo.",
-      "cancelled": "Cancelado.",
-      "endorsement_mismatch": "La aprobación no corresponde a este equipo.",
-      "endorser_not_trusted": "El dispositivo que aprobó no es de confianza.",
       "device_exists": "Este equipo ya está registrado.",
       "rejected": "El servidor rechazó el registro.",
       "failed": "Algo falló. Vuelve a intentarlo.",
@@ -414,9 +412,9 @@
       "wrong_target": "Enlace no válido.",
       "no_pending": "Ese enlace no corresponde a un inicio de sesión abierto en esta ventana. Vuelve a intentarlo desde aquí.",
       "state_mismatch": "Enlace no válido.",
-      "duplicate_param": "Enlace no válido."
+      "duplicate_param": "Enlace no válido.",
+      "unsupported": "El servidor de Chalito aún no permite aprobar este equipo al iniciar sesión. Vuelve a intentarlo en un momento."
     },
-    "glyph": "Código para escanear con tu teléfono",
     "petHint": "Para volver a abrir este panel, toca a tu compañero en la pantalla.",
     "staleLink": "Ese enlace era de un intento anterior. Termina en la pestaña más reciente del navegador o vuelve a abrirla.",
     "enrolling": "Entrando con este equipo…"
@@ -433,6 +431,8 @@
     "ready": "La versión {version} está lista. Reinicia Chalito para usarla.",
     "relaunch": "Reiniciar ahora",
     "unavailable": "Esta compilación no se actualiza sola.",
+    "libcUnknown": "No se pudo comprobar qué Linux tiene este equipo (su versión de glibc), así que la versión {version} no se instala: podría no arrancar. Chalito sigue funcionando como está.",
+    "tooOld": "La versión {version} necesita un Linux más nuevo (glibc {needs} o posterior, como Ubuntu 24.04, Debian 13 o Fedora 40). Chalito sigue funcionando como está.",
     "error": "No se pudo actualizar. Inténtalo más tarde."
   },
   "rooms": {
@@ -751,6 +751,11 @@
     "commentsOne": "1 comentario nuevo",
     "retry": "Reintentar"
   },
+  "popup": {
+    "title": "Chalito necesita tu aprobación",
+    "all": "Ver las {count} en la bandeja",
+    "later": "Más tarde"
+  },
   "offlineVoice": {
     "hold": "Mantén presionado para dar un comando (sin internet)",
     "listening": "Te escucho… suelta o deja de hablar para terminar.",
@@ -929,5 +934,17 @@
       "optIn": "Después de cada reunión, leer las notas de Granola y proponerme los pendientes",
       "soon": "Próximamente: después de cada reunión, Chalito leerá tus notas de Granola y te propondrá los pendientes."
     }
+  },
+  "alerts": {
+    "stuck": "Parece atorado: `{cmd}` falló {count} veces",
+    "stuckPlain": "Parece atorado: un comando sigue fallando",
+    "stalled": "Parece detenido: lleva un rato sin mostrar nada",
+    "snooze": "Posponer 30 min",
+    "waiting": "Esperando a alguien",
+    "waitingTitle": "Esperando a alguien",
+    "waitingHint": "No te avisa de nuevo hasta que la sesión cambie.",
+    "notWaiting": "Ya no",
+    "open": "Abrir sesión",
+    "unavailable": "Esto necesita una versión más nueva. Actualiza o reinicia Chalito."
   }
 }

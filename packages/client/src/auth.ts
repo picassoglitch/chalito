@@ -1,9 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 import { CoordRulesClient } from "./coord-rules.js";
+import { AlertActions } from "./alerts.js";
 import { ClientActions, type ClientActionsOptions } from "./actions.js";
 import type { ClientKeys } from "./keys.js";
 import { LiveStore, type LiveStoreOptions } from "./live.js";
-import type { SupaClient } from "./supa.js";
+import type { SupaClient, SupaResult } from "./supa.js";
 
 // ---------------------------------------------------------------- storage
 
@@ -92,6 +93,7 @@ export type BrowserSupabase = SupaClient & {
   auth: BrowserAuth;
   realtime: { setAuth(token?: string | null): unknown | Promise<unknown> };
   removeAllChannels(): Promise<unknown>;
+  rpc(fn: string, args: Record<string, string>): PromiseLike<SupaResult>;
 };
 
 /**
@@ -251,6 +253,8 @@ export interface ChalitoClient {
   actions: ClientActions;
   /** "Siempre así": the owner's remembered answers to coordinator helpers (ADR 0025 §6). */
   coordRules: CoordRulesClient;
+  /** Seen / waiting / snooze for alerts (from Alux, by Omar). */
+  alerts: AlertActions;
   close(): Promise<void>;
 }
 
@@ -276,6 +280,7 @@ export const connect = async (o: ConnectOptions): Promise<ChalitoClient> => {
     live,
     actions,
     coordRules,
+    alerts: new AlertActions(sb, o.actions?.retry),
     close: async () => {
       sub.unsubscribe();
       await live.stop();

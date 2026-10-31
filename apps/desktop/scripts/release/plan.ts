@@ -7,6 +7,8 @@
  * build is LABELLED unsigned (file names, manifest, draft notes). Never half-signed: a macOS
  * certificate without notarization keys is an error, not a quietly broken DMG.
  */
+import { UPDATER_MANIFEST } from "@chalito/releases";
+
 export type Os = "linux" | "windows" | "macos";
 export type Env = Record<string, string | undefined>;
 
@@ -166,7 +168,7 @@ export const releasePlan = (i: PlanInput): Plan => {
     plugins: {
       updater: {
         pubkey: i.updaterPubkey.trim(),
-        endpoints: [`${i.apiBase.replace(/\/+$/, "")}/releases/${i.channel}/latest.json`],
+        endpoints: [`${i.apiBase.replace(/\/+$/, "")}/releases/${i.channel}/${UPDATER_MANIFEST}`],
         windows: { installMode: "passive" },
       },
     },

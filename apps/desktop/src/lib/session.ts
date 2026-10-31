@@ -5,11 +5,9 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   connect,
   createBrowserSupabase,
-  endorsementChannel,
   ensureSession,
   indexedDbStorage,
   must,
-  supabaseEndorseWatch,
   type ChalitoClient,
   type StepUpProvider,
 } from "@chalito/client";
@@ -17,11 +15,10 @@ import { SettingsStore, apiPhone, type SettingsDb } from "@chalito/client/settin
 import {
   DeviceClientKeys,
   KeyVault,
-  accountAgents,
+  newAccountAgents,
   deviceFingerprint,
   deviceLogin,
   keyFingerprint,
-  endorseGlyph,
   httpApi,
   passkeyStepUp,
   type DirectoryDevice,
@@ -119,24 +116,20 @@ export interface Connected {
 export const createSession = async (
   env: DesktopEnv,
   onConnected: (c: Connected) => void,
-): Promise<{ controller: SignInController; dispose: () => void }> => {
+  openVault: () => Promise<KeyVault> = () => KeyVault.open("chalito-desktop-keys"),
+): Promise<{
+  controller: SignInController;
+  dispose: () => void;
+  /** This computer has a saved sign-in, and `restored` is trying it. */
+  restoring: boolean;
+  /** Settles once this device's saved sign-in (if any) has connected (true) or given up (false). */
+  restored: Promise<boolean>;
+}> => {
   const storage = indexedDbStorage({ dbName: "chalito-desktop" });
   const sb = createBrowserSupabase(env.supabaseUrl, env.supabaseKey, storage);
-  const vault = await KeyVault.open("chalito-desktop-keys");
+  const vault = await openVault();
   const token = async () => (await sb.auth.getSession()).data.session?.access_token ?? null;
   const api = httpApi({ baseUrl: env.apiBase, token });
-  // /v1/endorse (fallback only, for an api without /v1/devices/signin): publish the registration,
-  // show the code and the glyph signed by this device's key, wait on chalito:pairing:<code> with
-  // the scoped watch token.
-  const channel = endorsementChannel({
-    api,
-    watch: supabaseEndorseWatch(env.supabaseUrl, env.supabaseKey),
-    glyphFor: async (code) => {
-      const k = await vault.load();
-      return k ? endorseGlyph(k, code, { label: "Chalito (desktop)", now: Date.now() }) : null;
-    },
-  });
-
   const directory = async (owner: string): Promise<DirectoryDevice[]> => {
     const rows = await must<{ device_id: string; role: string; revoked: boolean; pub_sign: string; pub_box: string }[]>(
       "devices directory",
@@ -173,7 +166,7 @@ export const createSession = async (
     // Sign-in alone: the account's computers, from the directory (new ones since last time too).
     // Best effort: an unreadable directory only means waiting for the next launch.
     await directory(owner)
-      .then(accountAgents)
+      .then((dir) => newAccountAgents(dir, keys.trustedAgents()))
       .then((agents) => keys.trustIntroducedAgents(agents, SIGN_IN_INTRODUCER, Date.now()))
       .catch(() => undefined);
     const ownFingerprint = await deviceFingerprint(stored);
@@ -220,12 +213,11 @@ export const createSession = async (
         }
       : {}),
     exchange: (t) => exchange(t, { apiBase: env.apiBase, fetch: (...a) => fetch(...a), auth: sb.auth }),
-    enroll: async (owner, onDisplay, signal) => {
+    enroll: async (owner) => {
       const r = await enrollDesktop({
         owner,
         name: "Chalito (desktop)",
         keys: vault,
-        channel,
         userApi: api,
         deviceApi: async (customToken) => {
           const k = await vault.load();
@@ -235,14 +227,11 @@ export const createSession = async (
         },
         signer: (k) => DeviceClientKeys.create(k, vault),
         platformAuthenticator: () => platformAuthenticatorAvailable(),
-        // ADR 0018: the computers the endorsing client trusts, where the directory agrees.
         introduce: {
           directory: () => directory(owner),
           trust: async (k, agents, endorsedBy) =>
             (await DeviceClientKeys.create(k, vault)).trustIntroducedAgents(agents, endorsedBy, Date.now()),
         },
-        onDisplay,
-        signal,
       });
       if (r.ok) {
         saveStored({ owner, passkey: r.credential });
@@ -262,9 +251,19 @@ export const createSession = async (
     if (import.meta.env.DEV) unlisten.push(await listen<string>("chalito://sso-callback", (e) => handle([e.payload])));
   }
 
-  // Already enrolled: sign in as this device straight away.
+  // Already enrolled: sign in as this device in the background. Awaiting it kept the panel without a
+  // controller ("isn't configured") while it ran, or for good when the saved keys failed to load.
   const stored = loadStored();
-  if (stored && (await vault.load())) await connectAs(stored.owner, stored.passkey).catch(() => undefined);
+  const restored = stored
+    ? (async () => {
+        if (!(await vault.load())) return false;
+        await connectAs(stored.owner, stored.passkey);
+        return true;
+      })().catch((e: unknown) => {
+        console.warn("saved sign-in", e);
+        return false;
+      })
+    : Promise.resolve(false);
 
-  return { controller, dispose: () => unlisten.forEach((f) => f()) };
+  return { controller, dispose: () => unlisten.forEach((f) => f()), restoring: stored !== null, restored };
 };

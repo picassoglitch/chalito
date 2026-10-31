@@ -103,11 +103,16 @@ describe("sessions.yaml (M16 A)", () => {
   it("loads, with the idle timeout in milliseconds, and matches the compiled-in defaults", () => {
     const c = loadSessions();
     expect(c.session.idleTimeout).toBe(30 * 60 * 1000);
+    expect(c.alerts).toEqual({ stallTimeout: 20 * 60 * 1000, stuckFailures: 5, stuckWindow: 12 });
     expect(c).toEqual(SESSIONS_DEFAULTS);
   });
 
   it("refuses durations outside 1 minute to 24 hours and anything but a time duration", () => {
-    const base = { ...SESSIONS_DEFAULTS, session: { maxLivePerDevice: 6 } };
+    const base = {
+      ...SESSIONS_DEFAULTS,
+      session: { maxLivePerDevice: 6 },
+      alerts: { ...SESSIONS_DEFAULTS.alerts, stallTimeout: "PT20M" },
+    };
     const parse = (idleTimeout: string) =>
       SessionsConfig.safeParse({ ...base, session: { ...base.session, idleTimeout } }).success;
     expect(parse("PT1H30M")).toBe(true);

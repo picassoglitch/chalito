@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { clientWrites, dev, ready, rows } from "./helpers";
 
 type Sess = { access_token: string; role: string } | null;
+/** An older app (no sign-in approval) showing its endorsement code. */
 interface NewBrowser {
   codeId: string;
   shortCode: string;
@@ -18,59 +19,61 @@ const endorse = <T>(page: Page, fn: string, ...args: unknown[]) =>
     [fn, args] as const,
   ) as Promise<T>;
 
-test("Esperando aprobación: a new browser shows a code, a trusted device approves, and it signs in as itself", async ({
-  page,
-}) => {
+test("ADR 0032: signing in approves this browser by itself — no code, no trusted device", async ({ page }) => {
   await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
   await page.goto("/bandeja");
-  await expect(page.getByTestId("gate-unpaired")).toBeVisible();
-  await page.getByTestId("gate-link").click();
-  await expect(page).toHaveURL(/\/vincular$/);
-  await expect(page.getByTestId("endorse-name")).not.toHaveValue("");
-  await page.getByTestId("endorse-name").fill("Chrome del estudio");
-  await page.getByTestId("endorse-start-button").click();
-
-  await expect(page.getByRole("heading", { name: "Esperando aprobación" })).toBeVisible();
-  await expect(page.getByTestId("endorse-glyph")).toBeVisible();
-  const code = (await page.getByTestId("endorse-code").textContent())!;
-  expect(code).toMatch(/^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
-  // Published as the person (role user), with the registration this browser signed.
-  expect((await dev<Sess>(page, "session"))?.role).toBe("user");
-  const opened = (await clientWrites(page)).find((w) => w.op === "endorse/codes")!;
-  expect((opened.row.registration as { body: { name: string } }).body.name).toBe("Chrome del estudio");
-
-  // "Navegador del trabajo" approves it, introducing the computer it trusts (ADR 0018).
-  await endorse(page, "approveFromOther", code);
-  await expect(page.getByTestId("endorse-done")).toBeVisible();
-  await expect(page.getByTestId("endorse-introduced")).toContainText("Laptop de Aldo");
-  const agent = await dev<string>(page, "agent");
-  expect((await clientWrites(page)).find((w) => w.op === "trustIntroduced")?.row.agents).toEqual([agent]);
+  // Straight into the live inbox, as this browser's own device.
+  await expect(page.getByTestId("test-mode")).toBeVisible();
+  await expect(page.getByTestId("gate-unpaired")).toHaveCount(0);
+  await page.waitForFunction(() => !!(window as unknown as { __chalitoDev?: unknown }).__chalitoDev);
   await expect.poll(async () => (await dev<Sess>(page, "session"))?.role).toBe("client");
+
+  const writes = await clientWrites(page);
+  const signin = writes.filter((w) => w.op === "devices/signin");
+  expect(signin).toHaveLength(1);
+  const reg = (signin[0]!.row.registration as { body: { name: string; kind: string } }).body;
+  expect(reg).toMatchObject({ kind: "web", name: expect.stringMatching(/^Chrome (en|on) /) });
+  expect(writes.map((w) => w.op)).not.toContain("endorse/codes");
+  // The account's computer is trusted from the directory, introduced by the sign-in.
+  const agent = await dev<string>(page, "agent");
+  const trust = writes.find((w) => w.op === "trustIntroduced")!;
+  expect(trust.row).toMatchObject({ agents: [agent], endorsedBy: "sign_in" });
+
   const me = await dev<string>(page, "me");
   expect((await rows(page, "devices")).find((r) => r.device_id === me)).toMatchObject({
     role: "client",
-    name: "Chrome del estudio",
+    kind: "web",
     revoked: false,
   });
-  // Introduced: prompts reach the computer right away (sealed to its key).
-  const writes = (await clientWrites(page)).map((w) => w.op);
-  expect(writes).toEqual(expect.arrayContaining(["endorse/take", "devices/endorsed"]));
-
-  // The live screens open now, as this device.
-  await page.getByRole("link", { name: "Ir a la bandeja" }).click();
-  await expect(page.getByTestId("gate-unpaired")).toHaveCount(0);
-  await expect(page.getByTestId("test-mode")).toBeVisible();
 });
 
-test("Esperando aprobación: cancelling goes back to the start, still as the person", async ({ page }) => {
-  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
+test("/vincular when the sign-in can't approve: it says why, and Try again approves it", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("chalito.dev.paired", "0");
+    window.localStorage.setItem("chalito.dev.signin", "fail");
+  });
   await page.goto("/vincular");
-  await page.getByTestId("endorse-start-button").click();
-  await expect(page.getByTestId("endorse-code")).toBeVisible();
-  await page.getByRole("button", { name: "Cancelar" }).click();
-  await expect(page.getByTestId("endorse-start")).toBeVisible();
-  await expect(page.getByTestId("endorse-error")).toHaveCount(0);
+  await expect(page.getByTestId("endorse-error")).toHaveAttribute("data-reason", "rejected");
+  await page.waitForFunction(() => !!(window as unknown as { __chalitoDev?: unknown }).__chalitoDev);
+  // Never a code to show, nor a wait for another device.
+  await expect(page.getByTestId("endorse-code")).toHaveCount(0);
   expect((await dev<Sess>(page, "session"))?.role).toBe("user");
+
+  await page.evaluate(() => window.localStorage.removeItem("chalito.dev.signin"));
+  await page.getByTestId("endorse-retry").click();
+  await expect(page.getByTestId("endorse-done")).toBeVisible();
+  await expect.poll(async () => (await dev<Sess>(page, "session"))?.role).toBe("client");
+});
+
+test("an api without /v1/devices/signin: says so, and no endorsement code is opened", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("chalito.dev.paired", "0");
+    window.localStorage.setItem("chalito.dev.signin", "404");
+  });
+  await page.goto("/en/link");
+  await expect(page.getByTestId("endorse-error")).toHaveAttribute("data-reason", "unsupported");
+  await page.waitForFunction(() => !!(window as unknown as { __chalitoDev?: unknown }).__chalitoDev);
+  expect((await clientWrites(page)).map((w) => w.op)).not.toContain("endorse/codes");
 });
 
 test("Añadir un dispositivo: type the code, compare the fingerprint, approve with the passkey", async ({ page }) => {
@@ -142,21 +145,6 @@ test("EN paths: /en/devices/new, and /en/link on a trusted browser says it's alr
   await expect(page.getByRole("heading", { name: "Add a device" })).toBeVisible();
   await page.goto("/en/link");
   await expect(page.getByTestId("endorse-done")).toBeVisible();
-});
-
-test("ADR 0018: an introduced computer whose keys don't match the directory is dropped, with a way forward", async ({
-  page,
-}) => {
-  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
-  await page.goto("/vincular");
-  await page.getByTestId("endorse-start-button").click();
-  const code = (await page.getByTestId("endorse-code").textContent())!;
-  await endorse(page, "approveFromOther", code, "tampered");
-  await expect(page.getByTestId("endorse-done")).toBeVisible();
-  await expect(page.getByTestId("endorse-introduced")).toHaveCount(0);
-  await expect(page.getByTestId("endorse-dropped").locator("li")).toHaveAttribute("data-reason", "key_mismatch");
-  await expect(page.getByTestId("endorse-dropped")).toContainText("Emparéjala con su anillo");
-  expect((await clientWrites(page)).filter((w) => w.op === "trustIntroduced")).toEqual([]);
 });
 
 test("R-L13: a computer that refused an endorsement shows a security notice on /dispositivos", async ({ page }) => {

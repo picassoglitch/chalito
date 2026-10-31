@@ -13,7 +13,9 @@ import type { QueryFn, QueryLike } from "./adapter.js";
  * permission mode, then canUseTool for anything not decided (and always for
  * AskUserQuestion). Used by the adapter and agent tests.
  */
-export type FakeStep = { say: string } | { tool: string; input: Record<string, unknown> };
+/** `fail`: the tool ran but errored (a command exiting non-zero). `pause`: the turn goes quiet until it settles. */
+export type FakeStep =
+  { say: string } | { tool: string; input: Record<string, unknown>; fail?: boolean } | { pause: Promise<void> };
 
 export interface FakeRun {
   /** Tool calls that actually "ran". */
@@ -62,6 +64,10 @@ export const fakeClaudeCode = (
         aborter = new AbortController();
         for (const step of steps) {
           if (aborter.signal.aborted) break;
+          if ("pause" in step) {
+            await step.pause;
+            continue;
+          }
           if ("say" in step) {
             if (options.includePartialMessages) {
               // Two text deltas, then the complete message (as the CLI streams with partial messages on).
@@ -121,8 +127,13 @@ export const fakeClaudeCode = (
           if (decision === "deny") allowed = false;
           if (step.tool === "AskUserQuestion" || decision === undefined || decision === "ask") {
             if (decision !== "deny") {
+              // Like the SDK: a canUseTool that throws is answered as a deny.
               const res = canUseTool
-                ? await canUseTool(step.tool, input, { signal: aborter.signal, toolUseID: id, requestId: id } as never)
+                ? await canUseTool(step.tool, input, {
+                    signal: aborter.signal,
+                    toolUseID: id,
+                    requestId: id,
+                  } as never).catch((err: unknown) => ({ behavior: "deny" as const, message: String(err) }))
                 : { behavior: "deny" as const, message: "no canUseTool" };
               allowed = res?.behavior === "allow";
               if (res?.behavior === "allow" && res.updatedInput) input = res.updatedInput;
@@ -133,7 +144,7 @@ export const fakeClaudeCode = (
           else run.refused.push({ tool: step.tool, reason });
           yield {
             type: "user",
-            message: { content: [{ type: "tool_result", tool_use_id: id, is_error: !allowed }] },
+            message: { content: [{ type: "tool_result", tool_use_id: id, is_error: !allowed || step.fail === true }] },
           } as unknown as SDKMessage;
         }
         yield {

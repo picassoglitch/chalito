@@ -3,12 +3,16 @@ import { clientWrites, dev, ready } from "./helpers";
 
 type Sess = { access_token: string; role: string } | null;
 
-test("unpaired: the browser keeps the person's own session; live screens ask to pair, settings still work", async ({
+test("not approved (the sign-in was refused): keeps the person's own session; the gate retries, settings still work", async ({
   page,
 }) => {
-  await page.addInitScript(() => window.localStorage.setItem("chalito.dev.paired", "0"));
+  await page.addInitScript(() => {
+    window.localStorage.setItem("chalito.dev.paired", "0");
+    window.localStorage.setItem("chalito.dev.signin", "fail");
+  });
   await page.goto("/bandeja");
   await expect(page.getByTestId("gate-unpaired")).toBeVisible();
+  await expect(page.getByTestId("gate-link")).toHaveText("Volver a intentar");
   await page.waitForFunction(() => !!(window as unknown as { __chalitoDev?: unknown }).__chalitoDev);
   expect((await dev<Sess>(page, "session"))?.role).toBe("user");
   expect((await clientWrites(page)).filter((w) => w.op === "devices/token")).toEqual([]);
@@ -49,8 +53,9 @@ test("revoked while connected: the gate says so, offers re-pairing, and the brow
   await ready(page, "/bandeja");
   await dev(page, "revokeMe");
   await expect(page.getByTestId("gate-revoked")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Emparejar de nuevo" })).toHaveAttribute("href", "/vincular");
+  await expect(page.getByRole("link", { name: "Entrar de nuevo" })).toHaveAttribute("href", "/vincular");
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem("chalito.dev.paired"))).toBe("0");
+  expect((await clientWrites(page)).filter((w) => w.op === "devices/signin")).toEqual([]);
 });
 
 test("revoked at sign-in: the device login is refused (DeviceRevokedError) and the gate shows revoked", async ({
@@ -60,4 +65,8 @@ test("revoked at sign-in: the device login is refused (DeviceRevokedError) and t
   await page.goto("/bandeja");
   await expect(page.getByTestId("gate-revoked")).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem("chalito.dev.paired"))).toBe("0");
+  // ADR 0032 — the device login is refused before anything enrols, and the person's session is gone.
+  await page.waitForFunction(() => !!(window as unknown as { __chalitoDev?: unknown }).__chalitoDev);
+  expect((await clientWrites(page)).filter((w) => w.op === "devices/signin")).toEqual([]);
+  expect((await dev<{ role: string } | null>(page, "session"))?.role).not.toBe("user");
 });
