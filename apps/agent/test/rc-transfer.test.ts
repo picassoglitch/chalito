@@ -1,7 +1,7 @@
 // ADR 0031 §4: moving a session between two of the owner's computers. Two real agents relay through
 // a memory cloud over a real hand-off link; both workspaces are real clones of one bare origin.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ import { nodeGit, type GitRun } from "../src/coord/coordinator.js";
 import { createLogger } from "../src/redact.js";
 import { codeService } from "../src/code/service.js";
 import { ipcHandlers } from "../src/ipc-handlers.js";
-import { agentFor, device, waitFor } from "./rc-harness.js";
+import { agentFor, device, tempDir, waitFor } from "./rc-harness.js";
 import { SoftAuthenticator } from "@chalito/client-keys/testing";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -22,8 +22,8 @@ const ENV_KEYS = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "
 const saved: Record<string, string | undefined> = {};
 // Remotes are ssh://git@github.com/test/<name>.git: an ssh shim serves them from local bare repos and
 // logs each host contacted. The owner's "global" git config is a temp file.
-const GLOBAL = join(mkdtempSync(join(tmpdir(), "rc-gitconfig-")), "config");
-const SSH_ROOT = mkdtempSync(join(tmpdir(), "rc-ssh-"));
+const GLOBAL = join(tempDir("rc-gitconfig-"), "config");
+const SSH_ROOT = tempDir("rc-ssh-");
 const SSH_LOG = join(SSH_ROOT, "hosts.log");
 const SHIM = join(SSH_ROOT, "ssh-shim.sh");
 const SHIM_ENV = ["GIT_CONFIG_GLOBAL", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT"] as const;
@@ -50,7 +50,7 @@ afterAll(() => {
 });
 
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
-const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
+const tmp = tempDir;
 
 /** A bare origin with `main` and a pushed `feat/login`, cloned on A and on B. */
 const repos = () => {
@@ -267,7 +267,7 @@ describe("transfer (ADR 0031 §4)", () => {
     const p = await pair();
     const a = p.repo!.a;
     const sid = await p.session();
-    const marker = join(tmpdir(), `rc-filter-ran-${Date.now()}`);
+    const marker = join(SSH_ROOT, `rc-filter-ran-${Date.now()}`);
     // The owner's global filter, wired by the repo's .gitattributes: it must not run for a move.
     execFileSync("git", ["config", "--file", GLOBAL, "filter.mark.clean", `sh -c 'touch ${marker}; cat'`]);
     writeFileSync(join(a, ".gitattributes"), "*.txt filter=mark\n");
@@ -704,7 +704,7 @@ describe("transfer (ADR 0031 §4)", () => {
     });
 
     it("refuses known secret file names and secrets inside untracked text files (final check)", async () => {
-      const root = mkdtempSync(join(tmpdir(), "rc-risky-"));
+      const root = tmp("rc-risky-");
       const files: Record<string, string> = {
         "my-project-0123456789ab.json": "{}",
         "client_secret_123.apps.googleusercontent.com.json": "{}",
@@ -791,6 +791,14 @@ describe("transfer (ADR 0031 §4)", () => {
     it("git runs in the C locale, so its messages match", async () => {
       const r = await nodeGit()(tmpdir(), ["-c", "alias.e=!env", "e"]);
       expect(r.out).toMatch(/^LC_ALL=C$/m);
+    });
+
+    it("every nodeGit() points hooks at the same empty folder, so the runs leave one behind, not one each", async () => {
+      const hooks = async () => (await nodeGit()(tmpdir(), ["config", "--get", "core.hooksPath"])).out.trim();
+      const first = await hooks();
+      expect(first).not.toBe("");
+      expect(await hooks()).toBe(first);
+      expect(readdirSync(first)).toEqual([]);
     });
 
     it("finds the owner's per-host credential helper (gh auth setup-git form), proxy and CA", async () => {
