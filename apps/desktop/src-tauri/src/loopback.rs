@@ -5,8 +5,8 @@
 //! nonce it was started with, then closes. Release builds contain none of this: CI greps the
 //! release binary for `MARKER` (and the debug binary, to prove the grep works).
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
@@ -16,6 +16,7 @@ pub const MARKER: &str = "CHALITO_DEV_SSO_LOOPBACK";
 pub const EVENT: &str = "chalito://sso-callback";
 const WAIT: Duration = Duration::from_secs(10 * 60);
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const LINGER: Duration = Duration::from_secs(2);
 
 fn is_state(s: &str) -> bool {
     (22..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -51,9 +52,9 @@ pub fn callback_from_request_line(line: &str, state: &str) -> Result<String, &'s
 }
 
 /// The request line, after draining the headers (closing a socket with unread data resets
-/// the connection on Linux, and the browser would show an error instead of the page).
+/// the connection, and the browser would show an error instead of the page).
 fn read_request(stream: &TcpStream) -> std::io::Result<String> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut reader = BufReader::new(stream);
     let mut first = String::new();
     reader.read_line(&mut first)?;
     let mut header = String::new();
@@ -66,18 +67,46 @@ fn read_request(stream: &TcpStream) -> std::io::Result<String> {
     Ok(first)
 }
 
-fn respond(mut stream: TcpStream, ok: bool) {
+/// Writes the whole response, then FIN. The caller drains afterwards (see `drain`).
+fn respond(mut stream: &TcpStream, ok: bool) {
     let (status, text) = if ok {
         ("200 OK", "Listo. Vuelve a Chalito. / Done. Go back to Chalito.")
     } else {
         ("400 Bad Request", "Solicitud no válida. / Invalid request.")
     };
     let body = format!("<!doctype html><meta charset=utf-8><title>Chalito</title><p>{text}</p><!-- {MARKER} -->");
-    let _ = write!(
-        stream,
+    let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
         body.len()
     );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.shutdown(Shutdown::Write);
+}
+
+/// Reads until the client closes or LINGER passes; returns (bytes read, client closed). Dropping a socket
+/// with unread received data sends RST (os error 10054 on Windows) and the client can lose the response.
+fn drain(stream: TcpStream) -> (usize, bool) {
+    let deadline = Instant::now() + LINGER;
+    let mut sink = [0u8; 512];
+    let mut read = 0;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        // set_read_timeout(Some(ZERO)) is an error, so stop before it.
+        if left.is_zero() {
+            return (read, false);
+        }
+        // macOS refuses setsockopt once both directions are shut (our FIN, then the client's). The
+        // rest is buffered by then, so read it without blocking.
+        if stream.set_read_timeout(Some(left)).is_err() && stream.set_nonblocking(true).is_err() {
+            return (read, false);
+        }
+        match (&stream).read(&mut sink) {
+            Ok(0) => return (read, true),
+            Ok(n) => read += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return (read, false),
+        }
+    }
 }
 
 /// Starts the one-shot listener; returns its port. The webview builds the redirect URI.
@@ -95,19 +124,23 @@ pub fn sso_loopback(app: AppHandle, state: String) -> Result<u16, String> {
             match listener.accept() {
                 Ok((stream, peer)) => {
                     // Exactly one request, whatever it is: the listener is dropped after this.
-                    if !peer.ip().is_loopback() {
-                        return respond(stream, false);
-                    }
                     let _ = stream.set_nonblocking(false);
+                    if !peer.ip().is_loopback() {
+                        respond(&stream, false);
+                        drain(stream);
+                        return;
+                    }
                     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
                     let result = match read_request(&stream) {
                         Ok(line) => callback_from_request_line(&line, &state),
                         Err(_) => Err("read"),
                     };
-                    respond(stream, result.is_ok());
+                    respond(&stream, result.is_ok());
+                    // Emit before draining: the drain can take up to LINGER and login shouldn't wait.
                     if let Ok(url) = result {
                         let _ = app.emit_to("panel", EVENT, url);
                     }
+                    drain(stream);
                     return;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -161,17 +194,17 @@ mod tests {
         assert!(!is_state(&"a".repeat(129)));
     }
 
-    #[test]
-    fn serves_exactly_one_request_then_closes() {
-        // The same accept-once shape as sso_loopback, without a Tauri app.
+    /// One accept-once exchange, the same shape as sso_loopback without a Tauri app: its port and
+    /// the bytes the drain read. `extra` bytes follow the request, left unread by read_request.
+    fn one_exchange(extra: usize) -> (u16, usize) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let t = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let line = read_request(&stream).unwrap();
             let r = callback_from_request_line(&line, S);
-            respond(stream, r.is_ok());
-            r
+            respond(&stream, r.is_ok());
+            (r, drain(stream))
         });
         let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
         write!(
@@ -179,12 +212,60 @@ mod tests {
             "GET /auth/sso?token=x&state={S} HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: test\r\nAccept: */*\r\n\r\n"
         )
         .unwrap();
+        c.write_all(&vec![b'x'; extra]).unwrap();
         let mut resp = String::new();
-        std::io::Read::read_to_string(&mut c, &mut resp).unwrap();
+        c.read_to_string(&mut resp).unwrap();
+        drop(c);
         assert!(resp.starts_with("HTTP/1.1 200 OK"));
         assert!(resp.contains(MARKER));
-        assert!(t.join().unwrap().is_ok());
+        let (r, (drained, closed)) = t.join().unwrap();
+        assert!(r.is_ok());
+        // The client saw EOF from the half-close and closed; it didn't wait out LINGER.
+        assert!(closed);
+        (port, drained)
+    }
+
+    #[test]
+    fn serves_exactly_one_request_then_closes() {
+        // Many rounds: the reset on close hit about one CI run in three on Windows.
+        for _ in 0..200 {
+            one_exchange(0);
+        }
+        // More than BufReader's 8 KiB, so the drain must read what's left. On Linux the half-close
+        // alone avoids the reset; the drain is what Windows needs.
+        let (port, drained) = one_exchange(16 * 1024);
+        assert!(drained >= 8 * 1024, "{drained}");
         // The listener is gone: a second request can't connect.
         assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+
+    #[test]
+    fn the_drain_still_reads_to_eof_when_the_client_closed_first() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut c = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        c.write_all(&vec![b'x'; 16 * 1024]).unwrap();
+        respond(&stream, true);
+        let mut resp = String::new();
+        c.read_to_string(&mut resp).unwrap();
+        drop(c);
+        // Both directions are shut before the drain starts: the path macOS CI took.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(drain(stream), (16 * 1024, true));
+    }
+
+    #[test]
+    fn the_drain_gives_up_after_linger_on_a_client_that_never_closes() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut c = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        respond(&stream, true);
+        let started = Instant::now();
+        c.write_all(b"still here").unwrap();
+        let (drained, closed) = drain(stream);
+        let took = started.elapsed();
+        assert_eq!((drained, closed), (10, false));
+        assert!(took >= LINGER - Duration::from_millis(50) && took < LINGER * 5, "{took:?}");
+        drop(c);
     }
 }

@@ -161,7 +161,9 @@ const nonRead = fc.oneof(
   ),
 );
 
-describe("property: no unsigned origin ever gets allow for a non-read tool", () => {
+// 2,000 classifications per property, by design: ~0.4 s here, past vitest's 5 s default when CI
+// runs every package's tests at once.
+describe("property: no unsigned origin ever gets allow for a non-read tool", { timeout: 30_000 }, () => {
   it("whatever the permission mode or Developer mode", () => {
     fc.assert(
       fc.property(nonRead, origin, mode, devMode, ([tool, input], o, pm, dm) => {

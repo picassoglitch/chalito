@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type * as NodeFs from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 /** First Run C perf: 200 repos, classification reads a ready index (no folder walk, no per-repo stat). */
+// Counted in readdir/stat/lstat/read calls, not ms: a busy CI runner pushed a 0.1 ms call past 1 ms.
 
 const calls = { readdirSync: 0, statSync: 0, readFileSync: 0, lstatSync: 0 };
 let counting = false;
@@ -30,9 +31,16 @@ const { classifyToolCall, DEFAULT_POLICY } = await import("../src/policy/index.j
 const { clearRepoIndex, refreshRepoIndex } = await import("../src/policy/repo-index.js");
 const { hooksOptionsFor } = await import("../src/policy/classify.js");
 
-describe("classification with 200 repos in the workspace", () => {
-  it("stays under 1 ms per call after warm-up, without walking folders or statting each repo", async () => {
-    const home = realpathSync(mkdtempSync(join(tmpdir(), "chalito-bench-")));
+let home = "";
+afterEach(() => {
+  vi.useRealTimers();
+  if (home) rmSync(home, { recursive: true, force: true });
+});
+
+// 200 repos on disk and 3,000 classifications, by design: seconds on a loaded runner.
+describe("classification with 200 repos in the workspace", { timeout: 30_000 }, () => {
+  it("makes no readdir, stat or read per classification after warm-up: no folder walk, no per-repo stat", async () => {
+    home = realpathSync(mkdtempSync(join(tmpdir(), "chalito-bench-")));
     const ws = join(home, "ws");
     for (let i = 0; i < 200; i++) {
       const r = join(ws, `group${i % 10}`, `repo${i}`);
@@ -51,7 +59,10 @@ describe("classification with 200 repos in the workspace", () => {
     };
     const write = (f: string) => classifyToolCall("Write", { file_path: join(ws, f), content: "x" }, ctx);
     await refreshRepoIndex([ws], { hooks: hooksOptionsFor(ctx) });
+    // Frozen clock: the throttled mtime re-check (every 5 s) mustn't depend on how fast the runner is.
+    vi.useFakeTimers({ toFake: ["Date"] });
     // Warm-up: the first call builds the union (reads the 200 repos' configs once).
+    counting = true;
     expect(write("group3/repo13/hooks-13/pre-commit").tier).toBe("HIGH");
     expect(write("group4/repo14/hooks-14/pre-commit").tier).toBe("HIGH");
 
@@ -59,28 +70,24 @@ describe("classification with 200 repos in the workspace", () => {
     const loop = () => {
       for (let i = 0; i < n; i++) write(`group${i % 10}/repo${i % 200}/src/file${i}.ts`);
     };
-    // Warm-up of the per-folder repo lookup (each new folder once) and of the JIT.
+    // Warm-up of the per-folder repo lookup (each new folder once).
     loop();
-    loop();
-    counting = true;
-    // The median of five batches: a busy CI runner (other packages' tests in parallel) mustn't
-    // decide this; the steady state is about 0.1 ms per call.
-    const batches: number[] = [];
+    const warm = { ...calls };
+    for (const k of Object.keys(calls) as (keyof typeof calls)[]) calls[k] = 0;
+    const ms: number[] = [];
     for (let b = 0; b < 5; b++) {
-      const start = performance.now();
+      const t0 = performance.now();
       loop();
-      batches.push((performance.now() - start) / n);
+      ms.push(performance.now() - t0);
     }
     counting = false;
-    const perCall = batches.sort((x, y) => x - y)[2]!;
 
-    expect(perCall).toBeLessThan(1);
-    // No folder walk, no config reads, and no per-repo stat loop per call (at most one mtime sweep).
-    expect(calls.readdirSync).toBe(0);
-    expect(calls.readFileSync).toBe(0);
-    // At most a throttled mtime sweep or two (~14 files per repo), never a stat per repo per call
-    // (2,500 calls × 200 repos).
-    expect(calls.statSync).toBeLessThan(6000);
+    // The counter sees the warm-up's per-folder lookups, so the zeros below are real.
+    expect(warm.statSync).toBeGreaterThan(0);
+    // 2,500 calls over 200 repos: no folder walk, no config read, no stat of any kind.
+    expect(calls).toEqual({ readdirSync: 0, statSync: 0, readFileSync: 0, lstatSync: 0 });
+    // A loose bound for in-memory slowdowns (about 0.1 ms per call locally): a busy runner stays far under it.
+    expect(ms.sort((a, b) => a - b)[2]! / n).toBeLessThan(10);
     expect(write("group9/repo199/hooks-199/x").tier).toBe("HIGH");
     expect(write("group9/repo199/src/hooks/useX.ts").tier).toBe("MED");
   });

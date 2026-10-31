@@ -408,18 +408,25 @@ describe("review round 3: hostile rule sizes, zone names and the poll budget", (
     expect(zoneAliasCount()).toBeLessThanOrEqual(1024);
   });
 
-  it("the offset memo stays exact around transitions that aren't on a quarter hour", () => {
+  // Every zone × 20 instants, by design: main CI on 104afb7 (2026-10-31) hit 5.08 s with a new
+  // reference formatter per call. One per zone now, plus its own budget.
+  it("the offset memo stays exact around transitions that aren't on a quarter hour", { timeout: 30_000 }, () => {
+    const reference = new Map<string, Intl.DateTimeFormat>();
     const fresh = (t: number, tz: string) => {
-      const f = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        hourCycle: "h23",
-        year: "numeric",
-        month: "numeric",
-        day: "numeric",
-        hour: "numeric",
-        minute: "numeric",
-        second: "numeric",
-      });
+      let f = reference.get(tz);
+      if (!f) {
+        f = new Intl.DateTimeFormat("en-US", {
+          timeZone: tz,
+          hourCycle: "h23",
+          year: "numeric",
+          month: "numeric",
+          day: "numeric",
+          hour: "numeric",
+          minute: "numeric",
+          second: "numeric",
+        });
+        reference.set(tz, f);
+      }
       const p = Object.fromEntries(f.formatToParts(new Date(t)).map((x) => [x.type, Number(x.value)]));
       return Date.UTC(p.year!, p.month! - 1, p.day!, p.hour!, p.minute!, p.second!) - Math.floor(t / 1000) * 1000;
     };
