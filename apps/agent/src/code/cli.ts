@@ -1,5 +1,6 @@
 import { connect as netConnect, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
+import { sessionLink } from "@chalito/protocol";
 import { createInterface } from "node:readline";
 import type { LocalEvent } from "./events.js";
 
@@ -28,7 +29,7 @@ const T = {
       `Esta carpeta no está en tus carpetas de Chalito. Usa --workspace con una de: ${ws.join(", ") || "(ninguna)"}.\n`,
     ask: "> ",
     started: (sid: string, app: string, ws: string) =>
-      `Sesión ${sid.slice(0, 8)} · ${app} · ${ws}. También está en tu teléfono. Ctrl-C detiene · /salir sale.\n`,
+      `Sesión ${sid.slice(0, 8)} · ${app} · ${ws}. También está en tu teléfono. /link muestra el enlace · Ctrl-C detiene · /salir sale.\n`,
     refused: (r: string) => `Chalito no la aceptó (${r}).\n`,
     phone: "teléfono",
     here: "panel de esta computadora",
@@ -58,7 +59,7 @@ const T = {
       `This folder isn't one of your Chalito folders. Use --workspace with one of: ${ws.join(", ") || "(none)"}.\n`,
     ask: "> ",
     started: (sid: string, app: string, ws: string) =>
-      `Session ${sid.slice(0, 8)} · ${app} · ${ws}. It's on your phone too. Ctrl-C stops · /exit leaves.\n`,
+      `Session ${sid.slice(0, 8)} · ${app} · ${ws}. It's on your phone too. /link shows its link · Ctrl-C stops · /exit leaves.\n`,
     refused: (r: string) => `Chalito refused it (${r}).\n`,
     phone: "phone",
     here: "this computer's panel",
@@ -94,7 +95,7 @@ interface Rpc {
   close(): void;
 }
 
-const openRpc = (sock: Duplex, onPush: (e: LocalEvent & { sid: string }) => void, onClose: () => void): Rpc => {
+export const openRpc = (sock: Duplex, onPush: (e: LocalEvent & { sid: string }) => void, onClose: () => void): Rpc => {
   let n = 0;
   const waits = new Map<number, (r: { ok: boolean; result?: unknown; error?: string }) => void>();
   let buf = "";
@@ -321,6 +322,10 @@ export const runCode = async (
       const text = l.trim();
       if (!text) continue;
       if (text === "/salir" || text === "/exit") break;
+      if (text === "/link") {
+        io.out(`${sessionLink(sid, locale)}\n`);
+        continue;
+      }
       if (text === "/stop") {
         await rpc.call("stop", { sid });
         continue;

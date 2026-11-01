@@ -276,7 +276,7 @@
         "signing_in": "Termina de iniciar sesión en el navegador que se abrió.",
         "connected": "Conectado",
         "error": "No se pudo conectar.",
-        "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta. Usa una API key.",
+        "blocked_by_policy": "La conexión con tu cuenta aún no está disponible para esta aplicación en Chalito. Elige una herramienta que permita iniciar sesión.",
         "available": "Listo. Inicias sesión dentro de la app."
       },
       "mode": {
@@ -305,7 +305,7 @@
       },
       "install": "Instalar",
       "withKey": "Conectar con API key",
-      "signin": "Iniciar sesión",
+      "signin": "Conectar",
       "disconnect": "Desconectar",
       "confirmInstall": "Voy a instalar el paquete oficial {pkg} con npm en esta computadora. ¿Continuar?",
       "remoteInstall": "Pediste instalar {pkg} desde otro dispositivo. ¿Lo instalo en esta computadora?",
@@ -347,7 +347,7 @@
       "terms": "Términos de {vendor}",
       "remoteInstall": "Pediste instalar {name} desde otro dispositivo. ¿Lo instalo en esta computadora?",
       "signinTerminal": "Para iniciar sesión, abre una terminal en esta computadora y ejecuta: {cmd}",
-      "signinOff": "Iniciar sesión con tu plan no está disponible para tu cuenta por ahora. Usa una API key.",
+      "signinOff": "La conexión con tu cuenta aún no está disponible para esta aplicación en Chalito. Elige una herramienta que permita iniciar sesión.",
       "failure": {
         "blocked_by_policy": "Iniciar sesión con tu plan no está disponible para tu cuenta.",
         "provider_busy": "Ya hay una instalación o un inicio de sesión en curso.",
@@ -376,6 +376,50 @@
         "unsafe": "Cualquier programa de esta computadora puede cambiar {name} ({path}), así que no lo uso. Reinstálalo con su instalador oficial.",
         "use": "Usar",
         "confirm": "Sí, es mía: confirmar"
+      },
+      "advanced": "Opciones avanzadas",
+      "accountHint": "Conectar abre el inicio de sesión de la aplicación. Termina en el navegador; Chalito comprueba cuándo está lista la conexión. Sin API key.",
+      "openOnlyHint": "Abre la aplicación. Abrir su página no conecta sus herramientas con Chalito."
+    },
+    "remote": {
+      "title": "Herramientas en tus computadoras",
+      "intro": "Conecta una herramienta en cualquier computadora con tu cuenta de Chalito. Su cuenta y herramientas se quedan allí; úsalas desde Sesiones.",
+      "finish": "Solicitud enviada. Termina de iniciar sesión en el navegador de {computer}. El estado cambiará cuando esa computadora confirme la conexión.",
+      "failed": "No se pudo actualizar ni solicitar la conexión. Revisa que ambas computadoras estén en línea y vinculadas.",
+      "noComputers": "Inicia sesión en Chalito en tus otras computadoras para verlas aquí.",
+      "refresh": "Actualizar herramientas",
+      "allowSessions": "Conectada. Permite las sesiones de esta herramienta en Chalito en {computer} para ejecutar tareas desde aquí."
+    },
+    "native": {
+      "title": "Conecta tus aplicaciones de IA",
+      "intro": "Usa tus aplicaciones con su propio inicio de sesión. Conecta sus solicitudes de permiso a Chalito sin API key de IA.",
+      "scope": "Esta conexión permite aprobar acciones de sesiones que corren en la aplicación original. Los adaptadores de abajo permiten conversar e iniciar sesiones donde haya soporte.",
+      "name": {
+        "codex": "Codex",
+        "claude": "Claude Code",
+        "cursor": "Cursor"
+      },
+      "connected": "Una sesión de la aplicación se conectó. Las aprobaciones aparecen en Chalito.",
+      "configured": "Conector instalado. Abre una sesión nueva y revisa o autoriza el hook en tu aplicación de IA.",
+      "missing": "Instala esta aplicación de IA en esta computadora primero.",
+      "disconnected": "Todavía no está vinculada a Chalito.",
+      "connect": "Conectar aplicación",
+      "remove": "Desconectar aplicación",
+      "confirm": "Conectar esta aplicación de IA",
+      "addHint": "Chalito añadirá su conector de aprobaciones a los ajustes de esta aplicación. Se conservan los ajustes existentes y una copia local. El sistema te pedirá confirmación.",
+      "removeHint": "Quitar solo el conector de Chalito. Se rechazarán las solicitudes pendientes. La aplicación conserva su cuenta y sus ajustes.",
+      "changes": "Ver los cambios",
+      "error": {
+        "config_changed": "Los ajustes cambiaron mientras esta pantalla estaba abierta. Revísalos e inténtalo de nuevo.",
+        "os_auth_failed": "La confirmación del sistema se canceló o falló.",
+        "unsafe_path": "Estos ajustes usan un archivo enlazado o inseguro. Usa un archivo normal antes de conectar.",
+        "invalid_config": "Los ajustes de la aplicación no son JSON válido. Repáralos antes de conectar.",
+        "config_too_large": "El archivo de ajustes de la aplicación es demasiado grande para que Chalito lo cambie de forma segura.",
+        "state_corrupt": "El registro de Chalito para este conector está dañado. Desconecta la aplicación y vuelve a conectarla.",
+        "app_unavailable": "Chalito no encontró esta aplicación de IA en esta computadora.",
+        "unsafe_command": "Chalito está instalado en una carpeta donde los hooks de la aplicación no pueden correr de forma segura. Reinstala Chalito en una carpeta estándar.",
+        "cli_unavailable": "La herramienta de línea de comandos de Chalito no está disponible en esta computadora. Reinstala Chalito e inténtalo de nuevo.",
+        "other": "No se pudo actualizar el conector. No se confirmó ninguna conexión."
       }
     }
   },
@@ -591,7 +635,7 @@
   },
   "sessions": {
     "title": "Nueva sesión",
-    "intro": "Empieza aquí y síguela en tu teléfono. Las aprobaciones llegan a los dos lados.",
+    "intro": "Elige una computadora y una herramienta. Sigue la conversación y aprueba sus acciones aquí.",
     "app": "IA",
     "workspace": "Carpeta",
     "prompt": "Qué quieres que haga",
@@ -627,7 +671,21 @@
     "signInForLive": "Inicia sesión en Chalito para ver la conversación aquí; mientras, síguela en tu teléfono.",
     "terminal": "Tú (terminal)",
     "setupAI": "Configurar una IA",
-    "setupHint": "Elige una IA abajo. Instálala aquí, conecta tu cuenta y aprueba los cambios que se soliciten. Las IA listas aparecen automáticamente en el selector de sesiones."
+    "setupHint": "Elige una IA abajo. Instálala aquí, conecta tu cuenta y aprueba los cambios que se soliciten. Las IA listas aparecen automáticamente en el selector de sesiones.",
+    "computer": "Computadora",
+    "thisComputer": "Esta computadora",
+    "online": "En línea",
+    "offline": "Sin conexión",
+    "computerOffline": "Esta computadora está sin conexión. Abre Chalito en ella para ejecutar tareas.",
+    "setupUnavailable": "Abre y actualiza Chalito en esta computadora para compartir sus herramientas y carpetas.",
+    "remoteTimeout": "La computadora aún no confirmó una sesión nueva. Revisa que Chalito esté actualizado, que ese espacio de trabajo exista allí, que la herramienta esté conectada y que las sesiones estén permitidas. Revisa sus sesiones antes de volver a intentarlo.",
+    "signInForRemote": "Inicia sesión en Chalito para usar otra computadora.",
+    "waitingForComputer": "Esperando a que la computadora elegida empiece tu tarea…",
+    "allComputers": "Tus computadoras y sesiones",
+    "noConnectedTools": "Aún no hay herramientas reportadas.",
+    "link": "Enlace de esta sesión",
+    "linkHint": "Abre este enlace en tu teléfono e inicia sesión con la misma cuenta de Chalito. El enlace por sí solo no da acceso.",
+    "nativeScope": "Esta sesión corre en su aplicación de IA. Puedes aprobar sus acciones aquí; la conversación y los controles del proceso siguen en esa aplicación."
   },
   "copies": {
     "title": "Revisa las copias de Chalito",

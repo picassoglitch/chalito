@@ -612,6 +612,7 @@ export class AgentCore {
         if (!(await this.#makeRoom(origin))) return this.#reject(cid, "session_limit");
         try {
           const sid = await this.startSession({
+            commandId: cid,
             adapter: target.adapter,
             ...(target.appId ? { appId: target.appId } : {}),
             ...(target.appAdapter ? { appAdapter: target.appAdapter } : {}),
@@ -1232,6 +1233,7 @@ export class AgentCore {
   // ---- sessions -----------------------------------------------------------------
 
   async startSession(input: {
+    commandId?: string;
     adapter: AdapterKind;
     /** Engine: the recipe id, and the adapter its driver built (apps beyond the built-in four). */
     appId?: string;
@@ -1302,6 +1304,7 @@ export class AgentCore {
         });
         await this.#event(session, {
           type: "session.started",
+          ...(input.commandId ? { commandId: input.commandId } : {}),
           adapter: input.adapter,
           origin: input.origin,
           permissionMode: input.permissionMode,
@@ -2093,6 +2096,49 @@ export class AgentCore {
     }
   }
 
+  /** Native-app hooks request a decision; they never supply or sign the human's answer. */
+  async requestNativeTool(input: {
+    sid: string;
+    cwd: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    forcePrompt: boolean;
+    signal: AbortSignal;
+    onRequested?: (aid: string, expiresAt: number, risk: RiskTier) => void;
+  }): Promise<{ allow: boolean; reason: string }> {
+    if (this.#revoked || input.signal.aborted) return { allow: false, reason: "unavailable" };
+    const policy = this.d.policy.get();
+    const classification = classifyToolCall(
+      input.toolName,
+      input.input,
+      this.#classifyContext(policy, { cwd: input.cwd }),
+    );
+    const decision = decide({
+      classification,
+      origin: "local:cli",
+      originAllowed: originAllowed(policy.origins, "local:cli"),
+      devMode: DEVMODE_OFF,
+      permissionMode: "default",
+    });
+    if (decision.action === "deny") return { allow: false, reason: decision.reason };
+    if (!input.forcePrompt && classification.readOnly && decision.action === "allow")
+      return { allow: true, reason: "policy_read" };
+    const risk = classification.tier === "LOW" ? "MED" : classification.tier;
+    return this.#requestApproval({
+      sid: input.sid,
+      risk,
+      stepUp: risk === "HIGH" || risk === "CRITICAL",
+      origin: "local:cli",
+      signal: input.signal,
+      onRequested: (aid, expiresAt) => input.onRequested?.(aid, expiresAt, risk),
+      details: {
+        toolName: input.toolName,
+        input: input.input,
+        reasons: [...classification.reasons, "native app requested permission"],
+      },
+    });
+  }
+
   /**
    * A session's `computer_control` grant (computer/control.ts): HIGH, with a passkey step-up,
    * from a trusted device. The origin is the session's own, lowered by an unsigned answer.
@@ -2118,7 +2164,7 @@ export class AgentCore {
     });
   }
 
-  #classifyContext(policy: Policy, s: Session): ClassifyContext {
+  #classifyContext(policy: Policy, s: Pick<Session, "cwd">): ClassifyContext {
     return {
       policy,
       home: this.d.home,

@@ -70,6 +70,8 @@ export const AgentEvent = z.discriminatedUnion("type", [
   z.object({
     ...base,
     type: z.literal("session.started"),
+    /** Correlates a remote start with its resulting session, even with simultaneous starts. */
+    commandId: Id.optional(),
     adapter: AdapterKind,
     origin: Origin,
     permissionMode: RemotePermissionMode.or(z.literal("local_only")),

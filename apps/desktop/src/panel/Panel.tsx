@@ -25,6 +25,8 @@ import { Rooms } from "./Rooms.js";
 import { ConnectComputer, type AutoPair } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
 import { Apps } from "./Apps.js";
+import { NativeConnections } from "./NativeConnections.js";
+import { RemoteTools } from "./RemoteTools.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { SetupChecklist } from "./SetupChecklist.js";
@@ -96,6 +98,7 @@ export const Panel = (p: PanelProps) => {
   const t = useT();
   const [tab, setTab] = useState<Tab>(p.initialTab ?? "inbox");
   const [codeSid, setCodeSid] = useState<string | null>(null);
+  const [codeRemote, setCodeRemote] = useState(false);
   const ov = p.offlineVoice;
   // A fresh object per dictation, so saying the same prompt twice still fills the form.
   const [draft, setDraft] = useState<{ prompt: string } | null>(null);
@@ -105,6 +108,7 @@ export const Panel = (p: PanelProps) => {
     canStepUp: p.canStepUp ?? false,
     openSession: (sid) => {
       setCodeSid(sid);
+      setCodeRemote(p.client !== null);
       setTab("sessions");
     },
     openNewSession: (prompt) => {
@@ -176,6 +180,7 @@ export const Panel = (p: PanelProps) => {
             {...(p.openUrl ? { openUrl: p.openUrl } : {})}
             onSession={(sid) => {
               setCodeSid(sid);
+              setCodeRemote(p.client !== null);
               setTab("sessions");
             }}
           />
@@ -208,8 +213,10 @@ export const Panel = (p: PanelProps) => {
             client={p.client}
             canStepUp={p.canStepUp ?? false}
             sid={codeSid}
-            onSid={(sid) => {
+            remote={codeRemote}
+            onSid={(sid, remote = false) => {
               setCodeSid(sid);
+              setCodeRemote(remote);
               setDraft(null);
             }}
             {...(draft ? { draft } : {})}
@@ -246,7 +253,13 @@ export const Panel = (p: PanelProps) => {
         {tab === "settings" && p.thisComputer && <ThisComputer api={p.thisComputer} ipc={p.ipc} />}
         {tab === "settings" && p.meetings && <CalendarSettings watch={p.meetings} />}
         {tab === "settings" && p.updates && <Updates updates={p.updates} />}
-        {tab === "ai" && <Apps ipc={p.ipc} />}
+        {tab === "ai" && (
+          <>
+            <NativeConnections ipc={p.ipc} />
+            <Apps ipc={p.ipc} />
+          </>
+        )}
+        {tab === "ai" && p.client && <RemoteTools client={p.client} />}
         {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}
         {tab === "security" && p.client && <SecurityNotices client={p.client} />}
         {tab === "security" && <Security ipc={p.ipc} />}

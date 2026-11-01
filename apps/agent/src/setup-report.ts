@@ -1,4 +1,4 @@
-import { AppId, DeviceSetup, WorkspaceLabel } from "@chalito/protocol";
+import { AppId, DeviceSetup, WorkspaceLabel, type DeviceSetupView } from "@chalito/protocol";
 import type { AgentConfig } from "./config.js";
 import type { Policy } from "./policy/schema.js";
 
@@ -41,8 +41,8 @@ export const deviceSetup = (
  * minutes, and the policy and pin changes right away). A failed write is retried next time.
  */
 export const setupReporter = (
-  read: () => DeviceSetup,
-  write: (setup: DeviceSetup) => Promise<void>,
+  read: () => DeviceSetupView,
+  write: (setup: DeviceSetupView) => Promise<void>,
 ): (() => Promise<void>) => {
   let last: string | null = null;
   return async () => {

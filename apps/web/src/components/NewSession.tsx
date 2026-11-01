@@ -1,23 +1,20 @@
 "use client";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ActionError } from "@chalito/client";
-import type { AdapterKind, RemotePermissionMode } from "@chalito/protocol";
+import { ActionError, startedSessionFor } from "@chalito/client";
+import { startableApps, type RemotePermissionMode } from "@chalito/protocol";
 import { Link, useRouter } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { REMOTE_MODES } from "./Sessions";
 
-/** The adapters a remote surface starts (the computer's policy still decides which are on), and
- * where their names live (integrations.*, the only place provider names may appear). */
-export const START_ADAPTERS: readonly { kind: AdapterKind; name: string }[] = [
-  { kind: "claude-code", name: "anthropic.agent" },
-  { kind: "codex", name: "openai.agent" },
-];
 /** The computer may refuse silently (unknown workspace, adapter off): stop waiting after this. */
 export const START_WAIT_MS = 30_000;
 
 type Phase =
-  { kind: "idle" } | { kind: "waiting"; since: number } | { kind: "timeout" } | { kind: "error"; msg: string };
+  | { kind: "idle" }
+  | { kind: "waiting"; since: number; cid: string; target: string; before: ReadonlySet<string> }
+  | { kind: "timeout" }
+  | { kind: "error"; msg: string };
 
 /**
  * "Nueva sesión": a signed session.start to a paired computer (ClientActions.startSession), the
@@ -34,39 +31,46 @@ export const NewSession = () => {
   const router = useRouter();
   const computers = live.devices.filter((d) => d.role === "agent" && !d.revoked);
   const [agent, setAgent] = useState("");
-  const [adapter, setAdapter] = useState<AdapterKind>("claude-code");
+  const [appId, setAppId] = useState("");
   const [workspace, setWorkspace] = useState("");
   const [mode, setMode] = useState<RemotePermissionMode>("default");
   const [prompt, setPrompt] = useState("");
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  /** Sessions that existed when the command went out; the new one is whatever appears next. */
-  const before = useRef<Set<string>>(new Set());
+  const [sending, setSending] = useState(false);
 
   const target = agent || computers[0]?.deviceId || "";
+  const selected = computers.find((c) => c.deviceId === target);
+  const apps = selected ? startableApps(selected.setup) : [];
+  const selectedApp = apps.includes(appId) ? appId : (apps[0] ?? "");
+  // The computer's own tool name, else the built-in names, so people never see a raw id.
+  const appName = (id: string) =>
+    selected?.setup?.tools?.find((tool) => tool.appId === id)?.name ??
+    (id === "claude-code" ? ti("anthropic.agent") : id === "codex" ? ti("openai.agent") : id);
   const labels = useMemo(
     () =>
       [
-        ...new Set(
-          live.sessions
+        ...new Set([
+          ...(selected?.setup?.labels ?? []),
+          ...live.sessions
             .filter((s) => s.agentDeviceId === target)
             .map((s) => s.card?.workspaceLabel ?? s.label)
             .filter((l): l is string => !!l),
-        ),
+        ]),
       ].sort(),
-    [live.sessions, target],
+    [live.sessions, target, selected?.setup],
   );
 
   useEffect(() => {
     if (phase.kind !== "waiting") return;
-    const started = live.sessions.find((s) => s.agentDeviceId === target && !before.current.has(s.sid));
+    const started = startedSessionFor(live, { cid: phase.cid, deviceId: phase.target, before: phase.before });
     if (started) {
-      router.push({ pathname: "/sesiones/[sid]", params: { sid: started.sid } });
+      router.push({ pathname: "/sesiones/[sid]", params: { sid: started } });
       return;
     }
     const left = START_WAIT_MS - (Date.now() - phase.since);
     const timer = setTimeout(() => setPhase({ kind: "timeout" }), Math.max(0, left));
     return () => clearTimeout(timer);
-  }, [phase, live.sessions, target, router]);
+  }, [phase, live.sessions, live.events, router]);
 
   if (computers.length === 0)
     return (
@@ -83,27 +87,39 @@ export const NewSession = () => {
     e.preventDefault();
     const text = prompt.trim();
     const label = workspace.trim();
-    if (!client || !target || !text || !label) return;
-    before.current = new Set(live.sessions.map((s) => s.sid));
-    setPhase({ kind: "waiting", since: Date.now() });
+    if (
+      !client ||
+      !target ||
+      !selected?.online ||
+      !selectedApp ||
+      !text ||
+      !label ||
+      sending ||
+      phase.kind === "waiting"
+    )
+      return;
+    setSending(true);
     try {
-      await client.actions.startSession({
+      const before = new Set(live.sessions.filter((s) => s.agentDeviceId === target).map((s) => s.sid));
+      const cid = await client.actions.startSession({
         agentDeviceId: target,
-        adapter,
+        appId: selectedApp,
         workspaceLabel: label,
         prompt: text,
         permissionMode: mode,
       });
+      setPhase({ kind: "waiting", since: Date.now(), cid, target, before });
     } catch (err) {
       setPhase({
         kind: "error",
         msg: err instanceof ActionError && err.code === "untrusted_agent" ? t("untrusted") : t("failed"),
       });
+    } finally {
+      setSending(false);
     }
   };
 
-  const selected = computers.find((c) => c.deviceId === target);
-  const waiting = phase.kind === "waiting";
+  const waiting = sending || phase.kind === "waiting";
   return (
     <form onSubmit={(e) => void submit(e)} className="grid max-w-xl gap-4" data-testid="new-session">
       <h1 className="text-2xl font-bold">{t("title")}</h1>
@@ -112,7 +128,12 @@ export const NewSession = () => {
         <select
           className="rounded-lg border px-3 py-2"
           value={target}
-          onChange={(e) => setAgent(e.target.value)}
+          onChange={(e) => {
+            setAgent(e.target.value);
+            setWorkspace("");
+            setAppId("");
+            setPhase({ kind: "idle" });
+          }}
           disabled={waiting}
         >
           {computers.map((c) => (
@@ -129,17 +150,18 @@ export const NewSession = () => {
       ) : null}
       <fieldset className="grid gap-1">
         <legend className="font-medium">{t("adapter")}</legend>
+        {apps.length === 0 && <p role="status">{t("noTools")}</p>}
         <div className="flex gap-4">
-          {START_ADAPTERS.map((a) => (
-            <label key={a.kind} className="flex items-center gap-2">
+          {apps.map((id) => (
+            <label key={id} className="flex items-center gap-2">
               <input
                 type="radio"
                 name="adapter"
-                checked={adapter === a.kind}
-                onChange={() => setAdapter(a.kind)}
+                checked={selectedApp === id}
+                onChange={() => setAppId(id)}
                 disabled={waiting}
               />
-              {ti(a.name)}
+              {appName(id)}
             </label>
           ))}
         </div>
@@ -205,7 +227,7 @@ export const NewSession = () => {
       </label>
       <button
         className="w-fit rounded-lg bg-emerald-700 px-4 py-2 text-white disabled:opacity-50"
-        disabled={waiting || !prompt.trim() || !workspace.trim()}
+        disabled={waiting || !selected?.online || !selectedApp || !prompt.trim() || !workspace.trim()}
       >
         {t("start")}
       </button>

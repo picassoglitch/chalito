@@ -1,6 +1,16 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { redactError } from "./redact.js";
 import { runCode } from "./code/cli.js";
+import { runNativeHook } from "./native/cli.js";
+import {
+  NativeProvider,
+  nativeDenyMessage,
+  nativeHookDeny,
+  nativeHookEvent,
+  nativeHookOutput,
+  nativePermissionEvent,
+  nativeWorkspaceStatus,
+} from "./native/protocol.js";
 import { codePath } from "./code/server.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import { homedir, tmpdir } from "node:os";
@@ -559,6 +569,43 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
   }
 
   // ADR 0031 §1: talks to the running agent over code.sock; needs no secrets.
+  if (cmd === "native-hook") {
+    const provider = NativeProvider.safeParse(sub);
+    if (!provider.success) {
+      io.err("chalito native-hook: unknown app.\n");
+      return 2;
+    }
+    // Owner 2026-10-31: exit 2 blocks in Claude Code and Cursor; Codex only honours the JSON deny.
+    const blocked = provider.data === "codex" ? 0 : 2;
+    const deny = (reason: string) => {
+      io.out(`${JSON.stringify(nativeHookDeny(provider.data, reason, locale))}\n`);
+      io.err(`${nativeDenyMessage(reason, locale)}\n`);
+      return blocked;
+    };
+    if (!arg || !nativeHookEvent(arg)) return deny("bad_input");
+    try {
+      const winSec = io.platform === "win32" ? await (io.winPipeSecurity ?? loadWinPipeSecurity)() : null;
+      const where = io.platform === "win32" && !winSec ? null : codePath(dir, io.platform, winSec?.userSid);
+      return await runNativeHook(
+        {
+          input: io.tty.input,
+          out: io.out,
+          workspaceStatus: (cwd) => nativeWorkspaceStatus(dir, cwd, io.platform),
+          ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
+        },
+        where,
+        provider.data,
+        arg,
+        locale,
+      );
+    } catch {
+      // A crash must not read as "no objection" for a tool; lifecycle events never block the app.
+      if (nativePermissionEvent(arg)) return deny("crash");
+      io.out(`${JSON.stringify(nativeHookOutput(provider.data, arg, { ok: false }, locale))}\n`);
+      return 0;
+    }
+  }
+
   if (cmd === "code") {
     // Windows: the pipe, only when this build can check who serves it (the shipped agent).
     const winSec = io.platform === "win32" ? await (io.winPipeSecurity ?? loadWinPipeSecurity)() : null;

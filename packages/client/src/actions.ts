@@ -57,6 +57,8 @@ const CLIENT_COMMANDS = new Set<CommandPayload["type"]>([
   "session.resume",
   "session.setPermissionMode",
   "session.answer",
+  "app.connect",
+  "app.status",
   // ADR 0031 §4: moving a session goes over a hand-off link made on its computer; nothing to sign more.
   "session.transfer",
   "devmode.off",
@@ -187,9 +189,20 @@ export class ClientActions {
 
   // ---- sessions ---------------------------------------------------------------------
 
+  /** Starts the tool's own account sign-in on the selected computer; never sends an AI key. */
+  async connectApp(agentDeviceId: string, appId: string): Promise<string> {
+    return this.#command(agentDeviceId, async () => ({ type: "app.connect", appId, method: "signin" }));
+  }
+
+  async refreshApps(agentDeviceId: string): Promise<string> {
+    return this.#command(agentDeviceId, async () => ({ type: "app.status" }));
+  }
+
   async startSession(input: {
     agentDeviceId: string;
-    adapter: AdapterKind;
+    adapter?: AdapterKind;
+    /** A recipe on the selected computer, including ACP agents beyond the legacy adapters. */
+    appId?: string;
     workspaceLabel: string;
     prompt: string;
     permissionMode?: RemotePermissionMode;
@@ -197,7 +210,8 @@ export class ClientActions {
   }): Promise<string> {
     return this.#command(input.agentDeviceId, async (cid) => ({
       type: "session.start",
-      adapter: input.adapter,
+      ...(input.adapter ? { adapter: input.adapter } : {}),
+      ...(input.appId ? { appId: input.appId } : {}),
       workspaceLabel: input.workspaceLabel,
       promptCt: await this.#sealFor(input.agentDeviceId, input.prompt, cid),
       permissionMode: input.permissionMode ?? "default",

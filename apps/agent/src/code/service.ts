@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import type { DeviceSetup, RemotePermissionMode } from "@chalito/protocol";
+import { readySessionApps, type DeviceSetupView, type RemotePermissionMode } from "@chalito/protocol";
 import type { AgentCore, CommandResult } from "../agent-core.js";
 import type { Policy } from "../policy/schema.js";
 import type { LocalTap } from "./events.js";
@@ -25,7 +25,7 @@ export interface CodeService {
 
 const real = (p: string) => {
   try {
-    return realpathSync(p);
+    return realpathSync.native(p);
   } catch {
     return resolve(p);
   }
@@ -36,12 +36,12 @@ const within = (child: string, parent: string) =>
 export const codeService = (
   core: Pick<AgentCore, "localCommand" | "tap"> & Partial<Pick<AgentCore, "canRunSession">>,
   policy: () => Pick<Policy, "workspaces">,
-  setup: () => DeviceSetup,
+  setup: () => DeviceSetupView,
   /** `local` for the panel (its secret proves the desktop app), `local:cli` for code.sock (ADR 0031 §6a). */
   origin: "local" | "local:cli",
 ): CodeService => ({
   apps: () => ({
-    apps: setup().adapters.filter((appId) => core.canRunSession?.(appId) ?? true),
+    apps: readySessionApps(setup()).filter((appId) => core.canRunSession?.(appId) ?? true),
     workspaces: policy().workspaces.map((w) => w.label),
   }),
   workspaceFor: (cwd) => {

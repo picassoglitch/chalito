@@ -639,7 +639,10 @@
       "answer": "Answer",
       "answerSent": "Answer sent.",
       "untrusted": "That computer isn't paired with this device.",
-      "failed": "We couldn't send it."
+      "failed": "We couldn't send it.",
+      "link": "Link this session",
+      "linkHint": "Open this link on your phone and sign in to the same Chalito account. The link itself does not grant access.",
+      "nativeScope": "This session runs in its own AI app. You can approve its actions here; chat and process controls stay in that app."
     },
     "timeline": {
       "label": "Activity",
@@ -775,21 +778,22 @@
       "computer": "Computer",
       "online": "online",
       "offline": "offline",
-      "offlineNote": "That computer is offline. The session starts when it's back, if that's within a few minutes.",
+      "offlineNote": "That computer is offline. Open Chalito there before starting a session.",
       "adapter": "Agent",
       "workspace": "Workspace",
       "workspaceHint": "The name of a folder you allowed on that computer. Chalito never sees its paths.",
-      "recent": "Used before",
+      "recent": "Available folders",
       "mode": "Mode",
       "prompt": "First message",
       "promptPlaceholder": "What should it do?",
       "start": "Start session",
       "waiting": "Sent. Waiting for your computer to start it…",
-      "timeout": "Your computer didn't start it. Check that it's on, that the workspace exists and that the agent is turned on there.",
+      "timeout": "Your computer has not confirmed a new session. Check that Chalito is up to date there, that the workspace exists on it, that the tool is connected, and that sessions are allowed. Check its sessions before trying again.",
       "untrusted": "This computer isn't paired with this device.",
       "failed": "We couldn't send it.",
       "noComputers": "You don't have a linked computer yet.",
-      "download": "Download Chalito for your computer"
+      "download": "Download Chalito for your computer",
+      "noTools": "No tools are reported on this computer yet. Open Chalito there and connect a tool first."
     },
     "account": {
       "title": "Delete my Chalito account",

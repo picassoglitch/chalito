@@ -1,11 +1,12 @@
 "use client";
 import { useState, type FormEvent } from "react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { ActionError, linkEventLine, type DraftView, type EventView, type SessionView } from "@chalito/client";
-import type { RemotePermissionMode } from "@chalito/protocol";
+import { sessionLink, type RemotePermissionMode } from "@chalito/protocol";
 import { Link } from "@/i18n/navigation";
 import { useChalito, useLive } from "./ChalitoProvider";
 import { SharingToggle } from "./SharingToggle";
+import { ApprovalCard } from "./Approvals";
 
 /** The only modes a remote surface may set (the device policy is still the ceiling). Never bypassPermissions. */
 export const REMOTE_MODES: readonly RemotePermissionMode[] = ["default", "plan", "acceptEdits"];
@@ -166,15 +167,19 @@ const QuestionForm = ({
 
 export const SessionDetail = ({ sid }: { sid: string }) => {
   const t = useTranslations("live.session");
+  const locale = useLocale() === "en" ? "en" : "es";
   const ts = useTranslations("live.sessions");
   const live = useLive();
   const { client } = useChalito();
   const [draft, setDraft] = useState("");
   const [note, setNote] = useState<string | null>(null);
+  const [showLink, setShowLink] = useState(false);
+  const link = showLink && typeof window !== "undefined" ? sessionLink(sid, locale) : null;
   const s: SessionView | undefined = live.sessions.find((x) => x.sid === sid);
   const events = live.events[sid] ?? [];
   if (!s) return <p>{live.status === "live" ? t("notFound") : t("loading")}</p>;
   const card = s.card;
+  const approvalOnly = s.control === "approvals";
   const run = async (f: () => Promise<unknown>, ok: string) => {
     setNote(null);
     try {
@@ -189,6 +194,10 @@ export const SessionDetail = ({ sid }: { sid: string }) => {
     const msg = draft.trim();
     if (!msg || !client) return;
     setDraft("");
+    if (msg === "/link") {
+      setShowLink(true);
+      return;
+    }
     void run(() => client.actions.prompt(sid, msg), "sent");
   };
   const pendingQuestions = card?.openQuestion ? openQuestions(events).slice(-1) : [];
@@ -202,6 +211,20 @@ export const SessionDetail = ({ sid }: { sid: string }) => {
           <span data-testid="session-state">{ts(`state.${card?.state ?? s.state ?? "starting"}`)}</span>
         </p>
       </header>
+      <div>
+        <button type="button" className="rounded-lg border px-3 py-1" onClick={() => setShowLink(true)}>
+          {t("link")}
+        </button>
+        {link && (
+          <p className="break-all text-sm">
+            <a href={link} className="underline">
+              {link}
+            </a>
+            <br />
+            {t("linkHint")}
+          </p>
+        )}
+      </div>
       {card ? (
         <dl data-testid="session-card" className="grid grid-cols-2 gap-2 rounded-xl border bg-white p-4 text-sm">
           {card.lastAction ? (
@@ -228,57 +251,67 @@ export const SessionDetail = ({ sid }: { sid: string }) => {
           ) : null}
         </dl>
       ) : (
-        <p className="text-sm text-neutral-600">{t("sealed")}</p>
+        !approvalOnly && <p className="text-sm text-neutral-600">{t("sealed")}</p>
       )}
       <SharingToggle scope="session" target={sid} />
+      {live.approvals
+        ?.filter((a) => a.sid === sid && a.status === "pending")
+        .map((a) => (
+          <ApprovalCard key={a.aid} a={a} />
+        ))}
+      {approvalOnly && <p className="text-sm text-neutral-600">{t("nativeScope")}</p>}
       {pendingQuestions.map((q) => (
         <QuestionForm key={q.questionId} sid={sid} q={q} onSent={() => setNote(t("answerSent"))} />
       ))}
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          className="rounded-lg border px-3 py-1"
-          onClick={() => client && void run(() => client.actions.interrupt(sid), "interrupted")}
-        >
-          {t("interrupt")}
-        </button>
-        <button
-          className="rounded-lg border px-3 py-1"
-          onClick={() => client && void run(() => client.actions.resume(sid), "resumed")}
-        >
-          {t("resume")}
-        </button>
-        <label className="ml-auto flex items-center gap-2 text-sm">
-          {t("mode")}
-          <select
-            data-testid="permission-mode"
-            className="rounded border px-2 py-1"
-            value={s.permissionMode ?? "default"}
-            onChange={(e) =>
-              client &&
-              void run(() => client.actions.setPermissionMode(sid, e.target.value as RemotePermissionMode), "modeSet")
-            }
+      {!approvalOnly && (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className="rounded-lg border px-3 py-1"
+            onClick={() => client && void run(() => client.actions.interrupt(sid), "interrupted")}
           >
-            {REMOTE_MODES.map((m) => (
-              <option key={m} value={m}>
-                {t(`modes.${m}`)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <form onSubmit={send} className="flex gap-2">
-        <label htmlFor="prompt" className="sr-only">
-          {t("prompt")}
-        </label>
-        <input
-          id="prompt"
-          className="flex-1 rounded-lg border px-3 py-2"
-          placeholder={t("promptPlaceholder")}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-        />
-        <button className="rounded-lg bg-emerald-700 px-4 py-2 text-white">{t("send")}</button>
-      </form>
+            {t("interrupt")}
+          </button>
+          <button
+            className="rounded-lg border px-3 py-1"
+            onClick={() => client && void run(() => client.actions.resume(sid), "resumed")}
+          >
+            {t("resume")}
+          </button>
+          <label className="ml-auto flex items-center gap-2 text-sm">
+            {t("mode")}
+            <select
+              data-testid="permission-mode"
+              className="rounded border px-2 py-1"
+              value={s.permissionMode ?? "default"}
+              onChange={(e) =>
+                client &&
+                void run(() => client.actions.setPermissionMode(sid, e.target.value as RemotePermissionMode), "modeSet")
+              }
+            >
+              {REMOTE_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {t(`modes.${m}`)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+      {!approvalOnly && (
+        <form onSubmit={send} className="flex gap-2">
+          <label htmlFor="prompt" className="sr-only">
+            {t("prompt")}
+          </label>
+          <input
+            id="prompt"
+            className="flex-1 rounded-lg border px-3 py-2"
+            placeholder={t("promptPlaceholder")}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <button className="rounded-lg bg-emerald-700 px-4 py-2 text-white">{t("send")}</button>
+        </form>
+      )}
       {note ? <p role="status">{note}</p> : null}
       <Timeline events={events} draft={live.drafts[sid]} />
     </div>

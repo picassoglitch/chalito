@@ -293,15 +293,24 @@ export const Apps = ({ ipc, pollMs = APPS_POLL_MS }: { ipc: AgentIpc; pollMs?: n
             )}
             {v.doc.cli.installed && s !== "connected" && s !== "signing_in" && (
               <>
-                {r.apiKey && (
-                  <button disabled={busy} onClick={() => setKeyFor(id)}>
-                    {t("integrations.connect.withKey")}
-                  </button>
-                )}
                 {v.signinAllowed && cliSignin && !r.signin.interactive && (
                   <button disabled={busy} onClick={() => void act(id, () => ipc.signinApp(id))}>
                     {t("integrations.connect.signin")}
                   </button>
+                )}
+                {r.apiKey && (
+                  <details>
+                    <summary>{t("integrations.apps.advanced")}</summary>
+                    <button
+                      disabled={busy}
+                      onClick={() => {
+                        setKey("");
+                        setKeyFor(id);
+                      }}
+                    >
+                      {t("integrations.connect.withKey")}
+                    </button>
+                  </details>
                 )}
               </>
             )}
@@ -332,6 +341,13 @@ export const Apps = ({ ipc, pollMs = APPS_POLL_MS }: { ipc: AgentIpc; pollMs?: n
         {kindOk && v.doc.cli.installed && cliSignin && !v.signinAllowed && s !== "connected" && (
           <p className="muted">{t("integrations.apps.signinOff")}</p>
         )}
+        {kindOk &&
+          v.doc.cli.installed &&
+          v.signinAllowed &&
+          cliSignin &&
+          !r.signin.interactive &&
+          s !== "connected" && <p className="muted">{t("integrations.apps.accountHint")}</p>}
+        {openable && <p className="muted">{t("integrations.apps.openOnlyHint")}</p>}
       </li>
     );
   };
