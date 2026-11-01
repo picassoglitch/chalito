@@ -1001,6 +1001,15 @@ describe("native hook review fixes, round 2", () => {
       expect(
         decisionOf("claude", (await runHook("claude", fromHome, { path: missingSocket, status })).reply).decision,
       ).toBe("deny");
+      // A file named after the kept head can't be checked: no file target in the head → deny.
+      const late = hookPayload("claude", {
+        cwd: outside,
+        tool_name: "Write",
+        tool_input: { content: "x".repeat(1_200_000), file_path: join(WS, "a.txt") },
+      });
+      expect(
+        decisionOf("claude", (await runHook("claude", late, { path: missingSocket, status })).reply).decision,
+      ).toBe("deny");
     });
 
     it("keeps reading while chunks keep arriving, past one second in total", async () => {

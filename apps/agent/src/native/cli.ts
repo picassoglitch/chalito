@@ -89,7 +89,10 @@ export const runNativeHook = async (
   const raw = await readHookStdin(io.input, limits.idleMs);
   let reply: NativeHookReply;
   let request: NativeHookRequest | null = null;
-  if (raw.bytes > HOOK_MAX) reply = fallback(nativeTargetFields(raw.text), "too_large");
+  // A cut-off payload may name its file after the part we kept: pass only when a file target was read.
+  if (raw.bytes > READ_MAX && !/"(file_path|path|notebook_path)"\s*:/.test(raw.text))
+    reply = { ok: false, reason: "too_large" };
+  else if (raw.bytes > HOOK_MAX) reply = fallback(nativeTargetFields(raw.text), "too_large");
   else if (!(request = nativeHookInput(provider, event, raw.text)))
     reply = fallback(nativeTargetFields(raw.text), "bad_input");
   else if (JSON.stringify({ id: 1, method: "native", params: request }).length > CODE_MAX_LINE - 64)
