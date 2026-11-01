@@ -8,7 +8,21 @@
     "ai": "Connected AI",
     "sessions": "Sessions"
   },
+  "nav": {
+    "tools": "Tools",
+    "account": "Account & safety"
+  },
   "dnd": "Do not disturb",
+  "conn": {
+    "on": "Connected to your account",
+    "off": "Offline"
+  },
+  "theme": {
+    "label": "Theme",
+    "auto": "Auto",
+    "light": "Light",
+    "dark": "Dark"
+  },
   "offline": "Not connected to your account. Pair this computer with “chalito pair”.",
   "inbox": {
     "empty": "Nothing pending.",
@@ -685,7 +699,14 @@
     "noConnectedTools": "No tools reported yet.",
     "link": "Link this session",
     "linkHint": "Open this link on your phone and sign in to the same Chalito account. The link itself does not grant access.",
-    "nativeScope": "This session runs in its own AI app. You can approve its actions here; chat and process controls stay in that app."
+    "nativeScope": "This session runs in its own AI app. You can approve its actions here; chat and process controls stay in that app.",
+    "greeting": "What should we work on?",
+    "placeholder": "Ask the AI to do something…",
+    "replyPlaceholder": "Reply or give it another instruction…",
+    "recent": "Recent",
+    "noSessions": "No sessions yet.",
+    "untitled": "Untitled session",
+    "enterHint": "Enter sends · Shift+Enter new line"
   },
   "copies": {
     "title": "Check your copies of Chalito",

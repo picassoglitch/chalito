@@ -299,9 +299,9 @@ describe("panel → agent: Nueva sesión (ADR 0031 §1)", () => {
     await until(() => c.store.events.some((e) => e.type === "message.assistant"));
     await c.refresh();
     expect(await screen.findByText("Ya encontré el error.")).toBeTruthy();
-    expect(screen.getByText("Lista")).toBeTruthy();
+    expect(screen.getByText("Lista", { selector: ".pill" })).toBeTruthy();
     // The first prompt is in the transcript too (sealed for clients like every turn).
-    expect(screen.getByText("arregla el login")).toBeTruthy();
+    expect(screen.getByText("arregla el login", { selector: ".bubble" })).toBeTruthy();
 
     fireEvent.change(screen.getAllByRole("textbox").at(-1)!, { target: { value: "y corre las pruebas" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
