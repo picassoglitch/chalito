@@ -60,3 +60,8 @@ Back up the `.p12`, its password and the `.p8` offline, next to the updater key.
 
 ### Linux
 - AppImage and `.deb` are the documented downloads; `.rpm` keeps building. GPG for the AppImage is optional and free (`APPIMAGE_GPG_PRIVATE_KEY`, `APPIMAGE_SIGN_KEY`, `APPIMAGETOOL_SIGN_PASSPHRASE`).
+
+
+## 2026-10-31: automatic tag publication
+
+The owner requested automated building and publishing. Version-tag pushes now promote the verified artifacts to the private releases bucket and publish the GitHub draft. This supersedes the earlier manual-publication requirement. Manual workflow dispatch remains a dry run. The production updater key is mandatory, stable code-signing requirements remain enforced, and beta may retain labelled unsigned OS installers. The dedicated GitHub OIDC publisher is restricted to this repository's release-tag workflow. Installers arrive before the generation-guarded channel manifest; the legacy bridge manifest is never changed. See `docs/OPS.md` section 10 for one-time configuration and retry behavior.

@@ -165,14 +165,14 @@ A URL on another port keeps the session behaviour (startup `role`, prepared stat
 - Add the DNS record it prints (a `CNAME` to `ghs.googlehosted.com.`) at the `chalyb.com` DNS host, and wait for the managed certificate.
 - Check: `curl -fsS https://api.chalito.chalyb.com/health`.
 
-Until these are done, tag builds still produce DRAFT releases, labelled unsigned (`UNSIGNED_` file names, `unsigned` in latest-v2.json, a note in the draft). Nothing is ever published automatically.
+Version tags now build and publish automatically after verification (owner request, 2026-10-31). Manual workflow dispatch remains a dry run. Tag builds require the production updater key; missing cloud configuration stops publication and leaves a draft for diagnosis.
 
 **1. Updater signing key (required before any real release).**
 - On a trusted machine: `pnpm --filter @chalito/desktop exec tauri signer generate -w ~/.tauri/chalito-updater.key` (use a strong password).
 - Store the private key file content as the GitHub Actions secret `TAURI_SIGNING_PRIVATE_KEY`, and the password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Store the public key file content (`.key.pub`) as the repository **variable** `TAURI_UPDATER_PUBKEY`.
 - Keep an offline backup of the private key and password. Losing them means installed apps can never be updated again. Never commit either.
-- Without the secret, every run uses a throwaway test key and its draft says not to publish it.
+- Without the secret, tag builds fail. Manual dry runs use a throwaway key and cannot publish.
 
 **2. Releases bucket + URL signer (Terraform, Chalyb's GCP project).**
 - The private bucket `<project>-chalito-releases` already exists in `modules/storage` (uniform access, public access prevention enforced).
@@ -203,16 +203,27 @@ Until these are done, tag builds still produce DRAFT releases, labelled unsigned
 - They become the desktop's `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` and `VITE_CHALITO_API_BASE`. Without them the app builds with no account wiring (no sign-in, rooms or voice).
 - A tag release refuses to build without them. A dry run builds anyway, warns, names its artifacts `release-<os>-unwired`, adds `UNWIRED-<os>.txt`, and says so in the summary.
 
-**6. Dry run, then a release (owner's go).**
-- Actions → Release → "Run workflow" builds everything, verifies every updater signature, checks the labels, and produces artifacts plus a `latest-v2.json`. No release is created.
-- To release: push a tag `vX.Y.Z` (or `vX.Y.Z-beta.N` for the beta channel). The workflow creates a DRAFT GitHub release with all installers and `latest-v2.json`. The bridge release (0.1.0-beta.13) also carries `latest.json`.
-- Publishing is manual and needs the owner's go:
-  - check the draft;
-  - upload its files to `gs://<project>-chalito-releases/<channel>/<version>/`;
-  - upload `latest-v2.json` to `gs://<project>-chalito-releases/<channel>/latest-v2.json` (this is what makes installed apps update, and what /descargar shows);
-  - only for the bridge release (0.1.0-beta.13): also upload its `latest.json` to `gs://<project>-chalito-releases/<channel>/latest.json`. Builds before the bridge ask for that file; it stays frozen at the bridge so they never get a later build. Never upload `latest.json` again;
-  - publish the GitHub draft.
-- Never publish a draft that says "THROWAWAY test key", "UNWIRED", or (for a public release) "UNSIGNED".
+**6. Automatic publication from version tags (owner request, 2026-10-31).**
+
+One-time cloud setup uses short-lived GitHub OIDC credentials, not a service-account key:
+
+1. Get the repository's numeric ID: `gh api repos/picassoglitch/chalito --jq .id`.
+2. In `infra/terraform/envs/dev/terraform.tfvars`, set `enable_release_publishing = true` and `release_github_repository_id = "<numeric ID>"`. From that directory, initialize the existing backend, review `terraform plan`, and apply the reviewed plan. This provisions a dedicated publisher with object access only to the releases bucket. Identity is restricted to this repository ID and name, the release workflow, and version-tag push events.
+3. Set these GitHub repository variables from Terraform outputs:
+   - `CHALITO_RELEASES_BUCKET` ← `terraform output -raw releases_bucket`
+   - `RELEASE_WORKLOAD_IDENTITY_PROVIDER` ← `terraform output -raw release_workload_identity_provider`
+   - `RELEASE_SERVICE_ACCOUNT` ← `terraform output -raw release_publisher_service_account`
+4. Configure the production updater signing secret/public key and public app configuration described above. Stable releases require Windows signing and macOS signing/notarization. Beta releases preserve the existing policy allowing explicitly labelled unsigned OS installers; their updater signatures must still verify with the production key.
+
+For each release:
+
+- Wait for CI on the intended `main` commit to pass. Tag that commit `vX.Y.Z` (stable) or `vX.Y.Z-beta.N` (beta), then push the tag. Tags must belong to `main`; merging alone does not choose or publish a version.
+- The workflow builds all three OS installers, verifies signatures, creates a draft, authenticates to GCP, re-verifies every updater signature and download hash, uploads versioned installers, advances `<channel>/latest-v2.json`, then publishes the GitHub release.
+- Publication is serialized. A lower version cannot replace a newer one, versioned artifacts cannot be overwritten with different bytes, and the channel manifest uses a storage generation precondition to detect concurrent changes. Retrying the failed publish job reuses its original artifacts; do not rebuild an already published version with changed binaries.
+- `latest.json` stays frozen at the legacy bridge. Automatic publishing never writes it and refuses to republish the bridge itself.
+- Actions → Release → Run workflow remains artifacts-only: no GitHub release, cloud identity, uploads, or installed-app updates.
+
+If publishing fails, correct the missing configuration and rerun the **failed jobs** using the existing artifacts (retained 14 days). If artifacts have expired, choose a new version. Inspect the Actions log and draft before retrying. Existing installed apps discover the release through their normal updater checks; this workflow does not force an immediate installation.
 
 **7. Claude Code is NOT bundled (what the person installs; how the agent detects it).**
 - The desktop installers ship the Chalito agent as a sidecar, but not Anthropic's `claude` CLI: about 250 MB per platform, its own updates and its own terms (VERIFIED_APIS §8).

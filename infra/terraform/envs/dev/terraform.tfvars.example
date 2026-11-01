@@ -42,3 +42,7 @@ app_url      = "" # https://www.chalyb.com/app/chalito
 mcp_resource = "" # the mcp-gateway's URL + /mcp when it has no mcp.<domain> host
 # ADR 0030 kill switch for IA de Chalyb on chalito-ai-gateway (docs/OPS.md §13): true only on the owner's go.
 coding_managed_enabled = false
+
+# Optional desktop tag publication (docs/OPS.md section 10). No long-lived GCP key.
+# enable_release_publishing = true
+# release_github_repository_id = "123456789" # gh api repos/picassoglitch/chalito --jq .id

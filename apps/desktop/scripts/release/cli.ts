@@ -27,6 +27,7 @@ import { manifestFiles, type BuiltArtifact, type DownloadOs } from "@chalito/rel
 import { collectArtifacts, mergeManifest, type FoundFile } from "./collect.js";
 import { releasePlan, type Os, type Plan } from "./plan.js";
 import { sidecarPlan } from "./sidecar.js";
+import { publishRelease } from "./publish.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tauriDir = resolve(here, "../../src-tauri");
@@ -132,6 +133,16 @@ switch (cmd) {
       writeFileSync(join(arg("out-dir"), f), `${JSON.stringify(m, null, 2)}\n`);
       console.log(`${f}: ${Object.keys(m.platforms).join(", ")}`);
     }
+    break;
+  }
+  case "publish": {
+    await publishRelease({
+      dir: resolve(arg("in")),
+      bucket: arg("bucket"),
+      version: arg("version"),
+      channel: arg("channel") as "stable" | "beta",
+      publicKey: readFileSync(arg("pubkey-file"), "utf8"),
+    });
     break;
   }
   default:

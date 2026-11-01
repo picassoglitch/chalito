@@ -1,14 +1,7 @@
-# Desktop releases (ADR 0014, M14). Produces DRAFT GitHub releases only: nothing here ever
-# publishes. Promoting a draft and uploading the manifest to the releases bucket is the owner's
-# go (docs/OPS.md, "M14: downloadable apps").
-#
-#   - push of a `v*` tag → build, sign what can be signed, draft release
-#   - workflow_dispatch  → the same build as a dry run: artifacts only, no release
-#
-# Signing secrets may not exist yet. Every signing step skips cleanly without them and the
-# build is LABELLED unsigned (UNSIGNED_ file names, `unsigned` in the manifest, draft notes).
-# Without the real updater key, one THROWAWAY key is generated for the run (never committed,
-# never usable to update real installs) so the updater artifacts and manifest are still checked.
+# Version tags build all desktop platforms, draft a GitHub release, then publish to GCS
+# and GitHub after verification. Manual dispatch remains an artifacts-only dry run.
+# Tag releases require the production updater key; beta may retain labelled unsigned
+# OS installers. The legacy latest.json remains frozen at the bridge release.
 name: Release
 
 on:
@@ -32,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: desktop-release
   cancel-in-progress: false
 
 # The ONE api address for the desktop build (ADR 0028 §A): the plan derives the updater endpoint
@@ -51,6 +44,13 @@ jobs:
       dry_run: ${{ steps.m.outputs.dry_run }}
       updater_key: ${{ steps.key.outputs.kind }}
     steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+      - name: Release tags must belong to main
+        if: github.event_name == 'push'
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - id: m
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -74,6 +74,9 @@ jobs:
           if [ -n "$REAL_KEY" ]; then
             [ -n "$REAL_PUBKEY" ] || { echo "TAURI_SIGNING_PRIVATE_KEY is set but vars.TAURI_UPDATER_PUBKEY is not" >&2; exit 1; }
             echo "kind=release" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            echo "::error::Tag publication requires TAURI_SIGNING_PRIVATE_KEY and TAURI_UPDATER_PUBKEY"
+            exit 1
           else
             echo "::warning::No updater key: this run uses a throwaway test key"
             echo "kind=test" >> "$GITHUB_OUTPUT"
@@ -407,7 +410,7 @@ jobs:
           KIND: ${{ needs.meta.outputs.updater_key }}
         run: |
           {
-            echo "Chalito $VERSION ($CHANNEL). DRAFT: publishing is the owner's go (docs/OPS.md)."
+            echo "Chalito $VERSION ($CHANNEL). Publication completes automatically after production verification."
             echo
             node -e 'const m=require(process.argv[1]);for(const [os,u] of Object.entries(m.unsigned??{})) if(u) console.log(`- ${os}: UNSIGNED build`)' "$RUNNER_TEMP/dist/latest-v2.json"
             [ "$KIND" = test ] && echo "- updater: signed with a THROWAWAY test key; do not publish this draft"
@@ -430,7 +433,7 @@ jobs:
           name: dry-run-latest
           path: ${{ runner.temp }}/dist/latest*.json
           retention-days: 14
-      # A draft only. There is deliberately no step that publishes or un-drafts a release.
+      # Keep an inspectable draft if cloud publication fails. The publish job promotes it last.
       - name: Draft release
         if: needs.meta.outputs.dry_run != 'true'
         env:
@@ -447,3 +450,65 @@ jobs:
             gh release create "$tag" --draft --verify-tag --title "Chalito $VERSION" \
               --notes-file "$RUNNER_TEMP/notes.md" $( [ "$CHANNEL" = beta ] && echo --prerelease ) $files
           fi
+
+      - name: Publication inputs
+        if: needs.meta.outputs.dry_run != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-inputs
+          path: ${{ runner.temp }}/dist
+          retention-days: 14
+
+  publish:
+    needs: [meta, draft]
+    if: github.event_name == 'push' && needs.meta.outputs.dry_run == 'false' && needs.meta.outputs.updater_key == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      CHANNEL: ${{ needs.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check publication configuration
+        env:
+          BUCKET: ${{ vars.CHALITO_RELEASES_BUCKET }}
+          PROVIDER: ${{ vars.RELEASE_WORKLOAD_IDENTITY_PROVIDER }}
+          ACCOUNT: ${{ vars.RELEASE_SERVICE_ACCOUNT }}
+          PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          for name in BUCKET PROVIDER ACCOUNT PUBLIC_KEY; do
+            [ -n "${!name}" ] || { echo "::error::Missing release configuration: $name (docs/OPS.md section 10)"; exit 1; }
+          done
+          printf '%s' "$PUBLIC_KEY" > "$RUNNER_TEMP/updater.pub"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --filter @chalito/desktop...
+      - uses: actions/download-artifact@v4
+        with:
+          name: publication-inputs
+          path: ${{ runner.temp }}/dist
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.RELEASE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.RELEASE_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Publish installers then the update manifest
+        env:
+          BUCKET: ${{ vars.CHALITO_RELEASES_BUCKET }}
+        run: >
+          pnpm --filter @chalito/desktop release publish --version "$VERSION" --channel "$CHANNEL"
+          --bucket "$BUCKET" --in "$RUNNER_TEMP/dist" --pubkey-file "$RUNNER_TEMP/updater.pub"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true ]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false
+          fi
+          gh release view "$GITHUB_REF_NAME" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
