@@ -64,6 +64,7 @@ import { codeService } from "./code/service.js";
 import { expandHome } from "./workspace-path.js";
 import { NativeBridge } from "./native/bridge.js";
 import { NativeConnectors } from "./native/connectors.js";
+import { stableHookBinary } from "./native/stable-bin.js";
 import { NATIVE_APPS, NATIVE_WORKSPACES_FILE, nativeWorkspacePaths, writeNativeWorkspaces } from "./native/protocol.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import type { Duplex } from "node:stream";
@@ -174,6 +175,8 @@ export class OnboardingError extends Error {
 
 export interface DaemonDeps {
   home?: string;
+  /** The running agent binary; tests stand in for an AppImage's. */
+  execPath?: string;
   env?: Record<string, string | undefined>;
   secrets?: SecretStore;
   fetch?: FetchFn;
@@ -1502,7 +1505,18 @@ const startDaemon = async (
 
   // ADR 0031: sessions typed at this computer; the panel's are `local`, `chalito code`'s `local:cli` (§6a).
   const code = codeService(core, () => policy.get(), readSetup, "local", deps.home ?? homedir());
-  const hookCommand = computerMcpCommand();
+  const execPath = deps.execPath ?? process.execPath;
+  const hookCommand = computerMcpCommand(
+    isInterpreter(execPath)
+      ? execPath
+      : await stableHookBinary({
+          execPath,
+          env,
+          home: deps.home ?? homedir(),
+          platform: process.platform,
+          log: (event, meta) => log.warn(event, meta),
+        }),
+  );
   const nativeConnectors: NativeConnectors = new NativeConnectors({
     home: deps.home ?? homedir(),
     dir,
@@ -1520,6 +1534,7 @@ const startDaemon = async (
     connected: (provider) => nativeBridge.connected(provider),
     log: (event, meta) => log.warn(event, meta),
   });
+  nativeConnectors.repair();
   const nativeBridge: NativeBridge = new NativeBridge({
     core,
     store: signedInStore,

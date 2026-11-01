@@ -1,7 +1,8 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { nativeWorkspaceStatus } from "../src/native/protocol.js";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { NativeConnectors } from "../src/native/connectors.js";
 import { CodexAdapter } from "@chalito/adapters/codex";
 import { AcpAdapter } from "@chalito/adapters/acp";
 import { describe, expect, it, vi } from "vitest";
@@ -263,6 +264,35 @@ describe("chalito run (daemon)", () => {
     await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: w }] }, "local");
     expect(JSON.parse(readFileSync(file, "utf8")).paths).toContain(w);
     await vi.waitFor(() => expect(s.store.sessions.get("native-ghost")).toMatchObject({ state: "interrupted" }));
+    await d.stop();
+  });
+
+  it("moves AI app hooks off an AppImage's temporary mount on start (#132)", async () => {
+    const s = await setup();
+    const appDir = join(s.home, ".mount_ChalitNEW");
+    const agent = join(appDir, "usr", "bin", "chalito-agent");
+    mkdirSync(dirname(agent), { recursive: true });
+    writeFileSync(agent, "agent bytes", { mode: 0o755 });
+    // Connected while an older AppImage ran: hooks name its mount, gone since.
+    mkdirSync(s.dir, { recursive: true });
+    await new NativeConnectors({
+      home: s.home,
+      dir: s.dir,
+      command: ["/tmp/.mount_ChalitGONE/usr/bin/chalito-agent"],
+      platform: "linux",
+      available: async () => true,
+      verify: async () => true,
+      onDisconnect: () => undefined,
+    }).set("claude", true, "missing");
+    const d = await runDaemon({
+      ...s.deps,
+      execPath: agent,
+      env: { ...s.deps.env, APPIMAGE: join(s.home, "Chalito.AppImage"), APPDIR: appDir },
+    });
+    const settings = readFileSync(join(s.home, ".claude", "settings.json"), "utf8");
+    expect(settings).not.toContain(".mount_Chalit");
+    expect(settings).toContain(join(s.home, ".local", "share", "chalito", "chalito-agent"));
+    expect(readFileSync(join(s.home, ".local", "share", "chalito", "chalito-agent"), "utf8")).toBe("agent bytes");
     await d.stop();
   });
 

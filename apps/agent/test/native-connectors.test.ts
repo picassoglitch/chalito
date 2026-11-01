@@ -190,6 +190,51 @@ describe("native app connector installation", () => {
     );
   });
 
+  it.each(["codex", "claude", "cursor"] as const)(
+    "repairs %s hooks left on an old agent path when the agent starts (#132)",
+    async (provider) => {
+      const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+      const path = old.manager.path(provider);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, JSON.stringify({ model: "keep-me" }));
+      await old.manager.set(provider, true, (await old.manager.view(provider)).hash);
+      const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+      expect(now.manager.repair()).toEqual([provider]);
+      const text = readFileSync(path, "utf8");
+      expect(text).not.toContain(".mount_ChalitOLD");
+      expect(text.match(/native-hook/g)).toHaveLength(5);
+      expect(JSON.parse(text).model).toBe("keep-me");
+      expect(now.manager.enabled(provider)).toBe(true);
+      // Already current: nothing is written again, no backup piles up, no OS prompt was needed.
+      const backups = readdirSync(join(old.dir, "native-backups")).length;
+      expect(now.manager.repair()).toEqual([]);
+      expect(readdirSync(join(old.dir, "native-backups"))).toHaveLength(backups);
+      expect(now.verify).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not reconnect an app whose Chalito hooks were removed by hand, nor one never connected", async () => {
+    const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+    await old.manager.set("claude", true, "missing");
+    const path = old.manager.path("claude");
+    writeFileSync(path, JSON.stringify({ hooks: {} }));
+    const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+    expect(now.manager.repair()).toEqual([]);
+    expect(readFileSync(path, "utf8")).not.toContain("native-hook");
+    expect(existsSync(now.manager.path("codex"))).toBe(false);
+  });
+
+  it("keeps repairing the other apps when one app's settings can't be read", async () => {
+    const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+    await old.manager.set("claude", true, "missing");
+    await old.manager.set("codex", true, "missing");
+    writeFileSync(old.manager.path("claude"), "{not json");
+    const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+    expect(now.manager.repair()).toEqual(["codex"]);
+    expect(now.logs.map((l) => l.event)).toContain("native.connector_repair_failed");
+    expect(readFileSync(old.manager.path("claude"), "utf8")).toBe("{not json");
+  });
+
   it("reports an unusable agent command on the row before anyone tries to connect", async () => {
     expect((await setup(true, ["/bad\npath"]).manager.view("codex")).error).toBe("unsafe_command");
     expect((await setup(true, []).manager.view("codex")).error).toBe("cli_unavailable");

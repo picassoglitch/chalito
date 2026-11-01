@@ -280,6 +280,17 @@ export class NativeConnectors {
       if (enabled) throw error;
       records = { v: 1, providers: {} };
     }
+    this.#apply(provider, path, current, records, enabled ? commands : null);
+    if (!enabled) this.d.onDisconnect(provider);
+  }
+  /** Swaps Chalito's hooks in the app's settings for `commands` (none: removes them), keeping everything else. */
+  #apply(
+    provider: Provider,
+    path: string,
+    current: { raw: string | null; data: Record<string, unknown> },
+    records: Records,
+    commands: string[] | null,
+  ): void {
     const previous = new Set(records.providers[provider]?.commands ?? []);
     const ours = (event: string, command: unknown) =>
       previous.has(String(command)) || isChalitoHook(provider, event, command);
@@ -296,7 +307,7 @@ export class NativeConnectors {
         return kept.length ? [{ ...entry, hooks: kept }] : [];
       });
     }
-    if (enabled)
+    if (commands)
       for (const [index, event] of EVENTS[provider].entries()) {
         const timeout =
           event.toLowerCase() === "sessionend" ? 3 : event === "PreToolUse" || event === "preToolUse" ? 600 : 10;
@@ -315,7 +326,7 @@ export class NativeConnectors {
     const next =
       JSON.stringify({ ...current.data, ...(provider === "cursor" ? { version: 1 } : {}), hooks }, null, 2) + "\n";
     if (current.raw !== null) this.#backup(provider, current.raw);
-    if (enabled) records.providers[provider] = { commands };
+    if (commands) records.providers[provider] = { commands };
     else delete records.providers[provider];
     this.#write(path, next);
     try {
@@ -333,6 +344,35 @@ export class NativeConnectors {
       }
       throw error;
     }
-    if (!enabled) this.d.onDisconnect(provider);
+  }
+
+  // #132 — on agent start: connected apps whose Chalito hooks name an old agent path get the current one.
+  repair(): Provider[] {
+    let records: Records;
+    try {
+      records = this.#records();
+    } catch {
+      return [];
+    }
+    const fixed: Provider[] = [];
+    for (const provider of NativeProvider.options) {
+      const record = records.providers[provider];
+      if (!record) continue;
+      try {
+        const commands = nativeHookCommands(this.d.command, provider, this.d.platform);
+        const path = this.path(provider);
+        const current = this.#read(path);
+        const upToDate =
+          record.commands.join("\n") === commands.join("\n") && this.#hasCommands(provider, current.data, commands);
+        // Hooks taken out by hand stay out: only paths are fixed, nothing is reconnected.
+        if (upToDate || !this.#hasChalitoHooks(provider, current.data)) continue;
+        this.#apply(provider, path, current, records, commands);
+        fixed.push(provider);
+        this.d.log?.("native.connector_repaired", { provider });
+      } catch (error) {
+        this.d.log?.("native.connector_repair_failed", { provider, error: nativeConnectorErrorCode(error) });
+      }
+    }
+    return fixed;
   }
 }
