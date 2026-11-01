@@ -16,12 +16,18 @@ export const petCard = (o: {
   avatar: string;
   /** undefined until the account answers; null only after an authoritative no-custom response. */
   card: CardFiles | null | undefined;
+  /** What this device drew last: the same roster avatar may show while the account answers. */
+  last?: LastDrawn | null;
 }): PetCard => {
   if (o.card) return { kind: "custom", files: o.card };
-  return o.card === null ? { kind: "roster", avatar: o.avatar } : { kind: "wait" };
+  if (o.card === null) return { kind: "roster", avatar: o.avatar };
+  return o.last?.kind === "roster" && o.last.avatar === o.avatar
+    ? { kind: "roster", avatar: o.avatar }
+    : { kind: "wait" };
 };
 
-const LAST_KEY = "chalito-desktop-pet-last";
+// #129 — v2: values saved before the fix may hold the roster avatar that replaced a custom pet.
+const LAST_KEY = "chalito-desktop-pet-last-v2";
 
 export const loadLastDrawn = (storage: () => Pick<Storage, "getItem"> = () => localStorage): LastDrawn | null => {
   try {

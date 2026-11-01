@@ -21,6 +21,42 @@ const body = (host = GCS) => ({
 });
 
 describe("the desktop's own custom companion card", () => {
+  it("stops waiting for a session that stays unusable past the grace: expired, revoked or no companion (#129)", async () => {
+    let t = 0;
+    let ready = false;
+    let status: number | null = null;
+    const fetch = companionCardFetcher(
+      async () =>
+        ready
+          ? {
+              companionCard: async () => {
+                if (status) throw new Error(`/v1/avatar/companion: ${status}`);
+                return body();
+              },
+            }
+          : null,
+      () => t,
+      () => true,
+      60_000,
+    );
+    await expect(fetch()).rejects.toThrow("not ready");
+    t = 59_999;
+    await expect(fetch()).rejects.toThrow("not ready");
+    t = 60_000;
+    expect(await fetch()).toBeNull();
+    // Usable again: the custom card comes back, and the grace clock starts over.
+    ready = true;
+    expect(((await fetch()) as SignedCard).assetId).toBe(ASSET);
+    status = 401;
+    t = 100_000;
+    await expect(fetch()).rejects.toThrow("refused");
+    t = 160_000;
+    expect(await fetch()).toBeNull();
+    // A network failure or a 5xx is not an answer: keep waiting.
+    status = 503;
+    await expect(fetch()).rejects.toThrow("503");
+  });
+
   it("reads GET /v1/avatar/companion; distinguishes a restoring account from confirmed sign-out", async () => {
     const card = (await companionCardFetcher(async () => ({ companionCard: async () => body() }))()) as SignedCard;
     expect(card.assetId).toBe(ASSET);
