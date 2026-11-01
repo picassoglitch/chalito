@@ -40,6 +40,8 @@ export const attachBoardApprovals = (link: BoardLink, client: Client): (() => vo
     const d = attachApprovalDisplay(client.live, client.actions, link.approvalTransport(written), {
       onResult: (r, command) => {
         if (!r.ok) console.warn(`board: approvals screen: ${r.reason}`);
+        // A result from a screen that already stopped, or while frames fail, says nothing about the screen now.
+        if (display !== current || link.getSnapshot().approvalProblem === "write_failed") return;
         const c = ApprovalConsoleCommand.safeParse(command);
         const aid = c.success && c.data.type === "decide" ? c.data.aid : null;
         if (r.ok || problemOf(r)) report(problemOf(r), aid);

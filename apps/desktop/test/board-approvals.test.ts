@@ -186,6 +186,22 @@ describe("approvals-screen problems, precisely", () => {
     off();
   });
 
+  it("pressing Next on a re-attached screen whose frames still fail doesn't clear write_failed", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { board, link } = await setup({ frameFailures: 3 });
+    board.failNext.set("approval-console", 1000);
+    const off = attachBoardApprovals(link, { live: live("LOW"), actions: { decide: async () => undefined } } as never);
+    board.plug();
+    await until(() => link.getSnapshot().approvalProblem === "write_failed");
+    // A fresh screen attaches (another hello); its first failures are still under the limit.
+    board.emit({ v: 1, type: "hello", fw: "0.1.0", board: "b", w: 172, h: 320, card: null, pair: board.keyId });
+    await new Promise((r) => setTimeout(r, 30));
+    board.emit({ v: 1, type: "next" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(link.getSnapshot().approvalProblem).toBe("write_failed");
+    off();
+  });
+
   it("write_failed stays while frames still fail, even as the screen re-attaches on other changes", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const { board, link } = await setup({ frameFailures: 1 });
