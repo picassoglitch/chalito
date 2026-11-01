@@ -75,10 +75,37 @@ impl Board {
             _ => false,
         };
         if changed {
-            if let BoardStatus::Permission { port } = &status {
-                eprintln!("board: no permission to open {port} (Linux: add your user to the dialout group)");
+            match &status {
+                BoardStatus::Permission { port } => {
+                    eprintln!("board: no permission to open {port} (Linux: add your user to the dialout group)")
+                }
+                BoardStatus::Error { port, message } => eprintln!("board: {port}: {message}"),
+                _ => {}
             }
             sink.status(&status);
+        }
+    }
+
+    /// One look for the board (`CHALITO_BOARD_PORT` aside): a listing error is a status, not an absent board.
+    fn scan(&self, sink: &dyn Sink, listed: serialport::Result<Vec<serialport::SerialPortInfo>>) -> Option<String> {
+        match listed {
+            Ok(ports) => {
+                let found = find_port(ports);
+                if found.is_none() {
+                    self.set_status(sink, BoardStatus::Absent);
+                }
+                found
+            }
+            Err(e) => {
+                self.set_status(
+                    sink,
+                    BoardStatus::Error {
+                        port: "USB".into(),
+                        message: e.to_string(),
+                    },
+                );
+                None
+            }
         }
     }
 
@@ -96,7 +123,17 @@ impl Board {
     }
 
     /// Runs one open port until it fails (unplugged): lines go to `sink`, writes go through it.
-    pub fn serve(&self, sink: &dyn Sink, port_name: &str, mut port: Box<dyn SerialPort>) {
+    pub fn serve(&self, sink: &dyn Sink, port_name: &str, port: Box<dyn SerialPort>) {
+        self.serve_with(sink, port_name, port, port_listed);
+    }
+
+    fn serve_with(
+        &self,
+        sink: &dyn Sink,
+        port_name: &str,
+        mut port: Box<dyn SerialPort>,
+        listed: impl Fn(&str) -> bool,
+    ) {
         let writer = match port.try_clone() {
             Ok(w) => w,
             Err(e) => {
@@ -114,19 +151,33 @@ impl Board {
             i.writer = Some(writer);
         }
         self.set_status(sink, BoardStatus::Connected { port: port_name.into() });
-        let _ = pump(&mut port, |l| sink.line(l));
+        let err = pump(&mut port, |l| sink.line(l));
+        eprintln!("board: reading {port_name} stopped: {err}");
         if let Ok(mut i) = self.0.lock() {
             i.writer = None;
         }
-        self.set_status(sink, BoardStatus::Absent);
+        // The device node outlives the unplug by a moment; still there after that, the port broke.
+        thread::sleep(Duration::from_millis(300));
+        let status = if listed(port_name) {
+            BoardStatus::Error {
+                port: port_name.into(),
+                message: err.to_string(),
+            }
+        } else {
+            BoardStatus::Absent
+        };
+        self.set_status(sink, status);
     }
 
     /// Finds, opens and serves the board forever, on its own thread.
     pub fn spawn(&self, sink: impl Sink) {
         let board = self.clone();
         thread::spawn(move || loop {
-            let Some(name) = find_port() else {
-                board.set_status(&sink, BoardStatus::Absent);
+            let found = match std::env::var("CHALITO_BOARD_PORT") {
+                Ok(p) => (!p.is_empty()).then_some(p),
+                Err(_) => board.scan(&sink, serialport::available_ports()),
+            };
+            let Some(name) = found else {
                 thread::sleep(SCAN);
                 continue;
             };
@@ -167,12 +218,15 @@ fn open(name: &str) -> serialport::Result<Box<dyn SerialPort>> {
     Ok(port)
 }
 
-/// The board's port: `CHALITO_BOARD_PORT` (a pty for a fake board) or the first VID/PID match.
-pub fn find_port() -> Option<String> {
-    if let Ok(p) = std::env::var("CHALITO_BOARD_PORT") {
-        return (!p.is_empty()).then_some(p);
+fn port_listed(name: &str) -> bool {
+    if std::env::var("CHALITO_BOARD_PORT").is_ok_and(|p| p == name) {
+        return std::path::Path::new(name).exists();
     }
-    let ports = serialport::available_ports().ok()?;
+    serialport::available_ports().is_ok_and(|ps| ps.iter().any(|p| p.port_name == name))
+}
+
+/// The board's port among `ports` (the first VID/PID match), or None.
+fn find_port(ports: Vec<serialport::SerialPortInfo>) -> Option<String> {
     let mut matches: Vec<String> = ports
         .into_iter()
         .filter(|p| matches!(&p.port_type, SerialPortType::UsbPort(u) if u.vid == VID && u.pid == PID))
@@ -219,17 +273,22 @@ impl Lines {
                     } else {
                         self.buf.len()
                     };
-                    if let Ok(s) = std::str::from_utf8(&self.buf[..end]) {
-                        out(s);
+                    if end <= MAX_LINE {
+                        if let Ok(s) = std::str::from_utf8(&self.buf[..end]) {
+                            out(s);
+                        }
                     }
                 }
                 self.buf.clear();
                 self.overlong = false;
-            } else if self.buf.len() > MAX_LINE {
-                self.overlong = true;
-                self.buf.clear();
             } else if !self.overlong {
-                self.buf.push(b);
+                // Room for MAX_LINE bytes and a trailing \r; the content check is at the newline.
+                if self.buf.len() > MAX_LINE {
+                    self.overlong = true;
+                    self.buf.clear();
+                } else {
+                    self.buf.push(b);
+                }
             }
         }
     }
@@ -330,6 +389,52 @@ mod tests {
             "board not connected"
         );
         assert_eq!(Board::default().status(), BoardStatus::Absent);
+    }
+
+    #[test]
+    fn line_limit_is_exact() {
+        let mut got = vec![];
+        let mut l = Lines::default();
+        let max = "x".repeat(MAX_LINE);
+        l.push(format!("{max}\n{max}\r\n{max}y\nok\n").as_bytes(), |s| got.push(s.len()));
+        assert_eq!(got, [MAX_LINE, MAX_LINE, 2]);
+    }
+
+    #[test]
+    fn a_port_listing_error_is_reported_once() {
+        let (tx, rx) = mpsc::channel();
+        let sink = Chan(Mutex::new(tx));
+        let board = Board::default();
+        let err = || Err(serialport::Error::new(serialport::ErrorKind::Unknown, "udev gone"));
+        assert_eq!(board.scan(&sink, err()), None);
+        assert_eq!(board.scan(&sink, err()), None);
+        let got: Vec<String> = rx.try_iter().collect();
+        assert_eq!(got, [r#"status:{"state":"error","port":"USB","message":"udev gone"}"#]);
+        assert_eq!(board.scan(&sink, Ok(vec![])), None);
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), [r#"status:{"state":"absent"}"#]);
+    }
+
+    /// A read error on a port the OS still lists is not an unplug.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_error_on_a_listed_port_is_an_error_not_absent() {
+        use serialport::TTYPort;
+        let (fake, ours) = TTYPort::pair().expect("pty");
+        let (tx, rx) = mpsc::channel();
+        let sink = Chan(Mutex::new(tx));
+        let board = Board::default();
+        let b2 = board.clone();
+        let t = thread::spawn(move || {
+            let mut ours = ours;
+            ours.set_timeout(Duration::from_millis(50)).unwrap();
+            b2.serve_with(&sink, "pty", Box::new(ours), |_| true);
+        });
+        let recv = || rx.recv_timeout(Duration::from_secs(5)).expect("event");
+        assert_eq!(recv(), r#"status:{"state":"connected","port":"pty"}"#);
+        drop(fake);
+        let s = recv();
+        assert!(s.starts_with(r#"status:{"state":"error","port":"pty","message":"#), "{s}");
+        t.join().unwrap();
     }
 
     /// A pty stands in for the board: logs are skipped, writes arrive, and closing it is an unplug.
