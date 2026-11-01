@@ -226,13 +226,75 @@ describe("native app connector installation", () => {
 
   it("keeps repairing the other apps when one app's settings can't be read", async () => {
     const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
-    await old.manager.set("claude", true, "missing");
-    await old.manager.set("codex", true, "missing");
-    writeFileSync(old.manager.path("claude"), "{not json");
+    for (const p of ["codex", "claude", "cursor"] as const) await old.manager.set(p, true, "missing");
+    // codex is repaired first: a failure there must not stop the ones after it.
+    writeFileSync(old.manager.path("codex"), "{not json");
     const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
-    expect(now.manager.repair()).toEqual(["codex"]);
+    expect(now.manager.repair()).toEqual(["claude", "cursor"]);
     expect(now.logs.map((l) => l.event)).toContain("native.connector_repair_failed");
-    expect(readFileSync(old.manager.path("claude"), "utf8")).toBe("{not json");
+    expect(readFileSync(old.manager.path("codex"), "utf8")).toBe("{not json");
+  });
+
+  it("keeps an app's record as it was when writing its settings fails, even if a later app succeeds", async () => {
+    const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+    await old.manager.set("claude", true, "missing");
+    await old.manager.set("cursor", true, "missing");
+    const claudeDir = join(old.home, ".claude");
+    chmodSync(claudeDir, 0o500);
+    try {
+      const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+      expect(now.manager.repair()).toEqual(["cursor"]);
+      expect(now.logs.find((l) => l.event === "native.connector_repair_failed")?.meta).toMatchObject({
+        provider: "claude",
+        errno: "EACCES",
+      });
+      const record = JSON.parse(readFileSync(join(old.dir, "native-connectors.json"), "utf8"));
+      expect(record.providers.claude.commands[0]).toContain(".mount_ChalitOLD");
+      expect(record.providers.cursor.commands[0]).toContain(".local/share/chalito");
+    } finally {
+      chmodSync(claudeDir, 0o700);
+    }
+    // Claude still reads as connected (old hooks + old record agree), so the next start retries it.
+    expect(old.manager.readState("claude")).toBe(true);
+  });
+
+  it("says why when Chalito's own record can't be read, and changes nothing", async () => {
+    const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+    await old.manager.set("claude", true, "missing");
+    const before = readFileSync(old.manager.path("claude"), "utf8");
+    writeFileSync(join(old.dir, "native-connectors.json"), "{corrupt");
+    const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+    expect(now.manager.repair()).toEqual([]);
+    expect(now.logs).toContainEqual({ event: "native.connector_repair_failed", meta: { error: "state_corrupt" } });
+    expect(readFileSync(old.manager.path("claude"), "utf8")).toBe(before);
+  });
+
+  it("leaves an app with Chalito hooks but no record of connecting it untouched", async () => {
+    const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+    await old.manager.set("cursor", true, "missing");
+    writeFileSync(join(old.dir, "native-connectors.json"), JSON.stringify({ v: 1, providers: {} }));
+    const before = readFileSync(old.manager.path("cursor"), "utf8");
+    const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+    expect(now.manager.repair()).toEqual([]);
+    expect(readFileSync(old.manager.path("cursor"), "utf8")).toBe(before);
+  });
+
+  it("never puts back a hook removed by hand: same path does nothing, a new path moves only the ones left", async () => {
+    const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+    await old.manager.set("claude", true, "missing");
+    const path = old.manager.path("claude");
+    const data = JSON.parse(readFileSync(path, "utf8"));
+    delete data.hooks.PreToolUse;
+    data.hooks.Stop.push({ hooks: [{ type: "command", command: "existing-policy" }] });
+    writeFileSync(path, JSON.stringify(data));
+    expect(old.manager.repair()).toEqual([]);
+    const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+    expect(now.manager.repair()).toEqual(["claude"]);
+    const after = JSON.parse(readFileSync(path, "utf8"));
+    expect(after.hooks.PreToolUse ?? []).toEqual([]);
+    expect(JSON.stringify(after)).not.toContain(".mount_ChalitOLD");
+    expect(JSON.stringify(after).match(/native-hook/g)).toHaveLength(4);
+    expect(JSON.stringify(after.hooks.Stop)).toContain("existing-policy");
   });
 
   it("reports an unusable agent command on the row before anyone tries to connect", async () => {

@@ -191,6 +191,31 @@ export class NativeConnectors {
       );
     });
   }
+  /** Events holding a Chalito hook whose command matches `pick`. */
+  #chalitoEvents(provider: Provider, data: Record<string, unknown>, pick = (_c: string) => true): Set<string> {
+    const found = new Set<string>();
+    if (!object(data.hooks)) return found;
+    const hooks = data.hooks;
+    const ours = (event: string, command: unknown) => isChalitoHook(provider, event, command) && pick(String(command));
+    for (const event of EVENTS[provider]) {
+      const groups = hooks[event];
+      if (
+        Array.isArray(groups) &&
+        groups.some(
+          (g: unknown) =>
+            object(g) &&
+            (provider === "cursor"
+              ? ours(event, g.command)
+              : Array.isArray(g.hooks) && g.hooks.some((h: unknown) => object(h) && ours(event, h.command))),
+        )
+      )
+        found.add(event);
+    }
+    return found;
+  }
+  #hasStaleHooks(provider: Provider, data: Record<string, unknown>, commands: string[]): boolean {
+    return this.#chalitoEvents(provider, data, (c) => !commands.includes(c)).size > 0;
+  }
   #enabledIn(records: Records, provider: Provider, data: Record<string, unknown>): boolean {
     const record = records.providers[provider];
     return (
@@ -290,7 +315,9 @@ export class NativeConnectors {
     current: { raw: string | null; data: Record<string, unknown> },
     records: Records,
     commands: string[] | null,
-  ): void {
+    only?: Set<string>,
+  ): Records {
+    records = structuredClone(records);
     const previous = new Set(records.providers[provider]?.commands ?? []);
     const ours = (event: string, command: unknown) =>
       previous.has(String(command)) || isChalitoHook(provider, event, command);
@@ -309,6 +336,7 @@ export class NativeConnectors {
     }
     if (commands)
       for (const [index, event] of EVENTS[provider].entries()) {
+        if (only && !only.has(event)) continue;
         const timeout =
           event.toLowerCase() === "sessionend" ? 3 : event === "PreToolUse" || event === "preToolUse" ? 600 : 10;
         const hook = {
@@ -344,6 +372,7 @@ export class NativeConnectors {
       }
       throw error;
     }
+    return records;
   }
 
   // #132 — on agent start: connected apps whose Chalito hooks name an old agent path get the current one.
@@ -351,7 +380,8 @@ export class NativeConnectors {
     let records: Records;
     try {
       records = this.#records();
-    } catch {
+    } catch (error) {
+      this.d.log?.("native.connector_repair_failed", { error: nativeConnectorErrorCode(error) });
       return [];
     }
     const fixed: Provider[] = [];
@@ -362,15 +392,17 @@ export class NativeConnectors {
         const commands = nativeHookCommands(this.d.command, provider, this.d.platform);
         const path = this.path(provider);
         const current = this.#read(path);
-        const upToDate =
-          record.commands.join("\n") === commands.join("\n") && this.#hasCommands(provider, current.data, commands);
-        // Hooks taken out by hand stay out: only paths are fixed, nothing is reconnected.
-        if (upToDate || !this.#hasChalitoHooks(provider, current.data)) continue;
-        this.#apply(provider, path, current, records, commands);
+        // Only an old binary path is fixed: hooks taken out by hand, all or some, stay out.
+        if (!this.#hasStaleHooks(provider, current.data, commands)) continue;
+        records = this.#apply(provider, path, current, records, commands, this.#chalitoEvents(provider, current.data));
         fixed.push(provider);
         this.d.log?.("native.connector_repaired", { provider });
       } catch (error) {
-        this.d.log?.("native.connector_repair_failed", { provider, error: nativeConnectorErrorCode(error) });
+        this.d.log?.("native.connector_repair_failed", {
+          provider,
+          error: nativeConnectorErrorCode(error),
+          errno: (error as NodeJS.ErrnoException).code,
+        });
       }
     }
     return fixed;

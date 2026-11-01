@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, createReadStream, copyFileSync, lstatSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  createReadStream,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { dirname, join, sep } from "node:path";
 
 /** Same spot the desktop's "Instalar el comando chalito" copies to (cli_install.rs), so both share one copy. */
@@ -18,7 +28,8 @@ const sameFile = async (a: string, b: string): Promise<boolean> => {
   try {
     const sb = lstatSync(b);
     if (!sb.isFile() || sb.size !== statSync(a).size) return false;
-    return (await sha256(a)) === (await sha256(b));
+    const [ha, hb] = await Promise.all([sha256(a), sha256(b)]);
+    return ha === hb;
   } catch {
     return false;
   }
@@ -32,28 +43,49 @@ export const stableHookBinary = async (d: {
   home: string;
   platform: NodeJS.Platform;
   log?: (event: string, meta: Record<string, unknown>) => void;
-}): Promise<string> => {
+}): Promise<{ path: string; ephemeral: boolean }> => {
+  // A DMG or a translocated copy vanishes too: never repair hooks onto it.
+  if (d.platform === "darwin" && (d.execPath.startsWith("/Volumes/") || d.execPath.includes("/AppTranslocation/")))
+    return { path: d.execPath, ephemeral: true };
   const appDir = d.env.APPDIR;
   if (d.platform !== "linux" || !d.env.APPIMAGE || !appDir || !d.execPath.startsWith(appDir.replace(/\/+$/, "") + sep))
-    return d.execPath;
+    return { path: d.execPath, ephemeral: false };
   const target = stableAgentPath(d.home);
-  if (await sameFile(d.execPath, target)) return target;
+  if (await sameFile(d.execPath, target)) return { path: target, ephemeral: false };
   const temp = `${target}.${randomUUID()}.tmp`;
   try {
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    sweepTemps(dirname(target));
     copyFileSync(d.execPath, temp);
     chmodSync(temp, 0o755);
     // rename: hooks running the old copy keep their file; new ones get the new one.
     renameSync(temp, target);
-    return target;
+    return { path: target, ephemeral: false };
   } catch (error) {
-    d.log?.("native.stable_copy_failed", { error: error instanceof Error ? error.message : "error" });
-    return d.execPath;
+    d.log?.("native.stable_copy_failed", { error: (error as NodeJS.ErrnoException).code ?? "error" });
+    // An older copy still outlives the app; the mount never goes into hooks.
+    return existingCopy(target) ? { path: target, ephemeral: false } : { path: d.execPath, ephemeral: true };
   } finally {
     try {
       rmSync(temp, { force: true });
-    } catch {
-      // Nothing was created there (the folder itself failed); agent start must not fail on it.
+    } catch (error) {
+      // ENOTDIR: the folder was never made, so there is no temp file to leave behind.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOTDIR") d.log?.("native.stable_temp_left", { error: code ?? "error" });
     }
+  }
+};
+
+/** Copies cut off by a kill mid-update: each is a full agent binary. */
+const sweepTemps = (dir: string): void => {
+  for (const name of readdirSync(dir))
+    if (/^chalito-agent\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(dir, name), { force: true });
+};
+
+const existingCopy = (path: string): boolean => {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
   }
 };

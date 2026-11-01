@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, rmSync, watch, type FSWatcher } from "node:fs";
-import { basename, delimiter, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ManagedSessionAdapter, type ManagedSource, type SessionAdapter } from "@chalito/adapters";
 import { ClaudeCodeAdapter, claudeEnv, type ClaudeAuth } from "@chalito/adapters/claude-code";
@@ -64,7 +64,7 @@ import { codeService } from "./code/service.js";
 import { expandHome } from "./workspace-path.js";
 import { NativeBridge } from "./native/bridge.js";
 import { NativeConnectors } from "./native/connectors.js";
-import { stableHookBinary } from "./native/stable-bin.js";
+import { stableAgentPath, stableHookBinary } from "./native/stable-bin.js";
 import { NATIVE_APPS, NATIVE_WORKSPACES_FILE, nativeWorkspacePaths, writeNativeWorkspaces } from "./native/protocol.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import type { Duplex } from "node:stream";
@@ -848,9 +848,14 @@ const startDaemon = async (
   const pickEnv = (e: Record<string, string | undefined>, keys: string[]) =>
     Object.fromEntries(keys.flatMap((k) => (e[k] !== undefined ? [[k, e[k]]] : [])));
 
+  // #132 — the fixed agent copy runs as every AI app's hook: replacing it would bypass approvals.
+  const stableBin = stableAgentPath(deps.home ?? homedir());
   const extrasFor = (c: PairedConfig, claude: string | null) => ({
-    agentBinaries: [...new Set([process.execPath, agentBin].filter((p): p is string => !!p && !isInterpreter(p)))],
+    agentBinaries: [
+      ...new Set([process.execPath, agentBin, stableBin].filter((p): p is string => !!p && !isInterpreter(p))),
+    ],
     protectedPaths: [
+      dirname(stableBin),
       ...(agentBin ? servicePlanFiles(agentBin, deps.home ?? homedir()) : []),
       ...(claude ? [claude] : []),
       ...[c.codex, c.grok, c.gemini].flatMap((p) => (p ? [p.path] : [])),
@@ -1506,17 +1511,16 @@ const startDaemon = async (
   // ADR 0031: sessions typed at this computer; the panel's are `local`, `chalito code`'s `local:cli` (§6a).
   const code = codeService(core, () => policy.get(), readSetup, "local", deps.home ?? homedir());
   const execPath = deps.execPath ?? process.execPath;
-  const hookCommand = computerMcpCommand(
-    isInterpreter(execPath)
-      ? execPath
-      : await stableHookBinary({
-          execPath,
-          env,
-          home: deps.home ?? homedir(),
-          platform: process.platform,
-          log: (event, meta) => log.warn(event, meta),
-        }),
-  );
+  const hookBin = isInterpreter(execPath)
+    ? { path: execPath, ephemeral: true }
+    : await stableHookBinary({
+        execPath,
+        env,
+        home: deps.home ?? homedir(),
+        platform: process.platform,
+        log: (event, meta) => log.warn(event, meta),
+      });
+  const hookCommand = computerMcpCommand(hookBin.path);
   const nativeConnectors: NativeConnectors = new NativeConnectors({
     home: deps.home ?? homedir(),
     dir,
@@ -1534,7 +1538,8 @@ const startDaemon = async (
     connected: (provider) => nativeBridge.connected(provider),
     log: (event, meta) => log.warn(event, meta),
   });
-  nativeConnectors.repair();
+  // #132 — a dev run (node/tsx) or a mount-only path must never become every app's hook on its own.
+  if (!hookBin.ephemeral) nativeConnectors.repair();
   const nativeBridge: NativeBridge = new NativeBridge({
     core,
     store: signedInStore,
