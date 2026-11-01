@@ -84,3 +84,59 @@ it("requests account sign-in on the selected PC and waits for that PC to report 
   expect(screen.getByText(/Connected/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
 });
+
+it("a poll that succeeds later does not hide a failed Connect, and a failed poll is its own notice", async () => {
+  const tool = {
+    appId: "gemini",
+    name: "Test tool",
+    state: "needs_auth" as const,
+    installed: true,
+    signinAllowed: true,
+    sessionCapable: true,
+    sessionEnabled: true,
+  };
+  const snapshot = {
+    status: "live",
+    approvals: [],
+    sessions: [],
+    events: {},
+    drafts: {},
+    notifications: [],
+    devModeActive: false,
+    devices: [
+      {
+        deviceId: "pc-a",
+        name: "Work PC",
+        role: "agent",
+        online: true,
+        revoked: false,
+        setup: { adapters: ["gemini"], labels: ["work"], workspaces: 1, tools: [tool] },
+      } as DeviceView,
+    ],
+  } as Snapshot;
+  const resync = vi.fn().mockResolvedValue(undefined);
+  const client = {
+    live: { getSnapshot: () => snapshot, subscribe: () => () => undefined, resync },
+    actions: { connectApp: vi.fn().mockRejectedValue(new Error("offline")) },
+  } as unknown as ChalitoClient;
+  render(
+    <TextProviders locale="en">
+      <RemoteTools client={client} />
+    </TextProviders>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+  await screen.findByRole("alert");
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(resync).toHaveBeenCalled();
+  expect(screen.getByRole("alert").textContent).toContain("Could not refresh or request the connection");
+  resync.mockRejectedValue(new Error("network"));
+  await act(async () => {
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(document.querySelector("[data-remote-poll-failed]")?.textContent).toBe(
+    "Couldn't update the computers' status. Showing the last status received.",
+  );
+  expect(screen.getAllByRole("alert")).toHaveLength(1);
+});

@@ -525,6 +525,23 @@ export const startDevBackend = async (): Promise<Platform & { controls: DevContr
               },
               updated_at: iso(Date.now()),
             });
+            // Like apps/agent: the start event, tagged with its command, is what clients match a start by.
+            db.insert("session_events", {
+              owner: OWNER,
+              sid,
+              eid: `e${++seq}`,
+              device_id: agent.deviceId,
+              seq: 0,
+              t: iso(Date.now()),
+              type: "session.started",
+              urgency: "low",
+              doc: {
+                type: "session.started",
+                adapter: p.adapter,
+                origin: `client:${me.deviceId}`,
+                commandId: body.cid,
+              },
+            });
             return;
           }
           case "session.prompt": {

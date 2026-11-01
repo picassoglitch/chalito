@@ -281,7 +281,7 @@ describe("LiveStore", () => {
     expect(snap.devices.find((d) => d.deviceId === me.deviceId)!.setup).toBeNull();
   });
 
-  it("devices: tools reported beside the setup join it; bad tools leave the setup as is", async () => {
+  it("devices: tools reported beside the setup join it; a bad tool entry is dropped alone", async () => {
     const { agent, me, db, live } = await setup();
     const base = { adapters: ["claude-code"], workspaces: 1, labels: ["web"] };
     const tool = {
@@ -303,13 +303,23 @@ describe("LiveStore", () => {
       owner: OWNER,
       device_id: me.deviceId,
       role: "agent",
-      presence: { setup: base, tools: [{ ...tool, path: "/home/me" }] },
+      presence: {
+        setup: base,
+        tools: [
+          { ...tool, path: "/home/me" },
+          { ...tool, appId: "cursor-cli", name: "Cursor" },
+        ],
+      },
     });
     live.start();
     await tick(30);
     const snap = live.getSnapshot();
     expect(snap.devices.find((d) => d.deviceId === agent.deviceId)!.setup).toEqual({ ...base, tools: [tool] });
-    expect(snap.devices.find((d) => d.deviceId === me.deviceId)!.setup).toEqual(base);
+    // Only the entry carrying a path is dropped; the computer's other tool still shows.
+    expect(snap.devices.find((d) => d.deviceId === me.deviceId)!.setup).toEqual({
+      ...base,
+      tools: [{ ...tool, appId: "cursor-cli", name: "Cursor" }],
+    });
   });
 
   it("notifications are listed newest first", async () => {

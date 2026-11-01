@@ -97,3 +97,30 @@ it("sends the chosen recipe and follows only the session confirmed for its own c
     expect(state.push).toHaveBeenCalledWith({ pathname: "/sesiones/[sid]", params: { sid: "mine" } }),
   );
 });
+
+it("on a new agent (reports tools) waits for its tagged start, ignoring untagged and native sessions", async () => {
+  const live = snapshot();
+  const pc = live.devices[0]!;
+  live.devices = [{ ...pc, setup: { ...pc.setup!, tools: [] } } as DeviceView];
+  state.snapshot = live;
+  state.startSession.mockResolvedValue("my-command");
+  const { rerender } = render(<NewSession />);
+  fireEvent.change(screen.getByLabelText(/^workspace/), { target: { value: "work" } });
+  fireEvent.change(screen.getByLabelText("prompt"), { target: { value: "fix it" } });
+  fireEvent.click(screen.getByRole("button", { name: "start" }));
+  await screen.findByRole("status");
+  state.snapshot = {
+    ...live,
+    sessions: [
+      { sid: "untagged", agentDeviceId: "pc-a" },
+      { sid: "native", agentDeviceId: "pc-a", control: "approvals" },
+      { sid: "row-only", agentDeviceId: "pc-a" },
+    ],
+    events: {
+      untagged: [{ type: "session.started", meta: {} }],
+      native: [{ type: "session.started", meta: {} }],
+    },
+  };
+  rerender(<NewSession />);
+  expect(state.push).not.toHaveBeenCalled();
+});

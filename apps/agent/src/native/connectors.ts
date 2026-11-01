@@ -41,7 +41,7 @@ export const NATIVE_CONNECTOR_ERRORS = [
   "other",
 ] as const;
 export type NativeConnectorError = (typeof NATIVE_CONNECTOR_ERRORS)[number];
-const errorCode = (error: unknown): NativeConnectorError => {
+export const nativeConnectorErrorCode = (error: unknown): NativeConnectorError => {
   if (error instanceof SyntaxError) return "invalid_config";
   const message = error instanceof Error ? error.message : "";
   return (NATIVE_CONNECTOR_ERRORS as readonly string[]).includes(message) ? (message as NativeConnectorError) : "other";
@@ -199,18 +199,22 @@ export class NativeConnectors {
       this.#hasCommands(provider, data, record.commands)
     );
   }
-  enabled(provider: Provider): boolean {
+  /** On, off, or `unreadable` (settings or Chalito's record can't be read): the hook tells these apart. */
+  readState(provider: Provider): boolean | "unreadable" {
     try {
       const on = this.#enabledIn(this.#records(), provider, this.#read(this.path(provider)).data);
       this.#lastEnabledError = "";
       return on;
     } catch (error) {
       // Called on every hook request: log a failure once, not per tool call.
-      const code = `${provider}:${errorCode(error)}`;
+      const code = `${provider}:${nativeConnectorErrorCode(error)}`;
       if (code !== this.#lastEnabledError) this.d.log?.("native.connector_unreadable", { provider, error: code });
       this.#lastEnabledError = code;
-      return false;
+      return "unreadable";
     }
+  }
+  enabled(provider: Provider): boolean {
+    return this.readState(provider) === true;
   }
   async view(provider: Provider): Promise<NativeConnectorView> {
     let error: NativeConnectorError | undefined;
@@ -218,7 +222,7 @@ export class NativeConnectors {
     try {
       current = this.#read(this.path(provider));
     } catch (e) {
-      error = errorCode(e);
+      error = nativeConnectorErrorCode(e);
     }
     let records: Records | null = null;
     try {
@@ -243,7 +247,7 @@ export class NativeConnectors {
       try {
         nativeHookCommands(this.d.command, provider, this.d.platform);
       } catch (e) {
-        error = errorCode(e);
+        error = nativeConnectorErrorCode(e);
       }
     return {
       provider,
@@ -318,9 +322,14 @@ export class NativeConnectors {
       this.#write(this.#statePath(), JSON.stringify(records, null, 2) + "\n");
     } catch (error) {
       // Roll back only our exact write; never overwrite somebody's concurrent edit.
-      if (digest(this.#read(path).raw) === digest(next)) {
-        if (current.raw === null) rmSync(path, { force: true });
-        else this.#write(path, current.raw);
+      try {
+        if (digest(this.#read(path).raw) === digest(next)) {
+          if (current.raw === null) rmSync(path, { force: true });
+          else this.#write(path, current.raw);
+        }
+      } catch (rollback) {
+        // The caller needs the write's cause, not the rollback's.
+        this.d.log?.("native.rollback_failed", { provider, error: nativeConnectorErrorCode(rollback) });
       }
       throw error;
     }

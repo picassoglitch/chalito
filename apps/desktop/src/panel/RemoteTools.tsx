@@ -9,13 +9,15 @@ export const RemoteTools = ({ client }: { client: Pick<ChalitoClient, "live" | "
   const live = useSyncExternalStore(client.live.subscribe, client.live.getSnapshot);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // Kept apart: a later poll succeeding must not hide that a Connect or Refresh the person clicked failed.
   const [error, setError] = useState(false);
+  const [pollError, setPollError] = useState(false);
   // Presence isn't broadcast (migration 20261004000700): pull while this view is on screen, not every few seconds.
   useVisiblePoll(
     () =>
       void client.live.resync().then(
-        () => setError(false),
-        () => setError(true),
+        () => setPollError(false),
+        () => setPollError(true),
       ),
     20_000,
   );
@@ -51,6 +53,11 @@ export const RemoteTools = ({ client }: { client: Pick<ChalitoClient, "live" | "
       <p className="muted">{t("integrations.remote.intro")}</p>
       {notice && <p role="status">{notice}</p>}
       {error && <p role="alert">{t("integrations.remote.failed")}</p>}
+      {pollError && (
+        <p className="muted" data-remote-poll-failed>
+          {t("integrations.remote.pollFailed")}
+        </p>
+      )}
       {computers.length === 0 && <p>{t("integrations.remote.noComputers")}</p>}
       {computers.map((d) => (
         <div key={d.deviceId} data-tool-computer={d.deviceId}>

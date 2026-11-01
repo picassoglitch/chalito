@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, expect, it, vi } from "vitest";
 import { NativeConnections } from "../src/panel/NativeConnections.js";
 import { TextProviders } from "../src/lib/i18n.js";
-import { unavailableIpc, type NativeConnectionView } from "../src/lib/ipc.js";
+import { IpcUnavailableError, unavailableIpc, type NativeConnectionView } from "../src/lib/ipc.js";
 
 afterEach(cleanup);
 
@@ -155,5 +155,63 @@ it("polls every 15 seconds, and only while the panel is visible", async () => {
   } finally {
     spy.mockRestore();
     vi.useRealTimers();
+  }
+});
+
+it("keeps the last rows, an open confirm and a Connect error when a later read fails", async () => {
+  const row: NativeConnectionView = {
+    provider: "codex",
+    available: true,
+    configured: false,
+    connected: false,
+    path: "/c/hooks.json",
+    hash: "h",
+    events: ["PreToolUse"],
+  };
+  let fail: Error | null = null;
+  const nativeConnections = vi.fn(async () => {
+    if (fail) throw fail;
+    return [row];
+  });
+  const setNativeConnection = vi.fn().mockRejectedValue(new Error("os_auth_failed"));
+  const ipc = { ...unavailableIpc, nativeConnections, setNativeConnection };
+  const view = (
+    <TextProviders locale="en">
+      <NativeConnections ipc={ipc} />
+    </TextProviders>
+  );
+  const { rerender } = render(view);
+  // A Connect error survives a failing re-read.
+  fireEvent.click(await screen.findByRole("button", { name: "Connect app" }));
+  fail = new Error("internal");
+  fireEvent.click(
+    within(screen.getByRole("group", { name: "Connect this AI app" })).getByRole("button", { name: "Connect app" }),
+  );
+  await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+  expect(document.querySelector("[data-native-read-failed]")?.textContent).toBe(
+    "Chalito couldn't refresh these connections. The list shows the last status it read.",
+  );
+  expect(screen.getByRole("heading", { name: "Codex" })).toBeTruthy();
+  // An open confirm survives a failing poll.
+  fail = null;
+  rerender(<TextProviders locale="en">{<NativeConnections ipc={{ ...ipc }} />}</TextProviders>);
+  await waitFor(() => expect(document.querySelector("[data-native-read-failed]")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Connect app" }));
+  fail = new Error("internal");
+  rerender(<TextProviders locale="en">{<NativeConnections ipc={{ ...ipc }} />}</TextProviders>);
+  await waitFor(() => expect(document.querySelector("[data-native-read-failed]")).toBeTruthy());
+  expect(screen.getByRole("group", { name: "Connect this AI app" })).toBeTruthy();
+});
+
+it("hides the card only when the agent has no such call", async () => {
+  for (const error of [new IpcUnavailableError(), new Error("unknown_method")]) {
+    const { container, unmount } = render(
+      <TextProviders locale="en">
+        <NativeConnections ipc={{ ...unavailableIpc, nativeConnections: async () => Promise.reject(error) }} />
+      </TextProviders>,
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    expect(container.innerHTML).toBe("");
+    unmount();
   }
 });

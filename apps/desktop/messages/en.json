@@ -400,6 +400,7 @@
       "intro": "Connect a tool on any computer signed in to your Chalito account. Its account and tools stay on that computer; use them from Sessions.",
       "finish": "Request sent. Finish signing in in the browser on {computer}. The status will update when that computer confirms the connection.",
       "failed": "Could not refresh or request the connection. Check that both computers are online and paired.",
+      "pollFailed": "Couldn't update the computers' status. Showing the last status received.",
       "noComputers": "Sign in to Chalito on your other computers to see them here.",
       "refresh": "Refresh tools",
       "allowSessions": "Connected. Allow this tool’s sessions in Chalito on {computer} to run tasks from here."
@@ -423,6 +424,7 @@
       "addHint": "Chalito will add its approval connector to this app’s settings. Existing settings stay in place, with a local backup. Your operating system will ask you to confirm.",
       "removeHint": "Remove only Chalito’s connector. Pending requests will be denied. The app keeps its own account and settings.",
       "changes": "See the changes",
+      "readFailed": "Chalito couldn't refresh these connections. The list shows the last status it read.",
       "error": {
         "config_changed": "The settings changed while this screen was open. Review and try again.",
         "os_auth_failed": "The system confirmation was cancelled or failed.",

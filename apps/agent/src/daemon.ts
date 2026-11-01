@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { realpathSync, watch, type FSWatcher } from "node:fs";
+import { realpathSync, rmSync, watch, type FSWatcher } from "node:fs";
 import { basename, delimiter, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ManagedSessionAdapter, type ManagedSource, type SessionAdapter } from "@chalito/adapters";
@@ -61,9 +61,10 @@ import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
+import { expandHome } from "./workspace-path.js";
 import { NativeBridge } from "./native/bridge.js";
 import { NativeConnectors } from "./native/connectors.js";
-import { NATIVE_APPS, nativeWorkspacePaths, writeNativeWorkspaces } from "./native/protocol.js";
+import { NATIVE_APPS, NATIVE_WORKSPACES_FILE, nativeWorkspacePaths, writeNativeWorkspaces } from "./native/protocol.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import type { Duplex } from "node:stream";
 import { FileLinkStorage, LinkManager, LinkTools, MemoryLinkCloud } from "./links/index.js";
@@ -519,7 +520,7 @@ const startDaemon = async (
     // The same paths the classifier uses: ~ expanded, then resolved.
     // A pinned workspace that moved is out of the classifier's list (same check), so don't walk it.
     const paths = (policyRef?.get().workspaces ?? []).flatMap((w) => {
-      const p = w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : resolve(w.path);
+      const p = resolve(expandHome(w.path, home));
       if (!pinHolds(w, defaultRealpath(p))) return [];
       try {
         return [realpathSync.native(p)];
@@ -545,6 +546,12 @@ const startDaemon = async (
       writeNativeWorkspaces(dir, nativeWorkspacePaths(workspaces, deps.home ?? homedir()));
     } catch (err) {
       log.warn("native.workspaces_write_failed", { error: err instanceof Error ? err.message : "error" });
+      // A stale list could pass an action in a new workspace; no file makes the hook deny instead.
+      try {
+        rmSync(join(dir, NATIVE_WORKSPACES_FILE), { force: true });
+      } catch (rmErr) {
+        log.warn("native.workspaces_remove_failed", { error: rmErr instanceof Error ? rmErr.message : "error" });
+      }
     }
   };
   let policyRef: FilePolicyHolder | null = null;
@@ -1494,7 +1501,7 @@ const startDaemon = async (
   onSignal("SIGINT", () => void stop("SIGINT"));
 
   // ADR 0031: sessions typed at this computer; the panel's are `local`, `chalito code`'s `local:cli` (§6a).
-  const code = codeService(core, () => policy.get(), readSetup, "local");
+  const code = codeService(core, () => policy.get(), readSetup, "local", deps.home ?? homedir());
   const hookCommand = computerMcpCommand();
   const nativeConnectors: NativeConnectors = new NativeConnectors({
     home: deps.home ?? homedir(),
@@ -1517,8 +1524,9 @@ const startDaemon = async (
     core,
     store: signedInStore,
     deviceId: id.deviceId,
-    enabled: (provider) => nativeConnectors.enabled(provider),
+    enabled: (provider) => nativeConnectors.readState(provider),
     workspaceFor: code.workspaceFor,
+    home: deps.home ?? homedir(),
     now,
     locale: () => cfg.locale,
     ledger: join(dir, "native-sessions.json"),
@@ -1554,7 +1562,7 @@ const startDaemon = async (
       codeServer = await startCodeServer({
         path: codeAt,
         native: (request, signal) => nativeBridge.handle(request, signal),
-        code: codeService(core, () => policy.get(), readSetup, "local:cli"),
+        code: codeService(core, () => policy.get(), readSetup, "local:cli", deps.home ?? homedir()),
         ...(winSec
           ? {
               listen: (p: string, on: (s: Duplex) => void) =>
@@ -1579,6 +1587,7 @@ const startDaemon = async (
         secret: deps.ipcSecret,
         handlers: ipcHandlers({
           policy,
+          warn: (event, meta) => log.warn(event, meta),
           devMode,
           devModeDeps: devModeBase,
           osAuth:

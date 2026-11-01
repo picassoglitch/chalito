@@ -42,7 +42,7 @@ import { ownSessionHandlers, type OwnSessionsDeps } from "./watch/ipc.js";
 import { RepoPattern, type PrWatch } from "./prs/watch.js";
 import { meetingHandlers, type MeetingsFeature } from "./meetings/ipc.js";
 import { NativeProvider } from "./native/protocol.js";
-import type { NativeConnectors } from "./native/connectors.js";
+import { nativeConnectorErrorCode, type NativeConnectors } from "./native/connectors.js";
 
 /** The agent version the panel's `ping` sees. */
 export const AGENT_VERSION = "0.0.0";
@@ -173,6 +173,8 @@ export interface IpcDeps {
   /** ADR 0031 §1: sessions started here ("Nueva sesión"); absent = the code calls answer `unavailable`. */
   code?: CodeService;
   nativeConnectors?: NativeConnectors;
+  /** Operational warnings (the daemon's log.warn); absent in tests that don't check them. */
+  warn?: (event: string, meta: Record<string, unknown>) => void;
   /** Sessions the person started outside Chalito (opt-in, read-only); absent = those calls answer `unavailable`. */
   ownSessions?: OwnSessionsDeps | null;
   /** The person's GitHub PRs through their own `gh` (prs/watch.ts); absent = the PR calls answer `unavailable`. */
@@ -180,6 +182,25 @@ export interface IpcDeps {
   /** Meeting warnings and follow-ups (meetings/); absent = those calls answer `unavailable`. */
   meetings?: MeetingsFeature;
 }
+
+/** The panel's codes for a connector change; anything else is `internal`. */
+const NATIVE_SET_ERRORS = new Set([
+  "app_unavailable",
+  "os_auth_failed",
+  "config_changed",
+  "unsafe_path",
+  "invalid_config",
+  "config_too_large",
+  "unsafe_command",
+  "state_corrupt",
+  "cli_unavailable",
+]);
+export const nativeConnectionErrorCode = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : "";
+  if (NATIVE_SET_ERRORS.has(message)) return message;
+  const known = nativeConnectorErrorCode(error);
+  return known === "other" ? "internal" : known;
+};
 
 const prsOf = (d: IpcDeps): PrWatch => {
   if (!d.prs) throw new IpcError("unavailable");
@@ -493,20 +514,14 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     try {
       await d.nativeConnectors.set(p.provider, p.enabled, p.hash);
     } catch (error) {
-      const code = error instanceof Error ? error.message : "internal";
-      throw new IpcError(
-        [
-          "app_unavailable",
-          "os_auth_failed",
-          "config_changed",
-          "unsafe_path",
-          "invalid_config",
-          "config_too_large",
-          "unsafe_command",
-        ].includes(code)
-          ? code
-          : "internal",
-      );
+      const code = nativeConnectionErrorCode(error);
+      // `internal` tells the person nothing: keep the real cause in the log.
+      if (code === "internal")
+        d.warn?.("native.set_failed", {
+          provider: p.provider,
+          error: error instanceof Error ? error.message : "error",
+        });
+      throw new IpcError(code);
     }
   },
   connectAppKey: async (params) => {

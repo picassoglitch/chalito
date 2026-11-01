@@ -1,4 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { nativeWorkspaceStatus } from "../src/native/protocol.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "@chalito/adapters/codex";
@@ -262,6 +263,20 @@ describe("chalito run (daemon)", () => {
     await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: w }] }, "local");
     expect(JSON.parse(readFileSync(file, "utf8")).paths).toContain(w);
     await vi.waitFor(() => expect(s.store.sessions.get("native-ghost")).toMatchObject({ state: "interrupted" }));
+    await d.stop();
+  });
+
+  it("removes the native-hook workspace file when it can't write a current one, so the hook fails closed", async () => {
+    const s = await setup();
+    const d = await runDaemon(s.deps);
+    const file = join(s.dir, "native-workspaces.json");
+    await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: join(s.home, "w") }] }, "local");
+    expect(existsSync(file)).toBe(true);
+    // A path the hook's reader would reject (over 4096 characters): the stale list must not stay behind.
+    const long = join(s.home, "x".repeat(5000));
+    await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: long }] }, "local");
+    expect(existsSync(file)).toBe(false);
+    expect(nativeWorkspaceStatus(s.dir, join(s.home, "elsewhere"))).toBe("unknown");
     await d.stop();
   });
 

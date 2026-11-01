@@ -21,21 +21,25 @@ import { codeService } from "../src/code/service.js";
 import { startCodeServer } from "../src/code/server.js";
 import { agentFor, HOME, WS, tempDir, waitFor } from "./rc-harness.js";
 
-const rig = async (opts: { ledger?: string; logs?: string[] } = {}) => {
-  const agent = await agentFor();
+const rig = async (
+  opts: { ledger?: string; logs?: string[]; ws?: string; enabled?: () => boolean | "unreadable" } = {},
+) => {
+  const agent = await agentFor(opts.ws ? { ws: opts.ws } : {});
   const code = codeService(
     agent.core,
     () => agent.policy.get(),
     () => ({ adapters: [], labels: ["chalito"], workspaces: 1 }),
     "local:cli",
+    HOME,
   );
   let enabled = true;
   const bridge = new NativeBridge({
     core: agent.core,
     store: agent.store,
     deviceId: agent.self.id,
-    enabled: () => enabled,
+    enabled: opts.enabled ?? (() => enabled),
     workspaceFor: code.workspaceFor,
+    home: HOME,
     now: Date.now,
     locale: () => "en",
     ...(opts.ledger ? { ledger: opts.ledger } : {}),
@@ -294,10 +298,12 @@ const runHook = async (
     openPipe?: () => { ok: true; stream: Duplex };
     status?: (cwd: string) => "inside" | "outside" | "unknown";
     locale?: "es" | "en";
+    input?: PassThrough;
+    idleMs?: number;
   } = {},
 ) => {
-  const input = new PassThrough();
-  input.end(payload);
+  const input = opts.input ?? new PassThrough();
+  if (!opts.input) input.end(payload);
   let output = "";
   const code = await runNativeHook(
     {
@@ -307,12 +313,13 @@ const runHook = async (
       },
       ...(opts.openPipe ? { openPipe: opts.openPipe } : {}),
       ...(opts.status ? { workspaceStatus: opts.status } : {}),
+      home: HOME,
     },
     opts.path === undefined ? "native-test" : opts.path,
     provider,
     provider === "cursor" ? "preToolUse" : "PreToolUse",
     opts.locale ?? "en",
-    { connectMs: 500 },
+    { connectMs: 500, ...(opts.idleMs ? { idleMs: opts.idleMs } : {}) },
   );
   return { code, reply: JSON.parse(output) as Record<string, unknown> };
 };
@@ -527,7 +534,7 @@ describe("native hook review fixes (owner decisions 2026-10-31)", () => {
     };
     await s.answer(true);
     expect(await ask).toMatchObject({ ok: true, allow: true });
-    expect(logs).toContain("native.state_write_failed");
+    await vi.waitFor(() => expect(logs).toContain("native.state_write_failed"));
   });
 
   it("awaits interrupted writes on close and sweeps sessions an earlier run left live", async () => {
@@ -621,7 +628,9 @@ describe("native hook review fixes (owner decisions 2026-10-31)", () => {
         decision: "deny",
         message: "This request is too large for Chalito to review, so it was denied.",
       });
-      const away = await runHook("claude", hookPayload("claude", { ...big, cwd: outside }), {
+      // Outside means the file too: a workspace file_path from an outside cwd is still a workspace action.
+      const awayBig = { ...big, tool_input: { ...big.tool_input, file_path: join(outside, "a.txt") } };
+      const away = await runHook("claude", hookPayload("claude", { ...awayBig, cwd: outside }), {
         path: missingSocket,
         status,
       });
@@ -707,6 +716,320 @@ describe("native hook review fixes (owner decisions 2026-10-31)", () => {
       writeNativeWorkspaces(join(away.io.home, ".chalito"), [WS]);
       expect(await main(["native-hook", "claude", "PreToolUse"], away.io as never)).toBe(0);
       expect(JSON.parse(away.out.join(""))).toEqual({});
+    });
+  });
+});
+
+describe("native hook review fixes, round 2", () => {
+  const down = tempDir("chalito-native-r2-");
+  const missingSocket = join(down, "code.sock");
+  const outside = tempDir("chalito-native-r2-outside-");
+  const status = (cwd: string) => nativeWorkspaceStatus(down, cwd);
+  const signal = () => new AbortController().signal;
+  const tool = (provider: NativeProvider, fields: Record<string, unknown>) =>
+    JSON.stringify({
+      hook_event_name: provider === "cursor" ? "preToolUse" : "PreToolUse",
+      session_id: "r2",
+      ...fields,
+    });
+  /** Runs the hook against a live agent and reports whether Chalito asked a human (then denies it). */
+  const askedUp = async (provider: NativeProvider, payload: string, ws?: string) => {
+    const s = await rig(ws ? { ws } : {});
+    const server = await serve(s);
+    try {
+      const hook = runHook(provider, payload, { openPipe: server.openPipe });
+      const asked = await Promise.race([
+        waitFor(() => s.store.pendingApprovals().length === 1).then(() => true),
+        hook.then(() => false),
+      ]);
+      if (asked) await s.answer(false);
+      return { asked, reply: (await hook).reply };
+    } finally {
+      await s.bridge.close();
+      await server.close();
+    }
+  };
+
+  it("matches a `~` workspace with the agent up and down", async () => {
+    const asked = await askedUp("claude", hookPayload("claude", { cwd: join(WS, "src") }), "~/code/chalito");
+    expect(asked.asked).toBe(true);
+    expect(decisionOf("claude", asked.reply).decision).toBe("deny");
+    const s = await rig({ ws: "~/code/chalito" });
+    expect(s.code.workspaceFor(WS)).toBe("chalito");
+    expect(s.code.workspaceFor(outside)).toBeNull();
+    const home = codeService(
+      s.core,
+      () => ({ ...s.policy.get(), workspaces: [{ label: "home", path: "~" }] }),
+      () => ({ adapters: [], labels: ["home"], workspaces: 1 }),
+      "local:cli",
+      HOME,
+    );
+    expect(home.workspaceFor(join(HOME, "x"))).toBe("home");
+    await s.bridge.close();
+    writeNativeWorkspaces(down, nativeWorkspacePaths([{ path: "~/code/chalito" }], HOME));
+    const off = await runHook("claude", hookPayload("claude", { cwd: join(WS, "src") }), {
+      path: missingSocket,
+      status,
+    });
+    expect(decisionOf("claude", off.reply).decision).toBe("deny");
+  });
+
+  describe("gates where the action lands, not where the app opened", () => {
+    const edit = tool("claude", {
+      cwd: HOME,
+      tool_name: "Edit",
+      tool_input: { file_path: join(WS, "src", "a.ts"), old_string: "a", new_string: "b" },
+    });
+    const codexShell = tool("codex", {
+      cwd: HOME,
+      tool_name: "Bash",
+      tool_input: { command: "npm install left-pad", workdir: WS },
+    });
+    const cursorRoots = tool("cursor", {
+      workspace_roots: [outside, WS],
+      tool_name: "Shell",
+      tool_input: { command: "ls" },
+    });
+
+    it("asks a human with the agent up", async () => {
+      for (const [provider, payload] of [
+        ["claude", edit],
+        ["codex", codexShell],
+        ["cursor", cursorRoots],
+      ] as const) {
+        const { asked, reply } = await askedUp(provider, payload);
+        expect(asked, provider).toBe(true);
+        expect(decisionOf(provider, reply).decision).toBe("deny");
+      }
+    });
+
+    it("denies with the agent down", async () => {
+      writeNativeWorkspaces(down, nativeWorkspacePaths([{ path: WS }], HOME));
+      for (const [provider, payload] of [
+        ["claude", edit],
+        ["codex", codexShell],
+        ["cursor", cursorRoots],
+      ] as const) {
+        const { reply } = await runHook(provider, payload, { path: missingSocket, status });
+        expect(decisionOf(provider, reply).decision, provider).toBe("deny");
+      }
+    });
+
+    it("still gives no decision when every target is outside", async () => {
+      writeNativeWorkspaces(down, nativeWorkspacePaths([{ path: WS }], HOME));
+      const away = [
+        ["claude", tool("claude", { cwd: HOME, tool_name: "Edit", tool_input: { file_path: join(outside, "a.ts") } })],
+        ["codex", tool("codex", { cwd: HOME, tool_name: "Bash", tool_input: { command: "ls", workdir: outside } })],
+        ["cursor", tool("cursor", { workspace_roots: [outside], tool_name: "Shell", tool_input: { command: "ls" } })],
+      ] as const;
+      for (const [provider, payload] of away) {
+        expect((await askedUp(provider, payload)).reply, provider).toEqual({});
+        expect((await runHook(provider, payload, { path: missingSocket, status })).reply, provider).toEqual({});
+      }
+    });
+
+    it("refuses one request whose targets are in two different workspaces", async () => {
+      const s = await rig();
+      const other = join(HOME, "code", "other");
+      mkdirSync(other, { recursive: true });
+      await s.policy.set(
+        {
+          ...s.policy.get(),
+          workspaces: [...s.policy.get().workspaces, { label: "other", path: other }],
+        },
+        "local",
+      );
+      const reply = await s.bridge.handle(
+        {
+          provider: "codex",
+          event: "tool",
+          nativeSessionId: "two",
+          cwd: WS,
+          toolName: "Bash",
+          input: { command: "ls", workdir: other },
+        },
+        signal(),
+      );
+      expect(reply).toMatchObject({ ok: false, reason: "ambiguous_path" });
+      expect(s.store.pendingApprovals()).toHaveLength(0);
+      await s.bridge.close();
+    });
+  });
+
+  it("makes room by ending the oldest idle session, and refuses only when all 32 are busy", async () => {
+    const s = await rig();
+    const start = (id: string) =>
+      s.bridge.handle({ provider: "claude", event: "start", nativeSessionId: id, cwd: WS }, signal());
+    const first = await start("s0");
+    for (let i = 1; i < 32; i++) await start(`s${i}`);
+    const extra = await start("s32");
+    expect(extra).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(s.store.sessions.get(first.sid!)).toMatchObject({ state: "completed", live: false }));
+
+    const busy = await rig();
+    const aborts = Array.from({ length: 32 }, () => new AbortController());
+    const waiting = aborts.map((abort, i) =>
+      busy.bridge.handle(
+        {
+          provider: "claude",
+          event: "tool",
+          nativeSessionId: `b${i}`,
+          cwd: WS,
+          toolName: "Bash",
+          input: { command: "npm install left-pad" },
+        },
+        abort.signal,
+      ),
+    );
+    await waitFor(() => busy.store.pendingApprovals().length === 32, 10_000);
+    const refused = await busy.bridge.handle(
+      { provider: "claude", event: "start", nativeSessionId: "b32", cwd: WS },
+      signal(),
+    );
+    expect(refused).toEqual({ ok: false, reason: "session_limit" });
+    expect(nativeHookOutput("claude", "PreToolUse", refused)).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecisionReason: "Chalito is already following too many active sessions. Finish one, then try again.",
+      },
+    });
+    for (const abort of aborts) abort.abort();
+    await Promise.all(waiting);
+    await s.bridge.close();
+    await busy.bridge.close();
+  });
+
+  it("returns the decision while a store write hangs", async () => {
+    const s = await rig();
+    const ask = s.bridge.handle(
+      {
+        provider: "claude",
+        event: "tool",
+        nativeSessionId: "hung",
+        cwd: WS,
+        toolName: "Bash",
+        input: { command: "npm install left-pad" },
+      },
+      signal(),
+    );
+    await waitFor(() => s.store.pendingApprovals().length === 1);
+    const store = s.store as AgentStore;
+    store.upsertSession = () => new Promise(() => undefined);
+    store.writeEvent = () => new Promise(() => undefined);
+    await s.answer(true);
+    const reply = await Promise.race([ask, new Promise<"hung">((done) => setTimeout(() => done("hung"), 2000))]);
+    expect(reply).toMatchObject({ ok: true, allow: true });
+  });
+
+  it("ends a session whose row was written but whose start event failed", async () => {
+    const s = await rig();
+    const store = s.store as AgentStore;
+    const write = store.writeEvent.bind(store);
+    store.writeEvent = async () => {
+      throw new Error("db down");
+    };
+    await expect(
+      s.bridge.handle({ provider: "codex", event: "start", nativeSessionId: "half", cwd: WS }, signal()),
+    ).rejects.toThrow("db down");
+    store.writeEvent = write;
+    const rows = [...s.store.sessions.values()].filter((row) => row.control === "approvals");
+    expect(rows).toHaveLength(1);
+    await vi.waitFor(() => expect(rows[0]).toMatchObject({ state: "interrupted", live: false }));
+  });
+
+  it("tells a waiting tool call that its session ended", async () => {
+    const s = await rig();
+    const ask = s.bridge.handle(
+      {
+        provider: "claude",
+        event: "tool",
+        nativeSessionId: "ending",
+        cwd: WS,
+        toolName: "Bash",
+        input: { command: "npm install left-pad" },
+      },
+      signal(),
+    );
+    await waitFor(() => s.store.pendingApprovals().length === 1);
+    await s.bridge.handle({ provider: "claude", event: "end", nativeSessionId: "ending", cwd: WS }, signal());
+    const reply = await ask;
+    expect(reply).toMatchObject({ allow: false, reason: "session_ended" });
+    expect(nativeHookOutput("claude", "PreToolUse", reply)).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecisionReason: "This session ended in Chalito before the action was reviewed, so it was denied.",
+      },
+    });
+    await s.bridge.close();
+  });
+
+  it("names an unreadable connector config apart from a disabled one", async () => {
+    const s = await rig({ enabled: () => "unreadable" });
+    const reply = await s.bridge.handle(
+      { provider: "claude", event: "start", nativeSessionId: "u", cwd: WS },
+      signal(),
+    );
+    expect(reply).toEqual({ ok: false, reason: "connector_unreadable" });
+    expect(nativeHookOutput("claude", "PreToolUse", reply)).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecisionReason:
+          "Chalito can't read Claude Code settings, so it denied this action. Check the settings file in Chalito's Connected AI tab.",
+      },
+    });
+    await s.bridge.close();
+  });
+
+  describe("hook stdin", () => {
+    const big = (cwd: string) =>
+      hookPayload("claude", {
+        cwd,
+        tool_name: "Write",
+        tool_input: { file_path: join(cwd, "a.txt"), content: "x".repeat(1_200_000) },
+      });
+
+    it("passes an oversized (>1 MB) request outside workspaces and denies it inside as too large", async () => {
+      writeNativeWorkspaces(down, nativeWorkspacePaths([{ path: WS }], HOME));
+      expect((await runHook("claude", big(outside), { path: missingSocket, status })).reply).toEqual({});
+      expect(decisionOf("claude", (await runHook("claude", big(WS), { path: missingSocket, status })).reply)).toEqual({
+        decision: "deny",
+        message: "This request is too large for Chalito to review, so it was denied.",
+      });
+      // An oversized request that edits a workspace file from outside it is still inside.
+      const fromHome = hookPayload("claude", {
+        cwd: HOME,
+        tool_name: "Write",
+        tool_input: { file_path: join(WS, "a.txt"), content: "x".repeat(1_200_000) },
+      });
+      expect(
+        decisionOf("claude", (await runHook("claude", fromHome, { path: missingSocket, status })).reply).decision,
+      ).toBe("deny");
+    });
+
+    it("keeps reading while chunks keep arriving, past one second in total", async () => {
+      writeNativeWorkspaces(down, nativeWorkspacePaths([{ path: WS }], HOME));
+      const payload = hookPayload("claude", { cwd: outside });
+      const input = new PassThrough();
+      const run = runHook("claude", payload, { path: missingSocket, status, input });
+      const third = Math.ceil(payload.length / 3);
+      for (let i = 0; i < 3; i++) {
+        input.write(payload.slice(i * third, (i + 1) * third));
+        await new Promise((done) => setTimeout(done, 600));
+      }
+      input.end();
+      expect((await run).reply).toEqual({});
+    });
+
+    it("judges what was read when the writer stalls", async () => {
+      writeNativeWorkspaces(down, nativeWorkspacePaths([{ path: WS }], HOME));
+      for (const [cwd, expected] of [
+        [outside, "pass"],
+        [WS, "deny"],
+      ] as const) {
+        const payload = hookPayload("claude", { cwd });
+        const input = new PassThrough();
+        input.write(payload.slice(0, payload.indexOf('"tool_name"')));
+        const { reply } = await runHook("claude", "", { path: missingSocket, status, input, idleMs: 200 });
+        if (expected === "pass") expect(reply).toEqual({});
+        else expect(decisionOf("claude", reply).decision).toBe("deny");
+      }
     });
   });
 });
