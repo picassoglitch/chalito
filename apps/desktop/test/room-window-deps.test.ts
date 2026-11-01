@@ -5,7 +5,9 @@ import { BROWSER_SESSION_KEY, memoryStorage, type BrowserSupabase } from "@chali
 import { newRoom } from "@chalito/rooms";
 import { roomWindowDeps, type RoomWindowIo } from "../src/lib/room-window.js";
 
-const io = async (o: { session?: boolean; account?: boolean; keys?: boolean; companion?: string | null } = {}) => {
+const io = async (
+  o: { session?: boolean; account?: boolean; keys?: boolean; companion?: string | null; lookupFails?: boolean } = {},
+) => {
   const storage = memoryStorage();
   if (o.session !== false) await storage.setItem(BROWSER_SESSION_KEY, JSON.stringify({ access_token: "at_panel" }));
   const box = await generateBoxKeyPair();
@@ -17,6 +19,7 @@ const io = async (o: { session?: boolean; account?: boolean; keys?: boolean; com
         eq: (k: string, v: string) => ({
           maybeSingle: async () => {
             queries.push([t, c, k, v]);
+            if (o.lookupFails) return { data: null, error: { message: "fetch failed" } };
             return { data: o.companion === null ? null : { companion_id: o.companion ?? "chl_me" }, error: null };
           },
         }),
@@ -42,6 +45,10 @@ describe("room window connection (borrows the panel's session)", () => {
     expect(await roomWindowDeps((await io({ keys: false })).value)).toBeNull();
     expect(await roomWindowDeps((await io({ account: false })).value)).toBeNull();
     expect(await roomWindowDeps((await io({ companion: null })).value)).toBeNull();
+  });
+
+  it("throws when the companion lookup fails (offline, 5xx), so the pet keeps waiting instead of giving up (#129)", async () => {
+    await expect(roomWindowDeps((await io({ lookupFails: true })).value)).rejects.toThrow("companion lookup failed");
   });
 
   it("uses the panel's token, finds this owner's companion, and unwraps room keys inside the vault's box", async () => {

@@ -7,7 +7,7 @@ import {
 } from "@chalito/scene/custom-card";
 import type { RoomWindowDeps } from "./room-window.js";
 
-/** How long a borrowed session may stay unusable at startup before the pet stops waiting for it. */
+/** How long a borrowed session may stay unusable (no token, no companion row, 401/403) at startup before the pet stops waiting. */
 export const SESSION_GRACE_MS = 60_000;
 
 /** The avatar bucket's signed-URL host (tauri.conf.json img-src allows it). */
@@ -25,8 +25,10 @@ export const companionCardFetcher = (
   graceMs = SESSION_GRACE_MS,
 ) => {
   let unusableSince: number | null = null;
-  // #129 — a session still unusable after the grace (expired, revoked, no companion yet) means no custom card.
+  let answered = false;
+  // #129 — at startup only: a session still unusable after the grace means no custom card. Once one answered, keep it.
   const unusable = (why: string): null => {
+    if (answered) throw new Error(why);
     unusableSince ??= now();
     if (now() - unusableSince >= graceMs) return null;
     throw new Error(why);
@@ -43,6 +45,7 @@ export const companionCardFetcher = (
       throw error;
     }
     unusableSince = null;
+    answered = true;
     const c = parseSignedCard(body, { now: now(), isUrl: (u) => SIGNED.test(u) });
     if (c === "invalid") throw new Error("unusable custom card");
     return c;

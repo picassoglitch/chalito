@@ -8,7 +8,7 @@ import {
 import { KeyVault, httpApi } from "@chalito/client-keys";
 import { unwrapKeyring, type RoomControllerDeps, type RoomsDb } from "@chalito/rooms";
 import { catalogLoader, type CosmeticCatalog } from "../room/scene-members.js";
-import { companionIdFor } from "./companion.js";
+import { companionIdOrThrow } from "./companion.js";
 import { loadStored, type DesktopEnv, type Stored } from "./session.js";
 
 /** What every RoomController in the room window shares (all but the roomId). */
@@ -44,7 +44,8 @@ export const roomWindowDeps = async (io: RoomWindowIo): Promise<RoomWindowDeps |
   const token = storedAccessToken(io.storage);
   if (!account || !keys || !(await token())) return null;
   const db = io.supabase(token);
-  const companionId = await companionIdFor(db, account.owner);
+  // #129 — a failed lookup throws (keep waiting); only a missing row means "no companion".
+  const companionId = await companionIdOrThrow(db, account.owner);
   if (!companionId) return null;
   return {
     db: db as unknown as RoomsDb,
