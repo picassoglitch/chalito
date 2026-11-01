@@ -11,6 +11,17 @@ const problemOf = (r: ApprovalConsoleResult): ApprovalProblem | null =>
 // approval is pending, with no timed alert: owner, 2026-10-30, "we can't pressure them".
 export const attachBoardApprovals = (link: BoardLink, client: Client): (() => void) => {
   let display: { close: () => void; off: () => void } | null = null;
+  /** The approval a send_failed/phone_required was about: the notice goes once it leaves the list. */
+  let problemAid: string | null = null;
+  const report = (problem: ApprovalProblem | null, aid: string | null = null) => {
+    problemAid = problem === "write_failed" ? null : aid;
+    link.reportApproval(problem);
+  };
+  const offLive = client.live.subscribe(() => {
+    if (!problemAid) return;
+    const pending = client.live.getSnapshot().approvals.some((a) => a.aid === problemAid && a.status === "pending");
+    if (!pending) report(null);
+  });
   const drop = (d: typeof display) => {
     if (!d || display !== d) return;
     display = null;
@@ -23,12 +34,12 @@ export const attachBoardApprovals = (link: BoardLink, client: Client): (() => vo
     const d = attachApprovalDisplay(client.live, client.actions, link.approvalTransport(), {
       onResult: (r) => {
         if (!r.ok) console.warn(`board: approvals screen: ${r.reason}`);
-        if (r.ok || problemOf(r)) link.reportApproval(problemOf(r));
+        if (r.ok || problemOf(r)) report(problemOf(r), d.controller.getSnapshot().approval?.aid ?? null);
       },
       onClose: (reason) => {
         if (reason !== "write_failed") return;
         console.warn("board: approvals screen stopped: a frame couldn't be written");
-        link.reportApproval("write_failed");
+        report("write_failed");
         // The next link change (a hello) attaches a fresh one.
         drop(current);
       },
@@ -39,13 +50,15 @@ export const attachBoardApprovals = (link: BoardLink, client: Client): (() => vo
       if (!link.ready) drop(current);
     });
     display = current;
-    if (link.getSnapshot().approvalProblem === "write_failed") link.reportApproval(null);
+    // A fresh screen: whatever went wrong on the last one is over.
+    report(null);
   };
   const offLink = link.subscribe(sync);
   sync();
 
   return () => {
     offLink();
+    offLive();
     drop(display);
   };
 };

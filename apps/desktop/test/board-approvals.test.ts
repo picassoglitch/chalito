@@ -109,3 +109,51 @@ describe("board approvals in the panel", () => {
     expect(active).toBe(0);
   });
 });
+
+describe("approvals-screen problems go away", () => {
+  it("the real transport stops the screen after frames keep failing while connected, and says so", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { board, link } = await setup({ frameFailures: 2 });
+    board.failNext.set("approval-console", 2);
+    const off = attachBoardApprovals(link, { live: live("LOW"), actions: { decide: async () => undefined } } as never);
+    board.plug();
+    await until(() => link.getSnapshot().approvalProblem === "write_failed");
+    expect(warn.mock.calls.some((c) => String(c.join(" ")).includes("approval-console"))).toBe(true);
+    off();
+  });
+
+  it("phone_required clears once that approval leaves the list (answered on the phone)", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { board, link } = await setup();
+    const feed = live("HIGH");
+    let snap = feed.getSnapshot();
+    const subs = new Set<() => void>();
+    const changing = {
+      subscribe: (f: () => void) => (subs.add(f), () => void subs.delete(f)),
+      getSnapshot: () => snap,
+    };
+    const off = attachBoardApprovals(link, { live: changing, actions: { decide: async () => undefined } } as never);
+    board.plug();
+    await until(() => board.sent("approval-console").some((f) => f.state === "phone_required"));
+    board.decide(AID, shownTicket(board.sent("approval-console")), true);
+    await until(() => link.getSnapshot().approvalProblem === "phone_required");
+    snap = { ...snap, approvals: [] };
+    for (const f of [...subs]) f();
+    await until(() => link.getSnapshot().approvalProblem === null);
+    off();
+  });
+
+  it("a re-attached screen starts with no old problem", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { board, link } = await setup();
+    const off = attachBoardApprovals(link, { live: live("HIGH"), actions: { decide: async () => undefined } } as never);
+    board.plug();
+    await until(() => board.sent("approval-console").some((f) => f.state === "phone_required"));
+    board.decide(AID, shownTicket(board.sent("approval-console")), true);
+    await until(() => link.getSnapshot().approvalProblem === "phone_required");
+    board.unplug();
+    board.plug();
+    await until(() => link.ready && link.getSnapshot().approvalProblem === null);
+    off();
+  });
+});

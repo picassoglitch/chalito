@@ -52,6 +52,8 @@ export interface BoardLinkOptions {
   helloRetryMs?: number;
   /** Where a card failure is shared with the other windows. */
   cardErrors?: CardErrorChannel;
+  /** Approval frames that may fail in a row while connected before the screen is stopped. */
+  frameFailures?: number;
 }
 
 export interface BoardSnapshot {
@@ -104,6 +106,7 @@ export class BoardLink {
   readonly #retryMs: number;
   readonly #helloRetryMs: number;
   readonly #cardErrors: CardErrorChannel;
+  readonly #frameFailures: number;
   #cardRetries = 0;
   #cardRetry: ReturnType<typeof setTimeout> | undefined;
   #helloRetries = 0;
@@ -154,6 +157,7 @@ export class BoardLink {
     this.#retryMs = opts.retryMs ?? CARD_RETRY_MS;
     this.#helloRetryMs = opts.helloRetryMs ?? 500;
     this.#cardErrors = opts.cardErrors ?? memoryCardErrors();
+    this.#frameFailures = opts.frameFailures ?? 3;
   }
 
   getSnapshot = (): BoardSnapshot => this.#snap;
@@ -316,11 +320,18 @@ export class BoardLink {
 
   /** attachApprovalDisplay's transport for the current connection; it disconnects with the board. */
   approvalTransport(): ApprovalDisplayTransport {
+    let failures = 0;
     return {
-      write: (frame: ApprovalConsoleFrame) => {
-        if (!this.ready) return Promise.reject(new Error("board not connected"));
-        // A failed line while connected is dropped: the next second's frame replaces it.
-        return this.#write(frame).catch(() => undefined);
+      write: async (frame: ApprovalConsoleFrame) => {
+        if (!this.ready) throw new Error("board not connected");
+        try {
+          await this.#write(frame);
+          failures = 0;
+        } catch (e) {
+          console.warn("board: an approval-console frame didn't go out", e);
+          // One failed frame is replaced by the next second's; several in a row mean the screen is stale.
+          if (++failures >= this.#frameFailures) throw e;
+        }
       },
       listen: (onCommand, onDisconnect) => {
         const offCommand = this.onCommand(onCommand);
