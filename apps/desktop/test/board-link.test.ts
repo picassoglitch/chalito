@@ -74,11 +74,15 @@ describe("BoardLink", () => {
 
   it("hello carries the local offset so the board knows the hour", async () => {
     const at = new Date(Date.UTC(2026, 9, 30, 15, 0));
-    expect(hostHello(at)).toEqual({ v: 1, type: "hello", now: at.getTime(), tz: -at.getTimezoneOffset() });
+    expect(hostHello(at)).toEqual({ v: 1, type: "hello", now: at.getTime(), tz: 0 - at.getTimezoneOffset() });
+    // UTC (the CI machines): exactly 0, never -0.
+    const utc = Object.assign(new Date(at), { getTimezoneOffset: () => 0 });
+    expect(Object.is(hostHello(utc).tz, 0)).toBe(true);
+    expect(hostHello(Object.assign(new Date(at), { getTimezoneOffset: () => 360 })).tz).toBe(-360);
     const { board, link } = await setup();
     board.plug();
     await until(() => link.ready);
-    expect(board.sent("hello")[0]).toMatchObject({ tz: -new Date().getTimezoneOffset() });
+    expect(board.sent("hello")[0]).toMatchObject({ tz: 0 - new Date().getTimezoneOffset() });
   });
 
   it("sends the agents' activity hint on change, only to the paired board, again after each hello", async () => {

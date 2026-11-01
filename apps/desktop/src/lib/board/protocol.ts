@@ -112,4 +112,10 @@ export const boardMood = (tag: EmotionTag): BoardMood => {
 export const clampMs = (ms: number) => Math.min(60_000, Math.max(1, Math.round(ms)));
 
 /** BOARD_LINK host hello: the board has no clock, so it learns the time and the local offset here. */
-export const hostHello = (at = new Date()) => ({ v: 1, type: "hello", now: at.getTime(), tz: -at.getTimezoneOffset() });
+// `0 -` keeps UTC at 0, not -0 (which JSON turns into 0 and a strict compare tells apart).
+export const hostHello = (at = new Date()) => ({
+  v: 1,
+  type: "hello",
+  now: at.getTime(),
+  tz: 0 - at.getTimezoneOffset(),
+});

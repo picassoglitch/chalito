@@ -26,7 +26,7 @@ const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 /** make_sprites.py's output for the roster chalito (Pillow 12.1.1, libwebp 1.5), 2026-10-30. */
 const GOLDEN = {
   geometry: { x: 4, y: 13, w: 164, h: 295 },
-  key: "62860f69e70b59a880e020fe620ee883f47e914f3baafb8ffa38d76974dcf39d",
+  key: "62860f69e70b59a880e020fe620ee883f47e914f3baafb8ffa38d76974dcf39d", // gitleaks:allow — a test card's content hash, not a credential
   frames: {
     background: "ec828d96eeee8ab61cc8daf1272f2b159cf8e35afdb47fc162dfb1916f96e483",
     neutral: "3d9be3f43f6bc793a5613e26f247e1e91fa5b0485982bd98b84b0d3f9a06936f",
