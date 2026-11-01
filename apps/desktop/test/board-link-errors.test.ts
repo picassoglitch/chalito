@@ -299,3 +299,17 @@ describe("re-pairing a paired board that then fails", () => {
     expect(link.ready).toBe(false);
   });
 });
+
+describe("card error across launches", () => {
+  it("the uploading window clears a card error left by the last run when its link starts", () => {
+    const errors = memoryCardErrors();
+    errors.set("card-ack hash");
+    const panel = new BoardLink(new FakeBoard(), memoryPairStore(), { cardErrors: errors });
+    panel.start();
+    expect(errors.get()).toBe("card-ack hash");
+    const pet = new BoardLink(new FakeBoard(), memoryPairStore(), { cardErrors: errors, uploadsCard: true });
+    pet.start();
+    expect(errors.get()).toBeNull();
+    expect(panel.getSnapshot().cardError).toBeNull();
+  });
+});

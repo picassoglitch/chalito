@@ -52,6 +52,8 @@ export interface BoardLinkOptions {
   helloRetryMs?: number;
   /** Where a card failure is shared with the other windows. */
   cardErrors?: CardErrorChannel;
+  /** This window uploads the card: a card error left by the last run is cleared on start. */
+  uploadsCard?: boolean;
   /** Approval frames that may fail in a row while connected before the screen is stopped. */
   frameFailures?: number;
 }
@@ -106,6 +108,7 @@ export class BoardLink {
   readonly #retryMs: number;
   readonly #helloRetryMs: number;
   readonly #cardErrors: CardErrorChannel;
+  readonly #uploadsCard: boolean;
   readonly #frameFailures: number;
   #cardRetries = 0;
   #cardRetry: ReturnType<typeof setTimeout> | undefined;
@@ -157,6 +160,7 @@ export class BoardLink {
     this.#retryMs = opts.retryMs ?? CARD_RETRY_MS;
     this.#helloRetryMs = opts.helloRetryMs ?? 500;
     this.#cardErrors = opts.cardErrors ?? memoryCardErrors();
+    this.#uploadsCard = opts.uploadsCard ?? false;
     this.#frameFailures = opts.frameFailures ?? 3;
   }
 
@@ -187,6 +191,8 @@ export class BoardLink {
     this.#offs.push(this.#store.onChange(() => void this.#loadPairing()));
     const cardError = () => this.#set({ cardError: this.#cardErrors.get() });
     this.#offs.push(this.#cardErrors.onChange(cardError));
+    // LCD — localStorage outlives the app; a new launch hasn't failed anything yet.
+    if (this.#uploadsCard) this.#cardErrors.set(null);
     cardError();
     void this.#loadPairing();
     // The current status for a window opened after the board; an event since then is newer.

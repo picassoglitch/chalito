@@ -23,7 +23,9 @@ const cosmetics = async () => {
   return d ? ownCosmetics(d) : null;
 };
 // BOARD_LINK: the pet window owns the LCD's card and face; the panel owns its approvals screen.
-const board = isTauri() ? new BoardLink(tauriBoardPort, idbPairStore(), { cardErrors: localCardErrors() }) : null;
+const board = isTauri()
+  ? new BoardLink(tauriBoardPort, idbPairStore(), { cardErrors: localCardErrors(), uploadsCard: true })
+  : null;
 board?.start();
 startPet(
   canvas,
