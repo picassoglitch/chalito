@@ -352,6 +352,8 @@ export class BoardLink {
       return "failed";
     }
     let begunAt = 0;
+    /** The board confirmed our key: it no longer holds the old one, whatever happens next. */
+    let boardTook = false;
     let finish: (r: PairResult) => void = () => undefined;
     const answer = new Promise<PairResult>((resolve) => {
       const status = this.#snap.status;
@@ -366,6 +368,7 @@ export class BoardLink {
         if (m.type === "pair-cancel") return done("cancelled");
         if (m.type !== "pair-ok") return;
         if (m.pair !== keyId) return done("failed");
+        boardTook = true;
         const after = Date.now() - begunAt;
         if (after < this.#minPairMs) {
           // LCD — app-side stopgap until the firmware proves the hold: no person confirms this fast.
@@ -391,7 +394,10 @@ export class BoardLink {
         secret.fill(0);
       }
       const result = await answer;
-      if (result !== "paired") return result;
+      if (result !== "paired") {
+        if (boardTook) this.#boardHolds(keyId);
+        return result;
+      }
       // The board holds our secret now, though its last hello predates it.
       const hello = this.#snap.hello;
       if (hello) this.#set({ hello: { ...hello, pair: keyId } });
@@ -399,13 +405,21 @@ export class BoardLink {
         await this.#store.save({ keyId, key });
       } catch (e) {
         console.error("board: paired, but couldn't save the pairing", e);
-        if (hello && this.#snap.hello?.pair === keyId) this.#set({ hello });
+        this.#boardHolds(keyId);
         return "save-failed";
       }
       return "paired";
     } finally {
       this.#set({ pairing: null });
     }
+  }
+
+  /** The board stores `keyId` but this computer kept its old pairing: unpaired now, and the board's
+   * answer to a fresh hello confirms it. */
+  #boardHolds(keyId: string): void {
+    const hello = this.#snap.hello;
+    if (hello) this.#updatePaired({ hello: { ...hello, pair: keyId } });
+    this.#writeHello();
   }
 
   /** Forgets the paired board here and asks the board to forget us, whatever it answers. */

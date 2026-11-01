@@ -266,3 +266,36 @@ describe("link resilience", () => {
     expect(link.found).toBe(true);
   });
 });
+
+describe("re-pairing a paired board that then fails", () => {
+  it("a save failure after the board took the new key leaves the link unpaired, not on the old key", async () => {
+    quiet();
+    const { board, link, store } = await setup();
+    board.plug();
+    await until(() => link.ready);
+    store.save = async () => {
+      throw new Error("quota");
+    };
+    board.autoConfirm = true;
+    expect(await link.pair()).toBe("save-failed");
+    expect(link.getSnapshot().paired).toBe(false);
+    expect(link.ready).toBe(false);
+    // The board's own answer agrees: it holds the new key, this computer the old one.
+    await until(() => link.found && link.getSnapshot().hello?.pair === board.keyId);
+    expect(link.getSnapshot().paired).toBe(false);
+  });
+
+  it("a refused too-fast pair-ok after the board took the new key leaves the link unpaired", async () => {
+    quiet();
+    const { board, link, store } = await setup({ minPairMs: PAIR_MIN_MS });
+    board.plug();
+    await until(() => link.ready);
+    const old = (await store.load())!.keyId;
+    board.autoConfirm = true;
+    expect(await link.pair()).toBe("failed");
+    expect((await store.load())!.keyId).toBe(old);
+    expect(link.getSnapshot().paired).toBe(false);
+    await until(() => link.found && link.getSnapshot().hello?.pair === board.keyId);
+    expect(link.ready).toBe(false);
+  });
+});

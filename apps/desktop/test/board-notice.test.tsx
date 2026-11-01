@@ -160,3 +160,21 @@ it("forgetting says when the board didn't confirm, or when this computer couldn'
   await settle();
   expect(screen.getByRole("alert").textContent).toContain("couldn't forget");
 });
+
+it("re-pairing from the ignored-buttons banner says when the new pairing couldn't be saved", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const { board, link, store } = await pairedLink();
+  en(<BoardNotice link={link} />);
+  await act(async () => board.plug());
+  await settle();
+  await act(async () => board.decide("a1b2c3d4e5f6", "t".repeat(24), true, "0".repeat(64)));
+  await settle(30);
+  store.save = async () => {
+    throw new Error("quota");
+  };
+  board.autoConfirm = true;
+  await act(async () => screen.getByRole("button", { name: "Pair" }).click());
+  await settle(30);
+  expect(screen.getByRole("status").textContent).toContain("couldn't save");
+});
