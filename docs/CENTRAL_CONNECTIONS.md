@@ -43,4 +43,4 @@ The desktop integration tests execute real signed client commands against AgentC
 
 The desktop and web session views offer **Link this session** and recognize `/link` in managed session message boxes. `chalito code` also recognizes `/link` after a session starts. This prints the session page in the Chalyb hub (`https://www.chalyb.com/app/chalito/sesiones/<id>`); it sends no AI prompt, includes no bearer credential, and does not grant access to someone outside the account. Native connectors provide a session link through their session-start hook where the app supports additional context; a link alone does not install or authorize a connector.
 
-The small LCD approval screen ships separately (feat/lcd-approval-console).
+The small LCD approval screen is described in [LCD_APPROVAL_CONSOLE.md](LCD_APPROVAL_CONSOLE.md).
