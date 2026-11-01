@@ -150,6 +150,8 @@ interface SourceTiming {
 export interface SignedCardsSourceOptions extends SourceTiming {
   /** The cards by id (e.g. companion id), parsed; throws when it can't tell. */
   fetch: () => Promise<ReadonlyMap<string, SignedCard>>;
+  /** A first fetch that fails stays unresolved (keep waiting) instead of answering "no cards". */
+  waitOnFailure?: boolean;
 }
 
 /**
@@ -159,7 +161,7 @@ export interface SignedCardsSourceOptions extends SourceTiming {
  * until the first answer, then the cards by id (a missing id: draw the roster avatar).
  */
 export class SignedCardsSource {
-  readonly #opts: Required<SourceTiming> & Pick<SignedCardsSourceOptions, "fetch">;
+  readonly #opts: Required<SourceTiming> & Pick<SignedCardsSourceOptions, "fetch" | "waitOnFailure">;
   #cards: ReadonlyMap<string, SignedCard> | undefined = undefined;
   #inflight: Promise<void> | null = null;
   #timer: unknown = null;
@@ -228,6 +230,8 @@ export class SignedCardsSource {
       next = await this.#opts.fetch();
     } catch {
       if (this.#disposed) return;
+      // The web draws the roster avatar meanwhile; the desktop pet waits (#129: it lost the custom pet).
+      if (this.#cards === undefined && !this.#opts.waitOnFailure) this.#emit(new Map());
       this.#schedule(this.#opts.retryMs);
       return;
     }
@@ -277,6 +281,7 @@ export class SignedCardsSource {
 export interface CustomCardSourceOptions extends SourceTiming {
   /** GET /v1/avatar/companion, parsed: null when there's no custom card; throws when it can't tell. */
   fetch: () => Promise<SignedCard | null>;
+  waitOnFailure?: boolean;
 }
 
 const SELF = "self";

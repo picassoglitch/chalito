@@ -244,13 +244,26 @@ describe("CustomCardSource", () => {
     src.dispose();
   });
 
-  it("a first fetch that fails stays unresolved instead of replacing the custom pet", async () => {
+  it("a first fetch that fails answers null (draw the roster avatar) and retries", async () => {
     const t = timers();
     const src = new CustomCardSource({
       fetch: async () => {
-        throw new Error("offline");
+        throw new Error("api down");
       },
       timers: t.timers,
+    });
+    expect(await src.ready()).toBeNull();
+    expect(t.pending).toHaveLength(1);
+  });
+
+  it("with waitOnFailure, a first fetch that fails stays unresolved instead of replacing the custom pet", async () => {
+    const t = timers();
+    const src = new CustomCardSource({
+      fetch: async () => {
+        throw new Error("api down");
+      },
+      timers: t.timers,
+      waitOnFailure: true,
     });
     expect(await src.ready()).toBeUndefined();
     expect(t.pending).toHaveLength(1);
