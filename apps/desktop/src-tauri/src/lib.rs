@@ -1,5 +1,6 @@
 mod agent;
 mod autostart;
+mod board;
 mod cli_install;
 mod computer;
 mod copies;
@@ -873,7 +874,8 @@ pub fn run() {
         .manage(computer_ui.clone())
         .manage(AutostartItem::default())
         .manage(CopiesDownloads::default())
-        .manage(voice_hotkey::VoiceHotkey::default());
+        .manage(voice_hotkey::VoiceHotkey::default())
+        .manage(board::Board::default());
     // Linux writes its own XDG entry (autostart::xdg); the plugin would use ~/.config regardless.
     #[cfg(not(target_os = "linux"))]
     let builder =
@@ -912,6 +914,8 @@ pub fn run() {
         copies_show_applications,
         copies_scan_downloads,
         voice_hotkey::set_voice_hotkey,
+        board::board_status,
+        board::board_write,
         loopback::sso_loopback
     ]);
     #[cfg(not(debug_assertions))]
@@ -939,7 +943,9 @@ pub fn run() {
         copies_uninstall,
         copies_show_applications,
         copies_scan_downloads,
-        voice_hotkey::set_voice_hotkey
+        voice_hotkey::set_voice_hotkey,
+        board::board_status,
+        board::board_write
     ]);
     builder
         .setup(move |app| {
@@ -947,6 +953,7 @@ pub fn run() {
                 place_pet(&pet);
             }
             spawn_cursor_poll(app.handle().clone(), state.clone());
+            app.state::<board::Board>().spawn(board::TauriSink(app.handle().clone()));
             // Start with the computer: on by default the first time; the person's choice after that.
             // Release builds only: a dev build must not register itself to start at login.
             if let (false, Ok(dir)) = (cfg!(debug_assertions), app.path().app_config_dir()) {

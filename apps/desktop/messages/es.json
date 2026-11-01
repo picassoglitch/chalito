@@ -1030,5 +1030,15 @@
     "notWaiting": "Ya no",
     "open": "Abrir sesión",
     "unavailable": "Esto necesita una versión más nueva. Actualiza o reinicia Chalito."
+  },
+  "board": {
+    "permission": "Chalito no puede abrir la pantalla LCD ({port}). En Linux, agrégate al grupo dialout (sudo usermod -aG dialout $USER) y vuelve a iniciar sesión.",
+    "error": "Chalito no puede usar la pantalla LCD ({port}): {message}. Cierra cualquier otro programa que la tenga abierta.",
+    "found": "Placa encontrada.",
+    "pair": "Emparejar",
+    "code": "Confirma que la placa muestra este código y mantén BOOT: {code}",
+    "notPaired": "La placa no se emparejó.",
+    "paired": "Placa LCD emparejada.",
+    "forget": "Olvidar la placa"
   }
 }

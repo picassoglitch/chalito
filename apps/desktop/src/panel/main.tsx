@@ -28,6 +28,12 @@ import { copiesApi } from "../lib/copies.js";
 import { shell } from "../lib/shell.js";
 import { PushToTalk, unavailableVoice } from "../lib/voice.js";
 import { UpdateController, tauriUpdater } from "../lib/updates.js";
+import { isTauri } from "@tauri-apps/api/core";
+import { BoardLink } from "../lib/board/link.js";
+import { tauriBoardPort } from "../lib/board/tauri-port.js";
+import { idbPairStore } from "../lib/board/pairing.js";
+import { attachBoardApprovals } from "../lib/board/approvals.js";
+import { StateSince, boardSessions } from "../lib/board/sessions.js";
 import { Panel } from "./Panel.js";
 import { SignIn } from "./SignIn.js";
 import { useOfflineVoice } from "./use-offline-voice.js";
@@ -69,6 +75,13 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const copies = useMemo(copiesApi, []);
   const meetings = useMemo(() => new MeetingWatch(meetingsIpc()), []);
   useEffect(() => meetings.start(), [meetings]);
+  // BOARD_LINK: the LCD's approvals screen decides through this window's ClientActions.
+  const board = useMemo(() => (isTauri() ? new BoardLink(tauriBoardPort, idbPairStore()) : null), []);
+  useEffect(() => {
+    board?.start();
+    return () => board?.stop();
+  }, [board]);
+  useEffect(() => (board && client ? attachBoardApprovals(board, client) : undefined), [board, client]);
   // One quiet check per launch; the Settings tab shows the result and offers to install.
   useEffect(() => void updates.check(), [updates]);
   // Server-backed once the desktop has a session; this device's copy until then.
@@ -107,11 +120,12 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     }
   }, []);
   const offlineVoice = useOfflineVoice(applyDnd, showPanel);
-  const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions" | "events">>({
+  const live = useRef<Pick<Snapshot, "notifications" | "approvals" | "sessions" | "events" | "devices">>({
     notifications: [],
     approvals: [],
     sessions: [],
     events: {},
+    devices: [],
   });
   // One per connection, priming once its data has loaded: what happened before isn't news.
   const activity = useMemo(() => ({ tracker: new ActivityTracker(), load: new LoadWatch() }), [client]);
@@ -125,6 +139,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   // Sessions the person started outside Chalito: their own clock and tracker, like the PR feed.
   const ownFeed = useMemo(() => new OwnSessionsFeed(ipc), [ipc]);
   const ownTracker = useMemo(() => new ActivityTracker(), [ownFeed]);
+  const sessionSince = useMemo(() => new StateSince(), []);
   useEffect(() => {
     void ownFeed.refresh();
     const id = setInterval(() => void ownFeed.refresh(), SIGNAL_POLL_MS);
@@ -139,6 +154,12 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       const { sessions, events, notifications } = live.current;
       const learning = activity.load.loading(snap?.status, Date.now());
       const own = ownFeed.getSnapshot();
+      // BOARD_LINK: the LCD lists these on its double-click screen when nothing waits on the person.
+      try {
+        board?.sessions(boardSessions(live.current, own.sessions, undefined, sessionSince));
+      } catch {
+        // Never let the board's overview stop the pet context or presence below.
+      }
       const ownAct = ownTracker.update(ownSessionLikes(own.sessions), 0, {
         notifications: ownNotices(own.sessions, ownFeed.seen),
       });
@@ -174,7 +195,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       window.removeEventListener("keydown", touch);
       void reporter.stop();
     };
-  }, [client, ipc, sh, settings, dnd, activity, prFeed, ownFeed, ownTracker, meetings]);
+  }, [client, ipc, sh, settings, dnd, activity, prFeed, ownFeed, ownTracker, meetings, board, sessionSince]);
 
   return (
     <Panel
@@ -205,6 +226,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       thisComputer={computerApi}
       copies={copies}
       meetings={meetings}
+      board={board}
       openUrl={(url) => openUrl(url)}
       {...(FIRST_TASK_URL ? { firstTaskUrl: FIRST_TASK_URL } : {})}
     />

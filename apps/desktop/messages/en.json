@@ -1030,5 +1030,15 @@
     "notWaiting": "Not anymore",
     "open": "Open session",
     "unavailable": "This needs a newer version. Update or restart Chalito."
+  },
+  "board": {
+    "permission": "Chalito can't open the LCD board ({port}). On Linux, add yourself to the dialout group (sudo usermod -aG dialout $USER), then log out and back in.",
+    "error": "Chalito can't use the LCD board ({port}): {message}. Close any other program that has it open.",
+    "found": "Chalito LCD board found.",
+    "pair": "Pair",
+    "code": "Check that the board shows this code and hold BOOT: {code}",
+    "notPaired": "The board wasn't paired.",
+    "paired": "LCD board paired.",
+    "forget": "Forget the board"
   }
 }
