@@ -1030,5 +1030,26 @@
     "notWaiting": "Ya no",
     "open": "Abrir sesión",
     "unavailable": "Esto necesita una versión más nueva. Actualiza o reinicia Chalito."
+  },
+  "board": {
+    "permission": "Chalito no puede abrir la pantalla LCD ({port}). En Linux, agrégate al grupo dialout (sudo usermod -aG dialout $USER) y vuelve a iniciar sesión.",
+    "error": "Chalito no puede usar la pantalla LCD ({port}): {message}. Cierra cualquier otro programa que la tenga abierta.",
+    "found": "Placa encontrada.",
+    "pair": "Emparejar",
+    "code": "Confirma que la placa en {port} muestra este código y mantén BOOT: {code}",
+    "notPaired": "La placa no se emparejó.",
+    "paired": "Placa LCD emparejada.",
+    "forget": "Olvidar la placa",
+    "saveFailed": "La placa se emparejó, pero esta computadora no pudo guardarlo. Vuelve a emparejarla.",
+    "pairingError": "Chalito no pudo leer el emparejamiento de la placa en esta computadora ({message}). Reinicia Chalito; si sigue pasando, vuelve a emparejar la placa.",
+    "cardFailed": "No se pudo enviar tu mascota a la placa: {reason}",
+    "rejected": "Se ignoraron los botones de la placa (el emparejamiento no coincide); vuelve a emparejarla.",
+    "forgetUnconfirmed": "Se olvidó aquí, pero la placa no lo confirmó; desconéctala y vuelve a emparejarla para restablecerla.",
+    "forgetFailed": "Chalito no pudo olvidar la placa en esta computadora. Inténtalo de nuevo.",
+    "approval": {
+      "sendFailed": "Tu respuesta desde la placa no llegó al agente. Inténtalo de nuevo o responde desde tu teléfono.",
+      "phoneRequired": "Esta aprobación necesita tu teléfono; desde la placa solo puedes rechazarla.",
+      "writeFailed": "La placa dejó de recibir aprobaciones. Desconéctala y vuelve a conectarla."
+    }
   }
 }

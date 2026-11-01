@@ -6,6 +6,10 @@ import { ownCosmetics } from "./cosmetics.js";
 import { isTauri } from "@tauri-apps/api/core";
 import { startPet } from "./scene.js";
 import { tauriPetWindow } from "./window-api.js";
+import { BoardLink } from "../lib/board/link.js";
+import { tauriBoardPort } from "../lib/board/tauri-port.js";
+import { idbPairStore } from "../lib/board/pairing.js";
+import { localCardErrors } from "../lib/board/card-errors.js";
 
 const canvas = document.createElement("canvas");
 canvas.className = "pet-canvas";
@@ -18,10 +22,16 @@ const cosmetics = async () => {
   const d = await deps();
   return d ? ownCosmetics(d) : null;
 };
+// BOARD_LINK: the pet window owns the LCD's card and face; the panel owns its approvals screen.
+const board = isTauri()
+  ? new BoardLink(tauriBoardPort, idbPairStore(), { cardErrors: localCardErrors(), uploadsCard: true })
+  : null;
+board?.start();
 startPet(
   canvas,
   shell(),
   cosmetics,
   env ? companionCardSource(deps, () => loadStored() !== null) : null,
   isTauri() ? tauriPetWindow() : null,
+  board,
 );

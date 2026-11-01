@@ -1030,5 +1030,26 @@
     "notWaiting": "Not anymore",
     "open": "Open session",
     "unavailable": "This needs a newer version. Update or restart Chalito."
+  },
+  "board": {
+    "permission": "Chalito can't open the LCD board ({port}). On Linux, add yourself to the dialout group (sudo usermod -aG dialout $USER), then log out and back in.",
+    "error": "Chalito can't use the LCD board ({port}): {message}. Close any other program that has it open.",
+    "found": "Chalito LCD board found.",
+    "pair": "Pair",
+    "code": "Check that the board on {port} shows this code and hold BOOT: {code}",
+    "notPaired": "The board wasn't paired.",
+    "paired": "LCD board paired.",
+    "forget": "Forget the board",
+    "saveFailed": "The board paired, but this computer couldn't save it. Pair it again.",
+    "pairingError": "Chalito couldn't read this computer's board pairing ({message}). Restart Chalito; if it keeps happening, pair the board again.",
+    "cardFailed": "Couldn't send your pet to the board: {reason}",
+    "rejected": "The board's buttons were ignored (pairing mismatch); re-pair it.",
+    "forgetUnconfirmed": "Forgot it here, but the board didn't confirm; unplug and re-pair to reset it.",
+    "forgetFailed": "Chalito couldn't forget the board on this computer. Try again.",
+    "approval": {
+      "sendFailed": "Your answer from the board didn't reach the agent. Try again, or answer on your phone.",
+      "phoneRequired": "This approval needs your phone; from the board you can only deny it.",
+      "writeFailed": "The board stopped getting approvals. Unplug it and plug it back in."
+    }
   }
 }

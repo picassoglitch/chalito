@@ -37,6 +37,8 @@ import { Updates } from "./Updates.js";
 import { Voice } from "./Voice.js";
 import { OfflineVoiceButton, VoiceCard, panelVoiceActions, type OfflineVoiceWiring } from "./VoiceCard.js";
 import { OfflineVoiceSettings } from "./OfflineVoiceSettings.js";
+import { BoardNotice, BoardSettings } from "./BoardNotice.js";
+import type { BoardLink } from "../lib/board/link.js";
 
 export type Tab = "inbox" | "sessions" | "rooms" | "ai" | "voice" | "security" | "settings";
 /** Sidebar groups: daily use first, then the tools Chalito uses, then account and safety at the bottom. */
@@ -126,6 +128,8 @@ export interface PanelProps {
   offlineVoice?: OfflineVoiceWiring;
   /** Meeting warnings and follow-ups from the agent; absent outside the app. */
   meetings?: MeetingWatch;
+  /** The LCD board over USB; absent outside the app. */
+  board?: Pick<BoardLink, "subscribe" | "getSnapshot" | "pair" | "forget"> | null;
   initialTab?: Tab;
 }
 
@@ -218,6 +222,7 @@ export const Panel = (p: PanelProps) => {
           {tab !== "sessions" && <h1 className="page-title">{t(`tabs.${tab}`)}</h1>}
           {ov?.voice && <VoiceCard voice={ov.voice} actions={voiceActions} />}
           {p.copies && <OldCopies api={p.copies} />}
+          {p.board && <BoardNotice link={p.board} />}
           {p.localAgent && p.openUrl && (
             <ConnectComputer
               ipc={p.ipc}
@@ -329,6 +334,7 @@ export const Panel = (p: PanelProps) => {
             {tab === "settings" && p.thisComputer && <ThisComputer api={p.thisComputer} ipc={p.ipc} />}
             {tab === "settings" && p.meetings && <CalendarSettings watch={p.meetings} />}
             {tab === "settings" && p.updates && <Updates updates={p.updates} />}
+            {tab === "settings" && p.board && <BoardSettings link={p.board} />}
             {tab === "ai" && (
               <>
                 <NativeConnections ipc={p.ipc} />

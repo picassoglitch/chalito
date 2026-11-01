@@ -212,7 +212,8 @@ export const attachApprovalDisplay = (
   actions: Pick<ClientActions, "decide">,
   transport: ApprovalDisplayTransport,
   opts: {
-    onResult?: (result: ApprovalConsoleResult) => void;
+    /** `command` is what the display sent, so the host knows which approval a result is about. */
+    onResult?: (result: ApprovalConsoleResult, command: unknown) => void;
     /** Tells the host the display binding stopped, so it doesn't keep showing "connected". */
     onClose?: (reason: "closed" | "disconnected" | "write_failed") => void;
   } = {},
@@ -261,7 +262,7 @@ export const attachApprovalDisplay = (
       void controller.handle(command).then((result) => {
         // A host callback that throws is the host's bug, not a reason to drop the display.
         try {
-          opts.onResult?.(result);
+          opts.onResult?.(result, command);
         } catch {
           /* ignored on purpose */
         }

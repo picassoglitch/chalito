@@ -14,10 +14,18 @@ import { loadLastDrawn, petCard, saveLastDrawn } from "./choice.js";
 import { PetCardLoader, RetryBackoff } from "./card-loader.js";
 import { PerkGate, mouseMayPlay, petReaction, playReaction } from "./reactions.js";
 import { PetMotion, type PetWindowApi } from "./motion.js";
-import { ClickTracker, pickTrick } from "./clicks.js";
+import { ClickTracker, TRICKS, pickTrick } from "./clicks.js";
 import { Pendulum } from "./hang.js";
 import { IDLE_POLL_MS, IdlePoll, restFromIdle, wokeUp, type Rest } from "./sleep.js";
 import { loadPetWalk } from "../lib/pet-prefs.js";
+import type { BoardLink } from "../lib/board/link.js";
+import { boardMood } from "../lib/board/protocol.js";
+import { customBoardCard, rosterBoardCard } from "../lib/board/pet-card.js";
+import { dayPartAt, type DayPart } from "../lib/board/backdrop.js";
+import type { CardSource } from "../lib/board/link.js";
+
+/** What the pet does with the LCD board: show its card and face there, mirror the board's tricks. */
+export type PetBoard = Pick<BoardLink, "setCard" | "mood" | "onPet" | "activity">;
 
 /** Where the desktop serves @chalito/roster's assets/ and cosmetics/ (ec83c65). */
 const ROSTER_BASE = "/roster/";
@@ -48,6 +56,7 @@ export const startPet = (
   cosmetics: () => Promise<SceneCosmetic[] | null> = async () => null,
   myCard: Pick<CustomCardSource, "subscribe" | "getSnapshot" | "files" | "refresh"> | null = null,
   win: PetWindowApi | null = null,
+  board: PetBoard | null = null,
 ) => {
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
   renderer.setClearColor(0x000000, 0);
@@ -77,6 +86,8 @@ export const startPet = (
   let cardRetry: ReturnType<typeof setTimeout> | undefined;
   const backoff = new RetryBackoff();
   let wearing: SceneCosmetic[] = [];
+  /** What the board shows, for a given sky. */
+  let boardCard: ((part: DayPart) => CardSource) | null = null;
   const rendererName = () => {
     const gl = renderer.getContext();
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
@@ -95,15 +106,16 @@ export const startPet = (
     }
   };
   let mood: EmotionTag = "neutral";
-  const emotion = (tag: EmotionTag, intensity: number, now: number) => {
+  const emotion = (tag: EmotionTag, intensity: number, now: number, ms = 10_000) => {
     mood = tag;
     driver.setEmotion({ tag, intensity }, now);
     look?.setEmotion(tag);
+    board?.mood(boardMood(tag), ms);
   };
   /** A short-lived face for an action (happy after a finish, sad after a failure), then back. */
   let faceUntil = 0;
   const flash = (tag: EmotionTag, now: number, ms: number) => {
-    emotion(tag, 0.9, now);
+    emotion(tag, 0.9, now, ms);
     faceUntil = now + ms;
   };
   /** Says hello once, when its card first shows. */
@@ -128,6 +140,12 @@ export const startPet = (
           if (!assets) return;
           clearTimeout(cardRetry);
           backoff.reset();
+          // BOARD_LINK — the LCD shows the card the pet actually drew.
+          boardCard = (part) =>
+            custom
+              ? customBoardCard(custom, { skin: assets.skin, part })
+              : rosterBoardCard(ROSTER_BASE, s.avatar, { skin: assets.skin, part });
+          board?.setCard(boardCard(dayPartAt(new Date())));
           saveLastDrawn(custom ? { kind: "custom" } : { kind: "roster", avatar: s.avatar });
           const next = new PetLook(assets, levelOf(quality.level));
           next.setEmotion(mood);
@@ -215,7 +233,19 @@ export const startPet = (
     flash("happy", now, 1500);
     driver.playAction(lastTrick, now);
   };
+  // A click on the board played a trick: the desktop pet plays the same one (or one of its own).
+  const offBoardPet = board?.onPet((trick) => {
+    if (calling()) return;
+    const now = performance.now();
+    const known = TRICKS.find((t) => t === trick);
+    if (!known) return playTrick(now);
+    lastTrick = known;
+    flash("happy", now, 1500);
+    driver.playAction(known, now);
+  });
   const idleTimer = setInterval(pollIdle, IDLE_POLL_MS);
+  // The board's sky follows the local time: a new day part sends the card again (setCard skips a same id).
+  const skyTimer = setInterval(() => boardCard && board?.setCard(boardCard(dayPartAt(new Date()))), 60_000);
   pollIdle();
   /** One click a trick, a burst dizzy, a double click the dashboard (clicks.ts; settled in the frame loop).
    * While it calls for the person (an answer or approval waits) a click still opens the dashboard at once. */
@@ -371,12 +401,18 @@ export const startPet = (
     ? motion.attach(canvas)
     : (canvas.addEventListener("click", onClick), () => canvas.removeEventListener("click", onClick));
   void motion?.start();
-  const offCtx = sh.onPetContext((c) => (ctx = c));
+  const offCtx = sh.onPetContext((c) => {
+    ctx = c;
+    // The board's idle activities lean on "working" while the agents are busy.
+    board?.activity(c.activity?.mode === "working" ? "working" : "idle");
+  });
 
   return () => {
     loop?.stop();
     motion?.stop();
     clearInterval(idleTimer);
+    clearInterval(skyTimer);
+    offBoardPet?.();
     detachPress();
     clearTimeout(cardRetry);
     cards.dispose();
