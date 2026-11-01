@@ -194,12 +194,17 @@ export class NativeConnectors {
       );
     });
   }
-  /** Events holding a Chalito hook whose command matches `pick`. */
-  #chalitoEvents(provider: Provider, data: Record<string, unknown>, pick = (_c: string) => true): Set<string> {
+  /** Events holding a Chalito hook that matches `pick`. */
+  #chalitoEvents(
+    provider: Provider,
+    data: Record<string, unknown>,
+    pick = (_command: string, _hook: Record<string, unknown>) => true,
+  ): Set<string> {
     const found = new Set<string>();
     if (!object(data.hooks)) return found;
     const hooks = data.hooks;
-    const ours = (event: string, command: unknown) => isChalitoHook(provider, event, command) && pick(String(command));
+    const ours = (event: string, hook: Record<string, unknown>) =>
+      isChalitoHook(provider, event, hook.command) && pick(String(hook.command), hook);
     for (const event of EVENTS[provider]) {
       const groups = hooks[event];
       if (
@@ -208,8 +213,8 @@ export class NativeConnectors {
           (g: unknown) =>
             object(g) &&
             (provider === "cursor"
-              ? ours(event, g.command)
-              : Array.isArray(g.hooks) && g.hooks.some((h: unknown) => object(h) && ours(event, h.command))),
+              ? ours(event, g)
+              : Array.isArray(g.hooks) && g.hooks.some((h: unknown) => object(h) && ours(event, h))),
         )
       )
         found.add(event);
@@ -341,16 +346,8 @@ export class NativeConnectors {
         if (only && !only.has(event)) continue;
         const timeout =
           event.toLowerCase() === "sessionend" ? 3 : event === "PreToolUse" || event === "preToolUse" ? 600 : 10;
-        const hook = {
-          type: "command",
-          command: commands[index],
-          timeout,
-          ...(provider === "cursor"
-            ? { failClosed: true }
-            : provider === "claude" && event === "PreToolUse"
-              ? { onFailure: "block" }
-              : {}),
-        };
+        // #132 — a hook that cannot run must never lock the app out; a running Chalito denies inside workspaces itself.
+        const hook = { type: "command", command: commands[index], timeout };
         (hooks[event] as unknown[]).push(provider === "cursor" ? hook : { hooks: [hook] });
       }
     const next =
@@ -395,7 +392,13 @@ export class NativeConnectors {
         const path = this.path(provider);
         const current = this.#read(path);
         const present = this.#chalitoEvents(provider, current.data);
-        const stale = this.#chalitoEvents(provider, current.data, (c) => !commands.includes(c)).size > 0;
+        // Another binary path, or the old block-on-failure flags (a missing binary locked the app out).
+        const stale =
+          this.#chalitoEvents(
+            provider,
+            current.data,
+            (c, hook) => !commands.includes(c) || "onFailure" in hook || "failClosed" in hook,
+          ).size > 0;
         // A kill between the two writes leaves current hooks with an old record: heal the record too.
         const staleRecord = present.size > 0 && record.commands.join("\n") !== commands.join("\n");
         // Only paths are fixed: hooks taken out by hand, all or some, stay out.

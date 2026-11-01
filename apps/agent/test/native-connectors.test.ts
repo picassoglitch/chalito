@@ -333,6 +333,31 @@ describe("native app connector installation", () => {
     expect(now.manager.enabled("codex")).toBe(true);
   });
 
+  it.each(["claude", "cursor", "codex"] as const)(
+    "never makes %s block when the hook can't run, and repair drops the old block flags (#132)",
+    async (provider) => {
+      const s = setup(true, ["/home/u/.local/share/chalito/chalito-agent"]);
+      await s.manager.set(provider, true, "missing");
+      const path = s.manager.path(provider);
+      expect(readFileSync(path, "utf8")).not.toMatch(/onFailure|failClosed/);
+      // Hooks written by an older Chalito: same path, with the flags that locked the app out.
+      const data = JSON.parse(readFileSync(path, "utf8"));
+      const flag = provider === "cursor" ? { failClosed: true } : { onFailure: "block" };
+      for (const groups of Object.values(data.hooks) as Record<string, unknown>[][])
+        for (const g of groups) {
+          if (provider === "cursor") Object.assign(g, flag);
+          else for (const h of g.hooks as Record<string, unknown>[]) Object.assign(h, flag);
+        }
+      writeFileSync(path, JSON.stringify(data));
+      expect(s.manager.repair()).toEqual([provider]);
+      const after = readFileSync(path, "utf8");
+      expect(after).not.toMatch(/onFailure|failClosed/);
+      expect(after.match(/native-hook/g)).toHaveLength(5);
+      expect(s.manager.enabled(provider)).toBe(true);
+      expect(s.manager.repair()).toEqual([]);
+    },
+  );
+
   it("reports an unusable agent command on the row before anyone tries to connect", async () => {
     expect((await setup(true, ["/bad\npath"]).manager.view("codex")).error).toBe("unsafe_command");
     expect((await setup(true, []).manager.view("codex")).error).toBe("cli_unavailable");
