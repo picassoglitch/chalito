@@ -1,8 +1,9 @@
-import { realpathSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { sep } from "node:path";
 import { readySessionApps, type DeviceSetupView, type RemotePermissionMode } from "@chalito/protocol";
 import type { AgentCore, CommandResult } from "../agent-core.js";
 import type { Policy } from "../policy/schema.js";
+import { expandHome, realOrResolved as real } from "../workspace-path.js";
 import type { LocalTap } from "./events.js";
 
 /** What the panel's IPC and `code.sock` may do with sessions on this computer (ADR 0031 §1). */
@@ -23,13 +24,6 @@ export interface CodeService {
   tap(fn: LocalTap): () => void;
 }
 
-const real = (p: string) => {
-  try {
-    return realpathSync.native(p);
-  } catch {
-    return resolve(p);
-  }
-};
 const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
@@ -39,6 +33,8 @@ export const codeService = (
   setup: () => DeviceSetupView,
   /** `local` for the panel (its secret proves the desktop app), `local:cli` for code.sock (ADR 0031 §6a). */
   origin: "local" | "local:cli",
+  /** Expands `~` workspaces exactly as the hook's workspace file does (tests point it elsewhere). */
+  home: string = homedir(),
 ): CodeService => ({
   apps: () => ({
     apps: readySessionApps(setup()).filter((appId) => core.canRunSession?.(appId) ?? true),
@@ -47,7 +43,7 @@ export const codeService = (
   workspaceFor: (cwd) => {
     const here = real(cwd);
     const hits = policy()
-      .workspaces.map((w) => ({ label: w.label, path: real(w.path) }))
+      .workspaces.map((w) => ({ label: w.label, path: real(expandHome(w.path, home)) }))
       .filter((w) => within(here, w.path))
       .sort((a, b) => b.path.length - a.path.length);
     return hits[0]?.label ?? null;

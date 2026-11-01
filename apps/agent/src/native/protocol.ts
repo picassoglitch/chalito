@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
+import { expandHome, realOrResolved } from "../workspace-path.js";
 
 export const NativeProvider = z.enum(["codex", "claude", "cursor"]);
 export type NativeProvider = z.infer<typeof NativeProvider>;
@@ -12,6 +13,8 @@ export const NativeHookRequest = z
     event: z.enum(["start", "permission", "tool", "prompt", "stop", "end"]),
     nativeSessionId: z.string().min(1).max(256),
     cwd: z.string().min(1).max(4096).refine(isAbsolute, "absolute working directory required"),
+    /** Cursor's open folders: an action in any of them is an action there, whatever `cwd` says. */
+    workspaceRoots: z.array(z.string().min(1).max(4096).refine(isAbsolute)).max(64).optional(),
     toolName: z.string().min(1).max(200).optional(),
     input: z.record(z.string(), z.unknown()).optional(),
     text: z.string().max(20_000).optional(),
@@ -72,6 +75,7 @@ export const nativeHookInput = (
     event,
     nativeSessionId: h.session_id ?? h.thread_id ?? h.conversation_id,
     cwd,
+    ...(roots.length ? { workspaceRoots: roots } : {}),
     ...(typeof text === "string"
       ? { text: text.length <= 20_000 ? text : `${text.slice(0, 19_960)}\n[Message truncated]` }
       : {}),
@@ -85,8 +89,78 @@ export const nativeHookInput = (
   return request.success ? request.data : null;
 };
 
+const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const DIR_KEYS = ["working_directory", "cwd", "workdir"] as const;
+const PATH_KEYS = ["file_path", "path", "notebook_path"] as const;
+/** The hook payload fields that say where an action lands. */
+export interface NativeTargetFields {
+  cwd?: unknown;
+  roots?: unknown;
+  input?: unknown;
+}
+
+// Every folder or file a request touches (cwd, Cursor roots, shell folder, file fields), resolved like
+// the app would; null when nothing absolute anchors them, so callers fail closed.
+export const nativeTargets = (h: NativeTargetFields, home: string): string[] | null => {
+  const abs = (v: unknown): v is string => typeof v === "string" && v.length > 0 && isAbsolute(v);
+  const given = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+  const roots = Array.isArray(h.roots) ? h.roots.filter(abs) : [];
+  const base = abs(h.cwd) ? h.cwd : roots[0];
+  if (!base) return null;
+  const input = object(h.input) ? h.input : {};
+  const dirs = DIR_KEYS.map((k) => input[k])
+    .filter(given)
+    .map((d) => resolve(base, expandHome(d, home)));
+  const files = PATH_KEYS.map((k) => input[k])
+    .filter(given)
+    .flatMap((f) => (dirs.length ? dirs : [base]).map((d) => resolve(d, expandHome(f, home))));
+  return [...new Set([resolve(base), ...roots.map((r) => resolve(r)), ...dirs, ...files])];
+};
+
+const STRING = String.raw`"((?:[^"\\]|\\.)*)"`;
+const unescape = (s: string): string | undefined => {
+  try {
+    return JSON.parse(`"${s}"`) as string;
+  } catch {
+    return undefined;
+  }
+};
+const fieldText = (text: string, key: string): string | undefined => {
+  const m = new RegExp(`"${key}"\\s*:\\s*${STRING}`).exec(text);
+  return m ? unescape(m[1]!) : undefined;
+};
+
+/** Target fields from a hook payload; a cut or broken one is searched by key so its folder still counts. */
+export const nativeTargetFields = (text: string): NativeTargetFields => {
+  try {
+    const h: unknown = JSON.parse(text);
+    if (object(h)) return { cwd: h.cwd, roots: h.workspace_roots, input: h.tool_input };
+  } catch {
+    // Partial text (oversized or stalled stdin): fall through to a key search.
+  }
+  const list = new RegExp(`"workspace_roots"\\s*:\\s*\\[([^\\]]*)`).exec(text);
+  const roots = list ? [...list[1]!.matchAll(new RegExp(STRING, "g"))].map((m) => unescape(m[1]!)) : [];
+  const input: Record<string, unknown> = {};
+  for (const key of [...DIR_KEYS, ...PATH_KEYS]) if (key !== "cwd") input[key] = fieldText(text, key);
+  // A top-level and a tool `cwd` can't be told apart here: the first is the session's, the rest are targets.
+  const cwds = [...text.matchAll(new RegExp(`"cwd"\\s*:\\s*${STRING}`, "g"))].map((m) => unescape(m[1]!));
+  if (cwds.length > 1) input.cwd = cwds[1];
+  return { cwd: cwds[0], roots, input };
+};
+
 type DenyKind =
-  "not_running" | "denied" | "expired" | "policy" | "busy" | "disabled" | "too_large" | "ambiguous_path" | "generic";
+  | "not_running"
+  | "denied"
+  | "expired"
+  | "policy"
+  | "busy"
+  | "session_limit"
+  | "disabled"
+  | "unreadable"
+  | "session_ended"
+  | "too_large"
+  | "ambiguous_path"
+  | "generic";
 const DENY_KIND: Record<string, DenyKind> = {
   not_running: "not_running",
   signed_deny: "denied",
@@ -98,10 +172,12 @@ const DENY_KIND: Record<string, DenyKind> = {
   plan_mode: "policy",
   outside_workspace: "policy",
   busy: "busy",
-  session_limit: "busy",
+  session_limit: "session_limit",
   too_many_pending: "busy",
   rate_limited: "busy",
   connector_disabled: "disabled",
+  connector_unreadable: "unreadable",
+  session_ended: "session_ended",
   too_large: "too_large",
   ambiguous_path: "ambiguous_path",
 };
@@ -112,7 +188,11 @@ const DENY_TEXT: Record<"es" | "en", Record<DenyKind, string>> = {
     expired: "Nobody answered this request in Chalito in time, so it was denied.",
     policy: "Chalito's rules for this folder block this action.",
     busy: "Chalito has too many requests waiting. Try again in a moment.",
+    session_limit: "Chalito is already following too many active sessions. Finish one, then try again.",
     disabled: "Chalito's connector for this app is turned off. Turn it on in Chalito's Connected AI tab.",
+    unreadable:
+      "Chalito can't read {app} settings, so it denied this action. Check the settings file in Chalito's Connected AI tab.",
+    session_ended: "This session ended in Chalito before the action was reviewed, so it was denied.",
     too_large: "This request is too large for Chalito to review, so it was denied.",
     ambiguous_path: "This request names two different files, so Chalito denied it.",
     generic: "Chalito did not approve this action. Check Chalito on this computer or on your phone.",
@@ -123,14 +203,26 @@ const DENY_TEXT: Record<"es" | "en", Record<DenyKind, string>> = {
     expired: "Nadie respondió esta solicitud en Chalito a tiempo, así que se rechazó.",
     policy: "Las reglas de Chalito para esta carpeta bloquean esta acción.",
     busy: "Chalito tiene demasiadas solicitudes pendientes. Inténtalo de nuevo en un momento.",
+    session_limit: "Chalito ya sigue demasiadas sesiones activas. Termina una e inténtalo de nuevo.",
     disabled: "El conector de Chalito para esta app está apagado. Actívalo en la pestaña IA conectada de Chalito.",
+    unreadable:
+      "Chalito no puede leer la configuración de {app}, así que rechazó esta acción. Revisa el archivo de configuración en la pestaña IA conectada de Chalito.",
+    session_ended: "Esta sesión terminó en Chalito antes de revisar la acción, así que se rechazó.",
     too_large: "Esta solicitud es demasiado grande para que Chalito la revise, así que se rechazó.",
     ambiguous_path: "Esta solicitud menciona dos archivos distintos, así que Chalito la rechazó.",
     generic: "Chalito no aprobó esta acción. Revisa Chalito en esta computadora o en tu teléfono.",
   },
 };
-export const nativeDenyMessage = (reason: string | undefined, locale: "es" | "en" = "en"): string =>
-  DENY_TEXT[locale][(reason && Object.hasOwn(DENY_KIND, reason) ? DENY_KIND[reason] : undefined) ?? "generic"];
+const APP_NAMES: Record<NativeProvider, string> = { codex: "Codex", claude: "Claude Code", cursor: "Cursor" };
+export const nativeDenyMessage = (
+  reason: string | undefined,
+  locale: "es" | "en" = "en",
+  provider?: NativeProvider,
+): string =>
+  DENY_TEXT[locale][(reason && Object.hasOwn(DENY_KIND, reason) ? DENY_KIND[reason] : undefined) ?? "generic"].replace(
+    "{app}",
+    provider ? APP_NAMES[provider] : locale === "es" ? "la app" : "the app's",
+  );
 
 /** A tool-permission denial in each vendor's shape, for hooks that cannot tell which event ran. */
 export const nativeHookDeny = (
@@ -152,7 +244,7 @@ export const nativeHookOutput = (
     if (!allow && reply.ok === true && reply.pass === true) return {};
     // Codex rejects an explicit `allow` as a hook failure: no output is its "no objection".
     if (allow && provider === "codex") return {};
-    const message = nativeDenyMessage(reply.reason, locale);
+    const message = nativeDenyMessage(reply.reason, locale, provider);
     return provider === "cursor"
       ? { permission: allow ? "allow" : "deny", ...(!allow ? { user_message: message, agent_message: message } : {}) }
       : event === "PreToolUse"
@@ -184,19 +276,11 @@ export const nativeHookOutput = (
 export const NATIVE_WORKSPACES_FILE = "native-workspaces.json";
 const WorkspacesFile = z.object({ v: z.literal(1), paths: z.array(z.string().min(1).max(4096)).max(1000) });
 
-const realOrResolved = (p: string): string => {
-  try {
-    return realpathSync.native(p);
-  } catch {
-    return resolve(p);
-  }
-};
-
 /** Every form a policy path may take (`~`, as written, resolved): more paths only means more denials. */
 export const nativeWorkspacePaths = (workspaces: { path: string; realPath?: string }[], home: string): string[] => {
   const out = new Set<string>();
   for (const w of workspaces) {
-    const expanded = w.path === "~" ? home : w.path.startsWith("~/") ? join(home, w.path.slice(2)) : w.path;
+    const expanded = expandHome(w.path, home);
     for (const p of [expanded, w.path, ...(w.realPath ? [w.realPath] : [])]) {
       out.add(resolve(p));
       out.add(realOrResolved(p));
@@ -207,6 +291,8 @@ export const nativeWorkspacePaths = (workspaces: { path: string; realPath?: stri
 
 export const writeNativeWorkspaces = (dir: string, paths: string[]): void => {
   const file = join(dir, NATIVE_WORKSPACES_FILE);
+  // A list the hook would reject must not be written: the caller removes the old one instead.
+  WorkspacesFile.parse({ v: 1, paths });
   const temp = `${file}.${randomUUID()}.tmp`;
   writeFileSync(temp, `${JSON.stringify({ v: 1, paths })}\n`, { mode: 0o600, flag: "wx" });
   try {

@@ -158,6 +158,7 @@ export const NewSession = ({
     deviceId: string;
     since: number;
     before: ReadonlySet<string>;
+    tagged: boolean;
   } | null>(null);
   useEffect(() => {
     if (!client) {
@@ -260,7 +261,8 @@ export const NewSession = ({
           prompt: prompt.trim(),
           permissionMode: mode,
         });
-        setPending({ cid, deviceId: target, since: Date.now(), before });
+        // A computer that reports its tools is a new agent: only its tagged start counts.
+        setPending({ cid, deviceId: target, since: Date.now(), before, tagged: computer.setup?.tools !== undefined });
       } else {
         const r = await ipc.codeStart({
           appId: selectedApp,

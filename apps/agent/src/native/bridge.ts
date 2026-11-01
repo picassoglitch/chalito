@@ -1,21 +1,33 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, resolve } from "node:path";
 import { sessionLink, type AgentEvent } from "@chalito/protocol";
 import type { AgentCore } from "../agent-core.js";
 import type { AgentStore } from "../store.js";
-import { NativeHookRequest, NATIVE_APPS, type NativeHookReply, type NativeProvider } from "./protocol.js";
+import { expandHome } from "../workspace-path.js";
+import {
+  NativeHookRequest,
+  NATIVE_APPS,
+  nativeTargets,
+  type NativeHookReply,
+  type NativeProvider,
+} from "./protocol.js";
 
 interface LinkedSession {
   sid: string;
   provider: NativeProvider;
   label: string;
   cwd: string;
+  /** Provider, native session and folder: lifecycle events find every label's session by it. */
+  base: string;
   seq: number;
   active: number;
   at: number;
   pending: Set<AbortController>;
   tail: Promise<void>;
+  /** Detached state writes, kept in order. */
+  chain: Promise<void>;
   ready: Promise<void>;
 }
 
@@ -23,6 +35,19 @@ export const NATIVE_SID_PREFIX = "native-";
 // Claude Code runs about ten read-only tools in parallel; these only bound a runaway caller.
 const MAX_ACTIVE_PER_SESSION = 16;
 const MAX_PENDING = 32;
+const MAX_SESSIONS = 32;
+/** Tools whose targets are only file fields: these can be judged when the app runs outside the workspace. */
+const FILE_TOOLS = new Set([
+  "Read",
+  "NotebookRead",
+  "LS",
+  "Glob",
+  "Grep",
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+]);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "error");
 
 /** Native apps retain their own login and execution. Only signed Chalito decisions leave this bridge. */
@@ -63,8 +88,11 @@ export class NativeBridge {
       core: Pick<AgentCore, "requestNativeTool" | "sealer">;
       store: AgentStore;
       deviceId: string;
-      enabled: (provider: NativeProvider) => boolean;
+      /** `unreadable`: the app's settings or Chalito's record can't be read, which is not "turned off". */
+      enabled: (provider: NativeProvider) => boolean | "unreadable";
       workspaceFor: (cwd: string) => string | null;
+      /** Expands `~` in request paths (tests point it elsewhere). */
+      home?: string;
       now: () => number;
       locale: () => "es" | "en";
       /** Local list of this device's live native sids, so a restart can mark them interrupted. */
@@ -149,45 +177,67 @@ export class NativeBridge {
     return write;
   }
 
-  async handle(raw: unknown, signal: AbortSignal): Promise<NativeHookReply> {
-    const parsed = NativeHookRequest.safeParse(raw);
-    if (!parsed.success) return { ok: false, reason: "bad_params" };
-    const r = parsed.data;
-    if (this.#closed || signal.aborted) return { ok: false, reason: "not_running" };
-    const label = this.d.workspaceFor(r.cwd);
-    // Owner 2026-10-31: outside Chalito workspaces the hook gives no decision at all.
-    if (!label) return { ok: true, pass: true };
-    if (!this.d.enabled(r.provider)) return { ok: false, reason: "connector_disabled" };
+  /** Store bookkeeping off the decision path, in order per session; a hung write never delays a decision. */
+  #later(s: LinkedSession, event: string, work: () => Promise<void>): void {
+    s.chain = s.chain.then(work).catch((error: unknown) => this.#warn(event, error, { sid: s.sid }));
+  }
+
+  /** Why this app's requests can't be judged right now, or null when its connector is on. */
+  #refusal(provider: NativeProvider): string | null {
+    const on = this.d.enabled(provider);
+    return on === true ? null : on === "unreadable" ? "connector_unreadable" : "connector_disabled";
+  }
+
+  #expireIdle(): void {
     for (const [oldKey, session] of this.#sessions)
       if (!session.active && this.d.now() - session.at > 60 * 60_000) {
         this.#sessions.delete(oldKey);
         void this.#end(session.sid, "completed");
       }
-    const key = JSON.stringify([r.provider, r.nativeSessionId, r.cwd]);
+  }
+
+  /** The linked session for this native session in `label`, created on first use. */
+  async #open(
+    r: NativeHookRequest,
+    label: string,
+    base: string,
+    signal: AbortSignal,
+  ): Promise<{ key: string; s: LinkedSession } | NativeHookReply> {
+    const key = JSON.stringify([r.provider, r.nativeSessionId, r.cwd, label]);
     let s = this.#sessions.get(key);
-    if (!s && r.event === "end") return { ok: true };
     if (!s) {
-      // The same-user socket is not an unlimited session or approval allocator.
-      if (this.#sessions.size >= 32) return { ok: false, reason: "session_limit" };
-      s = {
+      // The same-user socket is not an unlimited session allocator: the oldest idle session makes room.
+      if (this.#sessions.size >= MAX_SESSIONS) {
+        let oldest: [string, LinkedSession] | undefined;
+        for (const entry of this.#sessions)
+          if (!entry[1].active && (!oldest || entry[1].at < oldest[1].at)) oldest = entry;
+        if (!oldest) return { ok: false, reason: "session_limit" };
+        this.#sessions.delete(oldest[0]);
+        void this.#end(oldest[1].sid, "completed");
+      }
+      const created: LinkedSession = {
         sid: `${NATIVE_SID_PREFIX}${randomUUID()}`,
         provider: r.provider,
         label,
         cwd: r.cwd,
+        base,
         seq: 0,
         active: 0,
         at: this.d.now(),
         pending: new Set(),
         tail: Promise.resolve(),
+        chain: Promise.resolve(),
         ready: Promise.resolve(),
       };
-      this.#sessions.set(key, s);
+      s = created;
+      this.#sessions.set(key, created);
       this.#saveLedger();
-      const created = s;
+      const adapter = r.provider === "cursor" ? "acp" : r.provider === "claude" ? "claude-code" : "codex";
+      let recorded = false;
       created.ready = (async () => {
         await this.d.store.upsertSession(created.sid, {
           deviceId: this.d.deviceId,
-          adapter: r.provider === "cursor" ? "acp" : r.provider === "claude" ? "claude-code" : "codex",
+          adapter,
           appId: NATIVE_APPS[r.provider],
           kind: "agent",
           control: "approvals",
@@ -198,9 +248,10 @@ export class NativeBridge {
           permissionMode: "default",
           updatedAt: this.d.now(),
         });
+        recorded = true;
         await this.#event(created, {
           type: "session.started",
-          adapter: r.provider === "cursor" ? "acp" : r.provider === "claude" ? "claude-code" : "codex",
+          adapter,
           origin: "local:cli",
           permissionMode: "default",
         });
@@ -209,41 +260,87 @@ export class NativeBridge {
           this.#sessions.delete(key);
           this.#saveLedger();
         }
+        // The row exists without its start event: end it so the ledger and sweep still clean it up.
+        if (recorded) void this.#end(created.sid, "interrupted");
         throw error;
       });
     }
     const linked = s;
     await linked.ready;
-    if (this.#closed || signal.aborted || !this.d.enabled(r.provider) || this.#sessions.get(key) !== linked)
-      return { ok: false, reason: "connector_disabled" };
+    if (this.#closed || signal.aborted) return { ok: false, reason: "not_running" };
+    const refusal = this.#refusal(r.provider);
+    if (refusal) return { ok: false, reason: refusal };
+    if (this.#sessions.get(key) !== linked) return { ok: false, reason: "session_ended" };
     linked.at = this.d.now();
-    const connection = { ok: true, sid: linked.sid, url: sessionLink(linked.sid, this.d.locale()) };
+    return { key, s: linked };
+  }
+
+  #connection(s: LinkedSession) {
+    return { ok: true, sid: s.sid, url: sessionLink(s.sid, this.d.locale()) };
+  }
+
+  async handle(raw: unknown, signal: AbortSignal): Promise<NativeHookReply> {
+    const parsed = NativeHookRequest.safeParse(raw);
+    if (!parsed.success) return { ok: false, reason: "bad_params" };
+    const r = parsed.data;
+    if (this.#closed || signal.aborted) return { ok: false, reason: "not_running" };
+    // Owner 2026-10-31: gate where the action lands (cwd, roots, shell folder, files), not where the app opened.
+    const home = this.d.home ?? homedir();
+    const targets = nativeTargets({ cwd: r.cwd, roots: r.workspaceRoots, input: r.input }, home) ?? [r.cwd];
+    const labels = [...new Set(targets.map((t) => this.d.workspaceFor(t)).filter((l): l is string => l !== null))];
+    const tool = r.event === "permission" || r.event === "tool";
+    const base = JSON.stringify([r.provider, r.nativeSessionId, r.cwd]);
+    // Lifecycle events reach every session this native session opened, wherever its actions landed.
+    const opened = tool ? [] : [...this.#sessions.entries()].filter(([, s]) => s.base === base);
+    // Owner 2026-10-31: outside Chalito workspaces the hook gives no decision at all.
+    if (!labels.length && !opened.length) return { ok: true, pass: true };
+    if (labels.length > 1) return { ok: false, reason: "ambiguous_path" };
+    const refusal = this.#refusal(r.provider);
+    if (refusal) return { ok: false, reason: refusal };
+    this.#expireIdle();
     if (r.event === "end") {
-      this.#sessions.delete(key);
-      for (const pending of linked.pending) pending.abort();
-      await this.#end(linked.sid, "completed");
-      await this.#event(linked, { type: "session.state", state: "completed" });
-      return connection;
+      let reply: NativeHookReply = { ok: true };
+      for (const [key, linked] of opened) {
+        this.#sessions.delete(key);
+        for (const pending of linked.pending) pending.abort();
+        await this.#end(linked.sid, "completed");
+        await this.#event(linked, { type: "session.state", state: "completed" });
+        reply = this.#connection(linked);
+      }
+      return reply;
     }
-    if (r.event !== "permission" && r.event !== "tool") {
-      if (r.text) {
-        const ct = await this.d.core.sealer.seal({ text: r.text }, `event:${linked.sid}`);
-        await this.#event(linked, {
-          type: r.event === "prompt" ? "message.user" : "message.assistant",
-          ...(r.event === "prompt" ? { origin: "local:cli" } : {}),
-          ct,
-        });
-      }
-      if (r.event === "prompt") {
-        await this.d.store.upsertSession(linked.sid, { state: "running", updatedAt: this.d.now() });
-        await this.#event(linked, { type: "session.state", state: "running" });
-      }
-      if (r.event === "stop" && linked.active === 0) {
-        await this.d.store.upsertSession(linked.sid, { state: "idle", updatedAt: this.d.now() });
-        await this.#event(linked, { type: "session.state", state: "idle" });
-      }
-      return connection;
+    const sessions = opened.map(([, s]) => s);
+    let mine: { key: string; s: LinkedSession } | undefined;
+    if (labels[0]) {
+      const got = await this.#open(r, labels[0], base, signal);
+      if (!("s" in got)) return got;
+      mine = got;
+      if (!sessions.includes(got.s)) sessions.unshift(got.s);
     }
+    if (!tool) {
+      for (const linked of sessions) {
+        if (r.text) {
+          const ct = await this.d.core.sealer.seal({ text: r.text }, `event:${linked.sid}`);
+          await this.#event(linked, {
+            type: r.event === "prompt" ? "message.user" : "message.assistant",
+            ...(r.event === "prompt" ? { origin: "local:cli" } : {}),
+            ct,
+          });
+        }
+        if (r.event === "prompt") {
+          await this.d.store.upsertSession(linked.sid, { state: "running", updatedAt: this.d.now() });
+          await this.#event(linked, { type: "session.state", state: "running" });
+        }
+        if (r.event === "stop" && linked.active === 0) {
+          await this.d.store.upsertSession(linked.sid, { state: "idle", updatedAt: this.d.now() });
+          await this.#event(linked, { type: "session.state", state: "idle" });
+        }
+      }
+      return this.#connection(sessions[0]!);
+    }
+    // A tool request always has its label: no target inside a workspace already passed above.
+    const { key, s: linked } = mine!;
+    const connection = this.#connection(linked);
     if (!r.toolName || !r.input) return { ...connection, allow: false, reason: "bad_params" };
     if (this.#pending >= MAX_PENDING || linked.active >= MAX_ACTIVE_PER_SESSION)
       return { ...connection, allow: false, reason: "busy" };
@@ -255,7 +352,6 @@ export class NativeBridge {
     if (signal.aborted) abort.abort();
     linked.pending.add(abort);
     let announced = false;
-    let announcing = Promise.resolve();
     try {
       const name = r.provider === "cursor" && r.toolName === "Shell" ? "Bash" : r.toolName;
       const input = { ...r.input };
@@ -268,7 +364,7 @@ export class NativeBridge {
       const dirs = [input.working_directory, input.cwd, input.workdir].filter((v) => v !== undefined);
       if (dirs.some((v) => typeof v !== "string") || new Set(dirs).size > 1)
         return { ...connection, allow: false, reason: "ambiguous_path" };
-      const actualCwd = resolve(linked.cwd, (dirs[0] as string | undefined) ?? ".");
+      const actualCwd = resolve(linked.cwd, expandHome((dirs[0] as string | undefined) ?? ".", home));
       if (name === "Bash") {
         // Codex sends argv, not a string: classify the real command, never an empty one.
         const cmd = input.command;
@@ -277,44 +373,61 @@ export class NativeBridge {
         else if (typeof cmd !== "string" || !cmd.trim())
           return { ...connection, allow: false, reason: "unsupported_input" };
       }
-      if (this.d.workspaceFor(actualCwd) !== linked.label)
-        return { ...connection, allow: false, reason: "outside_workspace" };
+      let classifyCwd = actualCwd;
+      let unsure = false;
+      if (this.d.workspaceFor(actualCwd) !== linked.label) {
+        const inside = targets.find((t) => this.d.workspaceFor(t) === linked.label)!;
+        if (FILE_TOOLS.has(name)) {
+          // The app runs outside the workspace yet names a file in it: judge the file where it lands.
+          for (const k of ["file_path", "notebook_path", "path"])
+            if (typeof input[k] === "string") input[k] = resolve(actualCwd, expandHome(input[k], home));
+          classifyCwd = this.d.workspaceFor(dirname(inside)) === linked.label ? dirname(inside) : inside;
+        } else if (this.d.workspaceFor(linked.cwd) === linked.label) {
+          // A session opened in the workspace may not move its shell out of it.
+          return { ...connection, allow: false, reason: "outside_workspace" };
+        } else {
+          // Only an open root (Cursor) is in the workspace: where it runs is unclear, so a human decides.
+          classifyCwd = inside;
+          unsure = true;
+        }
+      }
       const outcome = await this.d.core.requestNativeTool({
         sid: linked.sid,
-        cwd: actualCwd,
+        cwd: classifyCwd,
         toolName: name,
         input,
-        forcePrompt: r.event === "permission" || hidesPath(input),
+        forcePrompt: unsure || r.event === "permission" || hidesPath(input),
         signal: abort.signal,
         onRequested: (aid, expiresAt, risk) => {
           announced = true;
-          announcing = this.d.store
-            .upsertSession(linked.sid, { state: "waiting_approval", live: true, updatedAt: this.d.now() })
-            .then(() => this.#event(linked, { type: "approval.requested", aid, risk, expiresAt }))
-            .catch((error: unknown) => this.#warn("native.announce_failed", error, { sid: linked.sid }));
+          this.#later(linked, "native.announce_failed", async () => {
+            await this.d.store.upsertSession(linked.sid, {
+              state: "waiting_approval",
+              live: true,
+              updatedAt: this.d.now(),
+            });
+            await this.#event(linked, { type: "approval.requested", aid, risk, expiresAt });
+          });
         },
       });
-      return {
-        ...connection,
-        allow: outcome.allow && !abort.signal.aborted && this.d.enabled(r.provider),
-        reason: outcome.reason,
-      };
+      const refusal = this.#closed ? "not_running" : this.#refusal(r.provider);
+      const ended = this.#sessions.get(key) !== linked;
+      if (refusal || ended || abort.signal.aborted)
+        return { ...connection, allow: false, reason: refusal ?? (ended ? "session_ended" : outcome.reason) };
+      return { ...connection, allow: outcome.allow, reason: outcome.reason };
     } finally {
       signal.removeEventListener("abort", cancel);
       linked.pending.delete(abort);
       linked.active--;
       this.#pending--;
-      // Bookkeeping only: a failed store write must never turn the decision into an error.
-      try {
-        await announcing;
-        if (announced && this.#sessions.get(key) === linked) {
+      // Bookkeeping only: a failed or hung store write must never touch the decision.
+      if (announced)
+        this.#later(linked, "native.state_write_failed", async () => {
+          if (this.#sessions.get(key) !== linked) return;
           const state = linked.active ? "waiting_approval" : "running";
           await this.d.store.upsertSession(linked.sid, { state, updatedAt: this.d.now() });
           await this.#event(linked, { type: "session.state", state });
-        }
-      } catch (error) {
-        this.#warn("native.state_write_failed", error, { sid: linked.sid });
-      }
+        });
     }
   }
 

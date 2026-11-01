@@ -12,7 +12,7 @@ export const START_WAIT_MS = 30_000;
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "waiting"; since: number; cid: string; target: string; before: ReadonlySet<string> }
+  | { kind: "waiting"; since: number; cid: string; target: string; before: ReadonlySet<string>; tagged: boolean }
   | { kind: "timeout" }
   | { kind: "error"; msg: string };
 
@@ -62,7 +62,12 @@ export const NewSession = () => {
 
   useEffect(() => {
     if (phase.kind !== "waiting") return;
-    const started = startedSessionFor(live, { cid: phase.cid, deviceId: phase.target, before: phase.before });
+    const started = startedSessionFor(live, {
+      cid: phase.cid,
+      deviceId: phase.target,
+      before: phase.before,
+      tagged: phase.tagged,
+    });
     if (started) {
       router.push({ pathname: "/sesiones/[sid]", params: { sid: started } });
       return;
@@ -108,7 +113,15 @@ export const NewSession = () => {
         prompt: text,
         permissionMode: mode,
       });
-      setPhase({ kind: "waiting", since: Date.now(), cid, target, before });
+      // A computer that reports its tools is a new agent: only its tagged start counts.
+      setPhase({
+        kind: "waiting",
+        since: Date.now(),
+        cid,
+        target,
+        before,
+        tagged: selected?.setup?.tools !== undefined,
+      });
     } catch (err) {
       setPhase({
         kind: "error",

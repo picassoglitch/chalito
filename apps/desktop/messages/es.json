@@ -400,6 +400,7 @@
       "intro": "Conecta una herramienta en cualquier computadora con tu cuenta de Chalito. Su cuenta y herramientas se quedan allí; úsalas desde Sesiones.",
       "finish": "Solicitud enviada. Termina de iniciar sesión en el navegador de {computer}. El estado cambiará cuando esa computadora confirme la conexión.",
       "failed": "No se pudo actualizar ni solicitar la conexión. Revisa que ambas computadoras estén en línea y vinculadas.",
+      "pollFailed": "No se pudo actualizar el estado de las computadoras. Se muestra el último estado recibido.",
       "noComputers": "Inicia sesión en Chalito en tus otras computadoras para verlas aquí.",
       "refresh": "Actualizar herramientas",
       "allowSessions": "Conectada. Permite las sesiones de esta herramienta en Chalito en {computer} para ejecutar tareas desde aquí."
@@ -423,6 +424,7 @@
       "addHint": "Chalito añadirá su conector de aprobaciones a los ajustes de esta aplicación. Se conservan los ajustes existentes y una copia local. El sistema te pedirá confirmación.",
       "removeHint": "Quitar solo el conector de Chalito. Se rechazarán las solicitudes pendientes. La aplicación conserva su cuenta y sus ajustes.",
       "changes": "Ver los cambios",
+      "readFailed": "Chalito no pudo actualizar estas conexiones. La lista muestra el último estado que leyó.",
       "error": {
         "config_changed": "Los ajustes cambiaron mientras esta pantalla estaba abierta. Revísalos e inténtalo de nuevo.",
         "os_auth_failed": "La confirmación del sistema se canceló o falló.",

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { AgentIpc, NativeConnectionView } from "../lib/ipc.js";
+import { IpcUnavailableError, type AgentIpc, type NativeConnectionView } from "../lib/ipc.js";
 import { useT } from "../lib/i18n.js";
 
 // The agent marks a row it could not read; that row explains itself instead of hiding the list.
@@ -26,9 +26,21 @@ export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
   const [confirm, setConfirm] = useState<Row | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readFailed, setReadFailed] = useState(false);
   const read = useCallback(() => {
     if (!ipc.nativeConnections) return;
-    void ipc.nativeConnections().then(setConnections, () => setConnections(null));
+    void ipc.nativeConnections().then(
+      (rows) => {
+        setConnections(rows);
+        setReadFailed(false);
+      },
+      (e: unknown) => {
+        // Only an agent without this feature hides the card; a failed read keeps the last rows visible.
+        if (e instanceof IpcUnavailableError || (e instanceof Error && e.message === "unknown_method"))
+          setConnections(null);
+        else setReadFailed(true);
+      },
+    );
   }, [ipc]);
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -67,15 +79,20 @@ export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
       read();
     }
   };
-  if (connections === null) return null;
+  if (connections === null && !readFailed) return null;
   return (
     <section className="card" aria-labelledby="native-connect-title">
       <h2 id="native-connect-title">{t("integrations.native.title")}</h2>
       <p>{t("integrations.native.intro")}</p>
       <p className="muted">{t("integrations.native.scope")}</p>
       {error && <p role="alert">{t(`integrations.native.error.${error}`)}</p>}
+      {readFailed && (
+        <p role="alert" data-native-read-failed>
+          {t("integrations.native.readFailed")}
+        </p>
+      )}
       <ul className="list">
-        {connections.map((connection) => (
+        {(connections ?? []).map((connection) => (
           <li key={connection.provider} data-native={connection.provider}>
             <h3>{t(`integrations.native.name.${connection.provider}`)}</h3>
             <p>

@@ -37,3 +37,26 @@ it("a released agent doesn't tag its start: a new untagged session on that compu
   const live = { sessions: [session("old"), session("new")], events: { new: [started("new")] } };
   expect(startedSessionFor(live, { cid: "cmd-1", deviceId: "pc-a", before: new Set(["old"]) })).toBe("new");
 });
+
+it("never takes a session whose start event hasn't arrived yet", () => {
+  const live = { sessions: [session("row-only")], events: {} };
+  expect(startedSessionFor(live, { cid: "cmd-1", deviceId: "pc-a", before: new Set() })).toBeNull();
+});
+
+it("never takes a native approvals session that opened during the wait", () => {
+  const native = { ...session("native"), control: "approvals" as const };
+  const live = { sessions: [native], events: { native: [started("native")] } };
+  expect(startedSessionFor(live, { cid: "cmd-1", deviceId: "pc-a", before: new Set() })).toBeNull();
+});
+
+it("a new agent (reports tools) must tag its start: an untagged session there is someone else's", () => {
+  const live = { sessions: [session("untagged")], events: { untagged: [started("untagged")] } };
+  expect(startedSessionFor(live, { cid: "cmd-1", deviceId: "pc-a", before: new Set(), tagged: true })).toBeNull();
+  const mine = { sessions: [session("mine")], events: { mine: [started("mine", "cmd-1")] } };
+  expect(startedSessionFor(mine, { cid: "cmd-1", deviceId: "pc-a", before: new Set(), tagged: true })).toBe("mine");
+});
+
+it("an old agent (no tools report) still matches its untagged start", () => {
+  const live = { sessions: [session("new")], events: { new: [started("new")] } };
+  expect(startedSessionFor(live, { cid: "cmd-1", deviceId: "pc-a", before: new Set(), tagged: false })).toBe("new");
+});

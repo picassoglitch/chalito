@@ -591,6 +591,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           input: io.tty.input,
           out: io.out,
           workspaceStatus: (cwd) => nativeWorkspaceStatus(dir, cwd, io.platform),
+          home: io.home,
           ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
         },
         where,

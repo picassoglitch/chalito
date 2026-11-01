@@ -1,5 +1,5 @@
 import { connect } from "node:net";
-import { isAbsolute } from "node:path";
+import { homedir } from "node:os";
 import type { Duplex } from "node:stream";
 import { sessionLink } from "@chalito/protocol";
 import { openRpc } from "../code/cli.js";
@@ -7,6 +7,9 @@ import { CODE_MAX_LINE } from "../code/server.js";
 import {
   nativeHookInput,
   nativeHookOutput,
+  nativeTargetFields,
+  nativeTargets,
+  type NativeTargetFields,
   type NativeHookReply,
   type NativeHookRequest,
   type NativeProvider,
@@ -15,43 +18,49 @@ import {
 const HOOK_MAX = 64 * 1024;
 // Read past the hook limit only to learn the folder: oversized requests outside workspaces still pass.
 const READ_MAX = 1024 * 1024;
+// Past READ_MAX only the head is kept: the target fields come first in every vendor's payload.
+const HEAD_MAX = 16 * 1024;
+const IDLE_MS = 1000;
 
-const read = (input: NodeJS.ReadableStream): Promise<{ text: string; bytes: number }> =>
+/** Stdin up to READ_MAX, or its first HEAD_MAX when larger; a stalled writer ends the read after IDLE_MS. */
+export const readHookStdin = (
+  input: NodeJS.ReadableStream,
+  idleMs = IDLE_MS,
+): Promise<{ text: string; bytes: number }> =>
   new Promise((resolve) => {
     let text = "";
     let bytes = 0;
-    const finish = (value: string) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = () => {
       clearTimeout(timer);
       input.removeListener("data", data);
-      input.removeListener("end", end);
-      input.removeListener("error", error);
+      input.removeListener("end", finish);
+      input.removeListener("error", finish);
       input.pause();
-      resolve({ text: value, bytes });
+      resolve({ text: bytes > READ_MAX ? text.slice(0, HEAD_MAX) : text, bytes });
+    };
+    const idle = () => {
+      clearTimeout(timer);
+      timer = setTimeout(finish, idleMs);
     };
     const data = (chunk: Buffer | string) => {
       bytes += Buffer.byteLength(chunk);
-      if (bytes > READ_MAX) finish("");
-      else text += chunk.toString();
+      if (text.length < READ_MAX) text += chunk.toString();
+      if (bytes > READ_MAX) finish();
+      else idle();
     };
-    const end = () => finish(text);
-    const error = () => finish("");
-    const timer = setTimeout(() => finish(""), 1000);
+    idle();
     input.on("data", data);
-    input.once("end", end);
-    input.once("error", error);
+    input.once("end", finish);
+    input.once("error", finish);
   });
 
-const cwdOf = (raw: string): string | undefined => {
-  try {
-    const h = JSON.parse(raw) as { cwd?: unknown; workspace_roots?: unknown };
-    const cwd = h.cwd ?? (Array.isArray(h.workspace_roots) ? h.workspace_roots[0] : undefined);
-    return typeof cwd === "string" && isAbsolute(cwd) ? cwd : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
 const REASON = /^[a-z_]{1,40}$/;
+const fieldsOf = (r: NativeHookRequest): NativeTargetFields => ({
+  cwd: r.cwd,
+  roots: r.workspaceRoots,
+  input: r.input,
+});
 
 /** Runs inside the native app's hook process. It never calls a model or opens provider credentials. */
 export const runNativeHook = async (
@@ -62,25 +71,34 @@ export const runNativeHook = async (
     connect?: (path: string) => Duplex;
     /** The agent's workspace list on disk, consulted only when the agent can't answer. */
     workspaceStatus?: (cwd: string) => "inside" | "outside" | "unknown";
+    /** Expands `~` in request paths. */
+    home?: string;
   },
   path: string | null,
   provider: NativeProvider,
   event: string,
   locale: "es" | "en",
-  limits: { connectMs?: number; requestMs?: number } = {},
+  limits: { connectMs?: number; requestMs?: number; idleMs?: number } = {},
 ): Promise<number> => {
-  // Without the agent: deny in a workspace (or when unsure), stay out of the way elsewhere.
-  const fallback = (cwd: string | undefined, reason: string): NativeHookReply =>
-    cwd && (io.workspaceStatus?.(cwd) ?? "unknown") === "outside" ? { ok: true, pass: true } : { ok: false, reason };
-  const raw = await read(io.input);
+  // Without the agent: deny if any target is in a workspace (or unsure), stay out of the way elsewhere.
+  const fallback = (fields: NativeTargetFields, reason: string): NativeHookReply => {
+    const targets = nativeTargets(fields, io.home ?? homedir());
+    const outside = !!targets?.length && targets.every((t) => (io.workspaceStatus?.(t) ?? "unknown") === "outside");
+    return outside ? { ok: true, pass: true } : { ok: false, reason };
+  };
+  const raw = await readHookStdin(io.input, limits.idleMs);
   let reply: NativeHookReply;
   let request: NativeHookRequest | null = null;
-  if (raw.bytes > HOOK_MAX) reply = fallback(cwdOf(raw.text), "too_large");
-  else if (!(request = nativeHookInput(provider, event, raw.text))) reply = fallback(cwdOf(raw.text), "bad_input");
+  // A cut-off payload may name its file after the part we kept: pass only when a file target was read.
+  if (raw.bytes > READ_MAX && !/"(file_path|path|notebook_path)"\s*:/.test(raw.text))
+    reply = { ok: false, reason: "too_large" };
+  else if (raw.bytes > HOOK_MAX) reply = fallback(nativeTargetFields(raw.text), "too_large");
+  else if (!(request = nativeHookInput(provider, event, raw.text)))
+    reply = fallback(nativeTargetFields(raw.text), "bad_input");
   else if (JSON.stringify({ id: 1, method: "native", params: request }).length > CODE_MAX_LINE - 64)
-    reply = fallback(request.cwd, "too_large");
+    reply = fallback(fieldsOf(request), "too_large");
   else reply = path ? await ask(io, path, request, locale, limits) : { ok: false, reason: "not_running" };
-  if (request && !reply.ok && reply.reason === "not_running") reply = fallback(request.cwd, "not_running");
+  if (request && !reply.ok && reply.reason === "not_running") reply = fallback(fieldsOf(request), "not_running");
   io.out(`${JSON.stringify(nativeHookOutput(provider, event, reply, locale))}\n`);
   return 0;
 };

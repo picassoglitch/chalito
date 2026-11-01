@@ -4,7 +4,7 @@ import {
   SignedCoordPlan,
   type CoordPlanState,
   DeviceSetup,
-  DeviceTools,
+  DeviceTool,
   type DeviceSetupView,
   LiveBroadcast,
   SealedApprovalPayload,
@@ -227,8 +227,14 @@ const num = (v: unknown): number => (typeof v === "number" ? v : Number(v ?? 0))
 const setupOf = (presence: unknown): DeviceSetupView | null => {
   const p = DeviceSetup.safeParse((presence as { setup?: unknown } | null)?.setup);
   if (!p.success) return null;
-  const tools = DeviceTools.safeParse((presence as { tools?: unknown }).tools);
-  return tools.success ? { ...p.data, tools: tools.data } : p.data;
+  const raw = (presence as { tools?: unknown }).tools;
+  if (!Array.isArray(raw)) return p.data;
+  // One malformed entry (a newer agent's field, a bad path) must not hide the computer's other tools.
+  const tools = raw.slice(0, 64).flatMap((entry) => {
+    const tool = DeviceTool.safeParse(entry);
+    return tool.success ? [tool.data] : [];
+  });
+  return { ...p.data, tools };
 };
 
 export interface LiveStoreOptions {

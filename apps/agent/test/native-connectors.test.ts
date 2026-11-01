@@ -236,4 +236,16 @@ describe("native app connector installation", () => {
     writeFileSync(s.manager.path("codex"), "{}");
     expect(s.manager.enabled("codex")).toBe(false);
   });
+
+  it("reports an unreadable app config as unreadable, not as turned off", async () => {
+    const s = setup();
+    await s.manager.set("claude", true, "missing");
+    expect(s.manager.readState("claude")).toBe(true);
+    writeFileSync(s.manager.path("claude"), "{not json");
+    expect(s.manager.readState("claude")).toBe("unreadable");
+    expect(s.manager.enabled("claude")).toBe(false);
+    writeFileSync(s.manager.path("claude"), "{}");
+    expect(s.manager.readState("claude")).toBe(false);
+    expect(s.logs.filter((l) => l.event === "native.connector_unreadable")).toHaveLength(1);
+  });
 });
