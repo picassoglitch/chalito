@@ -38,6 +38,7 @@ export const NATIVE_CONNECTOR_ERRORS = [
   "app_unavailable",
   "unsafe_command",
   "cli_unavailable",
+  "unstable_path",
   "other",
 ] as const;
 export type NativeConnectorError = (typeof NATIVE_CONNECTOR_ERRORS)[number];
@@ -82,6 +83,8 @@ export class NativeConnectors {
       home: string;
       dir: string;
       command: string[];
+      /** #132 — false when the agent runs from a path that vanishes (/tmp mount, DMG): never put it in hooks. */
+      stable?: boolean;
       platform: NodeJS.Platform;
       available: (provider: Provider) => Promise<boolean>;
       verify: () => Promise<boolean>;
@@ -191,6 +194,28 @@ export class NativeConnectors {
       );
     });
   }
+  /** Events holding a Chalito hook whose command matches `pick`. */
+  #chalitoEvents(provider: Provider, data: Record<string, unknown>, pick = (_c: string) => true): Set<string> {
+    const found = new Set<string>();
+    if (!object(data.hooks)) return found;
+    const hooks = data.hooks;
+    const ours = (event: string, command: unknown) => isChalitoHook(provider, event, command) && pick(String(command));
+    for (const event of EVENTS[provider]) {
+      const groups = hooks[event];
+      if (
+        Array.isArray(groups) &&
+        groups.some(
+          (g: unknown) =>
+            object(g) &&
+            (provider === "cursor"
+              ? ours(event, g.command)
+              : Array.isArray(g.hooks) && g.hooks.some((h: unknown) => object(h) && ours(event, h.command))),
+        )
+      )
+        found.add(event);
+    }
+    return found;
+  }
   #enabledIn(records: Records, provider: Provider, data: Record<string, unknown>): boolean {
     const record = records.providers[provider];
     return (
@@ -243,6 +268,7 @@ export class NativeConnectors {
       this.d.log?.("native.app_check_failed", { provider, error: e instanceof Error ? e.message : "error" });
       error ??= "app_unavailable";
     }
+    if (!error && !configured && this.d.stable === false) error = "unstable_path";
     if (!error && !configured)
       try {
         nativeHookCommands(this.d.command, provider, this.d.platform);
@@ -266,6 +292,7 @@ export class NativeConnectors {
 
   async set(provider: Provider, enabled: boolean, expectedHash: string): Promise<void> {
     NativeProvider.parse(provider);
+    if (enabled && this.d.stable === false) throw new Error("unstable_path");
     if (enabled && !(await this.d.available(provider))) throw new Error("app_unavailable");
     // Disconnecting never needs the current binary path: old hooks are found by their signature.
     const commands = enabled ? nativeHookCommands(this.d.command, provider, this.d.platform) : [];
@@ -280,6 +307,19 @@ export class NativeConnectors {
       if (enabled) throw error;
       records = { v: 1, providers: {} };
     }
+    this.#apply(provider, path, current, records, enabled ? commands : null);
+    if (!enabled) this.d.onDisconnect(provider);
+  }
+  /** Swaps Chalito's hooks in the app's settings for `commands` (none: removes them), keeping everything else. */
+  #apply(
+    provider: Provider,
+    path: string,
+    current: { raw: string | null; data: Record<string, unknown> },
+    records: Records,
+    commands: string[] | null,
+    only?: Set<string>,
+  ): Records {
+    records = structuredClone(records);
     const previous = new Set(records.providers[provider]?.commands ?? []);
     const ours = (event: string, command: unknown) =>
       previous.has(String(command)) || isChalitoHook(provider, event, command);
@@ -296,8 +336,9 @@ export class NativeConnectors {
         return kept.length ? [{ ...entry, hooks: kept }] : [];
       });
     }
-    if (enabled)
+    if (commands)
       for (const [index, event] of EVENTS[provider].entries()) {
+        if (only && !only.has(event)) continue;
         const timeout =
           event.toLowerCase() === "sessionend" ? 3 : event === "PreToolUse" || event === "preToolUse" ? 600 : 10;
         const hook = {
@@ -315,7 +356,7 @@ export class NativeConnectors {
     const next =
       JSON.stringify({ ...current.data, ...(provider === "cursor" ? { version: 1 } : {}), hooks }, null, 2) + "\n";
     if (current.raw !== null) this.#backup(provider, current.raw);
-    if (enabled) records.providers[provider] = { commands };
+    if (commands) records.providers[provider] = { commands };
     else delete records.providers[provider];
     this.#write(path, next);
     try {
@@ -333,6 +374,43 @@ export class NativeConnectors {
       }
       throw error;
     }
-    if (!enabled) this.d.onDisconnect(provider);
+    return records;
+  }
+
+  // #132 — on agent start: connected apps whose Chalito hooks name an old agent path get the current one.
+  repair(): Provider[] {
+    let records: Records;
+    try {
+      records = this.#records();
+    } catch (error) {
+      this.d.log?.("native.connector_repair_failed", { error: nativeConnectorErrorCode(error) });
+      return [];
+    }
+    const fixed: Provider[] = [];
+    for (const provider of NativeProvider.options) {
+      const record = records.providers[provider];
+      if (!record) continue;
+      try {
+        const commands = nativeHookCommands(this.d.command, provider, this.d.platform);
+        const path = this.path(provider);
+        const current = this.#read(path);
+        const present = this.#chalitoEvents(provider, current.data);
+        const stale = this.#chalitoEvents(provider, current.data, (c) => !commands.includes(c)).size > 0;
+        // A kill between the two writes leaves current hooks with an old record: heal the record too.
+        const staleRecord = present.size > 0 && record.commands.join("\n") !== commands.join("\n");
+        // Only paths are fixed: hooks taken out by hand, all or some, stay out.
+        if (!stale && !staleRecord) continue;
+        records = this.#apply(provider, path, current, records, commands, present);
+        fixed.push(provider);
+        this.d.log?.("native.connector_repaired", { provider });
+      } catch (error) {
+        this.d.log?.("native.connector_repair_failed", {
+          provider,
+          error: nativeConnectorErrorCode(error),
+          errno: (error as NodeJS.ErrnoException).code,
+        });
+      }
+    }
+    return fixed;
   }
 }

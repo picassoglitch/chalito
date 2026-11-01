@@ -1,7 +1,9 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { nativeWorkspaceStatus } from "../src/native/protocol.js";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { NativeConnectors } from "../src/native/connectors.js";
+import { classifyToolCall } from "../src/policy/classify.js";
 import { CodexAdapter } from "@chalito/adapters/codex";
 import { AcpAdapter } from "@chalito/adapters/acp";
 import { describe, expect, it, vi } from "vitest";
@@ -264,6 +266,82 @@ describe("chalito run (daemon)", () => {
     expect(JSON.parse(readFileSync(file, "utf8")).paths).toContain(w);
     await vi.waitFor(() => expect(s.store.sessions.get("native-ghost")).toMatchObject({ state: "interrupted" }));
     await d.stop();
+  });
+
+  it("moves AI app hooks off an AppImage's temporary mount on start (#132)", async () => {
+    const s = await setup();
+    const appDir = join(s.home, ".mount_ChalitNEW");
+    const agent = join(appDir, "usr", "bin", "chalito-agent");
+    mkdirSync(dirname(agent), { recursive: true });
+    writeFileSync(agent, "agent bytes", { mode: 0o755 });
+    // Connected while an older AppImage ran: hooks name its mount, gone since.
+    mkdirSync(s.dir, { recursive: true });
+    await new NativeConnectors({
+      home: s.home,
+      dir: s.dir,
+      command: ["/tmp/.mount_ChalitGONE/usr/bin/chalito-agent"],
+      platform: "linux",
+      available: async () => true,
+      verify: async () => true,
+      onDisconnect: () => undefined,
+    }).set("claude", true, "missing");
+    const d = await runDaemon({
+      ...s.deps,
+      execPath: agent,
+      env: { ...s.deps.env, APPIMAGE: join(s.home, "Chalito.AppImage"), APPDIR: appDir },
+    });
+    const settings = readFileSync(join(s.home, ".claude", "settings.json"), "utf8");
+    expect(settings).not.toContain(".mount_Chalit");
+    expect(settings).toContain(join(s.home, ".local", "share", "chalito", "chalito-agent"));
+    expect(readFileSync(join(s.home, ".local", "share", "chalito", "chalito-agent"), "utf8")).toBe("agent bytes");
+    // An AI session must not swap the hook binary (or rename a file over it) to approve itself.
+    const w = join(s.home, "w");
+    const policy = { ...DEFAULT_POLICY, workspaces: [{ label: "w", path: w }] };
+    const ctx = { ...d.classifyExtras(), policy, home: s.home, cwd: w };
+    for (const command of [
+      `cp /tmp/x ${join(s.home, ".local", "share", "chalito", "chalito-agent")}`,
+      `mv /tmp/x ${join(s.home, ".local", "share", "chalito", "chalito-agent.tmp")}`,
+    ])
+      expect(classifyToolCall("Bash", { command }, ctx).hardFloor, command).toBe(true);
+    await d.stop();
+  });
+
+  it.each([
+    ["the copy can't be refreshed", "copy_fails"],
+    ["the agent runs from source (dev)", "dev"],
+  ])("keeps hooks on the fixed copy when %s (#132)", async (_label, mode) => {
+    const s = await setup();
+    const stable = join(s.home, ".local", "share", "chalito", "chalito-agent");
+    mkdirSync(dirname(stable), { recursive: true });
+    writeFileSync(stable, "agent v1", { mode: 0o755 });
+    mkdirSync(s.dir, { recursive: true });
+    await new NativeConnectors({
+      home: s.home,
+      dir: s.dir,
+      command: [stable],
+      platform: "linux",
+      available: async () => true,
+      verify: async () => true,
+      onDisconnect: () => undefined,
+    }).set("claude", true, "missing");
+    const appDir = join(s.home, ".mount_ChalitNEW");
+    const agent = join(appDir, "usr", "bin", "chalito-agent");
+    mkdirSync(dirname(agent), { recursive: true });
+    writeFileSync(agent, "agent v2", { mode: 0o755 });
+    chmodSync(dirname(stable), 0o500);
+    try {
+      const d = await runDaemon({
+        ...s.deps,
+        ...(mode === "copy_fails" ? { execPath: agent } : {}),
+        env: { ...s.deps.env, APPIMAGE: join(s.home, "Chalito.AppImage"), APPDIR: appDir },
+      });
+      const settings = readFileSync(join(s.home, ".claude", "settings.json"), "utf8");
+      expect(settings).not.toContain(".mount_Chalit");
+      expect(settings.match(new RegExp(`'${stable}'`, "g"))).toHaveLength(5);
+      await d.stop();
+    } finally {
+      chmodSync(dirname(stable), 0o700);
+    }
   });
 
   it("removes the native-hook workspace file when it can't write a current one, so the hook fails closed", async () => {
