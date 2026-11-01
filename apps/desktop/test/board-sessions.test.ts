@@ -1,9 +1,16 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "@chalito/client";
 import { BoardLink, SESSIONS_REFRESH_MS } from "../src/lib/board/link.js";
 import { memoryPairStore } from "../src/lib/board/pairing.js";
-import { MAX_SESSION_ITEMS, SESSION_LIMITS, StateSince, boardSessions, clip } from "../src/lib/board/sessions.js";
+import {
+  MAX_SESSION_ITEMS,
+  SESSION_LIMITS,
+  StateSince,
+  boardSessions,
+  clip,
+  sendBoardSessions,
+} from "../src/lib/board/sessions.js";
 import type { OwnSessionView } from "../src/lib/ipc.js";
 import { FakeBoard, prePair } from "./fake-board.js";
 
@@ -181,5 +188,22 @@ describe("BoardLink sessions", () => {
     link.sessions(overview("uno"));
     await new Promise((r) => setTimeout(r, 20));
     expect(board.sent("sessions")).toEqual([]);
+  });
+});
+
+describe("the panel tick's overview", () => {
+  it("logs an overview that couldn't be built and doesn't throw into the tick", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const sent: unknown[] = [];
+    expect(() =>
+      sendBoardSessions({ sessions: (o) => sent.push(o) }, () => {
+        throw new Error("bad row");
+      }),
+    ).not.toThrow();
+    expect(sent).toEqual([]);
+    expect(error.mock.calls.some((c) => String(c.join(" ")).includes("bad row"))).toBe(true);
+    sendBoardSessions({ sessions: (o) => sent.push(o) }, () => ({ items: [], more: 0 }));
+    expect(sent).toEqual([{ items: [], more: 0 }]);
+    error.mockRestore();
   });
 });

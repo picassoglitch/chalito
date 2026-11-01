@@ -114,3 +114,17 @@ export const boardSessions = (
     items.pop();
   return { items, more: all.length - items.length };
 };
+
+/** The panel tick's send: a bad overview is logged and skipped, never thrown into the tick (the pet
+ * context and presence come after it). */
+export const sendBoardSessions = (
+  board: { sessions(overview: BoardSessions): void } | null,
+  build: () => BoardSessions,
+): void => {
+  if (!board) return;
+  try {
+    board.sessions(build());
+  } catch (e) {
+    console.error("board: couldn't send the sessions overview", e);
+  }
+};

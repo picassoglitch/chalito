@@ -32,8 +32,9 @@ import { isTauri } from "@tauri-apps/api/core";
 import { BoardLink } from "../lib/board/link.js";
 import { tauriBoardPort } from "../lib/board/tauri-port.js";
 import { idbPairStore } from "../lib/board/pairing.js";
+import { localCardErrors } from "../lib/board/card-errors.js";
 import { attachBoardApprovals } from "../lib/board/approvals.js";
-import { StateSince, boardSessions } from "../lib/board/sessions.js";
+import { StateSince, boardSessions, sendBoardSessions } from "../lib/board/sessions.js";
 import { Panel } from "./Panel.js";
 import { SignIn } from "./SignIn.js";
 import { useOfflineVoice } from "./use-offline-voice.js";
@@ -76,7 +77,11 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
   const meetings = useMemo(() => new MeetingWatch(meetingsIpc()), []);
   useEffect(() => meetings.start(), [meetings]);
   // BOARD_LINK: the LCD's approvals screen decides through this window's ClientActions.
-  const board = useMemo(() => (isTauri() ? new BoardLink(tauriBoardPort, idbPairStore()) : null), []);
+  // LCD — the pet window uploads the card; it shares a failure here through localStorage.
+  const board = useMemo(
+    () => (isTauri() ? new BoardLink(tauriBoardPort, idbPairStore(), { cardErrors: localCardErrors() }) : null),
+    [],
+  );
   useEffect(() => {
     board?.start();
     return () => board?.stop();
@@ -155,11 +160,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       const learning = activity.load.loading(snap?.status, Date.now());
       const own = ownFeed.getSnapshot();
       // BOARD_LINK: the LCD lists these on its double-click screen when nothing waits on the person.
-      try {
-        board?.sessions(boardSessions(live.current, own.sessions, undefined, sessionSince));
-      } catch {
-        // Never let the board's overview stop the pet context or presence below.
-      }
+      sendBoardSessions(board, () => boardSessions(live.current, own.sessions, undefined, sessionSince));
       const ownAct = ownTracker.update(ownSessionLikes(own.sessions), 0, {
         notifications: ownNotices(own.sessions, ownFeed.seen),
       });
