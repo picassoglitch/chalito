@@ -11,7 +11,7 @@ import { checkCsp } from "../scripts/release/plan.js";
 import { DEFAULT_SSO_START_URL } from "../src/lib/session.js";
 import { MIN_GLIBC } from "../src/lib/updates.js";
 
-/** Guards on .github/workflows/release.yml: drafts only, and only from a tag or a manual dry run. */
+/** Guards on .github/workflows/release.yml: tag publication and isolated manual dry runs. */
 // Windows checkouts may convert line endings: match on LF regardless.
 const yml = readFileSync(join(__dirname, "../../../.github/workflows/release.yml"), "utf8").replace(/\r\n/g, "\n");
 const code = yml
@@ -27,13 +27,17 @@ describe("release workflow", () => {
     expect(on).not.toMatch(/pull_request|schedule|branches:/);
   });
 
-  it("creates drafts only: nothing publishes or un-drafts a release", () => {
-    const creates = code.match(/gh release create[^\n]*/g) ?? [];
-    expect(creates.length).toBe(1);
-    expect(creates[0]).toContain("--draft");
-    expect(code).not.toMatch(/--draft=false|draft: false|releaseDraft: false|gh release edit|publish: true/);
-    // Uploading assets to a release refuses an already published one.
-    expect(code).toMatch(/already published; not touching it/);
+  it("drafts first, publishes only tag builds with production updater keys", () => {
+    expect(code).toMatch(/gh release create[^\n]*--draft/);
+    expect(code).toContain("gh release edit");
+    const publish = code.slice(code.indexOf("\n  publish:"));
+    expect(publish).toContain("github.event_name == 'push'");
+    expect(publish).toContain("needs.meta.outputs.dry_run == 'false'");
+    expect(publish).toContain("needs.meta.outputs.updater_key == 'release'");
+    expect(publish).toContain("id-token: write");
+    expect(publish.indexOf("release publish")).toBeLessThan(publish.indexOf("gh release edit"));
+    expect(code).toContain("Tag publication requires TAURI_SIGNING_PRIVATE_KEY");
+    expect(code).toContain("group: desktop-release");
   });
 
   it("the bridge release (LEGACY_BRIDGE_VERSION) refuses to build on anything but Ubuntu 22.04", () => {
@@ -91,9 +95,9 @@ describe("release workflow", () => {
     },
   );
 
-  it("the default token is read-only; only the draft job can write", () => {
+  it("the default token is read-only; only draft and publish jobs can write", () => {
     expect(yml).toMatch(/\npermissions:\n {2}contents: read\n/);
-    expect((code.match(/contents: write/g) ?? []).length).toBe(1);
+    expect((code.match(/contents: write/g) ?? []).length).toBe(2);
     const draft = code.slice(code.indexOf("\n  draft:"));
     expect(draft).toContain("contents: write");
   });
