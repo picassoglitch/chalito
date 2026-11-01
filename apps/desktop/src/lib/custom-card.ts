@@ -34,7 +34,7 @@ export const companionCardFetcher =
 export const companionCardSource = (
   deps: () => Promise<Pick<RoomWindowDeps, "companionCard"> | null>,
   hasAccount: () => boolean = () => true,
-) => new CustomCardSource({ fetch: companionCardFetcher(deps, Date.now, hasAccount) });
+) => new CustomCardSource({ fetch: companionCardFetcher(deps, Date.now, hasAccount), waitOnFailure: true });
 
 /** A room's members' custom cards by companion id (the server signs them for members only, 15 min). */
 export const roomCardsFetcher =
