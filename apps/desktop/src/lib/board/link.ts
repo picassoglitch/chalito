@@ -436,7 +436,7 @@ export class BoardLink {
   #boardHolds(keyId: string): void {
     const hello = this.#snap.hello;
     if (hello) this.#updatePaired({ hello: { ...hello, pair: keyId } });
-    this.#writeHello();
+    if (this.found) this.#writeHello();
   }
 
   /** Forgets the paired board here and asks the board to forget us, whatever it answers. */

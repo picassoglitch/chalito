@@ -313,3 +313,19 @@ describe("card error across launches", () => {
     expect(panel.getSnapshot().cardError).toBeNull();
   });
 });
+
+it("a board unplugged while the new pairing is saved gets no hello retries", async () => {
+  const log = quiet();
+  const { board, link, store } = await setup({ helloRetryMs: 5 });
+  board.plug();
+  await until(() => link.ready);
+  store.save = async () => {
+    board.unplug();
+    throw new Error("quota");
+  };
+  board.autoConfirm = true;
+  expect(await link.pair()).toBe("save-failed");
+  await new Promise((r) => setTimeout(r, 80));
+  expect(logged(log.warn, "couldn't send hello")).toBe(false);
+  link.stop();
+});
