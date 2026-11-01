@@ -146,6 +146,24 @@ const startOne = async (prompt = "arregla el login") => {
 };
 
 describe("panel → agent: Nueva sesión (ADR 0031 §1)", () => {
+  it("sets up an AI inside Sessions and refreshes the picker without losing the task", async () => {
+    let ready = false;
+    const ipc = {
+      ...unavailableIpc,
+      codeApps: async () => ({ apps: ready ? ["claude-code"] : [], workspaces: ["chalito"] }),
+      apps: async () => ({ apps: [], problems: [], catalog: null }),
+    };
+    renderIt(ipc, null);
+    fireEvent.click(screen.getByRole("button", { name: "Configurar una IA" }));
+    await waitFor(() => expect(document.querySelector('[data-section="apps"]')).not.toBeNull());
+    ready = true;
+    await screen.findByLabelText("Qué quieres que haga", {}, { timeout: 5000 });
+    fireEvent.change(screen.getByLabelText("Qué quieres que haga"), { target: { value: "fix login" } });
+    fireEvent.click(screen.getByRole("button", { name: "Configurar una IA" }));
+    expect((screen.getByLabelText("Qué quieres que haga") as HTMLTextAreaElement).value).toBe("fix login");
+    expect(document.querySelector('[data-section="apps"]')).toBeNull();
+  });
+
   it("offers this computer's AIs and folders, and starts a local-origin session it then follows", async () => {
     const c = await computer();
     renderIt(c.ipc, c.client);

@@ -625,7 +625,9 @@
       "interrupted": "Stopped"
     },
     "signInForLive": "Sign in to Chalito to see the conversation here; meanwhile, follow it on your phone.",
-    "terminal": "You (terminal)"
+    "terminal": "You (terminal)",
+    "setupAI": "Set up an AI",
+    "setupHint": "Choose an AI below. Install it here, then connect your account and approve any requested changes. Ready AIs appear in the session picker automatically."
   },
   "copies": {
     "title": "Check your copies of Chalito",
