@@ -142,7 +142,7 @@ export const publishRelease = async (o: {
       body: new Uint8Array(bytes),
       headers: {
         "Content-Type": json ? "application/json" : "application/octet-stream",
-        "Content-MD5": createHash("md5").update(bytes).digest("base64"),
+        "X-Goog-Hash": `md5=${createHash("md5").update(bytes).digest("base64")}`,
       },
     });
     if (!res.ok) throw new Error(`Upload failed: ${name}`);

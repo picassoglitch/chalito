@@ -102,6 +102,7 @@ describe("automatic desktop publication", () => {
         if (init.method === "POST") {
           const name = u.searchParams.get("name")!;
           uploads.push(name);
+          expect((init.headers as Record<string, string>)["X-Goog-Hash"]).toMatch(/^md5=.+/);
           if (options.uploadFailure && !name.endsWith("latest-v2.json"))
             return new Response("upload failed", { status: 503 });
           if (name.endsWith("latest-v2.json")) {
