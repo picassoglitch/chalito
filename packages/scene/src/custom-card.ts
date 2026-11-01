@@ -228,7 +228,6 @@ export class SignedCardsSource {
       next = await this.#opts.fetch();
     } catch {
       if (this.#disposed) return;
-      if (this.#cards === undefined) this.#emit(new Map()); // can't tell: roster avatars meanwhile
       this.#schedule(this.#opts.retryMs);
       return;
     }

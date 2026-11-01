@@ -21,16 +21,50 @@ const body = (host = GCS) => ({
 });
 
 describe("the desktop's own custom companion card", () => {
-  it("reads GET /v1/avatar/companion through the borrowed session; null before sign-in or without one", async () => {
+  it("reads GET /v1/avatar/companion; distinguishes a restoring account from confirmed sign-out", async () => {
     const card = (await companionCardFetcher(async () => ({ companionCard: async () => body() }))()) as SignedCard;
     expect(card.assetId).toBe(ASSET);
     expect(card.expiresAt).toBe(1_800_000_000_000);
-    expect(await companionCardFetcher(async () => null)()).toBeNull();
+    await expect(companionCardFetcher(async () => null)()).rejects.toThrow("not ready");
+    expect(
+      await companionCardFetcher(
+        async () => null,
+        Date.now,
+        () => false,
+      )(),
+    ).toBeNull();
     expect(await companionCardFetcher(async () => ({ companionCard: async () => ({ assetId: null }) }))()).toBeNull();
     // Only the bucket's signed URLs (the webview's img-src allows that host only).
     await expect(
       companionCardFetcher(async () => ({ companionCard: async () => body("https://evil.example") }))(),
     ).rejects.toThrow("unusable");
+  });
+
+  it("keeps a custom pet through a temporary loss of the borrowed session and recovers", async () => {
+    let available = false;
+    let signedIn = true;
+    const src = companionCardSource(
+      async () => (available ? { companionCard: async () => body() } : null),
+      () => signedIn,
+    );
+    try {
+      await src.ready();
+      expect(src.getSnapshot()).toBeUndefined();
+      available = true;
+      await src.refresh();
+      const files = src.files();
+      expect(files?.key).toBe(`custom:${ASSET}`);
+      available = false;
+      await src.refresh();
+      expect(src.files()).toBe(files);
+      expect(src.getSnapshot()?.assetId).toBe(ASSET);
+      signedIn = false;
+      await src.refresh();
+      expect(src.getSnapshot()).toBeNull();
+      expect(src.files()).toBeNull();
+    } finally {
+      src.dispose();
+    }
   });
 
   it("the source hands the pet late-bound files for the card", async () => {

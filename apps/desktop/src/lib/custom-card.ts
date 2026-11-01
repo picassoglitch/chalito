@@ -12,22 +12,29 @@ const SIGNED = /^https:\/\/storage\.googleapis\.com\//;
 
 /**
  * GET /v1/avatar/companion through the panel's borrowed device session: the companion's custom
- * card, or null when it wears a roster avatar (or nobody has signed in yet). Throws when it can't
+ * card, or null when it wears a roster avatar or is explicitly signed out. Throws when it can't
  * tell (the source keeps what it had and retries).
  */
 export const companionCardFetcher =
-  (deps: () => Promise<Pick<RoomWindowDeps, "companionCard"> | null>, now: () => number = Date.now) =>
+  (
+    deps: () => Promise<Pick<RoomWindowDeps, "companionCard"> | null>,
+    now: () => number = Date.now,
+    hasAccount: () => boolean = () => true,
+  ) =>
   async (): Promise<SignedCard | null> => {
+    if (!hasAccount()) return null;
     const d = await deps();
-    if (!d?.companionCard) return null;
+    if (!d?.companionCard) throw new Error("companion session is not ready");
     const c = parseSignedCard(await d.companionCard(), { now: now(), isUrl: (u) => SIGNED.test(u) });
     if (c === "invalid") throw new Error("unusable custom card");
     return c;
   };
 
 /** The person's own custom card for the pet and the room window, with its signed URLs kept fresh. */
-export const companionCardSource = (deps: () => Promise<Pick<RoomWindowDeps, "companionCard"> | null>) =>
-  new CustomCardSource({ fetch: companionCardFetcher(deps) });
+export const companionCardSource = (
+  deps: () => Promise<Pick<RoomWindowDeps, "companionCard"> | null>,
+  hasAccount: () => boolean = () => true,
+) => new CustomCardSource({ fetch: companionCardFetcher(deps, Date.now, hasAccount) });
 
 /** A room's members' custom cards by companion id (the server signs them for members only, 15 min). */
 export const roomCardsFetcher =

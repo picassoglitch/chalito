@@ -10,7 +10,8 @@ import { loadSettings } from "../lib/settings-local.js";
 import { PET_COSMETICS_REFRESH_MS, cosmeticsKey, watchCosmetics } from "./cosmetics.js";
 import type { CustomCardSource } from "@chalito/scene/custom-card";
 import { PetLook, QualityResolver } from "./look.js";
-import { CARD_WAIT_MS, loadLastDrawn, petCard, saveLastDrawn } from "./choice.js";
+import { petCard, saveLastDrawn } from "./choice.js";
+import { PetCardLoader } from "./card-loader.js";
 import { PerkGate, mouseMayPlay, petReaction, playReaction } from "./reactions.js";
 import { PetMotion, type PetWindowApi } from "./motion.js";
 import { ClickTracker, pickTrick } from "./clicks.js";
@@ -72,7 +73,8 @@ export const startPet = (
   const creature = new CreatureBinding(placeholder);
   let look: PetLook | null = null;
   /** What's drawn (or loading): companion card and its cosmetics. */
-  let shown: string | null = null;
+  const cards = new PetCardLoader<Awaited<ReturnType<typeof loadCardAssets>>>();
+  let cardRetry: ReturnType<typeof setTimeout> | undefined;
   let wearing: SceneCosmetic[] = [];
   const rendererName = () => {
     const gl = renderer.getContext();
@@ -106,14 +108,6 @@ export const startPet = (
   /** Says hello once, when its card first shows. */
   let greeted = false;
 
-  /** What this device drew last time: a returning pet shows its roster avatar without waiting. */
-  let last = loadLastDrawn();
-  let cardWaitOver = false;
-  const cardWait = setTimeout(() => {
-    cardWaitOver = true;
-    applySettings();
-  }, CARD_WAIT_MS);
-
   /** The slider and the companion come from the local settings the panel writes (any window). */
   const applySettings = () => {
     const s = loadSettings();
@@ -121,36 +115,38 @@ export const startPet = (
     const choice = petCard({
       avatar: s.avatar,
       card: !myCard ? null : myCard.getSnapshot() === undefined ? undefined : myCard.files(),
-      gaveUp: cardWaitOver,
-      last,
     });
     if (choice.kind === "wait") return;
     const custom = choice.kind === "custom" ? choice.files : null;
     const want = `${custom?.key ?? s.avatar}|${cosmeticsKey(wearing)}`;
-    if (want === shown) return;
-    shown = want;
-    const roster = () => loadCardAssets(ROSTER_BASE, s.avatar, wearing);
-    (custom ? loadCardAssets(ROSTER_BASE, custom, wearing).catch(roster) : roster()).then(
-      (assets) => {
-        if (want !== shown) return;
-        last = custom ? { kind: "custom" } : { kind: "roster", avatar: s.avatar };
-        saveLastDrawn(last);
-        const next = new PetLook(assets, levelOf(quality.level));
-        next.setEmotion(mood);
-        if (look) {
-          scene.remove(look.root);
-          look.dispose();
-        } else scene.remove(placeholder);
-        look = next;
-        scene.add(next.root);
-        pet = next.root;
-        if (!greeted) {
-          greeted = true;
-          driver.playGesture("wave", performance.now());
-        }
-      },
-      () => undefined, // no art: keep what's drawn
-    );
+    void cards
+      .load(want, () => loadCardAssets(ROSTER_BASE, custom ?? s.avatar, wearing))
+      .then(
+        (assets) => {
+          if (!assets) return;
+          clearTimeout(cardRetry);
+          saveLastDrawn(custom ? { kind: "custom" } : { kind: "roster", avatar: s.avatar });
+          const next = new PetLook(assets, levelOf(quality.level));
+          next.setEmotion(mood);
+          if (look) {
+            scene.remove(look.root);
+            look.dispose();
+          } else scene.remove(placeholder);
+          look = next;
+          scene.add(next.root);
+          pet = next.root;
+          if (!greeted) {
+            greeted = true;
+            driver.playGesture("wave", performance.now());
+          }
+        },
+        () => {
+          // Keep the current pet or placeholder. Expired URLs are refreshed by loadCardAssets;
+          // a persistent error must remain retryable, never become a successful roster load.
+          clearTimeout(cardRetry);
+          cardRetry = setTimeout(applySettings, 3000);
+        },
+      );
   };
   let walkOn = loadPetWalk();
   const onStorage = () => {
@@ -379,7 +375,8 @@ export const startPet = (
     motion?.stop();
     clearInterval(idleTimer);
     detachPress();
-    clearTimeout(cardWait);
+    clearTimeout(cardRetry);
+    cards.dispose();
     wear.stop();
     offCard?.();
     if (cardTimer) clearInterval(cardTimer);
