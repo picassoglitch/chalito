@@ -53,6 +53,28 @@ describe("the desktop's own custom companion card", () => {
     expect(((await refused()) as SignedCard).assetId).toBe(ASSET);
   });
 
+  it("starts the grace over after a failed lookup, so one late 401 doesn't give up at once", async () => {
+    let t = 0;
+    let mode: "none" | "offline" | "401" = "none";
+    const fetch = companionCardFetcher(
+      async () => {
+        if (mode === "offline") throw new Error("companion lookup failed");
+        return mode === "none" ? null : { companionCard: async () => Promise.reject(new Error("/x: 401")) };
+      },
+      () => t,
+      () => true,
+      60_000,
+    );
+    await expect(fetch()).rejects.toThrow("not ready");
+    mode = "offline";
+    t = 300_000;
+    await expect(fetch()).rejects.toThrow("lookup failed");
+    mode = "401";
+    await expect(fetch()).rejects.toThrow("refused");
+    t = 360_000;
+    expect(await fetch()).toBeNull();
+  });
+
   it("keeps waiting on network errors and 5xx, and never gives up once a card has answered (#129)", async () => {
     let t = 0;
     let status: number | null = 503;

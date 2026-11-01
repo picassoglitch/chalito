@@ -35,14 +35,19 @@ export const companionCardFetcher = (
   };
   return async (): Promise<SignedCard | null> => {
     if (!hasAccount()) return null;
-    const d = await deps();
+    // A failed lookup or call (offline, 5xx) says nothing about the session: the grace starts over.
+    const transient = (error: unknown) => {
+      unusableSince = null;
+      return error;
+    };
+    const d = await deps().catch((error: unknown) => Promise.reject(transient(error)));
     if (!d?.companionCard) return unusable("companion session is not ready");
     let body: unknown;
     try {
       body = await d.companionCard();
     } catch (error) {
       if (/: 40[13]$/.test(error instanceof Error ? error.message : "")) return unusable("session refused");
-      throw error;
+      throw transient(error);
     }
     unusableSince = null;
     answered = true;
