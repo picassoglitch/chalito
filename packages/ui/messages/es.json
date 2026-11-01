@@ -639,7 +639,10 @@
       "answer": "Responder",
       "answerSent": "Respuesta enviada.",
       "untrusted": "Esta computadora no está emparejada con este dispositivo.",
-      "failed": "No pudimos enviarlo."
+      "failed": "No pudimos enviarlo.",
+      "link": "Enlace de esta sesión",
+      "linkHint": "Abre este enlace en tu teléfono e inicia sesión con la misma cuenta de Chalito. El enlace por sí solo no da acceso.",
+      "nativeScope": "Esta sesión corre en su aplicación de IA. Puedes aprobar sus acciones aquí; la conversación y los controles del proceso siguen en esa aplicación."
     },
     "timeline": {
       "label": "Actividad",
@@ -775,21 +778,22 @@
       "computer": "Computadora",
       "online": "en línea",
       "offline": "sin conexión",
-      "offlineNote": "Esa computadora está sin conexión. La sesión empieza cuando vuelva, si es dentro de unos minutos.",
+      "offlineNote": "Esa computadora está sin conexión. Abre Chalito allí antes de iniciar una sesión.",
       "adapter": "Agente",
       "workspace": "Espacio de trabajo",
       "workspaceHint": "El nombre de una carpeta que permitiste en esa computadora. Chalito nunca ve sus rutas.",
-      "recent": "Usados antes",
+      "recent": "Carpetas disponibles",
       "mode": "Modo",
       "prompt": "Primer mensaje",
       "promptPlaceholder": "¿Qué quieres que haga?",
       "start": "Iniciar sesión",
       "waiting": "Enviado. Esperando a que tu computadora la inicie…",
-      "timeout": "Tu computadora no la inició. Revisa que esté encendida, que ese espacio de trabajo exista y que el agente esté activado en ella.",
+      "timeout": "Tu computadora aún no confirmó una sesión nueva. Revisa que Chalito esté actualizado, que ese espacio de trabajo exista allí, que la herramienta esté conectada y que las sesiones estén permitidas. Revisa sus sesiones antes de volver a intentarlo.",
       "untrusted": "Esta computadora no está emparejada con este dispositivo.",
       "failed": "No pudimos enviarlo.",
       "noComputers": "Aún no tienes una computadora vinculada.",
-      "download": "Descargar Chalito para tu computadora"
+      "download": "Descargar Chalito para tu computadora",
+      "noTools": "Esta computadora aún no reporta herramientas. Abre Chalito allí y conecta una herramienta primero."
     },
     "account": {
       "title": "Eliminar mi cuenta de Chalito",

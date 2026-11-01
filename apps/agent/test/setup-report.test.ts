@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DevicePresence, DeviceSetup } from "@chalito/protocol";
+import { DevicePresence, DeviceSetup, DeviceTool, readySessionApps } from "@chalito/protocol";
 import { deviceSetup, setupReporter } from "../src/setup-report.js";
 
 /** As the daemon decides it from the catalog: these run sessions, aider (a terminal app) doesn't. */
@@ -13,6 +13,51 @@ const HOME = "/Users/aldo";
 const pin = (p: string) => ({ path: `${HOME}/${p}`, sha256: HASH });
 
 describe("First Run D: the setup a computer reports (never paths)", () => {
+  it("offers only connected tools with session permission, retaining older-agent compatibility", () => {
+    const tool = {
+      appId: "gemini",
+      name: "Tool",
+      state: "connected" as const,
+      installed: true,
+      signinAllowed: true,
+      sessionCapable: true,
+      sessionEnabled: true,
+    };
+    const setup = {
+      adapters: ["codex"],
+      workspaces: 1,
+      labels: ["work"],
+      tools: [
+        tool,
+        { ...tool, appId: "codex", sessionEnabled: false },
+        { ...tool, appId: "grok", state: "needs_auth" as const },
+        { ...tool, appId: "chatgpt", state: "available" as const, sessionCapable: false },
+      ],
+    };
+    expect(readySessionApps(setup)).toEqual(["gemini"]);
+    // Released clients parse `setup` strictly: the tools travel beside it, so they still read it.
+    const { tools, ...base } = setup;
+    const presence = DevicePresence.parse({ setup: base, tools });
+    expect(DeviceSetup.strict().safeParse(presence.setup).success).toBe(true);
+    expect(DeviceSetup.safeParse({ ...base, tools }).success).toBe(false);
+    expect(readySessionApps({ adapters: ["codex"], workspaces: 0, labels: [] })).toEqual(["codex"]);
+    // Right after start no tool has reported yet: the pinned apps stay offered, not an empty list.
+    expect(readySessionApps({ adapters: ["claude-code", "codex"], workspaces: 1, labels: [], tools: [] })).toEqual([
+      "claude-code",
+      "codex",
+    ]);
+    // A reported app follows its report; an unreported pinned one keeps the pinned answer.
+    expect(
+      readySessionApps({
+        adapters: ["claude-code", "codex"],
+        workspaces: 1,
+        labels: [],
+        tools: [{ ...tool, appId: "codex", state: "needs_auth" as const }],
+      }),
+    ).toEqual(["claude-code"]);
+    expect(DeviceTool.safeParse({ ...tool, apiKey: "secret" }).success).toBe(false);
+    expect(DeviceTool.safeParse({ ...tool, path: "/home/private" }).success).toBe(false);
+  });
   it("lists pinned session apps (not a pinned terminal app), the folder count and labels", () => {
     const s = deviceSetup(
       {

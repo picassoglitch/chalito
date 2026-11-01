@@ -41,6 +41,8 @@ import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
 import { ownSessionHandlers, type OwnSessionsDeps } from "./watch/ipc.js";
 import { RepoPattern, type PrWatch } from "./prs/watch.js";
 import { meetingHandlers, type MeetingsFeature } from "./meetings/ipc.js";
+import { NativeProvider } from "./native/protocol.js";
+import type { NativeConnectors } from "./native/connectors.js";
 
 /** The agent version the panel's `ping` sees. */
 export const AGENT_VERSION = "0.0.0";
@@ -92,6 +94,9 @@ const PrWatchSet = z
     allow: z.array(RepoPattern).max(50).optional(),
     deny: z.array(RepoPattern).max(50).optional(),
   })
+  .strict();
+const NativeConnectorSet = z
+  .object({ provider: NativeProvider, enabled: z.boolean(), hash: z.string().max(80) })
   .strict();
 const ForLink = z.object({ linkId: z.string().max(80) });
 const LinkSend = z.object({
@@ -167,6 +172,7 @@ export interface IpcDeps {
   home?: string;
   /** ADR 0031 §1: sessions started here ("Nueva sesión"); absent = the code calls answer `unavailable`. */
   code?: CodeService;
+  nativeConnectors?: NativeConnectors;
   /** Sessions the person started outside Chalito (opt-in, read-only); absent = those calls answer `unavailable`. */
   ownSessions?: OwnSessionsDeps | null;
   /** The person's GitHub PRs through their own `gh` (prs/watch.ts); absent = the PR calls answer `unavailable`. */
@@ -476,6 +482,32 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
       problems: d.catalog?.custom().problems ?? [],
       catalog: d.catalog ? { source: d.catalog.source, issuedAt: d.catalog.issuedAt } : null,
     };
+  },
+  nativeConnections: async () => {
+    if (!d.nativeConnectors) throw new IpcError("unavailable");
+    return d.nativeConnectors.list();
+  },
+  setNativeConnection: async (params) => {
+    const p = parse(NativeConnectorSet, params);
+    if (!d.nativeConnectors) throw new IpcError("unavailable");
+    try {
+      await d.nativeConnectors.set(p.provider, p.enabled, p.hash);
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "internal";
+      throw new IpcError(
+        [
+          "app_unavailable",
+          "os_auth_failed",
+          "config_changed",
+          "unsafe_path",
+          "invalid_config",
+          "config_too_large",
+          "unsafe_command",
+        ].includes(code)
+          ? code
+          : "internal",
+      );
+    }
   },
   connectAppKey: async (params) => {
     const { appId, key } = parse(AppKey, params);

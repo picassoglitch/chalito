@@ -8,7 +8,21 @@
     "ai": "Connected AI",
     "sessions": "Sessions"
   },
+  "nav": {
+    "tools": "Tools",
+    "account": "Account & safety"
+  },
   "dnd": "Do not disturb",
+  "conn": {
+    "on": "Connected to your account",
+    "off": "Offline"
+  },
+  "theme": {
+    "label": "Theme",
+    "auto": "Auto",
+    "light": "Light",
+    "dark": "Dark"
+  },
   "offline": "Not connected to your account. Pair this computer with “chalito pair”.",
   "inbox": {
     "empty": "Nothing pending.",
@@ -276,7 +290,7 @@
         "signing_in": "Finish signing in in the browser that opened.",
         "connected": "Connected",
         "error": "Couldn't connect.",
-        "blocked_by_policy": "Signing in with your plan isn't available for your account. Use an API key.",
+        "blocked_by_policy": "Account connection is not available for this app in Chalito yet. Choose a tool that supports sign-in.",
         "available": "Ready. You sign in inside the app."
       },
       "mode": {
@@ -305,7 +319,7 @@
       },
       "install": "Install",
       "withKey": "Connect with an API key",
-      "signin": "Sign in",
+      "signin": "Connect",
       "disconnect": "Disconnect",
       "confirmInstall": "I'll install the official {pkg} package with npm on this computer. Continue?",
       "remoteInstall": "You asked to install {pkg} from another device. Install it on this computer?",
@@ -347,7 +361,7 @@
       "terms": "{vendor}'s terms",
       "remoteInstall": "You asked to install {name} from another device. Install it on this computer?",
       "signinTerminal": "To sign in, open a terminal on this computer and run: {cmd}",
-      "signinOff": "Signing in with your plan isn't available for your account yet. Use an API key.",
+      "signinOff": "Account connection is not available for this app in Chalito yet. Choose a tool that supports sign-in.",
       "failure": {
         "blocked_by_policy": "Signing in with your plan isn't available for your account.",
         "provider_busy": "An install or a sign-in is already running.",
@@ -376,6 +390,50 @@
         "unsafe": "Any program on this computer can change {name} ({path}), so I won't use it. Reinstall it with its official installer.",
         "use": "Use",
         "confirm": "Yes, it's mine: confirm"
+      },
+      "advanced": "Advanced options",
+      "accountHint": "Connect opens the app’s own sign-in. Finish in your browser; Chalito checks when the connection is ready. No API key needed.",
+      "openOnlyHint": "Opens the app for you. Opening its page does not connect its tools to Chalito."
+    },
+    "remote": {
+      "title": "Tools on your computers",
+      "intro": "Connect a tool on any computer signed in to your Chalito account. Its account and tools stay on that computer; use them from Sessions.",
+      "finish": "Request sent. Finish signing in in the browser on {computer}. The status will update when that computer confirms the connection.",
+      "failed": "Could not refresh or request the connection. Check that both computers are online and paired.",
+      "noComputers": "Sign in to Chalito on your other computers to see them here.",
+      "refresh": "Refresh tools",
+      "allowSessions": "Connected. Allow this tool’s sessions in Chalito on {computer} to run tasks from here."
+    },
+    "native": {
+      "title": "Connect your existing AI apps",
+      "intro": "Use your apps with their own sign-in. Connect their permission requests to Chalito without an AI API key.",
+      "scope": "This connection lets you approve actions from sessions running in the original app. The session adapters below provide chat control and new sessions where supported.",
+      "name": {
+        "codex": "Codex",
+        "claude": "Claude Code",
+        "cursor": "Cursor"
+      },
+      "connected": "A native session has connected. Approvals appear in Chalito.",
+      "configured": "Connector installed. Open a new session and review or trust the hook in your AI app.",
+      "missing": "Install this AI app on this computer first.",
+      "disconnected": "Not linked to Chalito yet.",
+      "connect": "Connect app",
+      "remove": "Disconnect app",
+      "confirm": "Connect this AI app",
+      "addHint": "Chalito will add its approval connector to this app’s settings. Existing settings stay in place, with a local backup. Your operating system will ask you to confirm.",
+      "removeHint": "Remove only Chalito’s connector. Pending requests will be denied. The app keeps its own account and settings.",
+      "changes": "See the changes",
+      "error": {
+        "config_changed": "The settings changed while this screen was open. Review and try again.",
+        "os_auth_failed": "The system confirmation was cancelled or failed.",
+        "unsafe_path": "These settings use a linked or unsafe file. Choose a regular app settings file before connecting.",
+        "invalid_config": "The app settings are not valid JSON. Repair them before connecting.",
+        "config_too_large": "The app settings file is too large for Chalito to change safely.",
+        "state_corrupt": "Chalito's record of this connector is damaged. Disconnect the app, then connect it again.",
+        "app_unavailable": "Chalito couldn't find this AI app on this computer.",
+        "unsafe_command": "Chalito is installed in a folder the app's hooks can't run safely. Reinstall Chalito in a standard folder.",
+        "cli_unavailable": "Chalito's command-line tool isn't available on this computer. Reinstall Chalito and try again.",
+        "other": "Could not update the connector. No connection was confirmed."
       }
     }
   },
@@ -591,7 +649,7 @@
   },
   "sessions": {
     "title": "New session",
-    "intro": "Start here and follow it on your phone. Approvals reach both.",
+    "intro": "Choose a computer and a tool. Follow the conversation and approve its actions here.",
     "app": "AI",
     "workspace": "Folder",
     "prompt": "What should it do",
@@ -627,7 +685,28 @@
     "signInForLive": "Sign in to Chalito to see the conversation here; meanwhile, follow it on your phone.",
     "terminal": "You (terminal)",
     "setupAI": "Set up an AI",
-    "setupHint": "Choose an AI below. Install it here, then connect your account and approve any requested changes. Ready AIs appear in the session picker automatically."
+    "setupHint": "Choose an AI below. Install it here, then connect your account and approve any requested changes. Ready AIs appear in the session picker automatically.",
+    "computer": "Computer",
+    "thisComputer": "This computer",
+    "online": "Online",
+    "offline": "Offline",
+    "computerOffline": "This computer is offline. Open Chalito on it to run tasks.",
+    "setupUnavailable": "Open Chalito on this computer and update it to share its tools and folders.",
+    "remoteTimeout": "The computer has not confirmed a new session. Check that Chalito is up to date there, that the workspace exists on it, that the tool is connected, and that sessions are allowed. Check its sessions before trying again.",
+    "signInForRemote": "Sign in to Chalito to use another computer.",
+    "waitingForComputer": "Waiting for the selected computer to start your task…",
+    "allComputers": "Your computers and sessions",
+    "noConnectedTools": "No tools reported yet.",
+    "link": "Link this session",
+    "linkHint": "Open this link on your phone and sign in to the same Chalito account. The link itself does not grant access.",
+    "nativeScope": "This session runs in its own AI app. You can approve its actions here; chat and process controls stay in that app.",
+    "greeting": "What should we work on?",
+    "placeholder": "Ask the AI to do something…",
+    "replyPlaceholder": "Reply or give it another instruction…",
+    "recent": "Recent",
+    "noSessions": "No sessions yet.",
+    "untitled": "Untitled session",
+    "enterHint": "Enter sends · Shift+Enter new line"
   },
   "copies": {
     "title": "Check your copies of Chalito",

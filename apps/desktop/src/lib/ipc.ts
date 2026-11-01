@@ -293,6 +293,8 @@ export type OwnOpenResult = ({ opened: true; via: "terminal" | "codex" } | { ope
 };
 
 export interface AgentIpc {
+  nativeConnections(): Promise<NativeConnectionView[]>;
+  setNativeConnection(provider: NativeConnectionView["provider"], enabled: boolean, hash: string): Promise<void>;
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
   /** "Conectar esta computadora": starts pairing (or returns the one in progress). Unpaired agents only. */
@@ -408,8 +410,20 @@ export class IpcUnavailableError extends Error {
 
 const unavailable = () => Promise.reject(new IpcUnavailableError());
 
+export interface NativeConnectionView {
+  provider: "codex" | "claude" | "cursor";
+  available: boolean;
+  configured: boolean;
+  connected: boolean;
+  path: string;
+  hash: string;
+  events: string[];
+}
+
 /** Until the agent's IPC server exists: every call fails with IpcUnavailableError. */
 export const unavailableIpc: AgentIpc = {
+  nativeConnections: unavailable,
+  setNativeConnection: unavailable,
   ping: unavailable,
   startPairing: unavailable,
   pendingPairing: unavailable,
@@ -507,6 +521,9 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     disableDevToggle: (toggle) => call("disableDevToggle", { toggle }),
     reportPresence: (p) => call("reportPresence", { desktopActive: p.desktopActive }),
     apps: () => call("apps"),
+    nativeConnections: () => call("nativeConnections"),
+    setNativeConnection: async (provider, enabled, hash) =>
+      void (await call("setNativeConnection", { provider, enabled, hash })),
     connectAppKey: async (appId, key) => void (await call("connectAppKey", { appId, key })),
     signinApp: async (appId) => void (await call("signinApp", { appId })),
     disconnectApp: async (appId) => void (await call("disconnectApp", { appId })),

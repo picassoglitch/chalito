@@ -199,7 +199,7 @@ describe("chalito run (daemon)", () => {
       devMode: { on: false, toggles: [], since: null },
       lastSeenAt: NOW,
       // First Run D: the checklist's view of this computer (ids and counts only).
-      presence: { setup: { adapters: ["claude-code"], workspaces: 0, labels: [] } },
+      presence: { setup: { adapters: ["claude-code"], workspaces: 0, labels: [] }, tools: expect.any(Array) },
     });
     expect(s.adapterInputs).toEqual([
       { apiKey: "sk-ant-test-key-123456", claudePath: s.claude, log: expect.anything() },
@@ -247,6 +247,21 @@ describe("chalito run (daemon)", () => {
     await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: join(s.home, "w") }] }, "local");
     expect((s.store.device.presence as { setup?: unknown }).setup).toMatchObject({ workspaces: 1, labels: ["w"] });
     expect(JSON.stringify(s.store.device.presence)).not.toContain(s.home);
+    await d.stop();
+  });
+
+  it("keeps the native-hook workspace file current and sweeps native sessions a crash left live", async () => {
+    const s = await setup();
+    mkdirSync(s.dir, { recursive: true });
+    writeFileSync(join(s.dir, "native-sessions.json"), JSON.stringify({ v: 1, sids: ["native-ghost"] }));
+    const d = await runDaemon(s.deps);
+    const file = join(s.dir, "native-workspaces.json");
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: 1, paths: [] });
+    if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+    const w = join(s.home, "w");
+    await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: w }] }, "local");
+    expect(JSON.parse(readFileSync(file, "utf8")).paths).toContain(w);
+    await vi.waitFor(() => expect(s.store.sessions.get("native-ghost")).toMatchObject({ state: "interrupted" }));
     await d.stop();
   });
 

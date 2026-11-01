@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { join } from "node:path";
 import { z } from "zod";
 import { AppId, RemotePermissionMode, SessionId } from "@chalito/protocol";
+import { NativeHookRequest, type NativeHookReply } from "../native/protocol.js";
 import type { LocalEvent } from "./events.js";
 import type { CodeService } from "./service.js";
 
@@ -47,6 +48,7 @@ export interface CodeServer {
 }
 
 class Conn {
+  readonly abort = new AbortController();
   readonly owned = new Set<string>();
   #starting = 0;
   /** Events of sessions not known yet, kept only while one of this connection's starts runs. */
@@ -90,6 +92,8 @@ class Conn {
 export const startCodeServer = async (opts: {
   path: string;
   code: CodeService;
+  /** Native hooks may request an approval, never submit its decision. */
+  native?: (request: NativeHookRequest, signal: AbortSignal) => Promise<NativeHookReply>;
   onError?: (method: string, err: unknown) => void;
   platform?: NodeJS.Platform;
   /** Windows: serve through this listener (a pipe locked to this user, winpipe.ts) instead of a socket. */
@@ -142,6 +146,11 @@ export const startCodeServer = async (opts: {
       return result(await code.stop(p.sid));
     },
     sessions: async (c) => ({ ok: true, result: { sids: [...c.owned] } }),
+    native: async (c, params) => {
+      const request = parse(NativeHookRequest, params);
+      if (!request || !opts.native) return { ok: false, error: request ? "unavailable" : "bad_params" };
+      return { ok: true, result: await opts.native(request, c.abort.signal) };
+    },
   };
 
   const handle = async (c: Conn, line: string) => {
@@ -170,7 +179,11 @@ export const startCodeServer = async (opts: {
     let buf = "";
     sock.setEncoding("utf8");
     sock.on("error", () => undefined);
-    sock.on("close", () => conns.delete(c));
+    sock.on("close", () => {
+      c.abort.abort();
+      conns.delete(c);
+    });
+    sock.on("end", () => c.abort.abort());
     sock.on("data", (chunk: string) => {
       buf += chunk;
       let nl: number;

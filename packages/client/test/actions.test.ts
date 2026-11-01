@@ -199,6 +199,30 @@ describe("ClientActions commands", () => {
     expect(Object.keys(p.promptCt.keys).sort()).toEqual([agent.deviceId, me.deviceId].sort());
   });
 
+  it("connects an app on the chosen PC using its own sign-in without sending an API key", async () => {
+    const { agent, db, actions, trust } = await setup();
+    await actions.connectApp(agent.deviceId, "gemini");
+    const { row, env } = commandOf(db);
+    expect(row.target_device_id).toBe(agent.deviceId);
+    expect(env.body.payload).toEqual({ type: "app.connect", appId: "gemini", method: "signin" });
+    expect(await trust.verifySigned(env, "chalito.command.v1")).toMatchObject({ ok: true });
+  });
+
+  it("starts any reported recipe on the chosen PC, with the prompt sealed to that PC", async () => {
+    const { agent, db, actions } = await setup();
+    const cid = await actions.startSession({
+      agentDeviceId: agent.deviceId,
+      appId: "gemini",
+      workspaceLabel: "work",
+      prompt: "hello",
+    });
+    const { env } = commandOf(db);
+    const p = env.body.payload as Extract<CommandPayload, { type: "session.start" }>;
+    expect(p).toMatchObject({ appId: "gemini", workspaceLabel: "work" });
+    expect(p.adapter).toBeUndefined();
+    expect(await openJson(p.promptCt, agent.deviceId, agent.box, `command:${cid}`)).toBe("hello");
+  });
+
   it("prompt/interrupt/resume/setPermissionMode/answer target the session's agent", async () => {
     const { agent, db, live, actions } = await setup();
     seedSession(db, agent);

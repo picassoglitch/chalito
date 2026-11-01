@@ -10,6 +10,7 @@ import { SESSIONS_DEFAULTS, loadLiabilityText, loadProviders, loadSessions } fro
 import { fromB64url, sealJson, signEnvelope, type NonceStore, type TrustedClientList } from "@chalito/crypto";
 import {
   PROVIDER_APP,
+  DeviceTool,
   isLegacyApp,
   type AdapterKind,
   type DeviceEvent,
@@ -60,6 +61,9 @@ import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
+import { NativeBridge } from "./native/bridge.js";
+import { NativeConnectors } from "./native/connectors.js";
+import { NATIVE_APPS, nativeWorkspacePaths, writeNativeWorkspaces } from "./native/protocol.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import type { Duplex } from "node:stream";
 import { FileLinkStorage, LinkManager, LinkTools, MemoryLinkCloud } from "./links/index.js";
@@ -535,6 +539,14 @@ const startDaemon = async (
       log.warn("repos.scan_failed", { error: err instanceof Error ? err.message : "error" }),
     );
   };
+  // Lets a native-app hook deny workspace actions (and pass others) while this agent is down.
+  const syncNativeWorkspaces = (workspaces: { path: string; realPath?: string }[]) => {
+    try {
+      writeNativeWorkspaces(dir, nativeWorkspacePaths(workspaces, deps.home ?? homedir()));
+    } catch (err) {
+      log.warn("native.workspaces_write_failed", { error: err instanceof Error ? err.message : "error" });
+    }
+  };
   let policyRef: FilePolicyHolder | null = null;
   const policy = new FilePolicyHolder(dir, id.sign, {
     anchor,
@@ -542,6 +554,7 @@ const startDaemon = async (
     onTamper: ({ fileHash, inForceHash }) =>
       publish({ v: 1, type: "policy.tampered", deviceId: id.deviceId, fileHash, inForceHash, t: now() }),
     onChange: async (hash) => {
+      syncNativeWorkspaces(policy.get().workspaces);
       // New workspaces: find their repos now, not on the first classified write.
       scanWorkspaceRepos(true);
       await computer?.onPolicyChange();
@@ -625,14 +638,34 @@ const startDaemon = async (
   >;
   const allowSignIn = deps.signInAllowed ?? ((p: Provider) => signInAllowed(p));
   const currentConfig = (): PairedConfig => requirePaired(readConfig(dir, env, { keys: id.sign }));
+  const toolReports = new Map<string, DeviceTool>();
+  const sessionsAllowed = (appId: string): boolean => {
+    const p = policy.get();
+    return isLegacyApp(appId)
+      ? {
+          "claude-code": p.adapters.claudeCode,
+          codex: p.adapters.codex,
+          grok: p.adapters.grok ?? false,
+          gemini: p.adapters.gemini ?? false,
+        }[appId]
+      : p.apps?.sessions?.[appId] === true;
+  };
   // First Run D: what the checklist reads (pinned app ids, folder count and labels; never paths).
-  const readSetup = () =>
-    deviceSetup(currentConfig(), policy.get(), (appId) => {
+  const readSetup = () => ({
+    ...deviceSetup(currentConfig(), policy.get(), (appId) => {
       const r = catalog.get(appId)?.recipe;
       return !!r && r.kinds.some((k) => SESSION_KINDS.has(k));
-    });
+    }),
+    tools: [...toolReports.values()]
+      .filter((tool) => catalog.get(tool.appId))
+      .map((tool) => ({ ...tool, sessionEnabled: sessionsAllowed(tool.appId) }))
+      .sort((a, b) => a.appId.localeCompare(b.appId))
+      .slice(0, 64),
+  });
   const reportSetup = setupReporter(readSetup, async (setup) => {
-    if (store) await store.updateDevice({ presence: { setup } });
+    if (!store) return;
+    const { tools, ...base } = setup;
+    await store.updateDevice({ presence: { setup: base, ...(tools ? { tools } : {}) } });
   });
   const catalog = new AppCatalog({
     dir,
@@ -677,7 +710,30 @@ const startDaemon = async (
       },
     },
     report: async (appId, doc) => {
+      // Known locally first: the local session picker must not wait on (or lose to) a cloud write.
+      const entry = catalog.get(appId);
+      if (entry) {
+        toolReports.set(
+          appId,
+          DeviceTool.parse({
+            appId,
+            name: entry.recipe.name,
+            state: doc.state,
+            installed: doc.cli.installed,
+            signinAllowed:
+              entrySignin(entry) &&
+              !entry.recipe.signin.interactive &&
+              ["cli", "acp"].includes(entry.recipe.signin.via),
+            sessionCapable: entry.recipe.capabilities.includes("sessions"),
+            sessionEnabled: sessionsAllowed(appId),
+          }),
+        );
+      }
       if (store) await store.upsertConnection(appId, doc);
+      if (entry)
+        await reportSetup().catch((err: unknown) =>
+          log.warn("setup.report_failed", { error: err instanceof Error ? err.message : "error" }),
+        );
     },
     onChange: () => void rebuildAdapters(),
     launcher: (appId) => launchers.get(appId),
@@ -1413,6 +1469,15 @@ const startDaemon = async (
     await screen?.stopAll().catch(() => undefined);
     // Every session stays resumable after the restart (sessions.json).
     await core.suspendAll().catch(() => undefined);
+    // Bounded: a stuck store must not hold the shutdown; the next start's sweep covers it.
+    let nativeTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      nativeBridge.close(),
+      new Promise<void>((r) => {
+        nativeTimer = setTimeout(r, 2000);
+      }),
+    ]);
+    clearTimeout(nativeTimer);
     await broker?.close().catch(() => undefined);
     await linksBroker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
@@ -1430,6 +1495,37 @@ const startDaemon = async (
 
   // ADR 0031: sessions typed at this computer; the panel's are `local`, `chalito code`'s `local:cli` (§6a).
   const code = codeService(core, () => policy.get(), readSetup, "local");
+  const hookCommand = computerMcpCommand();
+  const nativeConnectors: NativeConnectors = new NativeConnectors({
+    home: deps.home ?? homedir(),
+    dir,
+    platform: process.platform,
+    command: [hookCommand.command, ...hookCommand.args.slice(0, -2)],
+    available: async (provider) =>
+      !!(await apps.findCli(NATIVE_APPS[provider])) ||
+      (provider === "cursor" && (await apps.status("cursor"))?.cli.installed === true),
+    verify: () =>
+      (
+        deps.osAuth?.() ??
+        osAuthFor(process.platform, spawnRunner, (m) => log.warn("os_auth.notice", { message: m }), cfg.locale)
+      ).verify("Chalito: connect your AI app"),
+    onDisconnect: (provider) => void nativeBridge.disconnect(provider),
+    connected: (provider) => nativeBridge.connected(provider),
+    log: (event, meta) => log.warn(event, meta),
+  });
+  const nativeBridge: NativeBridge = new NativeBridge({
+    core,
+    store: signedInStore,
+    deviceId: id.deviceId,
+    enabled: (provider) => nativeConnectors.enabled(provider),
+    workspaceFor: code.workspaceFor,
+    now,
+    locale: () => cfg.locale,
+    ledger: join(dir, "native-sessions.json"),
+    log: (event, meta) => log.warn(event, meta),
+  });
+  syncNativeWorkspaces(policy.get().workspaces);
+  void nativeBridge.sweep();
   // Only the panel shows PR news, so the watch runs only for an agent the app started.
   const prs = deps.ipcSecret
     ? new PrWatch({
@@ -1457,6 +1553,7 @@ const startDaemon = async (
     try {
       codeServer = await startCodeServer({
         path: codeAt,
+        native: (request, signal) => nativeBridge.handle(request, signal),
         code: codeService(core, () => policy.get(), readSetup, "local:cli"),
         ...(winSec
           ? {
@@ -1494,6 +1591,7 @@ const startDaemon = async (
           now,
           reportDevMode,
           apps,
+          nativeConnectors,
           catalog,
           computer,
           terminal,

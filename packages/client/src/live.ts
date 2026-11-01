@@ -4,6 +4,8 @@ import {
   SignedCoordPlan,
   type CoordPlanState,
   DeviceSetup,
+  DeviceTools,
+  type DeviceSetupView,
   LiveBroadcast,
   SealedApprovalPayload,
   type SealedEnvelope,
@@ -100,6 +102,10 @@ export interface SessionView {
   sid: string;
   agentDeviceId: string;
   adapter?: string;
+  /** The concrete recipe, so ACP tools retain their own names in remote controls. */
+  appId?: string;
+  /** Native hooks can answer approvals without owning the app's chat process. */
+  control?: "approvals";
   label?: string;
   state?: string;
   permissionMode?: string;
@@ -182,7 +188,7 @@ export interface DeviceView {
    * First Run D: what the computer reported about its own setup (pinned app ids, folder count and
    * labels; never paths), or null when it hasn't (a phone, or an older agent). Agent-written: parsed.
    */
-  setup: DeviceSetup | null;
+  setup: DeviceSetupView | null;
   rev: number;
 }
 
@@ -218,9 +224,11 @@ const TABLES: readonly Table[] = ["devices", "sessions", "approvals", "notificat
 type Row = Record<string, unknown>;
 const ms = (v: unknown): number => (typeof v === "string" ? Date.parse(v) : typeof v === "number" ? v : 0);
 const num = (v: unknown): number => (typeof v === "number" ? v : Number(v ?? 0));
-const setupOf = (presence: unknown): DeviceSetup | null => {
+const setupOf = (presence: unknown): DeviceSetupView | null => {
   const p = DeviceSetup.safeParse((presence as { setup?: unknown } | null)?.setup);
-  return p.success ? p.data : null;
+  if (!p.success) return null;
+  const tools = DeviceTools.safeParse((presence as { tools?: unknown }).tools);
+  return tools.success ? { ...p.data, tools: tools.data } : p.data;
 };
 
 export interface LiveStoreOptions {
@@ -616,6 +624,8 @@ export class LiveStore {
       sid,
       agentDeviceId: String(r.device_id),
       adapter: doc.adapter as string | undefined,
+      ...(typeof doc.appId === "string" ? { appId: doc.appId } : {}),
+      ...(doc.control === "approvals" ? { control: "approvals" as const } : {}),
       label: doc.label as string | undefined,
       state: doc.state as string | undefined,
       permissionMode: doc.permissionMode as string | undefined,

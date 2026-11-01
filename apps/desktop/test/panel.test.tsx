@@ -101,6 +101,8 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
   };
   return {
     calls,
+    nativeConnections: async () => [],
+    setNativeConnection: async (...a) => void calls.push(["setNativeConnection", ...a]),
     ping: async () => ({ version: "test" }),
     startPairing: async () => {
       throw new Error("already_paired");
@@ -928,7 +930,7 @@ describe("panel: IA conectadas (catalog)", () => {
     const { container } = renderPanel({ initialTab: "ai", ipc: fakeIpc({ apps: async () => views() }) }, "es");
     await waitFor(() => expect(row(container, "chatgpt")).toBeTruthy());
     expect(buttons(container, "claude-code")).toEqual(["Conectar con API key"]);
-    expect(buttons(container, "grok")).toEqual(["Conectar con API key", "Iniciar sesión"]);
+    expect(buttons(container, "grok")).toEqual(["Conectar", "Conectar con API key"]);
     expect(row(container, "codex").textContent).toContain("Conectado · con tu API key");
     expect(buttons(container, "chatgpt")).toEqual(["Abrir (inicias sesión ahí)"]);
     expect(buttons(container, "claude-desktop")).toEqual(["Instalar"]);
@@ -972,7 +974,7 @@ describe("panel: IA conectadas (catalog)", () => {
     await click("claude-code", "Save");
     await waitFor(() => expect(ipc.calls).toContainEqual(["connectAppKey", "claude-code", "sk-ant-x"]));
 
-    await click("grok", "Sign in");
+    await click("grok", "Connect");
     await waitFor(() => expect(ipc.calls).toContainEqual(["signinApp", "grok"]));
     await click("chatgpt", "Open (sign in there)");
     await waitFor(() => expect(ipc.calls).toContainEqual(["launchApp", "chatgpt"]));

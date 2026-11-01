@@ -7,7 +7,8 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { openJson } from "@chalito/crypto";
-import type { ApprovalView, EventView, Snapshot } from "@chalito/client";
+import { ClientActions, type ApprovalView, type ChalitoClient, type EventView, type Snapshot } from "@chalito/client";
+import { FakeSupabase, testKeys } from "../../../packages/client/test/helpers.js";
 import type { DeviceSetup } from "@chalito/protocol";
 import { codeService } from "../../agent/src/code/service.js";
 import { ipcHandlers } from "../../agent/src/ipc-handlers.js";
@@ -20,7 +21,7 @@ afterEach(cleanup);
 
 const SETUP: DeviceSetup = { adapters: ["claude-code"], workspaces: 1, labels: ["chalito"] };
 
-const computer = async () => {
+const computer = async (remote = false) => {
   const a = await agentFor();
   const handlers = ipcHandlers({
     code: codeService(
@@ -46,7 +47,25 @@ const computer = async () => {
     events: {},
     drafts: {},
     notifications: [],
-    devices: [],
+    devices: remote
+      ? [
+          {
+            deviceId: a.self.id,
+            role: "agent",
+            kind: "desktop",
+            platform: "linux",
+            name: "Work PC",
+            revoked: false,
+            online: true,
+            lastSeenAt: Date.now(),
+            devMode: { on: false, toggles: [], since: null },
+            policyHash: null,
+            lastEvent: null,
+            setup: SETUP,
+            rev: 1,
+          },
+        ]
+      : [],
     devModeActive: false,
   };
   const subs = new Set<() => void>();
@@ -112,12 +131,31 @@ const computer = async () => {
     };
     for (const fn of subs) fn();
   };
+  const live = {
+    owner: "hub-user-1",
+    subscribe: (fn: () => void) => (subs.add(fn), () => void subs.delete(fn)),
+    getSnapshot: () => snap,
+    session: (sid: string) => snap.sessions.find((s) => s.sid === sid),
+  };
+  const db = new FakeSupabase();
+  const keys = testKeys({ ...a.phone, deviceId: a.phone.id }, { [a.self.id]: a.self.pubBox });
+  const signed = new ClientActions(db, keys, live as never, { stepUp: async () => null });
+  const dispatch = async (p: Promise<string>) => {
+    const cid = await p;
+    const row = db.rows("commands").find((r) => r.id === cid)!;
+    const result = await a.core.handleCommand(cid, { env: row.env, fromDeviceId: a.phone.id });
+    if (!result.ok) throw new Error(result.reason);
+    await refresh();
+    return cid;
+  };
   const client = {
-    live: {
-      subscribe: (fn: () => void) => (subs.add(fn), () => void subs.delete(fn)),
-      getSnapshot: () => snap,
+    live,
+    actions: {
+      decide: async (aid: string, allow: boolean) => a.answer(allow, false, aid),
+      startSession: (i: Parameters<ClientActions["startSession"]>[0]) => dispatch(signed.startSession(i)),
+      prompt: (sid: string, text: string) => dispatch(signed.prompt(sid, text)),
+      interrupt: (sid: string) => dispatch(signed.interrupt(sid)),
     },
-    actions: { decide: async (aid: string, allow: boolean) => a.answer(allow, false, aid) },
   } as never;
   return { ...a, ipc, client, refresh };
 };
@@ -125,11 +163,23 @@ const computer = async () => {
 /** The panel keeps the followed session, as Panel.tsx does across tabs. */
 const Harness = ({ ipc, client }: { ipc: AgentIpc; client: unknown }) => {
   const [sid, setSid] = useState<string | null>(null);
+  const [remote, setRemote] = useState(false);
   const [shown, setShown] = useState(true);
   return (
     <>
       <button onClick={() => setShown((v) => !v)}>otra pestaña</button>
-      {shown && <NewSession ipc={ipc} client={client as never} sid={sid} onSid={setSid} />}
+      {shown && (
+        <NewSession
+          ipc={ipc}
+          client={client as never}
+          sid={sid}
+          remote={remote}
+          onSid={(id, r = false) => {
+            setSid(id);
+            setRemote(r);
+          }}
+        />
+      )}
     </>
   );
 };
@@ -164,6 +214,76 @@ describe("panel → agent: Nueva sesión (ADR 0031 §1)", () => {
     expect(document.querySelector('[data-section="apps"]')).toBeNull();
   });
 
+  it("/link and the link button expose this session's phone URL without prompting the AI", async () => {
+    const c = await computer();
+    renderIt(c.ipc, c.client);
+    await startOne();
+    await until(() => c.adapter.runs.length === 1);
+    fireEvent.change((await screen.findAllByRole("textbox")).at(-1)!, { target: { value: "/link" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    const link = await screen.findByRole("link");
+    expect(link.getAttribute("href")).toContain(c.adapter.runs[0]!.opts.sid);
+    expect(c.adapter.runs[0]!.prompts).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Enlace de esta sesión" }));
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+  it("opens the session for its command even when another task starts at the same time", async () => {
+    const c = await computer(true);
+    const client = c.client as ChalitoClient;
+    const start = client.actions.startSession;
+    client.actions.startSession = async (input) => {
+      await c.core.localCommand("local", {
+        type: "session.start",
+        appId: "claude-code",
+        workspaceLabel: "chalito",
+        prompt: "unrelated task",
+        permissionMode: "default",
+      });
+      await c.refresh();
+      return start(input);
+    };
+    const { container } = renderIt(c.ipc, client);
+    fireEvent.change(await screen.findByLabelText("Computadora"), { target: { value: c.self.id } });
+    await startOne("my remote task");
+    await until(() => c.adapter.runs.length === 2);
+    const remoteSid = c.adapter.runs[1]!.opts.sid;
+    await waitFor(() => expect(container.querySelector(`[data-sid="${remoteSid}"]`)).toBeTruthy());
+    expect(container.querySelector(`[data-sid="${c.adapter.runs[0]!.opts.sid}"]`)).toBeNull();
+  });
+
+  it("does not send a task to an offline computer", async () => {
+    const c = await computer(true);
+    const client = c.client as ChalitoClient;
+    client.live.getSnapshot().devices[0]!.online = false;
+    renderIt(c.ipc, client);
+    fireEvent.change(await screen.findByLabelText("Computadora"), { target: { value: c.self.id } });
+    fireEvent.change(await screen.findByLabelText("Qué quieres que haga"), { target: { value: "test" } });
+    expect((screen.getByRole("button", { name: "Empezar" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(c.adapter.runs).toHaveLength(0);
+  });
+
+  it("starts, prompts and stops on the selected PC through signed commands, preserving routing across tabs", async () => {
+    const c = await computer(true);
+    renderIt(c.ipc, c.client);
+    fireEvent.change(await screen.findByLabelText("Computadora"), { target: { value: c.self.id } });
+    await startOne("trabaja en la otra PC");
+    await until(() => c.adapter.runs.length === 1);
+    const run = c.adapter.runs[0]!;
+    expect(run.opts.origin).toBe(`client:${c.phone.id}`);
+    expect(run.opts.cwd).toBe(WS);
+    const started = c.store.events.find((e) => e.type === "session.started");
+    expect(started).toMatchObject({ commandId: expect.any(String), sid: run.opts.sid });
+    await screen.findByRole("button", { name: "Enviar" });
+    fireEvent.click(screen.getByRole("button", { name: "otra pestaña" }));
+    fireEvent.click(screen.getByRole("button", { name: "otra pestaña" }));
+    fireEvent.change(screen.getAllByRole("textbox").at(-1)!, { target: { value: "sigue allí" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar" }));
+    await until(() => run.prompts.length === 2);
+    expect(run.prompts[1]).toEqual({ text: "sigue allí", origin: `client:${c.phone.id}` });
+    fireEvent.click(screen.getByRole("button", { name: "Detener" }));
+    await until(() => run.interrupts === 1);
+  });
+
   it("offers this computer's AIs and folders, and starts a local-origin session it then follows", async () => {
     const c = await computer();
     renderIt(c.ipc, c.client);
@@ -179,9 +299,9 @@ describe("panel → agent: Nueva sesión (ADR 0031 §1)", () => {
     await until(() => c.store.events.some((e) => e.type === "message.assistant"));
     await c.refresh();
     expect(await screen.findByText("Ya encontré el error.")).toBeTruthy();
-    expect(screen.getByText("Lista")).toBeTruthy();
+    expect(screen.getByText("Lista", { selector: ".pill" })).toBeTruthy();
     // The first prompt is in the transcript too (sealed for clients like every turn).
-    expect(screen.getByText("arregla el login")).toBeTruthy();
+    expect(screen.getByText("arregla el login", { selector: ".bubble" })).toBeTruthy();
 
     fireEvent.change(screen.getAllByRole("textbox").at(-1)!, { target: { value: "y corre las pruebas" } });
     fireEvent.click(screen.getByRole("button", { name: "Enviar" }));

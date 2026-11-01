@@ -281,6 +281,37 @@ describe("LiveStore", () => {
     expect(snap.devices.find((d) => d.deviceId === me.deviceId)!.setup).toBeNull();
   });
 
+  it("devices: tools reported beside the setup join it; bad tools leave the setup as is", async () => {
+    const { agent, me, db, live } = await setup();
+    const base = { adapters: ["claude-code"], workspaces: 1, labels: ["web"] };
+    const tool = {
+      appId: "codex",
+      name: "Codex",
+      state: "connected",
+      installed: true,
+      signinAllowed: true,
+      sessionCapable: true,
+      sessionEnabled: true,
+    };
+    db.seed("devices", {
+      owner: OWNER,
+      device_id: agent.deviceId,
+      role: "agent",
+      presence: { setup: base, tools: [tool] },
+    });
+    db.seed("devices", {
+      owner: OWNER,
+      device_id: me.deviceId,
+      role: "agent",
+      presence: { setup: base, tools: [{ ...tool, path: "/home/me" }] },
+    });
+    live.start();
+    await tick(30);
+    const snap = live.getSnapshot();
+    expect(snap.devices.find((d) => d.deviceId === agent.deviceId)!.setup).toEqual({ ...base, tools: [tool] });
+    expect(snap.devices.find((d) => d.deviceId === me.deviceId)!.setup).toEqual(base);
+  });
+
   it("notifications are listed newest first", async () => {
     const { db, live } = await setup();
     for (const [nid, t] of [
