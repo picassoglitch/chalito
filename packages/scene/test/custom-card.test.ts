@@ -256,6 +256,32 @@ describe("CustomCardSource", () => {
     expect(t.pending).toHaveLength(1);
   });
 
+  it("retries fast while nothing has answered yet (2, 4, 8 s… up to retryMs), then at retryMs", async () => {
+    const t = timers();
+    let fail = true;
+    const src = new CustomCardSource({
+      fetch: async () => {
+        if (fail) throw new Error("not ready");
+        return null;
+      },
+      timers: t.timers,
+      waitOnFailure: true,
+      firstRetryMs: 2_000,
+      retryMs: 60_000,
+    });
+    const delays: number[] = [];
+    await src.refresh();
+    for (let i = 0; i < 6; i++) {
+      delays.push(t.pending.at(-1)!.ms);
+      await src.refresh();
+    }
+    expect(delays).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000]);
+    fail = false;
+    await src.refresh();
+    expect(src.getSnapshot()).toBeNull();
+    src.dispose();
+  });
+
   it("with waitOnFailure, a first fetch that fails stays unresolved instead of replacing the custom pet", async () => {
     const t = timers();
     const src = new CustomCardSource({

@@ -21,6 +21,86 @@ const body = (host = GCS) => ({
 });
 
 describe("the desktop's own custom companion card", () => {
+  it("stops waiting for a session that stays unusable past the grace at startup: no session, no companion, 401/403 (#129)", async () => {
+    let t = 0;
+    let status: number | null = null;
+    const ready = { companionCard: async () => (status ? Promise.reject(new Error(`/x: ${status}`)) : body()) };
+    const gone = companionCardFetcher(
+      async () => null,
+      () => t,
+      () => true,
+      60_000,
+    );
+    await expect(gone()).rejects.toThrow("not ready");
+    t = 59_999;
+    await expect(gone()).rejects.toThrow("not ready");
+    t = 60_000;
+    expect(await gone()).toBeNull();
+
+    t = 0;
+    status = 401;
+    const refused = companionCardFetcher(
+      async () => ready,
+      () => t,
+      () => true,
+      60_000,
+    );
+    await expect(refused()).rejects.toThrow("refused");
+    t = 60_000;
+    expect(await refused()).toBeNull();
+    // Back: the custom card returns.
+    status = null;
+    expect(((await refused()) as SignedCard).assetId).toBe(ASSET);
+  });
+
+  it("starts the grace over after a failed lookup, so one late 401 doesn't give up at once", async () => {
+    let t = 0;
+    let mode: "none" | "offline" | "401" = "none";
+    const fetch = companionCardFetcher(
+      async () => {
+        if (mode === "offline") throw new Error("companion lookup failed");
+        return mode === "none" ? null : { companionCard: async () => Promise.reject(new Error("/x: 401")) };
+      },
+      () => t,
+      () => true,
+      60_000,
+    );
+    await expect(fetch()).rejects.toThrow("not ready");
+    mode = "offline";
+    t = 300_000;
+    await expect(fetch()).rejects.toThrow("lookup failed");
+    mode = "401";
+    await expect(fetch()).rejects.toThrow("refused");
+    t = 360_000;
+    expect(await fetch()).toBeNull();
+  });
+
+  it("keeps waiting on network errors and 5xx, and never gives up once a card has answered (#129)", async () => {
+    let t = 0;
+    let status: number | null = 503;
+    let up = true;
+    const fetch = companionCardFetcher(
+      async () =>
+        up ? { companionCard: async () => (status ? Promise.reject(new Error(`/x: ${status}`)) : body()) } : null,
+      () => t,
+      () => true,
+      60_000,
+    );
+    await expect(fetch()).rejects.toThrow("503");
+    t = 600_000;
+    await expect(fetch()).rejects.toThrow("503");
+    status = null;
+    expect(((await fetch()) as SignedCard).assetId).toBe(ASSET);
+    // Mid-session: a late token refresh (401) or a lost session never turns the pet into the roster.
+    status = 401;
+    t = 700_000;
+    await expect(fetch()).rejects.toThrow("refused");
+    t = 900_000;
+    await expect(fetch()).rejects.toThrow("refused");
+    up = false;
+    await expect(fetch()).rejects.toThrow("not ready");
+  });
+
   it("reads GET /v1/avatar/companion; distinguishes a restoring account from confirmed sign-out", async () => {
     const card = (await companionCardFetcher(async () => ({ companionCard: async () => body() }))()) as SignedCard;
     expect(card.assetId).toBe(ASSET);

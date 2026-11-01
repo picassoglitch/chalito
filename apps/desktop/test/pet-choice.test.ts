@@ -25,12 +25,27 @@ describe("the pet only ever draws the companion's own character", () => {
     expect(petCard({ avatar: "luna", card: null })).toEqual({ kind: "roster", avatar: "luna" });
   });
 
+  it("shows the same roster avatar it drew last while the account answers, never another one (#129)", () => {
+    const luna = { kind: "roster", avatar: "luna" } as const;
+    expect(petCard({ avatar: "luna", card: undefined, last: luna })).toEqual(luna);
+    expect(petCard({ avatar: "luna", card: undefined, last: { kind: "roster", avatar: "calavera" } })).toEqual({
+      kind: "wait",
+    });
+    expect(petCard({ avatar: "luna", card: undefined, last: { kind: "custom" } })).toEqual({ kind: "wait" });
+    expect(petCard({ avatar: "luna", card: undefined, last: null })).toEqual({ kind: "wait" });
+  });
+
+  it("ignores what was saved before the fix (it may be the roster avatar that replaced a custom pet)", () => {
+    const m = new Map([["chalito-desktop-pet-last", JSON.stringify({ kind: "roster", avatar: "calavera" })]]);
+    expect(loadLastDrawn(() => ({ getItem: (k: string) => m.get(k) ?? null }))).toBeNull();
+  });
+
   it("keeps what it drew last in storage, and survives storage that throws", () => {
     const m = new Map<string, string>();
     const s = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
     saveLastDrawn({ kind: "roster", avatar: "luna" }, () => s);
     expect(loadLastDrawn(() => s)).toEqual({ kind: "roster", avatar: "luna" });
-    m.set("chalito-desktop-pet-last", "{not json");
+    m.set("chalito-desktop-pet-last-v2", "{not json");
     expect(loadLastDrawn(() => s)).toBeNull();
     const blocked = () => {
       throw new Error("SecurityError");

@@ -10,8 +10,8 @@ import { loadSettings } from "../lib/settings-local.js";
 import { PET_COSMETICS_REFRESH_MS, cosmeticsKey, watchCosmetics } from "./cosmetics.js";
 import type { CustomCardSource } from "@chalito/scene/custom-card";
 import { PetLook, QualityResolver } from "./look.js";
-import { petCard, saveLastDrawn } from "./choice.js";
-import { PetCardLoader } from "./card-loader.js";
+import { loadLastDrawn, petCard, saveLastDrawn } from "./choice.js";
+import { PetCardLoader, RetryBackoff } from "./card-loader.js";
 import { PerkGate, mouseMayPlay, petReaction, playReaction } from "./reactions.js";
 import { PetMotion, type PetWindowApi } from "./motion.js";
 import { ClickTracker, pickTrick } from "./clicks.js";
@@ -75,6 +75,7 @@ export const startPet = (
   /** What's drawn (or loading): companion card and its cosmetics. */
   const cards = new PetCardLoader<Awaited<ReturnType<typeof loadCardAssets>>>();
   let cardRetry: ReturnType<typeof setTimeout> | undefined;
+  const backoff = new RetryBackoff();
   let wearing: SceneCosmetic[] = [];
   const rendererName = () => {
     const gl = renderer.getContext();
@@ -115,6 +116,7 @@ export const startPet = (
     const choice = petCard({
       avatar: s.avatar,
       card: !myCard ? null : myCard.getSnapshot() === undefined ? undefined : myCard.files(),
+      last: loadLastDrawn(),
     });
     if (choice.kind === "wait") return;
     const custom = choice.kind === "custom" ? choice.files : null;
@@ -125,6 +127,7 @@ export const startPet = (
         (assets) => {
           if (!assets) return;
           clearTimeout(cardRetry);
+          backoff.reset();
           saveLastDrawn(custom ? { kind: "custom" } : { kind: "roster", avatar: s.avatar });
           const next = new PetLook(assets, levelOf(quality.level));
           next.setEmotion(mood);
@@ -144,7 +147,7 @@ export const startPet = (
           // Keep the current pet or placeholder. Expired URLs are refreshed by loadCardAssets;
           // a persistent error must remain retryable, never become a successful roster load.
           clearTimeout(cardRetry);
-          cardRetry = setTimeout(applySettings, 3000);
+          cardRetry = setTimeout(applySettings, backoff.next(want));
         },
       );
   };

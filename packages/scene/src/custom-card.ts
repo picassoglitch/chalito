@@ -152,6 +152,8 @@ export interface SignedCardsSourceOptions extends SourceTiming {
   fetch: () => Promise<ReadonlyMap<string, SignedCard>>;
   /** A first fetch that fails stays unresolved (keep waiting) instead of answering "no cards". */
   waitOnFailure?: boolean;
+  /** While nothing has answered yet, retry after this, doubling up to retryMs (a startup race clears fast). */
+  firstRetryMs?: number;
 }
 
 /**
@@ -161,7 +163,7 @@ export interface SignedCardsSourceOptions extends SourceTiming {
  * until the first answer, then the cards by id (a missing id: draw the roster avatar).
  */
 export class SignedCardsSource {
-  readonly #opts: Required<SourceTiming> & Pick<SignedCardsSourceOptions, "fetch" | "waitOnFailure">;
+  readonly #opts: Required<SourceTiming> & Pick<SignedCardsSourceOptions, "fetch" | "waitOnFailure" | "firstRetryMs">;
   #cards: ReadonlyMap<string, SignedCard> | undefined = undefined;
   #inflight: Promise<void> | null = null;
   #timer: unknown = null;
@@ -170,6 +172,7 @@ export class SignedCardsSource {
   readonly #listeners = new Set<() => void>();
   /** Per id, stable while the card is the same asset, so hosts don't reload it on a URL refresh. */
   readonly #files = new Map<string, CardFiles>();
+  #failures = 0;
 
   constructor(opts: SignedCardsSourceOptions) {
     this.#opts = {
@@ -232,7 +235,12 @@ export class SignedCardsSource {
       if (this.#disposed) return;
       // The web draws the roster avatar meanwhile; the desktop pet waits (#129: it lost the custom pet).
       if (this.#cards === undefined && !this.#opts.waitOnFailure) this.#emit(new Map());
-      this.#schedule(this.#opts.retryMs);
+      const first = this.#opts.firstRetryMs;
+      this.#schedule(
+        this.#cards === undefined && first
+          ? Math.min(this.#opts.retryMs, first * 2 ** this.#failures++)
+          : this.#opts.retryMs,
+      );
       return;
     }
     if (this.#disposed) return;
@@ -282,6 +290,7 @@ export interface CustomCardSourceOptions extends SourceTiming {
   /** GET /v1/avatar/companion, parsed: null when there's no custom card; throws when it can't tell. */
   fetch: () => Promise<SignedCard | null>;
   waitOnFailure?: boolean;
+  firstRetryMs?: number;
 }
 
 const SELF = "self";

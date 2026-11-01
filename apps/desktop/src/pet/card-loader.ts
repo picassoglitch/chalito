@@ -22,3 +22,31 @@ export class PetCardLoader<T> {
     this.#key = null;
   }
 }
+
+/** Retry delays for a pet look that keeps failing: doubling, capped; a different look starts over. */
+export class RetryBackoff {
+  #key: string | null = null;
+  #ms: number;
+
+  constructor(
+    private readonly firstMs = 3_000,
+    private readonly maxMs = 5 * 60_000,
+  ) {
+    this.#ms = firstMs;
+  }
+
+  next(key: string): number {
+    if (key !== this.#key) {
+      this.#key = key;
+      this.#ms = this.firstMs;
+    }
+    const ms = this.#ms;
+    this.#ms = Math.min(this.maxMs, ms * 2);
+    return ms;
+  }
+
+  reset(): void {
+    this.#key = null;
+    this.#ms = this.firstMs;
+  }
+}
