@@ -297,19 +297,27 @@ describe("native app connector installation", () => {
     expect(JSON.stringify(after.hooks.Stop)).toContain("existing-policy");
   });
 
-  it("from a path that will vanish too, moves only hooks whose binary is already gone", async () => {
-    const s0 = setup();
-    const alive = join(s0.home, "alive", "chalito-agent");
-    mkdirSync(join(alive, ".."), { recursive: true });
-    writeFileSync(alive, "bin");
-    const dead = setup(true, [join(s0.home, "gone's", "chalito-agent")], s0.home);
-    await dead.manager.set("claude", true, "missing");
-    const live = setup(true, [alive], s0.home);
-    await live.manager.set("cursor", true, "missing");
-    const mount = setup(true, ["/tmp/.mount_ChalitNEW/usr/bin/chalito-agent"], s0.home);
-    expect(mount.manager.repair({ onlyDead: true })).toEqual(["claude"]);
-    expect(readFileSync(mount.manager.path("claude"), "utf8")).toContain(".mount_ChalitNEW");
-    expect(readFileSync(mount.manager.path("cursor"), "utf8")).toContain(alive);
+  it("refuses to connect from a path that vanishes, saying why on the row, but still disconnects", async () => {
+    const old = setup();
+    await old.manager.set("claude", true, "missing");
+    const home = old.home;
+    const temp = new NativeConnectors({
+      home,
+      dir: join(home, ".chalito"),
+      command: ["/tmp/.mount_ChalitNEW/usr/bin/chalito-agent"],
+      stable: false,
+      platform: "linux",
+      available: async () => true,
+      verify: async () => true,
+      onDisconnect: () => undefined,
+    });
+    const codex = await temp.view("codex");
+    expect(codex.error).toBe("unstable_path");
+    await expect(temp.set("codex", true, codex.hash)).rejects.toThrow("unstable_path");
+    expect(existsSync(temp.path("codex"))).toBe(false);
+    expect((await temp.view("claude")).error).toBeUndefined();
+    await temp.set("claude", false, (await temp.view("claude")).hash);
+    expect(readFileSync(temp.path("claude"), "utf8")).not.toContain("native-hook");
   });
 
   it("heals a record left behind by a kill between writing the settings and the record", async () => {

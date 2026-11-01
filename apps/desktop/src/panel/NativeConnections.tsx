@@ -14,6 +14,7 @@ const ERRORS = [
   "app_unavailable",
   "unsafe_command",
   "cli_unavailable",
+  "unstable_path",
 ];
 const errorKey = (code: string | undefined) => (code && ERRORS.includes(code) ? code : "other");
 // Each read runs three CLI lookups in the agent: slow, and only while someone can see the panel.

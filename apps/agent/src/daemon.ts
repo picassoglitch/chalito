@@ -1526,6 +1526,7 @@ const startDaemon = async (
     dir,
     platform: process.platform,
     command: [hookCommand.command, ...hookCommand.args.slice(0, -2)],
+    stable: isInterpreter(execPath) || !hookBin.ephemeral,
     available: async (provider) =>
       !!(await apps.findCli(NATIVE_APPS[provider])) ||
       (provider === "cursor" && (await apps.status("cursor"))?.cli.installed === true),
@@ -1538,8 +1539,8 @@ const startDaemon = async (
     connected: (provider) => nativeBridge.connected(provider),
     log: (event, meta) => log.warn(event, meta),
   });
-  // #132 — a dev run never rewrites hooks; from a vanishing path only dead hooks are moved.
-  if (!isInterpreter(execPath)) nativeConnectors.repair({ onlyDead: hookBin.ephemeral });
+  // #132 — hooks never point into /tmp or a DMG (anyone could plant a binary there later); dev runs never rewrite them.
+  if (!isInterpreter(execPath) && !hookBin.ephemeral) nativeConnectors.repair();
   const nativeBridge: NativeBridge = new NativeBridge({
     core,
     store: signedInStore,

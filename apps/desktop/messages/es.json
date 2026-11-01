@@ -435,6 +435,7 @@
         "app_unavailable": "Chalito no encontró esta aplicación de IA en esta computadora.",
         "unsafe_command": "Chalito está instalado en una carpeta donde los hooks de la aplicación no pueden correr de forma segura. Reinstala Chalito en una carpeta estándar.",
         "cli_unavailable": "La herramienta de línea de comandos de Chalito no está disponible en esta computadora. Reinstala Chalito e inténtalo de nuevo.",
+        "unstable_path": "Chalito se está ejecutando desde una ubicación temporal, así que los hooks de la app dejarían de funcionar al cerrarlo. Instala Chalito en tu carpeta de Aplicaciones (o libera espacio en disco) y vuelve a abrirlo.",
         "other": "No se pudo actualizar el conector. No se confirmó ninguna conexión."
       }
     }

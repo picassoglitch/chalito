@@ -38,6 +38,7 @@ export const NATIVE_CONNECTOR_ERRORS = [
   "app_unavailable",
   "unsafe_command",
   "cli_unavailable",
+  "unstable_path",
   "other",
 ] as const;
 export type NativeConnectorError = (typeof NATIVE_CONNECTOR_ERRORS)[number];
@@ -59,12 +60,6 @@ const object = (value: unknown): value is Record<string, unknown> =>
 const isChalitoHook = (provider: Provider, event: string, command: unknown): boolean =>
   typeof command === "string" &&
   new RegExp(`["']native-hook["'] ["']${provider}["'] ["']${event}["']\\s*$`).test(command);
-
-/** Whether the binary a hook command runs (its first, quoted argument) is still on disk. */
-const hookBinaryExists = (command: string, platform: NodeJS.Platform): boolean => {
-  const m = platform === "win32" ? /^"([^"]*)"/.exec(command) : /^'((?:[^']|'\\'')*)'/.exec(command);
-  return !!m && existsSync(platform === "win32" ? m[1]! : m[1]!.replace(/'\\''/g, "'"));
-};
 
 /** Hook command lines for one app; Windows paths may hold any letter but no cmd metacharacters. */
 export const nativeHookCommands = (command: string[], provider: Provider, platform: NodeJS.Platform): string[] => {
@@ -88,6 +83,8 @@ export class NativeConnectors {
       home: string;
       dir: string;
       command: string[];
+      /** #132 — false when the agent runs from a path that vanishes (/tmp mount, DMG): never put it in hooks. */
+      stable?: boolean;
       platform: NodeJS.Platform;
       available: (provider: Provider) => Promise<boolean>;
       verify: () => Promise<boolean>;
@@ -271,6 +268,7 @@ export class NativeConnectors {
       this.d.log?.("native.app_check_failed", { provider, error: e instanceof Error ? e.message : "error" });
       error ??= "app_unavailable";
     }
+    if (!error && !configured && this.d.stable === false) error = "unstable_path";
     if (!error && !configured)
       try {
         nativeHookCommands(this.d.command, provider, this.d.platform);
@@ -294,6 +292,7 @@ export class NativeConnectors {
 
   async set(provider: Provider, enabled: boolean, expectedHash: string): Promise<void> {
     NativeProvider.parse(provider);
+    if (enabled && this.d.stable === false) throw new Error("unstable_path");
     if (enabled && !(await this.d.available(provider))) throw new Error("app_unavailable");
     // Disconnecting never needs the current binary path: old hooks are found by their signature.
     const commands = enabled ? nativeHookCommands(this.d.command, provider, this.d.platform) : [];
@@ -379,7 +378,7 @@ export class NativeConnectors {
   }
 
   // #132 — on agent start: connected apps whose Chalito hooks name an old agent path get the current one.
-  repair(opts: { onlyDead?: boolean } = {}): Provider[] {
+  repair(): Provider[] {
     let records: Records;
     try {
       records = this.#records();
@@ -387,8 +386,6 @@ export class NativeConnectors {
       this.d.log?.("native.connector_repair_failed", { error: nativeConnectorErrorCode(error) });
       return [];
     }
-    // From a path that will vanish too, only hooks whose binary is already gone are moved.
-    const movable = (command: string) => !opts.onlyDead || !hookBinaryExists(command, this.d.platform);
     const fixed: Provider[] = [];
     for (const provider of NativeProvider.options) {
       const record = records.providers[provider];
@@ -398,9 +395,9 @@ export class NativeConnectors {
         const path = this.path(provider);
         const current = this.#read(path);
         const present = this.#chalitoEvents(provider, current.data);
-        const stale = this.#chalitoEvents(provider, current.data, (c) => !commands.includes(c) && movable(c)).size > 0;
+        const stale = this.#chalitoEvents(provider, current.data, (c) => !commands.includes(c)).size > 0;
         // A kill between the two writes leaves current hooks with an old record: heal the record too.
-        const staleRecord = !opts.onlyDead && present.size > 0 && record.commands.join("\n") !== commands.join("\n");
+        const staleRecord = present.size > 0 && record.commands.join("\n") !== commands.join("\n");
         // Only paths are fixed: hooks taken out by hand, all or some, stay out.
         if (!stale && !staleRecord) continue;
         records = this.#apply(provider, path, current, records, commands, present);

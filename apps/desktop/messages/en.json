@@ -435,6 +435,7 @@
         "app_unavailable": "Chalito couldn't find this AI app on this computer.",
         "unsafe_command": "Chalito is installed in a folder the app's hooks can't run safely. Reinstall Chalito in a standard folder.",
         "cli_unavailable": "Chalito's command-line tool isn't available on this computer. Reinstall Chalito and try again.",
+        "unstable_path": "Chalito is running from a temporary location, so the app's hooks would stop working when it closes. Install Chalito in your Applications folder (or free some disk space) and open it again.",
         "other": "Could not update the connector. No connection was confirmed."
       }
     }
