@@ -1,5 +1,5 @@
 import { roomWindowDeps, tauriRoomWindowIo } from "../lib/room-window.js";
-import { readEnv } from "../lib/session.js";
+import { loadStored, readEnv } from "../lib/session.js";
 import { shell } from "../lib/shell.js";
 import { companionCardSource } from "../lib/custom-card.js";
 import { ownCosmetics } from "./cosmetics.js";
@@ -18,4 +18,10 @@ const cosmetics = async () => {
   const d = await deps();
   return d ? ownCosmetics(d) : null;
 };
-startPet(canvas, shell(), cosmetics, companionCardSource(deps), isTauri() ? tauriPetWindow() : null);
+startPet(
+  canvas,
+  shell(),
+  cosmetics,
+  env ? companionCardSource(deps, () => loadStored() !== null) : null,
+  isTauri() ? tauriPetWindow() : null,
+);

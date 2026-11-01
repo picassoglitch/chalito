@@ -11,24 +11,14 @@ export type PetCard = { kind: "wait" } | { kind: "roster"; avatar: string } | { 
 /** What the pet drew last time on this device (a per-device convenience, never authoritative). */
 export type LastDrawn = { kind: "roster"; avatar: string } | { kind: "custom" };
 
-/** How long the placeholder waits for the custom card's answer before drawing the roster avatar. */
-export const CARD_WAIT_MS = 5000;
-
+/** Unknown account state is never permission to substitute a roster character. */
 export const petCard = (o: {
-  /** The roster avatar from the local settings. */
   avatar: string;
-  /** The custom card: undefined until the api answered, null when there is none (or no source). */
+  /** undefined until the account answers; null only after an authoritative no-custom response. */
   card: CardFiles | null | undefined;
-  /** CARD_WAIT_MS passed without an answer. */
-  gaveUp: boolean;
-  last: LastDrawn | null;
 }): PetCard => {
   if (o.card) return { kind: "custom", files: o.card };
-  if (o.card === null || o.gaveUp) return { kind: "roster", avatar: o.avatar };
-  // Not known yet: last time's roster avatar shows at once (a returning pet); anything else waits.
-  return o.last?.kind === "roster" && o.last.avatar === o.avatar
-    ? { kind: "roster", avatar: o.avatar }
-    : { kind: "wait" };
+  return o.card === null ? { kind: "roster", avatar: o.avatar } : { kind: "wait" };
 };
 
 const LAST_KEY = "chalito-desktop-pet-last";
