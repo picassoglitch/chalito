@@ -75,8 +75,8 @@ describe("board approvals in the panel", () => {
     const { board, link } = await setup();
     const real = link.approvalTransport.bind(link);
     let broken = true;
-    link.approvalTransport = () => {
-      const t = real();
+    link.approvalTransport = (onWritten) => {
+      const t = real(onWritten);
       return { ...t, write: (f) => (broken ? Promise.reject(new Error("usb")) : t.write(f)) };
     };
     const off = attachBoardApprovals(link, { live: live("LOW"), actions: { decide: async () => undefined } } as never);
@@ -86,7 +86,7 @@ describe("board approvals in the panel", () => {
     board.emit({ v: 1, type: "hello", fw: "0.1.0", board: "b", w: 172, h: 320, card: null, pair: board.keyId });
     await until(() => board.sent("approval-console").length > 0);
     // The fresh screen works again: the panel stops saying it doesn't.
-    expect(link.getSnapshot().approvalProblem).toBeNull();
+    await until(() => link.getSnapshot().approvalProblem === null);
     off();
   });
 
@@ -154,6 +154,56 @@ describe("approvals-screen problems go away", () => {
     board.unplug();
     board.plug();
     await until(() => link.ready && link.getSnapshot().approvalProblem === null);
+    off();
+  });
+});
+
+describe("approvals-screen problems, precisely", () => {
+  it("a send_failed for an approval that left the feed during the decide still clears", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { board, link } = await setup();
+    const feed = live("LOW");
+    let snap = feed.getSnapshot();
+    const subs = new Set<() => void>();
+    const changing = {
+      subscribe: (f: () => void) => (subs.add(f), () => void subs.delete(f)),
+      getSnapshot: () => snap,
+    };
+    const decide = async () => {
+      // Answered on the phone while the board's decide was in flight.
+      snap = { ...snap, approvals: [] };
+      for (const f of [...subs]) f();
+      throw new Error("offline");
+    };
+    const off = attachBoardApprovals(link, { live: changing, actions: { decide } } as never);
+    const reported: unknown[] = [];
+    link.subscribe(() => reported.push(link.getSnapshot().approvalProblem));
+    board.plug();
+    await until(() => board.sent("approval-console").some((f) => f.state === "pending"));
+    board.decide(AID, shownTicket(board.sent("approval-console")), true);
+    await until(() => reported.includes("send_failed"));
+    await until(() => link.getSnapshot().approvalProblem === null);
+    off();
+  });
+
+  it("write_failed stays while frames still fail, even as the screen re-attaches on other changes", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { board, link } = await setup({ frameFailures: 1 });
+    board.failNext.set("approval-console", 1000);
+    const off = attachBoardApprovals(link, { live: live("LOW"), actions: { decide: async () => undefined } } as never);
+    board.plug();
+    await until(() => link.getSnapshot().approvalProblem === "write_failed");
+    const seen: unknown[] = [];
+    link.subscribe(() => seen.push(link.getSnapshot().approvalProblem));
+    // An unrelated change: the same paired board says hello again.
+    board.emit({ v: 1, type: "hello", fw: "0.1.0", board: "b", w: 172, h: 320, card: null, pair: board.keyId });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).not.toContain(null);
+    // Frames go out again: the first one that does clears it.
+    board.failNext.set("approval-console", 0);
+    board.emit({ v: 1, type: "hello", fw: "0.1.0", board: "b", w: 172, h: 320, card: null, pair: board.keyId });
+    await until(() => link.getSnapshot().approvalProblem === null);
     off();
   });
 });

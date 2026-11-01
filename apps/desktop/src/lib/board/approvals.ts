@@ -1,3 +1,4 @@
+import { ApprovalConsoleCommand } from "@chalito/protocol";
 import { attachApprovalDisplay, type ApprovalConsoleResult, type ChalitoClient } from "@chalito/client";
 import type { ApprovalProblem, BoardLink } from "./link.js";
 
@@ -13,15 +14,18 @@ export const attachBoardApprovals = (link: BoardLink, client: Client): (() => vo
   let display: { close: () => void; off: () => void } | null = null;
   /** The approval a send_failed/phone_required was about: the notice goes once it leaves the list. */
   let problemAid: string | null = null;
-  const report = (problem: ApprovalProblem | null, aid: string | null = null) => {
-    problemAid = problem === "write_failed" ? null : aid;
-    link.reportApproval(problem);
-  };
-  const offLive = client.live.subscribe(() => {
+  const gone = () => {
     if (!problemAid) return;
     const pending = client.live.getSnapshot().approvals.some((a) => a.aid === problemAid && a.status === "pending");
     if (!pending) report(null);
-  });
+  };
+  const report = (problem: ApprovalProblem | null, aid: string | null = null) => {
+    problemAid = problem === "write_failed" ? null : aid;
+    link.reportApproval(problem);
+    // It may have left the feed while the decide was in flight.
+    gone();
+  };
+  const offLive = client.live.subscribe(gone);
   const drop = (d: typeof display) => {
     if (!d || display !== d) return;
     display = null;
@@ -31,10 +35,14 @@ export const attachBoardApprovals = (link: BoardLink, client: Client): (() => vo
   const sync = () => {
     if (!link.ready || display) return;
     const current = { close: () => undefined, off: () => undefined } as { close: () => void; off: () => void };
-    const d = attachApprovalDisplay(client.live, client.actions, link.approvalTransport(), {
-      onResult: (r) => {
+    // write_failed goes only once a frame of the new screen reaches the board, not on re-attach.
+    const written = () => link.getSnapshot().approvalProblem === "write_failed" && report(null);
+    const d = attachApprovalDisplay(client.live, client.actions, link.approvalTransport(written), {
+      onResult: (r, command) => {
         if (!r.ok) console.warn(`board: approvals screen: ${r.reason}`);
-        if (r.ok || problemOf(r)) report(problemOf(r), d.controller.getSnapshot().approval?.aid ?? null);
+        const c = ApprovalConsoleCommand.safeParse(command);
+        const aid = c.success && c.data.type === "decide" ? c.data.aid : null;
+        if (r.ok || problemOf(r)) report(problemOf(r), aid);
       },
       onClose: (reason) => {
         if (reason !== "write_failed") return;
@@ -50,8 +58,8 @@ export const attachBoardApprovals = (link: BoardLink, client: Client): (() => vo
       if (!link.ready) drop(current);
     });
     display = current;
-    // A fresh screen: whatever went wrong on the last one is over.
-    report(null);
+    // A fresh screen: a decide problem from the last one is over.
+    if (link.getSnapshot().approvalProblem !== "write_failed") report(null);
   };
   const offLink = link.subscribe(sync);
   sync();

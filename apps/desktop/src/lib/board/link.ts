@@ -325,7 +325,8 @@ export class BoardLink {
   }
 
   /** attachApprovalDisplay's transport for the current connection; it disconnects with the board. */
-  approvalTransport(): ApprovalDisplayTransport {
+  /** `onWritten` hears each frame that actually reached the board. */
+  approvalTransport(onWritten?: () => void): ApprovalDisplayTransport {
     let failures = 0;
     return {
       write: async (frame: ApprovalConsoleFrame) => {
@@ -333,6 +334,7 @@ export class BoardLink {
         try {
           await this.#write(frame);
           failures = 0;
+          onWritten?.();
         } catch (e) {
           console.warn("board: an approval-console frame didn't go out", e);
           // One failed frame is replaced by the next second's; several in a row mean the screen is stale.
