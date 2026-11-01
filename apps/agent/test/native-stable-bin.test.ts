@@ -86,6 +86,17 @@ describe("stable agent path for AI app hooks (#132)", () => {
     expect((await s.run({ env: { ...s.env, APPDIR: `${s.appDir}/` } })).path).toBe(stableAgentPath(s.home));
   });
 
+  it("on macOS, a translocated copy or a read-only /Volumes path (a DMG) counts as vanishing; an external disk doesn't", async () => {
+    const s = setup();
+    const run = (execPath: string) => s.run({ execPath, env: {}, platform: "darwin" });
+    expect(
+      (await run("/private/var/folders/x/AppTranslocation/ab/d/Chalito.app/Contents/MacOS/chalito-agent")).ephemeral,
+    ).toBe(true);
+    // The test machine has no /Volumes: a path whose folder can't be written stands in for a DMG.
+    expect((await run("/Volumes/Chalito/Chalito.app/Contents/MacOS/chalito-agent")).ephemeral).toBe(true);
+    expect((await run("/Applications/Chalito.app/Contents/MacOS/chalito-agent")).ephemeral).toBe(false);
+  });
+
   it("marks the mount as ephemeral, and says so, when no copy can be made", async () => {
     const s = setup();
     writeFileSync(join(s.home, ".local"), "a file where a folder should be");

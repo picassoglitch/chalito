@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  accessSync,
   chmodSync,
+  constants,
   copyFileSync,
   createReadStream,
   lstatSync,
@@ -44,8 +46,8 @@ export const stableHookBinary = async (d: {
   platform: NodeJS.Platform;
   log?: (event: string, meta: Record<string, unknown>) => void;
 }): Promise<{ path: string; ephemeral: boolean }> => {
-  // A DMG or a translocated copy vanishes too: never repair hooks onto it.
-  if (d.platform === "darwin" && (d.execPath.startsWith("/Volumes/") || d.execPath.includes("/AppTranslocation/")))
+  // A DMG (read-only under /Volumes; an app on an external disk is writable) or a translocated copy vanishes too.
+  if (d.platform === "darwin" && (d.execPath.includes("/AppTranslocation/") || readOnlyVolume(d.execPath)))
     return { path: d.execPath, ephemeral: true };
   const appDir = d.env.APPDIR;
   if (d.platform !== "linux" || !d.env.APPIMAGE || !appDir || !d.execPath.startsWith(appDir.replace(/\/+$/, "") + sep))
@@ -80,6 +82,16 @@ export const stableHookBinary = async (d: {
 const sweepTemps = (dir: string): void => {
   for (const name of readdirSync(dir))
     if (/^chalito-agent\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(dir, name), { force: true });
+};
+
+const readOnlyVolume = (path: string): boolean => {
+  if (!path.startsWith("/Volumes/")) return false;
+  try {
+    accessSync(dirname(path), constants.W_OK);
+    return false;
+  } catch {
+    return true;
+  }
 };
 
 const existingCopy = (path: string): boolean => {
