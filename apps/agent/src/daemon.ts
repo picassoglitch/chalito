@@ -1538,8 +1538,8 @@ const startDaemon = async (
     connected: (provider) => nativeBridge.connected(provider),
     log: (event, meta) => log.warn(event, meta),
   });
-  // #132 — a dev run (node/tsx) or a mount-only path must never become every app's hook on its own.
-  if (!hookBin.ephemeral) nativeConnectors.repair();
+  // #132 — a dev run never rewrites hooks; from a vanishing path only dead hooks are moved.
+  if (!isInterpreter(execPath)) nativeConnectors.repair({ onlyDead: hookBin.ephemeral });
   const nativeBridge: NativeBridge = new NativeBridge({
     core,
     store: signedInStore,

@@ -297,6 +297,34 @@ describe("native app connector installation", () => {
     expect(JSON.stringify(after.hooks.Stop)).toContain("existing-policy");
   });
 
+  it("from a path that will vanish too, moves only hooks whose binary is already gone", async () => {
+    const s0 = setup();
+    const alive = join(s0.home, "alive", "chalito-agent");
+    mkdirSync(join(alive, ".."), { recursive: true });
+    writeFileSync(alive, "bin");
+    const dead = setup(true, [join(s0.home, "gone's", "chalito-agent")], s0.home);
+    await dead.manager.set("claude", true, "missing");
+    const live = setup(true, [alive], s0.home);
+    await live.manager.set("cursor", true, "missing");
+    const mount = setup(true, ["/tmp/.mount_ChalitNEW/usr/bin/chalito-agent"], s0.home);
+    expect(mount.manager.repair({ onlyDead: true })).toEqual(["claude"]);
+    expect(readFileSync(mount.manager.path("claude"), "utf8")).toContain(".mount_ChalitNEW");
+    expect(readFileSync(mount.manager.path("cursor"), "utf8")).toContain(alive);
+  });
+
+  it("heals a record left behind by a kill between writing the settings and the record", async () => {
+    const old = setup(true, ["/tmp/.mount_ChalitOLD/usr/bin/chalito-agent"]);
+    await old.manager.set("codex", true, "missing");
+    const now = setup(true, ["/home/u/.local/share/chalito/chalito-agent"], old.home);
+    const file = join(old.dir, "native-connectors.json");
+    const oldRecord = readFileSync(file, "utf8");
+    now.manager.repair();
+    writeFileSync(file, oldRecord);
+    expect(now.manager.enabled("codex")).toBe(false);
+    expect(now.manager.repair()).toEqual(["codex"]);
+    expect(now.manager.enabled("codex")).toBe(true);
+  });
+
   it("reports an unusable agent command on the row before anyone tries to connect", async () => {
     expect((await setup(true, ["/bad\npath"]).manager.view("codex")).error).toBe("unsafe_command");
     expect((await setup(true, []).manager.view("codex")).error).toBe("cli_unavailable");

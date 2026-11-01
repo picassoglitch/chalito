@@ -60,6 +60,12 @@ const isChalitoHook = (provider: Provider, event: string, command: unknown): boo
   typeof command === "string" &&
   new RegExp(`["']native-hook["'] ["']${provider}["'] ["']${event}["']\\s*$`).test(command);
 
+/** Whether the binary a hook command runs (its first, quoted argument) is still on disk. */
+const hookBinaryExists = (command: string, platform: NodeJS.Platform): boolean => {
+  const m = platform === "win32" ? /^"([^"]*)"/.exec(command) : /^'((?:[^']|'\\'')*)'/.exec(command);
+  return !!m && existsSync(platform === "win32" ? m[1]! : m[1]!.replace(/'\\''/g, "'"));
+};
+
 /** Hook command lines for one app; Windows paths may hold any letter but no cmd metacharacters. */
 export const nativeHookCommands = (command: string[], provider: Provider, platform: NodeJS.Platform): string[] => {
   const quote = (arg: string) => {
@@ -212,9 +218,6 @@ export class NativeConnectors {
         found.add(event);
     }
     return found;
-  }
-  #hasStaleHooks(provider: Provider, data: Record<string, unknown>, commands: string[]): boolean {
-    return this.#chalitoEvents(provider, data, (c) => !commands.includes(c)).size > 0;
   }
   #enabledIn(records: Records, provider: Provider, data: Record<string, unknown>): boolean {
     const record = records.providers[provider];
@@ -376,7 +379,7 @@ export class NativeConnectors {
   }
 
   // #132 — on agent start: connected apps whose Chalito hooks name an old agent path get the current one.
-  repair(): Provider[] {
+  repair(opts: { onlyDead?: boolean } = {}): Provider[] {
     let records: Records;
     try {
       records = this.#records();
@@ -384,6 +387,8 @@ export class NativeConnectors {
       this.d.log?.("native.connector_repair_failed", { error: nativeConnectorErrorCode(error) });
       return [];
     }
+    // From a path that will vanish too, only hooks whose binary is already gone are moved.
+    const movable = (command: string) => !opts.onlyDead || !hookBinaryExists(command, this.d.platform);
     const fixed: Provider[] = [];
     for (const provider of NativeProvider.options) {
       const record = records.providers[provider];
@@ -392,9 +397,13 @@ export class NativeConnectors {
         const commands = nativeHookCommands(this.d.command, provider, this.d.platform);
         const path = this.path(provider);
         const current = this.#read(path);
-        // Only an old binary path is fixed: hooks taken out by hand, all or some, stay out.
-        if (!this.#hasStaleHooks(provider, current.data, commands)) continue;
-        records = this.#apply(provider, path, current, records, commands, this.#chalitoEvents(provider, current.data));
+        const present = this.#chalitoEvents(provider, current.data);
+        const stale = this.#chalitoEvents(provider, current.data, (c) => !commands.includes(c) && movable(c)).size > 0;
+        // A kill between the two writes leaves current hooks with an old record: heal the record too.
+        const staleRecord = !opts.onlyDead && present.size > 0 && record.commands.join("\n") !== commands.join("\n");
+        // Only paths are fixed: hooks taken out by hand, all or some, stay out.
+        if (!stale && !staleRecord) continue;
+        records = this.#apply(provider, path, current, records, commands, present);
         fixed.push(provider);
         this.d.log?.("native.connector_repaired", { provider });
       } catch (error) {
