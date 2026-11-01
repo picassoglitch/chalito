@@ -39,6 +39,7 @@ export type BoardMessage =
   | { type: "card-ack"; key: string; ok: boolean; reason?: string }
   | { type: "pair-ok"; pair: string }
   | { type: "pair-cancel" }
+  | { type: "pair-cleared" }
   | { type: "other"; raw: Record<string, unknown> };
 
 const str = (v: unknown): v is string => typeof v === "string";
@@ -72,6 +73,8 @@ export const parseBoardLine = (line: string): BoardMessage | null => {
       return str(o.pair) ? { type: "pair-ok", pair: o.pair } : null;
     case "pair-cancel":
       return { type: "pair-cancel" };
+    case "pair-cleared":
+      return { type: "pair-cleared" };
     case "pet":
       return str(o.trick) ? { type: "pet", trick: o.trick } : null;
     case "card-progress":

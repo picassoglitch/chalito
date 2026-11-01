@@ -9,6 +9,7 @@ import { tauriPetWindow } from "./window-api.js";
 import { BoardLink } from "../lib/board/link.js";
 import { tauriBoardPort } from "../lib/board/tauri-port.js";
 import { idbPairStore } from "../lib/board/pairing.js";
+import { localCardErrors } from "../lib/board/card-errors.js";
 
 const canvas = document.createElement("canvas");
 canvas.className = "pet-canvas";
@@ -22,7 +23,7 @@ const cosmetics = async () => {
   return d ? ownCosmetics(d) : null;
 };
 // BOARD_LINK: the pet window owns the LCD's card and face; the panel owns its approvals screen.
-const board = isTauri() ? new BoardLink(tauriBoardPort, idbPairStore()) : null;
+const board = isTauri() ? new BoardLink(tauriBoardPort, idbPairStore(), { cardErrors: localCardErrors() }) : null;
 board?.start();
 startPet(
   canvas,

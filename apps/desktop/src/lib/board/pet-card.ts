@@ -37,7 +37,9 @@ export const rosterBoardCard = (
   id: idOf(`roster:${avatar}`, look),
   convert: async () => {
     const dir = `${base}assets/${avatar}/`;
-    const manifest = (await (await fetch(`${dir}card.json`)).json()) as CardManifest;
+    const res = await fetch(`${dir}card.json`);
+    if (!res.ok) throw new Error(`${dir}card.json: HTTP ${res.status}`);
+    const manifest = (await res.json()) as CardManifest;
     return convert(manifest, (f) => decode(dir + f), look, bake);
   },
 });

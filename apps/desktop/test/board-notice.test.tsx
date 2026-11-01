@@ -27,7 +27,7 @@ it("tells how to fix a board the OS won't open, and says nothing once it works",
 
 it("offers to pair a board that answers, shows the code, and then says nothing", async () => {
   const board = new FakeBoard();
-  const link = new BoardLink(board, memoryPairStore());
+  const link = new BoardLink(board, memoryPairStore(), { minPairMs: 0 });
   link.start();
   render(
     <TextProviders locale="es">

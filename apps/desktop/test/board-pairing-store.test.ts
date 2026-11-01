@@ -32,3 +32,23 @@ it("makes 6-digit codes and 32-byte secrets", () => {
     expect(code).toMatch(/^\d{6}$/);
   }
 });
+
+it("opens IndexedDB again after a failed open instead of failing forever", async () => {
+  const real = new IDBFactory();
+  let fail = true;
+  const flaky = {
+    open: (name: string, version?: number) => {
+      if (!fail) return real.open(name, version);
+      fail = false;
+      const r = {
+        error: new DOMException("blocked"),
+        onerror: null as null | (() => void),
+      } as unknown as IDBOpenDBRequest;
+      queueMicrotask(() => (r.onerror as unknown as () => void)());
+      return r;
+    },
+  } as unknown as IDBFactory;
+  const store = idbPairStore(flaky);
+  await expect(store.load()).rejects.toThrow("blocked");
+  expect(await store.load()).toBeNull();
+});

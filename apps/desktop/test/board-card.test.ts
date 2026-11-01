@@ -5,10 +5,10 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import sharp from "sharp";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CARD_FRAMES, convertCard, frameFiles, pyRound, toRgb565, type CardManifest } from "../src/lib/board/card.js";
 import { alphaComposite, blank, fillEllipse, resizeLanczos, type Rgba } from "../src/lib/board/pillow.js";
-import { customBoardCard } from "../src/lib/board/pet-card.js";
+import { customBoardCard, rosterBoardCard } from "../src/lib/board/pet-card.js";
 import { backdrop, dayPartAt } from "../src/lib/board/backdrop.js";
 
 const ROOT = resolve(__dirname, "../../..");
@@ -160,6 +160,16 @@ describe("card → LCD frames", () => {
     await card.convert();
     expect(asked).not.toContain("rig-lids.webp");
     expect(baked).toEqual(["gold", "gold", "gold", "gold", "gold"]);
+  });
+
+  it("a roster card.json that isn't there fails with its HTTP status, not a JSON parse error", async () => {
+    vi.stubGlobal("fetch", async () => new Response("<html>not found</html>", { status: 404 }));
+    try {
+      const card = rosterBoardCard("/roster/", "chalito", { part: "day" });
+      await expect(card.convert()).rejects.toThrow("HTTP 404");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("picks the sky from the local hour and draws a different scene for each", () => {

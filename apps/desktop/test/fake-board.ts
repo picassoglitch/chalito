@@ -31,6 +31,8 @@ export class FakeBoard implements BoardPort {
   pending: { secret: Buffer; code: string } | null = null;
   /** Holds BOOT by itself as soon as a pairing starts. */
   autoConfirm = false;
+  /** Fails the next N writes of a message type (a USB write error). */
+  readonly failNext = new Map<string, number>();
   #held: (() => void)[] = [];
   #chunks = 0;
   #upload: Upload | null = null;
@@ -80,6 +82,12 @@ export class FakeBoard implements BoardPort {
     this.emit({ v: 1, type: "pair-ok", pair: this.keyId });
   }
 
+  /** The person held BOOT 10 s on the board and confirmed forgetting this computer. */
+  forgetOnBoard(): void {
+    this.secret = null;
+    this.emit({ v: 1, type: "pair-cleared" });
+  }
+
   cancelPairing(): void {
     this.pending = null;
     this.emit({ v: 1, type: "pair-cancel" });
@@ -103,6 +111,11 @@ export class FakeBoard implements BoardPort {
     if (line.includes("\n") || line.length > 4096) throw new Error("bad line");
     const m = JSON.parse(line) as Record<string, unknown>;
     if (m.v !== 1) throw new Error("bad version");
+    const fail = this.failNext.get(m.type as string) ?? 0;
+    if (fail > 0) {
+      this.failNext.set(m.type as string, fail - 1);
+      throw new Error("write failed");
+    }
     this.got.push(m);
     switch (m.type) {
       case "hello":

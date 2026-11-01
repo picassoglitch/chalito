@@ -82,7 +82,12 @@ export const idbPairStore = (idb: IDBFactory = indexedDB): PairStore => {
     if (!db) {
       const o = idb.open(DB, 1);
       o.onupgradeneeded = () => o.result.createObjectStore(STORE);
-      db = req(o);
+      const opening = req(o);
+      db = opening;
+      // A failed open (blocked, quota) would otherwise fail every later load for the app's life.
+      opening.catch(() => {
+        if (db === opening) db = null;
+      });
     }
     return db;
   };

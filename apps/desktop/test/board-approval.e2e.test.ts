@@ -66,7 +66,7 @@ it("a paired LCD board approves with a hold: pairing, frame out, mac-signed deci
   await waitFor(() => live.getSnapshot().status === "live" && live.getSnapshot().approvals[0]?.verified === true);
   const board = new FakeBoard();
   const store = memoryPairStore();
-  const link = new BoardLink(board, store);
+  const link = new BoardLink(board, store, { minPairMs: 0 });
   link.start();
   const detach = attachBoardApprovals(link, { live, actions });
   try {
