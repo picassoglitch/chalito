@@ -1182,6 +1182,22 @@ export class AgentCore {
     return { ok: true, adapter: adapter ?? appAdapter.kind, appId, appAdapter };
   }
 
+  /** Picker readiness includes the loaded driver and the current local session permission. */
+  canRunSession(appId: string): boolean {
+    const policy = this.d.policy.get();
+    if (isLegacyApp(appId)) {
+      const kind = APP_ADAPTER[appId];
+      const allowed = {
+        "claude-code": policy.adapters.claudeCode,
+        codex: policy.adapters.codex,
+        grok: policy.adapters.grok ?? false,
+        gemini: policy.adapters.gemini ?? false,
+      }[appId];
+      return allowed && !!this.d.adapters[kind];
+    }
+    return policy.apps?.sessions?.[appId] === true && !!this.d.appAdapters && Object.hasOwn(this.d.appAdapters, appId);
+  }
+
   /** The daemon rebuilds the adapters when an app is connected, signed out or installed. */
   setAdapters(
     adapters: Partial<Record<AdapterKind, SessionAdapter>>,

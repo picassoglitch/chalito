@@ -34,13 +34,16 @@ const within = (child: string, parent: string) =>
   child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
 
 export const codeService = (
-  core: Pick<AgentCore, "localCommand" | "tap">,
+  core: Pick<AgentCore, "localCommand" | "tap"> & Partial<Pick<AgentCore, "canRunSession">>,
   policy: () => Pick<Policy, "workspaces">,
   setup: () => DeviceSetup,
   /** `local` for the panel (its secret proves the desktop app), `local:cli` for code.sock (ADR 0031 §6a). */
   origin: "local" | "local:cli",
 ): CodeService => ({
-  apps: () => ({ apps: [...setup().adapters], workspaces: policy().workspaces.map((w) => w.label) }),
+  apps: () => ({
+    apps: setup().adapters.filter((appId) => core.canRunSession?.(appId) ?? true),
+    workspaces: policy().workspaces.map((w) => w.label),
+  }),
   workspaceFor: (cwd) => {
     const here = real(cwd);
     const hits = policy()

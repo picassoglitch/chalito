@@ -630,7 +630,9 @@
       "interrupted": "Detenida"
     },
     "signInForLive": "Inicia sesión en Chalito para ver la conversación aquí; mientras, síguela en tu teléfono.",
-    "terminal": "Tú (terminal)"
+    "terminal": "Tú (terminal)",
+    "setupAI": "Configurar una IA",
+    "setupHint": "Elige una IA abajo. Instálala aquí, conecta tu cuenta y aprueba los cambios que se soliciten. Las IA listas aparecen automáticamente en el selector de sesiones."
   },
   "copies": {
     "title": "Revisa las copias de Chalito",

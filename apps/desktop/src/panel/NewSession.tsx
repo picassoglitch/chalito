@@ -3,6 +3,7 @@ import type { ChalitoClient, EventView } from "@chalito/client";
 import { useT } from "../lib/i18n.js";
 import { IpcUnavailableError, type AgentIpc, type CodeMode } from "../lib/ipc.js";
 import { ApprovalRow } from "./Inbox.js";
+import { Apps, APPS_POLL_MS } from "./Apps.js";
 
 // ADR 0031 §1: start a session at this computer (origin `local`) and follow it here and on the phone.
 // Start, prompt and stop go over the agent's IPC; the transcript and approvals come from the live store.
@@ -102,6 +103,7 @@ export const NewSession = ({
   draft?: { prompt: string };
 }) => {
   const t = useT();
+  const [settingUp, setSettingUp] = useState(false);
   const [setup, setSetup] = useState<{ apps: string[]; workspaces: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [appId, setAppId] = useState("");
@@ -123,17 +125,23 @@ export const NewSession = ({
 
   useEffect(() => {
     let live = true;
-    ipc.codeApps().then(
-      (s) => {
-        if (!live) return;
-        setSetup(s);
-        setAppId((a) => a || s.apps[0] || "");
-        setWorkspace((w) => w || s.workspaces[0] || "");
-      },
-      (e: unknown) => live && fail(e),
-    );
-    return () => void (live = false);
-  }, [ipc]);
+    const read = () =>
+      ipc.codeApps().then(
+        (s) => {
+          if (!live) return;
+          setSetup(s);
+          setAppId((a) => (s.apps.includes(a) ? a : (s.apps[0] ?? "")));
+          setWorkspace((w) => (s.workspaces.includes(w) ? w : (s.workspaces[0] ?? "")));
+        },
+        (e: unknown) => live && fail(e),
+      );
+    void read();
+    const timer = settingUp ? setInterval(() => void read(), APPS_POLL_MS) : undefined;
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [ipc, settingUp]);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -149,6 +157,7 @@ export const NewSession = ({
 
   const start = (ev: FormEvent) => {
     ev.preventDefault();
+    if (busy || !setup?.apps.includes(appId) || !setup.workspaces.includes(workspace) || !prompt.trim()) return;
     void run(async () => {
       const r = await ipc.codeStart({ appId, workspaceLabel: workspace, prompt: prompt.trim(), permissionMode: mode });
       onSid(r.sid);
@@ -173,6 +182,15 @@ export const NewSession = ({
           <p className="muted">{t("sessions.intro")}</p>
           {setup && !setup.apps.length && <p>{t("sessions.noApps")}</p>}
           {setup && !setup.workspaces.length && <p>{t("sessions.noWorkspaces")}</p>}
+          <button type="button" aria-expanded={settingUp} onClick={() => setSettingUp((v) => !v)}>
+            {t("sessions.setupAI")}
+          </button>
+          {settingUp && (
+            <div className="stack">
+              <p className="muted">{t("sessions.setupHint")}</p>
+              <Apps ipc={ipc} />
+            </div>
+          )}
           {setup && setup.apps.length > 0 && setup.workspaces.length > 0 && (
             <form className="stack" onSubmit={start}>
               <label>
