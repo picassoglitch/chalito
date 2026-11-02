@@ -15,6 +15,7 @@ import {
 } from "../src/connections/store.js";
 import { connectionSearchHandlers, connectionsSearchFeature } from "../src/connections/ipc.js";
 import { VerifiedConnectors, catalogEntry } from "../src/connections/catalog.js";
+import { shippedConnectors } from "../src/connections/shipped.js";
 import type { InputSpec } from "../src/connections/catalog.js";
 import type { ConnectorEntry } from "../src/connections/types.js";
 
@@ -42,7 +43,8 @@ const community: ConnectorEntry = {
   server: { url: "https://y.example/mcp" },
   auth: "token",
 };
-const verified = catalogEntry(new VerifiedConnectors().get("github")!);
+const SRI = `sha512-${"A".repeat(86)}==`;
+const verified = catalogEntry(new VerifiedConnectors(shippedConnectors()).get("github")!);
 
 describe("ConnectorStore", () => {
   it("round-trips install → list → uninstall in ~/.chalito/connectors.json, secrets only in the keychain", async () => {
@@ -61,10 +63,9 @@ describe("ConnectorStore", () => {
     expect(JSON.parse(text)).toMatchObject({
       v: 1,
       installed: [{ id: "github" }],
-      secrets: { github: [{ name: "Authorization", as: "header" }] },
     });
     if (process.platform !== "win32") expect(statSync(join(dir, "connectors.json")).mode & 0o777).toBe(0o600);
-    expect(await secrets.get("chalito.connector.github.Authorization")).toBe("Bearer ghp_secret");
+    expect(await secrets.get("chalito.connector.github.token")).toBe("ghp_secret");
     // A fresh store (another process) reads the same file.
     expect(new ConnectorStore({ dir, secrets }).list().map((c) => c.id)).toEqual(["github"]);
     await store.uninstall("github");
@@ -87,9 +88,9 @@ describe("ConnectorStore", () => {
       confirmed: true,
       warningAccepted: true,
     });
-    expect(await secrets.get(connectorSecretName(community.id, "Authorization"))).toBe("Bearer abc");
+    expect(await secrets.get(connectorSecretName(community.id, "token"))).toBe("abc");
     await store.uninstall(community.id);
-    expect(await secrets.get(connectorSecretName(community.id, "Authorization"))).toBeNull();
+    expect(await secrets.get(connectorSecretName(community.id, "token"))).toBeNull();
   });
 
   it("community and custom need the unverified warning once; every source needs the one confirmation", async () => {
@@ -113,7 +114,7 @@ describe("ConnectorStore", () => {
 
   it("held (OAuth) entries refuse install", async () => {
     const store = new ConnectorStore({ dir, secrets: new MemorySecretStore() });
-    const slack = catalogEntry(new VerifiedConnectors().get("slack")!);
+    const slack = catalogEntry(new VerifiedConnectors(shippedConnectors()).get("slack")!);
     await expect(
       store.install({ entry: slack, inputs: [], values: {}, confirmed: true, warningAccepted: true }),
     ).rejects.toThrow("held_oauth");
@@ -320,6 +321,37 @@ describe("Conexiones IPC (real local servers, temp HOME)", () => {
         return send(JSON.stringify(open(`${base}/mcp-open`)));
       if (path === "/v0.1/servers/io.example%2Foauth/versions/1.0.0")
         return send(JSON.stringify({ server: { ...open(`${base}/mcp-oauth`).server, name: "io.example/oauth" } }));
+      if (path === "/v0.1/servers/io.example%2Fstdio/versions/1.0.0")
+        return send(
+          JSON.stringify({
+            server: {
+              name: "io.example/stdio",
+              version: "1.0.0",
+              packages: [
+                {
+                  registryType: "npm",
+                  identifier: "@ex/pkg-x",
+                  version: "1.2.3",
+                  transport: { type: "stdio" },
+                  environmentVariables: [{ name: "SECRET_KEY", isSecret: true, isRequired: true }],
+                },
+              ],
+            },
+          }),
+        );
+      if (path === "/v0.1/servers/io.example%2Fnohash/versions/1.0.0")
+        return send(
+          JSON.stringify({
+            server: {
+              name: "io.example/nohash",
+              version: "1.0.0",
+              packages: [
+                { registryType: "npm", identifier: "gone-pkg", version: "1.0.0", transport: { type: "stdio" } },
+              ],
+            },
+          }),
+        );
+      if (path === "/@ex%2Fpkg-x/1.2.3") return send(JSON.stringify({ version: "1.2.3", dist: { integrity: SRI } }));
       if (path === "/mcp-oauth") return res.writeHead(401, { "www-authenticate": "Bearer" }).end();
       if (path === "/mcp-open") return send('{"jsonrpc":"2.0","id":1,"result":{}}');
       res.writeHead(404).end();
@@ -334,10 +366,11 @@ describe("Conexiones IPC (real local servers, temp HOME)", () => {
     const secrets = new MemorySecretStore();
     const h = connectionSearchHandlers(
       connectionsSearchFeature({
+        verified: new VerifiedConnectors(shippedConnectors()),
         dir,
         secrets,
         audit: (t, m) => audit.push([t, m]),
-        registry: { base: registryBase, localRemotesForTests: true },
+        registry: { base: registryBase, npmBase: registryBase, localRemotesForTests: true },
       }),
     );
     return { h, audit, secrets };
@@ -385,6 +418,32 @@ describe("Conexiones IPC (real local servers, temp HOME)", () => {
     expect(secrets.values.size).toBe(0);
   });
 
+  it("a registry npm server: tarball hash pinned at install, secrets as secretEnv for the proxy", async () => {
+    const { h, secrets } = setup();
+    const ref = { kind: "registry", name: "io.example/stdio", version: "1.0.0" };
+    const out = (await h.connectionsInstall!({
+      ref,
+      values: { SECRET_KEY: "s3cr3t" },
+      confirmed: true,
+      warningAccepted: true,
+    })) as { installed: ConnectorEntry & { secretEnv?: string[] } };
+    expect(out.installed.server).toMatchObject({ command: "npx", args: ["-y", "@ex/pkg-x@1.2.3"], integrity: SRI });
+    expect(out.installed.secretEnv).toEqual(["SECRET_KEY"]);
+    expect(await secrets.get("chalito.connector.io-example-stdio.SECRET_KEY")).toBe("s3cr3t");
+    const file = JSON.parse(readFileSync(join(dir, "connectors.json"), "utf8"));
+    expect(Object.keys(file)).toEqual(["v", "installed"]);
+    await h.connectionsUninstall!({ id: "io-example-stdio" });
+    expect(secrets.values.size).toBe(0);
+    await expect(
+      h.connectionsInstall!({
+        ref: { kind: "registry", name: "io.example/nohash", version: "1.0.0" },
+        values: {},
+        confirmed: true,
+        warningAccepted: true,
+      }),
+    ).rejects.toThrow("integrity_unavailable");
+  });
+
   it("a remote that answers 401 is held as OAuth: check says so and install refuses", async () => {
     const { h } = setup();
     const ref = { kind: "registry", name: "io.example/oauth", version: "1.0.0" };
@@ -403,7 +462,7 @@ describe("Conexiones IPC (real local servers, temp HOME)", () => {
       warningAccepted: false,
     })) as { installed: ConnectorEntry };
     expect(out.installed).toMatchObject({ source: "verified", server: { url: "https://mcp.linear.app/mcp" } });
-    expect(await secrets.get("chalito.connector.linear.Authorization")).toBe("Bearer lin_api_x");
+    expect(await secrets.get("chalito.connector.linear.token")).toBe("lin_api_x");
     await expect(
       h.connectionsInstall!({
         ref: { kind: "verified", id: "slack" },

@@ -1,4 +1,3 @@
-import { readConfigFile } from "@chalito/config";
 import { fromB64url, signDetached, verifyDetached } from "@chalito/crypto";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -10,6 +9,8 @@ import type { ConnectorEntry } from "./types.js";
 
 export const CONNECTOR_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** Header or environment variable names: what a secret is delivered as. */
+/** Environment variable names the proxy (PR C) passes to a stdio server. */
+export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 export const INPUT_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 
 /** One value the person types at install (a token, a project ref). Every value goes to the keychain. */
@@ -96,8 +97,7 @@ export const SignedConnectorCatalog = z
   .strict();
 
 /** The catalog shipped with this agent. Throws on a bad file: that's a build bug (the tests guard it). */
-export const loadBuiltinConnectors = (text: string = readConfigFile("connectors.yaml")): ConnectorCatalog =>
-  ConnectorCatalog.parse(parseYaml(text));
+export const loadBuiltinConnectors = (text: string): ConnectorCatalog => ConnectorCatalog.parse(parseYaml(text));
 
 export type ConnectorCatalogVerify =
   | { ok: true; catalog: ConnectorCatalog; keyId: string }
@@ -142,7 +142,7 @@ export const catalogEntry = (c: CatalogConnector): ConnectorEntry => ({
 export class VerifiedConnectors {
   #catalog: ConnectorCatalog;
   constructor(
-    builtin: ConnectorCatalog = loadBuiltinConnectors(),
+    builtin: ConnectorCatalog,
     private readonly keys: Readonly<Record<string, string>> = CATALOG_KEYS,
   ) {
     this.#catalog = builtin;

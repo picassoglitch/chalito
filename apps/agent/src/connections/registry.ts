@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { INPUT_NAME, type InputSpec } from "./catalog.js";
+import { ENV_NAME, INPUT_NAME, type InputSpec } from "./catalog.js";
 import { isPublicHostname } from "./net-guard.js";
 import type { ConnectorEntry } from "./types.js";
 
@@ -139,9 +139,12 @@ const templatePrefix = (value: string): string | null | undefined => {
 
 const toInput = (kv: z.infer<typeof KeyValue>, as: InputSpec["as"]): InputSpec | null => {
   if (!INPUT_NAME.test(kv.name)) return null;
-  if (as === "env" ? RISKY_ENV.test(kv.name) : RISKY_HEADER.test(kv.name)) return null;
+  if (as === "env" ? RISKY_ENV.test(kv.name) || !ENV_NAME.test(kv.name) : RISKY_HEADER.test(kv.name)) return null;
+  // The proxy (PR C) only sends one header, `Authorization: Bearer <token>`; anything else we can't deliver.
+  if (as === "header" && kv.name.toLowerCase() !== "authorization") return null;
   const prefix = kv.value === undefined ? undefined : templatePrefix(kv.value);
   if (prefix === null) return null;
+  if (as === "header" && prefix !== undefined && prefix !== "Bearer ") return null;
   // A fixed value (no template) isn't something the person types; we don't carry fixed values.
   if (kv.value !== undefined && prefix === undefined) return null;
   const description = clean(kv.description, 300);
@@ -290,7 +293,25 @@ export interface RegistryOptions {
   limit?: number;
   /** Tests only (never reachable from the panel): registry remotes on this computer. */
   localRemotesForTests?: boolean;
+  /** npm registry (tests point it at a local server). */
+  npmBase?: string;
 }
+
+export const NPM_BASE = "https://registry.npmjs.org";
+const SRI = /^sha512-[A-Za-z0-9+/]{86}==$/;
+
+/** ADR 0023 §1: the npm tarball hash at install, so a re-published or swapped package can be refused later. */
+export const npmIntegrity = async (pkg: string, version: string, o: RegistryOptions = {}): Promise<string> => {
+  const url = `${o.npmBase ?? NPM_BASE}/${pkg.replace("/", "%2F")}/${encodeURIComponent(version)}`;
+  const raw = (await getJson(o.fetch ?? fetch, url, o.timeoutMs ?? REGISTRY_TIMEOUT_MS)) as {
+    version?: unknown;
+    dist?: { integrity?: unknown };
+  };
+  const integrity = raw?.dist?.integrity;
+  if (raw?.version !== version || typeof integrity !== "string" || !SRI.test(integrity))
+    throw new RegistryError("registry_bad_response");
+  return integrity;
+};
 
 /** Searches the registry by server name (latest versions only). Empty `q` lists everything. */
 export const searchRegistry = async (q: string, cursor?: string, o: RegistryOptions = {}): Promise<RegistryPage> => {

@@ -4,11 +4,11 @@ import { CATALOG_KEYS } from "../src/apps/catalog-keys.js";
 import { readConfigFile } from "@chalito/config";
 import {
   ConnectorCatalog,
-  loadBuiltinConnectors,
   signConnectorCatalog,
   verifyConnectorCatalog,
   VerifiedConnectors,
 } from "../src/connections/catalog.js";
+import { shippedConnectors as loadBuiltinConnectors } from "../src/connections/shipped.js";
 import { EMBEDDED_CONFIG } from "../scripts/embedded-config.js";
 
 const devKey = JSON.parse(
@@ -109,7 +109,7 @@ describe("signed connector catalog", () => {
   });
 
   it("search matches id, name and description, case-insensitively", () => {
-    const vc = new VerifiedConnectors();
+    const vc = new VerifiedConnectors(loadBuiltinConnectors());
     expect(vc.search("LINEAR").map((c) => c.id)).toEqual(["linear"]);
     expect(vc.search("").length).toBe(vc.list().length);
   });

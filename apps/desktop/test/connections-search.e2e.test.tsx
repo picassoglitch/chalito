@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { connectionSearchHandlers, connectionsSearchFeature } from "../../agent/src/connections/ipc.js";
+import { VerifiedConnectors } from "../../agent/src/connections/catalog.js";
+import { shippedConnectors } from "../../agent/src/connections/shipped.js";
 import { MemorySecretStore } from "../../agent/src/secrets.js";
 import { TextProviders } from "../src/lib/i18n.js";
 import { invokeConnectionsSearchIpc } from "../src/panel/connections/search-ipc.js";
@@ -53,7 +55,9 @@ const mount = () => {
   const secrets = new MemorySecretStore();
   const audit: string[] = [];
   const handlers = connectionSearchHandlers(
-    connectionsSearchFeature({ dir: join(home, ".chalito"), secrets, audit: (t) => audit.push(t), registry: { base } }),
+    connectionsSearchFeature({
+      verified: new VerifiedConnectors(shippedConnectors()),
+      dir: join(home, ".chalito"), secrets, audit: (t) => audit.push(t), registry: { base } }),
   );
   const ipc = invokeConnectionsSearchIpc(async <T,>(_cmd: string, args?: Record<string, unknown>): Promise<T> => {
     try {
@@ -96,7 +100,7 @@ describe("Conexiones → Buscar", () => {
     await waitFor(() =>
       expect(document.querySelector('[data-installed="ai-smithery-smithery-ai-github"]')).toBeTruthy(),
     );
-    expect(await secrets.get("chalito.connector.ai-smithery-smithery-ai-github.Authorization")).toBe("Bearer sk_test");
+    expect(await secrets.get("chalito.connector.ai-smithery-smithery-ai-github.token")).toBe("sk_test");
     const file = JSON.parse(readFileSync(join(home, ".chalito", "connectors.json"), "utf8"));
     expect(file.installed[0]).toMatchObject({ source: "community", confirmedWarning: true });
     expect(JSON.stringify(file)).not.toContain("sk_test");

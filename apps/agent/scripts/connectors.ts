@@ -2,7 +2,8 @@
 //   pnpm --filter @chalito/agent exec tsx scripts/connectors.ts sign --key <keyfile> --out <file>
 import { readFileSync, writeFileSync } from "node:fs";
 import { KeyFile } from "./recipes.js";
-import { loadBuiltinConnectors, signConnectorCatalog } from "../src/connections/catalog.js";
+import { signConnectorCatalog } from "../src/connections/catalog.js";
+import { shippedConnectors } from "../src/connections/shipped.js";
 
 const flag = (args: string[], name: string) => {
   const i = args.indexOf(name);
@@ -17,5 +18,5 @@ if (cmd !== "sign" || !keyPath || !out) {
   process.exit(1);
 }
 const key = KeyFile.parse(JSON.parse(readFileSync(keyPath, "utf8")));
-writeFileSync(out, `${JSON.stringify(await signConnectorCatalog(loadBuiltinConnectors(), key), null, 2)}\n`);
+writeFileSync(out, `${JSON.stringify(await signConnectorCatalog(shippedConnectors(), key), null, 2)}\n`);
 process.stdout.write(`wrote ${out} (keyId ${key.keyId})\n`);

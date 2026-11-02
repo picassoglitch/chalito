@@ -466,6 +466,13 @@ describe("review round 1: registry inputs can't inject or steer", () => {
       expect(remote([{ name, isSecret: true }]), name).toBeNull();
   });
 
+  it("only an Authorization: Bearer header can be delivered; other headers or schemes skip the server", () => {
+    expect(remote([{ name: "X-Api-Key", isSecret: true }])).toBeNull();
+    expect(remote([{ name: "Authorization", value: "Token {t}", isSecret: true }])).toBeNull();
+    expect(remote([{ name: "Authorization", isSecret: true }])?.entry.auth).toBe("token");
+    expect(env([{ name: "BAD-NAME", isSecret: true }])).toBeNull();
+  });
+
   it("a registry name can't take a custom- id", () => {
     expect(registryId("custom.x/y")).toBe("reg-custom-x-y");
     expect(registryId(`custom/${"a".repeat(80)}`)).toHaveLength(64);

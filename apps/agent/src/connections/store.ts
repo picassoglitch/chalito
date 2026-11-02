@@ -12,7 +12,7 @@ import {
 import { delimiter, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { SecretStore } from "../secrets.js";
-import { CONNECTOR_ID, INPUT_NAME, type InputSpec } from "./catalog.js";
+import { CONNECTOR_ID, ENV_NAME, type InputSpec } from "./catalog.js";
 import { registryId, safeRemoteUrl } from "./registry.js";
 import type { ConnectorEntry, InstalledConnector } from "./types.js";
 
@@ -62,21 +62,17 @@ const Installed = z
     server: Server,
     auth: z.enum(["none", "token", "oauth"]),
     held: z.literal("oauth").optional(),
-    installedAt: z.number().int().nonnegative(),
+    installedAt: z.union([z.number().int().nonnegative(), z.string().max(64)]),
     confirmedWarning: z.boolean(),
+    secretEnv: z.array(z.string().regex(ENV_NAME)).max(16).optional(),
   })
   .strict();
-const Slot = z.object({ name: z.string().regex(INPUT_NAME), as: z.enum(["env", "header"]) }).strict();
-/** `secrets` lists which keychain entries each connector has (names only, never values). */
-const StoreFile = z
-  .object({
-    v: z.literal(1),
-    installed: z.array(Installed).max(500),
-    secrets: z.record(z.string(), z.array(Slot).max(16)).optional(),
-  })
-  .strict();
+const StoreFile = z.object({ v: z.literal(1), installed: z.array(Installed).max(500) }).strict();
 type StoreFile = z.infer<typeof StoreFile>;
-export type SecretSlot = z.infer<typeof Slot>;
+
+/** Keychain accounts a connector uses (the proxy's convention): `token` for a remote, `secretEnv` names for stdio. */
+export const secretAccounts = (c: InstalledConnector): string[] =>
+  c.transport === "remote" ? (c.auth === "token" ? ["token"] : []) : [...(c.secretEnv ?? [])];
 
 export interface InstallRequest {
   entry: ConnectorEntry;
@@ -143,8 +139,9 @@ export class ConnectorStore {
     return this.#read().installed as InstalledConnector[];
   }
 
-  slots(id: string): SecretSlot[] {
-    return this.#read().secrets?.[id] ?? [];
+  slots(id: string): string[] {
+    const c = this.list().find((x) => x.id === id);
+    return c ? secretAccounts(c) : [];
   }
 
   install(req: InstallRequest): Promise<InstalledConnector> {
@@ -160,13 +157,18 @@ export class ConnectorStore {
       if (file.installed.some((c) => c.id === entry.id)) throw new ConnectorStoreError("already_installed");
 
       const written: string[] = [];
+      const secretEnv: string[] = [];
       try {
         for (const [spec, value] of values) {
-          const name = connectorSecretName(entry.id, spec.name);
-          const full = `${spec.prefix ?? ""}${value}`;
-          if (!SAFE_VALUE.test(full)) throw new ConnectorStoreError("bad_input");
-          await this.d.secrets.set(name, full);
+          // The proxy sends a remote's `token` as `Authorization: Bearer`; stdio values go in as env.
+          const remote = spec.as === "header";
+          if (remote && (spec.name.toLowerCase() !== "authorization" || (spec.prefix ?? "Bearer ") !== "Bearer "))
+            throw new ConnectorStoreError("bad_input");
+          if (!remote && !ENV_NAME.test(spec.name)) throw new ConnectorStoreError("bad_input");
+          const name = connectorSecretName(entry.id, remote ? "token" : spec.name);
+          await this.d.secrets.set(name, value);
           written.push(name);
+          if (!remote) secretEnv.push(spec.name);
         }
       } catch (e) {
         // Half an install is worse than none: take back what was written.
@@ -177,14 +179,10 @@ export class ConnectorStore {
         ...entry,
         installedAt: (this.d.now ?? Date.now)(),
         confirmedWarning: unverified,
+        ...(secretEnv.length ? { secretEnv } : {}),
       };
-      const slots = values.map(([s]) => ({ name: s.name, as: s.as }));
       try {
-        this.#write({
-          v: 1,
-          installed: [...file.installed, installed],
-          secrets: { ...(file.secrets ?? {}), ...(slots.length ? { [entry.id]: slots } : {}) },
-        });
+        this.#write({ v: 1, installed: [...file.installed, installed] });
       } catch {
         await this.#forget(written);
         throw new ConnectorStoreError("write_failed");
@@ -198,15 +196,14 @@ export class ConnectorStore {
       const file = this.#read();
       if (!file.installed.some((c) => c.id === id)) throw new ConnectorStoreError("not_installed");
       // File first: a failed write keeps the connector working; a keychain leftover is reported, not hidden.
-      const secrets = { ...(file.secrets ?? {}) };
-      delete secrets[id];
+      const gone = file.installed.find((c) => c.id === id)!;
       try {
-        this.#write({ v: 1, installed: file.installed.filter((c) => c.id !== id), secrets });
+        this.#write({ v: 1, installed: file.installed.filter((c) => c.id !== id) });
       } catch {
         throw new ConnectorStoreError("write_failed");
       }
       const results = await Promise.allSettled(
-        (file.secrets?.[id] ?? []).map((s) => this.d.secrets.delete(connectorSecretName(id, s.name))),
+        secretAccounts(gone as InstalledConnector).map((a) => this.d.secrets.delete(connectorSecretName(id, a))),
       );
       if (results.some((r) => r.status === "rejected")) throw new ConnectorStoreError("keychain");
     });
@@ -296,7 +293,7 @@ export const customStdio = async (
   if (!cmd || cmd.length > 4096 || !SAFE_VALUE.test(cmd)) throw new ConnectorStoreError("bad_input");
   if (p.args.length > 64 || p.args.some((a) => a.length > 4096 || (a !== "" && !SAFE_VALUE.test(a))))
     throw new ConnectorStoreError("bad_input");
-  if (p.env.length > 16 || p.env.some((e) => !INPUT_NAME.test(e))) throw new ConnectorStoreError("bad_input");
+  if (p.env.length > 16 || p.env.some((e) => !ENV_NAME.test(e))) throw new ConnectorStoreError("bad_input");
   const exe = resolveCommand(cmd, pathEnv);
   if (!exe) throw new ConnectorStoreError("command_not_found");
   const inputs: InputSpec[] = p.env.map((n) => ({ name: n, as: "env", secret: true, required: true }));

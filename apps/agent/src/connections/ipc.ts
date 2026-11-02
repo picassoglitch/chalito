@@ -1,9 +1,11 @@
 import { z } from "zod";
 import { IpcError, type IpcHandlers } from "../ipc-server.js";
 import type { SecretStore } from "../secrets.js";
-import { catalogEntry, VerifiedConnectors, type InputSpec } from "./catalog.js";
+import type { VerifiedConnectors} from "./catalog.js";
+import { catalogEntry, type InputSpec } from "./catalog.js";
 import {
   getRegistryServer,
+  npmIntegrity,
   RegistryError,
   searchRegistry,
   type RegistryOptions,
@@ -28,11 +30,11 @@ export const connectionsSearchFeature = (d: {
   secrets: SecretStore;
   audit: (type: string, meta: Record<string, unknown>) => void;
   registry?: RegistryOptions;
-  verified?: VerifiedConnectors;
+  verified: VerifiedConnectors;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
 }): ConnectionsSearchFeature => ({
-  verified: d.verified ?? new VerifiedConnectors(),
+  verified: d.verified,
   store: new ConnectorStore({ dir: d.dir, secrets: d.secrets, ...(d.now ? { now: d.now } : {}) }),
   registry: d.registry ?? {},
   env: d.env ?? process.env,
@@ -96,6 +98,14 @@ const resolve = async (f: ConnectionsSearchFeature, ref: ConnectorRef): Promise<
     }
     case "registry": {
       const r = await getRegistryServer(ref, f.registry);
+      const srv = r.entry.server;
+      if ("command" in srv && srv.command === "npx" && !srv.integrity) {
+        // Pin what npx will fetch; without a hash we don't install (PR C refuses a mismatch at start).
+        const integrity = await npmIntegrity(srv.package, srv.version, f.registry).catch(() => {
+          throw new IpcError("integrity_unavailable");
+        });
+        return { entry: { ...r.entry, server: { ...srv, integrity } }, inputs: r.inputs };
+      }
       return { entry: r.entry, inputs: r.inputs };
     }
     case "url":
@@ -185,7 +195,7 @@ export const connectionSearchHandlers = (f: ConnectionsSearchFeature | null | un
     connectionsInstalled: async () => {
       const s = of();
       try {
-        return { installed: s.store.list().map((c) => ({ ...c, slots: s.store.slots(c.id).map((x) => x.name) })) };
+        return { installed: s.store.list().map((c) => ({ ...c, slots: s.store.slots(c.id) })) };
       } catch (e) {
         return asIpc(e);
       }
