@@ -21,6 +21,7 @@ export const httpCompanionAvatar = (
   apiBase: string,
   token: () => Promise<string | null>,
   fetchImpl: typeof fetch = (...a) => fetch(...a),
+  timeoutMs = 10_000,
 ): CompanionAvatarApi => {
   const call = async (path: string, body?: unknown): Promise<Response | null> => {
     const bearer = await token().catch(() => null);
@@ -34,6 +35,8 @@ export const httpCompanionAvatar = (
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         cache: "no-store",
+        // Picks wait on these: a request that never answers counts as a failure.
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
       return null;
@@ -76,7 +79,9 @@ export const announceCardChanged = (storage: Pick<Storage, "setItem"> = localSto
 export const refreshOnStorage = (
   key: string | null,
   card: { refresh: () => Promise<void>; refreshAfterChange: () => Promise<void> },
-): Promise<void> => (key === CARD_CHANGED_KEY ? card.refreshAfterChange() : card.refresh());
+): Promise<void> =>
+  // Never rejects: the pet fires it and forgets; a failed refresh retries on the source's own clock.
+  (key === CARD_CHANGED_KEY ? card.refreshAfterChange() : card.refresh()).catch(() => undefined);
 
 export interface CustomCompanionView {
   /** The character the tile stands for: the worn one, else the newest. Null: no tile. */
@@ -97,12 +102,16 @@ export class CustomCompanion {
   #busy = false;
   /** Bumped by every pick and when picks finish: a kept list read across one is stale. */
   #gen = 0;
+  /** A wear on its way: a roster pick waits behind it. */
+  #wearInFlight = false;
+  #reloadAfter = false;
 
   constructor(
     private readonly api: CompanionAvatarApi,
     private readonly opts: {
-      /** Lets a pending companion save land first (DesktopSettings.flushCompanion). */
+      /** Lets a pending companion save land first (DesktopSettings.flushCompanion); bounded by waitMs. */
       beforeWear?: () => Promise<void>;
+      waitMs?: number;
       cardChanged?: () => void;
     } = {},
   ) {}
@@ -115,7 +124,7 @@ export class CustomCompanion {
 
   /** Signed out, offline or none kept: no tile, and nothing to say about it. */
   load(): Promise<void> {
-    return this.#reload({ clearFailed: true, duringPick: false });
+    return this.#reload(true);
   }
 
   wear(): Promise<void> {
@@ -125,16 +134,21 @@ export class CustomCompanion {
   // While wearing the character, `apply` (the avatar change) waits for use(null): the server only
   // clears it on an avatar change, and a failed switch must leave everything as it was.
   pickRoster(apply: () => void): Promise<void> {
-    return this.#pick({ kind: "roster", apply });
+    if (this.#view.wearing || this.#wearInFlight) return this.#pick({ kind: "roster", apply });
+    this.#gen++;
+    this.#next = null;
+    apply();
+    this.#set({ failed: false });
+    return Promise.resolve();
   }
 
-  async #reload(o: { clearFailed: boolean; duringPick: boolean }): Promise<void> {
+  async #reload(clearFailed: boolean): Promise<void> {
     const gen = this.#gen;
     const kept = await this.api.kept();
-    if (kept === "error" || gen !== this.#gen || (this.#busy && !o.duringPick)) return;
+    if (kept === "error" || gen !== this.#gen || this.#busy) return;
     // Owner 2026-11-02 — one tile, like the PWA: the worn character, else the newest kept one.
     const own = kept.find((k) => k.worn) ?? kept[0] ?? null;
-    this.#set({ own, wearing: !!own?.worn, ...(o.clearFailed ? { failed: false } : {}) });
+    this.#set({ own, wearing: !!own?.worn, ...(clearFailed ? { failed: false } : {}) });
   }
 
   async #pick(p: Choice): Promise<void> {
@@ -152,23 +166,53 @@ export class CustomCompanion {
       // A list read while these ran may predate them.
       this.#gen++;
     }
+    if (this.#reloadAfter) {
+      this.#reloadAfter = false;
+      // What the server wears after a failure is unknown; the tile follows its answer.
+      await this.#reload(false);
+    }
   }
 
   async #run(p: Choice): Promise<void> {
     const own = this.#view.own;
     if (p.kind === "roster" && (!own || !this.#view.wearing)) return p.apply();
     if (!own || (p.kind === "own" && this.#view.wearing)) return;
-    if (p.kind === "own") await this.opts.beforeWear?.();
-    const ok = (await this.api.use(p.kind === "own" ? own.creationId : null)) === "ok";
+    this.#wearInFlight = p.kind === "own";
+    let ok: boolean;
+    try {
+      ok =
+        (p.kind === "roster" || (await this.#bounded(this.opts.beforeWear?.()))) &&
+        (await this.api.use(p.kind === "own" ? own.creationId : null)) === "ok";
+    } finally {
+      this.#wearInFlight = false;
+    }
     if (!ok) {
       this.#set({ failed: true });
-      // What the server wears now is unknown; the tile follows its answer.
-      return this.#reload({ clearFailed: false, duringPick: true });
+      this.#reloadAfter = true;
+      return;
     }
     const wearing = p.kind === "own";
     this.#set({ own: { ...own, worn: wearing }, wearing, failed: false });
     if (p.kind === "roster") p.apply();
     (this.opts.cardChanged ?? announceCardChanged)();
+  }
+
+  /** True once `work` is done; false when it failed or outlasted waitMs. */
+  async #bounded(work: Promise<void> | undefined): Promise<boolean> {
+    if (!work) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<boolean>((r) => (timer = setTimeout(() => r(false), this.opts.waitMs ?? 10_000)));
+    try {
+      return await Promise.race([
+        work.then(
+          () => true,
+          () => false,
+        ),
+        late,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   #set(p: Partial<CustomCompanionView>): void {

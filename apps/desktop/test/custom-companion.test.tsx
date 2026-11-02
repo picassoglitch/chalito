@@ -37,6 +37,17 @@ const CARD = {
   },
 };
 
+/** A held request gives up when the caller aborts it, like fetch. */
+const abortable = (gate: Promise<void> | undefined, signal?: AbortSignal | null) =>
+  gate && signal
+    ? Promise.race([
+        gate,
+        new Promise<never>((_, reject) =>
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+        ),
+      ])
+    : gate;
+
 // The api and settings RPCs over one companion row, like the database: /use sets the worn
 // character, and an avatar change clears it (companions trigger, migration 20261005000100).
 const backend = (o: { worn?: string | null; kept?: string[]; useStatus?: number; down?: boolean } = {}) => {
@@ -55,7 +66,7 @@ const backend = (o: { worn?: string | null; kept?: string[]; useStatus?: number;
     if (o.down) return new Response("down", { status: 503 });
     if (new Headers(init?.headers).get("authorization") !== "Bearer device-token")
       return new Response("no", { status: 401 });
-    const gate = held.get(path)?.shift();
+    const gate = abortable(held.get(path)?.shift(), init?.signal);
     if (path === "/use") {
       const { creationId } = JSON.parse(String(init!.body)) as { creationId: string | null };
       log.push(`use:${creationId}`);
@@ -83,6 +94,7 @@ const backend = (o: { worn?: string | null; kept?: string[]; useStatus?: number;
     save: async () => undefined,
     saveCompanion: async (v: Pick<SettingsValues, "avatar" | "companionName">) => {
       log.push(`saveCompanion:${v.avatar}`);
+      await held.get("saveCompanion")?.shift();
       if (v.avatar !== state.avatar) state.worn = null;
       state.avatar = v.avatar;
     },
@@ -91,12 +103,12 @@ const backend = (o: { worn?: string | null; kept?: string[]; useStatus?: number;
 };
 
 /** The panel's wiring (main.tsx): DesktopSettings + CustomCompanion behind the real Panel. */
-const mount = (b: ReturnType<typeof backend>, o: { locale?: Locale; signedOut?: boolean } = {}) => {
+const mount = (b: ReturnType<typeof backend>, o: { locale?: Locale; signedOut?: boolean; timeoutMs?: number } = {}) => {
   const store = new DesktopSettings(b.settings, { load: () => DEFAULT_SETTINGS, save: () => undefined });
   const custom = o.signedOut
     ? null
     : new CustomCompanion(
-        httpCompanionAvatar(BASE, async () => "device-token", b.fetchImpl),
+        httpCompanionAvatar(BASE, async () => "device-token", b.fetchImpl, o.timeoutMs),
         { beforeWear: () => store.flushCompanion() },
       );
   const App = () => {
@@ -312,7 +324,91 @@ describe("desktop companion picker: your own character", () => {
   });
 });
 
+describe("picks never get stuck", () => {
+  /** Real time passing (AbortSignal.timeout doesn't follow the faked setTimeout). */
+  const realWait = async (ms: number) => {
+    const end = performance.now() + ms;
+    while (performance.now() < end) await act(() => new Promise<void>((r) => setImmediate(r)));
+    await settle();
+  };
+
+  it("a /use that never answers times out as a failure, and the next pick still goes through", async () => {
+    const b = backend();
+    const { store } = mount(b, { locale: "en", timeoutMs: 50 });
+    await ready(store);
+    b.hold("/use");
+    fireEvent.click(own());
+    await realWait(120);
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't switch your character. Try again.");
+    fireEvent.click(roster("bruno"));
+    expect(store.getSnapshot().values?.avatar).toBe("bruno");
+  });
+
+  it("a companion save that never finishes doesn't hold the wear forever: it fails, and roster picks still apply", async () => {
+    const b = backend();
+    const { store } = mount(b, { locale: "en" });
+    await ready(store);
+    fireEvent.click(roster("bruno"));
+    b.hold("saveCompanion");
+    fireEvent.click(own());
+    await settle();
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    await settle();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(b.log.some((l) => l.startsWith("use:"))).toBe(false);
+    fireEvent.click(roster("luna"));
+    expect(store.getSnapshot().values?.avatar).toBe("luna");
+  });
+
+  it("while not wearing it, a roster pick applies at once even during the re-read after a failure, and clears the error", async () => {
+    const b = backend({ useStatus: 500 });
+    const { store } = mount(b, { locale: "en" });
+    await ready(store);
+    b.hold("/creations");
+    fireEvent.click(own());
+    await settle();
+    expect(b.log.slice(1)).toEqual(["use:cr_new", "GET /creations"]);
+    expect(screen.getByRole("alert")).toBeTruthy();
+    fireEvent.click(roster("bruno"));
+    expect(store.getSnapshot().values?.avatar).toBe("bruno");
+    await settle();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("while wearing it, a retry after a failed switch doesn't wait on the re-read", async () => {
+    const b = backend({ worn: "cr_new", useStatus: 500 });
+    const { store } = mount(b);
+    await ready(store);
+    b.hold("/creations");
+    fireEvent.click(roster("bruno"));
+    await settle();
+    expect(b.log.slice(1)).toEqual(["use:null", "GET /creations"]);
+    b.state.useStatus = 200;
+    fireEvent.click(roster("bruno"));
+    await settle();
+    expect(b.log.slice(1)).toEqual(["use:null", "GET /creations", "use:null"]);
+    expect(store.getSnapshot().values?.avatar).toBe("bruno");
+  });
+});
+
 describe("the pet window after a pick", () => {
+  it("a refresh that fails doesn't reach the pet as an unhandled rejection", async () => {
+    vi.useRealTimers();
+    const b = backend();
+    const card = companionCardSource(async () => ({
+      companionCard: async () =>
+        (
+          await b.fetchImpl(`${BASE}/v1/avatar/companion`, { headers: { authorization: "Bearer device-token" } })
+        ).json(),
+    }));
+    card.subscribe(() => {
+      throw new Error("a drawing listener broke");
+    });
+    await expect(refreshOnStorage(CARD_CHANGED_KEY, card)).resolves.toBeUndefined();
+    await expect(refreshOnStorage("chalito-desktop-settings", card)).resolves.toBeUndefined();
+    card.dispose();
+  });
+
   it("a card request already running when the panel wears the character doesn't keep the roster pet", async () => {
     vi.useRealTimers();
     const b = backend();

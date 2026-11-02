@@ -222,10 +222,12 @@ export class SignedCardsSource {
     if (this.#disposed) return Promise.resolve();
     const running = this.#inflight;
     if (!running) return this.refresh();
-    this.#followUp ??= running.then(() => {
+    const next = () => {
       this.#followUp = null;
       return this.refresh();
-    });
+    };
+    // Whatever became of the earlier request, the follow-up runs (and is cleared for the next change).
+    this.#followUp ??= running.then(next, next);
     return this.#followUp;
   };
 
