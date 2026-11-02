@@ -7,7 +7,8 @@ The MCP instructions tell each AI to coordinate automatically: check messages at
 ## Connect an app
 
 1. Run an updated Chalito agent and add the project folder to its configured workspaces.
-2. Generate the launch configuration for that app and project:
+2. Open **Connections**, choose the workspace, and turn on **Trust** for each AI that may communicate there. Trust is separate for Claude Code, Codex, Grok Build, and Cursor. Enabling it uses the desktop's operating-system check. Disabling it immediately removes that AI's active memberships when the channel next handles a request or the panel refreshes. The saved permission belongs to the folder's canonical path, so reusing a workspace label for a different folder does not carry trust over.
+3. Open **Connection setup** to obtain the launch configuration. You can also generate it from the CLI:
 
    ```sh
    chalito team config claude /absolute/path/to/project
@@ -18,10 +19,10 @@ The MCP instructions tell each AI to coordinate automatically: check messages at
 
    Each command prints a JSON `mcpServers.chalito_team` entry containing the actual executable and arguments for this installation. It does not change the app's settings. The underlying command is `chalito team mcp <provider> <workspace-path>`.
 
-3. Register that command and argument array in the app's MCP settings as `chalito_team`, preserving other servers. For a client with a different configuration format, use the printed `command` and `args` values in its own stdio-server format. Use a project-specific configuration or a separate entry for each project; the explicit workspace path controls where messages go, regardless of the MCP process's starting directory.
-4. Restart or reconnect the app's MCP servers, and trust the connection using the app's normal controls. Its tool permissions still apply. `team_read` reports the other connected sessions. Ask the AI to use Chalito for automatic coordination on the current task; the MCP initialization instructions carry this behavior into subsequent connections.
+4. Register that command and argument array in the app's MCP settings as `chalito_team`, preserving other servers. For a client with a different configuration format, use the printed `command` and `args` values in its own stdio-server format. Use a project-specific configuration or a separate entry for each project; the explicit workspace path controls where messages go, regardless of the MCP process's starting directory.
+5. Restart or reconnect the app's MCP servers, and trust the connection using the app's normal controls. Its tool permissions still apply. `team_read` reports the other connected sessions. Ask the AI to use Chalito for automatic coordination on the current task; the MCP initialization instructions carry this behavior into subsequent connections.
 
-The native approval hooks and this messaging connection are separate. Installing an approval hook alone does not register this MCP server. The desktop Connected AI buttons do not yet install the team MCP configuration automatically. Existing sessions require reconnection before they can use these tools. The implementation has been verified with four MCP clients against the local RPC server; live vendor-app acceptance and packaged installation still need validation.
+The native approval hooks and this messaging connection are separate. Installing an approval hook alone does not register this MCP server. Connections saves and enforces trust and shows the setup configuration; it does not yet install that configuration into each vendor app automatically. Existing sessions require reconnection before they can use these tools. The implementation has been verified with four MCP clients against the local RPC server; live vendor-app acceptance and packaged installation still need validation. Gmail and other service integrations are outside this change.
 
 Coordinator mode controls which routine approval prompts Chalito answers. It is not required for these messaging tools and does not connect an MCP client. The workspace policy must include the selected project. A policy containing only `~/projects` will reject `/home/picassoglitch/chalito`. Update it through `chalito policy edit` in a normal terminal before testing; use an absolute path, since `~` expansion inside configuration is not guaranteed. If you also want coordinator approval behavior, enable it separately with `chalito coordinator enable`.
 
@@ -43,15 +44,17 @@ From `apps/agent`, `node --import tsx src/cli.ts team config claude /absolute/pr
 Validation:
 
 ```sh
-pnpm --filter @chalito/agent exec vitest run test/team.test.ts test/links.test.ts
+pnpm --filter @chalito/agent exec vitest run test/team.test.ts test/team-connections.test.ts test/links.test.ts test/cli.test.ts
 pnpm --filter @chalito/agent typecheck
+pnpm --filter @chalito/desktop typecheck
+pnpm --filter @chalito/desktop exec vitest run test/connections.test.tsx test/panel.test.tsx test/ipc-invoke.test.ts
 ```
 
 ## Live Claude–Codex acceptance check (pending)
 
 Run this in a normal terminal with access to the installed applications and Chalito's sockets. The test harness does not substitute for this check.
 
-1. Run an agent built from this branch. An older running agent does not have the `team` RPC method. Configure an allowed project path and reconnect both apps to the new MCP launch commands for that same path.
+1. Run an agent and desktop built from this branch. An older running agent does not have the `team` RPC method. Configure an allowed project path, trust Claude and Codex for it in Connections, and reconnect both apps to the new MCP launch commands for that same path.
 2. Open a real Claude Code session and a real Codex session. Verify each app lists `chalito_team` and both tools. Ask each to call `team_read`; each must report the other as an active peer.
 3. In Claude: "Use Chalito to send Codex a direct request: return the text TEAM-LIVE-ACK-20261101 and explain in one sentence what the team channel does. This is a messaging test; do not edit files or run commands. Read its reply."
 4. In Codex: "Use Chalito to read pending team requests and answer Claude through team_send with kind result. Do not edit files or run commands."

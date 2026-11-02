@@ -28,6 +28,7 @@ import { LocalAgent } from "./LocalAgent.js";
 import { Apps } from "./Apps.js";
 import { NativeConnections } from "./NativeConnections.js";
 import { RemoteTools } from "./RemoteTools.js";
+import { Connections } from "./Connections.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { SetupChecklist } from "./SetupChecklist.js";
@@ -338,6 +339,7 @@ export const Panel = (p: PanelProps) => {
             {tab === "ai" && (
               <>
                 <NativeConnections ipc={p.ipc} />
+                <Connections ipc={p.ipc} />
                 <Apps ipc={p.ipc} />
               </>
             )}

@@ -95,13 +95,14 @@ export const startCodeServer = async (opts: {
   code: CodeService;
   /** Native hooks may request an approval, never submit its decision. */
   native?: (request: NativeHookRequest, signal: AbortSignal) => Promise<NativeHookReply>;
+  team?: TeamHub;
   onError?: (method: string, err: unknown) => void;
   platform?: NodeJS.Platform;
   /** Windows: serve through this listener (a pipe locked to this user, winpipe.ts) instead of a socket. */
   listen?: (path: string, onStream: (stream: Duplex) => void) => { close(): void };
 }): Promise<CodeServer> => {
   const { code } = opts;
-  const team = new TeamHub((cwd) => code.workspaceFor(cwd));
+  const team = opts.team ?? new TeamHub((cwd) => code.workspaceFor(cwd));
   const unix = (opts.platform ?? process.platform) !== "win32";
   // The instance lock (instance-lock.ts) guarantees no other agent owns a leftover socket.
   if (unix) rmSync(opts.path, { force: true });

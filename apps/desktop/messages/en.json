@@ -5,7 +5,7 @@
     "security": "Security",
     "voice": "Voice",
     "rooms": "Rooms",
-    "ai": "Connected AI",
+    "ai": "Connections",
     "sessions": "Sessions"
   },
   "nav": {
@@ -270,7 +270,7 @@
       "name": "Google"
     },
     "connect": {
-      "title": "Connected AI",
+      "title": "Connections",
       "agent": {
         "anthropic": "Claude Code",
         "openai": "Codex",
@@ -437,6 +437,27 @@
         "cli_unavailable": "Chalito's command-line tool isn't available on this computer. Reinstall Chalito and try again.",
         "unstable_path": "Chalito couldn't save a permanent copy of itself, so the app's hooks would stop working when it closes. On a Mac, move Chalito to Applications; on Linux, make sure Chalito can write to ~/.local/share/chalito (free disk space, check permissions). Then open Chalito again.",
         "other": "Could not update the connector. No connection was confirmed."
+      }
+    },
+    "team": {
+      "title": "AI team",
+      "intro": "Let your installed AIs communicate automatically while working in the same workspace.",
+      "workspace": "Workspace",
+      "trust": "Trust {name} for this workspace",
+      "notTrusted": "Not trusted · messaging off",
+      "connected": "Connected · automatic messaging on",
+      "ready": "Trusted · waiting for the app to connect",
+      "setup": "Connection setup",
+      "setupHint": "Add this command and its arguments as the chalito_team stdio MCP server in the app, then reconnect it. Use the app’s configuration format.",
+      "config": "{name} connection configuration",
+      "scope": "Trust allows team messages in this workspace. Each app keeps its own login and action approvals. Turning trust off disconnects its messaging.",
+      "noWorkspace": "Add a workspace in Settings before connecting your AI team.",
+      "error": "Could not update connections. Check Chalito and try again.",
+      "name": {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "grok": "Grok Build",
+        "cursor": "Cursor"
       }
     }
   },
@@ -638,13 +659,13 @@
       "account": "Sign in with your Chalyb account.",
       "browser": "Sign in with your Chalyb account to approve this app.",
       "computer": "Once you're signed in, this computer connects by itself (see “Connect this computer” above).",
-      "ai": "In “Connected AI”, tap “Use” next to an AI you already have installed.",
+      "ai": "In “Connections”, tap “Use” next to an AI you already have installed.",
       "folder": "In Settings → This computer, add a project folder.",
       "firstTask": "Ask your AI to summarize your project. It only reads; it changes nothing."
     },
     "action": {
       "signIn": "Sign in with Chalyb",
-      "ai": "Go to Connected AI",
+      "ai": "Go to Connections",
       "folder": "Choose a folder",
       "firstTask": "Try the first task"
     },
@@ -663,7 +684,7 @@
       "acceptEdits": "Edits the folder without asking"
     },
     "start": "Start",
-    "noApps": "No AI is ready on this computer. Connect one in “Connected AI”.",
+    "noApps": "No AI is ready on this computer. Connect one in “Connections”.",
     "noWorkspaces": "Add a folder in Settings to start.",
     "unavailable": "Chalito isn't running on this computer.",
     "refused": "Chalito refused it: {reason}",
@@ -985,7 +1006,7 @@
       "later": "Later",
       "no": "No",
       "error": {
-        "no_app": "Connect an AI in “Connected AI” to open the session.",
+        "no_app": "Connect an AI in “Connections” to open the session.",
         "no_workspace": "Add a folder in Settings → This computer to open the session.",
         "other": "I couldn't open the session. Try again."
       }

@@ -5,7 +5,7 @@
     "security": "Seguridad",
     "voice": "Voz",
     "rooms": "Salas",
-    "ai": "IA conectadas",
+    "ai": "Conexiones",
     "sessions": "Sesiones"
   },
   "nav": {
@@ -270,7 +270,7 @@
       "name": "Google"
     },
     "connect": {
-      "title": "IA conectadas",
+      "title": "Conexiones",
       "agent": {
         "anthropic": "Claude Code",
         "openai": "Codex",
@@ -437,6 +437,27 @@
         "cli_unavailable": "La herramienta de línea de comandos de Chalito no está disponible en esta computadora. Reinstala Chalito e inténtalo de nuevo.",
         "unstable_path": "Chalito no pudo guardar una copia permanente de sí mismo, así que los hooks de la app dejarían de funcionar al cerrarlo. En Mac, mueve Chalito a Aplicaciones; en Linux, asegúrate de que Chalito pueda escribir en ~/.local/share/chalito (libera espacio en disco, revisa permisos). Luego vuelve a abrir Chalito.",
         "other": "No se pudo actualizar el conector. No se confirmó ninguna conexión."
+      }
+    },
+    "team": {
+      "title": "Equipo de IA",
+      "intro": "Deja que tus IA instaladas se comuniquen automáticamente mientras trabajan en el mismo espacio de trabajo.",
+      "workspace": "Espacio de trabajo",
+      "trust": "Confiar en {name} para este espacio",
+      "notTrusted": "Sin confianza · mensajes desactivados",
+      "connected": "Conectado · mensajes automáticos activados",
+      "ready": "Con confianza · esperando conexión de la app",
+      "setup": "Configurar conexión",
+      "setupHint": "Agrega este comando y sus argumentos como servidor MCP stdio chalito_team en la app y vuelve a conectarlo. Usa el formato de configuración de la app.",
+      "config": "Configuración de conexión de {name}",
+      "scope": "La confianza permite mensajes del equipo en este espacio. Cada app conserva su inicio de sesión y sus aprobaciones. Al quitar la confianza se desconectan sus mensajes.",
+      "noWorkspace": "Agrega un espacio de trabajo en Ajustes antes de conectar tu equipo de IA.",
+      "error": "No se pudieron actualizar las conexiones. Revisa Chalito e inténtalo de nuevo.",
+      "name": {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "grok": "Grok Build",
+        "cursor": "Cursor"
       }
     }
   },
@@ -638,13 +659,13 @@
       "account": "Inicia sesión con tu cuenta de Chalyb.",
       "browser": "Inicia sesión con tu cuenta de Chalyb para aprobar esta app.",
       "computer": "En cuanto inicies sesión, esta computadora se conecta sola (mira «Conectar esta computadora» arriba).",
-      "ai": "En «IA conectadas», toca «Usar» junto a una IA que ya tengas instalada.",
+      "ai": "En «Conexiones», toca «Usar» junto a una IA que ya tengas instalada.",
       "folder": "En Ajustes → Esta computadora, agrega la carpeta de un proyecto.",
       "firstTask": "Pídele a tu IA que resuma tu proyecto. Solo lee; no cambia nada."
     },
     "action": {
       "signIn": "Iniciar sesión con Chalyb",
-      "ai": "Ir a IA conectadas",
+      "ai": "Ir a Conexiones",
       "folder": "Elegir una carpeta",
       "firstTask": "Probar la primera tarea"
     },
@@ -663,7 +684,7 @@
       "acceptEdits": "Edita sin preguntar en la carpeta"
     },
     "start": "Empezar",
-    "noApps": "No hay una IA lista en esta computadora. Conéctala en «IA conectadas».",
+    "noApps": "No hay una IA lista en esta computadora. Conéctala en «Conexiones».",
     "noWorkspaces": "Agrega una carpeta en Ajustes para empezar.",
     "unavailable": "Chalito no está corriendo en esta computadora.",
     "refused": "Chalito no la aceptó: {reason}",
@@ -985,7 +1006,7 @@
       "later": "Luego",
       "no": "No",
       "error": {
-        "no_app": "Conecta una IA en «IA conectadas» para abrir la sesión.",
+        "no_app": "Conecta una IA en «Conexiones» para abrir la sesión.",
         "no_workspace": "Agrega una carpeta en Ajustes → Esta computadora para abrir la sesión.",
         "other": "No pude abrir la sesión. Inténtalo otra vez."
       }

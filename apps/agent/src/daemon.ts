@@ -56,6 +56,8 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
+import { TeamHub } from "./team/hub.js";
+import { TeamConnections } from "./team/connections.js";
 import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
 import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
@@ -1555,6 +1557,23 @@ const startDaemon = async (
   });
   syncNativeWorkspaces(policy.get().workspaces);
   void nativeBridge.sweep();
+  const teamCommand = computerMcpCommand();
+  const teamConnections: TeamConnections = new TeamConnections({
+    dir,
+    workspaces: () => policy.get().workspaces,
+    workspaceFor: code.workspaceFor,
+    launch: {
+      command: teamCommand.command,
+      args: teamCommand.args
+        .slice(0, -2)
+        .map((value, index, args) =>
+          value === "tsx" && args[index - 1] === "--import" ? import.meta.resolve("tsx") : value,
+        ),
+    },
+    connected: (provider, workspace) =>
+      team.members().some((p) => p.provider === provider && p.workspace === workspace),
+  });
+  const team: TeamHub = new TeamHub(code.workspaceFor, now, (provider, cwd) => teamConnections.trusted(provider, cwd));
   // Only the panel shows PR news, so the watch runs only for an agent the app started.
   const prs = deps.ipcSecret
     ? new PrWatch({
@@ -1584,6 +1603,7 @@ const startDaemon = async (
         path: codeAt,
         native: (request, signal) => nativeBridge.handle(request, signal),
         code: codeService(core, () => policy.get(), readSetup, "local:cli", deps.home ?? homedir()),
+        team,
         ...(winSec
           ? {
               listen: (p: string, on: (s: Duplex) => void) =>
@@ -1632,6 +1652,7 @@ const startDaemon = async (
           audit: auditAgent,
           chalitoDir: dir,
           code,
+          teamConnections,
           ownSessions: {
             watcher: ownWatcher,
             open: (v) => openOwnSession(v, { platform: process.platform, run: spawnRunner, paths: ownPaths }),

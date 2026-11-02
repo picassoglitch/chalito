@@ -135,9 +135,11 @@ export const runTeamMcp = async (
         ? "This process cannot access the agent socket. Check sandbox access and permissions; Chalito may already be running."
         : reason === "unknown_method"
           ? "Update and restart the Chalito agent with team-channel support."
-          : reason === "unknown_workspace"
-            ? "Use a project path allowed by Chalito's workspace policy."
-            : "Check the Chalito connection and workspace configuration.";
+          : reason === "not_trusted"
+            ? "Trust this AI for the selected workspace in Chalito's Connections tab, then reconnect the app's MCP server."
+            : reason === "unknown_workspace"
+              ? "Use a project path allowed by Chalito's workspace policy."
+              : "Check the Chalito connection and workspace configuration.";
     io.err(`Chalito team unavailable: ${reason}. ${hint}\n`);
     return 1;
   } finally {

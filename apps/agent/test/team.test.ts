@@ -14,7 +14,7 @@ const join = (hub: TeamHub, signal: AbortSignal, provider = "claude", cwd = "/pr
 
 describe("automatic workspace team", () => {
   it("isolates workspaces and connection identities; retains a departing peer's result for remaining peers", () => {
-    const hub = new TeamHub(workspaceFor);
+    const hub = new TeamHub(workspaceFor, Date.now, () => true);
     const a = new AbortController(),
       b = new AbortController(),
       outside = new AbortController();
@@ -42,7 +42,11 @@ describe("automatic workspace team", () => {
 
   it("bounds spam, rejects invalid messages, and expires retained data", () => {
     let now = 0;
-    const hub = new TeamHub(workspaceFor, () => now);
+    const hub = new TeamHub(
+      workspaceFor,
+      () => now,
+      () => true,
+    );
     const a = new AbortController(),
       b = new AbortController();
     join(hub, a.signal);
@@ -67,6 +71,7 @@ describe("automatic workspace team", () => {
     const hub = new TeamHub(
       (cwd) => (allowed ? workspaceFor(cwd) : null),
       () => now,
+      () => true,
     );
     const a = new AbortController(),
       b = new AbortController();
@@ -89,6 +94,7 @@ describe("automatic workspace team", () => {
     let accept!: (stream: Duplex) => void;
     const server = await startCodeServer({
       path: "team-test",
+      team: new TeamHub(workspaceFor, Date.now, () => true),
       platform: "win32",
       code: { workspaceFor, tap: () => () => undefined } as unknown as CodeService,
       listen: (_path, onStream) => {

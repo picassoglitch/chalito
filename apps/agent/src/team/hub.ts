@@ -38,20 +38,32 @@ export class TeamHub {
   constructor(
     private readonly workspaceFor: (cwd: string) => string | null,
     private readonly now = Date.now,
+    private readonly trusted: (provider: z.infer<typeof TeamProvider>, cwd: string) => boolean = () => false,
   ) {}
 
-  call(signal: AbortSignal, action: string, raw: unknown): Record<string, unknown> {
-    if (signal.aborted) return { ok: false, error: "closed" };
+  #prune() {
     for (const [connection, member] of this.#peers)
-      if (this.workspaceFor(member.cwd) !== member.workspace) this.#peers.delete(connection);
+      if (this.workspaceFor(member.cwd) !== member.workspace || !this.trusted(member.provider, member.cwd))
+        this.#peers.delete(connection);
     this.#messages = this.#messages.filter(
       (m) => m.at > this.now() - 60 * 60_000 && [...this.#peers.values()].some((p) => p.workspace === m.workspace),
     );
+  }
+
+  members() {
+    this.#prune();
+    return [...this.#peers.values()].map(({ id, provider, workspace }) => ({ id, provider, workspace }));
+  }
+
+  call(signal: AbortSignal, action: string, raw: unknown): Record<string, unknown> {
+    if (signal.aborted) return { ok: false, error: "closed" };
+    this.#prune();
     let peer = this.#peers.get(signal);
     if (action === "team_join") {
       const p = Join.safeParse(raw);
       if (!p.success) return { ok: false, error: "bad_params" };
       const workspace = this.workspaceFor(p.data.cwd);
+      if (workspace && !this.trusted(p.data.provider, p.data.cwd)) return { ok: false, error: "not_trusted" };
       if (!workspace) return { ok: false, error: "unknown_workspace" };
       if (peer && (peer.workspace !== workspace || peer.provider !== p.data.provider))
         return { ok: false, error: "already_joined" };
