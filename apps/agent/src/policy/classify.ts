@@ -547,7 +547,7 @@ const mark = (out: Classification, paths: Paths, tier: RiskTier, reason: string)
   paths.fencesReachable ? fence(out, tier, reason) : raise(out, tier, reason);
 
 const PROC_LIKE = /^\/(proc|dev)(\/|$)/;
-const PLAIN_DEVICE = /^\/dev(\/(null|zero|u?random|tty|std(in|out|err)))?$/;
+const PLAIN_DEVICE = /^\/dev\/(null|zero|u?random|tty|std(in|out|err))$/;
 
 const markHardFloor = (out: Classification, reason = "touches ~/.chalito"): void => {
   raise(out, "CRITICAL", reason);
@@ -591,6 +591,11 @@ const classifyPath = (
   // /proc/self/cwd and /dev/fd resolve in the agent's process, not the AI's: never trust them.
   if (paths.procLike(raw, cwd)) {
     fence(out, "HIGH", "process file system path");
+    return;
+  }
+  // `grep -r x /`, `find /`: a walk from the root goes through /proc and /dev.
+  if (tree && [abs, lexical].some((p) => /^\/+$/.test(p))) {
+    fence(out, "HIGH", "folder holds /proc or /dev");
     return;
   }
   // Shell arguments of anything but a read-only tool count as writes here: whether `curl -o` or `ln` writes is a guess.
