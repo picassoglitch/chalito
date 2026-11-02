@@ -12,9 +12,13 @@ export interface KeptCharacter {
 
 export interface CompanionAvatarApi {
   kept(): Promise<KeptCharacter[] | "error">;
-  /** The companion wears this creation (null: back to its roster avatar). */
-  use(creationId: string | null): Promise<"ok" | "error">;
+  /** The companion wears this creation (null: back to its roster avatar). "unknown": sent, no answer. */
+  use(creationId: string | null): Promise<"ok" | "error" | "unknown">;
 }
+
+const warn = (step: string) => console.warn(`custom companion: ${step}`);
+
+type Outcome = { kind: "ok"; json: unknown } | { kind: "error" } | { kind: "unknown" };
 
 /** The PWA's kept()/use() (apps/web lib/avatar.ts), as this device's session. */
 export const httpCompanionAvatar = (
@@ -23,30 +27,43 @@ export const httpCompanionAvatar = (
   fetchImpl: typeof fetch = (...a) => fetch(...a),
   timeoutMs = 10_000,
 ): CompanionAvatarApi => {
-  const call = async (path: string, body?: unknown): Promise<Response | null> => {
-    const bearer = await token().catch(() => null);
-    if (!apiBase || !bearer) return null;
+  // One deadline for the whole call (session token, request and body): picks wait on it.
+  const call = async (step: string, path: string, body?: unknown): Promise<Outcome> => {
+    const signal = AbortSignal.timeout(timeoutMs);
+    const gaveUp = new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    gaveUp.catch(() => undefined);
+    const until = <T>(p: Promise<T>): Promise<T> => Promise.race([p, gaveUp]);
+    let sent = false;
     try {
-      return await fetchImpl(`${apiBase}/v1/avatar${path}`, {
-        method: body === undefined ? "GET" : "POST",
-        headers: {
-          authorization: `Bearer ${bearer}`,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        cache: "no-store",
-        // Picks wait on these: a request that never answers counts as a failure.
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+      const bearer = await until(token().catch(() => null));
+      if (!apiBase || !bearer) return (warn(`${step} no token`), { kind: "error" });
+      sent = true;
+      const r = await until(
+        fetchImpl(`${apiBase}/v1/avatar${path}`, {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            authorization: `Bearer ${bearer}`,
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          cache: "no-store",
+          signal,
+        }),
+      );
+      if (!r.ok) return (warn(`${step} HTTP ${r.status}`), { kind: "error" });
+      return { kind: "ok", json: await until(r.json().catch(() => null)) };
     } catch {
-      return null;
+      if (!sent) return (warn(`${step} no token`), { kind: "error" });
+      warn(`${step} ${signal.aborted ? "aborted" : "network error"}`);
+      // The server may still have done it.
+      return { kind: "unknown" };
     }
   };
   return {
     kept: async () => {
-      const r = await call("/creations");
-      if (!r?.ok) return "error";
-      const list = ((await r.json().catch(() => null)) as { creations?: unknown } | null)?.creations;
+      const r = await call("kept", "/creations");
+      if (r.kind !== "ok") return "error";
+      const list = (r.json as { creations?: unknown } | null)?.creations;
       if (!Array.isArray(list)) return "error";
       const out: KeptCharacter[] = [];
       for (const e of list as Record<string, unknown>[]) {
@@ -59,7 +76,10 @@ export const httpCompanionAvatar = (
       }
       return out;
     },
-    use: async (creationId) => ((await call("/use", { creationId }))?.ok ? "ok" : "error"),
+    use: async (creationId) => {
+      const r = await call("use", "/use", { creationId });
+      return r.kind === "ok" ? "ok" : r.kind;
+    },
   };
 };
 
@@ -81,7 +101,10 @@ export const refreshOnStorage = (
   card: { refresh: () => Promise<void>; refreshAfterChange: () => Promise<void> },
 ): Promise<void> =>
   // Never rejects: the pet fires it and forgets; a failed refresh retries on the source's own clock.
-  (key === CARD_CHANGED_KEY ? card.refreshAfterChange() : card.refresh()).catch(() => undefined);
+  (key === CARD_CHANGED_KEY ? card.refreshAfterChange() : card.refresh()).catch((e: unknown) =>
+    // Signed URLs carry their signature in the query: keep it out of the log.
+    console.warn("pet: card refresh failed", String(e instanceof Error ? e.message : e).replace(/\?\S*/g, "?…")),
+  );
 
 export interface CustomCompanionView {
   /** The character the tile stands for: the worn one, else the newest. Null: no tile. */
@@ -92,6 +115,8 @@ export interface CustomCompanionView {
 }
 
 type Choice = { kind: "own" } | { kind: "roster"; apply: () => void };
+/** What the person asked for last, and (for a roster pet) whether the avatar change went through. */
+type Intent = { kind: "own" } | { kind: "roster"; applied: boolean };
 
 // The panel's "Your character" tile: kept characters and switching to and from them.
 // Picks run one at a time and the last one wins (a new pick replaces one still waiting).
@@ -102,9 +127,15 @@ export class CustomCompanion {
   #busy = false;
   /** Bumped by every pick and when picks finish: a kept list read across one is stale. */
   #gen = 0;
+  /** Bumped by every answered /use: a reconciling read from before one is stale. */
+  #useSeq = 0;
   /** A wear on its way: a roster pick waits behind it. */
   #wearInFlight = false;
   #reloadAfter = false;
+  #intent: Intent | null = null;
+  /** A /use went out without an answer; the server may still apply it, so the tile follows its reads. */
+  #reconciling = false;
+  #reconcileTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly api: CompanionAvatarApi,
@@ -112,6 +143,8 @@ export class CustomCompanion {
       /** Lets a pending companion save land first (DesktopSettings.flushCompanion); bounded by waitMs. */
       beforeWear?: () => Promise<void>;
       waitMs?: number;
+      /** How long after an unanswered /use to read again what the server wears. */
+      reconcileMs?: number;
       cardChanged?: () => void;
     } = {},
   ) {}
@@ -124,7 +157,7 @@ export class CustomCompanion {
 
   /** Signed out, offline or none kept: no tile, and nothing to say about it. */
   load(): Promise<void> {
-    return this.#reload(true);
+    return this.#reload(this.#reconciling ? "last-reconcile" : "load");
   }
 
   wear(): Promise<void> {
@@ -135,20 +168,38 @@ export class CustomCompanion {
   // clears it on an avatar change, and a failed switch must leave everything as it was.
   pickRoster(apply: () => void): Promise<void> {
     if (this.#view.wearing || this.#wearInFlight) return this.#pick({ kind: "roster", apply });
-    this.#gen++;
     this.#next = null;
+    this.#intent = { kind: "roster", applied: true };
     apply();
-    this.#set({ failed: false });
+    // An unanswered /use may still land: its reads stay, and so does the error until they agree.
+    if (!this.#reconciling) {
+      this.#gen++;
+      this.#set({ failed: false });
+    }
     return Promise.resolve();
   }
 
-  async #reload(clearFailed: boolean): Promise<void> {
+  async #reload(mode: "load" | "after-error" | "reconcile" | "last-reconcile"): Promise<void> {
     const gen = this.#gen;
+    const seq = this.#useSeq;
     const kept = await this.api.kept();
-    if (kept === "error" || gen !== this.#gen || this.#busy) return;
+    if (kept === "error" || this.#busy || seq !== this.#useSeq) return;
+    const reconcile = mode === "reconcile" || mode === "last-reconcile";
+    if (reconcile ? !this.#reconciling : gen !== this.#gen) return;
     // Owner 2026-11-02 — one tile, like the PWA: the worn character, else the newest kept one.
     const own = kept.find((k) => k.worn) ?? kept[0] ?? null;
-    this.#set({ own, wearing: !!own?.worn, ...(clearFailed ? { failed: false } : {}) });
+    const wearing = !!own?.worn;
+    if (!reconcile) return this.#set({ own, wearing, ...(mode === "load" ? { failed: false } : {}) });
+    const i = this.#intent;
+    const agreed = i?.kind === "own" ? wearing : !!i?.applied && !wearing;
+    if (mode === "last-reconcile") this.#endReconcile();
+    this.#set({ own, wearing, failed: !agreed });
+    (this.opts.cardChanged ?? announceCardChanged)();
+  }
+
+  #endReconcile(): void {
+    this.#reconciling = false;
+    clearTimeout(this.#reconcileTimer);
   }
 
   async #pick(p: Choice): Promise<void> {
@@ -169,31 +220,45 @@ export class CustomCompanion {
     if (this.#reloadAfter) {
       this.#reloadAfter = false;
       // What the server wears after a failure is unknown; the tile follows its answer.
-      await this.#reload(false);
+      await this.#reload(this.#reconciling ? "reconcile" : "after-error");
     }
   }
 
   async #run(p: Choice): Promise<void> {
     const own = this.#view.own;
-    if (p.kind === "roster" && (!own || !this.#view.wearing)) return p.apply();
+    if (p.kind === "roster" && (!own || !this.#view.wearing)) {
+      this.#intent = { kind: "roster", applied: true };
+      return p.apply();
+    }
     if (!own || (p.kind === "own" && this.#view.wearing)) return;
+    this.#intent = p.kind === "own" ? { kind: "own" } : { kind: "roster", applied: false };
     this.#wearInFlight = p.kind === "own";
-    let ok: boolean;
+    let r: "ok" | "error" | "unknown";
     try {
-      ok =
-        (p.kind === "roster" || (await this.#bounded(this.opts.beforeWear?.()))) &&
-        (await this.api.use(p.kind === "own" ? own.creationId : null)) === "ok";
+      const ready = p.kind === "roster" || (await this.#bounded(this.opts.beforeWear?.()));
+      if (!ready) warn("beforeWear timeout");
+      r = ready ? await this.api.use(p.kind === "own" ? own.creationId : null) : "error";
     } finally {
       this.#wearInFlight = false;
     }
-    if (!ok) {
+    if (r !== "unknown") this.#useSeq++;
+    if (r !== "ok") {
       this.#set({ failed: true });
       this.#reloadAfter = true;
+      if (r === "unknown") {
+        this.#reconciling = true;
+        clearTimeout(this.#reconcileTimer);
+        this.#reconcileTimer = setTimeout(() => void this.#reload("reconcile"), this.opts.reconcileMs ?? 3_000);
+      }
       return;
     }
+    this.#endReconcile();
     const wearing = p.kind === "own";
     this.#set({ own: { ...own, worn: wearing }, wearing, failed: false });
-    if (p.kind === "roster") p.apply();
+    if (p.kind === "roster") {
+      this.#intent = { kind: "roster", applied: true };
+      p.apply();
+    }
     (this.opts.cardChanged ?? announceCardChanged)();
   }
 

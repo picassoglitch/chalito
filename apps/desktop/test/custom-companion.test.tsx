@@ -66,17 +66,25 @@ const backend = (o: { worn?: string | null; kept?: string[]; useStatus?: number;
     if (o.down) return new Response("down", { status: 503 });
     if (new Headers(init?.headers).get("authorization") !== "Bearer device-token")
       return new Response("no", { status: 401 });
-    const gate = abortable(held.get(path)?.shift(), init?.signal);
+    const held1 = held.get(path)?.shift();
     if (path === "/use") {
       const { creationId } = JSON.parse(String(init!.body)) as { creationId: string | null };
       log.push(`use:${creationId}`);
-      await gate;
-      if (state.useStatus !== 200) return Response.json({ error: "x" }, { status: state.useStatus });
-      state.worn = creationId;
-      return Response.json({ ok: true });
+      // The server finishes a request the client gave up on (a timeout doesn't undo it).
+      const done = (async () => {
+        await held1;
+        if (state.useStatus !== 200) return Response.json({ error: "x" }, { status: state.useStatus });
+        state.worn = creationId;
+        return Response.json({ ok: true });
+      })();
+      await abortable(
+        done.then(() => undefined),
+        init?.signal,
+      );
+      return done;
     }
     log.push(`GET ${path}`);
-    await gate;
+    await abortable(held1, init?.signal);
     if (path === "/creations")
       return Response.json({
         creations: kept.map((id, i) => ({
@@ -103,12 +111,15 @@ const backend = (o: { worn?: string | null; kept?: string[]; useStatus?: number;
 };
 
 /** The panel's wiring (main.tsx): DesktopSettings + CustomCompanion behind the real Panel. */
-const mount = (b: ReturnType<typeof backend>, o: { locale?: Locale; signedOut?: boolean; timeoutMs?: number } = {}) => {
+const mount = (
+  b: ReturnType<typeof backend>,
+  o: { locale?: Locale; signedOut?: boolean; timeoutMs?: number; token?: () => Promise<string | null> } = {},
+) => {
   const store = new DesktopSettings(b.settings, { load: () => DEFAULT_SETTINGS, save: () => undefined });
   const custom = o.signedOut
     ? null
     : new CustomCompanion(
-        httpCompanionAvatar(BASE, async () => "device-token", b.fetchImpl, o.timeoutMs),
+        httpCompanionAvatar(BASE, o.token ?? (async () => "device-token"), b.fetchImpl, o.timeoutMs),
         { beforeWear: () => store.flushCompanion() },
       );
   const App = () => {
@@ -166,6 +177,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("desktop companion picker: your own character", () => {
@@ -345,6 +357,7 @@ describe("picks never get stuck", () => {
   });
 
   it("a companion save that never finishes doesn't hold the wear forever: it fails, and roster picks still apply", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const b = backend();
     const { store } = mount(b, { locale: "en" });
     await ready(store);
@@ -356,6 +369,7 @@ describe("picks never get stuck", () => {
     await settle();
     expect(screen.getByRole("alert")).toBeTruthy();
     expect(b.log.some((l) => l.startsWith("use:"))).toBe(false);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toContain("custom companion: beforeWear timeout");
     fireEvent.click(roster("luna"));
     expect(store.getSnapshot().values?.avatar).toBe("luna");
   });
@@ -389,6 +403,90 @@ describe("picks never get stuck", () => {
     expect(b.log.slice(1)).toEqual(["use:null", "GET /creations", "use:null"]);
     expect(store.getSnapshot().values?.avatar).toBe("bruno");
   });
+
+  it("a wear that timed out but landed later: the panel ends up showing what the server wears", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const b = backend();
+    const { store } = mount(b, { locale: "en", timeoutMs: 50 });
+    await ready(store);
+    const late = b.hold("/use");
+    fireEvent.click(own());
+    await realWait(120);
+    expect(screen.getByRole("alert")).toBeTruthy();
+    // The person moves on to a roster pet; the error stays while the outcome is unknown.
+    fireEvent.click(roster("bruno"));
+    expect(store.getSnapshot().values?.avatar).toBe("bruno");
+    await debounce();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    localStorage.clear();
+    late.release();
+    await settle();
+    expect(b.state).toMatchObject({ worn: "cr_new", avatar: "bruno" });
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    await settle();
+    expect(checked()).toEqual(["own"]);
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(localStorage.getItem(CARD_CHANGED_KEY)).not.toBeNull();
+    expect(warn.mock.calls.map((c) => String(c[0]))).toContain("custom companion: use aborted");
+  });
+
+  it("a switch back to the roster that timed out but landed later: the panel follows the server", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const b = backend({ worn: "cr_new" });
+    const { store } = mount(b, { locale: "en", timeoutMs: 50 });
+    await ready(store);
+    const late = b.hold("/use");
+    fireEvent.click(roster("bruno"));
+    await realWait(120);
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(checked()).toEqual(["own"]);
+    late.release();
+    await settle();
+    expect(b.state.worn).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    await settle();
+    expect(checked()).toEqual(["luna"]);
+    expect(store.getSnapshot().values?.avatar).toBe("luna");
+  });
+
+  it("a session token that never comes counts against the same timeout", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const b = backend();
+    let calls = 0;
+    // The first read gets a token; then the session read hangs (getSession stuck).
+    const token = () => (calls++ === 0 ? Promise.resolve("device-token") : new Promise<never>(() => undefined));
+    const { store } = mount(b, { locale: "en", timeoutMs: 50, token });
+    await ready(store);
+    fireEvent.click(own());
+    await realWait(120);
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't switch your character. Try again.");
+    expect(b.log.some((l) => l.startsWith("use:"))).toBe(false);
+    expect(warn.mock.calls.map((c) => String(c[0]))).toContain("custom companion: use no token");
+    fireEvent.click(roster("bruno"));
+    expect(store.getSnapshot().values?.avatar).toBe("bruno");
+  });
+
+  it("says which step failed, without the token or signed URLs", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const steps = () => warn.mock.calls.map((c) => String(c[0]));
+    const b = backend({ useStatus: 500 });
+    const { store } = mount(b);
+    await ready(store);
+    fireEvent.click(own());
+    await settle();
+    expect(steps()).toContain("custom companion: use HTTP 500");
+    cleanup();
+    const down = backend({ down: true });
+    const m2 = mount(down);
+    await ready(m2.store);
+    expect(steps()).toContain("custom companion: kept HTTP 503");
+    cleanup();
+    const m3 = mount(backend(), { token: async () => null });
+    await ready(m3.store);
+    expect(steps()).toContain("custom companion: kept no token");
+    const all = JSON.stringify(warn.mock.calls);
+    expect(all).not.toMatch(/device-token|Bearer|sig=|googleapis/);
+  });
 });
 
 describe("the pet window after a pick", () => {
@@ -404,7 +502,9 @@ describe("the pet window after a pick", () => {
     card.subscribe(() => {
       throw new Error("a drawing listener broke");
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     await expect(refreshOnStorage(CARD_CHANGED_KEY, card)).resolves.toBeUndefined();
+    expect(warn.mock.calls.some((c) => c.join(" ").includes("a drawing listener broke"))).toBe(true);
     await expect(refreshOnStorage("chalito-desktop-settings", card)).resolves.toBeUndefined();
     card.dispose();
   });
