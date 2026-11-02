@@ -1,4 +1,4 @@
-import { readdirSync, realpathSync } from "node:fs";
+import { readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
@@ -120,6 +120,10 @@ interface Paths {
   touchesFence(abs: string): boolean;
   /** Any step of the path (as given, normalized, or walked) is in /proc or /dev, bar plain devices. */
   procLike(raw: string, cwd?: string): boolean;
+  /** A workspace is or holds the home folder: shell commands go through the allowlist. */
+  homeInWorkspace: boolean;
+  projectFor(cwd: string): string | null;
+  within(child: string, parent: string): boolean;
   /** `abs` is (in) where a symlink in a hidden home place points, when a workspace holds home. */
   linkedFromFence(abs: string): boolean;
   /** `raw` against `cwd` with `~` expanded, symlinks not followed. */
@@ -338,26 +342,59 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     if (aiPrefixed(abs)) return "persistence";
     return null;
   };
+  // Only once a workspace holds home; links to home itself or above would fence everything, so skipped.
+  const linkTargets = () => {
+    if (!homeInWorkspace) return { targets: [] as string[], partial: false };
+    const r = fenceLinkTargets(lexicalHome, real);
+    return { partial: r.partial, targets: r.targets.filter((t) => !homeKeys.some((hk) => within(hk, t))) };
+  };
+  // The project folder a home-workspace shell may stay in: the cwd's non-home workspace, or ~/<first>.
+  const projectFor = (cwd: string): string | null => {
+    const inner = workspaces.filter((w) => within(cwd, w) && !homeKeys.some((hk) => within(hk, w)));
+    if (inner.length) return inner.sort((a, b) => b.length - a.length)[0]!;
+    for (const hk of homeKeys) {
+      if (!within(cwd, hk) || same(cwd, hk)) continue;
+      const first =
+        k(cwd)
+          .slice(k(hk).length)
+          .replace(/^[\\/]+/, "")
+          .split(/[\\/]/)[0] ?? "";
+      if (!first || hidden(join(hk, first)) || excluded(join(hk, first))) return null;
+      return join(
+        hk,
+        cwd
+          .slice(hk.length)
+          .replace(/^[\\/]+/, "")
+          .split(/[\\/]/)[0]!,
+      );
+    }
+    return null;
+  };
   return {
     home: ctx.home,
     resolve: res,
+    homeInWorkspace,
+    projectFor,
+    within,
     inWorkspace,
     excluded,
     hidden,
     lexical: (p, cwd = ctx.cwd) => resolve(cwd, expand(p)),
     // A link to home itself or above (`~/.root -> /`) would fence everything: those are skipped.
-    linkedFromFence: (abs) =>
-      homeInWorkspace &&
-      fenceLinkTargets(lexicalHome, real).some((t) => !homeKeys.some((hk) => within(hk, t)) && within(abs, t)),
+    linkedFromFence: (abs) => linkTargets().partial || linkTargets().targets.some((t) => within(abs, t)),
     procLike,
     fencesReachable: workspaces.some(
       (w) => fenceRoots.some((f) => within(f, w)) || homeKeys.some((hk) => within(hk, w)),
     ),
-    holdsFence: (abs) => fenceRoots.some((f) => within(f, abs)),
+    holdsFence: (abs) => fenceRoots.some((f) => within(f, abs)) || linkTargets().targets.some((t) => within(t, abs)),
     // Uncached on purpose: a fail-closed fence must see a `.git` made a second ago.
     repoRoot: (dir) =>
       repoRootOf(dir, { fallback: dir, ...(ctx.gitFs ? { fs: ctx.gitFs } : {}), ...(ctx.env ? { env: ctx.env } : {}) }),
-    touchesFence: (abs) => fenceRoots.some((f) => within(f, abs) || within(abs, f)) || aiPrefixed(abs) || hidden(abs),
+    touchesFence: (abs) =>
+      fenceRoots.some((f) => within(f, abs) || within(abs, f)) ||
+      aiPrefixed(abs) ||
+      hidden(abs) ||
+      linkTargets().targets.some((t) => within(t, abs) || within(abs, t)),
     hardFloor: (abs) => floor.some((f) => within(abs, f)),
     floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
     persistence: (abs) =>
@@ -553,27 +590,46 @@ const mark = (out: Classification, paths: Paths, tier: RiskTier, reason: string)
   paths.fencesReachable ? fence(out, tier, reason) : raise(out, tier, reason);
 
 /** Where the symlinks in hidden home places point (top level and one level in), cached for 1 s. */
-const linkScan = new Map<string, { at: number; targets: string[] }>();
-const fenceLinkTargets = (home: string, real: (p: string) => string): string[] => {
+const linkScan = new Map<string, { at: number; targets: string[]; partial: boolean }>();
+const LINK_SCAN_MAX = 10_000;
+const fenceLinkTargets = (home: string, real: (p: string) => string): { targets: string[]; partial: boolean } => {
   const hit = linkScan.get(home);
-  if (hit && Date.now() - hit.at < 1000) return hit.targets;
+  if (hit && Date.now() - hit.at < 1000) return hit;
   const targets: string[] = [];
-  const list = (dir: string) => {
+  let partial = false;
+  const isHidden = (n: string) => n.startsWith(".") || ["library", "appdata"].includes(n.toLowerCase());
+  const list = (dir: string, onlyHidden = false) => {
     try {
-      return readdirSync(dir, { withFileTypes: true }).slice(0, 2000);
+      const all = readdirSync(dir, { withFileTypes: true }).filter((e) => !onlyHidden || isHidden(e.name));
+      // Fail closed: a folder too big to list could hide a link anywhere.
+      if (all.length > LINK_SCAN_MAX) partial = true;
+      return all.slice(0, LINK_SCAN_MAX);
     } catch {
       return [];
     }
   };
-  const isHidden = (n: string) => n.startsWith(".") || ["library", "appdata"].includes(n.toLowerCase());
-  const dirs = [home, ...FENCES.filter((f) => f.includes("/")).map((f) => join(home, ...f.split("/")))];
-  for (const e of list(home))
-    if (isHidden(e.name) && (e.isDirectory() || e.isSymbolicLink())) dirs.push(join(home, e.name));
-  for (const dir of dirs)
-    for (const e of list(dir))
-      if (e.isSymbolicLink() && (dir !== home || isHidden(e.name))) targets.push(real(join(dir, e.name)));
-  linkScan.set(home, { at: Date.now(), targets });
-  return targets;
+  // A dangling link still points somewhere: read it against its own folder.
+  const target = (p: string) => {
+    try {
+      return realpathSync.native(p);
+    } catch {
+      try {
+        return real(resolve(dirname(p), readlinkSync(p)));
+      } catch {
+        return real(p);
+      }
+    }
+  };
+  const top = list(home, true);
+  const dirs = [
+    ...FENCES.filter((f) => f.includes("/")).map((f) => join(home, ...f.split("/"))),
+    ...top.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => join(home, e.name)),
+  ];
+  for (const e of top) if (e.isSymbolicLink()) targets.push(target(join(home, e.name)));
+  for (const dir of dirs) for (const e of list(dir)) if (e.isSymbolicLink()) targets.push(target(join(dir, e.name)));
+  const result = { at: Date.now(), targets, partial };
+  linkScan.set(home, result);
+  return result;
 };
 
 const PROC_LIKE = /^\/(proc|dev)(\/|$)/;
@@ -1672,6 +1728,142 @@ const classifyBash = (command: string, ctx: ClassifyContext, paths: Paths, state
   return out;
 };
 
+/**
+ * Home-folder workspace (security review 2026-11-02): shell is deny-by-default. A command may be
+ * auto-approved only when it stays in one project folder; null means it does, else why not.
+ */
+const LINK_OR_UNPACK = new Set([
+  "ln",
+  "link",
+  "tar",
+  "unzip",
+  "cpio",
+  "7z",
+  "7za",
+  "7zr",
+  "rsync",
+  "busybox",
+  "toybox",
+  "patch",
+  "eval",
+  "source",
+  ".",
+  "exec",
+  "install",
+]);
+const HOME_TOUCHERS = new Set([
+  "ssh",
+  "scp",
+  "sftp",
+  "ssh-keygen",
+  "ssh-add",
+  "gpg",
+  "crontab",
+  "launchctl",
+  "chsh",
+  "systemctl",
+]);
+// Git subcommands that write the tree from history (can materialize symlinks) or touch global config.
+const GIT_TREE_WRITERS = new Set([
+  "checkout",
+  "switch",
+  "restore",
+  "reset",
+  "worktree",
+  "clone",
+  "submodule",
+  "merge",
+  "pull",
+  "rebase",
+  "cherry-pick",
+  "am",
+  "apply",
+  "revert",
+  "stash",
+  "config",
+  "credential",
+  "read-tree",
+  "update-index",
+]);
+const SET_VARS = /^(HOME|CDPATH|ZDOTDIR|XDG_\w+|GIT_\w+|PATH|BASH_ENV|ENV|LD_\w+|DYLD_\w+)=/;
+
+/** Quote-aware scan for expansions and grouping the allowlist doesn't model. */
+const unmodelled = (command: string): string | null => {
+  let q: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (q === "'") {
+      if (c === "'") q = null;
+      continue;
+    }
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (q === '"') {
+      if (c === '"') q = null;
+      else if (c === "$" || c === "`") return "expansion";
+      continue;
+    }
+    if (c === "'" || c === '"') q = c;
+    else if ("$`(){}".includes(c)) return c === "$" || c === "`" ? "expansion" : "grouping";
+    else if (c === "<" && command[i + 1] === "<") return "here-document";
+  }
+  return null;
+};
+
+const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): string | null => {
+  const cwd = paths.resolve(ctx.cwd);
+  const project = paths.projectFor(cwd);
+  if (!project) return "runs outside a project folder";
+  const bad = unmodelled(command);
+  if (bad) return bad;
+  const segs = splitShell(command);
+  if (!segs) return "unparseable";
+  const inside = (w: string) => {
+    if (w.startsWith("~") || w.includes("$") || w.includes("`")) return false;
+    return [paths.resolve(w, cwd), paths.lexical(w, cwd)].every((p) => paths.within(p, project));
+  };
+  for (const seg of segs) {
+    let words = [...seg.words];
+    while (words[0] && /^[A-Za-z_]\w*=/.test(words[0])) {
+      if (SET_VARS.test(words[0])) return "sets an environment variable that moves files";
+      words = words.slice(1);
+    }
+    if (words.some((w) => SET_VARS.test(w))) return "sets an environment variable that moves files";
+    const cmd = cmdName(words[0]);
+    const args = words.slice(1);
+    if (!cmd) continue;
+    if (LINK_OR_UNPACK.has(cmd) || SHELLS.has(cmd) || HOME_TOUCHERS.has(cmd)) return `${cmd} isn't allowed on its own`;
+    if (
+      cmd === "cp" &&
+      args.some((a) => /^-[^-]*[sadPlrR]/.test(a) || /^--(symbolic-link|archive|no-dereference|link|recursive)/.test(a))
+    )
+      return "cp that may copy links";
+    if (cmd === "git" && args.some((a) => GIT_TREE_WRITERS.has(a) || a === "--global" || a === "--system"))
+      return "git that rewrites the tree";
+    if (
+      ["npm", "pnpm", "yarn", "bun"].includes(cmd) &&
+      args.some((a) => ["login", "logout", "adduser", "config", "token", "set"].includes(a))
+    )
+      return "package manager account or config";
+    if (cmd === "gh" && args[0] === "auth") return "gh auth";
+    if (
+      cmd === "popd" ||
+      ((cmd === "cd" || cmd === "pushd") && (args.length === 0 || args.some((a) => a === "-" || /^[+-]\d+$/.test(a))))
+    )
+      return "changes folder where it can't be followed";
+    for (const w of [...words, ...seg.writes.map((x) => x.text), ...seg.reads.map((x) => x.text)]) {
+      const value = /^-[^=]*=/.test(w) ? w.slice(w.indexOf("=") + 1) : /^-[A-Za-z]./.test(w) ? w.slice(2) : w;
+      if (w === words[0] && !value.includes("/")) continue;
+      if (PLAIN_DEVICE.test(value) || /^&\d$/.test(value)) continue;
+      if (value && !value.startsWith("-") && !inside(value)) return "names a path outside the project";
+      if (value.startsWith("~") || value.includes("$")) return "names a path outside the project";
+    }
+  }
+  return null;
+};
+
 type Input = Record<string, unknown>;
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
 
@@ -1716,7 +1908,15 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
     case "KillBash": {
       if (toolName === "BashOutput") return { ...base("shell"), readOnly: true };
       if (toolName !== "Bash") return base("shell");
-      return classifyBash(str(input.command) ?? "", ctx, paths);
+      const command = str(input.command) ?? "";
+      const out = classifyBash(command, ctx, paths);
+      // The allowlist decides in a home workspace; the fence checks above stay as a second layer.
+      const why = paths.homeInWorkspace ? homeShellProblem(command, ctx, paths) : null;
+      if (why) {
+        fence(out, "HIGH", `home workspace: ${why}`);
+        out.readOnly = false;
+      }
+      return out;
     }
     case "WebFetch": {
       const out = base("web");

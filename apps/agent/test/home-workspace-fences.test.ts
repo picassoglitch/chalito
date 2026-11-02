@@ -425,6 +425,78 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     expect(r.c.workspaceEdit).toBe(false);
   });
 
+  // Security review round 3: shell in a home workspace is deny-by-default (an allowlist), not a denylist.
+  describe("home-workspace shell allowlist", () => {
+    for (const command of [
+      "read HOME <<< ../..; cat ~/.ssh/id_ed25519",
+      "printf -v HOME %s ../..; cat ~/.ssh/id_ed25519",
+      "mapfile -t H < list.txt; cat ${H[0]}",
+      "for HOME in ../..; do cat ~/.ssh/id_ed25519; done",
+      "getopts h HOME; cat ~/x",
+      "declare -n H=HOME; H=../..; cat ~/.ssh/id_ed25519",
+      "tar xf evil.tar && cat k/id_ed25519",
+      "unzip evil.zip && cat k/id_ed25519",
+      "cpio -id < evil.cpio",
+      "7z x evil.7z",
+      "rsync -a src/ dst/",
+      "git checkout evil -- k && cat k/id_ed25519",
+      "busybox ln -s ../../.ssh k",
+      "cp -a src dst",
+      "cp -P link dst",
+      "cp -d link dst",
+      "cp -r src dst",
+      "cat /etc/hosts",
+      "ls ~",
+      "cd ..; cat ../.bashrc",
+      "git config --global core.hooksPath x",
+      "npm config set prefix x",
+      "ssh-keygen -f k",
+      "bash -c 'ls'",
+      "cat $(echo src/a.ts)",
+      "(cat src/a.ts)",
+      "NODE_OPTIONS=--require=x pnpm test",
+      "HOME=. pnpm test",
+    ])
+      it(`asks: ${command}`, () => {
+        const r = answeredFor("Bash", { command }, h.ctx());
+        expect(r.auto, JSON.stringify(r.c)).toBe(false);
+      });
+
+    for (const [command, kind] of [
+      ["pnpm test", "tests"],
+      ["git status", "read"],
+      ["ls src", "read"],
+      ["ls src 2>/dev/null", null],
+      ["grep -rn foo src", "read"],
+      ["cat src/a.ts | head -5", "read"],
+      ['git add -A && git commit -m "feat(x): y"', "git_local"],
+      ["pnpm add zod", "package_install"],
+      ["git push -u origin coord/p1/t1", "coord_branch_push"],
+      ["cd src && ls", "read"],
+    ] as const)
+      it(`still auto-approves in ~/projects/x: ${command}`, () => {
+        const r = answeredFor("Bash", { command }, h.ctx());
+        expect(r.c.fenced, JSON.stringify(r.c)).toBeUndefined();
+        if (kind) expect(r.coord).toEqual({ via: "coordinator_auto", kind });
+      });
+  });
+
+  it("link targets count for tree walks, dangling links resolve, an unlistable folder fails closed", () => {
+    const d = makeHome();
+    mkdirSync(join(d.home, "dotfiles/ssh"), { recursive: true });
+    symlinkSync(join(d.home, "dotfiles/ssh/newkey"), join(d.home, ".ssh/newkey"));
+    const write = answeredFor("Write", { file_path: `${d.home}/dotfiles/ssh/newkey`, content: "x" }, d.ctx());
+    expect(write.auto).toBe(false);
+    expect(answeredFor("Grep", { pattern: "KEY", path: `${d.home}/dotfiles` }, d.ctx()).auto).toBe(false);
+    expect(answeredFor("Read", { file_path: `${d.project}/src/a.ts` }, d.ctx()).coord).not.toBeNull();
+    const big = join(d.home, ".cache");
+    mkdirSync(big);
+    for (let i = 0; i <= 10_000; i++) writeFileSync(join(big, String(i)), "");
+    const later = Date.now() + 1100;
+    while (Date.now() < later); // the scan is cached for 1 s
+    expect(answeredFor("Read", { file_path: `${d.project}/src/a.ts` }, d.ctx()).auto).toBe(false);
+  });
+
   it("the coordinator never answers a read outside the workspaces", () => {
     const p: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "x", path: h.project }] };
     expect(answeredFor("Read", { file_path: "/etc/hosts" }, h.ctx(h.project, p)).coord).toBeNull();
@@ -479,7 +551,8 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     });
     // Plain files in the home folder are workspace files too.
     expect(answeredFor("Read", { file_path: `${H}/notes.txt` }, h.ctx()).c).toMatchObject({ tier: "LOW" });
-    expect(answeredFor("Bash", { command: "cd ~/projects/x && pnpm test" }, h.ctx(H)).c.fenced).toBeUndefined();
+    // From the home folder itself even this asks: the shell allowlist needs a project folder as cwd.
+    expect(answeredFor("Bash", { command: "cd ~/projects/x && pnpm test" }, h.ctx(H)).auto).toBe(false);
   });
 
   it("a dotfiles repo at the home folder: git there is fenced, a project's own repo is not", () => {
