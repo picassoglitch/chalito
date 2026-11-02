@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { openJson } from "@chalito/crypto";
 import { AgentEvent } from "@chalito/protocol";
-import { NativeBridge } from "../src/native/bridge.js";
+import { NativeBridge, TEAM_CHANNEL_TOOLS } from "../src/native/bridge.js";
+import { TEAM_INFO } from "../src/team/mcp.js";
 import {
   nativeHookInput,
   nativeHookOutput,
@@ -1040,5 +1041,114 @@ describe("native hook review fixes, round 2", () => {
         else expect(decisionOf("claude", reply).decision).toBe("deny");
       }
     });
+  });
+});
+
+describe("team channel tools skip the human gate (owner decision 2026-11-02)", () => {
+  const hook = (provider: NativeProvider, event: string, toolName: string, input: Record<string, unknown>) =>
+    nativeHookInput(
+      provider,
+      event,
+      JSON.stringify({
+        hook_event_name: event,
+        session_id: `team-${provider}`,
+        cwd: WS,
+        tool_name: toolName,
+        tool_input: input,
+      }),
+    );
+
+  it("names exactly the tools the team MCP server serves", () => {
+    expect([...TEAM_CHANNEL_TOOLS].sort()).toEqual(
+      (TEAM_INFO.tools() as { name: string }[]).map((t) => `mcp__${TEAM_INFO.name}__${t.name}`).sort(),
+    );
+  });
+
+  it.each([
+    ["claude", "PreToolUse", "mcp__chalito_team__team_read", {}],
+    ["claude", "PermissionRequest", "mcp__chalito_team__team_send", { text: "Tests passed", kind: "result" }],
+    ["codex", "PreToolUse", "mcp__chalito_team__team_read", {}],
+    ["codex", "PreToolUse", "mcp__chalito_team__team_send", { to: "peer", text: "Working on UI" }],
+  ] as const)("allows %s %s %s without asking anyone", async (provider, event, toolName, input) => {
+    const s = await rig();
+    const request = hook(provider, event, toolName, input);
+    expect(request).not.toBeNull();
+    const reply = await s.bridge.handle(request, new AbortController().signal);
+    expect(reply).toMatchObject({ ok: true, allow: true, reason: "team_channel" });
+    expect(s.store.pendingApprovals()).toHaveLength(0);
+    expect(nativeHookOutput(provider, event, reply)).toEqual(
+      provider === "codex"
+        ? {}
+        : event === "PreToolUse"
+          ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } }
+          : { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } },
+    );
+    await s.bridge.close();
+  });
+
+  it.each([
+    ["claude", "mcp__chalito_team_evil__team_read"],
+    ["claude", "mcp__other__team_read"],
+    ["claude", "mcp__chalito_team__team_write"],
+    ["claude", "mcp__chalito_team__team_read_all"],
+    ["claude", "Mcp__chalito_team__team_read"],
+    ["claude", "mcp__chalito_team__team_read "],
+    ["codex", "mcp__chalito_team__team_join"],
+    ["codex", "team_read"],
+    ["cursor", "MCP:team_read"],
+    ["cursor", "mcp__chalito_team__team_read"],
+  ] as const)("still asks a human for %s %s", async (provider, toolName) => {
+    const s = await rig();
+    const abort = new AbortController();
+    const waiting = s.bridge.handle(
+      { provider, event: "tool", nativeSessionId: "lookalike", cwd: WS, toolName, input: {} },
+      abort.signal,
+    );
+    await vi.waitFor(() => expect(s.store.pendingApprovals()).toHaveLength(1));
+    abort.abort();
+    expect(await waiting).toMatchObject({ allow: false });
+    await s.bridge.close();
+  });
+
+  it("refuses team tools once local origins are off or the device is revoked, like every native call", async () => {
+    const s = await rig();
+    const signal = new AbortController().signal;
+    const read = () => s.bridge.handle(hook("claude", "PreToolUse", "mcp__chalito_team__team_read", {}), signal);
+    s.setPolicy({ ...s.policy.get(), origins: { ...s.policy.get().origins, local: false } });
+    expect(await read()).toMatchObject({ ok: true, allow: false, reason: "origin_disabled" });
+    s.setPolicy({ ...s.policy.get(), origins: { ...s.policy.get().origins, local: true } });
+    expect(await read()).toMatchObject({ allow: true, reason: "team_channel" });
+    vi.spyOn(s.core, "nativeAllowed").mockReturnValue({ allow: false, reason: "unavailable" });
+    expect(await read()).toMatchObject({ allow: false, reason: "unavailable" });
+    expect(s.store.pendingApprovals()).toHaveLength(0);
+    await s.bridge.close();
+  });
+
+  it("still refuses team tools when the connector is off or outside a workspace", async () => {
+    const s = await rig();
+    s.disable();
+    const signal = new AbortController().signal;
+    expect(
+      await s.bridge.handle(hook("codex", "PreToolUse", "mcp__chalito_team__team_read", {}), signal),
+    ).toMatchObject({
+      ok: false,
+      reason: "connector_disabled",
+    });
+    const t = await rig();
+    expect(
+      await t.bridge.handle(
+        {
+          provider: "claude",
+          event: "tool",
+          nativeSessionId: "outside",
+          cwd: "/not-allowed",
+          toolName: "mcp__chalito_team__team_read",
+          input: {},
+        },
+        signal,
+      ),
+    ).toEqual({ ok: true, pass: true });
+    await s.bridge.close();
+    await t.bridge.close();
   });
 });
