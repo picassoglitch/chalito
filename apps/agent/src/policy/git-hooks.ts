@@ -606,9 +606,65 @@ export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = 
     if (!resolved) return null;
     common = resolved;
   }
-  // objects/ and refs/ linked out of the project (`objects -> ~/.git/objects`) write elsewhere.
-  const store = [join(common, "objects"), join(common, "refs")];
-  return store.every((d) => fs.isDir(d) && insideProject(d)) ? real : null;
+  if (!fs.isDir(join(common, "objects")) || !fs.isDir(join(common, "refs"))) return null;
+  // No entry may be a link (dangling ones too) or leave the project (`objects -> ~/.git/objects`).
+  const own = (p: string) => insideProject(p) === p;
+  for (const d of new Set([real, common])) {
+    let names: string[];
+    try {
+      names = fs.list ? fs.list(d).map((e) => e.name) : [];
+    } catch {
+      return null;
+    }
+    // Case-folded: on macOS and Windows `Config` is the `config` git opens.
+    const watched = names.filter((n) => GIT_DIR_ENTRIES.includes(n.toLowerCase()));
+    if (!fs.list || !watched.every((n) => own(join(d, n)))) return null;
+  }
+  // Borrowed object stores reach outside (a dangling link counts); refs/ is walked, bounded.
+  const info = join(common, "objects", "info");
+  try {
+    if (fs.isDir(info) !== null && fs.list!(info).some((e) => e.name.toLowerCase() === "alternates")) return null;
+  } catch {
+    return null;
+  }
+  return walkOwned(join(common, "refs"), own, fs) ? real : null;
+};
+
+const GIT_DIR_ENTRIES = ["objects", "refs", "packed-refs", "index", "logs", "info", "hooks", "config", "head"];
+const WALK_MAX = 2000;
+
+const walkOwned = (top: string, own: (p: string) => boolean, fs: GitFs): boolean => {
+  if (!fs.list) return false;
+  const stack = [top];
+  let seen = 0;
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let entries: { name: string; dir: boolean }[];
+    try {
+      entries = fs.list(dir);
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      if (++seen > WALK_MAX) return false;
+      const p = join(dir, e.name);
+      if (!own(p)) return false;
+      if (e.dir) stack.push(p);
+    }
+  }
+  return true;
+};
+
+// Security review 2026-11-02 — git takes a folder holding HEAD, objects/ and refs/ as a bare repo before
+// walking further up: any such folder between `dir` and the repo root makes discovery unclear.
+export const bareBetween = (dir: string, root: string, o: { fs?: GitFs } = {}): boolean => {
+  const fs = o.fs ?? nodeFs;
+  for (let cur = dir; cur !== root; cur = dirname(cur)) {
+    if (fs.isDir(join(cur, "HEAD")) !== null && fs.isDir(join(cur, "objects")) && fs.isDir(join(cur, "refs")))
+      return true;
+    if (dirname(cur) === cur) return true;
+  }
+  return false;
 };
 
 export const SCAN_DEPTH = 4;

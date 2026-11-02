@@ -769,6 +769,63 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     }
   });
 
+  it("git dir entries, refs and alternates must stay in the project; a bare-looking folder below the root asks", () => {
+    const d = makeHome();
+    gitRepo(d.home);
+    const outside = join(d.home, "elsewhere");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "file"), "x");
+    let n = 0;
+    const fresh = () => {
+      const p = join(d.home, `projects/e${n++}`);
+      mkdirSync(join(p, "src"), { recursive: true });
+      gitRepo(p);
+      return p;
+    };
+    const git = (cwd: string) => answeredFor("Bash", { command: "git add src && git commit -m wip" }, d.ctx(cwd));
+    expect(git(fresh()).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    for (const entry of ["config", "hooks", "packed-refs", "index", "logs", "info", "Config"]) {
+      const p = fresh();
+      symlinkSync(join(outside, "file"), join(p, ".git", entry));
+      expect(git(p).auto, entry).toBe(false);
+    }
+    // A dangling link would be created outside on first write.
+    const dangling = fresh();
+    symlinkSync(join(outside, "nope"), join(dangling, ".git/config"));
+    expect(git(dangling).auto).toBe(false);
+    // A link deep in refs/ (a branch file pointing at the home repo's refs).
+    const ref = fresh();
+    mkdirSync(join(ref, ".git/refs/heads"));
+    symlinkSync(join(outside, "file"), join(ref, ".git/refs/heads/main"));
+    expect(git(ref).auto).toBe(false);
+    // Past the walk bound fails closed.
+    const big = fresh();
+    mkdirSync(join(big, ".git/refs/tags"));
+    for (let i = 0; i < 2001; i++) writeFileSync(join(big, ".git/refs/tags", `t${i}`), "a".repeat(40));
+    expect(git(big).auto).toBe(false);
+    // Any alternates file, even a dangling link, borrows objects from elsewhere.
+    const alt = fresh();
+    mkdirSync(join(alt, ".git/objects/info"));
+    writeFileSync(join(alt, ".git/objects/info/alternates"), "objects\n");
+    expect(git(alt).auto).toBe(false);
+    const altLink = fresh();
+    mkdirSync(join(altLink, ".git/objects/info"));
+    symlinkSync(join(outside, "nope"), join(altLink, ".git/objects/info/alternates"));
+    expect(git(altLink).auto).toBe(false);
+    // git takes a folder holding HEAD, objects/ and refs/ as a bare repo before the root's .git.
+    const bare = fresh();
+    const sub = join(bare, "src/inner");
+    mkdirSync(join(sub, "objects"), { recursive: true });
+    mkdirSync(join(sub, "refs"));
+    writeFileSync(join(sub, "HEAD"), "ref: refs/heads/main\n");
+    expect(git(bare).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    expect(answeredFor("Bash", { command: "git status" }, d.ctx(sub)).auto).toBe(false);
+    expect(answeredFor("Bash", { command: "git status" }, d.ctx(join(bare, "src"))).coord).toEqual({
+      via: "coordinator_auto",
+      kind: "read",
+    });
+  });
+
   it("git's HEAD and commondir are checked the way git checks them", () => {
     const d = makeHome();
     gitRepo(d.home);

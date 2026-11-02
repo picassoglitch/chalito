@@ -2,7 +2,7 @@ import { readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { realGitDirOf, repoRootOf, type GitFs } from "./git-hooks.js";
+import { bareBetween, realGitDirOf, repoRootOf, type GitFs } from "./git-hooks.js";
 import { foldKey, repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import { TEAM_READ_TOOL, TEAM_SEND_TOOL } from "../team/tools.js";
@@ -1889,7 +1889,8 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
         ctx.env?.GIT_WORK_TREE ||
         ctx.env?.GIT_COMMON_DIR ||
         ctx.env?.GIT_OBJECT_DIRECTORY ||
-        !realGitDirOf(root, project, ctx.gitFs ? { fs: ctx.gitFs } : {})
+        !realGitDirOf(root, project, ctx.gitFs ? { fs: ctx.gitFs } : {}) ||
+        bareBetween(cwd, root, ctx.gitFs ? { fs: ctx.gitFs } : {})
       )
         return "git without a real repository in the project";
       if (args[0] === "add" && args.slice(1).some((x) => paths.within(root, paths.resolve(x, cwd))))
