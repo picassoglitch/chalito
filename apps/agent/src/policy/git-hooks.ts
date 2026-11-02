@@ -606,7 +606,9 @@ export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = 
     if (!resolved) return null;
     common = resolved;
   }
-  return fs.isDir(join(common, "objects")) && fs.isDir(join(common, "refs")) ? real : null;
+  // objects/ and refs/ linked out of the project (`objects -> ~/.git/objects`) write elsewhere.
+  const store = [join(common, "objects"), join(common, "refs")];
+  return store.every((d) => fs.isDir(d) && insideProject(d)) ? real : null;
 };
 
 export const SCAN_DEPTH = 4;

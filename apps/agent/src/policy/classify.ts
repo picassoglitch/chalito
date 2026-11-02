@@ -1888,6 +1888,7 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
         ctx.env?.GIT_DIR ||
         ctx.env?.GIT_WORK_TREE ||
         ctx.env?.GIT_COMMON_DIR ||
+        ctx.env?.GIT_OBJECT_DIRECTORY ||
         !realGitDirOf(root, project, ctx.gitFs ? { fs: ctx.gitFs } : {})
       )
         return "git without a real repository in the project";

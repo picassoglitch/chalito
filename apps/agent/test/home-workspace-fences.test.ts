@@ -757,6 +757,16 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     expect(git(own, { env: { GIT_DIR: join(d.home, ".git") } }).auto).toBe(false);
     expect(git(own, { env: { GIT_WORK_TREE: d.home } }).auto).toBe(false);
     expect(git(own, { env: { GIT_COMMON_DIR: join(d.home, ".git") } }).auto).toBe(false);
+    expect(git(own, { env: { GIT_OBJECT_DIRECTORY: join(d.home, ".git/objects") } }).auto).toBe(false);
+    // objects/ or refs/ linked to the home repo: commits would land there.
+    for (const part of ["objects", "refs"]) {
+      const l = join(d.home, `projects/link-${part}`);
+      mkdirSync(join(l, "src"), { recursive: true });
+      gitRepo(l);
+      rmSync(join(l, ".git", part), { recursive: true });
+      symlinkSync(join(d.home, ".git", part), join(l, ".git", part));
+      expect(git(l).auto, part).toBe(false);
+    }
   });
 
   it("git's HEAD and commondir are checked the way git checks them", () => {
