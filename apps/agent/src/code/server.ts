@@ -7,6 +7,7 @@ import { AppId, RemotePermissionMode, SessionId } from "@chalito/protocol";
 import { NativeHookRequest, type NativeHookReply } from "../native/protocol.js";
 import type { LocalEvent } from "./events.js";
 import type { CodeService } from "./service.js";
+import { TeamHub } from "../team/hub.js";
 
 // ADR 0031 §6a: `chalito code`'s way in. Any process of the user may connect (a session too), so it
 // starts only unsigned `local:cli` sessions, answers no approvals, and steers only its own sessions.
@@ -100,6 +101,7 @@ export const startCodeServer = async (opts: {
   listen?: (path: string, onStream: (stream: Duplex) => void) => { close(): void };
 }): Promise<CodeServer> => {
   const { code } = opts;
+  const team = new TeamHub((cwd) => code.workspaceFor(cwd));
   const unix = (opts.platform ?? process.platform) !== "win32";
   // The instance lock (instance-lock.ts) guarantees no other agent owns a leftover socket.
   if (unix) rmSync(opts.path, { force: true });
@@ -150,6 +152,10 @@ export const startCodeServer = async (opts: {
       const request = parse(NativeHookRequest, params);
       if (!request || !opts.native) return { ok: false, error: request ? "unavailable" : "bad_params" };
       return { ok: true, result: await opts.native(request, c.abort.signal) };
+    },
+    team: async (c, params) => {
+      const p = parse(z.object({ action: z.string(), args: z.unknown() }).strict(), params);
+      return p ? team.call(c.abort.signal, p.action, p.args) : { ok: false, error: "bad_params" };
     },
   };
 

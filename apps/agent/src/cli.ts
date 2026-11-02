@@ -11,6 +11,8 @@ import {
   nativePermissionEvent,
   nativeWorkspaceStatus,
 } from "./native/protocol.js";
+import { runTeamMcp } from "./team/mcp.js";
+import { TeamProvider } from "./team/hub.js";
 import { codePath } from "./code/server.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import { homedir, tmpdir } from "node:os";
@@ -49,7 +51,7 @@ import {
   writeConfig,
   type AgentConfig,
 } from "./config.js";
-import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
+import { computerMcpCommand, OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
 import { DeviceRevokedError } from "./device-auth.js";
 import { readIpcSecret } from "./ipc-server.js";
@@ -113,6 +115,10 @@ const TERMINAL_USAGE = `  terminal enable|disable|status       remote terminal: 
 const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
 
   run                                  run the agent (the OS service does this)
+  team mcp <claude|codex|grok|cursor> [workspace-path]
+                                       automatic messaging between AI sessions in the same workspace
+  team config <claude|codex|grok|cursor> [workspace-path]
+                                       print the MCP launch configuration for an AI app
   code <claude|codex|gemini|grok|app> [--workspace <label>] [--mode default|plan|acceptEdits] [prompt]
                                        a session here that is also live on your phone (Ctrl-C stops)
   pair [--laptop]                      pair this computer with your phone
@@ -566,6 +572,49 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       server: { name: LINKS_SERVER, title: "Chalito links", instructions: LINKS_INSTRUCTIONS, tools: linkMcpTools },
     });
     return 0;
+  }
+
+  if (cmd === "team" && sub === "config") {
+    if (!TeamProvider.safeParse(arg).success) {
+      io.err("Usage: chalito team config <claude|codex|grok|cursor> [workspace-path]\n");
+      return 1;
+    }
+    const launch = computerMcpCommand();
+    // An MCP client may start in a folder without node_modules (development launches only).
+    const launchArgs = launch.args.map((value, index, args) =>
+      value === "tsx" && args[index - 1] === "--import" ? import.meta.resolve("tsx") : value,
+    );
+    io.out(
+      JSON.stringify(
+        {
+          mcpServers: {
+            chalito_team: {
+              command: launch.command,
+              args: [...launchArgs.slice(0, -2), "team", "mcp", arg, resolve(positional[3] ?? io.cwd ?? process.cwd())],
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    return 0;
+  }
+
+  if (cmd === "team" && sub === "mcp") {
+    const winSec = io.platform === "win32" ? await (io.winPipeSecurity ?? loadWinPipeSecurity)() : null;
+    const where = io.platform === "win32" && !winSec ? null : codePath(dir, io.platform, winSec?.userSid);
+    return runTeamMcp(
+      {
+        input: io.tty.input,
+        out: io.out,
+        err: io.err,
+        ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
+      },
+      where,
+      arg ?? "",
+      positional[3] ?? io.cwd ?? process.cwd(),
+    );
   }
 
   // ADR 0031 §1: talks to the running agent over code.sock; needs no secrets.
