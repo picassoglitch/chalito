@@ -1,0 +1,138 @@
+{
+  "ctx": "chalito.connector-catalog.v1",
+  "keyId": "dev-test-2026-10",
+  "body": {
+    "v": 1,
+    "issuedAt": 1793491200000,
+    "connectors": [
+      {
+        "id": "github",
+        "name": "GitHub",
+        "description": "Repos, issues and pull requests through GitHub's official remote MCP server.",
+        "transport": "remote",
+        "server": {
+          "url": "https://api.githubcopilot.com/mcp/"
+        },
+        "auth": "token",
+        "inputs": [
+          {
+            "name": "Authorization",
+            "as": "header",
+            "secret": true,
+            "required": true,
+            "prefix": "Bearer ",
+            "description": "GitHub personal access token (fine-grained, only the repos you want)."
+          }
+        ],
+        "risk": "MED",
+        "verified": {
+          "checked": "2026-11-01",
+          "version": "registry io.github.github/github-mcp-server 2.0.3",
+          "sources": [
+            "https://registry.modelcontextprotocol.io/v0.1/servers?search=github-mcp-server",
+            "probe: POST initialize without a token answers 401 + resource_metadata (token or OAuth)"
+          ],
+          "unverified": [
+            "tool tiers (tools.read) not listed yet; every tool is write tier until checked with a real token"
+          ]
+        }
+      },
+      {
+        "id": "supabase",
+        "name": "Supabase",
+        "description": "Projects, tables and SQL through Supabase's official remote MCP server.",
+        "transport": "remote",
+        "server": {
+          "url": "https://mcp.supabase.com/mcp"
+        },
+        "auth": "token",
+        "inputs": [
+          {
+            "name": "Authorization",
+            "as": "header",
+            "secret": true,
+            "required": true,
+            "prefix": "Bearer ",
+            "description": "Supabase personal access token."
+          }
+        ],
+        "risk": "MED",
+        "verified": {
+          "checked": "2026-11-01",
+          "version": "registry com.supabase/mcp 0.14.0",
+          "sources": [
+            "https://supabase.com/docs/guides/getting-started/mcp (manual authentication, Authorization Bearer)",
+            "https://registry.modelcontextprotocol.io/v0.1/servers/com.supabase%2Fmcp/versions/latest"
+          ],
+          "unverified": [
+            "tool tiers (tools.read) not listed yet; every tool is write tier until checked with a real token"
+          ]
+        }
+      },
+      {
+        "id": "linear",
+        "name": "Linear",
+        "description": "Issues, projects and cycles through Linear's official remote MCP server.",
+        "transport": "remote",
+        "server": {
+          "url": "https://mcp.linear.app/mcp"
+        },
+        "auth": "token",
+        "inputs": [
+          {
+            "name": "Authorization",
+            "as": "header",
+            "secret": true,
+            "required": true,
+            "prefix": "Bearer ",
+            "description": "Linear personal API key."
+          }
+        ],
+        "risk": "MED",
+        "verified": {
+          "checked": "2026-11-01",
+          "version": "registry app.linear/linear 1.0.2",
+          "sources": ["https://linear.app/docs/mcp (FAQ, API keys in Authorization Bearer)"],
+          "unverified": [
+            "tool tiers (tools.read) not listed yet; every tool is write tier until checked with a real token"
+          ]
+        }
+      },
+      {
+        "id": "slack",
+        "name": "Slack",
+        "description": "Channels and messages through Slack's official MCP server.",
+        "transport": "remote",
+        "server": {
+          "url": "https://mcp.slack.com/mcp"
+        },
+        "auth": "oauth",
+        "held": "oauth",
+        "inputs": [],
+        "risk": "HIGH",
+        "verified": {
+          "checked": "2026-11-01",
+          "version": "probe: 401 + resource_metadata, OAuth only",
+          "sources": ["probe: POST https://mcp.slack.com/mcp initialize"]
+        }
+      },
+      {
+        "id": "gdrive",
+        "name": "Google Drive",
+        "description": "Files in your Google Drive.",
+        "transport": "remote",
+        "server": {},
+        "auth": "oauth",
+        "held": "oauth",
+        "inputs": [],
+        "risk": "MED",
+        "verified": {
+          "checked": "2026-11-01",
+          "version": "none pinned",
+          "sources": ["no official Google Drive MCP server in the registry on 2026-11-01; OAuth only"]
+        }
+      }
+    ]
+  },
+  "sig": "EZUJ8PcU5TurCL33nb4PR-FNhOCMHbeGv70vwLndo5BVG3PKdAiHvVWdFQmOWx-18Y5csi0GF54CCvYdynDXCw"
+}

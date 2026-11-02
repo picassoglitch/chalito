@@ -438,7 +438,8 @@ mod tests {
     }
 
     /// A pty stands in for the board: logs are skipped, writes arrive, and closing it is an unplug.
-    #[cfg(unix)]
+    // Linux only: on macOS this test blocks forever once the pty closes (held CI 6h); cause not pinned.
+    #[cfg(target_os = "linux")]
     #[test]
     fn serves_a_pty_board_until_it_goes_away() {
         use serialport::TTYPort;

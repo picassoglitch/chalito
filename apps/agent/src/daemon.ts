@@ -59,11 +59,15 @@ import { ipcHandlers } from "./ipc-handlers.js";
 import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
 import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
+import { connectionsSearchFeature } from "./connections/ipc.js";
+import { VerifiedConnectors } from "./connections/catalog.js";
+import { shippedConnectors } from "./connections/shipped.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
 import { expandHome } from "./workspace-path.js";
 import { NativeBridge } from "./native/bridge.js";
 import { NativeConnectors } from "./native/connectors.js";
+import { ChannelInstaller } from "./connections/install-channel.js";
 import { stableAgentPath, stableHookBinary } from "./native/stable-bin.js";
 import { NATIVE_APPS, NATIVE_WORKSPACES_FILE, nativeWorkspacePaths, writeNativeWorkspaces } from "./native/protocol.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
@@ -1544,11 +1548,12 @@ const startDaemon = async (
         log: (event, meta) => log.warn(event, meta),
       });
   const hookCommand = computerMcpCommand(hookBin.path);
+  const agentCommand = [hookCommand.command, ...hookCommand.args.slice(0, -2)];
   const nativeConnectors: NativeConnectors = new NativeConnectors({
     home: deps.home ?? homedir(),
     dir,
     platform: process.platform,
-    command: [hookCommand.command, ...hookCommand.args.slice(0, -2)],
+    command: agentCommand,
     stable: isInterpreter(execPath) || !hookBin.ephemeral,
     available: async (provider) =>
       !!(await apps.findCli(NATIVE_APPS[provider])) ||
@@ -1564,6 +1569,17 @@ const startDaemon = async (
   });
   // #132 — hooks never point into /tmp or a DMG (anyone could plant a binary there later); dev runs never rewrite them.
   if (!isInterpreter(execPath) && !hookBin.ephemeral) nativeConnectors.repair();
+  const channelInstaller = new ChannelInstaller({
+    home: deps.home ?? homedir(),
+    dir,
+    env,
+    platform: process.platform,
+    command: agentCommand,
+    // Unlike hooks, a dev run never goes into another tool's config: a deleted worktree would break it.
+    stable: !isInterpreter(execPath) && !hookBin.ephemeral,
+    log: (event, meta) => log.warn(event, meta),
+  });
+  channelInstaller.repair();
   const nativeBridge: NativeBridge = new NativeBridge({
     core,
     store: signedInStore,
@@ -1665,11 +1681,28 @@ const startDaemon = async (
             open: (v) => openOwnSession(v, { platform: process.platform, run: spawnRunner, paths: ownPaths }),
           },
           ...(prs ? { prs } : {}),
+          connectionsFound: {
+            installer: channelInstaller,
+            scan: {
+              home: deps.home ?? homedir(),
+              env,
+              platform: process.platform,
+              recipes: () => catalog.curated(),
+              findCli: (recipeId, bin) => apps.findCli(recipeId, bin),
+            },
+            warn: (event, meta) => log.warn(event, meta),
+          },
           meetings: meetingsFeature({
             secrets,
             code,
             locale: () => cfg.locale,
             warn: (event, meta) => log.warn(event, meta),
+          }),
+          connections: connectionsSearchFeature({
+            dir,
+            secrets,
+            audit: auditAgent,
+            verified: new VerifiedConnectors(shippedConnectors()),
           }),
         }),
         onError: (method, err) =>
