@@ -117,6 +117,7 @@ export class Upstream {
 
   async #boot(): Promise<Transport> {
     const t = await this.#open();
+    if (this.#stopped) throw new ConnectorError("connector_stopped");
     let initialized = false;
     try {
       await t.start(
@@ -212,8 +213,16 @@ export class Upstream {
     return this.#tools;
   }
 
-  async call(tool: string, args: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
+  /** `onSecrets` gets the values this very server holds, so output is scrubbed even if it stops meanwhile. */
+  async call(
+    tool: string,
+    args: unknown,
+    timeoutMs: number,
+    signal?: AbortSignal,
+    onSecrets?: (values: string[]) => void,
+  ): Promise<unknown> {
     const t = await this.#ensure();
+    onSecrets?.([...this.secretValues]);
     return t.request("tools/call", { name: tool, arguments: args ?? {} }, timeoutMs, signal).catch((e: unknown) => {
       this.#expired(t, e);
       throw e;

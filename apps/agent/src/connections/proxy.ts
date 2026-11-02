@@ -125,7 +125,7 @@ export class ConnectionsProxy {
   #names = new Map<string, { connectorId: string; fp: string; stamp: ConnectorStamp; slug: string }>();
   #closed = false;
   // Set for the whole of revoke-all: nothing may start or be listed while secrets are being deleted.
-  #revoking = false;
+  #revoking = 0;
 
   constructor(d: ProxyDeps) {
     this.#d = d;
@@ -282,6 +282,10 @@ export class ConnectionsProxy {
       return fail(`Chalito did not allow ${name} (${clean(decision.allow ? "cancelled" : decision.reason, 40)}).`);
     }
     // The approval may have taken minutes: an uninstall, edit, revoke-all or stop in that time wins.
+    if (this.#closed) {
+      this.#d.audit("connector.call", { ...base, decision: "deny", reason: "stopped", ms: this.#now() - started });
+      return fail("Chalito connections are stopped.");
+    }
     const current = this.#closed ? undefined : this.#sync().find((x) => x.id === c.id);
     if (!current || fingerprint(current) !== entry.fp) {
       this.#d.audit("connector.call", { ...base, decision: "deny", reason: "changed", ms: this.#now() - started });
@@ -289,9 +293,10 @@ export class ConnectionsProxy {
     }
     let up: Upstream;
     let raw: unknown;
+    let callSecrets: string[] = [];
     try {
       up = this.#upstream(current);
-      raw = await up.call(stamp.tool, args, this.#d.callTimeoutMs ?? CALL_TIMEOUT_MS, signal);
+      raw = await up.call(stamp.tool, args, this.#d.callTimeoutMs ?? CALL_TIMEOUT_MS, signal, (v) => (callSecrets = v));
     } catch (e) {
       const code = e instanceof ConnectorError ? e.code : e instanceof RpcError ? "rpc_error" : "connector_unavailable";
       this.#d.audit("connector.call", {
@@ -302,14 +307,14 @@ export class ConnectionsProxy {
         error: code,
         ms: this.#now() - started,
       });
-      const secrets = this.#upstreams.get(c.id)?.secretValues ?? [];
-      if (e instanceof RpcError) {
+      // Without the values to scrub, a token connector's error text is dropped rather than risked.
+      if (e instanceof RpcError && (callSecrets.length || current.auth !== "token")) {
         let msg = clean(e.rpcMessage, MAX_ERROR_TEXT);
-        for (const secret of secrets) msg = msg.split(secret).join("[secret]");
+        for (const secret of callSecrets) msg = msg.split(secret).join("[secret]");
         return fail(quoteConnectorData(slug, stamp.tool, LABEL[c.source], { error: msg }));
       }
       // A write that timed out may still have happened on the server.
-      if (stamp.tier === "write" && (code === "connector_timeout" || code === "cancelled"))
+      if (stamp.tier === "write" && ["connector_timeout", "cancelled", "connector_crashed"].includes(code))
         return fail(
           `${clean(c.name, 80)} did not answer in time (${code}); it may still have run. Check before retrying.`,
         );
@@ -318,7 +323,7 @@ export class ConnectionsProxy {
     try {
       const { text: full, isError } = resultText(raw);
       let text = full;
-      for (const secret of up.secretValues) text = text.split(secret).join("[secret]");
+      for (const secret of callSecrets) text = text.split(secret).join("[secret]");
       const capped = capText(text, this.#d.resultCap ?? RESULT_CAP_BYTES);
       this.#d.audit("connector.call", {
         ...base,
@@ -354,7 +359,7 @@ export class ConnectionsProxy {
 
   /** ADR 0020 revoke-all: servers stop, their keychain entries go, and the installed list empties. */
   async revokeAll(by: string): Promise<number> {
-    this.#revoking = true;
+    this.#revoking++;
     try {
       let unreadable = false;
       const installed = readInstalled(this.#d.dir, (type, meta) => {
@@ -364,7 +369,13 @@ export class ConnectionsProxy {
       const targets = new Map<string, InstalledConnector>();
       for (const c of [...installed, ...[...this.#upstreams.values()].map((u) => u.c)]) targets.set(c.id, c);
       // The list goes first so nothing can be started from it while servers stop and secrets go.
-      if (!unreadable) clearInstalled(this.#d.dir);
+      let clearFailed = false;
+      if (!unreadable)
+        try {
+          clearInstalled(this.#d.dir);
+        } catch {
+          clearFailed = true;
+        }
       const stopAll = async () => {
         const all = [...this.#upstreams.values()];
         this.#upstreams.clear();
@@ -377,11 +388,11 @@ export class ConnectionsProxy {
         for (const account of new Set(["token", ...(c.secretEnv ?? [])]))
           await this.#d.secrets.delete(secretName(c.id, account)).catch(() => void secretsFailed++);
       await stopAll();
-      this.#d.audit("connector.revoke_all", { count: targets.size, by, secretsFailed, unreadable });
-      if (secretsFailed || unreadable) throw new ConnectorError("revoke_incomplete");
+      this.#d.audit("connector.revoke_all", { count: targets.size, by, secretsFailed, unreadable, clearFailed });
+      if (secretsFailed || unreadable || clearFailed) throw new ConnectorError("revoke_incomplete");
       return targets.size;
     } finally {
-      this.#revoking = false;
+      this.#revoking--;
     }
   }
 

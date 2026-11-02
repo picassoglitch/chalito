@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { duplexPair, PassThrough, type Duplex } from "node:stream";
@@ -543,7 +543,7 @@ describe("connections: revoke-all (ADR 0020)", () => {
     expect(readInstalled(dir)).toEqual([]);
     expect(audits).toContainEqual({
       type: "connector.revoke_all",
-      meta: { count: 1, by: "revoke_all", secretsFailed: 0, unreadable: false },
+      meta: { count: 1, by: "revoke_all", secretsFailed: 0, unreadable: false, clearFailed: false },
     });
   });
 });
@@ -812,5 +812,88 @@ describe("connections proxy: revoke and approval races", () => {
     const r = await proxy.callTool("fx__garbage", {}, client, signal());
     expect(r.isError).toBe(true);
     expect(textOf(r)).toContain("connector_protocol");
+  });
+});
+
+describe("connections proxy: revoke-all edge cases", () => {
+  const servers: Server[] = [];
+  afterEach(() => {
+    for (const s of servers.splice(0)) s.close();
+  });
+
+  it("a server error that arrives after revoke-all still has its token scrubbed", async () => {
+    const token = "tok-LATE-ERROR-8812";
+    let replyLater!: () => void;
+    const called = new Promise<void>((r) => {
+      const server = createServer((req, res) => {
+        if (req.method === "DELETE") return res.writeHead(200).end();
+        let raw = "";
+        req.on("data", (c: Buffer) => (raw += c.toString()));
+        req.on("end", () => {
+          const msg = JSON.parse(raw) as { id?: number; method: string };
+          if (msg.id === undefined) return res.writeHead(202).end();
+          const json = (body: unknown) =>
+            res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+          if (msg.method === "initialize")
+            return json({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {} } });
+          if (msg.method === "tools/list")
+            return json({
+              jsonrpc: "2.0",
+              id: msg.id,
+              result: { tools: [{ name: "leak", inputSchema: { type: "object" } }] },
+            });
+          replyLater = () => json({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: `bad ${token}` } });
+          r();
+        });
+      });
+      servers.push(server);
+      server.listen(0, "127.0.0.1");
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const port = (servers[0]!.address() as AddressInfo).port;
+    const secrets = new MemorySecretStore();
+    await secrets.set(secretName("r", "token"), token);
+    const { dir, proxy } = rig({ secrets });
+    install(dir, [
+      {
+        id: "r",
+        name: "r",
+        description: "",
+        source: "verified",
+        transport: "remote",
+        server: { url: `http://127.0.0.1:${port}/mcp` },
+        auth: "token",
+        installedAt: 1,
+        confirmedWarning: false,
+      },
+    ]);
+    const pending = proxy.callTool("r__leak", {}, client, signal());
+    await called;
+    await proxy.revokeAll("test");
+    replyLater();
+    const out = JSON.stringify(await pending);
+    expect(out).not.toContain(token);
+    expect(out).toContain("[secret]");
+  });
+
+  it("an installed list that can't be cleared still stops servers and deletes secrets, and says so", async () => {
+    const pids = tempDir("chalito-pid-");
+    const secrets = new MemorySecretStore();
+    await secrets.set(secretName("fx", "token"), "tok-xyz123");
+    const { dir, proxy, audits } = rig({ secrets });
+    install(dir, [stdio("fx", { auth: "token", secretEnv: [] }, ["--pidfile", join(pids, "fx")])]);
+    await secrets.set(secretName("fx", "FIXTURE_TOKEN"), "tok-abc123");
+    install(dir, [stdio("fx", { auth: "token", secretEnv: ["FIXTURE_TOKEN"] }, ["--pidfile", join(pids, "fx")])]);
+    await proxy.listTools();
+    const pid = Number(readFileSync(join(pids, "fx"), "utf8"));
+    chmodSync(dir, 0o500);
+    try {
+      await expect(proxy.revokeAll("test")).rejects.toThrow("revoke_incomplete");
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    await waitFor(() => !alive(pid), 5000);
+    expect(secrets.values.size).toBe(0);
+    expect(audits.find((a) => a.type === "connector.revoke_all")!.meta).toMatchObject({ clearFailed: true });
   });
 });
