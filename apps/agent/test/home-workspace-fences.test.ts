@@ -6,7 +6,14 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AutoKind } from "@chalito/protocol";
 import { coordAnswer } from "../src/coord/gate.js";
-import { DEFAULT_POLICY, classifyToolCall, decide, isTighterOrEqual, type Policy } from "../src/policy/index.js";
+import {
+  DEFAULT_POLICY,
+  Policy as PolicySchema,
+  classifyToolCall,
+  decide,
+  isTighterOrEqual,
+  type Policy,
+} from "../src/policy/index.js";
 import type { ClassifyContext } from "../src/policy/classify.js";
 import { AI_CONFIG_DIRS, FENCES, SENSITIVE_DIRS, STARTUP_DIRS } from "../src/policy/persistence.js";
 import { codeService } from "../src/code/service.js";
@@ -288,6 +295,72 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       expect(r.c.fenced || r.c.hardFloor, JSON.stringify(r.c)).toBe(true);
     });
 
+  // Adversarial review 2026-11-02: each of these reached a key or startup file at LOW before the fix.
+  for (const [tool, input] of [
+    ["Bash", { command: "env -C ../.. cat .ssh/id_ed25519" }],
+    ["Bash", { command: "env -C ~/.ssh cat id_ed25519" }],
+    ["Bash", { command: "env --chdir=../.. cat .ssh/id_ed25519" }],
+    ["Bash", { command: "timeout 5 env -C ../.. cat .ssh/id_ed25519" }],
+    ["Bash", { command: "env -C ../../wayak cat repo/README.md" }],
+    ["Bash", { command: "cat {../../.ssh,src}/id_ed25519" }],
+    ["Bash", { command: "cat s*/../../../.ssh/id_ed25519" }],
+    ["Bash", { command: "cat [s]rc/../../../.ssh/id_ed25519" }],
+    ["Bash", { command: "cat src/{,../../../.ssh/}id_ed25519" }],
+    ["Bash", { command: "cat src/{a,../../../wayak/repo/README.md}" }],
+    ["Bash", { command: "cat {/etc/hosts,x}" }],
+    ["Glob", { pattern: "{../../.ssh,src}/*", path: `${H}/projects/x` }],
+    ["Grep", { pattern: "KEY", glob: "{../../.ssh/*,x}" }],
+    ["Bash", { command: "xargs cat <<< ~/.ssh/id_ed25519" }],
+    ["Bash", { command: "echo ../../.ssh/id_ed25519 | xargs cat" }],
+    ["Bash", { command: "xargs -a list.txt cat" }],
+    ["Bash", { command: "wc --files0-from=list.txt" }],
+    ["Bash", { command: "CDPATH=~ cd .ssh; cat id_ed25519" }],
+    ["Bash", { command: "export CDPATH=../..; cd .ssh; cat id_ed25519" }],
+    ["Bash", { command: "pushd ../..; pushd +1; pushd +1; cat .ssh/id_ed25519" }],
+    ["Read", { file_path: "/proc/self/cwd/../../.ssh/id_ed25519" }],
+    ["Read", { file_path: "/proc/thread-self/cwd/../../.claude/settings.json" }],
+    ["Edit", { file_path: "/proc/self/cwd/../../.bashrc", old_string: "a", new_string: "b" }],
+    ["Bash", { command: "cat /dev/fd/../cwd/x" }],
+    ["Bash", { command: "cat keys/../.bashrc" }],
+    ["Bash", { command: "cat keys/../.aws/credentials" }],
+    ["Read", { file_path: `${H}/projects/x/keys/../.claude/settings.json` }],
+    ["Edit", { file_path: "keys/../.profile", old_string: "a", new_string: "b" }],
+  ] as const)
+    it(`escape attempt ${tool} ${JSON.stringify(input)} is never auto-approved`, () => {
+      const r = answeredFor(tool, input, h.ctx());
+      expect(r.auto, JSON.stringify(r.c)).toBe(false);
+    });
+
+  it("sort --compress-program runs a program, so it is not a read", () => {
+    const c = classifyToolCall("Bash", { command: "sort -S 64K --compress-prog=./e.sh big.txt" }, h.ctx());
+    expect(c.readOnly).toBe(false);
+    expect(answeredFor("Bash", { command: "sort -S 64K --compress-program=./e.sh big.txt" }, h.ctx()).coord).toBeNull();
+  });
+
+  it("a dotfiles manager's symlinked dotfile is still a hidden place (checked as written too)", () => {
+    const d = makeHome();
+    mkdirSync(join(d.home, "dotfiles/config/nvim"), { recursive: true });
+    writeFileSync(join(d.home, "dotfiles/bash_aliases"), "x");
+    symlinkSync(join(d.home, "dotfiles/bash_aliases"), join(d.home, ".bash_aliases"));
+    symlinkSync(join(d.home, "dotfiles/config"), join(d.home, ".config"));
+    for (const file of [`${d.home}/.bash_aliases`, `${d.home}/.config/nvim/init.lua`]) {
+      const r = answeredFor("Write", { file_path: file, content: "x" }, d.ctx());
+      expect(r.auto, file).toBe(false);
+      expect(r.c.workspaceEdit, file).toBe(false);
+    }
+  });
+
+  it("the coordinator never answers a read outside the workspaces", () => {
+    const p: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "x", path: h.project }] };
+    expect(answeredFor("Read", { file_path: "/etc/hosts" }, h.ctx(h.project, p)).coord).toBeNull();
+  });
+
+  it("workspaceExclude takes only absolute or ~/ paths", () => {
+    expect(PolicySchema.safeParse({ ...h.policy, workspaceExclude: ["wayak"] }).success).toBe(false);
+    expect(PolicySchema.safeParse({ ...h.policy, workspaceExclude: ["$HOME/wayak"] }).success).toBe(false);
+    expect(PolicySchema.safeParse({ ...h.policy, workspaceExclude: ["~/wayak", "/srv/x"] }).success).toBe(true);
+  });
+
   it("fenced items ask with step-up (never a silent allow, never only a tap)", () => {
     const c = classifyToolCall("Read", { file_path: `${H}/.bashrc` }, h.ctx());
     expect(
@@ -337,17 +410,31 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
   it("a dotfiles repo at the home folder: git there is fenced, a project's own repo is not", () => {
     const d = makeHome();
     mkdirSync(join(d.home, ".git"));
+    const own = join(d.home, "projects/own");
+    mkdirSync(join(own, ".git"), { recursive: true });
     const git = (cwd: string) => answeredFor("Bash", { command: "git add -A && git commit -m wip" }, d.ctx(cwd));
     expect(git(d.project).auto).toBe(false);
     expect(git(d.project).c.fenced).toBe(true);
     expect(answeredFor("Bash", { command: "git diff" }, d.ctx()).auto).toBe(false);
-    mkdirSync(join(d.project, ".git"));
-    expect(git(d.project).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    expect(git(own).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
     expect(answeredFor("Bash", { command: "git -C ../.. diff" }, d.ctx()).auto).toBe(false);
   });
 
   it("a session started in the excluded folder has no workspace", () => {
     expect(classifyToolCall("Read", { file_path: "README.md" }, h.ctx(`${H}/wayak/repo`)).noWorkspace).toBe(true);
+  });
+
+  it("a trailing `.`/`..` before a brace or variable is read both ways (name prefix and folder)", () => {
+    const p: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "x", path: h.project }] };
+    const sub = join(h.project, "src");
+    for (const command of ["cat ../../..{/.ssh/id_ed25519,}", "cat ../../..{/.bashrc,}"]) {
+      const c = classifyToolCall("Bash", { command }, h.ctx(sub, p));
+      expect(c.tier, command).toBe("CRITICAL");
+    }
+    const home = classifyToolCall("Bash", { command: "cat ../..{/.ssh/id_ed25519,}" }, h.ctx(h.project));
+    expect(answeredFor("Bash", { command: "cat ../..{/.ssh/id_ed25519,}" }, h.ctx()).auto).toBe(false);
+    expect(home.tier).toBe("CRITICAL");
+    expect(classifyToolCall("Bash", { command: "cat ~/.{ssh,aws}/x" }, h.ctx(sub, p)).tier).toBe("CRITICAL");
   });
 
   it("an ordinary project workspace keeps its behaviour (no fence inside it)", () => {

@@ -1,8 +1,8 @@
 import { realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { repoRootOf, type GitFs } from "./git-hooks.js";
+import { type GitFs } from "./git-hooks.js";
 import { foldKey, repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
@@ -118,6 +118,8 @@ interface Paths {
   holdsFence(abs: string): boolean;
   /** Is in a fence, or holds one. */
   touchesFence(abs: string): boolean;
+  /** `raw` against `cwd` with `~` expanded, symlinks not followed. */
+  lexical(raw: string, cwd?: string): string;
   /** Some workspace is or holds a fence (the home folder): an unknown path may land in one. */
   fencesReachable: boolean;
   /** Owner 2026-11-02 — a hidden place directly under home (`~/.*`, Library, AppData) when a workspace holds home. */
@@ -168,7 +170,22 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const same = (a: string, b: string) => k(a) === k(b);
   const real = ctx.realpath ?? defaultRealpath;
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
-  const res = (p: string, cwd = ctx.cwd) => real(resolve(cwd, expand(p)));
+  // `link/../x` is where the kernel goes: past the link's target, not the link's own folder.
+  const physical = (abs: string) => {
+    const root = parse(abs).root;
+    return abs
+      .slice(root.length)
+      .split(/[\\/]+/)
+      .reduce((cur, part) => {
+        if (part === "" || part === ".") return cur;
+        return part === ".." ? dirname(cur) : real(join(cur, part));
+      }, root);
+  };
+  const res = (p: string, cwd = ctx.cwd) => {
+    // Concatenated, not joined: join() would fold `link/..` before the link is followed.
+    const joined = isAbsolute(expand(p)) ? expand(p) : `${cwd}${sep}${expand(p)}`;
+    return /(^|[\\/])\.\.([\\/]|$)/.test(joined) ? real(physical(joined)) : real(resolve(joined));
+  };
   // Fail closed: a pinned workspace that now resolves elsewhere (e.g. swapped for `ln -s /`) is dropped.
   const workspaces = ctx.policy.workspaces.flatMap((w) => {
     const r = real(resolve(expand(w.path)));
@@ -240,9 +257,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const floor = [chalito, ...protectedPaths, ...agentBinaries];
   const startupFiles = STARTUP_FILES.map(h);
   const startupDirs = STARTUP_DIRS.flatMap(places);
-  // A project's own PATH entries (node_modules/.bin, ./scripts) stay workspace paths. A PATH entry
-  // in a workspace that is the home folder or above (only reachable by a hand edit of the policy)
-  // stays a PATH dir: a write there still replaces what later commands run.
+  // A project's own PATH entries (node_modules/.bin, ./scripts) stay workspace paths. In a workspace that
+  // is the home folder or above, PATH entries stay PATH dirs (fences): a write there replaces later commands.
   const homeReal = real(ctx.home);
   const projectPath = (d: string) => workspaces.some((w) => within(d, w) && !within(homeReal, w));
   const pathDirs = (ctx.pathDirs ?? [])
@@ -265,8 +281,12 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   // Each fence as written and as resolved: `grep -r x ~` reaches ~/.ssh even when it links elsewhere.
   const lexicalHome = resolve(ctx.home);
   const fenceRoots = [
-    ...FENCES.flatMap((rel) => [join(lexicalHome, ...rel.split("/")), ...places(rel)]),
-    ...pathDirs,
+    ...FENCES.map((rel) => join(lexicalHome, ...rel.split("/"))),
+    chalito,
+    ...sensitiveDirs,
+    ...sensitiveFiles,
+    ...startupFiles,
+    ...persistDirs,
     ...excludes,
   ];
   // Deny by default for hidden places once the home folder is in a workspace (security review 2026-11-02).
@@ -283,18 +303,39 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
           .split(/[\\/]/)[0] ?? "";
       return first.startsWith(".") || ["library", "appdata"].includes(first.toLowerCase());
     });
+  const coversFrom = (dirPart: string, partial: string, next: string, cwd: string): Cover => {
+    const dir = res(dirPart === "" ? "." : dirPart, cwd);
+    const abs = (dir.endsWith(sep) ? dir : dir + sep) + partial;
+    // `*`, `?` and `[…]` never match a leading dot; `{…}` and variables can produce anything.
+    const dotSafe = partial === "" && "*?[".includes(next);
+    const reaches = (target: string) => {
+      if (within(abs.endsWith(sep) ? abs.slice(0, -1) || sep : abs, target)) return true;
+      if (!k(target).startsWith(k(abs))) return false;
+      // Slice the folded path: NFC can change the length on macOS.
+      return !(dotSafe && k(target).slice(k(abs).length).startsWith("."));
+    };
+    if (floor.some(reaches)) return "hard_floor";
+    if ([...sensitiveDirs, ...sensitiveFiles, ...systemSecrets].some(reaches)) return "credentials";
+    // `~/.aider*` has no fixed name: a prefix that can expand to "~/.aider…" (`~/.ai*`, `~/.aider$X`,
+    // braces) reaches it, and so does a computed path already in it.
+    if ([...startupFiles, ...persistDirs, ...AI_CONFIG_PREFIXES.map((p) => join(homeRoot, p))].some(reaches))
+      return "persistence";
+    if (aiPrefixed(abs)) return "persistence";
+    return null;
+  };
   return {
     home: ctx.home,
     resolve: res,
     inWorkspace,
     excluded,
     hidden,
+    lexical: (p, cwd = ctx.cwd) => resolve(cwd, expand(p)),
     fencesReachable: workspaces.some(
       (w) => fenceRoots.some((f) => within(f, w)) || homeKeys.some((hk) => within(hk, w)),
     ),
     holdsFence: (abs) => fenceRoots.some((f) => within(f, abs)),
-    repoRoot: (dir) =>
-      repoRootOf(dir, { fallback: dir, ...(ctx.gitFs ? { fs: ctx.gitFs } : {}), ...(ctx.env ? { env: ctx.env } : {}) }),
+    // The cached per-folder lookup (repo-index.ts): no stat walk per git command.
+    repoRoot: (dir) => repoForPath(join(dir, "_"), { ...hooksOpts, fallback: dir })?.root ?? null,
     touchesFence: (abs) => fenceRoots.some((f) => within(f, abs) || within(abs, f)) || aiPrefixed(abs) || hidden(abs),
     hardFloor: (abs) => floor.some((f) => within(abs, f)),
     floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
@@ -373,31 +414,14 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     covers: (prefix, next, cwd) => {
       // Split into a directory we can resolve and a partial last component ("~/.chal" → "~/", ".chal").
       const slash = prefix.lastIndexOf("/");
-      let dirPart = prefix.slice(0, slash + 1);
-      let partial = prefix.slice(slash + 1);
-      // `~/.` then a glob or variable is `~/.*`, which matches dotfiles: only a bare `.`/`..` is a folder.
-      if (next === "" && (partial === "." || partial === "..")) {
-        dirPart += partial;
-        partial = "";
-      }
-      const dir = res(dirPart === "" ? "." : dirPart, cwd);
-      const abs = (dir.endsWith(sep) ? dir : dir + sep) + partial;
-      // `*`, `?` and `[…]` never match a leading dot; `{…}` and variables can produce anything.
-      const dotSafe = partial === "" && "*?[".includes(next);
-      const reaches = (target: string) => {
-        if (within(abs.endsWith(sep) ? abs.slice(0, -1) || sep : abs, target)) return true;
-        if (!k(target).startsWith(k(abs))) return false;
-        // Slice the folded path: NFC can change the length on macOS.
-        return !(dotSafe && k(target).slice(k(abs).length).startsWith("."));
-      };
-      if (floor.some(reaches)) return "hard_floor";
-      if ([...sensitiveDirs, ...sensitiveFiles, ...systemSecrets].some(reaches)) return "credentials";
-      // `~/.aider*` has no fixed name: a prefix that can expand to "~/.aider…" (`~/.ai*`, `~/.aider$X`,
-      // braces) reaches it, and so does a computed path already in it.
-      if ([...startupFiles, ...persistDirs, ...AI_CONFIG_PREFIXES.map((p) => join(homeRoot, p))].some(reaches))
-        return "persistence";
-      if (aiPrefixed(abs)) return "persistence";
-      return null;
+      const dirPart = prefix.slice(0, slash + 1);
+      const partial = prefix.slice(slash + 1);
+      // A trailing `.`/`..` is a name prefix (`~/.*` matches dotfiles) and, unless a glob follows, also
+      // a folder (`..{/.ssh/id,}`, `..$X`): check both readings.
+      const dotted = partial === "." || partial === "..";
+      const first = coversFrom(dirPart, partial, next, cwd);
+      if (first || !dotted || ("*?[".includes(next) && next !== "")) return first;
+      return coversFrom(dirPart + partial, "", next, cwd);
     },
   };
 };
@@ -507,6 +531,8 @@ const fence = (out: Classification, tier: RiskTier, reason: string): void => {
 const mark = (out: Classification, paths: Paths, tier: RiskTier, reason: string): void =>
   paths.fencesReachable ? fence(out, tier, reason) : raise(out, tier, reason);
 
+const expandTilde = (p: string, home: string) => (p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p);
+
 const markHardFloor = (out: Classification, reason = "touches ~/.chalito"): void => {
   raise(out, "CRITICAL", reason);
   out.hardFloor = true;
@@ -537,6 +563,14 @@ const classifyPath = (
   tree = false,
 ): void => {
   const abs = paths.resolve(raw, cwd);
+  const lexical = paths.lexical(raw, cwd);
+  // /proc/self/cwd and /dev/fd resolve in the agent's process, not the AI's: never trust them.
+  const given = expandTilde(raw, paths.home);
+  const device = /^\/dev\/(null|zero|u?random|tty|std(in|out|err))$/.test(given);
+  if ((!device && /^\/(proc|dev)(\/|$)/.test(given)) || /^\/proc(\/|$)/.test(lexical)) {
+    fence(out, "HIGH", "process file system path");
+    return;
+  }
   if (paths.hardFloor(abs)) {
     markHardFloor(out, paths.floorReason(abs));
     return;
@@ -556,7 +590,7 @@ const classifyPath = (
     fence(out, "HIGH", "excluded folder");
     return;
   }
-  if (paths.hidden(abs)) {
+  if (paths.hidden(abs) || paths.hidden(lexical)) {
     fence(out, "HIGH", "hidden place in the home folder");
     return;
   }
@@ -1018,6 +1052,8 @@ interface ShellState {
   tainted: boolean;
   /** An allowlisted runner (tests, lint, build) ran: LOW, but it executes code, so not read-only. */
   ranCode?: boolean;
+  /** CDPATH was set: a bare `cd name` may land anywhere. */
+  cdpath?: boolean;
 }
 
 interface Expanded {
@@ -1076,6 +1112,10 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
   const at = e.text.search(/[$`*?[{]/);
   const prefix = at === -1 ? e.text : e.text.slice(0, at);
   const next = at === -1 ? "" : e.text[at]!;
+  // `{../../.ssh,src}/x`, `s*/../../x`, `{/etc,x}`: the expanded part leaves the folder we check.
+  const tail = at === -1 ? "" : e.text.slice(at);
+  if (!opts.prose && /(^|[/{,])\.\.([/},]|$)|[{,][/~]/.test(tail))
+    mark(out, paths, "HIGH", "glob or brace that leaves its folder");
   // "~user/…" can't be resolved from here.
   const tildeUser = /^~[^/]/.test(prefix);
   if (!tildeUser) {
@@ -1142,6 +1182,7 @@ const classifySegment = (
       raise(out, "MED", `sets ${name}`);
       st.tainted = true;
     }
+    if (name === "CDPATH") st.cdpath = true;
   };
   const strip = () => {
     while (words[0] && LEADING.has(words[0].text)) words.shift();
@@ -1199,6 +1240,14 @@ const classifySegment = (
         return;
       }
       const opt = t.includes("=") ? t.slice(0, t.indexOf("=")) : t;
+      // `env -C dir`: the command runs elsewhere; the folder is checked, the cwd becomes unknown.
+      if (w === "env" && (opt === "-C" || opt === "--chdir" || /^-C./.test(t))) {
+        const dir = t.includes("=") ? t.slice(t.indexOf("=") + 1) : /^-C./.test(t) ? t.slice(2) : words[i + 1]?.text;
+        if (dir) classifyWord({ text: dir, dyn: words[i]!.dyn }, st, paths, out, { folderOnly: true });
+        st.cwd = null;
+        i += t.includes("=") || /^-C./.test(t) ? 1 : 2;
+        continue;
+      }
       if (spec.value.includes(opt)) {
         if (w === "xargs" && (opt === "-a" || opt === "--arg-file") && words[i + 1])
           classifyWord(words[i + 1]!, st, paths, out);
@@ -1232,6 +1281,9 @@ const classifySegment = (
   }
   const texts = args.map((a) => a.text);
   producerCmd.set(seg, cmd);
+  // File names read from input (`xargs`, `--files0-from`) can't be checked: never auto near a fence.
+  if (paths.fencesReachable && (viaXargs || texts.some((t) => t.startsWith("--files0-from"))))
+    fence(out, "HIGH", "paths read from input");
 
   // The agent's own CLI: directly, by path, or through a launcher (npx chalito, tsx apps/agent/src/cli.ts, script -c …).
   const isAgent = (w: Word) => {
@@ -1319,7 +1371,11 @@ const classifySegment = (
 
   if (cmd === "cd" || cmd === "pushd" || cmd === "popd") {
     const target = args.find((a) => !a.text.startsWith("-") || a.text === "-");
-    if (cmd === "popd" || target?.text === "-") {
+    const cdpath = st.cdpath || !!ctx.env?.CDPATH;
+    // bash consults CDPATH for any name not starting with `/`, `./` or `../` (`.ssh` included).
+    const bare = !!target && !/^(\/|~|\$|\.\.?(\/|$))/.test(target.text);
+    // Stack rotation (`pushd +1`) and CDPATH lookups land where we can't follow: unknown folder.
+    if (cmd === "popd" || target?.text === "-" || /^[+-]\d+$/.test(target?.text ?? "") || (cdpath && bare)) {
       st.cwd = null;
       return;
     }
@@ -1493,6 +1549,7 @@ const classifySegment = (
   if (cmd === "sort") {
     const o = optValue(["--output", "-o"]);
     if (o) writtenBy(o, "sort writes a file");
+    if (texts.some((t) => t.startsWith("--compress"))) raise(out, "MED", "sort runs a program");
   }
   if (cmd === "tree") {
     const o = optValue(["-o"]);
