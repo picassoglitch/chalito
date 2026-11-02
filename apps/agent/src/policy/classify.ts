@@ -1729,65 +1729,77 @@ const classifyBash = (command: string, ctx: ClassifyContext, paths: Paths, state
 };
 
 /**
- * Home-folder workspace (security review 2026-11-02): shell is deny-by-default. A command may be
- * auto-approved only when it stays in one project folder; null means it does, else why not.
+ * Home-folder workspace (security review 2026-11-02): shell is a positive allowlist. A command may be
+ * auto-approved only when every segment is an allowed shape that stays in one project folder.
  */
-const LINK_OR_UNPACK = new Set([
-  "ln",
-  "link",
-  "tar",
-  "unzip",
-  "cpio",
-  "7z",
-  "7za",
-  "7zr",
-  "rsync",
-  "busybox",
-  "toybox",
-  "patch",
-  "eval",
-  "source",
-  ".",
-  "exec",
-  "install",
+type Shape = (args: string[], ctx: ClassifyContext, cmd: string) => boolean;
+const noOpts = (args: string[]) => args.every((a) => !a.startsWith("-"));
+const READERS: Record<string, Shape> = {
+  ls: (a) => !a.some((x) => /^-[^-]*[RL]|^--(recursive|dereference)/.test(x)),
+  cat: () => true,
+  head: () => true,
+  tail: (a) => !a.some((x) => /^-[^-]*[fF]|^--follow/.test(x)),
+  wc: (a) => !a.some((x) => x.startsWith("--files0-from")),
+  grep: (a) => !a.some((x) => /^-[^-]*R|^--(dereference-recursive|file)/.test(x) || /^-[^-]*f/.test(x)),
+  rg: (a) => !a.some((x) => /^--(pre|follow|ignore-file|type-add)|^-[^-]*L/.test(x)),
+  echo: () => true,
+  pwd: () => true,
+  true: () => true,
+  false: () => true,
+  diff: (a) => !a.some((x) => /^-[^-]*r|^--(recursive|to-file|from-file)/.test(x)),
+  cut: () => true,
+  tr: () => true,
+  basename: () => true,
+  dirname: () => true,
+  sed: (a) => a[0] === "-n" && a.length >= 2 && /^\d+(,\d+)?p$/.test(a[1]!),
+  mkdir: (a) => a.every((x) => !x.startsWith("-") || x === "-p"),
+  touch: noOpts,
+  cp: noOpts,
+  mv: noOpts,
+  cd: (a) => a.length === 1 && !a[0]!.startsWith("-") && !/^[+-]\d+$/.test(a[0]!),
+};
+const RUN_VERBS = new Set(["run", "test", "install", "i", "add", "ci"]);
+/** The policy's own test/lint/build commands (`pnpm lint`, `npx vitest run`), word for word as a prefix. */
+const allowlisted = (words: string[], ctx: ClassifyContext) =>
+  ctx.policy.allowlist.commands.some((c) => c.split(/\s+/).every((p, i) => words[i] === p));
+const MOVES = /^--?(prefix|dir|cwd|C|g|global|location|filter|workspace-root|w)(=|$)/;
+const pkg: Shape = (a, ctx, cmd) =>
+  (RUN_VERBS.has(a[0] ?? "") && !a.slice(1).some((x) => MOVES.test(x))) || allowlisted([cmd, ...a], ctx);
+// Only these git subcommands, never a global option (`-c`, `-C`, `--git-dir`, `--exec-path` run or move things).
+const GIT_OK = new Set([
+  "status",
+  "diff",
+  "log",
+  "show",
+  "add",
+  "commit",
+  "branch",
+  "rev-parse",
+  "ls-files",
+  "blame",
+  "push",
 ]);
-const HOME_TOUCHERS = new Set([
-  "ssh",
-  "scp",
-  "sftp",
-  "ssh-keygen",
-  "ssh-add",
-  "gpg",
-  "crontab",
-  "launchctl",
-  "chsh",
-  "systemctl",
-]);
-// Git subcommands that write the tree from history (can materialize symlinks) or touch global config.
-const GIT_TREE_WRITERS = new Set([
-  "checkout",
-  "switch",
-  "restore",
-  "reset",
-  "worktree",
-  "clone",
-  "submodule",
-  "merge",
-  "pull",
-  "rebase",
-  "cherry-pick",
-  "am",
-  "apply",
-  "revert",
-  "stash",
-  "config",
-  "credential",
-  "read-tree",
-  "update-index",
-]);
-const SET_VARS = /^(HOME|CDPATH|ZDOTDIR|XDG_\w+|GIT_\w+|PATH|BASH_ENV|ENV|LD_\w+|DYLD_\w+)=/;
+const RUNNERS: Record<string, Shape> = {
+  pnpm: pkg,
+  npm: pkg,
+  yarn: pkg,
+  bun: pkg,
+  npx: (a, ctx) => allowlisted(["npx", ...a], ctx),
+  vitest: (a) => !a.some((x) => /^--(config|c|root|dir|environment)\b/.test(x)),
+  pytest: (a) => !a.some((x) => /^(-p|-c|--rootdir|--confcutdir)/.test(x)),
+  node: (a) => a.length > 0 && noOpts(a.slice(0, 1)) && !a[0]!.startsWith("-"),
+  tsx: (a) => a.length > 0 && !a[0]!.startsWith("-"),
+  git: (a) => {
+    const sub = a[0] ?? "";
+    if (!GIT_OK.has(sub)) return sub === "stash" && (a.length === 1 || ["push", "list"].includes(a[1]!));
+    return !a.some(
+      (x) =>
+        /^--(ext-diff|exec|upload-pack|receive-pack|textconv|output)/.test(x) || x === "--global" || x === "--system",
+    );
+  },
+};
 
-/** Quote-aware scan for expansions and grouping the allowlist doesn't model. */
+/** Quote-aware scan: expansions, grouping, globs and here-documents aren't modelled by the allowlist. */
 const unmodelled = (command: string): string | null => {
   let q: "'" | '"' | null = null;
   for (let i = 0; i < command.length; i++) {
@@ -1796,20 +1808,20 @@ const unmodelled = (command: string): string | null => {
       if (c === "'") q = null;
       continue;
     }
-    if (c === "\\") {
-      i++;
-      continue;
-    }
+    if (c === "\\") return "backslash escape";
     if (q === '"') {
       if (c === '"') q = null;
       else if (c === "$" || c === "`") return "expansion";
       continue;
     }
     if (c === "'" || c === '"') q = c;
-    else if ("$`(){}".includes(c)) return c === "$" || c === "`" ? "expansion" : "grouping";
+    else if (c === "$" || c === "`") return "expansion";
+    else if ("(){}".includes(c)) return "grouping";
+    else if ("*?[".includes(c)) return "glob";
+    else if (c === "~") return "home shorthand";
     else if (c === "<" && command[i + 1] === "<") return "here-document";
   }
-  return null;
+  return q ? "unclosed quote" : null;
 };
 
 const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): string | null => {
@@ -1820,46 +1832,23 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
   if (bad) return bad;
   const segs = splitShell(command);
   if (!segs) return "unparseable";
-  const inside = (w: string) => {
-    if (w.startsWith("~") || w.includes("$") || w.includes("`")) return false;
-    return [paths.resolve(w, cwd), paths.lexical(w, cwd)].every((p) => paths.within(p, project));
-  };
+  let here = cwd;
+  const inside = (w: string) => [paths.resolve(w, here), paths.lexical(w, here)].every((p) => paths.within(p, project));
   for (const seg of segs) {
-    let words = [...seg.words];
-    while (words[0] && /^[A-Za-z_]\w*=/.test(words[0])) {
-      if (SET_VARS.test(words[0])) return "sets an environment variable that moves files";
-      words = words.slice(1);
-    }
-    if (words.some((w) => SET_VARS.test(w))) return "sets an environment variable that moves files";
-    const cmd = cmdName(words[0]);
+    const words = seg.words;
+    if (!words.length) continue;
+    if (words.some((w, i) => i === 0 && /^[A-Za-z_]\w*=/.test(w))) return "sets an environment variable";
+    const cmd = words[0]!;
     const args = words.slice(1);
-    if (!cmd) continue;
-    if (LINK_OR_UNPACK.has(cmd) || SHELLS.has(cmd) || HOME_TOUCHERS.has(cmd)) return `${cmd} isn't allowed on its own`;
-    if (
-      cmd === "cp" &&
-      args.some((a) => /^-[^-]*[sadPlrR]/.test(a) || /^--(symbolic-link|archive|no-dereference|link|recursive)/.test(a))
-    )
-      return "cp that may copy links";
-    if (cmd === "git" && args.some((a) => GIT_TREE_WRITERS.has(a) || a === "--global" || a === "--system"))
-      return "git that rewrites the tree";
-    if (
-      ["npm", "pnpm", "yarn", "bun"].includes(cmd) &&
-      args.some((a) => ["login", "logout", "adduser", "config", "token", "set"].includes(a))
-    )
-      return "package manager account or config";
-    if (cmd === "gh" && args[0] === "auth") return "gh auth";
-    if (
-      cmd === "popd" ||
-      ((cmd === "cd" || cmd === "pushd") && (args.length === 0 || args.some((a) => a === "-" || /^[+-]\d+$/.test(a))))
-    )
-      return "changes folder where it can't be followed";
-    for (const w of [...words, ...seg.writes.map((x) => x.text), ...seg.reads.map((x) => x.text)]) {
+    const shape = READERS[cmd] ?? RUNNERS[cmd];
+    if (!shape) return `${cmd.slice(0, 40)} isn't on the home-workspace allowlist`;
+    if (!shape(args, ctx, cmd)) return `${cmd} with options outside the allowlist`;
+    for (const w of [...args, ...seg.writes.map((x) => x.text), ...seg.reads.map((x) => x.text)]) {
       const value = /^-[^=]*=/.test(w) ? w.slice(w.indexOf("=") + 1) : /^-[A-Za-z]./.test(w) ? w.slice(2) : w;
-      if (w === words[0] && !value.includes("/")) continue;
-      if (PLAIN_DEVICE.test(value) || /^&\d$/.test(value)) continue;
-      if (value && !value.startsWith("-") && !inside(value)) return "names a path outside the project";
-      if (value.startsWith("~") || value.includes("$")) return "names a path outside the project";
+      if (PLAIN_DEVICE.test(value) || /^&\d$/.test(value) || value === "" || value.startsWith("-")) continue;
+      if (!inside(value)) return "names a path outside the project";
     }
+    if (cmd === "cd") here = paths.resolve(args[0]!, here);
   }
   return null;
 };
