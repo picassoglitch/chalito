@@ -112,6 +112,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
     () => (conn ? new CustomCompanion(conn.avatar, { beforeWear: () => store.flushCompanion() }) : null),
     [conn, store],
   );
+  useEffect(() => () => custom?.dispose(), [custom]);
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);

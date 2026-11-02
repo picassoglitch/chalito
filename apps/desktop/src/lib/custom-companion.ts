@@ -53,7 +53,7 @@ export const httpCompanionAvatar = (
       if (!r.ok) return (warn(`${step} HTTP ${r.status}`), { kind: "error" });
       return { kind: "ok", json: await until(r.json().catch(() => null)) };
     } catch {
-      if (!sent) return (warn(`${step} no token`), { kind: "error" });
+      if (!sent) return (warn(`${step} token timeout`), { kind: "error" });
       warn(`${step} ${signal.aborted ? "aborted" : "network error"}`);
       // The server may still have done it.
       return { kind: "unknown" };
@@ -171,12 +171,24 @@ export class CustomCompanion {
     this.#next = null;
     this.#intent = { kind: "roster", applied: true };
     apply();
-    // An unanswered /use may still land: its reads stay, and so does the error until they agree.
-    if (!this.#reconciling) {
+    // An unanswered /use may still land: the error stays until a read agrees. That read waits
+    // past the companion save's debounce, which can itself clear a late-landed character.
+    if (this.#reconciling) this.#scheduleReconcile("last-reconcile");
+    else {
       this.#gen++;
       this.#set({ failed: false });
     }
     return Promise.resolve();
+  }
+
+  /** Stops a pending re-read (the panel dropped this instance: sign-out or a new connection). */
+  dispose(): void {
+    this.#endReconcile();
+  }
+
+  #scheduleReconcile(mode: "reconcile" | "last-reconcile"): void {
+    clearTimeout(this.#reconcileTimer);
+    this.#reconcileTimer = setTimeout(() => void this.#reload(mode), this.opts.reconcileMs ?? 3_000);
   }
 
   async #reload(mode: "load" | "after-error" | "reconcile" | "last-reconcile"): Promise<void> {
@@ -247,8 +259,7 @@ export class CustomCompanion {
       this.#reloadAfter = true;
       if (r === "unknown") {
         this.#reconciling = true;
-        clearTimeout(this.#reconcileTimer);
-        this.#reconcileTimer = setTimeout(() => void this.#reload("reconcile"), this.opts.reconcileMs ?? 3_000);
+        this.#scheduleReconcile("reconcile");
       }
       return;
     }

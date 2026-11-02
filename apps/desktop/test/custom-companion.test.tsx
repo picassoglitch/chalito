@@ -461,7 +461,7 @@ describe("picks never get stuck", () => {
     await realWait(120);
     expect(screen.getByRole("alert").textContent).toBe("Couldn't switch your character. Try again.");
     expect(b.log.some((l) => l.startsWith("use:"))).toBe(false);
-    expect(warn.mock.calls.map((c) => String(c[0]))).toContain("custom companion: use no token");
+    expect(warn.mock.calls.map((c) => String(c[0]))).toContain("custom companion: use token timeout");
     fireEvent.click(roster("bruno"));
     expect(store.getSnapshot().values?.avatar).toBe("bruno");
   });
@@ -486,6 +486,42 @@ describe("picks never get stuck", () => {
     expect(steps()).toContain("custom companion: kept no token");
     const all = JSON.stringify(warn.mock.calls);
     expect(all).not.toMatch(/device-token|Bearer|sig=|googleapis/);
+  });
+
+  it("a roster pick after the re-reads of an unanswered wear is checked against the server, and the error clears", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const b = backend();
+    const { store } = mount(b, { locale: "en", timeoutMs: 50 });
+    await ready(store);
+    b.hold("/use"); // never lands
+    fireEvent.click(own());
+    await realWait(120);
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    await settle();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    const reads = b.log.filter((l) => l === "GET /creations").length;
+    fireEvent.click(roster("bruno"));
+    await act(() => vi.advanceTimersByTimeAsync(3_000));
+    await settle();
+    expect(b.log.filter((l) => l === "GET /creations").length).toBe(reads + 1);
+    expect(b.state).toMatchObject({ worn: null, avatar: "bruno" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(checked()).toEqual(["bruno"]);
+  });
+
+  it("dispose stops a pending re-read", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const b = backend();
+    const { store, custom } = mount(b, { timeoutMs: 50 });
+    await ready(store);
+    b.hold("/use");
+    fireEvent.click(own());
+    await realWait(120);
+    const reads = b.log.filter((l) => l === "GET /creations").length;
+    custom.dispose();
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    await settle();
+    expect(b.log.filter((l) => l === "GET /creations").length).toBe(reads);
   });
 });
 
