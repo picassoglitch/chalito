@@ -1786,21 +1786,31 @@ const pkg: Shape = (a, ctx, cmd) => {
   const dash = rest.indexOf("--");
   return (dash === -1 ? rest : rest.slice(0, dash)).every((x) => !x.startsWith("-"));
 };
-// Only these git subcommands and options; never a global option (`-c`, `-C`, `--git-dir`, `--exec-path`).
-const GIT_OK = new Set(["status", "diff", "log", "show", "add", "commit", "branch", "rev-parse", "ls-files", "blame"]);
-const GIT_LONG = [
-  "--stat",
-  "--oneline",
-  "--cached",
-  "--staged",
-  "--name-only",
-  "--name-status",
-  "--short",
-  "--porcelain",
-  "--all",
-  "--graph",
-  "--no-color",
-];
+// git: per-subcommand exact options, never a global option (`-c`, `-C`, `--git-dir`, `--exec-path`).
+const GIT_OPTS: Record<string, string[]> = {
+  status: ["-s", "-b", "-sb", "--short", "--porcelain"],
+  diff: ["--stat", "--cached", "--staged", "--name-only", "--name-status", "--no-color"],
+  log: ["-p", "--oneline", "--stat", "--graph", "--no-color", "--name-only"],
+  show: ["--stat", "--name-only", "--no-color"],
+  branch: [],
+  "rev-parse": ["--show-toplevel", "--abbrev-ref"],
+  "ls-files": [],
+  blame: [],
+  add: [],
+};
+const gitShape = (a: string[]): boolean => {
+  const sub = a[0] ?? "";
+  const rest = a.slice(1);
+  if (sub === "stash") return rest.length === 0 || (rest.length === 1 && ["push", "list"].includes(rest[0]!));
+  // `commit -m <msg>` only (no -a): what's staged was staged by an allowed `git add`.
+  if (sub === "commit")
+    return rest.length >= 2 && rest.length % 2 === 0 && rest.every((x, i) => i % 2 === 1 || x === "-m");
+  const ok = GIT_OPTS[sub];
+  if (!ok || !Object.hasOwn(GIT_OPTS, sub)) return false;
+  // `rev:path` names a file in history, maybe from anywhere: never auto in these.
+  if (["show", "log", "diff", "blame"].includes(sub) && rest.some((x) => x.includes(":"))) return false;
+  return rest.every((x) => !x.startsWith("-") || ok.includes(x) || (sub === "log" && /^-\d+$/.test(x)));
+};
 const RUNNERS: Record<string, Shape> = {
   pnpm: pkg,
   npm: pkg,
@@ -1811,12 +1821,7 @@ const RUNNERS: Record<string, Shape> = {
   pytest: opts(/^-[vqsx]+$/),
   node: (a) => a.length > 0 && !a[0]!.startsWith("-"),
   tsx: (a) => a.length > 0 && !a[0]!.startsWith("-"),
-  git: (a) => {
-    const sub = a[0] ?? "";
-    const rest = a.slice(1);
-    if (sub === "stash") return rest.length === 0 || (rest.length === 1 && ["push", "list"].includes(rest[0]!));
-    return GIT_OK.has(sub) && rest.every((x) => !x.startsWith("-") || /^-[A-Za-z]+$/.test(x) || GIT_LONG.includes(x));
-  },
+  git: gitShape,
 };
 
 /** Quote-aware scan: expansions, grouping, globs and here-documents aren't modelled by the allowlist. */
@@ -1862,6 +1867,21 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
     const shape = Object.hasOwn(READERS, cmd) ? READERS[cmd] : Object.hasOwn(RUNNERS, cmd) ? RUNNERS[cmd] : undefined;
     if (!shape) return `${cmd.slice(0, 40)} isn't on the home-workspace allowlist`;
     if (!shape(args, ctx, cmd)) return `${cmd} with options outside the allowlist`;
+    // A dash-word carrying a path or URL (`--out=../x`, `-o/x`, `-1x`) and URL-like words always ask.
+    if (args.some((x) => (x.startsWith("-") && /[/\\.:=]/.test(x)) || /^-\d+\D/.test(x)))
+      return "option with a path or URL";
+    if (
+      args.some((x) =>
+        /^[a-z][a-z0-9+.-]*:\/\/|^(file|link|git|github|gitlab|bitbucket|ssh|npm|workspace|portal):/i.test(x),
+      )
+    )
+      return "URL";
+    if (cmd === "git") {
+      const root = paths.repoRoot(cwd);
+      if (!root || !paths.within(root, project)) return "git outside the project's own repository";
+      if (args[0] === "add" && args.slice(1).some((x) => paths.within(root, paths.resolve(x, cwd))))
+        return "git add of the whole repository";
+    }
     for (const w of [...args, ...seg.writes.map((x) => x.text), ...seg.reads.map((x) => x.text)]) {
       // `-o/path` (attached short value) and every piece around `=` or `,` (`log_file=../x`) may be a path.
       const word = /^-[A-Za-z]./.test(w) ? w.slice(2) : w;

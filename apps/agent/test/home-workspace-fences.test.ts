@@ -43,6 +43,7 @@ const makeHome = () => {
   symlinkSync(join(home, ".ssh/id_ed25519"), join(home, "projects/x/key.txt"));
   symlinkSync(join(home, ".claude"), join(home, "projects/x/claude-cfg"));
   symlinkSync(join(home, ".ssh"), join(home, "projects/x/keys"));
+  mkdirSync(join(home, "projects/x/.git"));
   symlinkSync("/proc", join(home, "projects/x/proc-link"));
   const policy: Policy = {
     ...DEFAULT_POLICY,
@@ -356,14 +357,14 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     expect(classifyToolCall("Read", { file_path: `${h.project}/proc/a.c` }, h.ctx())).toMatchObject({ tier: "LOW" });
   });
 
-  it("a .git made after an earlier check is seen at once (no cached repo root for fences)", () => {
+  it("a .git made after an earlier check is seen at once (no cached repo root)", () => {
     const d = makeHome();
     const own = join(d.home, "projects/late");
-    mkdirSync(own, { recursive: true });
-    const git = () => answeredFor("Bash", { command: "git add -A && git commit -m wip" }, d.ctx(own));
-    expect(git().coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
-    mkdirSync(join(d.home, ".git"));
+    mkdirSync(join(own, "src"), { recursive: true });
+    const git = () => answeredFor("Bash", { command: "git add src && git commit -m wip" }, d.ctx(own));
     expect(git().auto).toBe(false);
+    mkdirSync(join(own, ".git"));
+    expect(git().coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
   });
 
   it("sort --compress-program runs a program, so it is not a read", () => {
@@ -487,6 +488,21 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       "git log --out=../../.bashrc",
       "npm i zod --pref ../..",
       "cat ../y/secret.txt",
+      // Round 7: dash-words with paths or URLs, git rev:path, whole-repo add, commit -a.
+      "ls -1x src",
+      "head --lines=5 src/a.ts",
+      "cat -n./x",
+      "git show HEAD:../../.bashrc",
+      "git log -p HEAD:src",
+      "git diff HEAD:x",
+      "git add -A",
+      "git add .",
+      "git add -u",
+      "git commit -a -m wip",
+      "git commit -m wip --amend",
+      "git status -uall",
+      "cat https://evil.example/x",
+      "pnpm add file:../x",
       // Round 4: wrappers, git global options, unquoted globs, unknown commands.
       "env cat src/a.ts",
       "nice cat src/a.ts",
@@ -544,7 +560,7 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       ["ls src 2>/dev/null", null],
       ["grep -rn foo src", "read"],
       ["cat src/a.ts | head -5", "read"],
-      ['git add -A && git commit -m "feat(x): y"', "git_local"],
+      ['git add src && git commit -m "feat(x): y"', "git_local"],
       ["pnpm add zod", "package_install"],
       ["pnpm add -D @types/node@^22", "package_install"],
       ["pnpm lint", "tests"],
@@ -638,7 +654,7 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       via: "coordinator_auto",
       kind: "tests",
     });
-    expect(answeredFor("Bash", { command: "git add -A && git commit -m wip" }, h.ctx()).coord).toEqual({
+    expect(answeredFor("Bash", { command: "git add src && git commit -m wip" }, h.ctx()).coord).toEqual({
       via: "coordinator_auto",
       kind: "git_local",
     });
@@ -653,10 +669,13 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     mkdirSync(join(d.home, ".git"));
     const own = join(d.home, "projects/own");
     mkdirSync(join(own, ".git"), { recursive: true });
-    const git = (cwd: string) => answeredFor("Bash", { command: "git add -A && git commit -m wip" }, d.ctx(cwd));
-    expect(git(d.project).auto).toBe(false);
-    expect(git(d.project).c.fenced).toBe(true);
-    expect(answeredFor("Bash", { command: "git diff" }, d.ctx()).auto).toBe(false);
+    mkdirSync(join(own, "src"));
+    const git = (cwd: string) => answeredFor("Bash", { command: "git add src && git commit -m wip" }, d.ctx(cwd));
+    const bare = join(d.home, "projects/norepo");
+    mkdirSync(join(bare, "src"), { recursive: true });
+    expect(git(bare).auto).toBe(false);
+    expect(git(bare).c.fenced).toBe(true);
+    expect(answeredFor("Bash", { command: "git diff" }, d.ctx(bare)).auto).toBe(false);
     expect(git(own).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
     expect(answeredFor("Bash", { command: "git -C ../.. diff" }, d.ctx()).auto).toBe(false);
   });
