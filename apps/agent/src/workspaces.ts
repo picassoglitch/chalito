@@ -12,6 +12,7 @@ import {
   STARTUP_FILES,
 } from "./policy/persistence.js";
 import type { Policy } from "./policy/index.js";
+import { expandHome } from "./workspace-path.js";
 
 /**
  * Workspaces from the desktop panel (First Run C, ADR 0028): the person picks a folder with the
@@ -25,13 +26,14 @@ import type { Policy } from "./policy/index.js";
  */
 
 export type AddWorkspaceResult =
-  | { ok: true; label: string; added: boolean }
+  | { ok: true; label: string; added: boolean; home?: true }
   | {
       ok: false;
       reason: WorkspaceProblem | "not_a_folder" | "os_auth_failed" | "too_many";
     };
 
-export type WorkspaceProblem = "too_broad" | "chalito_folder" | "sensitive" | "startup" | "ai_config";
+export type WorkspaceProblem =
+  "too_broad" | "chalito_folder" | "sensitive" | "startup" | "ai_config" | "excluded" | "hidden";
 
 export interface WorkspaceDeps {
   policy: { get(): Policy; set(p: Policy, via: "local"): Promise<void> };
@@ -138,13 +140,18 @@ export const workspaceProblem = (
      * profiles, folder redirection), so the AppData entries are checked under them too.
      */
     env?: Record<string, string | undefined>;
+    /** The policy's `workspaceExclude`, resolved: never a workspace, nor inside or above one. */
+    exclude?: string[];
   },
 ): WorkspaceProblem | null => {
   const { P, key, within } = pathsFor(o.platform);
   const root = P.parse(dir).root;
   if (key(dir) === key(root)) return "too_broad";
-  // The whole home folder (or anything above it) holds ~/.chalito, keys and every other app's data.
+  // Owner 2026-11-02: the home folder itself may be a workspace; its fences still ask (classify.ts).
+  if (key(dir) === key(o.home)) return null;
+  // Anything above the home folder holds other people's homes or the system.
   if (within(o.home, dir)) return "too_broad";
+  if ((o.exclude ?? []).some((x) => within(dir, x) || within(x, dir))) return "excluded";
   if (within(dir, o.chalitoDir) || within(o.chalitoDir, dir)) return "chalito_folder";
   const appData = (name: string) => o.env?.[name] ?? o.env?.[name.toUpperCase()];
   // A home-relative entry; AppData ones also under the real %APPDATA% / %LOCALAPPDATA%.
@@ -178,7 +185,11 @@ export const workspaceProblem = (
     const first = P.relative(key(o.home), key(dir)).split(/[\\/]/)[0] ?? "";
     if (AI_CONFIG_PREFIXES.some((p) => first.startsWith(p.toLowerCase()) || first.startsWith(p))) return "ai_config";
   }
-  if (within(dir, o.home)) return null;
+  if (within(dir, o.home)) {
+    // Hidden places under home are fenced in a home workspace (classify.ts), so never one on their own.
+    const first = P.relative(key(o.home), key(dir)).split(/[\\/]/)[0] ?? "";
+    return first.startsWith(".") || ["library", "appdata"].includes(first.toLowerCase()) ? "hidden" : null;
+  }
 
   if (o.platform === "win32") {
     for (const d of WIN_DENY) if (within(dir, P.join(root, d))) return "too_broad";
@@ -230,12 +241,14 @@ export const addWorkspace = async (d: WorkspaceDeps, rawPath: string): Promise<A
   ]
     .filter((p) => p && P.isAbsolute(p))
     .map(resolved);
-  const problem = workspaceProblem(dir, { home, chalitoDir, platform, pathDirs, resolve: resolved, env });
-  if (problem) return { ok: false, reason: problem };
-
   const policy = d.policy.get();
+  const exclude = (policy.workspaceExclude ?? []).map((p) => resolved(expandHome(p, home)));
+  const problem = workspaceProblem(dir, { home, chalitoDir, platform, pathDirs, resolve: resolved, env, exclude });
+  if (problem) return { ok: false, reason: problem };
+  const isHome = key(dir) === key(home) ? ({ home: true } as const) : {};
+
   const existing = policy.workspaces.find((w) => key(w.path) === key(dir));
-  if (existing) return { ok: true, label: existing.label, added: false };
+  if (existing) return { ok: true, label: existing.label, added: false, ...isHome };
   if (policy.workspaces.length >= MAX_WORKSPACES) return { ok: false, reason: "too_many" };
 
   const label = labelFor(
@@ -250,10 +263,10 @@ export const addWorkspace = async (d: WorkspaceDeps, rawPath: string): Promise<A
   // Re-read: the policy may have changed while the OS prompt was open.
   const now = d.policy.get();
   if (now.workspaces.some((w) => key(w.path) === key(dir)))
-    return { ok: true, label: now.workspaces.find((w) => key(w.path) === key(dir))!.label, added: false };
+    return { ok: true, label: now.workspaces.find((w) => key(w.path) === key(dir))!.label, added: false, ...isHome };
   await d.policy.set({ ...now, workspaces: [...now.workspaces, { label, path: dir }] }, "local");
   d.emit("workspace.added", { label });
-  return { ok: true, label, added: true };
+  return { ok: true, label, added: true, ...isHome };
 };
 
 /** Tightening only: no OS check. True when something was removed. */

@@ -627,6 +627,8 @@
     "folders": {
       "title": "Folders Chalito can work in",
       "hint": "Choose your project folders. Chalito only works inside them, and your computer will ask for your password to add one.",
+      "protected": "You can also choose your whole home folder. Even then, Chalito always asks you first before touching any hidden place in it (names starting with a dot, Library, AppData): your keys and passwords (.ssh, .aws…), startup files (.bashrc, .profile…), your AIs' settings (.claude, .codex…), its own folder, plus any folder you excluded.",
+      "addedHome": "Done: Chalito can now work in your home folder. Its hidden places (keys, startup files, AI settings) and excluded folders stay protected: it will always ask you first.",
       "none": "None yet: add a project folder to get started.",
       "add": "Add a folder",
       "remove": "Remove",
@@ -635,7 +637,9 @@
       "unavailable": "Connect this computer first; then you can choose folders here.",
       "error": {
         "not_a_folder": "That isn't a folder I can open.",
-        "too_broad": "That folder is too broad (for example, your whole home folder or a system folder). Choose a project folder.",
+        "too_broad": "That folder is too broad (for example, the whole disk, a system folder or another person's folder). Choose your home folder or a project folder.",
+        "hidden": "That's a hidden folder in your home folder (its name starts with a dot, or it's Library or AppData), where apps keep their settings and keys. Choose a project folder.",
+        "excluded": "That folder is on your excluded list, so Chalito never works there. Choose another one.",
         "chalito_folder": "That's Chalito's own internal folder; choose another one.",
         "os_auth_failed": "Your computer didn't confirm it was you, so I didn't add it.",
         "too_many": "You already have the maximum number of folders. Remove one to add another.",

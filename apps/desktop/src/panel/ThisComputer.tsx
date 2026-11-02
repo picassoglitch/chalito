@@ -49,7 +49,16 @@ export const ThisComputer = ({ api, ipc }: { api: ThisComputerApi; ipc: AgentIpc
       if (r.ok)
         setNotice({
           kind: r.added ? "added" : "already",
-          text: t(r.added ? "computer.folders.added" : "computer.folders.already", { label: r.label }),
+          text: t(
+            r.home && r.added
+              ? "computer.folders.addedHome"
+              : r.added
+                ? "computer.folders.added"
+                : "computer.folders.already",
+            {
+              label: r.label,
+            },
+          ),
         });
       else setNotice({ kind: "error", text: t(`computer.folders.error.${r.reason}`) });
     } catch {
@@ -101,6 +110,9 @@ export const ThisComputer = ({ api, ipc }: { api: ThisComputerApi; ipc: AgentIpc
       ) : (
         <>
           <p className="muted">{t("computer.folders.hint")}</p>
+          <p className="muted" data-folders="protected">
+            {t("computer.folders.protected")}
+          </p>
           {folders && folders.length === 0 && <p data-folders="none">{t("computer.folders.none")}</p>}
           {folders && folders.length > 0 && (
             <ul data-folders="list">

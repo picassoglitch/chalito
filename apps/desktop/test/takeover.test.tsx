@@ -266,6 +266,8 @@ describe("Esta computadora: start with the computer and the folders", () => {
       ["sensitive", /guarda llaves o contraseñas/],
       ["startup", /puede ejecutarse solo/],
       ["ai_config", /configuración de una IA/],
+      ["excluded", /lista de excluidas/],
+      ["hidden", /carpeta oculta/],
     ] as const) {
       const refusing = ipcWith({
         workspaces: async () => ({ workspaces: [] }),
@@ -276,6 +278,21 @@ describe("Esta computadora: start with the computer and the folders", () => {
       expect((await screen.findByRole("alert")).textContent).toMatch(text);
       cleanup();
     }
+  });
+
+  it("the home folder can be chosen: a note says what stays protected, and adding it repeats that", async () => {
+    const homeIpc = ipcWith({
+      workspaces: async () => ({ workspaces: [] }),
+      addWorkspace: async () => ({ ok: true, label: "ana", added: true, home: true }),
+    });
+    const { container } = withText(
+      <ThisComputer api={api({ pickFolder: vi.fn(async () => "/home/ana") })} ipc={homeIpc.ipc} />,
+      "en",
+    );
+    const note = await waitFor(() => container.querySelector('[data-folders="protected"]')!);
+    expect(note.textContent).toMatch(/whole home folder.*\.ssh.*\.bashrc.*\.claude/);
+    fireEvent.click(await screen.findByRole("button", { name: "Add a folder" }));
+    expect((await screen.findByRole("status")).textContent).toMatch(/your home folder.*stay protected/);
   });
 
   it("a folder can be removed", async () => {

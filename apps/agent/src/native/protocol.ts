@@ -274,7 +274,9 @@ export const nativeHookOutput = (
 
 /** Written by the agent so a hook can tell workspace folders apart while the agent is down. */
 export const NATIVE_WORKSPACES_FILE = "native-workspaces.json";
-const WorkspacesFile = z.object({ v: z.literal(1), paths: z.array(z.string().min(1).max(4096)).max(1000) });
+const PathList = z.array(z.string().min(1).max(4096)).max(1000);
+// `exclude` (#home-workspace): folders outside every workspace; a hook that predates it denies there.
+const WorkspacesFile = z.object({ v: z.literal(1), paths: PathList, exclude: PathList.optional() });
 
 /** Every form a policy path may take (`~`, as written, resolved): more paths only means more denials. */
 export const nativeWorkspacePaths = (workspaces: { path: string; realPath?: string }[], home: string): string[] => {
@@ -289,12 +291,13 @@ export const nativeWorkspacePaths = (workspaces: { path: string; realPath?: stri
   return [...out];
 };
 
-export const writeNativeWorkspaces = (dir: string, paths: string[]): void => {
+export const writeNativeWorkspaces = (dir: string, paths: string[], exclude: string[] = []): void => {
   const file = join(dir, NATIVE_WORKSPACES_FILE);
+  const body = { v: 1 as const, paths, ...(exclude.length ? { exclude } : {}) };
   // A list the hook would reject must not be written: the caller removes the old one instead.
-  WorkspacesFile.parse({ v: 1, paths });
+  WorkspacesFile.parse(body);
   const temp = `${file}.${randomUUID()}.tmp`;
-  writeFileSync(temp, `${JSON.stringify({ v: 1, paths })}\n`, { mode: 0o600, flag: "wx" });
+  writeFileSync(temp, `${JSON.stringify(body)}\n`, { mode: 0o600, flag: "wx" });
   try {
     renameSync(temp, file);
   } finally {
@@ -308,20 +311,20 @@ export const nativeWorkspaceStatus = (
   cwd: string,
   platform: NodeJS.Platform = process.platform,
 ): "inside" | "outside" | "unknown" => {
-  let paths: string[];
+  let file: z.infer<typeof WorkspacesFile>;
   try {
     const raw = readFileSync(join(dir, NATIVE_WORKSPACES_FILE), "utf8");
     if (raw.length > 4 * 1024 * 1024) return "unknown";
-    paths = WorkspacesFile.parse(JSON.parse(raw)).paths;
+    file = WorkspacesFile.parse(JSON.parse(raw));
   } catch {
     return "unknown";
   }
   const fold = (p: string) => (platform === "win32" || platform === "darwin" ? p.toLowerCase() : p);
   const here = fold(realOrResolved(cwd));
-  return paths.some((p) => {
-    const root = fold(p);
-    return here === root || here.startsWith(root.endsWith(sep) ? root : root + sep);
-  })
-    ? "inside"
-    : "outside";
+  const under = (list: string[]) =>
+    list.some((p) => {
+      const root = fold(p);
+      return here === root || here.startsWith(root.endsWith(sep) ? root : root + sep);
+    });
+  return under(file.paths) && !under(file.exclude ?? []) ? "inside" : "outside";
 };

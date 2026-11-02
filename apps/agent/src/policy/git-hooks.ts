@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 
 /**
  * Where git would run a workspace repo's hooks from, worked out WITHOUT running git (running a
@@ -541,6 +541,122 @@ export const repoRootOf = (path: string, o: { fs?: GitFs; env?: GitEnv; fallback
     if (up === cur) return null;
     cur = up;
   }
+};
+
+// Security review 2026-11-02 — git skips a `.git` that isn't a repo and walks up: only a real git dir
+// (valid HEAD, objects/, refs/, commondir) resolved inside `project` counts; unreadable is null.
+export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = {}): string | null => {
+  const fs = o.fs ?? nodeFs;
+  const dot = join(root, ".git");
+  const kind = fs.isDir(dot);
+  if (kind === null) return null;
+  let dir = dot;
+  if (!kind) {
+    let text: string;
+    try {
+      text = fs.read(dot);
+    } catch {
+      return null;
+    }
+    const m = /^gitdir: ?(.+?)\s*$/.exec(text);
+    if (!m) return null;
+    dir = resolve(root, m[1]!);
+  }
+  let realProject: string;
+  try {
+    realProject = fs.realpath(project);
+  } catch {
+    return null;
+  }
+  const insideProject = (p: string): string | null => {
+    try {
+      const r = fs.realpath(p);
+      const rel = relative(realProject, r);
+      return isAbsolute(rel) || rel.split(sep)[0] === ".." ? null : r;
+    } catch {
+      return null;
+    }
+  };
+  const real = insideProject(dir);
+  if (!real) return null;
+  // HEAD as git validates it: a symbolic ref into refs/ or a full sha (SHA-1 or SHA-256).
+  // A symlinked HEAD (legacy) or anything but a regular file fails closed.
+  const headPath = join(real, "HEAD");
+  let head: string;
+  try {
+    if (fs.isDir(headPath) !== false || fs.realpath(headPath) !== headPath) return null;
+    head = fs.read(headPath);
+  } catch {
+    return null;
+  }
+  if (!/^(ref: refs\/\S+|[0-9a-f]{40}|[0-9a-f]{64})\s*$/.test(head)) return null;
+  // A worktree's objects/ and refs/ live in its commondir: it must be inside the project too.
+  let common = real;
+  if (fs.isDir(join(real, "commondir")) !== null) {
+    let text: string;
+    try {
+      text = fs.read(join(real, "commondir"));
+    } catch {
+      return null;
+    }
+    // One path, one optional trailing newline: no padding or control characters to read differently.
+    const line = text.endsWith("\r\n") ? text.slice(0, -2) : text.endsWith("\n") ? text.slice(0, -1) : text;
+    const clean = line !== "" && line.trim() === line && [...line].every((c) => c > "\x1f" && c !== "\x7f");
+    const resolved = clean ? insideProject(resolve(real, line)) : null;
+    if (!resolved) return null;
+    common = resolved;
+  }
+  if (!fs.isDir(join(common, "objects")) || !fs.isDir(join(common, "refs"))) return null;
+  // Alternates borrow objects from elsewhere: any such file (a dangling link too) asks.
+  const info = join(common, "objects", "info");
+  try {
+    if (fs.isDir(info) !== null && fs.list!(info).some((e) => e.name.toLowerCase() === "alternates")) return null;
+  } catch {
+    return null;
+  }
+  // The whole git dir, bounded: no link anywhere (dangling ones too), nothing resolving out of the project.
+  const own = (p: string) => insideProject(p) === p;
+  return walkOwned([...new Set([real, common])], own, fs) ? real : null;
+};
+
+const WALK_MAX = 20_000;
+
+const walkOwned = (tops: string[], own: (p: string) => boolean, fs: GitFs): boolean => {
+  if (!fs.list) return false;
+  const stack = [...tops];
+  let seen = 0;
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let entries: { name: string; dir: boolean }[];
+    try {
+      entries = fs.list(dir);
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      if (++seen > WALK_MAX) return false;
+      const p = join(dir, e.name);
+      if (!own(p)) return false;
+      if (e.dir) stack.push(p);
+    }
+  }
+  return true;
+};
+
+// Security review 2026-11-02 — git may take a folder below the root as a repo (bare, gitfile, worktree):
+// any folder between `dir` and the root holding HEAD, commondir, gitdir or .git asks.
+export const bareBetween = (dir: string, root: string, o: { fs?: GitFs } = {}): boolean => {
+  const fs = o.fs ?? nodeFs;
+  const marks = ["head", "commondir", "gitdir", ".git"];
+  for (let cur = dir; cur !== root; cur = dirname(cur)) {
+    if (dirname(cur) === cur || !fs.list) return true;
+    try {
+      if (fs.list(cur).some((e) => marks.includes(e.name.toLowerCase()))) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
 };
 
 export const SCAN_DEPTH = 4;

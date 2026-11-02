@@ -169,8 +169,9 @@ export const autoKindOf = (
   input: Record<string, unknown>,
   branchPrefix: string,
 ): AutoKind | null => {
-  if (c.hardFloor || c.noWorkspace) return null;
-  if (c.readOnly) return "read";
+  if (c.hardFloor || c.noWorkspace || c.fenced) return null;
+  // A read outside the workspaces (HIGH) is the owner's call, not a helper's "read".
+  if (c.readOnly) return c.tier === "HIGH" ? null : "read";
   if (c.tier === "LOW") return c.category === "shell" ? "tests" : "read";
   if (c.tier === "MED" && c.workspaceEdit && c.reasons.length === 0) return "workspace_edit";
   // Test code and build manifests are HIGH for any edit (review R-C1: edit-then-test runs code
@@ -233,7 +234,7 @@ export interface CoordAnswerInput {
 /** Chalito's answer for the owner, or null to ask them. */
 export const coordAnswer = (a: CoordAnswerInput): CoordAnswer | null => {
   const c = a.classification;
-  if (c.hardFloor || c.noWorkspace) return null;
+  if (c.hardFloor || c.noWorkspace || c.fenced) return null;
   const kind = autoKindOf(c, a.toolName, a.input, a.branchPrefix);
   if (kind && a.ceiling.includes(kind)) return { via: "coordinator_auto", kind };
   // "Siempre así": MED only; HIGH and CRITICAL always ask.

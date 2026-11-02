@@ -29,7 +29,7 @@ const within = (child: string, parent: string) =>
 
 export const codeService = (
   core: Pick<AgentCore, "localCommand" | "tap"> & Partial<Pick<AgentCore, "canRunSession">>,
-  policy: () => Pick<Policy, "workspaces">,
+  policy: () => Pick<Policy, "workspaces" | "workspaceExclude">,
   setup: () => DeviceSetupView,
   /** `local` for the panel (its secret proves the desktop app), `local:cli` for code.sock (ADR 0031 §6a). */
   origin: "local" | "local:cli",
@@ -42,8 +42,11 @@ export const codeService = (
   }),
   workspaceFor: (cwd) => {
     const here = real(cwd);
-    const hits = policy()
-      .workspaces.map((w) => ({ label: w.label, path: real(expandHome(w.path, home)) }))
+    const p = policy();
+    // #home-workspace — an excluded folder is outside every workspace (native hooks pass it by).
+    if ((p.workspaceExclude ?? []).some((x) => within(here, real(expandHome(x, home))))) return null;
+    const hits = p.workspaces
+      .map((w) => ({ label: w.label, path: real(expandHome(w.path, home)) }))
       .filter((w) => within(here, w.path))
       .sort((a, b) => b.path.length - a.path.length);
     return hits[0]?.label ?? null;

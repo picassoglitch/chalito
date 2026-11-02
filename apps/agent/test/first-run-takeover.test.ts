@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AppConnectionDoc } from "@chalito/protocol";
 import { checkClaudePin, pinClaude, sha256Fd, type ClaudePin } from "../src/claude-pin.js";
@@ -300,9 +300,9 @@ describe("workspaces from the OS folder picker (local, OS-checked)", () => {
     expect(labelFor("/x/app", ["app", "app-2"], "linux")).toBe("app-3");
   });
 
-  it("refuses the home folder, the disk root, Chalito's own folder and anything inside it", async () => {
+  it("refuses above the home folder, the disk root, Chalito's own folder and anything inside it", async () => {
     const w = ws();
-    expect(await addWorkspace(w.d as never, w.home)).toEqual({ ok: false, reason: "too_broad" });
+    expect(await addWorkspace(w.d as never, dirname(w.home))).toEqual({ ok: false, reason: "too_broad" });
     expect(await addWorkspace(w.d as never, "/")).toEqual({ ok: false, reason: "too_broad" });
     expect(await addWorkspace(w.d as never, w.chalitoDir)).toEqual({ ok: false, reason: "chalito_folder" });
     mkdirSync(join(w.chalitoDir, "logs"));
@@ -325,12 +325,16 @@ describe("workspaces from the OS folder picker (local, OS-checked)", () => {
       ok: false,
       reason: "chalito_folder",
     });
-    expect(await addWorkspace(w.d as never, join(w.home, "code", ".."))).toEqual({ ok: false, reason: "too_broad" });
+    expect(await addWorkspace(w.d as never, join(w.home, "code", "..", ".."))).toEqual({
+      ok: false,
+      reason: "too_broad",
+    });
     expect(w.asked).toHaveLength(0);
   });
 
   it("case variants can't get around the refusals on macOS and Windows", () => {
-    expect(workspaceProblem("/USERS/ANA", mac)).toBe("too_broad");
+    expect(workspaceProblem("/USERS", mac)).toBe("too_broad");
+    expect(workspaceProblem("/USERS/BETO", mac)).toBe("too_broad");
     expect(workspaceProblem("/Users/ana/.CHALITO", mac)).toBe("chalito_folder");
     expect(workspaceProblem("/users/ana/.Ssh/keys", mac)).toBe("sensitive");
     expect(workspaceProblem("/SYSTEM/Library", mac)).toBe("too_broad");
@@ -339,8 +343,8 @@ describe("workspaces from the OS folder picker (local, OS-checked)", () => {
     expect(workspaceProblem("c:\\program files\\app", win)).toBe("too_broad");
     // NFC: a decomposed "é" is the same folder as the composed one.
     expect(workspaceProblem("/Users/ana/proyecto-cafe\u0301", mac)).toBeNull();
-    // Linux file systems are case-sensitive: a different case is a different folder.
-    expect(workspaceProblem("/home/ana/.CHALITO", linux)).toBeNull();
+    // Linux is case-sensitive, so not ~/.chalito; still a hidden folder, never a workspace.
+    expect(workspaceProblem("/home/ana/.CHALITO", linux)).toBe("hidden");
   });
 
   it("Windows 8.3 short names are resolved by the OS before the check (PROGRA~1, CHALIT~1)", async () => {
@@ -434,7 +438,7 @@ describe("workspaces from the OS folder picker (local, OS-checked)", () => {
       expect(workspaceProblem(`/home/ana/${p}`, linux), p).toBe("sensitive");
     expect(workspaceProblem("/Users/ana/Library/Keychains", mac)).toBe("sensitive");
     expect(workspaceProblem("/Users/ana/Library", mac)).toBe("sensitive");
-    expect(workspaceProblem("/home/ana/.config-backup", linux)).toBeNull();
+    expect(workspaceProblem("/home/ana/.config-backup", linux)).toBe("hidden");
     expect(workspaceProblem("/home/ana/code/.ssh-tools", linux)).toBeNull();
   });
 
@@ -509,7 +513,7 @@ describe("startup, autostart and PATH folders: never a workspace, and CRITICAL e
     expect(workspaceProblem("/home/ana/tools", { ...linux, pathDirs: ["/home/ana/tools/bin"] })).toBe("startup");
     expect(workspaceProblem("/home/ana/code/app", { ...linux, pathDirs: ["/home/ana/tools/bin"] })).toBeNull();
     expect(workspaceProblem("/home/ana/code/app", linux)).toBeNull();
-    expect(workspaceProblem("/home/ana/.localized-notes", linux)).toBeNull();
+    expect(workspaceProblem("/home/ana/.localized-notes", linux)).toBe("hidden");
   });
 
   it("addWorkspace refuses a PATH folder from the agent's environment", async () => {
