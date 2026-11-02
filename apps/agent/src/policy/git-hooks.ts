@@ -580,9 +580,12 @@ export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = 
   const real = insideProject(dir);
   if (!real) return null;
   // HEAD as git validates it: a symbolic ref into refs/ or a full sha (SHA-1 or SHA-256).
+  // A symlinked HEAD (legacy) or anything but a regular file fails closed.
+  const headPath = join(real, "HEAD");
   let head: string;
   try {
-    head = fs.read(join(real, "HEAD"));
+    if (fs.isDir(headPath) !== false || fs.realpath(headPath) !== headPath) return null;
+    head = fs.read(headPath);
   } catch {
     return null;
   }
@@ -596,7 +599,10 @@ export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = 
     } catch {
       return null;
     }
-    const resolved = text.trim() ? insideProject(resolve(real, text.trim())) : null;
+    // One path, one optional trailing newline: no padding or control characters to read differently.
+    const line = text.endsWith("\r\n") ? text.slice(0, -2) : text.endsWith("\n") ? text.slice(0, -1) : text;
+    const clean = line !== "" && line.trim() === line && [...line].every((c) => c > "\x1f" && c !== "\x7f");
+    const resolved = clean ? insideProject(resolve(real, line)) : null;
     if (!resolved) return null;
     common = resolved;
   }

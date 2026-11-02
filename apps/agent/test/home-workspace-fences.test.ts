@@ -798,9 +798,26 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     expect(git(w).auto).toBe(false);
     writeFileSync(commondir, "\n");
     expect(git(w).auto).toBe(false);
+    for (const bad of [" ../..\n", "../..\n\n", "../.. \n", "../\t..\n", "../..\0\n", "../..\r"]) {
+      writeFileSync(commondir, bad);
+      expect(git(w).auto, JSON.stringify(bad)).toBe(false);
+    }
+    writeFileSync(commondir, "../..\r\n");
+    expect(git(w).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    writeFileSync(commondir, "../..");
+    expect(git(w).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
     rmSync(commondir);
     mkdirSync(commondir);
     expect(git(w).auto).toBe(false);
+    // A symlinked HEAD fails closed, even pointing at a valid ref file.
+    rmSync(join(p, ".git/HEAD"));
+    mkdirSync(join(p, ".git/refs/heads"));
+    writeFileSync(join(p, ".git/refs/heads/main"), `${"a".repeat(40)}\n`);
+    symlinkSync(join(p, ".git/refs/heads/main"), join(p, ".git/HEAD"));
+    expect(git(p).auto).toBe(false);
+    rmSync(join(p, ".git/HEAD"));
+    mkdirSync(join(p, ".git/HEAD"));
+    expect(git(p).auto).toBe(false);
   });
 
   it("a session started in the excluded folder has no workspace", () => {
