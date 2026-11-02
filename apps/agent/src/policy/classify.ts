@@ -360,13 +360,9 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
           .replace(/^[\\/]+/, "")
           .split(/[\\/]/)[0] ?? "";
       if (!first || hidden(join(hk, first)) || excluded(join(hk, first))) return null;
-      return join(
-        hk,
-        cwd
-          .slice(hk.length)
-          .replace(/^[\\/]+/, "")
-          .split(/[\\/]/)[0]!,
-      );
+      // The cwd's own repo (or the cwd): siblings under ~/projects are not the same project.
+      const root = repoRootOf(cwd, { fallback: cwd, ...(ctx.gitFs ? { fs: ctx.gitFs } : {}) });
+      return root && within(root, hk) && !same(root, hk) && within(cwd, root) ? root : cwd;
     }
     return null;
   };
@@ -622,11 +618,22 @@ const fenceLinkTargets = (home: string, real: (p: string) => string): { targets:
   };
   const top = list(home, true);
   const dirs = [
-    ...FENCES.filter((f) => f.includes("/")).map((f) => join(home, ...f.split("/"))),
+    ...FENCES.map((f) => join(home, ...f.split("/"))),
     ...top.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => join(home, e.name)),
   ];
   for (const e of top) if (e.isSymbolicLink()) targets.push(target(join(home, e.name)));
   for (const dir of dirs) for (const e of list(dir)) if (e.isSymbolicLink()) targets.push(target(join(dir, e.name)));
+  // Credentials folders at any depth (they're small): `~/.ssh/keys/work -> ~/dotfiles/...`.
+  let budget = LINK_SCAN_MAX;
+  const deep = (dir: string, depth: number) => {
+    for (const e of list(dir)) {
+      if (--budget < 0) return void (partial = true);
+      const p = join(dir, e.name);
+      if (e.isSymbolicLink()) targets.push(target(p));
+      else if (e.isDirectory() && depth < 6) deep(p, depth + 1);
+    }
+  };
+  for (const rel of SENSITIVE_DIRS) deep(join(home, ...rel.split("/")), 0);
   const result = { at: Date.now(), targets, partial };
   linkScan.set(home, result);
   return result;
@@ -1735,64 +1742,80 @@ const classifyBash = (command: string, ctx: ClassifyContext, paths: Paths, state
  * auto-approved only when every segment is an allowed shape that stays in one project folder.
  */
 type Shape = (args: string[], ctx: ClassifyContext, cmd: string) => boolean;
-const noOpts = (args: string[]) => args.every((a) => !a.startsWith("-"));
+// Exact options only: GNU tools and git accept abbreviated long options, so prefixes are never matched.
+const opts =
+  (short: RegExp, long: string[] = []): Shape =>
+  (a) =>
+    a.every((x) => !x.startsWith("-") || short.test(x) || long.includes(x));
+const NONE = /^$/;
 const READERS: Record<string, Shape> = {
-  ls: (a) => !a.some((x) => /^-[^-]*[RL]|^--(recursive|dereference)/.test(x)),
-  cat: () => true,
-  head: () => true,
-  tail: (a) => !a.some((x) => /^-[^-]*[fF]|^--follow/.test(x)),
-  wc: (a) => !a.some((x) => x.startsWith("--files0-from")),
-  grep: (a) => !a.some((x) => /^-[^-]*R|^--(dereference-recursive|file)/.test(x) || /^-[^-]*f/.test(x)),
-  rg: (a) => !a.some((x) => /^--(pre|follow|ignore-file|type-add)|^-[^-]*L/.test(x)),
-  echo: () => true,
-  pwd: () => true,
-  true: () => true,
-  false: () => true,
-  diff: (a) => !a.some((x) => /^-[^-]*r|^--(recursive|to-file|from-file)/.test(x)),
-  cut: () => true,
-  tr: () => true,
-  basename: () => true,
-  dirname: () => true,
-  sed: (a) => a[0] === "-n" && a.length >= 2 && /^\d+(,\d+)?p$/.test(a[1]!),
-  mkdir: (a) => a.every((x) => !x.startsWith("-") || x === "-p"),
-  touch: noOpts,
-  cp: noOpts,
-  mv: noOpts,
+  ls: opts(/^-[lah1tSrdF]+$/),
+  cat: opts(/^-[nAbsvET]+$/),
+  head: opts(/^-n?\d*$/),
+  tail: opts(/^-n?\d*$/),
+  wc: opts(/^-[lwcm]+$/),
+  grep: opts(/^-[inlcvwhHoEFqsxr]+$/),
+  rg: opts(/^-[inlcvwFS]+$/),
+  echo: opts(/^-[ne]+$/),
+  pwd: opts(NONE),
+  true: opts(NONE),
+  false: opts(NONE),
+  diff: opts(/^-[uqw]+$/),
+  basename: opts(NONE),
+  dirname: opts(NONE),
+  sed: (a) => a.length === 3 && a[0] === "-n" && /^\d+(,\d+)?p$/.test(a[1]!),
+  mkdir: opts(/^-p$/),
+  touch: opts(NONE),
+  cp: opts(NONE),
+  mv: opts(NONE),
 };
-const RUN_VERBS = new Set(["run", "test", "install", "i", "add", "ci"]);
 /** The policy's own test/lint/build commands (`pnpm lint`, `npx vitest run`), word for word as a prefix. */
 const allowlisted = (words: string[], ctx: ClassifyContext) =>
   ctx.policy.allowlist.commands.some((c) => c.split(/\s+/).every((p, i) => words[i] === p));
-const MOVES = /^--?(prefix|dir|cwd|C|g|global|location|filter|workspace-root|w)(=|$)/;
 // Installs take only registry names (`zod`, `@scope/pkg@^1`): no path, URL, git, file: or link: spec.
 const REGISTRY_NAME = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(@[A-Za-z0-9.^~<>=*_+-]+)?$/i;
+const INSTALL_FLAGS = ["-D", "--save-dev", "-E", "--save-exact", "-O", "--save-optional", "--frozen-lockfile", "--dev"];
 const pkg: Shape = (a, ctx, cmd) => {
   if (allowlisted([cmd, ...a], ctx)) return true;
   const verb = a[0] ?? "";
-  if (!RUN_VERBS.has(verb) || a.slice(1).some((x) => MOVES.test(x))) return false;
-  return (
-    !["install", "i", "add", "ci"].includes(verb) || a.slice(1).every((x) => x.startsWith("-") || REGISTRY_NAME.test(x))
-  );
+  const rest = a.slice(1);
+  if (["install", "i", "add", "ci"].includes(verb))
+    return rest.every((x) => (x.startsWith("-") ? INSTALL_FLAGS.includes(x) : REGISTRY_NAME.test(x)));
+  // `run <script>` / `test`: no options for the manager itself; after `--` they belong to the script.
+  if (verb !== "run" && verb !== "test") return false;
+  const dash = rest.indexOf("--");
+  return (dash === -1 ? rest : rest.slice(0, dash)).every((x) => !x.startsWith("-"));
 };
-// Only these git subcommands, never a global option (`-c`, `-C`, `--git-dir`, `--exec-path` run or move things).
+// Only these git subcommands and options; never a global option (`-c`, `-C`, `--git-dir`, `--exec-path`).
 const GIT_OK = new Set(["status", "diff", "log", "show", "add", "commit", "branch", "rev-parse", "ls-files", "blame"]);
+const GIT_LONG = [
+  "--stat",
+  "--oneline",
+  "--cached",
+  "--staged",
+  "--name-only",
+  "--name-status",
+  "--short",
+  "--porcelain",
+  "--all",
+  "--graph",
+  "--no-color",
+];
 const RUNNERS: Record<string, Shape> = {
   pnpm: pkg,
   npm: pkg,
   yarn: pkg,
   bun: pkg,
   npx: (a, ctx) => allowlisted(["npx", ...a], ctx),
-  vitest: (a) => !a.some((x) => /^--(config|c|root|dir|environment)\b/.test(x)),
-  pytest: (a) => !a.some((x) => /^(-p|-c|--rootdir|--confcutdir)/.test(x)),
-  node: (a) => a.length > 0 && noOpts(a.slice(0, 1)) && !a[0]!.startsWith("-"),
+  vitest: opts(NONE),
+  pytest: opts(/^-[vqsx]+$/),
+  node: (a) => a.length > 0 && !a[0]!.startsWith("-"),
   tsx: (a) => a.length > 0 && !a[0]!.startsWith("-"),
   git: (a) => {
     const sub = a[0] ?? "";
-    if (!GIT_OK.has(sub)) return sub === "stash" && (a.length === 1 || ["push", "list"].includes(a[1]!));
-    return !a.some(
-      (x) =>
-        /^--(ext-diff|exec|upload-pack|receive-pack|textconv|output)/.test(x) || x === "--global" || x === "--system",
-    );
+    const rest = a.slice(1);
+    if (sub === "stash") return rest.length === 0 || (rest.length === 1 && ["push", "list"].includes(rest[0]!));
+    return GIT_OK.has(sub) && rest.every((x) => !x.startsWith("-") || /^-[A-Za-z]+$/.test(x) || GIT_LONG.includes(x));
   },
 };
 
@@ -1840,9 +1863,13 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
     if (!shape) return `${cmd.slice(0, 40)} isn't on the home-workspace allowlist`;
     if (!shape(args, ctx, cmd)) return `${cmd} with options outside the allowlist`;
     for (const w of [...args, ...seg.writes.map((x) => x.text), ...seg.reads.map((x) => x.text)]) {
-      const value = /^-[^=]*=/.test(w) ? w.slice(w.indexOf("=") + 1) : /^-[A-Za-z]./.test(w) ? w.slice(2) : w;
-      if (PLAIN_DEVICE.test(value) || /^&\d$/.test(value) || value === "" || value.startsWith("-")) continue;
-      if (!inside(value)) return "names a path outside the project";
+      // `-o/path` (attached short value) and every piece around `=` or `,` (`log_file=../x`) may be a path.
+      const word = /^-[A-Za-z]./.test(w) ? w.slice(2) : w;
+      const pieces = word.startsWith("-") ? word.split("=").slice(1) : [word];
+      for (const value of pieces.flatMap((p) => p.split(/[=,]/)).filter(Boolean)) {
+        if (PLAIN_DEVICE.test(value) || /^&\d$/.test(value)) continue;
+        if (!inside(value)) return "names a path outside the project";
+      }
     }
   }
   return null;

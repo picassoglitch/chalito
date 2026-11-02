@@ -472,6 +472,21 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       "constructor src",
       "toString src",
       "__proto__ src",
+      // Round 6: option values, abbreviations, siblings.
+      "pytest -o log_file=../../.bashrc",
+      "pytest -o cache_dir=../../.config/autostart",
+      "npm test -- -o log_file=../../.bashrc",
+      "pnpm test --reporter-options=output=../../.bashrc",
+      "ls --recur src",
+      "ls --deref src",
+      "tail --foll src/a.ts",
+      "diff --recur src src",
+      "grep --fil=x foo src",
+      "grep -d recurse foo src",
+      "rg --fol foo",
+      "git log --out=../../.bashrc",
+      "npm i zod --pref ../..",
+      "cat ../y/secret.txt",
       // Round 4: wrappers, git global options, unquoted globs, unknown commands.
       "env cat src/a.ts",
       "nice cat src/a.ts",
@@ -558,6 +573,21 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     const later = Date.now() + 1100;
     while (Date.now() < later); // the scan is cached for 1 s
     expect(answeredFor("Read", { file_path: `${d.project}/src/a.ts` }, d.ctx()).auto).toBe(false);
+  });
+
+  it("links deep in a credentials folder, and in a non-hidden PATH folder, fence their targets", () => {
+    const d = makeHome();
+    mkdirSync(join(d.home, "dotfiles/sshkeys"), { recursive: true });
+    writeFileSync(join(d.home, "dotfiles/sshkeys/work"), "k");
+    mkdirSync(join(d.home, ".ssh/keys/more"), { recursive: true });
+    symlinkSync(join(d.home, "dotfiles/sshkeys/work"), join(d.home, ".ssh/keys/more/work"));
+    mkdirSync(join(d.home, "bin"));
+    writeFileSync(join(d.project, "tool.sh"), "x");
+    symlinkSync(join(d.project, "tool.sh"), join(d.home, "bin/tool"));
+    expect(answeredFor("Read", { file_path: `${d.home}/dotfiles/sshkeys/work` }, d.ctx()).auto).toBe(false);
+    const w = answeredFor("Write", { file_path: `${d.project}/tool.sh`, content: "y" }, d.ctx());
+    expect(w.auto).toBe(false);
+    expect(w.c.workspaceEdit).toBe(false);
   });
 
   it("the coordinator never answers a read outside the workspaces", () => {
