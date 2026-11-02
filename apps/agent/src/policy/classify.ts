@@ -5,6 +5,7 @@ import type { Policy } from "./schema.js";
 import { type GitFs } from "./git-hooks.js";
 import { foldKey, repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
+import { TEAM_READ_TOOL, TEAM_SEND_TOOL } from "../team/tools.js";
 import {
   AI_CONFIG_DIRS,
   AI_CONFIG_PREFIXES,
@@ -1533,6 +1534,10 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
           ? { ...base("mcp"), tier: "MED", reasons: [`${tool}: reaches another agent over a link`] }
           : { ...base("mcp"), tier: "HIGH", reasons: [`unknown link tool ${tool}`] };
       }
+      // Chalito's team channel: reading is local; a send only reaches trusted peers in the same workspace.
+      if (toolName === TEAM_READ_TOOL) return { ...base("mcp"), readOnly: true };
+      if (toolName === TEAM_SEND_TOOL)
+        return { ...base("mcp"), tier: "MED", reasons: ["team_send: messages another AI session"] };
       if (toolName.startsWith("mcp__")) {
         const readOnly = ctx.policy.mcp.readOnlyTools.includes(toolName);
         return readOnly

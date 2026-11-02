@@ -459,7 +459,8 @@
         "codex": "Codex",
         "grok": "Grok Build",
         "cursor": "Cursor"
-      }
+      },
+      "otherApp": "Otra app “{id}”"
     }
   },
   "settingsError": {

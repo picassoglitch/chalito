@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { TeamProvider } from "./hub.js";
+import { KNOWN_PROVIDERS, TeamProvider } from "./hub.js";
 import { expandHome } from "../workspace-path.js";
 
 const TrustFile = z
@@ -15,6 +15,8 @@ const TrustFile = z
 /** Trust belongs to a configured folder and app, not a reusable label or provider login. */
 export class TeamConnections {
   #trusted = new Set<string>();
+  /** Untrusted ids that tried to join, per canonical folder: shown so they can be trusted, never trusted by asking. */
+  #requested = new Map<string, Set<TeamProvider>>();
   readonly #file: string;
   constructor(
     private readonly d: {
@@ -23,7 +25,7 @@ export class TeamConnections {
       workspaces: () => { label: string; path: string }[];
       workspaceFor: (cwd: string) => string | null;
       launch: { command: string; args: string[] };
-      connected: (provider: z.infer<typeof TeamProvider>, workspace: string) => boolean;
+      connected: (provider: TeamProvider, workspace: string) => boolean;
     },
   ) {
     this.#file = join(d.dir, "team-trust.json");
@@ -54,13 +56,33 @@ export class TeamConnections {
     }
   }
 
-  trusted(provider: z.infer<typeof TeamProvider>, cwd: string): boolean {
+  trusted(provider: TeamProvider, cwd: string): boolean {
     const label = this.d.workspaceFor(cwd);
     const path = label && this.#path(label);
     return !!path && this.#trusted.has(JSON.stringify([path, provider]));
   }
 
-  set(provider: z.infer<typeof TeamProvider>, workspace: string, trusted: boolean, expectedPath?: string): void {
+  requested(provider: TeamProvider, cwd: string): void {
+    if (!TeamProvider.safeParse(provider).success) return;
+    const label = this.d.workspaceFor(cwd);
+    const path = label && this.#path(label);
+    if (!path) return;
+    const ids = this.#requested.get(path) ?? new Set();
+    if (ids.size >= 16 && !ids.has(provider)) return;
+    this.#requested.set(path, ids.add(provider));
+  }
+
+  #providers(path: string): TeamProvider[] {
+    const ids = new Set<TeamProvider>(KNOWN_PROVIDERS);
+    for (const key of this.#trusted) {
+      const [p, provider] = JSON.parse(key) as [string, TeamProvider];
+      if (p === path) ids.add(provider);
+    }
+    for (const provider of this.#requested.get(path) ?? []) ids.add(provider);
+    return [...ids];
+  }
+
+  set(provider: TeamProvider, workspace: string, trusted: boolean, expectedPath?: string): void {
     TeamProvider.parse(provider);
     const path = this.#path(workspace);
     if (!path) throw new Error("unknown_workspace");
@@ -71,7 +93,7 @@ export class TeamConnections {
     if (trusted) next.add(key);
     else next.delete(key);
     const entries = [...next].map((key) => {
-      const [path, provider] = JSON.parse(key) as [string, z.infer<typeof TeamProvider>];
+      const [path, provider] = JSON.parse(key) as [string, TeamProvider];
       return { path, provider };
     });
     const data = TrustFile.parse({ v: 1, entries });
@@ -95,8 +117,9 @@ export class TeamConnections {
         return {
           ...w,
           path,
-          connections: TeamProvider.options.map((provider) => ({
+          connections: this.#providers(path).map((provider) => ({
             provider,
+            known: (KNOWN_PROVIDERS as readonly string[]).includes(provider),
             trusted: this.trusted(provider, path),
             connected: this.d.connected(provider, w.label),
             command: this.d.launch.command,

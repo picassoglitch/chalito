@@ -115,11 +115,14 @@ export interface Workspace {
   path: string;
 }
 
-export type TeamProvider = "claude" | "codex" | "grok" | "cursor";
+/** Known apps (claude, codex, grok, cursor) or any other MCP client's own lowercase id. */
+export type TeamProvider = string;
 export interface TeamConnectionsView {
   workspaces: (Workspace & {
     connections: {
       provider: TeamProvider;
+      /** One of the four named apps; others tried to join under their own id. */
+      known?: boolean;
       trusted: boolean;
       connected: boolean;
       command: string;

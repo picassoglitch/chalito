@@ -90,6 +90,23 @@ describe("classification", () => {
     expect(tier("SomeNewTool", {})).toBe("HIGH");
   });
 
+  it("chalito_team tools: exact names only; read is a read, send asks (MED), lookalikes stay HIGH", () => {
+    const read = classifyToolCall("mcp__chalito_team__team_read", {}, ctx());
+    expect(read).toMatchObject({ tier: "LOW", readOnly: true, category: "mcp" });
+    expect(tier("mcp__chalito_team__team_send", { text: "hi" })).toBe("MED");
+    for (const lookalike of [
+      "mcp__chalito_team__team_read_all",
+      "mcp__chalito_team__team_sendx",
+      "mcp__chalito_team_evil__team_read",
+      "mcp__evil_chalito_team__team_send",
+      "mcp__chalito_team__team_read ",
+      "mcp__Chalito_Team__team_read",
+      "xmcp__chalito_team__team_read",
+      "mcp__chalito_team__team_join",
+    ])
+      expect(tier(lookalike, {}), lookalike).toBe("HIGH");
+  });
+
   it("CRITICAL by default: sudo, credentials, keychain, force-push to main, curl | sh", () => {
     for (const c of [
       "sudo apt install x",

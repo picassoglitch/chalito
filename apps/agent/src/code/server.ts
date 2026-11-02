@@ -170,7 +170,9 @@ export const startCodeServer = async (opts: {
     },
     team: async (c, params) => {
       const p = parse(z.object({ action: z.string(), args: z.unknown() }).strict(), params);
-      return p ? team.call(c.abort.signal, p.action, p.args) : { ok: false, error: "bad_params" };
+      if (!p) return { ok: false, error: "bad_params" };
+      const link = { push: (frame: unknown) => (c.sock.destroyed ? false : (c.send(frame), !c.sock.destroyed)) };
+      return team.call(c.abort.signal, p.action, p.args, link);
     },
     "connections.list": async (c, params) => {
       const p = parse(ConnList, params);
