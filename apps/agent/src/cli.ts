@@ -583,6 +583,10 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     // #132 — an AppImage's own path is a temporary mount; AI apps get the fixed copy the agent keeps.
     const appDir = io.env.APPDIR?.replace(/\/+$/, "");
     const mounted = io.platform === "linux" && !!io.env.APPIMAGE && !!appDir && io.execPath.startsWith(appDir + sep);
+    if (mounted && !existsSync(stableAgentPath(io.home))) {
+      io.err(`Open Chalito once so it installs ${stableAgentPath(io.home)}, then run this again.\n`);
+      return 1;
+    }
     const launch = teamLaunchCommand(mounted ? stableAgentPath(io.home) : io.execPath);
     io.out(
       JSON.stringify(

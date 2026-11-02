@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { generateSigningKeyPair } from "@chalito/crypto";
@@ -1108,6 +1117,13 @@ describe("chalito team config", () => {
       execPath: "/tmp/.mount_ChalitX/usr/bin/chalito-agent",
       env: { APPIMAGE: "/home/a/Chalito.AppImage", APPDIR: "/tmp/.mount_ChalitX/" },
     });
+    // No fixed copy yet: refuse rather than hand out the temporary mount.
+    expect(await mounted.run(["team", "config", "claude", "/work/app"])).toBe(1);
+    expect(mounted.err()).toContain("Open Chalito once");
+    mounted.reset();
+    const stable = join(mounted.home, ".local", "share", "chalito", "chalito-agent");
+    mkdirSync(dirname(stable), { recursive: true });
+    writeFileSync(stable, "agent", { mode: 0o755 });
     expect(await mounted.run(["team", "config", "claude", "/work/app"])).toBe(0);
     expect(JSON.parse(mounted.out()).mcpServers.chalito_team.command).toBe(
       join(mounted.home, ".local", "share", "chalito", "chalito-agent"),

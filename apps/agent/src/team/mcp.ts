@@ -84,6 +84,7 @@ export const runTeamMcp = async (
     const active = socket;
     // A lost agent ends this server, so the AI app shows it disconnected instead of failing every call.
     let lost = (): void => undefined;
+    let timedOut = false;
     const closed = new Promise<"closed">((resolve) => (lost = () => resolve("closed")));
     const rpc = openRpc(
       active,
@@ -97,6 +98,7 @@ export const runTeamMcp = async (
           rpc.call("team", { action, args }),
           new Promise<{ ok: false; error: string }>((resolve) => {
             timer = setTimeout(() => {
+              timedOut = true;
               active.destroy();
               resolve({ ok: false, error: "timeout" });
             }, 5000);
@@ -130,7 +132,11 @@ export const runTeamMcp = async (
         },
       });
       if ((await Promise.race([served, closed])) === "closed") {
-        io.err("Chalito team: lost the connection to Chalito (restarted or stopped). Reconnect this MCP server.\n");
+        io.err(
+          timedOut
+            ? "Chalito team: Chalito did not answer within 5 seconds. Reconnect this MCP server.\n"
+            : "Chalito team: lost the connection to Chalito (restarted or stopped). Reconnect this MCP server.\n",
+        );
         return 1;
       }
     } finally {
