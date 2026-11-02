@@ -145,7 +145,9 @@ export class Upstream {
     } catch (e) {
       await t.close().catch(() => undefined);
       this.#failed();
-      throw e instanceof ConnectorError ? e : new ConnectorError("connector_unavailable");
+      const err = e instanceof ConnectorError ? e : new ConnectorError("connector_unavailable");
+      this.d.event("connector.start_failed", { connector: this.c.id, error: err.code, attempt: this.#failures });
+      throw err;
     }
     if (this.#stopped) {
       await t.close().catch(() => undefined);
@@ -173,7 +175,7 @@ export class Upstream {
     this.#failed();
     const attempt = this.#failures;
     this.d.event("connector.crashed", { connector: this.c.id, attempt });
-    if (attempt > MAX_RESTARTS) return;
+    if (attempt > MAX_RESTARTS) return void this.d.event("connector.gave_up", { connector: this.c.id, attempt });
     this.#restartTimer?.clear();
     this.#restartTimer = this.d.setTimer(() => {
       this.#restartTimer = null;
@@ -192,7 +194,10 @@ export class Upstream {
     const all: UpstreamTool[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < MAX_PAGES && all.length < MAX_TOOLS; page++) {
-      const r = (await t.request("tools/list", cursor ? { cursor } : {}, LIST_TIMEOUT_MS)) as {
+      const r = (await t.request("tools/list", cursor ? { cursor } : {}, LIST_TIMEOUT_MS).catch((e: unknown) => {
+        this.#expired(t, e);
+        throw e;
+      })) as {
         tools?: unknown;
         nextCursor?: unknown;
       } | null;
@@ -209,7 +214,19 @@ export class Upstream {
 
   async call(tool: string, args: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
     const t = await this.#ensure();
-    return t.request("tools/call", { name: tool, arguments: args ?? {} }, timeoutMs, signal);
+    return t.request("tools/call", { name: tool, arguments: args ?? {} }, timeoutMs, signal).catch((e: unknown) => {
+      this.#expired(t, e);
+      throw e;
+    });
+  }
+
+  // A forgotten MCP session or a refused token needs a fresh start (and a fresh keychain read) next time.
+  #expired(t: Transport, e: unknown) {
+    const codes = ["connector_session_expired", "connector_unauthorized"];
+    if (!(e instanceof ConnectorError && codes.includes(e.code)) || this.#transport !== t) return;
+    this.#transport = null;
+    this.#tools = null;
+    void t.close().catch(() => undefined);
   }
 
   /** Stops for good (agent stop, uninstall, revoke-all): the process group is killed. */

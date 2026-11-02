@@ -732,9 +732,11 @@ export class AgentCore {
         // ADR 0020 revoke-all (a bundle step-up) also revokes every link on this device.
         if (body?.stepUp?.bundle) {
           await this.d.links?.revokeAll("revoke_all");
-          await this.d.connections
-            ?.revokeAll("revoke_all")
-            .catch((err: unknown) => this.#writeFailed("connector.revoke_all_failed", err));
+          await this.d.connections?.revokeAll("revoke_all").catch((err: unknown) =>
+            this.#audit("connector.revoke_all_failed", {
+              error: err instanceof Error ? err.message.slice(0, 64) : "error",
+            }),
+          );
           this.#cancelOutside();
         }
         for (const s of this.sessions.values())

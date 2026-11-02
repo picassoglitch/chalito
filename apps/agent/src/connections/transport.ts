@@ -78,6 +78,7 @@ const withTimeout = <T>(
 /** A local stdio MCP server: newline-delimited JSON-RPC, its own process group so a kill reaches npx's children. */
 export class StdioTransport implements Transport {
   #child: ChildProcess | null = null;
+  #pgid: number | undefined;
   #waiters = new Map<number, Waiter>();
   #n = 0;
   #closing = false;
@@ -100,10 +101,13 @@ export class StdioTransport implements Transport {
         detached: this.platform !== "win32",
       });
       this.#child = child;
+      this.#pgid = this.platform !== "win32" ? child.pid : undefined;
       let closed = false;
       const end = () => {
         if (closed) return;
         closed = true;
+        // The leader is gone, crash or not: its group (npx's node server, holding the token) goes too.
+        this.#killGroup("SIGKILL");
         for (const w of this.#waiters.values()) w.reject(new ConnectorError("connector_crashed"));
         this.#waiters.clear();
         onClose(!this.#closing);
@@ -206,6 +210,15 @@ export class StdioTransport implements Transport {
     }
   }
 
+  #killGroup(signal: NodeJS.Signals) {
+    if (this.#pgid === undefined) return;
+    try {
+      process.kill(-this.#pgid, signal);
+    } catch {
+      /* group already empty */
+    }
+  }
+
   #kill(signal: NodeJS.Signals = "SIGKILL") {
     const child = this.#child;
     if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -228,8 +241,7 @@ export class StdioTransport implements Transport {
       }, KILL_GRACE_MS);
       child.once("exit", () => {
         clearTimeout(timer);
-        // The group may still hold grandchildren (npx → node): make sure they go too.
-        this.#kill("SIGKILL");
+        this.#killGroup("SIGKILL");
         resolve();
       });
       child.stdin?.end();

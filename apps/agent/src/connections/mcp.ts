@@ -97,7 +97,17 @@ export const runConnectionsMcp = (io: ConnectionsMcpIo): Promise<void> =>
         case "tools/list": {
           const r = await open();
           const res = r ? await r.call("connections.list", app) : null;
-          const tools = res?.ok ? (res.result as { tools?: unknown }).tools : [];
+          // "Chalito is down" must not look like "nothing installed".
+          if (!res?.ok)
+            return {
+              jsonrpc: "2.0",
+              id,
+              error: {
+                code: -32603,
+                message: res ? `Chalito couldn't list connections (${res.error ?? "error"}).` : NOT_RUNNING,
+              },
+            };
+          const tools = (res.result as { tools?: unknown }).tools;
           return ok({ tools: Array.isArray(tools) ? tools : [] });
         }
         case "tools/call": {
@@ -158,7 +168,12 @@ export const runConnectionsMcp = (io: ConnectionsMcpIo): Promise<void> =>
         line(one);
       }
       // One request can't hold the process's memory hostage.
-      if (buf.length > 4 * CODE_MAX_LINE) buf = "";
+      if (buf.length > 4 * CODE_MAX_LINE) {
+        buf = "";
+        io.write(
+          `${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Request too large" } })}\n`,
+        );
+      }
     });
     io.input.once(
       "end",

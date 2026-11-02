@@ -1,4 +1,5 @@
 // A real stdio MCP server for the connections proxy tests: newline JSON-RPC over stdin/stdout.
+import { spawn } from "node:child_process";
 import { appendFileSync, writeFileSync } from "node:fs";
 
 const flag = (name) => {
@@ -8,6 +9,15 @@ const flag = (name) => {
 const pidFile = flag("--pidfile");
 const callsFile = flag("--calls");
 if (pidFile) writeFileSync(pidFile, String(process.pid));
+const childFile = flag("--spawn-child");
+if (childFile) {
+  // A long-lived grandchild, like npx → node, so the test can prove the whole group dies.
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1e9)"], {
+    stdio: "ignore",
+  });
+  writeFileSync(childFile, String(child.pid));
+}
+if (process.argv.includes("--ignore-term")) process.on("SIGTERM", () => undefined);
 
 const tools = [
   {
@@ -34,6 +44,9 @@ const tools = [
     inputSchema: { type: "object", properties: { name: { type: "string" } } },
   },
   { name: "crash", description: "Exits.", inputSchema: { type: "object" } },
+  { name: "garbage", description: "Returns a non-MCP result.", inputSchema: { type: "object" } },
+  { name: "sleep", description: "Never answers.", inputSchema: { type: "object" } },
+  { name: "fail_secret", description: "Errors with an env var in the message.", inputSchema: { type: "object" } },
   { name: "fail", description: "Returns a JSON-RPC error.", inputSchema: { type: "object" } },
   { name: "bad name!", description: "Not a valid tool name.", inputSchema: { type: "object" } },
 ];
@@ -53,7 +66,10 @@ process.stdin.on("data", (chunk) => {
 process.stdin.on("end", () => process.exit(0));
 
 function onMessage(msg) {
-  if (msg.id === undefined) return;
+  if (msg.id === undefined) {
+    if (callsFile && msg.method === "notifications/cancelled") appendFileSync(callsFile, "cancelled\n");
+    return;
+  }
   const ok = (result) => send({ jsonrpc: "2.0", id: msg.id, result });
   switch (msg.method) {
     case "initialize":
@@ -74,6 +90,14 @@ function onMessage(msg) {
       if (name === "show_env")
         return ok({ content: [{ type: "text", text: `value=${process.env[args.name] ?? "unset"}` }] });
       if (name === "crash") process.exit(1);
+      if (name === "sleep") return;
+      if (name === "garbage") return ok("not an object");
+      if (name === "fail_secret")
+        return send({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32000, message: `bad token ${process.env.FIXTURE_TOKEN}` },
+        });
       if (name === "fail")
         return send({
           jsonrpc: "2.0",

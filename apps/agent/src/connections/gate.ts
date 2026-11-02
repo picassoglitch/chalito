@@ -100,7 +100,8 @@ export class ConnectorSessions {
     const s = this.#session(call.client);
     try {
       await s.ready;
-    } catch {
+    } catch (error) {
+      this.d.log?.("connector.session_failed", { error: error instanceof Error ? error.message : "error" });
       return { allow: false, reason: "unavailable" };
     }
     return this.d.core.requestConnectorTool({

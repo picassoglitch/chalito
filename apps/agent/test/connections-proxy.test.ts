@@ -66,6 +66,7 @@ const rig = (
     env?: NodeJS.ProcessEnv;
     restartMs?: number;
     cap?: number;
+    callTimeoutMs?: number;
   } = {},
 ) => {
   const dir = tempDir("chalito-conn-");
@@ -78,6 +79,7 @@ const rig = (
     audit: (type, meta) => void audits.push({ type, meta }),
     env: o.env ?? { PATH: process.env.PATH },
     ...(o.cap ? { resultCap: o.cap } : {}),
+    ...(o.callTimeoutMs ? { callTimeoutMs: o.callTimeoutMs } : {}),
     ...(o.restartMs !== undefined
       ? {
           setTimer: (fn: () => void) => {
@@ -104,7 +106,9 @@ describe("connections proxy: a real stdio MCP server", () => {
     const names = tools.map((t) => t.name).sort();
     // "bad name!" is not a valid tool name: it is left out, never mangled.
     expect(names).toEqual(
-      ["big", "crash", "delete_repo", "echo", "fail", "show_env"].map((t) => `io-github-acme-fixture__${t}`),
+      ["big", "crash", "delete_repo", "echo", "fail", "fail_secret", "garbage", "show_env", "sleep"].map(
+        (t) => `io-github-acme-fixture__${t}`,
+      ),
     );
     const echo = tools.find((t) => t.name.endsWith("__echo"))!;
     expect(echo.description.startsWith("[Verificado · Fixture io.github.acme/fixture]")).toBe(true);
@@ -468,7 +472,7 @@ describe("connections: the AI app's MCP server → code socket → real agent ga
     }
   });
 
-  it("without a running agent the AI app gets an empty list and a clear error, not a hang", async () => {
+  it("without a running agent the AI app gets a clear error, not an empty list or a hang", async () => {
     const input = new PassThrough();
     const replies: Record<string, unknown>[] = [];
     const done = runConnectionsMcp({
@@ -481,7 +485,7 @@ describe("connections: the AI app's MCP server → code socket → real agent ga
     await waitFor(() => replies.length === 2, 5000);
     input.end();
     await done;
-    expect(replies.find((r) => r.id === 1)!.result).toEqual({ tools: [] });
+    expect(JSON.stringify(replies.find((r) => r.id === 1)!.error)).toContain("isn't running");
     expect(JSON.stringify(replies.find((r) => r.id === 2))).toContain("isn't running");
   });
 
@@ -537,7 +541,10 @@ describe("connections: revoke-all (ADR 0020)", () => {
     await waitFor(() => !alive(pid), 5000);
     expect(secrets.values.size).toBe(0);
     expect(readInstalled(dir)).toEqual([]);
-    expect(audits).toContainEqual({ type: "connector.revoke_all", meta: { count: 1, by: "revoke_all" } });
+    expect(audits).toContainEqual({
+      type: "connector.revoke_all",
+      meta: { count: 1, by: "revoke_all", secretsFailed: 0, unreadable: false },
+    });
   });
 });
 
@@ -558,5 +565,252 @@ describe("connections helpers", () => {
     expect(slugFor("///")).toBe("connector");
     expect(capText("ñ".repeat(10), 5)).toEqual({ text: "ññ", bytes: 20, truncated: true });
     expect(sseMessages('data: {"id":1}\n\nevent: x\ndata: nope\n\n')).toEqual([{ id: 1 }]);
+  });
+});
+
+describe("connections proxy: lifecycle and edge cases", () => {
+  it("a stop during the restart backoff never spawns a new server", async () => {
+    const pids = tempDir("chalito-pid-");
+    const pidfile = join(pids, "pid");
+    const { dir, proxy, audits } = rig({ restartMs: 150 });
+    install(dir, [stdio("fx", {}, ["--pidfile", pidfile])]);
+    await proxy.listTools();
+    const first = readFileSync(pidfile, "utf8");
+    await proxy.callTool("fx__crash", {}, client, signal());
+    await proxy.close();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(readFileSync(pidfile, "utf8")).toBe(first);
+    expect(audits.some((a) => a.type === "connector.restarted")).toBe(false);
+  });
+
+  it("kills the whole process group, grandchildren and a server that ignores SIGTERM included", async () => {
+    const pids = tempDir("chalito-pid-");
+    const { dir, proxy } = rig();
+    install(dir, [
+      stdio("fx", {}, ["--pidfile", join(pids, "server"), "--spawn-child", join(pids, "child"), "--ignore-term"]),
+    ]);
+    await proxy.listTools();
+    const server = Number(readFileSync(join(pids, "server"), "utf8"));
+    await waitFor(() => existsSync(join(pids, "child")));
+    const child = Number(readFileSync(join(pids, "child"), "utf8"));
+    expect(alive(child)).toBe(true);
+    await proxy.close();
+    await waitFor(() => !alive(server) && !alive(child), 5000);
+  });
+
+  it("a call that never answers times out, and the server is told to cancel", async () => {
+    const calls = join(tempDir("chalito-calls-"), "calls.log");
+    const { dir, proxy, audits } = rig({ callTimeoutMs: 200 });
+    install(dir, [stdio("fx", {}, ["--calls", calls])]);
+    const r = await proxy.callTool("fx__sleep", {}, client, signal());
+    expect(textOf(r)).toContain("connector_timeout");
+    await waitFor(() => readFileSync(calls, "utf8").includes("cancelled"));
+    expect(audits.find((a) => a.type === "connector.call")!.meta).toMatchObject({
+      ok: false,
+      error: "connector_timeout",
+    });
+  });
+
+  it("a server's error text is scrubbed of its token and stays out of the audit", async () => {
+    const secrets = new MemorySecretStore();
+    const token = "tok_ERRORPATH_5521";
+    await secrets.set(secretName("fx", "FIXTURE_TOKEN"), token);
+    const { dir, proxy, audits } = rig({ secrets });
+    install(dir, [stdio("fx", { auth: "token", secretEnv: ["FIXTURE_TOKEN"] })]);
+    const r = await proxy.callTool("fx__fail_secret", {}, client, signal());
+    expect(textOf(r)).toContain("bad token [secret]");
+    expect(textOf(r)).not.toContain(token);
+    await proxy.callTool("fx__fail", {}, client, signal());
+    expect(JSON.stringify(audits)).not.toContain(token);
+    expect(JSON.stringify(audits)).not.toContain("ignore all rules");
+  });
+
+  it("an edit or uninstall between list and call wins: the old tool name no longer runs", async () => {
+    const calls = join(tempDir("chalito-calls-"), "calls.log");
+    const { dir, proxy } = rig();
+    install(dir, [stdio("fx", {}, ["--calls", calls])]);
+    await proxy.listTools();
+    install(dir, [stdio("fx", { source: "community", confirmedWarning: false }, ["--calls", calls])]);
+    const r = await proxy.callTool("fx__echo", { text: "x" }, client, signal());
+    expect(r.isError).toBe(true);
+    expect(existsSync(calls) ? readFileSync(calls, "utf8") : "").toBe("");
+    expect(proxy.running()).toEqual([]);
+  });
+
+  it("two ids with the same slug get distinct names and reach their own server", async () => {
+    const { dir, proxy } = rig();
+    install(dir, [stdio("a.b"), stdio("a-b")]);
+    const names = (await proxy.listTools()).map((t) => t.name).filter((n) => n.endsWith("__echo"));
+    expect(names.sort()).toEqual(["a-b-2__echo", "a-b__echo"]);
+    expect(textOf(await proxy.callTool("a-b-2__echo", { text: "two" }, client, signal()))).toContain('source="a-b-2"');
+  });
+});
+
+describe("connections proxy: remote failure modes", () => {
+  const servers: Server[] = [];
+  afterEach(() => {
+    for (const s of servers.splice(0)) s.close();
+  });
+  const listen = async (handler: Parameters<typeof createServer>[1]) => {
+    const server = createServer(handler);
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return (server.address() as AddressInfo).port;
+  };
+  const remote = (id: string, url: string): InstalledConnector => ({
+    id,
+    name: id,
+    description: "",
+    source: "verified",
+    transport: "remote",
+    server: { url },
+    auth: "token",
+    installedAt: 1,
+    confirmedWarning: false,
+  });
+  const readBody = (req: IncomingMessage) =>
+    new Promise<Record<string, unknown>>((resolve) => {
+      let raw = "";
+      req.on("data", (c: Buffer) => (raw += c.toString()));
+      req.on("end", () => resolve(raw ? (JSON.parse(raw) as Record<string, unknown>) : {}));
+    });
+
+  it("never follows a redirect with the token, and a 401 is reported as unauthorized", async () => {
+    let leaked = 0;
+    const target = await listen((req, res) => {
+      leaked++;
+      res.writeHead(200).end();
+    });
+    const redirector = await listen((_req, res) =>
+      res.writeHead(307, { location: `http://127.0.0.1:${target}/mcp` }).end(),
+    );
+    const denier = await listen((_req, res) => res.writeHead(401).end());
+    const secrets = new MemorySecretStore();
+    await secrets.set(secretName("redir", "token"), "tok-redirect");
+    await secrets.set(secretName("denied", "token"), "tok-denied");
+    const { dir, proxy, audits } = rig({ secrets });
+    install(dir, [
+      remote("redir", `http://127.0.0.1:${redirector}/mcp`),
+      remote("denied", `http://127.0.0.1:${denier}/mcp`),
+    ]);
+    expect(await proxy.listTools()).toEqual([]);
+    expect(leaked).toBe(0);
+    expect(audits).toContainEqual({
+      type: "connector.unavailable",
+      meta: { connector: "redir", error: "connector_unavailable" },
+    });
+    expect(audits).toContainEqual({
+      type: "connector.unavailable",
+      meta: { connector: "denied", error: "connector_unauthorized" },
+    });
+  });
+
+  it("re-initializes after the server forgets its MCP session", async () => {
+    let session = 0;
+    let live = "";
+    const port = await listen(async (req, res) => {
+      if (req.method === "DELETE") return res.writeHead(200).end();
+      const msg = await readBody(req);
+      if (msg.method === "initialize") {
+        live = `s${++session}`;
+        return res
+          .writeHead(200, { "content-type": "application/json", "mcp-session-id": live })
+          .end(
+            JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          );
+      }
+      if (req.headers["mcp-session-id"] !== live) return res.writeHead(404).end();
+      if (msg.id === undefined) return res.writeHead(202).end();
+      const result =
+        msg.method === "tools/list"
+          ? { tools: [{ name: "ping_me", inputSchema: { type: "object" } }] }
+          : { content: [{ type: "text", text: `pong ${live}` }] };
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+    });
+    const secrets = new MemorySecretStore();
+    await secrets.set(secretName("r", "token"), "tok-r");
+    const { dir, proxy } = rig({ secrets });
+    install(dir, [remote("r", `http://127.0.0.1:${port}/mcp`)]);
+    expect(textOf(await proxy.callTool("r__ping_me", {}, client, signal()))).toContain("pong s1");
+    live = "gone";
+    expect(textOf(await proxy.callTool("r__ping_me", {}, client, signal()))).toContain("connector_session_expired");
+    expect(textOf(await proxy.callTool("r__ping_me", {}, client, signal()))).toContain("pong s2");
+  });
+});
+
+describe("connections proxy: revoke and approval races", () => {
+  it("an uninstall or edit while the phone approval is pending refuses the call", async () => {
+    const calls = join(tempDir("chalito-calls-"), "calls.log");
+    let release!: () => void;
+    const waiting = new Promise<void>((r) => (release = r));
+    const { dir, proxy, audits } = rig({ gate: async () => (await waiting, { allow: true, reason: "approved" }) });
+    install(dir, [stdio("fx", {}, ["--calls", calls])]);
+    await proxy.listTools();
+    const pending = proxy.callTool("fx__show_env", { name: "PATH" }, client, signal());
+    await new Promise((r) => setTimeout(r, 20));
+    install(dir, [stdio("fx", {}, ["--calls", calls, "--changed"])]);
+    release();
+    const r = await pending;
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("changed or removed");
+    expect(existsSync(calls) ? readFileSync(calls, "utf8") : "").toBe("");
+    expect(audits.find((a) => a.type === "connector.call")!.meta).toMatchObject({
+      decision: "deny",
+      reason: "changed",
+    });
+  });
+
+  it("revoke-all while an approval is pending: the call never reaches a server and nothing is left running", async () => {
+    const pids = tempDir("chalito-pid-");
+    const calls = join(pids, "calls.log");
+    let release!: () => void;
+    const waiting = new Promise<void>((r) => (release = r));
+    const { dir, proxy } = rig({ gate: async () => (await waiting, { allow: true, reason: "approved" }) });
+    install(dir, [stdio("fx", {}, ["--calls", calls, "--pidfile", join(pids, "fx")])]);
+    await proxy.listTools();
+    const pid = Number(readFileSync(join(pids, "fx"), "utf8"));
+    const pending = proxy.callTool("fx__show_env", { name: "PATH" }, client, signal());
+    const revoking = proxy.revokeAll("test");
+    // A list during revoke-all starts nothing.
+    expect(await proxy.listTools()).toEqual([]);
+    await revoking;
+    release();
+    expect((await pending).isError).toBe(true);
+    expect(existsSync(calls) ? readFileSync(calls, "utf8") : "").toBe("");
+    expect(proxy.running()).toEqual([]);
+    await waitFor(() => !alive(pid), 5000);
+  });
+
+  it("a keychain that won't delete makes revoke-all report itself incomplete", async () => {
+    const secrets = new MemorySecretStore();
+    secrets.delete = async () => {
+      throw new Error("locked");
+    };
+    const { dir, proxy, audits } = rig({ secrets });
+    install(dir, [stdio("fx")]);
+    await expect(proxy.revokeAll("test")).rejects.toThrow("revoke_incomplete");
+    expect(audits.find((a) => a.type === "connector.revoke_all")!.meta).toMatchObject({ secretsFailed: 1 });
+    expect(readInstalled(dir)).toEqual([]);
+  });
+
+  it("when the server leader dies by itself, its grandchild (the real server) dies too", async () => {
+    const pids = tempDir("chalito-pid-");
+    const { dir, proxy } = rig({ restartMs: 60_000 });
+    install(dir, [stdio("fx", {}, ["--pidfile", join(pids, "server"), "--spawn-child", join(pids, "child")])]);
+    await proxy.listTools();
+    await waitFor(() => existsSync(join(pids, "child")));
+    const child = Number(readFileSync(join(pids, "child"), "utf8"));
+    await proxy.callTool("fx__crash", {}, client, signal());
+    await waitFor(() => !alive(child), 5000);
+  });
+
+  it("a result that isn't an MCP result is an error, not an empty success", async () => {
+    const { dir, proxy } = rig();
+    install(dir, [stdio("fx")]);
+    const r = await proxy.callTool("fx__garbage", {}, client, signal());
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toContain("connector_protocol");
   });
 });
