@@ -2,7 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, expect, it, vi } from "vitest";
 import { TextProviders } from "../src/lib/i18n.js";
 import { unavailableIpc, type TeamConnectionsView, type TeamProvider } from "../src/lib/ipc.js";
-import { Connections } from "../src/panel/Connections.js";
+import { ConnectionsScreen } from "../src/panel/connections/ConnectionsScreen.js";
+import { TeamSection } from "../src/panel/connections/TeamSection.js";
 
 afterEach(cleanup);
 const view = (): TeamConnectionsView => ({
@@ -28,7 +29,7 @@ it("shows the four AI trust switches and scopes changes to the selected workspac
   });
   render(
     <TextProviders locale="en">
-      <Connections ipc={{ ...unavailableIpc, teamConnections: async () => structuredClone(current), setTeamTrust }} />
+      <TeamSection ipc={{ ...unavailableIpc, teamConnections: async () => structuredClone(current), setTeamTrust }} />
     </TextProviders>,
   );
   await screen.findByRole("switch", { name: "Trust Claude Code for this workspace" });
@@ -51,7 +52,7 @@ it("shows the four AI trust switches and scopes changes to the selected workspac
 it("keeps trust off and displays a rejected trust change", async () => {
   render(
     <TextProviders locale="en">
-      <Connections
+      <TeamSection
         ipc={{
           ...unavailableIpc,
           teamConnections: async () => view(),
@@ -67,4 +68,18 @@ it("keeps trust off and displays a rejected trust change", async () => {
   expect((screen.getByRole("switch", { name: "Trust Codex for this workspace" }) as HTMLInputElement).checked).toBe(
     false,
   );
+});
+
+it("is one section of the single Connections screen, after the AI tools found on this PC", async () => {
+  const found = { scan: async () => [], connect: vi.fn(), disconnect: vi.fn() };
+  const { container } = render(
+    <TextProviders locale="en">
+      <ConnectionsScreen found={found} ipc={{ ...unavailableIpc, teamConnections: async () => view() }} />
+    </TextProviders>,
+  );
+  const team = await screen.findByRole("heading", { name: "AI team" });
+  expect(screen.getAllByRole("heading", { name: "AI team" })).toHaveLength(1);
+  const sections = [...container.querySelectorAll("section")];
+  expect(sections.indexOf(team.closest("section")!)).toBe(1);
+  expect(screen.getAllByRole("switch")).toHaveLength(4);
 });

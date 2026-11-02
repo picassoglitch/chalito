@@ -124,6 +124,7 @@ export const agentFor = async (
     cloud?: MemoryLinkCloud;
     ws?: string;
     maxLive?: number;
+    connections?: { revokeAll(by: string): Promise<number> };
   } = {},
 ) => {
   const self = o.self ?? (await device(true));
@@ -190,6 +191,7 @@ export const agentFor = async (
     now: Date.now,
     log: createLogger(() => undefined),
     links,
+    ...(o.connections ? { connections: o.connections } : {}),
     ...(o.maxLive
       ? {
           sessionsConfig: {
@@ -267,6 +269,7 @@ export const agentFor = async (
     linkHost: () => linkHost!,
     command,
     answer,
+    passkeyRef,
     policy: holder,
     setPolicy: (p: Policy) => void (policy = p),
   };

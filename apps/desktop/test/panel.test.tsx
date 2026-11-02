@@ -48,11 +48,11 @@ const renderPanel = (p: Partial<PanelProps> & { initialTab?: Tab }, locale: Loca
 
 describe("panel: settings parity with the PWA", () => {
   // The first render pays the one-time start; on a busy Windows runner that pushed the (es) case
-  // past 5 s while (en), the same work, took 0.1 s. It happens here, under its own budget.
+  // past 5 s while (en), the same work, took 0.1 s. It happens here (budget: vitest.config.ts).
   beforeAll(() => {
     renderPanel({ initialTab: "settings" });
     cleanup();
-  }, 30_000);
+  });
 
   it.each(["es", "en"] as const)("renders every registered setting in the desktop shell (%s)", (locale) => {
     const { container } = renderPanel({ initialTab: "settings" }, locale);

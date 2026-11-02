@@ -7,7 +7,7 @@ The MCP instructions tell each AI to coordinate automatically: check messages at
 ## Connect an app
 
 1. Run an updated Chalito agent and add the project folder to its configured workspaces.
-2. Open **Connections**, choose the workspace, and turn on **Trust** for each AI that may communicate there. Trust is separate for Claude Code, Codex, Grok Build, and Cursor. Enabling it uses the desktop's operating-system check. Disabling it immediately removes that AI's active memberships when the channel next handles a request or the panel refreshes. The saved permission belongs to the folder's canonical path, so reusing a workspace label for a different folder does not carry trust over.
+2. Open the **Connections** tab, go to its **AI team** section, choose the workspace, and turn on **Trust** for each AI that may communicate there. Trust is separate for Claude Code, Codex, Grok Build, and Cursor. Enabling it uses the desktop's operating-system check. Disabling it immediately removes that AI's active memberships when the channel next handles a request or the panel refreshes. The saved permission belongs to the folder's canonical path, so reusing a workspace label for a different folder does not carry trust over.
 3. Open **Connection setup** to obtain the launch configuration. You can also generate it from the CLI:
 
    ```sh
@@ -47,7 +47,7 @@ Validation:
 pnpm --filter @chalito/agent exec vitest run test/team.test.ts test/team-connections.test.ts test/links.test.ts test/cli.test.ts
 pnpm --filter @chalito/agent typecheck
 pnpm --filter @chalito/desktop typecheck
-pnpm --filter @chalito/desktop exec vitest run test/connections.test.tsx test/panel.test.tsx test/ipc-invoke.test.ts
+pnpm --filter @chalito/desktop exec vitest run test/connections-team.test.tsx test/panel.test.tsx test/ipc-invoke.test.ts
 ```
 
 ## Live Claude–Codex acceptance check (pending)

@@ -61,11 +61,15 @@ import { TeamConnections } from "./team/connections.js";
 import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
 import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
+import { connectionsSearchFeature } from "./connections/ipc.js";
+import { VerifiedConnectors } from "./connections/catalog.js";
+import { shippedConnectors } from "./connections/shipped.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
 import { expandHome } from "./workspace-path.js";
 import { NativeBridge } from "./native/bridge.js";
 import { NativeConnectors } from "./native/connectors.js";
+import { ChannelInstaller } from "./connections/install-channel.js";
 import { stableAgentPath, stableHookBinary } from "./native/stable-bin.js";
 import { NATIVE_APPS, NATIVE_WORKSPACES_FILE, nativeWorkspacePaths, writeNativeWorkspaces } from "./native/protocol.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
@@ -94,6 +98,8 @@ import { FileSessionRegistry, type SessionRegistry } from "./session-registry.js
 import type { AgentStore } from "./store.js";
 import { lanPath, lanTee, peerEventLog, type LanService } from "./lan/index.js";
 import { TrustStore } from "./trust-store.js";
+import { ConnectionsProxy } from "./connections/proxy.js";
+import { ConnectorSessions } from "./connections/gate.js";
 
 export const CLAUDE_MISSING = {
   es: "No hay un Claude Code (`claude`) fijado. Instálalo con el instalador oficial de Anthropic (https://code.claude.com/docs/en/setup) y luego ejecuta `chalito claude pin` en una terminal.",
@@ -1156,7 +1162,25 @@ const startDaemon = async (
   });
   coreDeps.linkTools = linkTools;
   coreDeps.remote = { screen: screenOn, terminal: terminalOn };
+  // ADR 0023 §4: installed connectors for every connected AI app; servers start on first use.
+  let connectorSessions: ConnectorSessions | null = null;
+  const connections = new ConnectionsProxy({
+    dir,
+    secrets,
+    env,
+    gate: (call) => connectorSessions?.gate(call) ?? Promise.resolve({ allow: false, reason: "unavailable" }),
+    audit: auditAgent,
+    now,
+  });
+  coreDeps.connections = connections;
   const core = new AgentCore(coreDeps);
+  connectorSessions = new ConnectorSessions({
+    core,
+    store: signedInStore,
+    deviceId: id.deviceId,
+    now,
+    log: (event, meta) => log.warn(event, meta),
+  });
   // Sessions from before this start can be resumed (lazily: nothing is spawned for them now).
   await core
     .restore()
@@ -1511,6 +1535,9 @@ const startDaemon = async (
       }),
     ]);
     clearTimeout(nativeTimer);
+    // Connector servers are this agent's children: they never outlive it.
+    await connections.close().catch(() => undefined);
+    await connectorSessions?.close().catch(() => undefined);
     await broker?.close().catch(() => undefined);
     await linksBroker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
@@ -1539,11 +1566,12 @@ const startDaemon = async (
         log: (event, meta) => log.warn(event, meta),
       });
   const hookCommand = computerMcpCommand(hookBin.path);
+  const agentCommand = [hookCommand.command, ...hookCommand.args.slice(0, -2)];
   const nativeConnectors: NativeConnectors = new NativeConnectors({
     home: deps.home ?? homedir(),
     dir,
     platform: process.platform,
-    command: [hookCommand.command, ...hookCommand.args.slice(0, -2)],
+    command: agentCommand,
     stable: isInterpreter(execPath) || !hookBin.ephemeral,
     available: async (provider) =>
       !!(await apps.findCli(NATIVE_APPS[provider])) ||
@@ -1559,6 +1587,17 @@ const startDaemon = async (
   });
   // #132 — hooks never point into /tmp or a DMG (anyone could plant a binary there later); dev runs never rewrite them.
   if (!isInterpreter(execPath) && !hookBin.ephemeral) nativeConnectors.repair();
+  const channelInstaller = new ChannelInstaller({
+    home: deps.home ?? homedir(),
+    dir,
+    env,
+    platform: process.platform,
+    command: agentCommand,
+    // Unlike hooks, a dev run never goes into another tool's config: a deleted worktree would break it.
+    stable: !isInterpreter(execPath) && !hookBin.ephemeral,
+    log: (event, meta) => log.warn(event, meta),
+  });
+  channelInstaller.repair();
   const nativeBridge: NativeBridge = new NativeBridge({
     core,
     store: signedInStore,
@@ -1613,6 +1652,11 @@ const startDaemon = async (
       codeServer = await startCodeServer({
         path: codeAt,
         native: (request, signal) => nativeBridge.handle(request, signal),
+        connections: {
+          list: () => connections.listTools(),
+          call: (client, name, args, signal) => connections.callTool(name, args, client, signal),
+          closed: (key) => void connectorSessions?.end(key),
+        },
         code: codeService(core, () => policy.get(), readSetup, "local:cli", deps.home ?? homedir()),
         team,
         ...(winSec
@@ -1669,11 +1713,28 @@ const startDaemon = async (
             open: (v) => openOwnSession(v, { platform: process.platform, run: spawnRunner, paths: ownPaths }),
           },
           ...(prs ? { prs } : {}),
+          connectionsFound: {
+            installer: channelInstaller,
+            scan: {
+              home: deps.home ?? homedir(),
+              env,
+              platform: process.platform,
+              recipes: () => catalog.curated(),
+              findCli: (recipeId, bin) => apps.findCli(recipeId, bin),
+            },
+            warn: (event, meta) => log.warn(event, meta),
+          },
           meetings: meetingsFeature({
             secrets,
             code,
             locale: () => cfg.locale,
             warn: (event, meta) => log.warn(event, meta),
+          }),
+          connections: connectionsSearchFeature({
+            dir,
+            secrets,
+            audit: auditAgent,
+            verified: new VerifiedConnectors(shippedConnectors()),
           }),
         }),
         onError: (method, err) =>

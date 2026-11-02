@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useT } from "../lib/i18n.js";
-import type { AgentIpc, TeamConnectionsView, TeamProvider } from "../lib/ipc.js";
+import { useT } from "../../lib/i18n.js";
+import type { AgentIpc, TeamConnectionsView, TeamProvider } from "../../lib/ipc.js";
 
 /** Per-app trust for automatic communication; vendor login and tool approvals stay with each app. */
-export const Connections = ({ ipc }: { ipc: AgentIpc }) => {
+export const TeamSection = ({ ipc }: { ipc: AgentIpc }) => {
   const t = useT();
   const [view, setView] = useState<TeamConnectionsView | null>(null);
   const [workspace, setWorkspace] = useState("");

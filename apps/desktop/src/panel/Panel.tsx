@@ -27,8 +27,8 @@ import { ConnectComputer, type AutoPair } from "./ConnectComputer.js";
 import { LocalAgent } from "./LocalAgent.js";
 import { Apps } from "./Apps.js";
 import { NativeConnections } from "./NativeConnections.js";
+import { ConnectionsScreen } from "./connections/ConnectionsScreen.js";
 import { RemoteTools } from "./RemoteTools.js";
-import { Connections } from "./Connections.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
 import { SetupChecklist } from "./SetupChecklist.js";
@@ -41,11 +41,11 @@ import { OfflineVoiceSettings } from "./OfflineVoiceSettings.js";
 import { BoardNotice, BoardSettings } from "./BoardNotice.js";
 import type { BoardLink } from "../lib/board/link.js";
 
-export type Tab = "inbox" | "sessions" | "rooms" | "ai" | "voice" | "security" | "settings";
+export type Tab = "inbox" | "sessions" | "rooms" | "ai" | "connections" | "voice" | "security" | "settings";
 /** Sidebar groups: daily use first, then the tools Chalito uses, then account and safety at the bottom. */
 const NAV: readonly { key: "main" | "tools" | "account"; tabs: readonly Tab[] }[] = [
   { key: "main", tabs: ["inbox", "sessions", "rooms"] },
-  { key: "tools", tabs: ["ai", "voice"] },
+  { key: "tools", tabs: ["ai", "connections", "voice"] },
   { key: "account", tabs: ["security", "settings"] },
 ];
 
@@ -61,6 +61,7 @@ const ICON: Record<Tab, ReactNode> = {
     </>
   ),
   ai: <path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2zM19 15l1 2.5 2.5 1-2.5 1L19 22l-1-2.5-2.5-1 2.5-1z" />,
+  connections: <path d="M9 7V3M15 7V3M7 7h10v4a5 5 0 0 1-10 0zM12 16v5" />,
   voice: <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zM5 11a7 7 0 0 0 14 0M12 18v3" />,
   security: <path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z" />,
   settings: (
@@ -339,11 +340,11 @@ export const Panel = (p: PanelProps) => {
             {tab === "ai" && (
               <>
                 <NativeConnections ipc={p.ipc} />
-                <Connections ipc={p.ipc} />
                 <Apps ipc={p.ipc} />
               </>
             )}
             {tab === "ai" && p.client && <RemoteTools client={p.client} />}
+            {tab === "connections" && <ConnectionsScreen ipc={p.ipc} />}
             {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}
             {tab === "security" && p.client && <SecurityNotices client={p.client} />}
             {tab === "security" && <Security ipc={p.ipc} />}

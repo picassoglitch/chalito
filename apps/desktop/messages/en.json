@@ -5,8 +5,9 @@
     "security": "Security",
     "voice": "Voice",
     "rooms": "Rooms",
-    "ai": "Connections",
-    "sessions": "Sessions"
+    "ai": "Connected AI",
+    "sessions": "Sessions",
+    "connections": "Connections"
   },
   "nav": {
     "tools": "Tools",
@@ -270,7 +271,7 @@
       "name": "Google"
     },
     "connect": {
-      "title": "Connections",
+      "title": "Connected AI",
       "agent": {
         "anthropic": "Claude Code",
         "openai": "Codex",
@@ -659,13 +660,13 @@
       "account": "Sign in with your Chalyb account.",
       "browser": "Sign in with your Chalyb account to approve this app.",
       "computer": "Once you're signed in, this computer connects by itself (see “Connect this computer” above).",
-      "ai": "In “Connections”, tap “Use” next to an AI you already have installed.",
+      "ai": "In “Connected AI”, tap “Use” next to an AI you already have installed.",
       "folder": "In Settings → This computer, add a project folder.",
       "firstTask": "Ask your AI to summarize your project. It only reads; it changes nothing."
     },
     "action": {
       "signIn": "Sign in with Chalyb",
-      "ai": "Go to Connections",
+      "ai": "Go to Connected AI",
       "folder": "Choose a folder",
       "firstTask": "Try the first task"
     },
@@ -684,7 +685,7 @@
       "acceptEdits": "Edits the folder without asking"
     },
     "start": "Start",
-    "noApps": "No AI is ready on this computer. Connect one in “Connections”.",
+    "noApps": "No AI is ready on this computer. Connect one in “Connected AI”.",
     "noWorkspaces": "Add a folder in Settings to start.",
     "unavailable": "Chalito isn't running on this computer.",
     "refused": "Chalito refused it: {reason}",
@@ -1006,7 +1007,7 @@
       "later": "Later",
       "no": "No",
       "error": {
-        "no_app": "Connect an AI in “Connections” to open the session.",
+        "no_app": "Connect an AI in “Connected AI” to open the session.",
         "no_workspace": "Add a folder in Settings → This computer to open the session.",
         "other": "I couldn't open the session. Try again."
       }
@@ -1071,6 +1072,120 @@
       "sendFailed": "Your answer from the board didn't reach the agent. Try again, or answer on your phone.",
       "phoneRequired": "This approval needs your phone; from the board you can only deny it.",
       "writeFailed": "The board stopped getting approvals. Unplug it and plug it back in."
+    }
+  },
+  "connections": {
+    "intro": "AI tools on this PC and connections you can add. Every connection works for all your connected agents, and each call still goes through your approvals.",
+    "found": {
+      "title": "Found on this PC",
+      "intro": "AI tools, agents and local models installed here. Connect adds a “chalito” server to the tool's own MCP settings; nothing else in them changes and a backup is kept.",
+      "scanning": "Looking for AI tools…",
+      "empty": "No AI tools found on this PC yet.",
+      "readFailed": "Couldn't scan this PC. Showing the last result.",
+      "scanFailed": "Couldn't scan this PC. Try again.",
+      "rescan": "Scan again",
+      "kind": {
+        "agent": "Agent",
+        "llm": "Local model",
+        "mcp-client": "MCP app"
+      },
+      "connected": "Connected to Chalito",
+      "notConnected": "Not connected",
+      "noMcp": "Doesn't support MCP connections",
+      "notYet": "Chalito can't connect this one yet",
+      "needsUpdate": "Requires the team channel update",
+      "connect": "Connect",
+      "disconnect": "Disconnect",
+      "cancel": "Cancel",
+      "confirm": "Confirm the change",
+      "addHint": "Chalito will add its “chalito” server to this file:",
+      "removeHint": "Chalito will remove only its own “chalito” server from this file:",
+      "error": {
+        "unknown_tool": "Chalito can't connect this tool.",
+        "unsafe_path": "That settings file is a link or sits outside your home folder, so Chalito won't change it.",
+        "invalid_config": "That tool's settings file can't be read (it may have a typo). Fix it, then try again; nothing was changed.",
+        "config_too_large": "That tool's settings file is too large to edit safely.",
+        "config_changed": "The tool changed its settings at the same moment. Try again.",
+        "config_layout": "Chalito's entry is written in a form it can't edit safely. Remove the “chalito” server by hand.",
+        "name_taken": "That tool already has another server named “chalito”. Chalito won't replace it.",
+        "channel_unavailable": "Requires the team channel update.",
+        "unstable_path": "Chalito is running from a temporary place (installer or disk image). Install it first.",
+        "cli_unavailable": "Chalito's command isn't available.",
+        "not_installed": "That tool isn't installed on this PC anymore. Scan again.",
+        "other": "That didn't work. Try again."
+      }
+    },
+    "search": {
+      "title": "Add connections",
+      "soon": "Coming soon.",
+      "intro": "Search MCP servers so your agents can use your tools. One install serves every connected agent, and each call still goes through your approvals.",
+      "label": "Search",
+      "placeholder": "github, notion, database…",
+      "unavailable": "Chalito isn't running on this computer.",
+      "verifiedTitle": "Verified",
+      "communityTitle": "From the MCP Registry",
+      "installedTitle": "Installed",
+      "empty": "Nothing by that name.",
+      "more": "Load more",
+      "installed": "Installed",
+      "remove": "Remove",
+      "cancel": "Cancel",
+      "needsToken": "needs a token",
+      "heldOauth": "Coming soon: this connection needs a sign-in with the service's account (OAuth), which isn't ready yet.",
+      "transport": {
+        "remote": "Remote server",
+        "stdio": "Program on this computer"
+      },
+      "badge": {
+        "verified": "Verified",
+        "community": "Community",
+        "soon": "Coming soon"
+      },
+      "install": {
+        "button": "Install",
+        "title": "Install {name}?",
+        "confirm": "Install",
+        "confirmUnverified": "I understand, install",
+        "warning": "Chalito hasn't checked this server. It can see what you send it and act with the access you give it.",
+        "keychain": "The token is kept in this computer's keychain; it never goes to the cloud or into a prompt.",
+        "allAgents": "It will be available to all your connected agents, always behind your approvals."
+      },
+      "own": {
+        "title": "Add your own",
+        "mode": "How it connects",
+        "url": "By URL",
+        "command": "By command",
+        "name": "Name",
+        "urlLabel": "Server URL (HTTPS)",
+        "token": "Needs a token (Authorization: Bearer)",
+        "commandLabel": "Command",
+        "args": "Arguments (one per line)",
+        "env": "Secret variables it needs (comma-separated)",
+        "next": "Continue"
+      },
+      "error": {
+        "held_oauth": "Coming soon: this server asks for a sign-in (OAuth), which isn't ready yet.",
+        "warning_required": "Confirm the warning before installing.",
+        "already_installed": "It's already installed.",
+        "missing_input": "A required value is missing.",
+        "bad_input": "Some value isn't valid.",
+        "bad_url": "The URL must be HTTPS (or localhost).",
+        "command_not_found": "We couldn't find that command on this computer.",
+        "state_corrupt": "We couldn't read ~/.chalito/connectors.json; we left it as is.",
+        "keychain": "Couldn't save to this computer's keychain.",
+        "unreachable": "The server didn't answer.",
+        "not_found": "That server is no longer in the registry.",
+        "query_too_short": "Type at least 3 letters.",
+        "registry_unreachable": "The MCP Registry didn't answer; showing the verified ones.",
+        "registry_bad_response": "The MCP Registry answered something we couldn't read.",
+        "write_failed": "We couldn't save ~/.chalito/connectors.json.",
+        "unknown_connector": "That connection is no longer listed.",
+        "not_installed": "That connection wasn't installed anymore.",
+        "confirm_required": "Confirm before installing.",
+        "too_many": "You have the maximum number of connections (64). Remove one to add another.",
+        "integrity_unavailable": "We couldn't confirm the package on npm, so we didn't install it.",
+        "other": "Something went wrong. Try again."
+      }
     }
   }
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmodSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import type { Duplex } from "node:stream";
@@ -39,6 +40,17 @@ const Start = z
 const Prompt = z.object({ sid: SessionId, text: z.string().min(1).max(20_000) }).strict();
 const ForSid = z.object({ sid: SessionId }).strict();
 const Cwd = z.object({ cwd: z.string().min(1).max(4096) }).strict();
+const ConnList = z.object({ app: z.string().max(64).optional() }).strict();
+const ConnCall = z
+  .object({ app: z.string().max(64).optional(), name: z.string().min(1).max(128), arguments: z.unknown().optional() })
+  .strict();
+
+/** ADR 0023 §4: `chalito-agent connections mcp` lists and calls installed connectors through here. */
+export interface CodeConnections {
+  list(client: { key: string; app?: string }): Promise<unknown[]>;
+  call(client: { key: string; app?: string }, name: string, args: unknown, signal: AbortSignal): Promise<unknown>;
+  closed(key: string): void;
+}
 
 /** What the server pushes for the connection's own sessions. */
 export type CodePush = { event: LocalEvent & { sid: string } };
@@ -49,6 +61,7 @@ export interface CodeServer {
 }
 
 class Conn {
+  readonly id = randomUUID();
   readonly abort = new AbortController();
   readonly owned = new Set<string>();
   #starting = 0;
@@ -96,6 +109,7 @@ export const startCodeServer = async (opts: {
   /** Native hooks may request an approval, never submit its decision. */
   native?: (request: NativeHookRequest, signal: AbortSignal) => Promise<NativeHookReply>;
   team?: TeamHub;
+  connections?: CodeConnections;
   onError?: (method: string, err: unknown) => void;
   platform?: NodeJS.Platform;
   /** Windows: serve through this listener (a pipe locked to this user, winpipe.ts) instead of a socket. */
@@ -158,6 +172,20 @@ export const startCodeServer = async (opts: {
       const p = parse(z.object({ action: z.string(), args: z.unknown() }).strict(), params);
       return p ? team.call(c.abort.signal, p.action, p.args) : { ok: false, error: "bad_params" };
     },
+    "connections.list": async (c, params) => {
+      const p = parse(ConnList, params);
+      if (!p || !opts.connections) return { ok: false, error: p ? "unavailable" : "bad_params" };
+      return {
+        ok: true,
+        result: { tools: await opts.connections.list({ key: c.id, ...(p.app ? { app: p.app } : {}) }) },
+      };
+    },
+    "connections.call": async (c, params) => {
+      const p = parse(ConnCall, params);
+      if (!p || !opts.connections) return { ok: false, error: p ? "unavailable" : "bad_params" };
+      const client = { key: c.id, ...(p.app ? { app: p.app } : {}) };
+      return { ok: true, result: await opts.connections.call(client, p.name, p.arguments ?? {}, c.abort.signal) };
+    },
   };
 
   const handle = async (c: Conn, line: string) => {
@@ -189,6 +217,7 @@ export const startCodeServer = async (opts: {
     sock.on("close", () => {
       c.abort.abort();
       conns.delete(c);
+      opts.connections?.closed(c.id);
     });
     sock.on("end", () => c.abort.abort());
     sock.on("data", (chunk: string) => {

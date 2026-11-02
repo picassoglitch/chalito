@@ -69,6 +69,7 @@ import {
   exposedFor,
   policyHash,
   presetPolicy,
+  type Classification,
   type ClassifyContext,
   type Policy,
 } from "./policy/index.js";
@@ -173,6 +174,8 @@ export interface AgentCoreDeps {
   links?: LinkManager;
   /** The session link tools (links/tool-server.ts, M16 F); absent = never attached. */
   linkTools?: LinkTools;
+  /** ADR 0023 connectors (connections/proxy.ts); revoke-all removes them too. */
+  connections?: { revokeAll(by: string): Promise<number> };
 }
 
 interface Session {
@@ -729,6 +732,11 @@ export class AgentCore {
         // ADR 0020 revoke-all (a bundle step-up) also revokes every link on this device.
         if (body?.stepUp?.bundle) {
           await this.d.links?.revokeAll("revoke_all");
+          await this.d.connections?.revokeAll("revoke_all").catch((err: unknown) =>
+            this.#audit("connector.revoke_all_failed", {
+              error: err instanceof Error ? err.message.slice(0, 64) : "error",
+            }),
+          );
           this.#cancelOutside();
         }
         for (const s of this.sessions.values())
@@ -2143,6 +2151,53 @@ export class AgentCore {
         input: input.input,
         reasons: [...classification.reasons, "native app requested permission"],
       },
+    });
+  }
+
+  /** ADR 0023 §4: a connector call the proxy stamped. Verified reads auto-allow; the rest ask the phone. */
+  async requestConnectorTool(input: {
+    sid: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    stamp: { connectorId: string; source: string; tier: "read" | "write"; risk: RiskTier };
+    signal: AbortSignal;
+    onRequested?: (aid: string, expiresAt: number, risk: RiskTier) => void;
+  }): Promise<{ allow: boolean; reason: string }> {
+    if (this.#revoked || input.signal.aborted) return { allow: false, reason: "unavailable" };
+    const policy = this.d.policy.get();
+    const { stamp } = input;
+    const unverified = stamp.source !== "verified";
+    const classification: Classification = {
+      tier: stamp.risk,
+      category: "mcp",
+      reasons: [
+        `connector ${stamp.connectorId.slice(0, 80)} (${unverified ? "community, unverified" : "verified"})`,
+        `${stamp.tier} tool, ${stamp.risk}`,
+      ],
+      hardFloor: false,
+      sudo: false,
+      workspaceEdit: false,
+      noWorkspace: false,
+      readOnly: stamp.tier === "read" && stamp.risk === "LOW",
+    };
+    const decision = decide({
+      classification,
+      origin: "local:cli",
+      originAllowed: originAllowed(policy.origins, "local:cli"),
+      devMode: DEVMODE_OFF,
+      permissionMode: "default",
+    });
+    if (decision.action === "deny") return { allow: false, reason: decision.reason };
+    if (classification.readOnly && decision.action === "allow") return { allow: true, reason: "policy_read" };
+    const risk = classification.tier === "LOW" ? "MED" : classification.tier;
+    return this.#requestApproval({
+      sid: input.sid,
+      risk,
+      stepUp: risk === "HIGH" || risk === "CRITICAL",
+      origin: "local:cli",
+      signal: input.signal,
+      onRequested: (aid, expiresAt) => input.onRequested?.(aid, expiresAt, risk),
+      details: { toolName: input.toolName, input: input.input, reasons: classification.reasons },
     });
   }
 
