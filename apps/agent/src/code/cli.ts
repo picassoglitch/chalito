@@ -90,7 +90,7 @@ export interface CodeCliIo {
   connect?: (path: string) => Socket;
 }
 
-interface Rpc {
+export interface Rpc {
   call(method: string, params?: unknown): Promise<{ ok: boolean; result?: unknown; error?: string }>;
   close(): void;
 }

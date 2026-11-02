@@ -25,6 +25,8 @@ import { AnchorStore } from "./anchor.js";
 import { pinClaude } from "./claude-pin.js";
 import { brokerCall } from "./computer/broker.js";
 import { runMcpServer } from "./computer/mcp-server.js";
+import { runConnectionsMcp } from "./connections/mcp.js";
+import { clientApp } from "./connections/gate.js";
 import { LINKS_INSTRUCTIONS, LINKS_SERVER, linkMcpTools } from "./links/tools.js";
 import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/native.js";
 import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
@@ -115,6 +117,7 @@ const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
   run                                  run the agent (the OS service does this)
   code <claude|codex|gemini|grok|app> [--workspace <label>] [--mode default|plan|acceptEdits] [prompt]
                                        a session here that is also live on your phone (Ctrl-C stops)
+  connections mcp [app]                the MCP server an AI app starts to use Chalito's installed connections
   pair [--laptop]                      pair this computer with your phone
   status                               show pairing, policy, Developer mode and keys
   devmode on <toggle>                  turn a Developer-mode toggle on (local only, 3 confirmations)
@@ -564,6 +567,25 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       write: io.out,
       call: (tool, args) => brokerCall(socket, token, tool, args),
       server: { name: LINKS_SERVER, title: "Chalito links", instructions: LINKS_INSTRUCTIONS, tools: linkMcpTools },
+    });
+    return 0;
+  }
+
+  // ADR 0023 §4: an AI app's MCP config starts this; it holds no secrets and the agent gates every call.
+  if (cmd === "connections" && sub === "mcp") {
+    const app = clientApp(arg);
+    if (arg && !app) {
+      io.err("chalito connections mcp: unknown app.\n");
+      return 2;
+    }
+    const winSec = io.platform === "win32" ? await (io.winPipeSecurity ?? loadWinPipeSecurity)() : null;
+    const where = io.platform === "win32" && !winSec ? null : codePath(dir, io.platform, winSec?.userSid);
+    await runConnectionsMcp({
+      input: io.tty.input,
+      write: io.out,
+      path: where,
+      ...(app ? { app } : {}),
+      ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
     });
     return 0;
   }

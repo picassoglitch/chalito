@@ -92,6 +92,8 @@ import { FileSessionRegistry, type SessionRegistry } from "./session-registry.js
 import type { AgentStore } from "./store.js";
 import { lanPath, lanTee, peerEventLog, type LanService } from "./lan/index.js";
 import { TrustStore } from "./trust-store.js";
+import { ConnectionsProxy } from "./connections/proxy.js";
+import { ConnectorSessions } from "./connections/gate.js";
 
 export const CLAUDE_MISSING = {
   es: "No hay un Claude Code (`claude`) fijado. Instálalo con el instalador oficial de Anthropic (https://code.claude.com/docs/en/setup) y luego ejecuta `chalito claude pin` en una terminal.",
@@ -1138,7 +1140,25 @@ const startDaemon = async (
   });
   coreDeps.linkTools = linkTools;
   coreDeps.remote = { screen: screenOn, terminal: terminalOn };
+  // ADR 0023 §4: installed connectors for every connected AI app; servers start on first use.
+  let connectorSessions: ConnectorSessions | null = null;
+  const connections = new ConnectionsProxy({
+    dir,
+    secrets,
+    env,
+    gate: (call) => connectorSessions?.gate(call) ?? Promise.resolve({ allow: false, reason: "unavailable" }),
+    audit: auditAgent,
+    now,
+  });
+  coreDeps.connections = connections;
   const core = new AgentCore(coreDeps);
+  connectorSessions = new ConnectorSessions({
+    core,
+    store: signedInStore,
+    deviceId: id.deviceId,
+    now,
+    log: (event, meta) => log.warn(event, meta),
+  });
   // Sessions from before this start can be resumed (lazily: nothing is spawned for them now).
   await core
     .restore()
@@ -1493,6 +1513,9 @@ const startDaemon = async (
       }),
     ]);
     clearTimeout(nativeTimer);
+    // Connector servers are this agent's children: they never outlive it.
+    await connections.close().catch(() => undefined);
+    await connectorSessions?.close().catch(() => undefined);
     await broker?.close().catch(() => undefined);
     await linksBroker?.close().catch(() => undefined);
     await ipc?.close().catch(() => undefined);
@@ -1583,6 +1606,11 @@ const startDaemon = async (
       codeServer = await startCodeServer({
         path: codeAt,
         native: (request, signal) => nativeBridge.handle(request, signal),
+        connections: {
+          list: () => connections.listTools(),
+          call: (client, name, args, signal) => connections.callTool(name, args, client, signal),
+          closed: (key) => void connectorSessions?.end(key),
+        },
         code: codeService(core, () => policy.get(), readSetup, "local:cli", deps.home ?? homedir()),
         ...(winSec
           ? {
