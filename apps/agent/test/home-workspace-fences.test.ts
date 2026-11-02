@@ -43,6 +43,7 @@ const makeHome = () => {
   symlinkSync(join(home, ".ssh/id_ed25519"), join(home, "projects/x/key.txt"));
   symlinkSync(join(home, ".claude"), join(home, "projects/x/claude-cfg"));
   symlinkSync(join(home, ".ssh"), join(home, "projects/x/keys"));
+  symlinkSync("/proc", join(home, "projects/x/proc-link"));
   const policy: Policy = {
     ...DEFAULT_POLICY,
     workspaces: [{ label: "home", path: home }],
@@ -322,6 +323,10 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     ["Edit", { file_path: "/proc/self/cwd/../../.bashrc", old_string: "a", new_string: "b" }],
     ["Bash", { command: "cat /dev/fd/../cwd/x" }],
     ["Bash", { command: "cat keys/../.bashrc" }],
+    ["Bash", { command: "ls ../../../../proc/self/root/etc" }],
+    ["Bash", { command: "cat /dev/fd/3" }],
+    ["Read", { file_path: "/proc/self/root/etc/hostname" }],
+    ["Bash", { command: "cat proc-link/self/cwd/x" }],
     ["Bash", { command: "cat keys/../.aws/credentials" }],
     ["Read", { file_path: `${H}/projects/x/keys/../.claude/settings.json` }],
     ["Edit", { file_path: "keys/../.profile", old_string: "a", new_string: "b" }],
@@ -330,6 +335,22 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       const r = answeredFor(tool, input, h.ctx());
       expect(r.auto, JSON.stringify(r.c)).toBe(false);
     });
+
+  it("plain devices and a project folder named proc stay ordinary", () => {
+    expect(classifyToolCall("Bash", { command: "ls src 2>/dev/null" }, h.ctx()).fenced).toBeUndefined();
+    expect(classifyToolCall("Bash", { command: "echo x > /dev/stderr" }, h.ctx()).fenced).toBeUndefined();
+    expect(classifyToolCall("Read", { file_path: `${h.project}/proc/a.c` }, h.ctx())).toMatchObject({ tier: "LOW" });
+  });
+
+  it("a .git made after an earlier check is seen at once (no cached repo root for fences)", () => {
+    const d = makeHome();
+    const own = join(d.home, "projects/late");
+    mkdirSync(own, { recursive: true });
+    const git = () => answeredFor("Bash", { command: "git add -A && git commit -m wip" }, d.ctx(own));
+    expect(git().coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    mkdirSync(join(d.home, ".git"));
+    expect(git().auto).toBe(false);
+  });
 
   it("sort --compress-program runs a program, so it is not a read", () => {
     const c = classifyToolCall("Bash", { command: "sort -S 64K --compress-prog=./e.sh big.txt" }, h.ctx());

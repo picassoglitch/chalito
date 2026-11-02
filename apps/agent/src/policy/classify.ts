@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { type GitFs } from "./git-hooks.js";
+import { repoRootOf, type GitFs } from "./git-hooks.js";
 import { foldKey, repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
@@ -118,6 +118,8 @@ interface Paths {
   holdsFence(abs: string): boolean;
   /** Is in a fence, or holds one. */
   touchesFence(abs: string): boolean;
+  /** Any step of the path (as given, normalized, or walked) is in /proc or /dev, bar plain devices. */
+  procLike(raw: string, cwd?: string): boolean;
   /** `raw` against `cwd` with `~` expanded, symlinks not followed. */
   lexical(raw: string, cwd?: string): string;
   /** Some workspace is or holds a fence (the home folder): an unknown path may land in one. */
@@ -171,19 +173,30 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const real = ctx.realpath ?? defaultRealpath;
   const expand = (p: string) => (p === "~" ? ctx.home : p.startsWith("~/") ? join(ctx.home, p.slice(2)) : p);
   // `link/../x` is where the kernel goes: past the link's target, not the link's own folder.
-  const physical = (abs: string) => {
+  const physical = (abs: string, seen?: string[]) => {
     const root = parse(abs).root;
     return abs
       .slice(root.length)
       .split(/[\\/]+/)
       .reduce((cur, part) => {
         if (part === "" || part === ".") return cur;
-        return part === ".." ? dirname(cur) : real(join(cur, part));
+        const next = part === ".." ? dirname(cur) : real(join(cur, part));
+        seen?.push(join(cur, part), next);
+        return next;
       }, root);
+  };
+  const joinedOf = (p: string, cwd: string) => (isAbsolute(expand(p)) ? expand(p) : `${cwd}${sep}${expand(p)}`);
+  // Every step the kernel would take: one through /proc or /dev (bar plain devices) is the agent's view.
+  const procLike = (p: string, cwd = ctx.cwd) => {
+    const joined = joinedOf(p, cwd);
+    if (PLAIN_DEVICE.test(joined)) return false;
+    const steps = [joined, resolve(joined)];
+    physical(joined, steps);
+    return steps.some((x) => PROC_LIKE.test(x) && !PLAIN_DEVICE.test(x));
   };
   const res = (p: string, cwd = ctx.cwd) => {
     // Concatenated, not joined: join() would fold `link/..` before the link is followed.
-    const joined = isAbsolute(expand(p)) ? expand(p) : `${cwd}${sep}${expand(p)}`;
+    const joined = joinedOf(p, cwd);
     return /(^|[\\/])\.\.([\\/]|$)/.test(joined) ? real(physical(joined)) : real(resolve(joined));
   };
   // Fail closed: a pinned workspace that now resolves elsewhere (e.g. swapped for `ln -s /`) is dropped.
@@ -330,12 +343,14 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     excluded,
     hidden,
     lexical: (p, cwd = ctx.cwd) => resolve(cwd, expand(p)),
+    procLike,
     fencesReachable: workspaces.some(
       (w) => fenceRoots.some((f) => within(f, w)) || homeKeys.some((hk) => within(hk, w)),
     ),
     holdsFence: (abs) => fenceRoots.some((f) => within(f, abs)),
-    // The cached per-folder lookup (repo-index.ts): no stat walk per git command.
-    repoRoot: (dir) => repoForPath(join(dir, "_"), { ...hooksOpts, fallback: dir })?.root ?? null,
+    // Uncached on purpose: a fail-closed fence must see a `.git` made a second ago.
+    repoRoot: (dir) =>
+      repoRootOf(dir, { fallback: dir, ...(ctx.gitFs ? { fs: ctx.gitFs } : {}), ...(ctx.env ? { env: ctx.env } : {}) }),
     touchesFence: (abs) => fenceRoots.some((f) => within(f, abs) || within(abs, f)) || aiPrefixed(abs) || hidden(abs),
     hardFloor: (abs) => floor.some((f) => within(abs, f)),
     floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
@@ -531,7 +546,8 @@ const fence = (out: Classification, tier: RiskTier, reason: string): void => {
 const mark = (out: Classification, paths: Paths, tier: RiskTier, reason: string): void =>
   paths.fencesReachable ? fence(out, tier, reason) : raise(out, tier, reason);
 
-const expandTilde = (p: string, home: string) => (p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p);
+const PROC_LIKE = /^\/(proc|dev)(\/|$)/;
+const PLAIN_DEVICE = /^\/dev(\/(null|zero|u?random|tty|std(in|out|err)))?$/;
 
 const markHardFloor = (out: Classification, reason = "touches ~/.chalito"): void => {
   raise(out, "CRITICAL", reason);
@@ -564,19 +580,17 @@ const classifyPath = (
 ): void => {
   const abs = paths.resolve(raw, cwd);
   const lexical = paths.lexical(raw, cwd);
-  // /proc/self/cwd and /dev/fd resolve in the agent's process, not the AI's: never trust them.
-  const given = expandTilde(raw, paths.home);
-  const device = /^\/dev\/(null|zero|u?random|tty|std(in|out|err))$/.test(given);
-  if ((!device && /^\/(proc|dev)(\/|$)/.test(given)) || /^\/proc(\/|$)/.test(lexical)) {
-    fence(out, "HIGH", "process file system path");
-    return;
-  }
   if (paths.hardFloor(abs)) {
     markHardFloor(out, paths.floorReason(abs));
     return;
   }
   if (paths.sensitive(abs)) {
     fence(out, "CRITICAL", "credentials path");
+    return;
+  }
+  // /proc/self/cwd and /dev/fd resolve in the agent's process, not the AI's: never trust them.
+  if (paths.procLike(raw, cwd)) {
+    fence(out, "HIGH", "process file system path");
     return;
   }
   // Shell arguments of anything but a read-only tool count as writes here: whether `curl -o` or `ln` writes is a guess.
