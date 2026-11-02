@@ -1096,7 +1096,8 @@ describe("team channel tools skip the human gate (owner decision 2026-11-02)", (
     ["codex", "mcp__chalito_team__team_join"],
     ["codex", "team_read"],
     ["cursor", "MCP:team_read"],
-    ["cursor", "mcp__chalito_team__team_read"],
+    // Cursor gets no team bypass; team_read itself is now a classified read, so send shows the gate still runs.
+    ["cursor", "mcp__chalito_team__team_send"],
   ] as const)("still asks a human for %s %s", async (provider, toolName) => {
     const s = await rig();
     const abort = new AbortController();

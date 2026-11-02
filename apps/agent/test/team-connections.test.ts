@@ -32,7 +32,9 @@ const rig = () => {
       hub.members().some((p) => p.provider === provider && p.workspace === workspace),
   };
   const connections: TeamConnections = new TeamConnections(deps);
-  const hub: TeamHub = new TeamHub(workspaceFor, Date.now, (provider, cwd) => connections.trusted(provider, cwd));
+  const hub: TeamHub = new TeamHub(workspaceFor, Date.now, (provider, cwd) => connections.trusted(provider, cwd), {
+    rejected: (provider, cwd) => connections.requested(provider, cwd),
+  });
   return {
     dir,
     project,
@@ -94,7 +96,7 @@ it("requires the desktop OS check to enable trust and permits revocation without
     workspace: "project",
     trusted: false,
   });
-  await expect(handlers.setTeamTrust!({ ...params, provider: "gmail" })).rejects.toThrow("bad_params");
+  await expect(handlers.setTeamTrust!({ ...params, provider: "Gmail!" })).rejects.toThrow("bad_params");
   verify.mockImplementation(async () => {
     s.replacePath();
     return true;
@@ -133,4 +135,33 @@ it("expands a ~ workspace path for trust and for the launch arguments MCP client
     trusted: true,
     args: ["team", "mcp", "codex", project],
   });
+});
+
+it("lists any app id that tried to join so it can be trusted, and never trusts it by asking", () => {
+  const s = rig(),
+    a = new AbortController();
+  const rows = () => s.connections.view().workspaces.find((w) => w.label === "project")!.connections;
+  expect(rows().map((c) => c.provider)).toEqual(["claude", "codex", "grok", "cursor"]);
+  expect(s.hub.call(a.signal, "team_join", { provider: "gemini", cwd: s.project })).toMatchObject({
+    error: "not_trusted",
+  });
+  expect(s.hub.call(a.signal, "team_join", { provider: "Gemini CLI", cwd: s.project })).toMatchObject({
+    error: "bad_params",
+  });
+  expect(rows().find((c) => c.provider === "gemini")).toMatchObject({ known: false, trusted: false });
+  expect(s.connections.view().workspaces.find((w) => w.label === "other")!.connections).toHaveLength(4);
+  expect(rows().find((c) => c.provider === "claude")).toMatchObject({ known: true });
+  s.connections.set("gemini", "project", true);
+  expect(s.hub.call(a.signal, "team_join", { provider: "gemini", cwd: s.project }).ok).toBe(true);
+  // Trust is saved per id and folder; a reload lists the trusted id without a new join attempt.
+  expect(
+    s
+      .reload()
+      .view()
+      .workspaces.find((w) => w.label === "project")!
+      .connections.find((c) => c.provider === "gemini"),
+  ).toMatchObject({ trusted: true, args: ["team", "mcp", "gemini", s.project] });
+  for (let n = 0; n < 40; n++) s.connections.requested(`spam${n}`, s.project);
+  expect(rows().length).toBeLessThanOrEqual(4 + 16);
+  a.abort();
 });

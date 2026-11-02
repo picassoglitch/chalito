@@ -13,6 +13,7 @@ import {
   type NativeHookReply,
   type NativeProvider,
 } from "./protocol.js";
+import { TEAM_READ_TOOL, TEAM_SEND_TOOL } from "../team/tools.js";
 
 interface LinkedSession {
   sid: string;
@@ -49,10 +50,7 @@ const FILE_TOOLS = new Set([
   "NotebookEdit",
 ]);
 /** Chalito's own team channel tools, as Claude Code and Codex name them (Cursor sends `MCP:<tool>`, no server). */
-export const TEAM_CHANNEL_TOOLS: ReadonlySet<string> = new Set([
-  "mcp__chalito_team__team_read",
-  "mcp__chalito_team__team_send",
-]);
+export const TEAM_CHANNEL_TOOLS: ReadonlySet<string> = new Set([TEAM_READ_TOOL, TEAM_SEND_TOOL]);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "error");
 
 /** Native apps retain their own login and execution. Only signed Chalito decisions leave this bridge. */
