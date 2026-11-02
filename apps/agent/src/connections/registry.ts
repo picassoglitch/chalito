@@ -94,9 +94,9 @@ export const registryId = (name: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
+    .replace(/^custom-/, "reg-custom-") // `custom-` ids belong to "Agregar la tuya"
     .slice(0, 64)
-    .replace(/-+$/, "")
-    .replace(/^custom-/, "reg-custom-") || "server"; // `custom-` ids belong to "Agregar la tuya"
+    .replace(/-+$/, "") || "server";
 
 // The registry entry's own version: only an id for re-reading it, never what runs.
 const SERVER_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
@@ -125,7 +125,7 @@ export const safeRemoteUrl = (raw: string, o: { local: boolean } = { local: fals
 
 // Names that would let a listed server steer the runtime (another package index, preloaded code) or the HTTP framing.
 const RISKY_ENV =
-  /^(PATH|PATHEXT|HOME|NODE_OPTIONS|NODE_PATH|LD_|DYLD_|npm_config_|NPM_|YARN_|PNPM_|UV_|PIP_|PYTHON|COREPACK_|BUN_)/i;
+  /^(?:(?:PATH|PATHEXT|HOME|ENV|BASH_ENV|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|(?:HTTPS?|ALL|NO)_PROXY)$|NODE_|LD_|DYLD_|npm_config_|NPM_|YARN_|PNPM_|UV_|PIP_|PYTHON|COREPACK_|BUN_|GIT_|SSL_)/i;
 const RISKY_HEADER = /^(host|content-length|transfer-encoding|connection|cookie|upgrade|te|trailer|proxy-.*)$/i;
 
 /** A `{var}` template the person fills: only `prefix{var}` is supported (e.g. `Bearer {token}`). */

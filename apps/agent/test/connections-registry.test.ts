@@ -1,3 +1,4 @@
+import type { lookup as dnsLookup } from "node:dns";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -357,6 +358,8 @@ describe("registry remotes can't reach this computer or its network (SSRF)", () 
       "not-an-ip",
     ])
       expect(isPrivateAddress(a), a).toBe(true);
+    for (const a of ["2002:7f00:1::", "2001::1", "64:ff9b:1::1", "fec0::1", "192.88.99.1"])
+      expect(isPrivateAddress(a), a).toBe(true);
     for (const a of ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:808:808"])
       expect(isPrivateAddress(a), a).toBe(false);
     expect(isPublicHostname("mcp.example.com")).toBe(true);
@@ -365,7 +368,7 @@ describe("registry remotes can't reach this computer or its network (SSRF)", () 
 
   it("checks the resolved address at connect time: a public name that resolves to 127.0.0.1 is refused", async () => {
     const rebinding = ((_h: string, _o: unknown, cb: (e: null, a: { address: string; family: number }[]) => void) =>
-      cb(null, [{ address: "127.0.0.1", family: 4 }])) as unknown as typeof import("node:dns").lookup;
+      cb(null, [{ address: "127.0.0.1", family: 4 }])) as unknown as typeof dnsLookup;
     // The guarded probe never connects to this computer, even with a server listening there.
     routes.set("POST /mcp", (res) => res.writeHead(401).end());
     expect(
@@ -376,11 +379,33 @@ describe("registry remotes can't reach this computer or its network (SSRF)", () 
     );
     expect((err as { code?: string } | null)?.code).toBe("EPRIVATE");
     const ok = ((_h: string, _o: unknown, cb: (e: null, a: { address: string; family: number }[]) => void) =>
-      cb(null, [{ address: "93.184.216.34", family: 4 }])) as unknown as typeof import("node:dns").lookup;
+      cb(null, [{ address: "93.184.216.34", family: 4 }])) as unknown as typeof dnsLookup;
     const addr = await new Promise<string>((resolve) =>
       publicOnlyLookup(ok)("x.example.com", {}, (_e, a) => resolve(a as string)),
     );
     expect(addr).toBe("93.184.216.34");
+  });
+
+  it("a server dripping bytes still ends at the overall deadline", async () => {
+    const { createServer: createTcp } = await import("node:net");
+    const drip = createTcp((sock) => {
+      // A valid status line, then one header byte at a time: never idle, never done.
+      sock.write("HTTP/1.1 200 OK\r\nX-Drip: ");
+      const t = setInterval(() => sock.write("a"), 50);
+      sock.on("close", () => clearInterval(t));
+      sock.on("error", () => clearInterval(t));
+    });
+    await new Promise<void>((r) => drip.listen(0, "127.0.0.1", r));
+    try {
+      const started = Date.now();
+      const port = (drip.address() as AddressInfo).port;
+      expect(await probeRemoteAuth(`http://127.0.0.1:${port}/mcp`, { publicOnly: false, timeoutMs: 300 })).toBe(
+        "unreachable",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      await new Promise<void>((r) => drip.close(() => r()));
+    }
   });
 
   it("a guarded probe refuses plain HTTP and IP literals before any connection", async () => {
@@ -433,12 +458,16 @@ describe("review round 1: registry inputs can't inject or steer", () => {
       "PYTHONPATH",
     ])
       expect(env([{ name, isSecret: true }]), name).toBeNull();
-    expect(env([{ name: "SUPABASE_ACCESS_TOKEN", isSecret: true }])).not.toBeNull();
+    for (const name of ["NODE_TLS_REJECT_UNAUTHORIZED", "BASH_ENV", "HTTPS_PROXY", "SSL_CERT_FILE", "GIT_SSH_COMMAND"])
+      expect(env([{ name, isSecret: true }]), name).toBeNull();
+    for (const name of ["SUPABASE_ACCESS_TOKEN", "GITHUB_TOKEN", "HOMEASSISTANT_TOKEN", "PATH_ROOT"])
+      expect(env([{ name, isSecret: true }]), name).not.toBeNull();
     for (const name of ["Host", "Content-Length", "Transfer-Encoding", "Cookie", "Connection"])
       expect(remote([{ name, isSecret: true }]), name).toBeNull();
   });
 
   it("a registry name can't take a custom- id", () => {
     expect(registryId("custom.x/y")).toBe("reg-custom-x-y");
+    expect(registryId(`custom/${"a".repeat(80)}`)).toHaveLength(64);
   });
 });

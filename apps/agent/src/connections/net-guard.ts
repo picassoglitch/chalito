@@ -1,6 +1,6 @@
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 
 // Registry data is untrusted: a listed server must not point Chalito at this computer or its network (SSRF).
@@ -14,6 +14,7 @@ for (const [net, bits] of [
   ["172.16.0.0", 12],
   ["192.0.0.0", 24],
   ["192.0.2.0", 24],
+  ["192.88.99.0", 24],
   ["192.168.0.0", 16],
   ["198.18.0.0", 15],
   ["198.51.100.0", 24],
@@ -30,6 +31,10 @@ for (const [net, bits] of [
   ["2001:db8::", 32],
   ["fc00::", 7],
   ["fe80::", 10],
+  ["fec0::", 10],
+  ["2001::", 32],
+  ["2002::", 16],
+  ["64:ff9b:1::", 48],
   ["ff00::", 8],
 ] as const)
   PRIVATE.addSubnet(net, bits, "ipv6");
@@ -111,6 +116,8 @@ export const probeRemoteAuth = (
           "content-length": Buffer.byteLength(body),
         },
         timeout: o.timeoutMs ?? 10_000,
+        // Own agent: an env proxy (NODE_USE_ENV_PROXY) would make the lookup check the proxy, not the server.
+        agent: u.protocol === "https:" ? new HttpsAgent() : new HttpAgent(),
         ...(o.publicOnly ? { lookup: publicOnlyLookup(o.lookup) } : {}),
       },
       (res) => {
@@ -120,6 +127,9 @@ export const probeRemoteAuth = (
         resolve(s === 401 ? "oauth" : s >= 200 && s < 300 ? "open" : s >= 400 && s < 500 ? "open" : "unreachable");
       },
     );
+    // `timeout` is idle-only; a server dripping bytes still ends at the overall deadline.
+    const deadline = setTimeout(() => req.destroy(new Error("timeout")), o.timeoutMs ?? 10_000);
+    req.on("close", () => clearTimeout(deadline));
     req.on("timeout", () => req.destroy(new Error("timeout")));
     req.on("error", () => resolve("unreachable"));
     req.end(body);

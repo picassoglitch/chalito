@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { SecretStore } from "../secrets.js";
@@ -111,8 +120,13 @@ export class ConnectorStore {
   #write(f: StoreFile) {
     mkdirSync(this.d.dir, { recursive: true, mode: 0o700 });
     const tmp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(f, null, 2)}\n`, { mode: 0o600 });
-    renameSync(tmp, this.file);
+    try {
+      writeFileSync(tmp, `${JSON.stringify(f, null, 2)}\n`, { mode: 0o600 });
+      renameSync(tmp, this.file);
+    } catch (e) {
+      rmSync(tmp, { force: true });
+      throw e;
+    }
   }
 
   #serial<T>(run: () => Promise<T>): Promise<T> {
@@ -183,10 +197,7 @@ export class ConnectorStore {
     return this.#serial(async () => {
       const file = this.#read();
       if (!file.installed.some((c) => c.id === id)) throw new ConnectorStoreError("not_installed");
-      // The connector goes away even if the keychain fails; the leftover is reported, not hidden.
-      const results = await Promise.allSettled(
-        (file.secrets?.[id] ?? []).map((s) => this.d.secrets.delete(connectorSecretName(id, s.name))),
-      );
+      // File first: a failed write keeps the connector working; a keychain leftover is reported, not hidden.
       const secrets = { ...(file.secrets ?? {}) };
       delete secrets[id];
       try {
@@ -194,6 +205,9 @@ export class ConnectorStore {
       } catch {
         throw new ConnectorStoreError("write_failed");
       }
+      const results = await Promise.allSettled(
+        (file.secrets?.[id] ?? []).map((s) => this.d.secrets.delete(connectorSecretName(id, s.name))),
+      );
       if (results.some((r) => r.status === "rejected")) throw new ConnectorStoreError("keychain");
     });
   }
