@@ -124,7 +124,7 @@ describe("panel → agent: making hand-off links (D-070)", () => {
     await ready();
     renderLinks(unavailableIpc);
     cleanup();
-  }, 30_000);
+  });
 
   it("a same-computer hand-off link: challenge, OS check, then it's listed as local", async () => {
     const a = await computer("dev_a1");
