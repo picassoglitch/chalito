@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { lookup as dnsLookup } from "node:dns";
 import type { RiskTier } from "@chalito/protocol";
 import type { SecretStore } from "../secrets.js";
 import { clearInstalled, readInstalled } from "./installed.js";
@@ -59,8 +60,12 @@ export interface ProxyDeps {
   gate: ConnectorGate;
   /** Audit sink, category `connector.*`: hashes, sizes and ids only. */
   audit: (type: string, meta: Record<string, unknown>) => void;
+  /** The signed verified catalog's `tools.read` for a connector id: the only way a tool gets the read tier. */
+  readTools?: (connectorId: string) => readonly string[];
   env?: NodeJS.ProcessEnv;
   fetch?: FetchLike;
+  lookup?: typeof dnsLookup;
+  localRemotesForTests?: boolean;
   platform?: NodeJS.Platform;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => { clear(): void };
@@ -156,6 +161,8 @@ export class ConnectionsProxy {
         secrets: this.#d.secrets,
         env: this.#d.env ?? process.env,
         ...(this.#d.fetch ? { fetch: this.#d.fetch } : {}),
+        ...(this.#d.lookup ? { lookup: this.#d.lookup } : {}),
+        ...(this.#d.localRemotesForTests ? { localRemotesForTests: true } : {}),
         ...(this.#d.platform ? { platform: this.#d.platform } : {}),
         now: this.#now,
         setTimer: this.#d.setTimer ?? unrefTimer,
@@ -207,6 +214,7 @@ export class ConnectionsProxy {
       if (!listed) continue;
       const { c, up, tools } = listed;
       const slug = slugs.get(c.id)!;
+      const readTools = c.source === "verified" ? (this.#d.readTools?.(c.id) ?? []) : [];
       let skipped = 0;
       for (const t of tools) {
         const name = namespacedName(slug, t.name);
@@ -215,7 +223,7 @@ export class ConnectionsProxy {
           skipped++;
           continue;
         }
-        const { tier, risk } = toolRisk(c, t);
+        const { tier, risk } = toolRisk(c, t, readTools);
         names.set(name, {
           connectorId: c.id,
           fp: up.fp,

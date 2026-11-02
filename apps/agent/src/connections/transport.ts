@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import type { lookup as dnsLookup } from "node:dns";
+import { publicFetch, publicRemoteUrl } from "./net-guard.js";
 
 /** A failure the proxy reports by code only: upstream text never reaches a log. */
 export class ConnectorError extends Error {
@@ -302,17 +304,30 @@ export const sseMessages = (body: string): Record<string, unknown>[] => {
   return out;
 };
 
+export interface HttpTransportOptions {
+  /** Verified and registry connectors: public HTTPS hosts only, checked at every connect. */
+  publicOnly: boolean;
+  /** Custom connectors only; a public-only transport always uses its own guarded fetch. */
+  fetch?: FetchLike;
+  lookup?: typeof dnsLookup;
+}
+
 /** A vendor's streamable-HTTP MCP server. Redirects are refused so the token never follows one. */
 export class HttpTransport implements Transport {
   #session: string | null = null;
   #protocol: string | null = null;
   #n = 0;
   #closed = false;
+  private readonly fetchFn: FetchLike;
+  private readonly publicOnly: boolean;
   constructor(
     private readonly url: string,
     private readonly headers: Record<string, string>,
-    private readonly fetchFn: FetchLike = fetch as unknown as FetchLike,
-  ) {}
+    o: HttpTransportOptions,
+  ) {
+    this.publicOnly = o.publicOnly;
+    this.fetchFn = o.publicOnly ? publicFetch(o.lookup) : (o.fetch ?? (fetch as unknown as FetchLike));
+  }
 
   setProtocol(v: string) {
     this.#protocol = v;
@@ -320,6 +335,8 @@ export class HttpTransport implements Transport {
 
   async start(): Promise<void> {
     if (!allowedRemoteUrl(this.url)) throw new ConnectorError("connector_bad_url");
+    // An IP literal skips the DNS lookup, so the public-only check has to refuse it here.
+    if (this.publicOnly && !publicRemoteUrl(this.url)) throw new ConnectorError("connector_bad_url");
   }
 
   #headers(): Record<string, string> {
@@ -343,14 +360,22 @@ export class HttpTransport implements Transport {
         redirect: "error",
         signal,
       });
-    } catch {
-      throw new ConnectorError(signal.aborted ? "connector_timeout" : "connector_unavailable");
+    } catch (e) {
+      if (signal.aborted) throw new ConnectorError("connector_timeout");
+      // Its own code, so the audit tells a refused LAN address from a server that is down.
+      const refused = (e as { code?: unknown } | null)?.code === "EPRIVATE";
+      throw new ConnectorError(refused ? "connector_private_address" : "connector_unavailable");
     }
     const sid = res.headers.get("mcp-session-id");
     if (sid && /^[\x21-\x7e]{1,256}$/.test(sid)) this.#session = sid;
-    if (res.status === 401 || res.status === 403) throw new ConnectorError("connector_unauthorized");
-    if (res.status === 404 && this.#session) throw new ConnectorError("connector_session_expired");
-    if (!res.ok && res.status !== 202) throw new ConnectorError("connector_http_error");
+    const fail = async (code: string): Promise<never> => {
+      // An unread error body would keep the socket open as long as the server likes.
+      await res.body?.cancel().catch(() => undefined);
+      throw new ConnectorError(code);
+    };
+    if (res.status === 401 || res.status === 403) return fail("connector_unauthorized");
+    if (res.status === 404 && this.#session) return fail("connector_session_expired");
+    if (!res.ok && res.status !== 202) return fail("connector_http_error");
     return res;
   }
 

@@ -20,13 +20,14 @@ export interface UpstreamTool {
 export const runnable = (c: InstalledConnector): boolean =>
   !c.held && c.auth !== "oauth" && (c.source === "verified" || c.confirmedWarning === true);
 
-/** ADR 0023 §1a: only verified servers' read-only hints count; community tools are write/MED at least. */
-export const toolRisk = (c: InstalledConnector, t: UpstreamTool): { tier: ToolTier; risk: RiskTier } => {
-  if (DESTRUCTIVE.test(t.name)) return { tier: "write", risk: "HIGH" };
-  if (c.source === "verified") {
-    if (t.annotations?.destructiveHint === true) return { tier: "write", risk: "HIGH" };
-    if (t.annotations?.readOnlyHint === true) return { tier: "read", risk: "LOW" };
-  }
+// Only the signed catalog's tools.read lowers risk; a server's own annotations can only raise it.
+export const toolRisk = (
+  c: InstalledConnector,
+  t: UpstreamTool,
+  catalogRead: readonly string[] = [],
+): { tier: ToolTier; risk: RiskTier } => {
+  if (DESTRUCTIVE.test(t.name) || t.annotations?.destructiveHint === true) return { tier: "write", risk: "HIGH" };
+  if (c.source === "verified" && catalogRead.includes(t.name)) return { tier: "read", risk: "LOW" };
   return { tier: "write", risk: "MED" };
 };
 

@@ -60,7 +60,7 @@ import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
 import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
 import { connectionsSearchFeature } from "./connections/ipc.js";
-import { VerifiedConnectors } from "./connections/catalog.js";
+import { VerifiedConnectors, type ConnectorCatalog } from "./connections/catalog.js";
 import { shippedConnectors } from "./connections/shipped.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
@@ -1146,10 +1146,20 @@ const startDaemon = async (
   coreDeps.remote = { screen: screenOn, terminal: terminalOn };
   // ADR 0023 §4: installed connectors for every connected AI app; servers start on first use.
   let connectorSessions: ConnectorSessions | null = null;
+  // One instance: a newer signed catalog accepted over IPC also updates the read lists the proxy uses.
+  let shipped: ConnectorCatalog = { v: 1, issuedAt: 1, connectors: [] };
+  try {
+    shipped = shippedConnectors();
+  } catch (err) {
+    // Empty is the safe side: no read tiers, nothing verified to install; the agent still starts.
+    log.error("connectors.catalog_unreadable", { error: err instanceof Error ? err.message : "error" });
+  }
+  const verifiedConnectors = new VerifiedConnectors(shipped);
   const connections = new ConnectionsProxy({
     dir,
     secrets,
     env,
+    readTools: (id) => verifiedConnectors.get(id)?.tools?.read ?? [],
     gate: (call) => connectorSessions?.gate(call) ?? Promise.resolve({ allow: false, reason: "unavailable" }),
     audit: auditAgent,
     now,
@@ -1702,7 +1712,7 @@ const startDaemon = async (
             dir,
             secrets,
             audit: auditAgent,
-            verified: new VerifiedConnectors(shippedConnectors()),
+            verified: verifiedConnectors,
           }),
         }),
         onError: (method, err) =>
