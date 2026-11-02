@@ -1490,6 +1490,8 @@ const classifySegment = (
 
   if (cmd === "cd" || cmd === "pushd" || cmd === "popd") {
     const target = args.find((a) => !a.text.startsWith("-") || a.text === "-");
+    // Home workspace: a folder change is never followed for auto-approval (security review round 5).
+    if (paths.homeInWorkspace) fence(out, "HIGH", "changes folder in a home workspace");
     const cdpath = st.cdpath || !!ctx.env?.CDPATH;
     // bash consults CDPATH for any name not starting with `/`, `./` or `../` (`.ssh` included).
     const bare = !!target && !/^(\/|~|\$|\.\.?(\/|$))/.test(target.text);
@@ -1756,29 +1758,24 @@ const READERS: Record<string, Shape> = {
   touch: noOpts,
   cp: noOpts,
   mv: noOpts,
-  cd: (a) => a.length === 1 && !a[0]!.startsWith("-") && !/^[+-]\d+$/.test(a[0]!),
 };
 const RUN_VERBS = new Set(["run", "test", "install", "i", "add", "ci"]);
 /** The policy's own test/lint/build commands (`pnpm lint`, `npx vitest run`), word for word as a prefix. */
 const allowlisted = (words: string[], ctx: ClassifyContext) =>
   ctx.policy.allowlist.commands.some((c) => c.split(/\s+/).every((p, i) => words[i] === p));
 const MOVES = /^--?(prefix|dir|cwd|C|g|global|location|filter|workspace-root|w)(=|$)/;
-const pkg: Shape = (a, ctx, cmd) =>
-  (RUN_VERBS.has(a[0] ?? "") && !a.slice(1).some((x) => MOVES.test(x))) || allowlisted([cmd, ...a], ctx);
+// Installs take only registry names (`zod`, `@scope/pkg@^1`): no path, URL, git, file: or link: spec.
+const REGISTRY_NAME = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(@[A-Za-z0-9.^~<>=*_+-]+)?$/i;
+const pkg: Shape = (a, ctx, cmd) => {
+  if (allowlisted([cmd, ...a], ctx)) return true;
+  const verb = a[0] ?? "";
+  if (!RUN_VERBS.has(verb) || a.slice(1).some((x) => MOVES.test(x))) return false;
+  return (
+    !["install", "i", "add", "ci"].includes(verb) || a.slice(1).every((x) => x.startsWith("-") || REGISTRY_NAME.test(x))
+  );
+};
 // Only these git subcommands, never a global option (`-c`, `-C`, `--git-dir`, `--exec-path` run or move things).
-const GIT_OK = new Set([
-  "status",
-  "diff",
-  "log",
-  "show",
-  "add",
-  "commit",
-  "branch",
-  "rev-parse",
-  "ls-files",
-  "blame",
-  "push",
-]);
+const GIT_OK = new Set(["status", "diff", "log", "show", "add", "commit", "branch", "rev-parse", "ls-files", "blame"]);
 const RUNNERS: Record<string, Shape> = {
   pnpm: pkg,
   npm: pkg,
@@ -1832,15 +1829,14 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
   if (bad) return bad;
   const segs = splitShell(command);
   if (!segs) return "unparseable";
-  let here = cwd;
-  const inside = (w: string) => [paths.resolve(w, here), paths.lexical(w, here)].every((p) => paths.within(p, project));
+  const inside = (w: string) => [paths.resolve(w, cwd), paths.lexical(w, cwd)].every((p) => paths.within(p, project));
   for (const seg of segs) {
     const words = seg.words;
     if (!words.length) continue;
     if (words.some((w, i) => i === 0 && /^[A-Za-z_]\w*=/.test(w))) return "sets an environment variable";
     const cmd = words[0]!;
     const args = words.slice(1);
-    const shape = READERS[cmd] ?? RUNNERS[cmd];
+    const shape = Object.hasOwn(READERS, cmd) ? READERS[cmd] : Object.hasOwn(RUNNERS, cmd) ? RUNNERS[cmd] : undefined;
     if (!shape) return `${cmd.slice(0, 40)} isn't on the home-workspace allowlist`;
     if (!shape(args, ctx, cmd)) return `${cmd} with options outside the allowlist`;
     for (const w of [...args, ...seg.writes.map((x) => x.text), ...seg.reads.map((x) => x.text)]) {
@@ -1848,7 +1844,6 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
       if (PLAIN_DEVICE.test(value) || /^&\d$/.test(value) || value === "" || value.startsWith("-")) continue;
       if (!inside(value)) return "names a path outside the project";
     }
-    if (cmd === "cd") here = paths.resolve(args[0]!, here);
   }
   return null;
 };
