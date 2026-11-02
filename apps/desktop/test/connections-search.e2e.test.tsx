@@ -110,6 +110,22 @@ describe("Conexiones → Buscar", () => {
     expect(secrets.values.size).toBe(0);
   });
 
+  it("while a dialog is open other Install buttons wait; cancel clears what was typed", async () => {
+    mount();
+    await waitFor(() => expect(card("linear")).toBeTruthy(), { timeout: 3000 });
+    fireEvent.click(within(card("linear")).getByRole("button", { name: "Instalar" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Authorization"), { target: { value: "lin_secret" } });
+    const other = within(card("github")).getByRole("button", { name: "Instalar" }) as HTMLButtonElement;
+    expect(other.disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancelar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(other.disabled).toBe(false));
+    fireEvent.click(other);
+    const next = await screen.findByRole("dialog");
+    expect((within(next).getByLabelText("Authorization") as HTMLInputElement).value).toBe("");
+  });
+
   it("verified install shows no unverified warning and a plain Instalar", async () => {
     mount();
     await waitFor(() => expect(card("linear")).toBeTruthy(), { timeout: 3000 });

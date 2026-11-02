@@ -1115,6 +1115,10 @@
         "query_too_short": "Escribe al menos 3 letras.",
         "registry_unreachable": "El registro MCP no respondió; te mostramos las verificadas.",
         "registry_bad_response": "El registro MCP respondió algo que no entendimos.",
+        "write_failed": "No pudimos guardar ~/.chalito/connectors.json.",
+        "unknown_connector": "Esa conexión ya no está en la lista.",
+        "not_installed": "Esa conexión ya no estaba instalada.",
+        "confirm_required": "Confirma antes de instalar.",
         "other": "Algo salió mal. Intenta de nuevo."
       }
     }

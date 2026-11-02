@@ -22,7 +22,8 @@ export type ConnectorStoreCode =
   | "bad_url"
   | "command_not_found"
   | "state_corrupt"
-  | "keychain";
+  | "keychain"
+  | "write_failed";
 export class ConnectorStoreError extends Error {
   constructor(readonly code: ConnectorStoreCode) {
     super(code);
@@ -120,6 +121,10 @@ export class ConnectorStore {
     return next;
   }
 
+  async #forget(names: string[]) {
+    await Promise.allSettled(names.map((n) => this.d.secrets.delete(n)));
+  }
+
   list(): InstalledConnector[] {
     return this.#read().installed as InstalledConnector[];
   }
@@ -144,13 +149,15 @@ export class ConnectorStore {
       try {
         for (const [spec, value] of values) {
           const name = connectorSecretName(entry.id, spec.name);
-          await this.d.secrets.set(name, `${spec.prefix ?? ""}${value}`);
+          const full = `${spec.prefix ?? ""}${value}`;
+          if (!SAFE_VALUE.test(full)) throw new ConnectorStoreError("bad_input");
+          await this.d.secrets.set(name, full);
           written.push(name);
         }
-      } catch {
+      } catch (e) {
         // Half an install is worse than none: take back what was written.
-        await Promise.all(written.map((n) => this.d.secrets.delete(n).catch(() => undefined)));
-        throw new ConnectorStoreError("keychain");
+        await this.#forget(written);
+        throw e instanceof ConnectorStoreError ? e : new ConnectorStoreError("keychain");
       }
       const installed: InstalledConnector = {
         ...entry,
@@ -158,11 +165,16 @@ export class ConnectorStore {
         confirmedWarning: unverified,
       };
       const slots = values.map(([s]) => ({ name: s.name, as: s.as }));
-      this.#write({
-        v: 1,
-        installed: [...file.installed, installed],
-        secrets: { ...(file.secrets ?? {}), ...(slots.length ? { [entry.id]: slots } : {}) },
-      });
+      try {
+        this.#write({
+          v: 1,
+          installed: [...file.installed, installed],
+          secrets: { ...(file.secrets ?? {}), ...(slots.length ? { [entry.id]: slots } : {}) },
+        });
+      } catch {
+        await this.#forget(written);
+        throw new ConnectorStoreError("write_failed");
+      }
       return installed;
     });
   }
@@ -171,10 +183,18 @@ export class ConnectorStore {
     return this.#serial(async () => {
       const file = this.#read();
       if (!file.installed.some((c) => c.id === id)) throw new ConnectorStoreError("not_installed");
-      for (const s of file.secrets?.[id] ?? []) await this.d.secrets.delete(connectorSecretName(id, s.name));
+      // The connector goes away even if the keychain fails; the leftover is reported, not hidden.
+      const results = await Promise.allSettled(
+        (file.secrets?.[id] ?? []).map((s) => this.d.secrets.delete(connectorSecretName(id, s.name))),
+      );
       const secrets = { ...(file.secrets ?? {}) };
       delete secrets[id];
-      this.#write({ v: 1, installed: file.installed.filter((c) => c.id !== id), secrets });
+      try {
+        this.#write({ v: 1, installed: file.installed.filter((c) => c.id !== id), secrets });
+      } catch {
+        throw new ConnectorStoreError("write_failed");
+      }
+      if (results.some((r) => r.status === "rejected")) throw new ConnectorStoreError("keychain");
     });
   }
 }
@@ -209,7 +229,7 @@ const customName = (name: string) => {
 
 /** "Agregar la tuya" by URL: a remote streamable HTTP server; an optional bearer token. */
 export const customRemote = (p: { name: string; url: string; token: boolean }) => {
-  const url = safeRemoteUrl(p.url.trim());
+  const url = safeRemoteUrl(p.url.trim(), { local: true });
   if (!url) throw new ConnectorStoreError("bad_url");
   const inputs: InputSpec[] = p.token
     ? [{ name: "Authorization", as: "header", secret: true, required: true, prefix: "Bearer " }]

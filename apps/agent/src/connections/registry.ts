@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { INPUT_NAME, type InputSpec } from "./catalog.js";
+import { isPublicHostname } from "./net-guard.js";
 import type { ConnectorEntry } from "./types.js";
 
 // Official MCP Registry, API v0.1 (the frozen stable one): https://registry.modelcontextprotocol.io/openapi.yaml
@@ -94,16 +95,22 @@ export const registryId = (name: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 64)
-    .replace(/-+$/, "") || "server";
+    .replace(/-+$/, "")
+    .replace(/^custom-/, "reg-custom-") || "server"; // `custom-` ids belong to "Agregar la tuya"
 
-const EXACT_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+// The registry entry's own version: only an id for re-reading it, never what runs.
+const SERVER_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+// What runs must be pinned: tags like latest/next or ranges would change under us.
+export const NPM_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+export const PYPI_VERSION = /^\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?$/;
 const NPM_NAME = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
 const PYPI_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 // eslint-disable-next-line no-control-regex
 const SAFE_ARG = /^[^\u0000-\u001f\u007f]{1,512}$/;
 
-/** A remote URL Chalito will talk to: HTTPS, or plain HTTP to this computer only; never credentials in it. */
-export const safeRemoteUrl = (raw: string): string | null => {
+// Registry data: HTTPS to a public DNS name only (SSRF). `local` = a URL the person typed: also HTTP to
+// this computer. Never credentials in the URL.
+export const safeRemoteUrl = (raw: string, o: { local: boolean } = { local: false }): string | null => {
   let u: URL;
   try {
     u = new URL(raw);
@@ -111,20 +118,28 @@ export const safeRemoteUrl = (raw: string): string | null => {
     return null;
   }
   if (u.username || u.password || raw.includes("{")) return null;
-  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
-  if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) return null;
-  return u.toString();
+  if (u.protocol === "https:" && (o.local || isPublicHostname(u.hostname))) return u.toString();
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  return o.local && u.protocol === "http:" && loopback ? u.toString() : null;
 };
+
+// Names that would let a listed server steer the runtime (another package index, preloaded code) or the HTTP framing.
+const RISKY_ENV =
+  /^(PATH|PATHEXT|HOME|NODE_OPTIONS|NODE_PATH|LD_|DYLD_|npm_config_|NPM_|YARN_|PNPM_|UV_|PIP_|PYTHON|COREPACK_|BUN_)/i;
+const RISKY_HEADER = /^(host|content-length|transfer-encoding|connection|cookie|upgrade|te|trailer|proxy-.*)$/i;
 
 /** A `{var}` template the person fills: only `prefix{var}` is supported (e.g. `Bearer {token}`). */
 const templatePrefix = (value: string): string | null | undefined => {
   if (!value.includes("{")) return undefined;
-  const m = /^([^{}]{0,64})\{[\w.-]{1,64}\}$/.exec(value);
+  // Printable ASCII only: a CR/LF in the prefix would inject a header or env line.
+  const m = /^([\x20-\x7e]{0,64})\{[\w.-]{1,64}\}$/.exec(value);
+  if (m && /[{}]/.test(m[1]!)) return null;
   return m ? m[1]! : null;
 };
 
 const toInput = (kv: z.infer<typeof KeyValue>, as: InputSpec["as"]): InputSpec | null => {
   if (!INPUT_NAME.test(kv.name)) return null;
+  if (as === "env" ? RISKY_ENV.test(kv.name) : RISKY_HEADER.test(kv.name)) return null;
   const prefix = kv.value === undefined ? undefined : templatePrefix(kv.value);
   if (prefix === null) return null;
   // A fixed value (no template) isn't something the person types; we don't carry fixed values.
@@ -159,13 +174,13 @@ const argList = (args: z.infer<typeof Argument>[] | undefined): string[] | null 
 };
 
 /** One registry server → a community connector, or null when Chalito can't run it safely. */
-export const mapServer = (raw: unknown): RegistryResult | null => {
+export const mapServer = (raw: unknown, o: { localForTests?: boolean } = {}): RegistryResult | null => {
   const parsed = ServerResponse.safeParse(raw);
   if (!parsed.success) return null;
   const { server, _meta } = parsed.data;
   const status = _meta?.["io.modelcontextprotocol.registry/official"]?.status;
   if (status !== undefined && status !== "active") return null;
-  if (!EXACT_VERSION.test(server.version)) return null;
+  if (!SERVER_VERSION.test(server.version)) return null;
   const base = {
     id: registryId(server.name),
     name: clean(server.title || server.name.split("/").pop() || server.name, 80),
@@ -178,7 +193,7 @@ export const mapServer = (raw: unknown): RegistryResult | null => {
   // Prefer a vendor-run streamable HTTP server (ADR 0023 §1), then a pinned npm/PyPI package.
   for (const r of server.remotes ?? []) {
     if (r.type !== "streamable-http" || !r.url) continue;
-    const url = safeRemoteUrl(r.url);
+    const url = safeRemoteUrl(r.url, { local: o.localForTests === true });
     if (!url) continue;
     const inputs = (r.headers ?? []).map((h) => toInput(h, "header"));
     if (inputs.some((i) => i === null)) continue;
@@ -191,13 +206,13 @@ export const mapServer = (raw: unknown): RegistryResult | null => {
     };
   }
   for (const p of server.packages ?? []) {
-    if (p.transport.type !== "stdio" || !p.version || !EXACT_VERSION.test(p.version)) continue;
+    if (p.transport.type !== "stdio" || !p.version) continue;
     let command: string;
     let pkgArg: string;
-    if (p.registryType === "npm" && NPM_NAME.test(p.identifier)) {
+    if (p.registryType === "npm" && NPM_NAME.test(p.identifier) && NPM_VERSION.test(p.version)) {
       command = "npx";
       pkgArg = `${p.identifier}@${p.version}`;
-    } else if (p.registryType === "pypi" && PYPI_NAME.test(p.identifier)) {
+    } else if (p.registryType === "pypi" && PYPI_NAME.test(p.identifier) && PYPI_VERSION.test(p.version)) {
       command = "uvx";
       pkgArg = `${p.identifier}==${p.version}`;
     } else continue;
@@ -240,8 +255,10 @@ const getJson = async (fetchFn: Fetch, url: string, timeoutMs: number): Promise<
   } catch {
     throw new RegistryError("registry_unreachable");
   }
-  if (res.status === 404) throw new RegistryError("not_found");
-  if (!res.ok || !res.body) throw new RegistryError("registry_bad_response");
+  if (!res.ok || !res.body) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new RegistryError(res.status === 404 ? "not_found" : "registry_bad_response");
+  }
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -271,6 +288,8 @@ export interface RegistryOptions {
   base?: string;
   timeoutMs?: number;
   limit?: number;
+  /** Tests only (never reachable from the panel): registry remotes on this computer. */
+  localRemotesForTests?: boolean;
 }
 
 /** Searches the registry by server name (latest versions only). Empty `q` lists everything. */
@@ -291,7 +310,7 @@ export const searchRegistry = async (q: string, cursor?: string, o: RegistryOpti
   const seen = new Set<string>();
   let skipped = 0;
   for (const s of body.data.servers) {
-    const r = mapServer(s);
+    const r = mapServer(s, { localForTests: o.localRemotesForTests === true });
     // Two names can slug to one id; keep the first so ids stay unique on a page.
     if (!r || seen.has(r.entry.id)) {
       skipped++;
@@ -314,34 +333,7 @@ export const getRegistryServer = async (
     new URL(path, o.base ?? REGISTRY_BASE).toString(),
     o.timeoutMs ?? REGISTRY_TIMEOUT_MS,
   );
-  const r = mapServer(raw);
+  const r = mapServer(raw, { localForTests: o.localRemotesForTests === true });
   if (!r || r.ref.name !== ref.name || r.ref.version !== ref.version) throw new RegistryError("not_found");
   return r;
-};
-
-// MCP authorization answers 401 when a server wants OAuth. Only probed on a deliberate install,
-// so searching never contacts unknown servers.
-export const probeRemoteAuth = async (
-  url: string,
-  o: { fetch?: Fetch; timeoutMs?: number } = {},
-): Promise<"open" | "oauth" | "unreachable"> => {
-  try {
-    const res = await (o.fetch ?? fetch)(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "chalito", version: "1" } },
-      }),
-      redirect: "error",
-      signal: AbortSignal.timeout(o.timeoutMs ?? REGISTRY_TIMEOUT_MS),
-    });
-    await res.body?.cancel().catch(() => undefined);
-    if (res.status === 401) return "oauth";
-    return res.status < 500 ? "open" : "unreachable";
-  } catch {
-    return "unreachable";
-  }
 };

@@ -168,6 +168,59 @@ describe("ConnectorStore", () => {
     expect(store.list()).toEqual([]);
   });
 
+  it("a file write failure takes the secrets back; a keychain delete failure still uninstalls and says so", async () => {
+    const mem = new MemorySecretStore();
+    const store = new ConnectorStore({ dir, secrets: mem });
+    mkdirSync(dir, { recursive: true });
+    // A directory where the file goes makes the rename fail like a full or read-only disk would.
+    mkdirSync(join(dir, "connectors.json"));
+    await expect(
+      store.install({
+        entry: community,
+        inputs: [token],
+        values: { Authorization: "x" },
+        confirmed: true,
+        warningAccepted: true,
+      }),
+    ).rejects.toThrow();
+    expect(mem.values.size).toBe(0);
+    rmSync(join(dir, "connectors.json"), { recursive: true });
+
+    let fail = true;
+    const flaky: SecretStore = {
+      get: (n) => mem.get(n),
+      set: (n, v) => mem.set(n, v),
+      delete: async (n) => {
+        if (fail) throw new Error("locked");
+        await mem.delete(n);
+      },
+    };
+    const s2 = new ConnectorStore({ dir, secrets: flaky });
+    await s2.install({
+      entry: community,
+      inputs: [token],
+      values: { Authorization: "x" },
+      confirmed: true,
+      warningAccepted: true,
+    });
+    await expect(s2.uninstall(community.id)).rejects.toThrow("keychain");
+    expect(s2.list()).toEqual([]);
+    fail = false;
+  });
+
+  it("a prefix that would break the value is refused even from the catalog", async () => {
+    const store = new ConnectorStore({ dir, secrets: new MemorySecretStore() });
+    await expect(
+      store.install({
+        entry: community,
+        inputs: [{ ...token, prefix: "Bearer\r\n" }],
+        values: { Authorization: "x" },
+        confirmed: true,
+        warningAccepted: true,
+      }),
+    ).rejects.toThrow("bad_input");
+  });
+
   it("a corrupt file is reported, never overwritten", async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "connectors.json"), "{ nope");
@@ -280,7 +333,12 @@ describe("Conexiones IPC (real local servers, temp HOME)", () => {
     const audit: [string, Record<string, unknown>][] = [];
     const secrets = new MemorySecretStore();
     const h = connectionSearchHandlers(
-      connectionsSearchFeature({ dir, secrets, audit: (t, m) => audit.push([t, m]), registry: { base: registryBase } }),
+      connectionsSearchFeature({
+        dir,
+        secrets,
+        audit: (t, m) => audit.push([t, m]),
+        registry: { base: registryBase, localRemotesForTests: true },
+      }),
     );
     return { h, audit, secrets };
   };
@@ -391,7 +449,7 @@ describe("Conexiones IPC (real local servers, temp HOME)", () => {
           server: {
             name: "io.github.github/github-mcp-server",
             version: "2.0.3",
-            remotes: [{ type: "streamable-http", url: "https://api.githubcopilot.com/mcp/" }],
+            remotes: [{ type: "streamable-http", url: "https://api.githubcopilot.com/mcp" }],
           },
         },
         {

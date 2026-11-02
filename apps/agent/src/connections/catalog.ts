@@ -20,7 +20,10 @@ export const InputSpec = z
     secret: z.boolean(),
     required: z.boolean(),
     /** Put before what the person types (`Bearer `). */
-    prefix: z.string().max(64).optional(),
+    prefix: z
+      .string()
+      .regex(/^[\x20-\x7e]{0,64}$/)
+      .optional(),
     description: z.string().max(300).optional(),
   })
   .strict();

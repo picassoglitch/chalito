@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   getRegistryServer,
   mapServer,
-  probeRemoteAuth,
   REGISTRY_BASE,
   REGISTRY_MAX_BYTES,
   registryId,
@@ -13,6 +12,8 @@ import {
   safeRemoteUrl,
   searchRegistry,
 } from "../src/connections/registry.js";
+import { isPrivateAddress, isPublicHostname, probeRemoteAuth, publicOnlyLookup } from "../src/connections/net-guard.js";
+import { NPM_VERSION, PYPI_VERSION } from "../src/connections/registry.js";
 
 // Recorded from https://registry.modelcontextprotocol.io/v0.1 on 2026-11-01 (CI runs offline on these).
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/registry/${name}`, import.meta.url), "utf8");
@@ -149,7 +150,8 @@ describe("untrusted registry fields", () => {
     expect(mapServer(remote("https://{tenant}.example.com/mcp"))).toBeNull();
     expect(mapServer(remote("javascript:alert(1)"))).toBeNull();
     expect(mapServer(remote("https://ok.example/mcp"))?.entry.auth).toBe("none");
-    expect(safeRemoteUrl("http://localhost:3000/mcp")).toBe("http://localhost:3000/mcp");
+    expect(safeRemoteUrl("http://localhost:3000/mcp", { local: true })).toBe("http://localhost:3000/mcp");
+    expect(safeRemoteUrl("http://localhost:3000/mcp")).toBeNull();
     expect(safeRemoteUrl("http://127.0.0.1.evil.example/mcp")).toBeNull();
   });
 
@@ -212,9 +214,9 @@ describe("probeRemoteAuth", () => {
       res.writeHead(401, { "www-authenticate": 'Bearer resource_metadata="x"' }).end(),
     );
     routes.set("POST /open", json('{"jsonrpc":"2.0","id":1,"result":{}}'));
-    expect(await probeRemoteAuth(`${base}/oauth`)).toBe("oauth");
-    expect(await probeRemoteAuth(`${base}/open`)).toBe("open");
-    expect(await probeRemoteAuth("http://127.0.0.1:1/mcp", { timeoutMs: 500 })).toBe("unreachable");
+    expect(await probeRemoteAuth(`${base}/oauth`, { publicOnly: false })).toBe("oauth");
+    expect(await probeRemoteAuth(`${base}/open`, { publicOnly: false })).toBe("open");
+    expect(await probeRemoteAuth("http://127.0.0.1:1/mcp", { publicOnly: false, timeoutMs: 500 })).toBe("unreachable");
   });
 });
 
@@ -236,6 +238,207 @@ describe.skipIf(!online)("live MCP Registry", () => {
   }, 30_000);
 
   it("Linear's official server answers 401 (OAuth or a token), as connectors.yaml says", async () => {
-    expect(await probeRemoteAuth("https://mcp.linear.app/mcp")).toBe("oauth");
+    expect(await probeRemoteAuth("https://mcp.linear.app/mcp", { publicOnly: true })).toBe("oauth");
   }, 20_000);
+});
+
+describe("pinned versions only (security review, 2026-11-01)", () => {
+  const npm = (version: string) =>
+    mapServer({
+      server: {
+        name: "io.github.x/y",
+        version: "1.0.0",
+        packages: [{ registryType: "npm", identifier: "pkg", version, transport: { type: "stdio" } }],
+      },
+    });
+  const pypi = (version: string) =>
+    mapServer({
+      server: {
+        name: "io.github.x/y",
+        version: "1.0.0",
+        packages: [{ registryType: "pypi", identifier: "pkg", version, transport: { type: "stdio" } }],
+      },
+    });
+
+  it("tags and ranges are refused for npm and PyPI", () => {
+    for (const v of [
+      "latest",
+      "next",
+      "beta",
+      "^1.0",
+      "~1",
+      "1.x",
+      "1.*",
+      ">=1.0.0",
+      "1",
+      "1.2",
+      "v1.2.3",
+      "1.2.3 || 2",
+    ]) {
+      expect(npm(v), `npm ${v}`).toBeNull();
+      expect(NPM_VERSION.test(v)).toBe(false);
+    }
+    for (const v of ["latest", "next", "~=1.0", ">=1", "1.*", "v1.0"]) {
+      expect(pypi(v), `pypi ${v}`).toBeNull();
+      expect(PYPI_VERSION.test(v)).toBe(false);
+    }
+  });
+
+  it("exact versions are accepted", () => {
+    expect(npm("1.2.3")?.entry.server).toMatchObject({ args: ["-y", "pkg@1.2.3"] });
+    expect(npm("1.2.3-rc.1")?.entry.server).toMatchObject({ args: ["-y", "pkg@1.2.3-rc.1"] });
+    expect(pypi("2.0")?.entry.server).toMatchObject({ args: ["pkg==2.0"] });
+    expect(pypi("1.0.0rc1")).not.toBeNull();
+  });
+
+  it("the registry's file hash is recorded as integrity", () => {
+    const sha = "a".repeat(64);
+    const r = mapServer({
+      server: {
+        name: "io.github.x/y",
+        version: "1.0.0",
+        packages: [
+          { registryType: "npm", identifier: "pkg", version: "1.0.0", fileSha256: sha, transport: { type: "stdio" } },
+        ],
+      },
+    });
+    expect(r?.entry.server).toMatchObject({ integrity: `sha256-${sha}` });
+  });
+});
+
+describe("registry remotes can't reach this computer or its network (SSRF)", () => {
+  const remote = (url: string) =>
+    mapServer({ server: { name: "io.github.x/y", version: "1.0.0", remotes: [{ type: "streamable-http", url }] } });
+
+  it("refuses loopback, private, link-local, metadata, CGNAT, ULA and every IP literal", () => {
+    for (const url of [
+      "http://localhost/mcp",
+      "https://localhost/mcp",
+      "https://foo.localhost/mcp",
+      "https://127.0.0.1/mcp",
+      "https://2130706433/mcp", // decimal 127.0.0.1
+      "https://0x7f000001/mcp", // hex 127.0.0.1
+      "https://0177.0.0.1/mcp", // octal
+      "https://0.0.0.0/mcp",
+      "https://169.254.169.254/latest/meta-data",
+      "https://10.0.0.5/mcp",
+      "https://100.64.0.1/mcp",
+      "https://192.168.1.1/mcp",
+      "https://8.8.8.8/mcp", // public, but still an IP literal
+      "https://[::1]/mcp",
+      "https://[::ffff:127.0.0.1]/mcp",
+      "https://[fd00::1]/mcp",
+      "https://[fe80::1]/mcp",
+      "https://router/mcp",
+      "https://printer.local/mcp",
+      "https://db.internal/mcp",
+    ])
+      expect(remote(url), url).toBeNull();
+    expect(remote("https://mcp.example.com/mcp")?.entry.server).toEqual({ url: "https://mcp.example.com/mcp" });
+  });
+
+  it("address classes", () => {
+    for (const a of [
+      "127.0.0.1",
+      "10.1.2.3",
+      "172.16.0.1",
+      "192.168.0.1",
+      "169.254.169.254",
+      "100.64.1.1",
+      "0.0.0.0",
+      "::1",
+      "::",
+      "fd12::1",
+      "fe80::1",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+      "::ffff:a9fe:a9fe",
+      "224.0.0.1",
+      "not-an-ip",
+    ])
+      expect(isPrivateAddress(a), a).toBe(true);
+    for (const a of ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:808:808"])
+      expect(isPrivateAddress(a), a).toBe(false);
+    expect(isPublicHostname("mcp.example.com")).toBe(true);
+    expect(isPublicHostname("[::1]")).toBe(false);
+  });
+
+  it("checks the resolved address at connect time: a public name that resolves to 127.0.0.1 is refused", async () => {
+    const rebinding = ((_h: string, _o: unknown, cb: (e: null, a: { address: string; family: number }[]) => void) =>
+      cb(null, [{ address: "127.0.0.1", family: 4 }])) as unknown as typeof import("node:dns").lookup;
+    // The guarded probe never connects to this computer, even with a server listening there.
+    routes.set("POST /mcp", (res) => res.writeHead(401).end());
+    expect(
+      await probeRemoteAuth("https://rebind.example.com/mcp", { publicOnly: true, lookup: rebinding, timeoutMs: 2000 }),
+    ).toBe("unreachable");
+    const err = await new Promise<Error | null>((resolve) =>
+      publicOnlyLookup(rebinding)("rebind.example.com", {}, (e) => resolve(e)),
+    );
+    expect((err as { code?: string } | null)?.code).toBe("EPRIVATE");
+    const ok = ((_h: string, _o: unknown, cb: (e: null, a: { address: string; family: number }[]) => void) =>
+      cb(null, [{ address: "93.184.216.34", family: 4 }])) as unknown as typeof import("node:dns").lookup;
+    const addr = await new Promise<string>((resolve) =>
+      publicOnlyLookup(ok)("x.example.com", {}, (_e, a) => resolve(a as string)),
+    );
+    expect(addr).toBe("93.184.216.34");
+  });
+
+  it("a guarded probe refuses plain HTTP and IP literals before any connection", async () => {
+    expect(await probeRemoteAuth(`${base}/oauth`, { publicOnly: true })).toBe("unreachable");
+    expect(await probeRemoteAuth("http://mcp.example.com/mcp", { publicOnly: true })).toBe("unreachable");
+  });
+});
+
+describe("review round 1: registry inputs can't inject or steer", () => {
+  const remote = (headers: unknown[]) =>
+    mapServer({
+      server: {
+        name: "io.github.x/y",
+        version: "1.0.0",
+        remotes: [{ type: "streamable-http", url: "https://ok.example/mcp", headers }],
+      },
+    });
+  const env = (environmentVariables: unknown[]) =>
+    mapServer({
+      server: {
+        name: "io.github.x/y",
+        version: "1.0.0",
+        packages: [
+          {
+            registryType: "npm",
+            identifier: "pkg",
+            version: "1.0.0",
+            transport: { type: "stdio" },
+            environmentVariables,
+          },
+        ],
+      },
+    });
+
+  it("a CR/LF (or any control char) in a template prefix skips the server", () => {
+    expect(remote([{ name: "Authorization", value: "X\r\nEvil: 1 {t}", isSecret: true }])).toBeNull();
+    expect(remote([{ name: "Authorization", value: "Bearer\t{t}", isSecret: true }])).toBeNull();
+    expect(remote([{ name: "Authorization", value: "Bearer {t}", isSecret: true }])?.inputs[0]?.prefix).toBe("Bearer ");
+  });
+
+  it("env names that steer npx/uvx or the loader, and framing headers, skip the server", () => {
+    for (const name of [
+      "npm_config_registry",
+      "NODE_OPTIONS",
+      "PATH",
+      "LD_PRELOAD",
+      "DYLD_INSERT_LIBRARIES",
+      "UV_INDEX_URL",
+      "PIP_INDEX_URL",
+      "PYTHONPATH",
+    ])
+      expect(env([{ name, isSecret: true }]), name).toBeNull();
+    expect(env([{ name: "SUPABASE_ACCESS_TOKEN", isSecret: true }])).not.toBeNull();
+    for (const name of ["Host", "Content-Length", "Transfer-Encoding", "Cookie", "Connection"])
+      expect(remote([{ name, isSecret: true }]), name).toBeNull();
+  });
+
+  it("a registry name can't take a custom- id", () => {
+    expect(registryId("custom.x/y")).toBe("reg-custom-x-y");
+  });
 });

@@ -4,12 +4,12 @@ import type { SecretStore } from "../secrets.js";
 import { catalogEntry, VerifiedConnectors, type InputSpec } from "./catalog.js";
 import {
   getRegistryServer,
-  probeRemoteAuth,
   RegistryError,
   searchRegistry,
   type RegistryOptions,
   type RegistryResult,
 } from "./registry.js";
+import { probeRemoteAuth } from "./net-guard.js";
 import { ConnectorStore, ConnectorStoreError, customRemote, customStdio } from "./store.js";
 import type { ConnectorEntry } from "./types.js";
 
@@ -111,15 +111,25 @@ const heldByServer = async (f: ConnectionsSearchFeature, r: Resolved): Promise<"
   if (r.entry.source === "verified" || r.entry.transport !== "remote" || r.entry.auth !== "none") return null;
   const url = "url" in r.entry.server ? r.entry.server.url : undefined;
   if (!url) return null;
+  // Registry URLs are untrusted (public hosts only, checked again at connect); a typed URL is the person's own.
   const probe = await probeRemoteAuth(url, {
-    ...(f.registry.fetch ? { fetch: f.registry.fetch } : {}),
+    publicOnly: r.entry.source !== "custom" && f.registry.localRemotesForTests !== true,
     ...(f.registry.timeoutMs ? { timeoutMs: f.registry.timeoutMs } : {}),
   });
   if (probe === "unreachable") throw new IpcError("unreachable");
   return probe === "oauth" ? "oauth" : null;
 };
 
-const sameServer = (a: ConnectorEntry, url: string | undefined) => !!url && "url" in a.server && a.server.url === url;
+const normUrl = (u: string) => {
+  try {
+    const x = new URL(u);
+    return `${x.origin}${x.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return u;
+  }
+};
+const sameServer = (a: ConnectorEntry, url: string | undefined) =>
+  !!url && "url" in a.server && !!a.server.url && normUrl(a.server.url) === normUrl(url);
 
 /** The panel's Conexiones search and install calls (desktop panel/connections/search-ipc.ts). */
 export const connectionSearchHandlers = (f: ConnectionsSearchFeature | null | undefined): IpcHandlers => {
@@ -131,7 +141,12 @@ export const connectionSearchHandlers = (f: ConnectionsSearchFeature | null | un
     connectionsSearch: async (params) => {
       const s = of();
       const { q, cursor } = parse(Search, params);
-      const installed = new Set(s.store.list().map((c) => c.id));
+      let installed: Set<string>;
+      try {
+        installed = new Set(s.store.list().map((c) => c.id));
+      } catch (e) {
+        return asIpc(e);
+      }
       const verified = cursor
         ? []
         : s.verified.search(q).map((c) => ({

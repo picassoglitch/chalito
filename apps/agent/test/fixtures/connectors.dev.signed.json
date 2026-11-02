@@ -92,9 +92,7 @@
         "verified": {
           "checked": "2026-11-01",
           "version": "registry app.linear/linear 1.0.2",
-          "sources": [
-            "https://linear.app/docs/mcp (FAQ, API keys in Authorization Bearer)"
-          ],
+          "sources": ["https://linear.app/docs/mcp (FAQ, API keys in Authorization Bearer)"],
           "unverified": [
             "tool tiers (tools.read) not listed yet; every tool is write tier until checked with a real token"
           ]
@@ -115,9 +113,7 @@
         "verified": {
           "checked": "2026-11-01",
           "version": "probe: 401 + resource_metadata, OAuth only",
-          "sources": [
-            "probe: POST https://mcp.slack.com/mcp initialize"
-          ]
+          "sources": ["probe: POST https://mcp.slack.com/mcp initialize"]
         }
       },
       {
@@ -133,9 +129,7 @@
         "verified": {
           "checked": "2026-11-01",
           "version": "none pinned",
-          "sources": [
-            "no official Google Drive MCP server in the registry on 2026-11-01; OAuth only"
-          ]
+          "sources": ["no official Google Drive MCP server in the registry on 2026-11-01; OAuth only"]
         }
       }
     ]

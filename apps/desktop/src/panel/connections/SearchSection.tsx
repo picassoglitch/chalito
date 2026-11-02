@@ -29,6 +29,10 @@ const ERRORS = new Set([
   "query_too_short",
   "registry_unreachable",
   "registry_bad_response",
+  "write_failed",
+  "unknown_connector",
+  "not_installed",
+  "confirm_required",
 ]);
 
 const Badge = ({ entry, held }: { entry: ConnectorEntry; held: boolean }) => {
@@ -237,11 +241,23 @@ export const SearchSection = ({ ipc: given }: { ipc?: ConnectionsSearchIpc } = {
         setError(null);
         setView((prev) =>
           cursor && prev
-            ? { ...page, verified: prev.verified, community: [...prev.community, ...page.community] }
+            ? {
+                ...page,
+                verified: prev.verified,
+                // Pages can repeat a slug; keep the first so rows (and their keys) stay unique.
+                community: [
+                  ...prev.community,
+                  ...page.community.filter((x) => !prev.community.some((y) => y.entry.id === x.entry.id)),
+                ],
+              }
             : page,
         );
       } catch (e) {
-        if (mine === seq.current) fail(e);
+        if (mine === seq.current) {
+          // Don't leave the last query's results under the new one.
+          if (!cursor) setView(null);
+          fail(e);
+        }
       } finally {
         if (mine === seq.current) setBusy(false);
       }
@@ -348,7 +364,7 @@ export const SearchSection = ({ ipc: given }: { ipc?: ConnectionsSearchIpc } = {
           <p className="muted">{t("connections.search.installed")}</p>
         ) : (
           <div className="row">
-            <button disabled={busy} onClick={() => void start(item.ref, key)}>
+            <button disabled={busy || !!dialog} onClick={() => void start(item.ref, key)}>
               {t("connections.search.install.button")}
             </button>
           </div>
@@ -382,6 +398,7 @@ export const SearchSection = ({ ipc: given }: { ipc?: ConnectionsSearchIpc } = {
       )}
       {dialog && (
         <InstallDialog
+          key={JSON.stringify(dialog.ref)}
           check={dialog.check}
           busy={busy}
           onInstall={(v) => void install(v)}
@@ -424,7 +441,7 @@ export const SearchSection = ({ ipc: given }: { ipc?: ConnectionsSearchIpc } = {
           )}
         </div>
       )}
-      <AddYourOwn busy={busy} onNext={(ref) => void start(ref, `own:${ref.kind}`)} />
+      <AddYourOwn busy={busy || !!dialog} onNext={(ref) => void start(ref, `own:${ref.kind}`)} />
     </section>
   );
 };
