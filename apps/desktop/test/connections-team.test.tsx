@@ -83,3 +83,24 @@ it("is one section of the single Connections screen, after the AI tools found on
   expect(sections.indexOf(team.closest("section")!)).toBe(1);
   expect(screen.getAllByRole("switch")).toHaveLength(4);
 });
+
+it("lists an app that joined under its own id by that id, with its own trust switch", async () => {
+  const current = view();
+  current.workspaces[0]!.connections.push({
+    provider: "gemini",
+    known: false,
+    trusted: false,
+    connected: false,
+    command: "/app/chalito",
+    args: ["team", "mcp", "gemini", "/work/project"],
+  });
+  const setTeamTrust = vi.fn(async () => structuredClone(current));
+  render(
+    <TextProviders locale="en">
+      <TeamSection ipc={{ ...unavailableIpc, teamConnections: async () => structuredClone(current), setTeamTrust }} />
+    </TextProviders>,
+  );
+  await screen.findByRole("heading", { name: "Other app “gemini”" });
+  fireEvent.click(screen.getByRole("switch", { name: "Trust Other app “gemini” for this workspace" }));
+  await waitFor(() => expect(setTeamTrust).toHaveBeenCalledWith("gemini", "project", true, "/work/project"));
+});

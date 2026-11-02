@@ -21,6 +21,8 @@ export interface McpServerIo {
   version?: string;
   /** Which server this is (default: computer control). The links server (links/tools.ts) uses it too. */
   server?: McpServerInfo;
+  /** Sees every parsed client message before it is handled (the team server reads initialize and initialized). */
+  onMessage?: (msg: Json) => void;
 }
 
 export interface McpServerInfo {
@@ -28,6 +30,8 @@ export interface McpServerInfo {
   title: string;
   instructions: string;
   tools: () => unknown[];
+  /** Extra `capabilities.experimental` entries, e.g. `claude/channel` for push delivery. */
+  experimental?: Record<string, unknown>;
 }
 
 const INSTRUCTIONS =
@@ -62,7 +66,10 @@ export const handleMcpMessage = async (
         : MCP_PROTOCOL_VERSIONS[0];
       return ok({
         protocolVersion,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: {
+          tools: { listChanged: false },
+          ...(info.experimental ? { experimental: info.experimental } : {}),
+        },
         serverInfo: { name: info.name, title: info.title, version: io.version ?? "0.0.0" },
         instructions: info.instructions,
       });
@@ -100,6 +107,7 @@ export const runMcpServer = (io: McpServerIo): Promise<void> =>
         io.write(`${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })}\n`);
         return;
       }
+      io.onMessage?.(msg);
       const p = handleMcpMessage(msg, io)
         .then((reply) => {
           if (reply) io.write(`${JSON.stringify(reply)}\n`);

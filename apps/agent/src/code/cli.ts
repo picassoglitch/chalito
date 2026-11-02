@@ -95,7 +95,12 @@ export interface Rpc {
   close(): void;
 }
 
-export const openRpc = (sock: Duplex, onPush: (e: LocalEvent & { sid: string }) => void, onClose: () => void): Rpc => {
+export const openRpc = (
+  sock: Duplex,
+  onPush: (e: LocalEvent & { sid: string }) => void,
+  onClose: () => void,
+  onFrame?: (msg: Record<string, unknown>) => void,
+): Rpc => {
   let n = 0;
   const waits = new Map<number, (r: { ok: boolean; result?: unknown; error?: string }) => void>();
   let buf = "";
@@ -116,7 +121,7 @@ export const openRpc = (sock: Duplex, onPush: (e: LocalEvent & { sid: string }) 
       else if (typeof msg.id === "number") {
         waits.get(msg.id)?.({ ok: msg.ok === true, result: msg.result, ...(msg.error ? { error: msg.error } : {}) });
         waits.delete(msg.id);
-      }
+      } else if (msg && typeof msg === "object" && !("id" in msg)) onFrame?.(msg as Record<string, unknown>);
     }
   });
   // A write after the agent went away errors before it closes: that's a disconnect, not a crash.

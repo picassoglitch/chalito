@@ -118,9 +118,9 @@ const TERMINAL_USAGE = `  terminal enable|disable|status       remote terminal: 
 const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
 
   run                                  run the agent (the OS service does this)
-  team mcp <claude|codex|grok|cursor> [workspace-path]
+  team mcp <app-id> [workspace-path]
                                        automatic messaging between AI sessions in the same workspace
-  team config <claude|codex|grok|cursor> [workspace-path]
+  team config <app-id> [workspace-path]
                                        print the MCP launch configuration for an AI app
   code <claude|codex|gemini|grok|app> [--workspace <label>] [--mode default|plan|acceptEdits] [prompt]
                                        a session here that is also live on your phone (Ctrl-C stops)
@@ -580,7 +580,9 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 
   if (cmd === "team" && sub === "config") {
     if (!TeamProvider.safeParse(arg).success) {
-      io.err("Usage: chalito team config <claude|codex|grok|cursor> [workspace-path]\n");
+      io.err(
+        "Usage: chalito team config <app-id> [workspace-path]   (claude, codex, grok, cursor, or any lowercase id)\n",
+      );
       return 1;
     }
     // #132 — an AppImage's own path is a temporary mount; AI apps get the fixed copy the agent keeps.
@@ -605,6 +607,13 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
         2,
       ) + "\n",
     );
+    // stderr keeps stdout pasteable as JSON.
+    if (arg === "claude")
+      io.err(
+        "To let teammates wake an idle Claude Code session, start it with:\n" +
+          "  claude --dangerously-load-development-channels server:chalito_team\n" +
+          "Without it, messages wait for team_read.\n",
+      );
     return 0;
   }
 

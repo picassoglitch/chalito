@@ -1109,6 +1109,7 @@ describe("chalito team config", () => {
   it("prints the agent's own path normally and the fixed copy from an AppImage mount (#132)", async () => {
     const plain = cli();
     expect(await plain.run(["team", "config", "codex", "/work/app"])).toBe(0);
+    expect(plain.err()).toBe("");
     expect(JSON.parse(plain.out()).mcpServers.chalito_team).toEqual({
       command: "/opt/chalito/chalito-agent",
       args: ["team", "mcp", "codex", "/work/app"],
@@ -1128,6 +1129,11 @@ describe("chalito team config", () => {
     expect(JSON.parse(mounted.out()).mcpServers.chalito_team.command).toBe(
       join(mounted.home, ".local", "share", "chalito", "chalito-agent"),
     );
-    expect(await mounted.run(["team", "config", "gemini"])).toBe(1);
+    expect(mounted.err()).toContain("claude --dangerously-load-development-channels server:chalito_team");
+    expect(await mounted.run(["team", "config", "Gemini CLI"])).toBe(1);
+    mounted.reset();
+    // Any MCP client joins under its own id (owner 2026-11-02), not only the four named apps.
+    expect(await mounted.run(["team", "config", "gemini", "/work/app"])).toBe(0);
+    expect(JSON.parse(mounted.out()).mcpServers.chalito_team.args).toEqual(["team", "mcp", "gemini", "/work/app"]);
   });
 });

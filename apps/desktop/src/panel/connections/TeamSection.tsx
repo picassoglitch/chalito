@@ -41,6 +41,9 @@ export const TeamSection = ({ ipc }: { ipc: AgentIpc }) => {
       generation.current++;
     };
   }, [refresh, busy]);
+  // Other ids are whatever the app declared: shown verbatim, never as a vendor name.
+  const name = (c: { provider: TeamProvider; known?: boolean }) =>
+    c.known === false ? t("integrations.team.otherApp", { id: c.provider }) : t(`integrations.team.name.${c.provider}`);
   const selected = view?.workspaces.find((w) => w.label === workspace) ?? view?.workspaces[0];
   const trust = async (provider: TeamProvider, trusted: boolean) => {
     if (!selected || !ipc.setTeamTrust) return;
@@ -77,7 +80,7 @@ export const TeamSection = ({ ipc }: { ipc: AgentIpc }) => {
           <ul className="list">
             {selected.connections.map((connection) => (
               <li key={connection.provider} data-team-provider={connection.provider}>
-                <h3>{t(`integrations.team.name.${connection.provider}`)}</h3>
+                <h3>{name(connection)}</h3>
                 <label>
                   <input
                     type="checkbox"
@@ -86,7 +89,7 @@ export const TeamSection = ({ ipc }: { ipc: AgentIpc }) => {
                     disabled={busy || !ipc.setTeamTrust}
                     onChange={(e) => void trust(connection.provider, e.target.checked)}
                   />
-                  {t("integrations.team.trust", { name: t(`integrations.team.name.${connection.provider}`) })}
+                  {t("integrations.team.trust", { name: name(connection) })}
                 </label>
                 <p>
                   {t(
@@ -98,9 +101,7 @@ export const TeamSection = ({ ipc }: { ipc: AgentIpc }) => {
                     <summary>{t("integrations.team.setup")}</summary>
                     <p>{t("integrations.team.setupHint")}</p>
                     <textarea
-                      aria-label={t("integrations.team.config", {
-                        name: t(`integrations.team.name.${connection.provider}`),
-                      })}
+                      aria-label={t("integrations.team.config", { name: name(connection) })}
                       readOnly
                       rows={8}
                       value={JSON.stringify(

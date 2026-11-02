@@ -1633,7 +1633,10 @@ const startDaemon = async (
     connected: (provider, workspace) =>
       team.members().some((p) => p.provider === provider && p.workspace === workspace),
   });
-  const team: TeamHub = new TeamHub(code.workspaceFor, now, (provider, cwd) => teamConnections.trusted(provider, cwd));
+  const team: TeamHub = new TeamHub(code.workspaceFor, now, (provider, cwd) => teamConnections.trusted(provider, cwd), {
+    audit: (type, meta) => auditAgent(type, meta),
+    rejected: (provider, cwd) => teamConnections.requested(provider, cwd),
+  });
   // Only the panel shows PR news, so the watch runs only for an agent the app started.
   const prs = deps.ipcSecret
     ? new PrWatch({
