@@ -626,8 +626,8 @@
     "folders": {
       "title": "Carpetas donde Chalito puede trabajar",
       "hint": "Elige las carpetas de tus proyectos. Chalito solo trabaja dentro de ellas, y tu computadora te pedirá tu contraseña para agregar una.",
-      "protected": "También puedes elegir tu carpeta personal completa. Aun así, Chalito siempre te pregunta antes de tocar tus llaves y contraseñas (.ssh, .aws…), los archivos de inicio (.bashrc, .profile…), la configuración de tus IA (.claude, .codex…), su propia carpeta y las carpetas que excluiste.",
-      "addedHome": "Listo: Chalito ya puede trabajar en tu carpeta personal. Tus llaves, archivos de inicio, configuración de tus IA y carpetas excluidas siguen protegidos: siempre te preguntará antes.",
+      "protected": "También puedes elegir tu carpeta personal completa. Aun así, Chalito siempre te pregunta antes de tocar cualquier lugar oculto en ella (nombres que empiezan con punto, Library, AppData): tus llaves y contraseñas (.ssh, .aws…), los archivos de inicio (.bashrc, .profile…), la configuración de tus IA (.claude, .codex…), su propia carpeta, además de las carpetas que excluiste.",
+      "addedHome": "Listo: Chalito ya puede trabajar en tu carpeta personal. Sus lugares ocultos (llaves, archivos de inicio, configuración de tus IA) y las carpetas excluidas siguen protegidos: siempre te preguntará antes.",
       "none": "Todavía no hay ninguna: agrega la carpeta de un proyecto para empezar.",
       "add": "Agregar una carpeta",
       "remove": "Quitar",
@@ -637,6 +637,7 @@
       "error": {
         "not_a_folder": "Eso no es una carpeta que pueda abrir.",
         "too_broad": "Esa carpeta es demasiado amplia (por ejemplo, el disco completo, una del sistema o la de otra persona). Elige tu carpeta personal o la de un proyecto.",
+        "hidden": "Esa es una carpeta oculta de tu carpeta personal (su nombre empieza con punto, o es Library o AppData), donde las apps guardan su configuración y sus llaves. Elige la carpeta de un proyecto.",
         "excluded": "Esa carpeta está en tu lista de excluidas, así que Chalito nunca trabaja ahí. Elige otra.",
         "chalito_folder": "Esa es la carpeta interna de Chalito; elige otra.",
         "os_auth_failed": "Tu computadora no confirmó que fuiste tú, así que no la agregué.",

@@ -32,7 +32,8 @@ export type AddWorkspaceResult =
       reason: WorkspaceProblem | "not_a_folder" | "os_auth_failed" | "too_many";
     };
 
-export type WorkspaceProblem = "too_broad" | "chalito_folder" | "sensitive" | "startup" | "ai_config" | "excluded";
+export type WorkspaceProblem =
+  "too_broad" | "chalito_folder" | "sensitive" | "startup" | "ai_config" | "excluded" | "hidden";
 
 export interface WorkspaceDeps {
   policy: { get(): Policy; set(p: Policy, via: "local"): Promise<void> };
@@ -184,7 +185,11 @@ export const workspaceProblem = (
     const first = P.relative(key(o.home), key(dir)).split(/[\\/]/)[0] ?? "";
     if (AI_CONFIG_PREFIXES.some((p) => first.startsWith(p.toLowerCase()) || first.startsWith(p))) return "ai_config";
   }
-  if (within(dir, o.home)) return null;
+  if (within(dir, o.home)) {
+    // Hidden places under home are fenced in a home workspace (classify.ts), so never one on their own.
+    const first = P.relative(key(o.home), key(dir)).split(/[\\/]/)[0] ?? "";
+    return first.startsWith(".") || ["library", "appdata"].includes(first.toLowerCase()) ? "hidden" : null;
+  }
 
   if (o.platform === "win32") {
     for (const d of WIN_DENY) if (within(dir, P.join(root, d))) return "too_broad";

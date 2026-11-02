@@ -118,6 +118,10 @@ interface Paths {
   holdsFence(abs: string): boolean;
   /** Is in a fence, or holds one. */
   touchesFence(abs: string): boolean;
+  /** Some workspace is or holds a fence (the home folder): an unknown path may land in one. */
+  fencesReachable: boolean;
+  /** Owner 2026-11-02 — a hidden place directly under home (`~/.*`, Library, AppData) when a workspace holds home. */
+  hidden(abs: string): boolean;
   /** The git repository `dir` is in (walking up to its `.git`), or null. */
   repoRoot(dir: string): string | null;
   hardFloor(abs: string): boolean;
@@ -265,15 +269,33 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     ...pathDirs,
     ...excludes,
   ];
+  // Deny by default for hidden places once the home folder is in a workspace (security review 2026-11-02).
+  const homeKeys = [lexicalHome, homeRoot];
+  const homeInWorkspace = workspaces.some((w) => homeKeys.some((hk) => within(hk, w)));
+  const hidden = (abs: string) =>
+    homeInWorkspace &&
+    homeKeys.some((hk) => {
+      if (!within(abs, hk) || same(abs, hk)) return false;
+      const first =
+        k(abs)
+          .slice(k(hk).length)
+          .replace(/^[\\/]+/, "")
+          .split(/[\\/]/)[0] ?? "";
+      return first.startsWith(".") || ["library", "appdata"].includes(first.toLowerCase());
+    });
   return {
     home: ctx.home,
     resolve: res,
     inWorkspace,
     excluded,
+    hidden,
+    fencesReachable: workspaces.some(
+      (w) => fenceRoots.some((f) => within(f, w)) || homeKeys.some((hk) => within(hk, w)),
+    ),
     holdsFence: (abs) => fenceRoots.some((f) => within(f, abs)),
     repoRoot: (dir) =>
       repoRootOf(dir, { fallback: dir, ...(ctx.gitFs ? { fs: ctx.gitFs } : {}), ...(ctx.env ? { env: ctx.env } : {}) }),
-    touchesFence: (abs) => fenceRoots.some((f) => within(f, abs) || within(abs, f)) || aiPrefixed(abs),
+    touchesFence: (abs) => fenceRoots.some((f) => within(f, abs) || within(abs, f)) || aiPrefixed(abs) || hidden(abs),
     hardFloor: (abs) => floor.some((f) => within(abs, f)),
     floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
     persistence: (abs) =>
@@ -481,6 +503,10 @@ const fence = (out: Classification, tier: RiskTier, reason: string): void => {
   out.fenced = true;
 };
 
+/** Raises; fenced too when a workspace holds a fence (an unknown target there may be one). */
+const mark = (out: Classification, paths: Paths, tier: RiskTier, reason: string): void =>
+  paths.fencesReachable ? fence(out, tier, reason) : raise(out, tier, reason);
+
 const markHardFloor = (out: Classification, reason = "touches ~/.chalito"): void => {
   raise(out, "CRITICAL", reason);
   out.hardFloor = true;
@@ -528,6 +554,10 @@ const classifyPath = (
   }
   if (paths.excluded(abs)) {
     fence(out, "HIGH", "excluded folder");
+    return;
+  }
+  if (paths.hidden(abs)) {
+    fence(out, "HIGH", "hidden place in the home folder");
     return;
   }
   // Inside a home-folder workspace, reading a startup file or an AI tool's settings still asks.
@@ -1034,7 +1064,7 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
   const e = expandWord(w, st, paths);
   const absolute = e.text.startsWith("/") || e.text.startsWith("~");
   if (!absolute && st.cwd === null) {
-    if (!opts.prose) raise(out, "HIGH", "unknown working directory");
+    if (!opts.prose) mark(out, paths, "HIGH", "unknown working directory");
     return;
   }
   const cwd = st.cwd ?? paths.home;
@@ -1056,7 +1086,7 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
       return fence(out, "CRITICAL", "startup file or PATH directory");
   }
   if (e.unresolved) {
-    if (!opts.prose) raise(out, "HIGH", "unresolved variable or substitution");
+    if (!opts.prose) mark(out, paths, "HIGH", "unresolved variable or substitution");
     return;
   }
   // Glob only: classify the directory the glob expands in.
@@ -1194,8 +1224,12 @@ const classifySegment = (
   const cmd = cmdName(words[0]!.text);
   const args = words.slice(1);
   // Commands reach their folder implicitly (`grep -r x`, `tar c .`): one in or holding a fence asks.
-  if (cmd !== "cd" && cmd !== "pushd" && cmd !== "popd" && st.cwd !== null && paths.touchesFence(st.cwd))
-    fence(out, "HIGH", "runs in a folder that is or holds a protected place");
+  if (cmd !== "cd" && cmd !== "pushd" && cmd !== "popd") {
+    if (st.cwd !== null && paths.touchesFence(st.cwd))
+      fence(out, "HIGH", "runs in a folder that is or holds a protected place");
+    // `cd -`, `popd`: a folder we lost track of may be a fence; fail closed where one is reachable.
+    if (st.cwd === null && paths.fencesReachable) fence(out, "HIGH", "runs in an unknown folder");
+  }
   const texts = args.map((a) => a.text);
   producerCmd.set(seg, cmd);
 
@@ -1376,7 +1410,7 @@ const classifySegment = (
     }
     // A dotfiles repo in the home folder: `git add -A`, `git diff` reach every fence it tracks.
     for (const d of [st.cwd, ...gitDirs.map((g) => paths.resolve(g, st.cwd ?? paths.home))]) {
-      const root = d === null ? null : paths.repoRoot(d);
+      const root = paths.repoRoot(d ?? paths.home);
       if (root && paths.holdsFence(root)) fence(out, "HIGH", "git repository holds a protected place");
     }
     const sub = texts[i] ?? "";

@@ -267,6 +267,7 @@ describe("Esta computadora: start with the computer and the folders", () => {
       ["startup", /puede ejecutarse solo/],
       ["ai_config", /configuración de una IA/],
       ["excluded", /lista de excluidas/],
+      ["hidden", /carpeta oculta/],
     ] as const) {
       const refusing = ipcWith({
         workspaces: async () => ({ workspaces: [] }),

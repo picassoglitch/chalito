@@ -135,6 +135,7 @@ export type AddWorkspaceResult =
       reason:
         | "not_a_folder"
         | "excluded"
+        | "hidden"
         | "too_broad"
         | "chalito_folder"
         | "sensitive"

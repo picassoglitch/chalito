@@ -222,6 +222,85 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       expect(["HIGH", "CRITICAL"]).toContain(r.c.tier);
     });
 
+  // Security review 2026-11-02: deny by default for hidden places once home is a workspace.
+  const hiddenWrites: [string, string][] = [
+    ["~/.zshenv", `${H}/.zshenv`],
+    ["~/.config/autostart/x.desktop", `${H}/.config/autostart/x.desktop`],
+    ["~/.local/bin/x", `${H}/.local/bin/x`],
+    ["~/.gitconfig", `${H}/.gitconfig`],
+    ["~/.npmrc", `${H}/.npmrc`],
+    ["~/.docker/config.json", `${H}/.docker/config.json`],
+    ["a new dotfile in no list", `${H}/.brand-new-tool/state.json`],
+    ["a browser profile", `${H}/.mozilla/firefox/x/logins.json`],
+    ["shell history", `${H}/.bash_history`],
+    ["~/Library on any OS", `${H}/Library/Application Support/x`],
+  ];
+  for (const [name, file] of hiddenWrites)
+    it(`hidden place ${name}: neither a write nor a read is a workspace edit or auto-approved`, () => {
+      for (const [tool, input] of [
+        ["Write", { file_path: file, content: "x" }],
+        ["Edit", { file_path: file, old_string: "a", new_string: "b" }],
+        ["Read", { file_path: file }],
+        ["Bash", { command: `cat '${file}'` }],
+      ] as const) {
+        const r = answeredFor(tool, input, h.ctx());
+        expect(r.auto, `${tool} ${file}`).toBe(false);
+        expect(r.c.workspaceEdit, `${tool} ${file}`).toBe(false);
+        expect(r.c.fenced || r.c.hardFloor, `${tool} ${file}`).toBe(true);
+      }
+    });
+
+  it("a project's own dotfiles are not hidden places (only those directly under home)", () => {
+    expect(
+      answeredFor("Edit", { file_path: `${h.project}/.eslintrc.json`, old_string: "a", new_string: "b" }, h.ctx())
+        .coord,
+    ).toEqual({
+      via: "coordinator_auto",
+      kind: "workspace_edit",
+    });
+  });
+
+  it("an ordinary project workspace keeps hidden places as before (outside it, not fenced by name)", () => {
+    const p: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "x", path: h.project }] };
+    const c = classifyToolCall("Read", { file_path: `${H}/.brand-new-tool/state.json` }, h.ctx(h.project, p));
+    expect(c.reasons).toContain("outside allowed folders");
+    expect(c.fenced).toBeUndefined();
+  });
+
+  for (const command of [
+    "cd ~/.ssh; cd -; cd -; cat id_ed25519",
+    "pushd ~/.ssh && popd && pushd - && cat id_ed25519",
+    "cd ~/.ssh && popd; cat id_ed25519",
+    "(cd ~/.ssh && cat id_ed25519)",
+    "cd ~/.ssh && (cat id_ed25519)",
+    "bash -c 'cd -; cat id_ed25519'",
+    "cd $UNSET_DIR && cat id_ed25519",
+    "cat $KEY_PATH",
+    "bash -c 'cat ~/.bashrc'",
+    "sh -c 'cat ~/.claude/settings.json'",
+    "eval 'cat ~/.bashrc'",
+    "git --git-dir=$HOME/.dotfiles --work-tree=$HOME add -A",
+    "git --work-tree=~ status",
+  ])
+    it(`fence evasion through the shell: ${command}`, () => {
+      const r = answeredFor("Bash", { command }, h.ctx());
+      expect(r.auto, JSON.stringify(r.c)).toBe(false);
+      expect(r.c.fenced || r.c.hardFloor, JSON.stringify(r.c)).toBe(true);
+    });
+
+  it("fenced items ask with step-up (never a silent allow, never only a tap)", () => {
+    const c = classifyToolCall("Read", { file_path: `${H}/.bashrc` }, h.ctx());
+    expect(
+      decide({
+        classification: c,
+        origin: "local",
+        originAllowed: true,
+        devMode: { ...DEV_ALL, toggles: [...DEV_ALL.toggles] },
+        permissionMode: "acceptEdits",
+      }),
+    ).toEqual({ action: "ask", stepUp: true });
+  });
+
   it("a session running in the home folder itself asks for every command (it can reach any fence)", () => {
     for (const command of ["ls", "grep -r token", "git status", "pnpm test", "rg PRIVATE"]) {
       const r = answeredFor("Bash", { command }, h.ctx(H));
