@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
-import { PassThrough } from "node:stream";
+import { duplexPair, PassThrough, type Duplex } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TeamHub } from "../src/team/hub.js";
 import { runTeamMcp } from "../src/team/mcp.js";
@@ -261,8 +261,7 @@ describe("push delivery over the real socket and stdio", () => {
     const claude = client(r.path, "claude", { channel: true });
     await claude.init();
     await vi.waitFor(async () => expect((await claude.tool("team_read")).self).toBeDefined());
-    // Let team_client settle so the process knows it is push-delivered.
-    await new Promise((res) => setTimeout(res, 50));
+    await vi.waitFor(() => expect(claude.errors()).toContain("wakes this session"));
     await r.stop();
     await new Promise((res) => setTimeout(res, 100));
     r.untrust();
@@ -304,6 +303,69 @@ describe("push delivery over the real socket and stdio", () => {
       codex.end();
       await Promise.all([claude.done, codex.done]);
       await r.close();
+    }
+  });
+
+  it("a stalled connection rejoins the same Chalito with its id and is pushed what arrived meanwhile", async () => {
+    let accept!: (stream: Duplex) => void;
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, { pacing: fast });
+    const server = await startCodeServer({
+      path: "team-resume",
+      team: hub,
+      platform: "win32",
+      code: { workspaceFor, tap: () => () => undefined } as unknown as CodeService,
+      listen: (_p, onStream) => {
+        accept = onStream;
+        return { close() {} };
+      },
+    });
+    let current: Duplex[] = [];
+    const pipe = () => {
+      const [mine, theirs] = duplexPair();
+      accept(theirs);
+      current = [mine, theirs];
+      return { ok: true as const, stream: mine };
+    };
+    const input = new PassThrough();
+    const lines: Record<string, unknown>[] = [];
+    let errors = "";
+    const done = runTeamMcp(
+      {
+        input,
+        out: (l) => lines.push(JSON.parse(l)),
+        err: (t) => {
+          errors += t;
+        },
+        openPipe: pipe,
+        channelLoaded: () => true,
+        retryMs: [30],
+      },
+      "team-resume",
+      "claude",
+      "/project",
+    );
+    const sender = new AbortController();
+    try {
+      input.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
+      input.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+      await vi.waitFor(() => expect(errors).toContain("wakes this session"));
+      const joined = hub.call(sender.signal, "team_join", { provider: "codex", cwd: "/project" }) as {
+        result: { peers: { id: string }[] };
+      };
+      const id = joined.result.peers[0]!.id;
+      // The link drops while Chalito keeps running; a result arrives before the rejoin.
+      current[1]!.destroy();
+      await vi.waitFor(() => expect(hub.members()).toHaveLength(1));
+      hub.call(sender.signal, "team_send", { kind: "result", text: "while away" });
+      current[0]!.destroy();
+      await vi.waitFor(() => expect(lines.filter((l) => l.method === "notifications/claude/channel")).toHaveLength(1));
+      expect(hub.members().map((m) => m.id)).toContain(id);
+      expect(JSON.stringify(lines)).toContain("> while away");
+    } finally {
+      sender.abort();
+      input.end();
+      expect(await done).toBe(0);
+      await server.close();
     }
   });
 
@@ -499,7 +561,11 @@ describe("hub pacing", () => {
       resume: before.result.self,
     }) as { result: { self: string; messages: { text: string }[] } };
     expect(back.result.self).toBe(before.result.self);
-    expect(back.result.messages.map((m) => m.text)).toEqual(["during the gap"]);
+    // The join leaves them unread, so the push (or the next team_read) still has them.
+    expect(back.result.messages).toEqual([]);
+    expect(s.hub.call(again.signal, "team_read", {})).toMatchObject({
+      result: { messages: [{ text: "during the gap" }] },
+    });
     // Another app cannot take that id, and an id is resumed once.
     const thief = new AbortController();
     again.abort();

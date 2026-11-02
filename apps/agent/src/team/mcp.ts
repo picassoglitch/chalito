@@ -79,11 +79,15 @@ const PERMANENT = new Set([
   "bad_params",
   "already_joined",
   "unknown_method",
-  "team_full",
   "EACCES",
   "EPERM",
 ]);
 const RETRY_MS = [250, 500, 1000, 2000, 5000];
+const RECONNECTING = {
+  ok: false as const,
+  error: "reconnecting",
+  message: "Chalito team: the connection to Chalito dropped; reconnecting. Retry shortly.",
+};
 
 type Link = {
   call: (action: string, args: unknown) => Promise<{ ok: boolean; result?: unknown; error?: string }>;
@@ -193,7 +197,8 @@ export const runTeamMcp = async (
   const declare = async (link: Link, declaration: ClientDeclaration) => {
     const r = await link.call("team_client", declaration);
     const result = r.result as { wakes?: boolean; delivery?: string } | undefined;
-    wakes = r.ok && result?.wakes === true;
+    // A dropped reply is not a downgrade: only a real answer changes how this session is reached.
+    if (r.ok) wakes = result?.wakes === true;
     io.err(
       r.ok
         ? `Chalito team: delivery ${result?.delivery ?? "pull"}${wakes ? " (wakes this session)" : " (call team_read)"}.\n`
@@ -257,19 +262,9 @@ export const runTeamMcp = async (
     call: async (tool, args) => {
       if (tool !== "team_read" && tool !== "team_send")
         return { ok: false, error: "unknown_tool", message: "Unknown team tool." };
-      if (!link)
-        return {
-          ok: false,
-          error: "reconnecting",
-          message: "Chalito team: Chalito restarted; reconnecting. Retry shortly.",
-        };
+      if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
-      if (!reply.ok && reply.error === "closed" && wakes)
-        return {
-          ok: false,
-          error: "reconnecting",
-          message: "Chalito team: Chalito restarted; reconnecting. Retry shortly.",
-        };
+      if (!reply.ok && reply.error === "closed" && wakes) return RECONNECTING;
       return reply.ok
         ? { ok: true, result: { text: JSON.stringify({ peerData: reply.result }) } }
         : {

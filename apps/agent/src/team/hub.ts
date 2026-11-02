@@ -105,7 +105,12 @@ export class TeamHub {
     if (!peer) return;
     clearTimeout(peer.timer);
     this.#peers.delete(signal);
-    this.#departed.set(peer.id, { ...peer, at: this.now() });
+    this.#departed.set(peer.id, {
+      provider: peer.provider,
+      workspace: peer.workspace,
+      cursor: peer.cursor,
+      at: this.now(),
+    });
     for (const [id, d] of this.#departed)
       if (this.#departed.size > 64 || d.at < this.now() - 10 * 60_000) this.#departed.delete(id);
   }
@@ -179,6 +184,8 @@ export class TeamHub {
     if (signal.aborted) return { ok: false, error: "closed" };
     this.#prune();
     let peer = this.#peers.get(signal);
+    // A resumed join leaves the unread messages for the push or the next team_read.
+    let resumedNow = false;
     if (action === "team_join") {
       const p = Join.safeParse(raw);
       if (!p.success) return { ok: false, error: "bad_params" };
@@ -194,8 +201,16 @@ export class TeamHub {
         if (this.#peers.size >= 64) return { ok: false, error: "team_full" };
         const back = p.data.resume ? this.#departed.get(p.data.resume) : undefined;
         const resumed =
-          back && back.provider === p.data.provider && back.workspace === workspace && p.data.resume ? back : null;
-        if (resumed) this.#departed.delete(p.data.resume!);
+          back &&
+          back.provider === p.data.provider &&
+          back.workspace === workspace &&
+          back.at > this.now() - 10 * 60_000
+            ? back
+            : null;
+        if (resumed) {
+          this.#departed.delete(p.data.resume!);
+          resumedNow = true;
+        }
         peer = {
           id: resumed ? p.data.resume! : randomUUID(),
           cwd: p.data.cwd,
@@ -222,6 +237,11 @@ export class TeamHub {
       }
     }
     if (!peer) return { ok: false, error: "join_first" };
+    if (action === "team_join" && resumedNow)
+      return {
+        ok: true,
+        result: { self: peer.id, workspace: peer.workspace, historyTruncated: false, peers: [], messages: [] },
+      };
     if (action === "team_client") {
       const p = ClientDeclaration.safeParse(raw);
       if (!p.success) return { ok: false, error: "bad_params" };
