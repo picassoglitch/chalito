@@ -302,6 +302,8 @@ jobs:
           - os: macos-latest
             bundles: app
     runs-on: ${{ matrix.os }}
+    # A hung test once held a macOS runner for the 6h default; a normal run takes ~5 min.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Linux webview and tray libraries
