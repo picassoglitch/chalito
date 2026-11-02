@@ -1,3 +1,4 @@
+import type { lookup as dnsLookup } from "node:dns";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -15,6 +16,7 @@ import {
 import { main } from "../src/cli.js";
 import { codeService } from "../src/code/service.js";
 import { startCodeServer } from "../src/code/server.js";
+import { loadBuiltinConnectors, signConnectorCatalog, VerifiedConnectors } from "../src/connections/catalog.js";
 import { ConnectorSessions } from "../src/connections/gate.js";
 import { CONNECTORS_FILE, readInstalled } from "../src/connections/installed.js";
 import { runConnectionsMcp } from "../src/connections/mcp.js";
@@ -28,6 +30,28 @@ import { agentFor, HOME, OWNER, tempDir, waitFor } from "./rc-harness.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/connections/stdio-mcp-server.mjs", import.meta.url));
 const ALLOW: ConnectorGate = async () => ({ allow: true, reason: "test" });
+
+const devKey = JSON.parse(
+  readFileSync(new URL("../../../recipes/test-fixtures/dev-catalog-key.json", import.meta.url), "utf8"),
+) as { keyId: string; publicKey: string; secretKey: string };
+const DEV_KEYS = { [devKey.keyId]: devKey.publicKey };
+// A real verified catalog (connectors.yaml's schema and loader): only its `tools.read` makes a tool read tier.
+const catalogYaml = (issuedAt: number, read: string[]) => `v: 1
+issuedAt: ${issuedAt}
+connectors:
+  - id: fx
+    name: Fixture
+    description: fixture
+    transport: stdio
+    server: { package: fixture, version: 1.0.0, command: node, args: [] }
+    auth: none
+    inputs: []
+    tools: { read: [${read.join(", ")}] }
+    risk: MED
+    verified: { checked: "2026-11-02", version: "1", sources: [test] }
+`;
+const verifiedFixture = (read = ["echo", "big", "delete_repo"]) =>
+  new VerifiedConnectors(loadBuiltinConnectors(catalogYaml(1, read)), DEV_KEYS);
 
 const stdio = (id: string, over: Partial<InstalledConnector> = {}, extra: string[] = []): InstalledConnector => ({
   id,
@@ -67,15 +91,25 @@ const rig = (
     restartMs?: number;
     cap?: number;
     callTimeoutMs?: number;
+    verified?: VerifiedConnectors;
+    /** false: verified/registry remotes get the real public-only guard. */
+    local?: boolean;
+    lookup?: typeof dnsLookup;
+    fetch?: typeof fetch;
   } = {},
 ) => {
   const dir = tempDir("chalito-conn-");
   const audits: { type: string; meta: Record<string, unknown> }[] = [];
   const secrets = o.secrets ?? new MemorySecretStore();
+  const verified = o.verified ?? verifiedFixture();
   const proxy = new ConnectionsProxy({
     dir,
     secrets,
     gate: o.gate ?? ALLOW,
+    readTools: (id) => verified.get(id)?.tools?.read ?? [],
+    ...(o.local === false ? {} : { localRemotesForTests: true }),
+    ...(o.lookup ? { lookup: o.lookup } : {}),
+    ...(o.fetch ? { fetch: o.fetch as never } : {}),
     audit: (type, meta) => void audits.push({ type, meta }),
     env: o.env ?? { PATH: process.env.PATH },
     ...(o.cap ? { resultCap: o.cap } : {}),
@@ -112,7 +146,8 @@ describe("connections proxy: a real stdio MCP server", () => {
     );
     const echo = tools.find((t) => t.name.endsWith("__echo"))!;
     expect(echo.description.startsWith("[Verificado · Fixture io.github.acme/fixture]")).toBe(true);
-    expect(echo.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    // Not in the catalog's tools.read: the server's own readOnlyHint doesn't make it read tier.
+    expect(echo.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
     // A server's read-only hint can't make a destructive name safe.
     expect(tools.find((t) => t.name.endsWith("__delete_repo"))!.annotations).toMatchObject({
       readOnlyHint: false,
@@ -551,16 +586,26 @@ describe("connections: revoke-all (ADR 0020)", () => {
 describe("connections helpers", () => {
   it("risk, slugs, caps and SSE parsing", () => {
     const c = stdio("x");
-    expect(toolRisk(c, { name: "list_issues", annotations: { readOnlyHint: true } })).toEqual({
-      tier: "read",
-      risk: "LOW",
-    });
-    expect(toolRisk(c, { name: "create_issue" })).toEqual({ tier: "write", risk: "MED" });
-    expect(toolRisk(c, { name: "send_message", annotations: { readOnlyHint: true } })).toEqual({
-      tier: "write",
-      risk: "HIGH",
-    });
-    expect(toolRisk(c, { name: "x", annotations: { destructiveHint: true } })).toEqual({ tier: "write", risk: "HIGH" });
+    const community = stdio("y", { source: "community", confirmedWarning: true });
+    const custom = stdio("z", { source: "custom", confirmedWarning: true });
+    const read = { tier: "read", risk: "LOW" };
+    const med = { tier: "write", risk: "MED" };
+    const high = { tier: "write", risk: "HIGH" };
+    // A server's readOnlyHint never lowers risk; only the signed catalog's tools.read does.
+    expect(toolRisk(c, { name: "list_issues", annotations: { readOnlyHint: true } })).toEqual(med);
+    expect(toolRisk(c, { name: "list_issues", annotations: { readOnlyHint: true } }, ["other"])).toEqual(med);
+    expect(toolRisk(c, { name: "list_issues" }, ["list_issues"])).toEqual(read);
+    expect(toolRisk(c, { name: "list_issues", annotations: { readOnlyHint: false } }, ["list_issues"])).toEqual(read);
+    // Annotations and destructive names only raise it, even for a catalog read tool.
+    expect(toolRisk(c, { name: "list_issues", annotations: { destructiveHint: true } }, ["list_issues"])).toEqual(high);
+    expect(toolRisk(c, { name: "send_message" }, ["send_message"])).toEqual(high);
+    expect(toolRisk(c, { name: "create_issue" })).toEqual(med);
+    expect(toolRisk(c, { name: "send_message", annotations: { readOnlyHint: true } })).toEqual(high);
+    expect(toolRisk(c, { name: "x", annotations: { destructiveHint: true } })).toEqual(high);
+    for (const u of [community, custom]) {
+      expect(toolRisk(u, { name: "list_issues", annotations: { readOnlyHint: true } }, ["list_issues"])).toEqual(med);
+      expect(toolRisk(u, { name: "x", annotations: { destructiveHint: true } })).toEqual(high);
+    }
     expect(slugFor("io.github.Some/Very-Long-Server-Name-Here")).toBe("io-github-some-very-long");
     expect(slugFor("///")).toBe("connector");
     expect(capText("ñ".repeat(10), 5)).toEqual({ text: "ññ", bytes: 20, truncated: true });
@@ -895,5 +940,168 @@ describe("connections proxy: revoke-all edge cases", () => {
     await waitFor(() => !alive(pid), 5000);
     expect(secrets.values.size).toBe(0);
     expect(audits.find((a) => a.type === "connector.revoke_all")!.meta).toMatchObject({ clearFailed: true });
+  });
+});
+
+describe("connections: tool tiers come from the signed verified catalog", () => {
+  it("a server's readOnlyHint can't make a tool read; a newer signed catalog can, a forged one can't", async () => {
+    const verified = verifiedFixture(["big"]);
+    const stamps: unknown[] = [];
+    const { dir, proxy } = rig({
+      verified,
+      gate: async (call) => (stamps.push(call.stamp), { allow: true, reason: "test" }),
+    });
+    install(dir, [stdio("fx")]);
+    const tier = async (tool: string) =>
+      (await proxy.listTools()).find((t) => t.name === `fx__${tool}`)!.annotations.readOnlyHint;
+    // The fixture server marks echo readOnlyHint: true; the catalog only lists big.
+    expect(await tier("echo")).toBe(false);
+    expect(await tier("big")).toBe(true);
+    await proxy.callTool("fx__echo", { text: "x" }, client, signal());
+    expect(stamps).toEqual([{ connectorId: "fx", source: "verified", tool: "echo", tier: "write", risk: "MED" }]);
+
+    const newer = loadBuiltinConnectors(catalogYaml(2, ["echo"]));
+    const forged = { ...(await signConnectorCatalog(newer, devKey)), sig: "A".repeat(86) };
+    expect((await verified.offer(forged)).ok).toBe(false);
+    expect(await tier("echo")).toBe(false);
+    expect((await verified.offer(await signConnectorCatalog(newer, devKey))).applied).toBe(true);
+    expect(await tier("echo")).toBe(true);
+    expect(await tier("big")).toBe(false);
+  });
+
+  it("a verified connector with no catalog entry or no tools block gets no read tools", async () => {
+    const noTools = new VerifiedConnectors(
+      loadBuiltinConnectors(catalogYaml(1, []).replace(/ {4}tools: .*\n/, "")),
+      DEV_KEYS,
+    );
+    expect(noTools.get("fx")!.tools).toBeUndefined();
+    for (const [verified, id] of [
+      [noTools, "fx"],
+      [verifiedFixture(), "not-in-catalog"],
+    ] as const) {
+      const { dir, proxy } = rig({ verified });
+      install(dir, [stdio(id)]);
+      expect((await proxy.listTools()).filter((t) => t.annotations.readOnlyHint)).toEqual([]);
+    }
+  });
+
+  it("a community install with the same id doesn't get the verified read list", async () => {
+    const { dir, proxy } = rig();
+    install(dir, [stdio("fx", { source: "community", confirmedWarning: true })]);
+    const tools = await proxy.listTools();
+    expect(tools.find((t) => t.name === "fx__echo")!.annotations.readOnlyHint).toBe(false);
+  });
+});
+
+describe("connections: verified and registry remotes reach public hosts only (DNS rebinding)", () => {
+  const servers: Server[] = [];
+  afterEach(() => {
+    for (const s of servers.splice(0)) s.close();
+  });
+  type Answer = { address: string; family: number };
+  const stub = (answers: Answer[], seen: string[]) =>
+    ((host: string, _o: unknown, cb: (e: null, a: Answer[]) => void) => {
+      seen.push(host);
+      cb(null, answers);
+    }) as unknown as typeof dnsLookup;
+  // Any TCP connection counts: the guard must refuse before one is opened.
+  const local = async () => {
+    let connections = 0;
+    const server = createServer((_req, res) => res.writeHead(401).end());
+    server.on("connection", () => void connections++);
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return { port: (server.address() as AddressInfo).port, connections: () => connections };
+  };
+  const remote = (id: string, url: string, source: InstalledConnector["source"]): InstalledConnector => ({
+    id,
+    name: id,
+    description: "",
+    source,
+    transport: "remote",
+    server: { url },
+    auth: "none",
+    installedAt: 1,
+    confirmedWarning: source !== "verified",
+  });
+
+  it("a public name that later resolves to this computer or the LAN is refused at connect, for every answer", async () => {
+    const srv = await local();
+    for (const answers of [
+      [{ address: "127.0.0.1", family: 4 }],
+      [{ address: "169.254.169.254", family: 4 }],
+      // One private answer among public ones is enough to refuse.
+      [
+        { address: "93.184.216.34", family: 4 },
+        { address: "10.0.0.7", family: 4 },
+      ],
+      [{ address: "::ffff:127.0.0.1", family: 6 }],
+    ]) {
+      const seen: string[] = [];
+      let injected = 0;
+      const { dir, proxy, audits } = rig({
+        local: false,
+        lookup: stub(answers, seen),
+        fetch: (async () => (injected++, new Response("{}"))) as never,
+      });
+      install(dir, [
+        remote("ver", `https://rebind.example.com:${srv.port}/mcp`, "verified"),
+        remote("reg", `https://rebind2.example.com:${srv.port}/mcp`, "community"),
+      ]);
+      expect(await proxy.listTools()).toEqual([]);
+      expect(seen.sort()).toEqual(["rebind.example.com", "rebind2.example.com"]);
+      for (const id of ["ver", "reg"])
+        expect(audits).toContainEqual({
+          type: "connector.unavailable",
+          meta: { connector: id, error: "connector_private_address" },
+        });
+      // A public-only transport never uses an injected fetch (or an env proxy) that would skip the check.
+      expect(injected).toBe(0);
+    }
+    expect(srv.connections()).toBe(0);
+  });
+
+  it("IP literals and plain HTTP to this computer are refused for verified and registry connectors", async () => {
+    const srv = await local();
+    const { dir, proxy, audits } = rig({ local: false });
+    install(dir, [
+      remote("v1", `http://127.0.0.1:${srv.port}/mcp`, "verified"),
+      remote("v2", `https://127.0.0.1:${srv.port}/mcp`, "verified"),
+      remote("v3", `https://[::1]:${srv.port}/mcp`, "community"),
+      remote("v4", `http://localhost:${srv.port}/mcp`, "community"),
+      remote("v5", "https://8.8.8.8/mcp", "verified"),
+    ]);
+    expect(await proxy.listTools()).toEqual([]);
+    for (const id of ["v1", "v2", "v3", "v4", "v5"])
+      expect(audits).toContainEqual({
+        type: "connector.unavailable",
+        meta: { connector: id, error: "connector_bad_url" },
+      });
+    expect(srv.connections()).toBe(0);
+  });
+
+  it("a custom connector the person typed may still point at this computer", async () => {
+    const port = await new Promise<number>((resolve) => {
+      const server = createServer((req, res) => {
+        let raw = "";
+        req.on("data", (c: Buffer) => (raw += c.toString()));
+        req.on("end", () => {
+          const msg = JSON.parse(raw || "{}") as { id?: number; method?: string };
+          if (msg.id === undefined) return res.writeHead(202).end();
+          const result =
+            msg.method === "initialize"
+              ? { protocolVersion: "2025-06-18", capabilities: {} }
+              : { tools: [{ name: "local_tool", inputSchema: { type: "object" } }] };
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }));
+        });
+      });
+      servers.push(server);
+      server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
+    });
+    const { dir, proxy } = rig({ local: false });
+    install(dir, [remote("custom-mine", `http://127.0.0.1:${port}/mcp`, "custom")]);
+    expect((await proxy.listTools()).map((t) => t.name)).toEqual(["custom-mine__local_tool"]);
   });
 });

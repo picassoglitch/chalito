@@ -1,7 +1,9 @@
 import { lookup as dnsLookup, type LookupAddress } from "node:dns";
-import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
+import { Readable } from "node:stream";
+import type { FetchLike } from "./transport.js";
 
 // Registry data is untrusted: a listed server must not point Chalito at this computer or its network (SSRF).
 const PRIVATE = new BlockList();
@@ -82,6 +84,86 @@ export const publicOnlyLookup =
       callback(null, list[0]!.address, list[0]!.family);
     });
   };
+
+const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+
+/** fetch over node:http(s) with its own agent and DNS lookup: neither Node's nor Bun's fetch takes a lookup. */
+export const lookupFetch =
+  (lookup?: LookupFunction): FetchLike =>
+  (raw, init) =>
+    new Promise<Response>((resolve, reject) => {
+      const signal = init.signal ?? undefined;
+      if (signal?.aborted) return reject(new Error("aborted"));
+      const u = new URL(raw);
+      if (init.body != null && typeof init.body !== "string") return reject(new TypeError("string body only"));
+      const body = init.body ?? undefined;
+      const headers: Record<string, string> = {};
+      new Headers(init.headers).forEach((v, k) => (headers[k] = v));
+      if (body !== undefined) headers["content-length"] = String(Buffer.byteLength(body));
+      const https = u.protocol === "https:";
+      let res: IncomingMessage | undefined;
+      const onAbort = () => {
+        const e = new Error("aborted");
+        req.destroy(e);
+        res?.destroy(e);
+      };
+      const done = () => signal?.removeEventListener("abort", onAbort);
+      const req = (https ? httpsRequest : httpRequest)(
+        u,
+        {
+          method: init.method ?? "GET",
+          headers,
+          // Own agent: an env proxy would get the lookup, not the server.
+          agent: https ? new HttpsAgent() : new HttpAgent(),
+          ...(lookup ? { lookup } : {}),
+        },
+        (r) => {
+          res = r;
+          r.once("close", done);
+          // A reset mid-body reaches the reader through the web stream; unheard it would crash the agent.
+          r.on("error", () => undefined);
+          const status = r.statusCode ?? 0;
+          // Never followed: the token must not go wherever a server points.
+          if (status >= 300 && status < 400) {
+            r.destroy();
+            return reject(new Error("redirect refused"));
+          }
+          try {
+            const h = new Headers();
+            for (const [k, v] of Object.entries(r.headers))
+              for (const one of Array.isArray(v) ? v : v === undefined ? [] : [v]) h.append(k, one);
+            const stream = NULL_BODY.has(status) ? null : (Readable.toWeb(r) as ReadableStream<Uint8Array>);
+            if (!stream) r.resume();
+            resolve(new Response(stream, { status, headers: h }));
+          } catch (e) {
+            r.destroy();
+            reject(e as Error);
+          }
+        },
+      );
+      signal?.addEventListener("abort", onAbort, { once: true });
+      req.on("error", (e) => {
+        done();
+        reject(e);
+      });
+      req.end(body);
+    });
+
+/** A connector URL Chalito didn't get from the person: HTTPS to a public DNS name, no credentials. */
+export const publicRemoteUrl = (raw: string): boolean => {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" && !u.username && !u.password && isPublicHostname(u.hostname);
+  } catch {
+    return false;
+  }
+};
+
+/** Verified and registry connectors: every connect re-checks all resolved addresses, so DNS can't rebind to the LAN. */
+export const publicFetch = (lookup: typeof dnsLookup = dnsLookup): FetchLike => {
+  const f = lookupFetch(publicOnlyLookup(lookup));
+  return (raw, init) => (publicRemoteUrl(raw) ? f(raw, init) : Promise.reject(new Error("not a public https url")));
+};
 
 export type ProbeResult = "open" | "oauth" | "unreachable";
 

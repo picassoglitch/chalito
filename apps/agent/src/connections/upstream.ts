@@ -1,3 +1,4 @@
+import type { lookup as dnsLookup } from "node:dns";
 import type { SecretStore } from "../secrets.js";
 import { ConnectorError, HttpTransport, StdioTransport, type FetchLike, type Transport } from "./transport.js";
 import type { UpstreamTool } from "./risk.js";
@@ -42,6 +43,9 @@ export interface UpstreamDeps {
   secrets: SecretStore;
   env: NodeJS.ProcessEnv;
   fetch?: FetchLike;
+  lookup?: typeof dnsLookup;
+  /** Tests only: verified/registry remotes may be served from 127.0.0.1 (like the registry's flag). */
+  localRemotesForTests?: boolean;
   platform?: NodeJS.Platform;
   now: () => number;
   setTimer: (fn: () => void, ms: number) => { clear(): void };
@@ -102,7 +106,12 @@ export class Upstream {
     }
     const url = (c.server as { url?: string }).url ?? "";
     const headers: Record<string, string> = secrets.token ? { authorization: `Bearer ${secrets.token}` } : {};
-    return new HttpTransport(url, headers, this.d.fetch);
+    // Only a URL the person typed may reach this computer or the LAN; catalog and registry hosts are public.
+    return new HttpTransport(url, headers, {
+      publicOnly: c.source !== "custom" && this.d.localRemotesForTests !== true,
+      ...(this.d.fetch ? { fetch: this.d.fetch } : {}),
+      ...(this.d.lookup ? { lookup: this.d.lookup } : {}),
+    });
   }
 
   /** The live link, starting it if needed; a crashed server waits out its backoff first. */
