@@ -3,6 +3,7 @@
 export const EMBEDDED_CONFIG = [
   "providers.yaml",
   "sessions.yaml",
+  "connectors.yaml",
   "legal/devmode-liability.en.md",
   "legal/devmode-liability.es.md",
 ] as const;

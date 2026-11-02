@@ -59,6 +59,9 @@ import { ipcHandlers } from "./ipc-handlers.js";
 import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
 import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
+import { connectionsSearchFeature } from "./connections/ipc.js";
+import { VerifiedConnectors } from "./connections/catalog.js";
+import { shippedConnectors } from "./connections/shipped.js";
 import { codePath, startCodeServer, type CodeServer } from "./code/server.js";
 import { codeService } from "./code/service.js";
 import { expandHome } from "./workspace-path.js";
@@ -1666,6 +1669,12 @@ const startDaemon = async (
             code,
             locale: () => cfg.locale,
             warn: (event, meta) => log.warn(event, meta),
+          }),
+          connections: connectionsSearchFeature({
+            dir,
+            secrets,
+            audit: auditAgent,
+            verified: new VerifiedConnectors(shippedConnectors()),
           }),
         }),
         onError: (method, err) =>
