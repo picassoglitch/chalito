@@ -24,6 +24,7 @@ const rig = () => {
   const workspaceFor = (cwd: string) => workspaces.find((w) => w.path === cwd)?.label ?? null;
   const deps = {
     dir,
+    home: root,
     workspaces: () => workspaces,
     workspaceFor,
     launch: { command: "/app/chalito", args: [] as string[] },
@@ -108,4 +109,28 @@ it("does not grant trust from corrupt saved settings", () => {
   expect(readFileSync(join(s.dir, "team-trust.json"), "utf8")).toContain("cursor");
   writeFileSync(join(s.dir, "team-trust.json"), "broken");
   expect(s.reload().trusted("cursor", s.project)).toBe(false);
+});
+
+it("expands a ~ workspace path for trust and for the launch arguments MCP clients run without a shell", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "chalito-team-home-")));
+  roots.push(home);
+  const dir = join(home, ".chalito"),
+    project = join(home, "code");
+  for (const p of [dir, project]) mkdirSync(p);
+  const connections = new TeamConnections({
+    dir,
+    home,
+    workspaces: () => [{ label: "code", path: "~/code" }],
+    workspaceFor: (cwd) => (cwd === project ? "code" : null),
+    launch: { command: "/app/chalito", args: [] },
+    connected: () => false,
+  });
+  connections.set("codex", "code", true, project);
+  expect(connections.trusted("codex", project)).toBe(true);
+  const view = connections.view().workspaces[0]!;
+  expect(view.path).toBe(project);
+  expect(view.connections.find((c) => c.provider === "codex")).toMatchObject({
+    trusted: true,
+    args: ["team", "mcp", "codex", project],
+  });
 });

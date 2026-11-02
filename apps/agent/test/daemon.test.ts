@@ -306,6 +306,35 @@ describe("chalito run (daemon)", () => {
     await d.stop();
   });
 
+  it("gives AI apps the fixed agent copy for the team MCP launch, never the AppImage mount", async () => {
+    const s = await setup();
+    const appDir = join(s.home, ".mount_ChalitNEW");
+    const agent = join(appDir, "usr", "bin", "chalito-agent");
+    mkdirSync(dirname(agent), { recursive: true });
+    writeFileSync(agent, "agent bytes", { mode: 0o755 });
+    const sock = join(s.home, "ipc-team.sock");
+    const secret = "d".repeat(64);
+    const d = await runDaemon({
+      ...s.deps,
+      execPath: agent,
+      env: { ...s.deps.env, APPIMAGE: join(s.home, "Chalito.AppImage"), APPDIR: appDir },
+      ipcSecret: secret,
+      ipcPath: sock,
+    });
+    const w = join(s.home, "w");
+    mkdirSync(w, { recursive: true });
+    await d.policy.set({ ...DEFAULT_POLICY, workspaces: [{ label: "w", path: w }] }, "local");
+    const reply = (await ipcCall(sock, { id: 1, token: secret, method: "teamConnections" })) as {
+      ok: boolean;
+      result: { workspaces: { connections: { command: string; args: string[] }[] }[] };
+    };
+    expect(reply.ok).toBe(true);
+    const launch = reply.result.workspaces[0]!.connections[0]!;
+    expect(launch.command).toBe(join(s.home, ".local", "share", "chalito", "chalito-agent"));
+    expect(launch.args).toEqual(["team", "mcp", "claude", w]);
+    await d.stop();
+  });
+
   it.each([
     ["the copy can't be refreshed", "copy_fails"],
     ["the agent runs from source (dev)", "dev"],

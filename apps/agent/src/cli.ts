@@ -12,11 +12,12 @@ import {
   nativeWorkspaceStatus,
 } from "./native/protocol.js";
 import { runTeamMcp } from "./team/mcp.js";
+import { stableAgentPath } from "./native/stable-bin.js";
 import { TeamProvider } from "./team/hub.js";
 import { codePath } from "./code/server.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { readHookInput, recordHook } from "./watch/hook.js";
 import { watchPaths } from "./watch/watcher.js";
 import { fileURLToPath } from "node:url";
@@ -51,7 +52,7 @@ import {
   writeConfig,
   type AgentConfig,
 } from "./config.js";
-import { computerMcpCommand, OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
+import { OnboardingError, runDaemon, teamLaunchCommand, type DaemonDeps, type Daemon } from "./daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
 import { DeviceRevokedError } from "./device-auth.js";
 import { readIpcSecret } from "./ipc-server.js";
@@ -579,18 +580,17 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       io.err("Usage: chalito team config <claude|codex|grok|cursor> [workspace-path]\n");
       return 1;
     }
-    const launch = computerMcpCommand();
-    // An MCP client may start in a folder without node_modules (development launches only).
-    const launchArgs = launch.args.map((value, index, args) =>
-      value === "tsx" && args[index - 1] === "--import" ? import.meta.resolve("tsx") : value,
-    );
+    // #132 — an AppImage's own path is a temporary mount; AI apps get the fixed copy the agent keeps.
+    const appDir = io.env.APPDIR?.replace(/\/+$/, "");
+    const mounted = io.platform === "linux" && !!io.env.APPIMAGE && !!appDir && io.execPath.startsWith(appDir + sep);
+    const launch = teamLaunchCommand(mounted ? stableAgentPath(io.home) : io.execPath);
     io.out(
       JSON.stringify(
         {
           mcpServers: {
             chalito_team: {
               command: launch.command,
-              args: [...launchArgs.slice(0, -2), "team", "mcp", arg, resolve(positional[3] ?? io.cwd ?? process.cwd())],
+              args: [...launch.args, "team", "mcp", arg, resolve(positional[3] ?? io.cwd ?? process.cwd())],
             },
           },
         },
@@ -613,7 +613,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       },
       where,
       arg ?? "",
-      positional[3] ?? io.cwd ?? process.cwd(),
+      resolve(positional[3] ?? io.cwd ?? process.cwd()),
     );
   }
 

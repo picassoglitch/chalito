@@ -82,10 +82,13 @@ export const runTeamMcp = async (
       });
     if (!socket) throw new Error("unavailable");
     const active = socket;
+    // A lost agent ends this server, so the AI app shows it disconnected instead of failing every call.
+    let lost = (): void => undefined;
+    const closed = new Promise<"closed">((resolve) => (lost = () => resolve("closed")));
     const rpc = openRpc(
       active,
       () => undefined,
-      () => undefined,
+      () => lost(),
     );
     const call = async (action: string, args: unknown) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -106,7 +109,7 @@ export const runTeamMcp = async (
     const joined = await call("team_join", { provider, cwd });
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
     try {
-      await runMcpServer({
+      const served = runMcpServer({
         input: io.input,
         write: io.out,
         server: TEAM_INFO,
@@ -119,10 +122,17 @@ export const runTeamMcp = async (
             : {
                 ok: false,
                 error: reply.error ?? "unavailable",
-                message: `Chalito team: ${reply.error ?? "unavailable"}`,
+                message:
+                  reply.error === "join_first"
+                    ? "Chalito team: trust or the workspace changed in Chalito. Reconnect this MCP server."
+                    : `Chalito team: ${reply.error ?? "unavailable"}`,
               };
         },
       });
+      if ((await Promise.race([served, closed])) === "closed") {
+        io.err("Chalito team: lost the connection to Chalito (restarted or stopped). Reconnect this MCP server.\n");
+        return 1;
+      }
     } finally {
       rpc.close();
     }

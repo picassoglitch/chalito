@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as joinPath } from "node:path";
 import { duplexPair, PassThrough, type Duplex } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { TeamHub } from "../src/team/hub.js";
@@ -88,6 +91,93 @@ describe("automatic workspace team", () => {
     expect(join(hub, b.signal, "grok").result.messages).toEqual([]);
     a.abort();
     b.abort();
+  });
+
+  it("caps and reports truncation per workspace, so one busy workspace never hides another's messages", () => {
+    let now = 0;
+    const hub = new TeamHub(
+      workspaceFor,
+      () => now,
+      () => true,
+    );
+    const busy = new AbortController(),
+      quiet1 = new AbortController(),
+      quiet2 = new AbortController(),
+      reader = new AbortController();
+    join(hub, busy.signal);
+    join(hub, reader.signal, "codex");
+    join(hub, quiet1.signal, "grok", "/other");
+    join(hub, quiet2.signal, "cursor", "/other");
+    expect(hub.call(quiet1.signal, "team_send", { text: "keep me" }).ok).toBe(true);
+    for (let n = 0; n < 65; n++) {
+      now += 2_100;
+      expect(hub.call(busy.signal, "team_send", { text: String(n) }).ok).toBe(true);
+    }
+    expect(hub.call(quiet2.signal, "team_read", {})).toMatchObject({
+      result: { historyTruncated: false, messages: [{ text: "keep me" }] },
+    });
+    const read = hub.call(reader.signal, "team_read", {}) as { result: { historyTruncated: boolean; messages: [] } };
+    expect(read.result).toMatchObject({ historyTruncated: true });
+    expect(read.result.messages).toHaveLength(64);
+    // A workspace emptied elsewhere is not a gap here.
+    const x = new AbortController(),
+      y = new AbortController(),
+      z = new AbortController();
+    const hub2 = new TeamHub(workspaceFor, Date.now, () => true);
+    join(hub2, x.signal);
+    join(hub2, y.signal, "codex");
+    join(hub2, z.signal, "grok", "/other");
+    hub2.call(z.signal, "team_send", { text: "elsewhere" });
+    hub2.call(x.signal, "team_send", { text: "here" });
+    z.abort();
+    expect(hub2.call(y.signal, "team_read", {})).toMatchObject({
+      result: { historyTruncated: false, messages: [{ text: "here" }] },
+    });
+    for (const c of [busy, quiet1, quiet2, reader, x, y]) c.abort();
+  });
+
+  it("serves a real Unix socket and exits with a reason when Chalito goes away", async () => {
+    const dir = mkdtempSync(joinPath(tmpdir(), "chalito-team-sock-"));
+    const path = joinPath(dir, "code.sock");
+    const server = await startCodeServer({
+      path,
+      team: new TeamHub(workspaceFor, Date.now, () => true),
+      platform: "linux",
+      code: { workspaceFor, tap: () => () => undefined } as unknown as CodeService,
+    });
+    const input = new PassThrough();
+    const replies: { id: number; result: { content: { text: string }[] } }[] = [];
+    let errors = "";
+    const done = runTeamMcp(
+      {
+        input,
+        out: (line) => replies.push(JSON.parse(line)),
+        err: (text) => {
+          errors += text;
+        },
+      },
+      path,
+      "codex",
+      "/project",
+    );
+    try {
+      input.write(
+        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "team_read", arguments: {} } }) +
+          "\n",
+      );
+      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      expect(JSON.parse(replies[0]!.result.content[0]!.text).peerData).toMatchObject({
+        workspace: "project",
+        peers: [],
+      });
+      await server.close();
+      expect(await done).toBe(1);
+      expect(errors).toContain("lost the connection to Chalito");
+    } finally {
+      input.end();
+      await server.close().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("connects four provider-labelled MCP clients through the local server and exchanges requests and results", async () => {

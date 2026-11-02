@@ -34,6 +34,8 @@ interface Peer {
 export class TeamHub {
   #peers = new Map<AbortSignal, Peer>();
   #messages: Message[] = [];
+  /** Highest seq dropped unread per workspace (cap or expiry), for historyTruncated. */
+  #dropped = new Map<string, number>();
   #seq = 0;
   constructor(
     private readonly workspaceFor: (cwd: string) => string | null,
@@ -45,9 +47,18 @@ export class TeamHub {
     for (const [connection, member] of this.#peers)
       if (this.workspaceFor(member.cwd) !== member.workspace || !this.trusted(member.provider, member.cwd))
         this.#peers.delete(connection);
-    this.#messages = this.#messages.filter(
-      (m) => m.at > this.now() - 60 * 60_000 && [...this.#peers.values()].some((p) => p.workspace === m.workspace),
-    );
+    const live = new Set([...this.#peers.values()].map((p) => p.workspace));
+    for (const workspace of this.#dropped.keys()) if (!live.has(workspace)) this.#dropped.delete(workspace);
+    this.#messages = this.#messages.filter((m) => {
+      if (!live.has(m.workspace)) return false;
+      if (m.at > this.now() - 60 * 60_000) return true;
+      this.#drop(m);
+      return false;
+    });
+  }
+
+  #drop(m: Message) {
+    this.#dropped.set(m.workspace, Math.max(this.#dropped.get(m.workspace) ?? 0, m.seq));
   }
 
   members() {
@@ -115,9 +126,15 @@ export class TeamHub {
         ...p.data,
         at: this.now(),
       });
-      this.#messages = this.#messages.slice(-64);
+      // The cap is per workspace: a busy workspace never pushes out another's unread messages.
+      const own = this.#messages.filter((m) => m.workspace === peer.workspace);
+      if (own.length > 64) {
+        const drop = own[0]!;
+        this.#messages = this.#messages.filter((m) => m !== drop);
+        this.#drop(drop);
+      }
     } else if (action !== "team_join" && action !== "team_read") return { ok: false, error: "unknown_tool" };
-    const historyTruncated = this.#messages.length > 0 && this.#messages[0]!.seq > peer.cursor + 1;
+    const historyTruncated = (this.#dropped.get(peer.workspace) ?? 0) > peer.cursor;
     const messages = this.#messages.filter(
       (m) =>
         m.seq > peer.cursor &&

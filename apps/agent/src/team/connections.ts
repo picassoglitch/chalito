@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { join } from "node:path";
 import { z } from "zod";
 import { TeamProvider } from "./hub.js";
+import { expandHome } from "../workspace-path.js";
 
 const TrustFile = z
   .object({
@@ -18,6 +19,7 @@ export class TeamConnections {
   constructor(
     private readonly d: {
       dir: string;
+      home: string;
       workspaces: () => { label: string; path: string }[];
       workspaceFor: (cwd: string) => string | null;
       launch: { command: string; args: string[] };
@@ -46,7 +48,7 @@ export class TeamConnections {
     const workspace = this.d.workspaces().find((w) => w.label === label);
     if (!workspace) return null;
     try {
-      return realpathSync(workspace.path);
+      return realpathSync(expandHome(workspace.path, this.d.home));
     } catch {
       return null;
     }
@@ -87,17 +89,21 @@ export class TeamConnections {
 
   view() {
     return {
-      workspaces: this.d.workspaces().map((w) => ({
-        ...w,
-        path: this.#path(w.label) ?? w.path,
-        connections: TeamProvider.options.map((provider) => ({
-          provider,
-          trusted: this.trusted(provider, w.path),
-          connected: this.d.connected(provider, w.label),
-          command: this.d.launch.command,
-          args: [...this.d.launch.args, "team", "mcp", provider, w.path],
-        })),
-      })),
+      workspaces: this.d.workspaces().map((w) => {
+        // MCP clients start the command without a shell, so `~` must already be expanded.
+        const path = this.#path(w.label) ?? expandHome(w.path, this.d.home);
+        return {
+          ...w,
+          path,
+          connections: TeamProvider.options.map((provider) => ({
+            provider,
+            trusted: this.trusted(provider, path),
+            connected: this.d.connected(provider, w.label),
+            command: this.d.launch.command,
+            args: [...this.d.launch.args, "team", "mcp", provider, path],
+          })),
+        };
+      }),
     };
   }
 }

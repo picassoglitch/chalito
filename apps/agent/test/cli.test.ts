@@ -1095,3 +1095,23 @@ describe("chalito CLI", () => {
     });
   });
 });
+
+describe("chalito team config", () => {
+  it("prints the agent's own path normally and the fixed copy from an AppImage mount (#132)", async () => {
+    const plain = cli();
+    expect(await plain.run(["team", "config", "codex", "/work/app"])).toBe(0);
+    expect(JSON.parse(plain.out()).mcpServers.chalito_team).toEqual({
+      command: "/opt/chalito/chalito-agent",
+      args: ["team", "mcp", "codex", "/work/app"],
+    });
+    const mounted = cli({
+      execPath: "/tmp/.mount_ChalitX/usr/bin/chalito-agent",
+      env: { APPIMAGE: "/home/a/Chalito.AppImage", APPDIR: "/tmp/.mount_ChalitX/" },
+    });
+    expect(await mounted.run(["team", "config", "claude", "/work/app"])).toBe(0);
+    expect(JSON.parse(mounted.out()).mcpServers.chalito_team.command).toBe(
+      join(mounted.home, ".local", "share", "chalito", "chalito-agent"),
+    );
+    expect(await mounted.run(["team", "config", "gemini"])).toBe(1);
+  });
+});
