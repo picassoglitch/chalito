@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AppConnectionDoc } from "@chalito/protocol";
 import { checkClaudePin, pinClaude, sha256Fd, type ClaudePin } from "../src/claude-pin.js";
@@ -300,9 +300,9 @@ describe("workspaces from the OS folder picker (local, OS-checked)", () => {
     expect(labelFor("/x/app", ["app", "app-2"], "linux")).toBe("app-3");
   });
 
-  it("refuses the home folder, the disk root, Chalito's own folder and anything inside it", async () => {
+  it("refuses above the home folder, the disk root, Chalito's own folder and anything inside it", async () => {
     const w = ws();
-    expect(await addWorkspace(w.d as never, w.home)).toEqual({ ok: false, reason: "too_broad" });
+    expect(await addWorkspace(w.d as never, dirname(w.home))).toEqual({ ok: false, reason: "too_broad" });
     expect(await addWorkspace(w.d as never, "/")).toEqual({ ok: false, reason: "too_broad" });
     expect(await addWorkspace(w.d as never, w.chalitoDir)).toEqual({ ok: false, reason: "chalito_folder" });
     mkdirSync(join(w.chalitoDir, "logs"));
@@ -325,12 +325,16 @@ describe("workspaces from the OS folder picker (local, OS-checked)", () => {
       ok: false,
       reason: "chalito_folder",
     });
-    expect(await addWorkspace(w.d as never, join(w.home, "code", ".."))).toEqual({ ok: false, reason: "too_broad" });
+    expect(await addWorkspace(w.d as never, join(w.home, "code", "..", ".."))).toEqual({
+      ok: false,
+      reason: "too_broad",
+    });
     expect(w.asked).toHaveLength(0);
   });
 
   it("case variants can't get around the refusals on macOS and Windows", () => {
-    expect(workspaceProblem("/USERS/ANA", mac)).toBe("too_broad");
+    expect(workspaceProblem("/USERS", mac)).toBe("too_broad");
+    expect(workspaceProblem("/USERS/BETO", mac)).toBe("too_broad");
     expect(workspaceProblem("/Users/ana/.CHALITO", mac)).toBe("chalito_folder");
     expect(workspaceProblem("/users/ana/.Ssh/keys", mac)).toBe("sensitive");
     expect(workspaceProblem("/SYSTEM/Library", mac)).toBe("too_broad");

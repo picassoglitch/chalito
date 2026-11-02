@@ -28,7 +28,13 @@ export interface DecideInput {
  * and LOW auto-allow of anything but a read apply only to signed origins (local, client:*),
  * never to mcp:*, call:* or agent:* (link hand-off) turns, and never past the hard floor.
  */
-export const decide = ({
+export const decide = (i: DecideInput): GateDecision => {
+  const d = decideTier(i);
+  // A fence (home-folder workspace) is never answered for the human: not by any auto-allow.
+  return i.classification.fenced && d.action === "allow" ? { action: "ask", stepUp: true } : d;
+};
+
+const decideTier = ({
   classification: c,
   origin,
   originAllowed,

@@ -19,6 +19,8 @@ export const Policy = z.object({
   version: z.literal(1),
   /** No workspaces = nothing runs. Chosen by the user at setup. */
   workspaces: z.array(Workspace).default([]),
+  /** Owner 2026-11-02 — outside every workspace, even `~`; optional so older policies keep their hash. */
+  workspaceExclude: z.array(z.string().min(1).max(4096)).max(64).optional(),
   /**
    * `grok` (Grok Build) and `gemini` (Gemini CLI) run over the ACP adapter. They are optional so
    * a policy written before they existed keeps its hash (the signed lock still verifies), and a

@@ -172,7 +172,8 @@ The exposure is content the victim sends to that computer, including keys the se
   - Pinning stays a **local** action: a remote client can ask the panel to show the prompt, but can't pin by itself (G3).
 - **A project folder from a picker.**
   - The panel offers "Elige la carpeta donde Chalito puede trabajar" with the OS folder picker, which adds a workspace to the signed policy (a local change, like `chalito policy edit`).
-  - The default suggestion is the user's home `Projects`/`Proyectos`/`code` folder if one exists. Never the whole home folder.
+  - The default suggestion is the user's home `Projects`/`Proyectos`/`code` folder if one exists.
+  - Amended 2026-11-02 (owner): the whole home folder may be chosen. Its fences (keys, startup files, AI tools' settings, `~/.chalito`, PATH folders, `workspaceExclude`) always ask a human; see THREAT_MODEL §4.8k.
   - Remote clients can request a folder; the computer confirms locally (same rule as today's tightening and loosening split).
 
 ### 6. Phase D: a setup that is actually guided

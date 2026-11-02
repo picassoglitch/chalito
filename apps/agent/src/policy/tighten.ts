@@ -46,6 +46,7 @@ export const isTighterOrEqual = (
       const r = strictReal(lexical, real);
       return r !== null && curWs.some((c) => within(r, c));
     }) &&
+    subsetOf(cur.workspaceExclude ?? [], next.workspaceExclude ?? []) &&
     flagsOnlyOff(next.adapters, cur.adapters) &&
     PERMISSION_RANK[next.remote.maxPermissionMode] <= PERMISSION_RANK[cur.remote.maxPermissionMode] &&
     SANDBOX_RANK[next.remote.maxCodexSandbox] <= SANDBOX_RANK[cur.remote.maxCodexSandbox] &&

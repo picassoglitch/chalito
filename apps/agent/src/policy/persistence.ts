@@ -120,3 +120,14 @@ export const AI_CONFIG_DIRS = [
 ];
 /** Names in the home folder that start with these are AI tool config too (`~/.aider.conf.yml`, …). */
 export const AI_CONFIG_PREFIXES = [".aider"];
+
+/** Owner 2026-11-02 — fences: places no AI acts on without a human, even in a home-folder workspace. */
+// At run time the agent's PATH folders and the policy's `workspaceExclude` are fences too.
+export const FENCES = [
+  ".chalito",
+  ...SENSITIVE_DIRS,
+  ...SENSITIVE_FILES,
+  ...STARTUP_DIRS,
+  ...STARTUP_FILES,
+  ...AI_CONFIG_DIRS,
+];

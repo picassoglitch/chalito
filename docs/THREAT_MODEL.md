@@ -231,6 +231,26 @@ The link is a **transport, not a trust root**. A `cmd` frame goes into the same 
 | G4: another computer (or the cloud relaying for it) makes this computer run work, or a helper computer hands back something other than what it did | S/T/E | A coordinator task arrives only over a hand-off link the owner made locally on both ends, its relay signed by the sender's device key (ADR 0022 §3); it runs only with coordinator mode on HERE and a link ceiling that lets sessions edit, under this computer's own ceiling and gate, in a worktree of its own copy, from the plan's base on `origin`, and only `coord/<plan>/<task>` is pushed (by the coordinator, with only the owner's global credential helpers). The plan's computer fetches the branch, refuses a commit other than the reported one, and runs its own checks and review before anything is integrated; the merge still needs the owner's passkey tap. The kill switch sends a stop to every helper computer | Implemented (G4) |
 | The planner, reviewer or a helper's text steers the coordinator | T | Planner output is parsed as JSON into a strict schema (ids, ≤ 12 tasks, known and acyclic dependencies); reviewer and helper verdicts are read from one line (`APPROVE` / `CHANGES:`, `DONE:` / `BLOCKED:`, `INTEGRATION PASS`) and checked against git (committed, clean, deletions only of listed files, every branch merged). Text from agents is shown to the owner as data. The planner and reviewer run in `plan` mode (reads only) | Implemented (G2) |
 
+### 4.8k The home folder as a workspace, with fences (owner, 2026-11-02)
+The home folder itself may be a workspace (`apps/agent/src/workspaces.ts`). The disk root, anything above the home folder, `/home` and `/Users` themselves, other people's homes and system folders are still refused. Some places inside the home folder are **fences** (`FENCES` in `apps/agent/src/policy/persistence.ts`, plus the agent's PATH folders and the policy's `workspaceExclude`):
+
+- `~/.chalito`
+- credentials: `.ssh`, `.aws`, `.azure`, `.config/gcloud`, `.kube`, `.gnupg`, `.password-store`, `.config/gh`, `.docker`, keyrings and keychains, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `.claude.json`, `.claude/.credentials.json`
+- startup: shell startup files (`.bashrc`, `.profile`, `.zshrc`…), autostart and service folders, per-user bin folders, PATH folders
+- AI tools' settings: `.claude`, `.codex`, `.gemini`, `.cursor`, `.continue`, `.windsurf`, `.aider*`, VS Code user settings…
+- `workspaceExclude` (policy, optional): folders that count as outside every workspace. The default list is empty; Aldo's own policy adds `~/wayak`. A remote tighten may add entries, never drop one.
+
+A fence, or a folder inside one, is never a workspace on its own. Inside a workspace, `classifyToolCall` marks `fenced` when an action's target touches a fence. Targets are the file of a file tool, every path operand and redirection of a shell command (symlinks resolved, globs and `$HOME` expanded), the folder Grep or Glob walks, and the shell's working folder. A path operand, a Grep or Glob folder, or a working folder that **holds** a fence (the home folder itself, `~/.config`) counts, because `grep -r`, `tar` or `cp -r` reach the whole tree. A `fenced` classification is at least HIGH. `decide` never allows it (no LOW auto-allow, `acceptEdits`, or Developer mode), the coordinator gate (`coord/gate.ts`) never answers it, and the native hook path asks a human. Writes to credentials and startup or AI-settings files stay CRITICAL (blocked), and `~/.chalito` stays the hard floor.
+
+| Threat | STRIDE | Mitigation | Status |
+|---|---|---|---|
+| A helper or a prompt injection reads keys or plants code that runs later (`.bashrc`, `.claude/settings.json` hooks) from a home-folder workspace | I/E | Fences: reads ask (HIGH, never auto-approved); writes are CRITICAL. Coordinator `read`/`workspace_edit` kinds never apply to a fenced call | Implemented |
+| Reaching a fence indirectly: a symlink in a project, `grep -r x ~`, `cat ~/.*/*`, `tar c ~`, `cd ~ && grep -r .`, a session started in `~` | I/E | Targets are realpath-resolved; a folder that holds a fence is fenced; `~/.` followed by a glob or variable now counts as reaching dotfiles; every command whose working folder is or holds a fence asks | Implemented |
+| A work profile in the home folder (`~/wayak`) picked up by personal sessions | I | `workspaceExclude`: outside every workspace for the classifier, for `workspaceFor` (native hooks and team trust pass it by), and in `native-workspaces.json` so the offline hook passes it too | Implemented |
+| A session in the home folder asks for every command | (usability) | Accepted: start sessions in a project folder under `~`; there, only actions that touch a fence ask | Accepted |
+
+Tests: `apps/agent/test/home-workspace-fences.test.ts` (classifier, gate, decide, workspaceProblem, exclude), `apps/agent/test/home-workspace-agent.test.ts` (real AgentCore: coordinator helper and native path).
+
 ### 4.8j Remote control: sessions started at the computer, transfers between computers (ADR 0031)
 | Threat | STRIDE | Mitigation | Status |
 |---|---|---|---|

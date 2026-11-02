@@ -129,11 +129,12 @@ export interface TeamConnectionsView {
 }
 
 export type AddWorkspaceResult =
-  | { ok: true; label: string; added: boolean }
+  | { ok: true; label: string; added: boolean; home?: true }
   | {
       ok: false;
       reason:
         | "not_a_folder"
+        | "excluded"
         | "too_broad"
         | "chalito_folder"
         | "sensitive"

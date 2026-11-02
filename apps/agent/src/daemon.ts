@@ -568,9 +568,20 @@ const startDaemon = async (
     );
   };
   // Lets a native-app hook deny workspace actions (and pass others) while this agent is down.
-  const syncNativeWorkspaces = (workspaces: { path: string; realPath?: string }[]) => {
+  const syncNativeWorkspaces = (p: {
+    workspaces: { path: string; realPath?: string }[];
+    workspaceExclude?: string[] | undefined;
+  }) => {
     try {
-      writeNativeWorkspaces(dir, nativeWorkspacePaths(workspaces, deps.home ?? homedir()));
+      const home = deps.home ?? homedir();
+      writeNativeWorkspaces(
+        dir,
+        nativeWorkspacePaths(p.workspaces, home),
+        nativeWorkspacePaths(
+          (p.workspaceExclude ?? []).map((path) => ({ path })),
+          home,
+        ),
+      );
     } catch (err) {
       log.warn("native.workspaces_write_failed", { error: err instanceof Error ? err.message : "error" });
       // A stale list could pass an action in a new workspace; no file makes the hook deny instead.
@@ -588,7 +599,7 @@ const startDaemon = async (
     onTamper: ({ fileHash, inForceHash }) =>
       publish({ v: 1, type: "policy.tampered", deviceId: id.deviceId, fileHash, inForceHash, t: now() }),
     onChange: async (hash) => {
-      syncNativeWorkspaces(policy.get().workspaces);
+      syncNativeWorkspaces(policy.get());
       // New workspaces: find their repos now, not on the first classified write.
       scanWorkspaceRepos(true);
       await computer?.onPolicyChange();
@@ -1620,7 +1631,7 @@ const startDaemon = async (
     ledger: join(dir, "native-sessions.json"),
     log: (event, meta) => log.warn(event, meta),
   });
-  syncNativeWorkspaces(policy.get().workspaces);
+  syncNativeWorkspaces(policy.get());
   void nativeBridge.sweep();
   // Same fixed copy as the hooks (#132): AI apps keep this command after an AppImage restart.
   const teamCommand = teamLaunchCommand(hookBin.path);

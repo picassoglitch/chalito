@@ -2,12 +2,13 @@ import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { type GitFs } from "./git-hooks.js";
+import { repoRootOf, type GitFs } from "./git-hooks.js";
 import { foldKey, repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import {
   AI_CONFIG_DIRS,
   AI_CONFIG_PREFIXES,
+  FENCES,
   SENSITIVE_DIRS,
   SENSITIVE_FILES,
   STARTUP_DIRS,
@@ -32,6 +33,8 @@ export interface Classification {
   sudo: boolean;
   /** Plain file edit/create inside a workspace (what `acceptEdits` auto-allows). */
   workspaceEdit: boolean;
+  /** Touches a fence (persistence.ts FENCES, PATH, workspaceExclude): only a human may answer it. */
+  fenced?: boolean;
   /** No workspaces configured, or the session runs outside them: nothing runs. */
   noWorkspace: boolean;
   /**
@@ -109,6 +112,14 @@ interface Paths {
   home: string;
   resolve(p: string, cwd?: string): string;
   inWorkspace(abs: string): boolean;
+  /** In a `workspaceExclude` folder: outside every workspace, whatever contains it. */
+  excluded(abs: string): boolean;
+  /** Is or holds a fence (a folder whose tree an action could reach one through). */
+  holdsFence(abs: string): boolean;
+  /** Is in a fence, or holds one. */
+  touchesFence(abs: string): boolean;
+  /** The git repository `dir` is in (walking up to its `.git`), or null. */
+  repoRoot(dir: string): string | null;
   hardFloor(abs: string): boolean;
   /** Why `abs` is the hard floor (~/.chalito, or an agent file outside it). */
   floorReason(abs: string): string;
@@ -216,7 +227,10 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
   const sensitiveDirs = SENSITIVE_DIRS.flatMap(places);
   const sensitiveFiles = SENSITIVE_FILES.flatMap(places);
   const systemSecrets = ["/etc/shadow", "/etc/sudoers", "/etc/sudoers.d"];
-  const inWorkspace = (abs: string) => workspaces.some((w) => within(abs, w));
+  // #home-workspace — excluded folders (e.g. a work profile) count as outside any workspace.
+  const excludes = (ctx.policy.workspaceExclude ?? []).flatMap((p) => [resolve(expand(p)), real(resolve(expand(p)))]);
+  const excluded = (abs: string) => excludes.some((x) => within(abs, x));
+  const inWorkspace = (abs: string) => workspaces.some((w) => within(abs, w)) && !excluded(abs);
   const protectedPaths = (ctx.protectedPaths ?? []).map((p) => real(resolve(expand(p))));
   const agentBinaries = (ctx.agentBinaries ?? []).map((p) => real(resolve(expand(p))));
   const floor = [chalito, ...protectedPaths, ...agentBinaries];
@@ -244,10 +258,22 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     return AI_CONFIG_PREFIXES.some((p) => first.startsWith(k(p)));
   };
   const persistDirs = [...startupDirs, ...AI_CONFIG_DIRS.flatMap(places), ...pathDirs];
+  // Each fence as written and as resolved: `grep -r x ~` reaches ~/.ssh even when it links elsewhere.
+  const lexicalHome = resolve(ctx.home);
+  const fenceRoots = [
+    ...FENCES.flatMap((rel) => [join(lexicalHome, ...rel.split("/")), ...places(rel)]),
+    ...pathDirs,
+    ...excludes,
+  ];
   return {
     home: ctx.home,
     resolve: res,
     inWorkspace,
+    excluded,
+    holdsFence: (abs) => fenceRoots.some((f) => within(f, abs)),
+    repoRoot: (dir) =>
+      repoRootOf(dir, { fallback: dir, ...(ctx.gitFs ? { fs: ctx.gitFs } : {}), ...(ctx.env ? { env: ctx.env } : {}) }),
+    touchesFence: (abs) => fenceRoots.some((f) => within(f, abs) || within(abs, f)) || aiPrefixed(abs),
     hardFloor: (abs) => floor.some((f) => within(abs, f)),
     floorReason: (abs) => (within(abs, chalito) ? "touches ~/.chalito" : "touches the Chalito agent's own files"),
     persistence: (abs) =>
@@ -327,7 +353,8 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
       const slash = prefix.lastIndexOf("/");
       let dirPart = prefix.slice(0, slash + 1);
       let partial = prefix.slice(slash + 1);
-      if (partial === "." || partial === "..") {
+      // `~/.` then a glob or variable is `~/.*`, which matches dotfiles: only a bare `.`/`..` is a folder.
+      if (next === "" && (partial === "." || partial === "..")) {
         dirPart += partial;
         partial = "";
       }
@@ -448,6 +475,12 @@ const raise = (out: Classification, tier: RiskTier, reason: string): void => {
   if (tier === "CRITICAL") crit(out).push(reason);
 };
 
+/** A fence is touched: at least HIGH, and nothing may answer for the human (decide, coordinator). */
+const fence = (out: Classification, tier: RiskTier, reason: string): void => {
+  raise(out, tier, reason);
+  out.fenced = true;
+};
+
 const markHardFloor = (out: Classification, reason = "touches ~/.chalito"): void => {
   raise(out, "CRITICAL", reason);
   out.hardFloor = true;
@@ -457,6 +490,7 @@ const markHardFloor = (out: Classification, reason = "touches ~/.chalito"): void
 const merge = (out: Classification, inner: Classification, floor: RiskTier = "LOW"): void => {
   out.tier = max(out.tier, max(inner.tier, floor));
   out.hardFloor ||= inner.hardFloor;
+  if (inner.fenced) out.fenced = true;
   out.reasons.push(...inner.reasons);
   crit(out).push(...crit(inner));
 };
@@ -473,6 +507,8 @@ const classifyPath = (
   cwd?: string,
   configAlways = false,
   persistAlways = configAlways,
+  /** The action may reach the folder's whole tree (shell operands, Grep/Glob): one holding a fence counts. */
+  tree = false,
 ): void => {
   const abs = paths.resolve(raw, cwd);
   if (paths.hardFloor(abs)) {
@@ -480,14 +516,27 @@ const classifyPath = (
     return;
   }
   if (paths.sensitive(abs)) {
-    raise(out, "CRITICAL", "credentials path");
+    fence(out, "CRITICAL", "credentials path");
     return;
   }
   // Shell arguments of anything but a read-only tool count as writes here: whether `curl -o` or `ln` writes is a guess.
   // Defense in depth: CRITICAL even inside a workspace (workspaces.ts refuses these folders, but
   // a hand-edited policy might not).
   if ((write || persistAlways) && paths.persistence(abs)) {
-    raise(out, "CRITICAL", "startup file or PATH directory");
+    fence(out, "CRITICAL", "startup file or PATH directory");
+    return;
+  }
+  if (paths.excluded(abs)) {
+    fence(out, "HIGH", "excluded folder");
+    return;
+  }
+  // Inside a home-folder workspace, reading a startup file or an AI tool's settings still asks.
+  if (paths.persistence(abs)) {
+    fence(out, "HIGH", "protected place (startup, PATH or AI settings)");
+    return;
+  }
+  if (tree && paths.holdsFence(abs)) {
+    fence(out, "HIGH", "folder holds a protected place");
     return;
   }
   if (paths.winAmbiguous(abs)) {
@@ -972,6 +1021,8 @@ interface WordOpts {
   prose?: boolean;
   /** The command only reads its operands (ls, cat, …): startup files and PATH dirs are just outside the workspace. */
   readOnly?: boolean;
+  /** Only names a folder (`cd`): a folder holding a fence is fine; what runs there is checked by its cwd. */
+  folderOnly?: boolean;
 }
 
 /**
@@ -987,8 +1038,9 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
     return;
   }
   const cwd = st.cwd ?? paths.home;
+  const tree = !opts.prose && !opts.folderOnly;
   if (!e.unresolved && !e.glob) {
-    classifyPath(paths, e.text, opts.write ?? false, out, cwd, true, !opts.readOnly);
+    classifyPath(paths, e.text, opts.write ?? false, out, cwd, true, !opts.readOnly, tree);
     return;
   }
   const at = e.text.search(/[$`*?[{]/);
@@ -999,9 +1051,9 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
   if (!tildeUser) {
     const cover = paths.covers(prefix, next, cwd);
     if (cover === "hard_floor") return markHardFloor(out, "may touch ~/.chalito or the agent's own files");
-    if (cover === "credentials") return raise(out, "CRITICAL", "credentials path");
+    if (cover === "credentials") return fence(out, "CRITICAL", "credentials path");
     if (cover === "persistence" && (opts.write || (!opts.prose && !opts.readOnly)))
-      return raise(out, "CRITICAL", "startup file or PATH directory");
+      return fence(out, "CRITICAL", "startup file or PATH directory");
   }
   if (e.unresolved) {
     if (!opts.prose) raise(out, "HIGH", "unresolved variable or substitution");
@@ -1009,7 +1061,7 @@ const classifyWord = (w: Word, st: ShellState, paths: Paths, out: Classification
   }
   // Glob only: classify the directory the glob expands in.
   const dir = prefix === "" || prefix.endsWith("/") ? prefix || "." : dirname(prefix);
-  classifyPath(paths, dir, opts.write ?? false, out, cwd, true, !opts.readOnly);
+  classifyPath(paths, dir, opts.write ?? false, out, cwd, true, !opts.readOnly, tree);
 };
 
 const looksPathy = (s: string) => s.includes("/") || s.startsWith("~") || s.startsWith("$") || s.startsWith(".");
@@ -1141,6 +1193,9 @@ const classifySegment = (
 
   const cmd = cmdName(words[0]!.text);
   const args = words.slice(1);
+  // Commands reach their folder implicitly (`grep -r x`, `tar c .`): one in or holding a fence asks.
+  if (cmd !== "cd" && cmd !== "pushd" && cmd !== "popd" && st.cwd !== null && paths.touchesFence(st.cwd))
+    fence(out, "HIGH", "runs in a folder that is or holds a protected place");
   const texts = args.map((a) => a.text);
   producerCmd.set(seg, cmd);
 
@@ -1235,7 +1290,7 @@ const classifySegment = (
       return;
     }
     const dest = target ?? { text: "~", dyn: false };
-    classifyWord(dest, st, paths, out);
+    classifyWord(dest, st, paths, out, { folderOnly: true });
     const e = expandWord(dest, st, paths);
     const relativeToUnknown = st.cwd === null && !e.text.startsWith("/") && !e.text.startsWith("~");
     st.cwd = e.unresolved || e.glob || relativeToUnknown ? null : paths.resolve(e.text, st.cwd ?? paths.home);
@@ -1301,12 +1356,14 @@ const classifySegment = (
   };
 
   if (cmd === "git") {
+    const gitDirs: string[] = [];
     // Global options before the subcommand.
     let i = 0;
     while (i < args.length && texts[i]!.startsWith("-")) {
       const t = texts[i]!;
       if (t === "-C" || t === "--git-dir" || t === "--work-tree" || t === "--namespace") {
         if (args[i + 1]) classifyWord(args[i + 1]!, st, paths, out);
+        if (t === "-C" && args[i + 1]) gitDirs.push(expandWord(args[i + 1]!, st, paths).text);
         i += 2;
         continue;
       }
@@ -1316,6 +1373,11 @@ const classifySegment = (
         continue;
       }
       i++;
+    }
+    // A dotfiles repo in the home folder: `git add -A`, `git diff` reach every fence it tracks.
+    for (const d of [st.cwd, ...gitDirs.map((g) => paths.resolve(g, st.cwd ?? paths.home))]) {
+      const root = d === null ? null : paths.repoRoot(d);
+      if (root && paths.holdsFence(root)) fence(out, "HIGH", "git repository holds a protected place");
     }
     const sub = texts[i] ?? "";
     const rest = texts.slice(i + 1);
@@ -1473,7 +1535,8 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
     case "Grep": {
       const out = base(toolName === "Grep" || toolName === "Glob" ? "search" : "read");
       const target = str(input.file_path) ?? str(input.notebook_path) ?? str(input.path) ?? ctx.cwd;
-      classifyPath(paths, target, false, out);
+      // Grep and Glob walk the folder: one holding a fence (the home folder) asks.
+      classifyPath(paths, target, false, out, undefined, false, false, toolName === "Grep" || toolName === "Glob");
       // Glob's pattern and Grep's glob filter are paths too ("/home/me/.ssh/**").
       const pattern = toolName === "Glob" ? str(input.pattern) : toolName === "Grep" ? str(input.glob) : undefined;
       if (pattern && !out.hardFloor) {
