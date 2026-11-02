@@ -1,6 +1,6 @@
 # ADR 0023: Agent connector catalog (the user's MCP tools for their agents)
 
-- Status: Proposed (M17 docs, 2026-10-16). Nothing is built until the owner's "go".
+- Status: Accepted (owner, 2026-11-01). Proposed in M17 docs, 2026-10-16. See "Owner decisions, 2026-11-01" below.
 - Builds on: the tool gate (PreToolUse hook, ACP permission requests), local policy (ADR 0008), the MCP gateway (ADR 0009, which is the other direction), signed recipes (ADR 0022 §4), revoke-all (ADR 0020).
 - Protocol: `v` stays 1. New schemas `ConnectorRecipe`, `ConnectorGrant`; new commands `connector.*`; new audit category `connector.*`.
 
@@ -87,6 +87,17 @@ Not to be confused with ADR 0009: the gateway lets *outside chats* reach Chalito
 - Agents become useful on real work (open a PR, read a Linear issue, query a staging database) without the user pasting secrets.
 - `docs/THREAT_MODEL.md` gains §4.8g: tool-result prompt injection (mitigated by quoted results, tiers and the gate), token theft from the keychain (same as API keys), a malicious or updated stdio server (pinned version and hash, signed catalog), and data exfiltration through a write tool (write tier off by default, HIGH for send/post tools).
 - Remote MCP servers change. Each catalog entry is re-verified before release (`verified` field), like `VERIFIED_APIS.md`.
+
+## Owner decisions, 2026-11-01 (Conexiones)
+Source: Aldo Ramírez (owner), 2026-11-01, Claude Code session: "a marketplace that shows the ones the app finds, and you can search stuff to connect (MCPs)".
+
+- **OAuth on hold.** No OAuth flow is built now. Gmail, Google Drive, Slack and any connector or registry server that only offers OAuth is shown as **Próximamente** and can't be installed (`held: oauth` in the catalog; a community remote that answers `401` to an MCP `initialize` is held the same way, checked only when the person clicks Instalar).
+- **Ask once.** Verified: one confirmation. Community and custom: the §1a unverified warning and one confirmation together, then labelled **Comunidad** everywhere. This one confirmation is what the desktop panel asks for adding a connector on this computer; the remote-client passkey step-up and the OS prompt for stdio in §1a apply when adding from another device, which isn't built yet.
+- **One install, every agent.** An installed connector (`~/.chalito/connectors.json`) is available to every connected agent, not per tool; each call still goes through the gate and audit (§4, §5). Per-project grants and per-session scopes (§3) stay as designed for the proxy.
+- **Desktop first.** Search and install live in the desktop panel (Conexiones). The phone comes later.
+- **Search** uses the official MCP Registry (`https://registry.modelcontextprotocol.io`, API v0.1, `version=latest`, cursor pagination, 10 s timeout, 2 MB cap). Every field is untrusted: only streamable-HTTP remotes on HTTPS (or localhost) and npm/PyPI packages pinned to an exact version are offered; the vendor's own server is shown once, as Verificado.
+- **Launch list (`packages/config/connectors.yaml`).** GitHub, Supabase and Linear use their official remote servers with a personal token (verified 2026-11-01). Slack and Google Drive are held (OAuth only). Postgres isn't listed: the reference `@modelcontextprotocol/server-postgres` is archived, and there is no maintained official server to pin (owner to decide).
+- **Signing.** Same as the recipes: the YAML is compiled into the agent; a served update must verify with a compiled-in catalog key (`chalito.connector-catalog.v1`). The dev key in `recipes/test-fixtures/` is never trusted.
 
 ## Not doing
 - Reading the user's own MCP configuration or other apps' tokens.

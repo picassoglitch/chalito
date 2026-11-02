@@ -58,6 +58,8 @@ export const SigningContext = z.enum([
   "chalito.webauthn-binding.v1",
   /** The curated recipe catalog (packages/protocol/src/recipe.ts), signed by Chalito's catalog key. */
   "chalito.recipe-catalog.v1",
+  /** ADR 0023 §1: the verified connector catalog (packages/config/connectors.yaml), same key as the recipes. */
+  "chalito.connector-catalog.v1",
   /** Remote screen (screen.ts): the agent's WebRTC offer / ICE, inside the sealed screen.signal event. */
   "chalito.screen-signal.v1",
   /** ADR 0022 §3: one agent's relay to another over a link (`RelayedCommand`, relayedBy agent-link). */

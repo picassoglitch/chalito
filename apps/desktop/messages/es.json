@@ -1051,5 +1051,72 @@
       "phoneRequired": "Esta aprobación necesita tu teléfono; desde la placa solo puedes rechazarla.",
       "writeFailed": "La placa dejó de recibir aprobaciones. Desconéctala y vuelve a conectarla."
     }
+  },
+  "connections": {
+    "search": {
+      "title": "Buscar conexiones",
+      "intro": "Busca servidores MCP para que tus agentes usen tus herramientas. Una instalación sirve a todos los agentes conectados, y cada llamada sigue pasando por tus aprobaciones.",
+      "label": "Buscar",
+      "placeholder": "github, notion, base de datos…",
+      "unavailable": "Chalito no está corriendo en esta computadora.",
+      "verifiedTitle": "Verificadas",
+      "communityTitle": "Del registro MCP",
+      "installedTitle": "Instaladas",
+      "empty": "Nada con ese nombre.",
+      "more": "Cargar más",
+      "installed": "Instalada",
+      "remove": "Quitar",
+      "cancel": "Cancelar",
+      "needsToken": "pide un token",
+      "heldOauth": "Próximamente: esta conexión necesita iniciar sesión con la cuenta del servicio (OAuth), y eso aún no está listo.",
+      "transport": {
+        "remote": "Servidor remoto",
+        "stdio": "Programa en esta computadora"
+      },
+      "badge": {
+        "verified": "Verificado",
+        "community": "Comunidad",
+        "soon": "Próximamente"
+      },
+      "install": {
+        "button": "Instalar",
+        "title": "¿Instalar {name}?",
+        "confirm": "Instalar",
+        "confirmUnverified": "Entiendo, instalar",
+        "warning": "Chalito no ha revisado este servidor. Puede ver lo que le mandes y actuar con el acceso que le des.",
+        "keychain": "El token se guarda en el llavero de esta computadora; nunca va a la nube ni a un prompt.",
+        "allAgents": "Quedará disponible para todos tus agentes conectados, siempre detrás de tus aprobaciones."
+      },
+      "own": {
+        "title": "Agregar la tuya",
+        "mode": "Cómo se conecta",
+        "url": "Por URL",
+        "command": "Por comando",
+        "name": "Nombre",
+        "urlLabel": "URL del servidor (HTTPS)",
+        "token": "Pide un token (Authorization: Bearer)",
+        "commandLabel": "Comando",
+        "args": "Argumentos (uno por línea)",
+        "env": "Variables secretas que pide (separadas por coma)",
+        "next": "Continuar"
+      },
+      "error": {
+        "held_oauth": "Próximamente: este servidor pide iniciar sesión (OAuth), y eso aún no está listo.",
+        "warning_required": "Confirma el aviso antes de instalar.",
+        "already_installed": "Ya está instalada.",
+        "missing_input": "Falta un dato obligatorio.",
+        "bad_input": "Algún dato no es válido.",
+        "bad_url": "La URL debe ser HTTPS (o localhost).",
+        "command_not_found": "No encontramos ese comando en esta computadora.",
+        "state_corrupt": "No pudimos leer ~/.chalito/connectors.json; no lo tocamos.",
+        "keychain": "No se pudo guardar en el llavero de la computadora.",
+        "unreachable": "El servidor no respondió.",
+        "not_found": "Ese servidor ya no está en el registro.",
+        "query_too_short": "Escribe al menos 3 letras.",
+        "registry_unreachable": "El registro MCP no respondió; te mostramos las verificadas.",
+        "registry_bad_response": "El registro MCP respondió algo que no entendimos.",
+        "other": "Algo salió mal. Intenta de nuevo."
+      }
+    }
   }
 }

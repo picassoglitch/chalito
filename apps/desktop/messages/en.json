@@ -1051,5 +1051,72 @@
       "phoneRequired": "This approval needs your phone; from the board you can only deny it.",
       "writeFailed": "The board stopped getting approvals. Unplug it and plug it back in."
     }
+  },
+  "connections": {
+    "search": {
+      "title": "Find connections",
+      "intro": "Search MCP servers so your agents can use your tools. One install serves every connected agent, and each call still goes through your approvals.",
+      "label": "Search",
+      "placeholder": "github, notion, database…",
+      "unavailable": "Chalito isn't running on this computer.",
+      "verifiedTitle": "Verified",
+      "communityTitle": "From the MCP Registry",
+      "installedTitle": "Installed",
+      "empty": "Nothing by that name.",
+      "more": "Load more",
+      "installed": "Installed",
+      "remove": "Remove",
+      "cancel": "Cancel",
+      "needsToken": "needs a token",
+      "heldOauth": "Coming soon: this connection needs a sign-in with the service's account (OAuth), which isn't ready yet.",
+      "transport": {
+        "remote": "Remote server",
+        "stdio": "Program on this computer"
+      },
+      "badge": {
+        "verified": "Verified",
+        "community": "Community",
+        "soon": "Coming soon"
+      },
+      "install": {
+        "button": "Install",
+        "title": "Install {name}?",
+        "confirm": "Install",
+        "confirmUnverified": "I understand, install",
+        "warning": "Chalito hasn't checked this server. It can see what you send it and act with the access you give it.",
+        "keychain": "The token is kept in this computer's keychain; it never goes to the cloud or into a prompt.",
+        "allAgents": "It will be available to all your connected agents, always behind your approvals."
+      },
+      "own": {
+        "title": "Add your own",
+        "mode": "How it connects",
+        "url": "By URL",
+        "command": "By command",
+        "name": "Name",
+        "urlLabel": "Server URL (HTTPS)",
+        "token": "Needs a token (Authorization: Bearer)",
+        "commandLabel": "Command",
+        "args": "Arguments (one per line)",
+        "env": "Secret variables it needs (comma-separated)",
+        "next": "Continue"
+      },
+      "error": {
+        "held_oauth": "Coming soon: this server asks for a sign-in (OAuth), which isn't ready yet.",
+        "warning_required": "Confirm the warning before installing.",
+        "already_installed": "It's already installed.",
+        "missing_input": "A required value is missing.",
+        "bad_input": "Some value isn't valid.",
+        "bad_url": "The URL must be HTTPS (or localhost).",
+        "command_not_found": "We couldn't find that command on this computer.",
+        "state_corrupt": "We couldn't read ~/.chalito/connectors.json; we left it as is.",
+        "keychain": "Couldn't save to this computer's keychain.",
+        "unreachable": "The server didn't answer.",
+        "not_found": "That server is no longer in the registry.",
+        "query_too_short": "Type at least 3 letters.",
+        "registry_unreachable": "The MCP Registry didn't answer; showing the verified ones.",
+        "registry_bad_response": "The MCP Registry answered something we couldn't read.",
+        "other": "Something went wrong. Try again."
+      }
+    }
   }
 }

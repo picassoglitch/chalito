@@ -1,0 +1,347 @@
+import { z } from "zod";
+import { INPUT_NAME, type InputSpec } from "./catalog.js";
+import type { ConnectorEntry } from "./types.js";
+
+// Official MCP Registry, API v0.1 (the frozen stable one): https://registry.modelcontextprotocol.io/openapi.yaml
+export const REGISTRY_BASE = "https://registry.modelcontextprotocol.io";
+export const REGISTRY_TIMEOUT_MS = 10_000;
+export const REGISTRY_MAX_BYTES = 2 * 1024 * 1024;
+export const REGISTRY_PAGE = 30;
+
+/** A registry server, mapped. `ref` re-resolves it at install, so the panel never hands the agent a server. */
+export interface RegistryResult {
+  ref: { name: string; version: string };
+  entry: ConnectorEntry;
+  inputs: InputSpec[];
+  repository: string | null;
+}
+
+export interface RegistryPage {
+  results: RegistryResult[];
+  nextCursor: string | null;
+  /** Servers we can't install (unsupported package type, templated URL, unfilled required args). */
+  skipped: number;
+}
+
+export type RegistryErrorCode = "query_too_short" | "registry_unreachable" | "registry_bad_response" | "not_found";
+export class RegistryError extends Error {
+  constructor(readonly code: RegistryErrorCode) {
+    super(code);
+    this.name = "RegistryError";
+  }
+}
+
+export type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+// Everything below is untrusted: loose shapes, every string capped and re-checked before use.
+const Str = (max: number) => z.string().max(max);
+const KeyValue = z.object({
+  name: Str(200),
+  description: Str(2000).optional(),
+  isRequired: z.boolean().optional(),
+  isSecret: z.boolean().optional(),
+  value: Str(2000).optional(),
+  default: Str(2000).optional(),
+});
+const Argument = z.object({
+  type: z.enum(["positional", "named"]),
+  name: Str(200).optional(),
+  value: Str(2000).optional(),
+  default: Str(2000).optional(),
+  isRequired: z.boolean().optional(),
+});
+const Package = z.object({
+  registryType: Str(40),
+  identifier: Str(300),
+  version: Str(100).optional(),
+  fileSha256: Str(64).optional(),
+  transport: z.object({ type: Str(40) }),
+  packageArguments: z.array(Argument).max(64).optional(),
+  environmentVariables: z.array(KeyValue).max(64).optional(),
+});
+const Remote = z.object({ type: Str(40), url: Str(2048).optional(), headers: z.array(KeyValue).max(32).optional() });
+const ServerJson = z.object({
+  name: Str(200),
+  title: Str(200).optional(),
+  description: Str(10_000).optional(),
+  version: Str(100),
+  repository: z.object({ url: Str(500).optional() }).optional(),
+  packages: z.array(Package).max(32).optional(),
+  remotes: z.array(Remote).max(32).optional(),
+});
+const Official = z.object({ status: Str(40).optional() }).optional();
+const ServerResponse = z.object({
+  server: ServerJson,
+  _meta: z.object({ "io.modelcontextprotocol.registry/official": Official }).optional(),
+});
+const ListResponse = z.object({
+  servers: z.array(z.unknown()).max(200),
+  metadata: z.object({ nextCursor: Str(1000).optional() }).optional(),
+});
+
+// Strip control and bidi characters (they could disguise a name) and cap the length.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g;
+export const clean = (s: string | undefined, max: number): string => {
+  const t = (s ?? "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+};
+
+/** Registry names (`io.github.owner/server`) as a connector id that is safe in tool names and keychain keys. */
+export const registryId = (name: string): string =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    .replace(/-+$/, "") || "server";
+
+const EXACT_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+const NPM_NAME = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+const PYPI_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+// eslint-disable-next-line no-control-regex
+const SAFE_ARG = /^[^\u0000-\u001f\u007f]{1,512}$/;
+
+/** A remote URL Chalito will talk to: HTTPS, or plain HTTP to this computer only; never credentials in it. */
+export const safeRemoteUrl = (raw: string): string | null => {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.username || u.password || raw.includes("{")) return null;
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) return null;
+  return u.toString();
+};
+
+/** A `{var}` template the person fills: only `prefix{var}` is supported (e.g. `Bearer {token}`). */
+const templatePrefix = (value: string): string | null | undefined => {
+  if (!value.includes("{")) return undefined;
+  const m = /^([^{}]{0,64})\{[\w.-]{1,64}\}$/.exec(value);
+  return m ? m[1]! : null;
+};
+
+const toInput = (kv: z.infer<typeof KeyValue>, as: InputSpec["as"]): InputSpec | null => {
+  if (!INPUT_NAME.test(kv.name)) return null;
+  const prefix = kv.value === undefined ? undefined : templatePrefix(kv.value);
+  if (prefix === null) return null;
+  // A fixed value (no template) isn't something the person types; we don't carry fixed values.
+  if (kv.value !== undefined && prefix === undefined) return null;
+  const description = clean(kv.description, 300);
+  return {
+    name: kv.name,
+    as,
+    secret: kv.isSecret === true || kv.name.toLowerCase() === "authorization",
+    required: kv.isRequired === true && kv.default === undefined,
+    ...(prefix ? { prefix } : {}),
+    ...(description ? { description } : {}),
+  };
+};
+
+const argList = (args: z.infer<typeof Argument>[] | undefined): string[] | null => {
+  const out: string[] = [];
+  for (const a of args ?? []) {
+    const value = a.value ?? a.default;
+    if (value === undefined) {
+      if (a.isRequired) return null; // We can't ask for argument values yet: not installable.
+      continue;
+    }
+    if (!SAFE_ARG.test(value) || value.includes("{")) return null;
+    if (a.type === "named") {
+      if (!a.name || !/^-{1,2}[A-Za-z0-9][\w-]{0,63}$/.test(a.name)) return null;
+      out.push(a.name);
+    }
+    out.push(value);
+  }
+  return out;
+};
+
+/** One registry server → a community connector, or null when Chalito can't run it safely. */
+export const mapServer = (raw: unknown): RegistryResult | null => {
+  const parsed = ServerResponse.safeParse(raw);
+  if (!parsed.success) return null;
+  const { server, _meta } = parsed.data;
+  const status = _meta?.["io.modelcontextprotocol.registry/official"]?.status;
+  if (status !== undefined && status !== "active") return null;
+  if (!EXACT_VERSION.test(server.version)) return null;
+  const base = {
+    id: registryId(server.name),
+    name: clean(server.title || server.name.split("/").pop() || server.name, 80),
+    description: clean(server.description, 300),
+    source: "community" as const,
+  };
+  const repo = server.repository?.url ? safeRemoteUrl(server.repository.url) : null;
+  const ref = { name: server.name, version: server.version };
+
+  // Prefer a vendor-run streamable HTTP server (ADR 0023 §1), then a pinned npm/PyPI package.
+  for (const r of server.remotes ?? []) {
+    if (r.type !== "streamable-http" || !r.url) continue;
+    const url = safeRemoteUrl(r.url);
+    if (!url) continue;
+    const inputs = (r.headers ?? []).map((h) => toInput(h, "header"));
+    if (inputs.some((i) => i === null)) continue;
+    const ok = inputs as InputSpec[];
+    return {
+      ref,
+      repository: repo,
+      inputs: ok,
+      entry: { ...base, transport: "remote", server: { url }, auth: ok.some((i) => i.secret) ? "token" : "none" },
+    };
+  }
+  for (const p of server.packages ?? []) {
+    if (p.transport.type !== "stdio" || !p.version || !EXACT_VERSION.test(p.version)) continue;
+    let command: string;
+    let pkgArg: string;
+    if (p.registryType === "npm" && NPM_NAME.test(p.identifier)) {
+      command = "npx";
+      pkgArg = `${p.identifier}@${p.version}`;
+    } else if (p.registryType === "pypi" && PYPI_NAME.test(p.identifier)) {
+      command = "uvx";
+      pkgArg = `${p.identifier}==${p.version}`;
+    } else continue;
+    const args = argList(p.packageArguments);
+    if (!args) continue;
+    const inputs = (p.environmentVariables ?? []).map((e) => toInput(e, "env"));
+    if (inputs.some((i) => i === null)) continue;
+    const ok = inputs as InputSpec[];
+    const integrity = p.fileSha256 && /^[a-f0-9]{64}$/.test(p.fileSha256) ? `sha256-${p.fileSha256}` : undefined;
+    return {
+      ref,
+      repository: repo,
+      inputs: ok,
+      entry: {
+        ...base,
+        transport: "stdio",
+        server: {
+          package: p.identifier,
+          version: p.version,
+          ...(integrity ? { integrity } : {}),
+          command,
+          args: command === "npx" ? ["-y", pkgArg, ...args] : [pkgArg, ...args],
+        },
+        auth: ok.some((i) => i.secret) ? "token" : "none",
+      },
+    };
+  }
+  return null;
+};
+
+/** GET with a timeout and a size cap; the body is parsed as JSON only once it fits. */
+const getJson = async (fetchFn: Fetch, url: string, timeoutMs: number): Promise<unknown> => {
+  let res: Response;
+  try {
+    res = await fetchFn(url, {
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    throw new RegistryError("registry_unreachable");
+  }
+  if (res.status === 404) throw new RegistryError("not_found");
+  if (!res.ok || !res.body) throw new RegistryError("registry_bad_response");
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > REGISTRY_MAX_BYTES) {
+        await reader.cancel();
+        throw new RegistryError("registry_bad_response");
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    throw e instanceof RegistryError ? e : new RegistryError("registry_unreachable");
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new RegistryError("registry_bad_response");
+  }
+};
+
+export interface RegistryOptions {
+  fetch?: Fetch;
+  base?: string;
+  timeoutMs?: number;
+  limit?: number;
+}
+
+/** Searches the registry by server name (latest versions only). Empty `q` lists everything. */
+export const searchRegistry = async (q: string, cursor?: string, o: RegistryOptions = {}): Promise<RegistryPage> => {
+  const query = q.trim();
+  // The registry rejects 1–2 character searches; say so instead of a 400.
+  if (query.length > 0 && query.length < 3) throw new RegistryError("query_too_short");
+  const url = new URL("/v0.1/servers", o.base ?? REGISTRY_BASE);
+  url.searchParams.set("version", "latest");
+  url.searchParams.set("limit", String(o.limit ?? REGISTRY_PAGE));
+  if (query) url.searchParams.set("search", query.slice(0, 100));
+  if (cursor) url.searchParams.set("cursor", cursor.slice(0, 1000));
+  const body = ListResponse.safeParse(
+    await getJson(o.fetch ?? fetch, url.toString(), o.timeoutMs ?? REGISTRY_TIMEOUT_MS),
+  );
+  if (!body.success) throw new RegistryError("registry_bad_response");
+  const results: RegistryResult[] = [];
+  const seen = new Set<string>();
+  let skipped = 0;
+  for (const s of body.data.servers) {
+    const r = mapServer(s);
+    // Two names can slug to one id; keep the first so ids stay unique on a page.
+    if (!r || seen.has(r.entry.id)) {
+      skipped++;
+      continue;
+    }
+    seen.add(r.entry.id);
+    results.push(r);
+  }
+  return { results, nextCursor: body.data.metadata?.nextCursor || null, skipped };
+};
+
+/** One exact server version, re-read from the registry at install time. */
+export const getRegistryServer = async (
+  ref: { name: string; version: string },
+  o: RegistryOptions = {},
+): Promise<RegistryResult> => {
+  const path = `/v0.1/servers/${encodeURIComponent(ref.name)}/versions/${encodeURIComponent(ref.version)}`;
+  const raw = await getJson(
+    o.fetch ?? fetch,
+    new URL(path, o.base ?? REGISTRY_BASE).toString(),
+    o.timeoutMs ?? REGISTRY_TIMEOUT_MS,
+  );
+  const r = mapServer(raw);
+  if (!r || r.ref.name !== ref.name || r.ref.version !== ref.version) throw new RegistryError("not_found");
+  return r;
+};
+
+// MCP authorization answers 401 when a server wants OAuth. Only probed on a deliberate install,
+// so searching never contacts unknown servers.
+export const probeRemoteAuth = async (
+  url: string,
+  o: { fetch?: Fetch; timeoutMs?: number } = {},
+): Promise<"open" | "oauth" | "unreachable"> => {
+  try {
+    const res = await (o.fetch ?? fetch)(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "chalito", version: "1" } },
+      }),
+      redirect: "error",
+      signal: AbortSignal.timeout(o.timeoutMs ?? REGISTRY_TIMEOUT_MS),
+    });
+    await res.body?.cancel().catch(() => undefined);
+    if (res.status === 401) return "oauth";
+    return res.status < 500 ? "open" : "unreachable";
+  } catch {
+    return "unreachable";
+  }
+};

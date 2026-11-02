@@ -41,6 +41,7 @@ import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
 import { ownSessionHandlers, type OwnSessionsDeps } from "./watch/ipc.js";
 import { RepoPattern, type PrWatch } from "./prs/watch.js";
 import { meetingHandlers, type MeetingsFeature } from "./meetings/ipc.js";
+import { connectionSearchHandlers, type ConnectionsSearchFeature } from "./connections/ipc.js";
 import { NativeProvider } from "./native/protocol.js";
 import { nativeConnectorErrorCode, type NativeConnectors } from "./native/connectors.js";
 
@@ -181,6 +182,8 @@ export interface IpcDeps {
   prs?: PrWatch;
   /** Meeting warnings and follow-ups (meetings/); absent = those calls answer `unavailable`. */
   meetings?: MeetingsFeature;
+  /** Conexiones search + install (ADR 0023); absent = those calls answer `unavailable`. */
+  connections?: ConnectionsSearchFeature | null;
 }
 
 /** The panel's codes for a connector change; anything else is `internal`. */
@@ -245,6 +248,7 @@ const appCall = async (d: IpcDeps, run: (m: AppManager) => Promise<AppResult>) =
  * this daemon runs only once paired, so pairing calls are served earlier by pairing-host.ts. */
 export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   ...meetingHandlers(d.meetings),
+  ...connectionSearchHandlers(d.connections),
   ping: async () => ({ version: AGENT_VERSION }),
   ...ownSessionHandlers(d.ownSessions),
 
