@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
@@ -120,6 +120,8 @@ interface Paths {
   touchesFence(abs: string): boolean;
   /** Any step of the path (as given, normalized, or walked) is in /proc or /dev, bar plain devices. */
   procLike(raw: string, cwd?: string): boolean;
+  /** `abs` is (in) where a symlink in a hidden home place points, when a workspace holds home. */
+  linkedFromFence(abs: string): boolean;
   /** `raw` against `cwd` with `~` expanded, symlinks not followed. */
   lexical(raw: string, cwd?: string): string;
   /** Some workspace is or holds a fence (the home folder): an unknown path may land in one. */
@@ -343,6 +345,10 @@ const pathsFor = (ctx: ClassifyContext): Paths => {
     excluded,
     hidden,
     lexical: (p, cwd = ctx.cwd) => resolve(cwd, expand(p)),
+    // A link to home itself or above (`~/.root -> /`) would fence everything: those are skipped.
+    linkedFromFence: (abs) =>
+      homeInWorkspace &&
+      fenceLinkTargets(lexicalHome, real).some((t) => !homeKeys.some((hk) => within(hk, t)) && within(abs, t)),
     procLike,
     fencesReachable: workspaces.some(
       (w) => fenceRoots.some((f) => within(f, w)) || homeKeys.some((hk) => within(hk, w)),
@@ -546,6 +552,30 @@ const fence = (out: Classification, tier: RiskTier, reason: string): void => {
 const mark = (out: Classification, paths: Paths, tier: RiskTier, reason: string): void =>
   paths.fencesReachable ? fence(out, tier, reason) : raise(out, tier, reason);
 
+/** Where the symlinks in hidden home places point (top level and one level in), cached for 1 s. */
+const linkScan = new Map<string, { at: number; targets: string[] }>();
+const fenceLinkTargets = (home: string, real: (p: string) => string): string[] => {
+  const hit = linkScan.get(home);
+  if (hit && Date.now() - hit.at < 1000) return hit.targets;
+  const targets: string[] = [];
+  const list = (dir: string) => {
+    try {
+      return readdirSync(dir, { withFileTypes: true }).slice(0, 2000);
+    } catch {
+      return [];
+    }
+  };
+  const isHidden = (n: string) => n.startsWith(".") || ["library", "appdata"].includes(n.toLowerCase());
+  const dirs = [home, ...FENCES.filter((f) => f.includes("/")).map((f) => join(home, ...f.split("/")))];
+  for (const e of list(home))
+    if (isHidden(e.name) && (e.isDirectory() || e.isSymbolicLink())) dirs.push(join(home, e.name));
+  for (const dir of dirs)
+    for (const e of list(dir))
+      if (e.isSymbolicLink() && (dir !== home || isHidden(e.name))) targets.push(real(join(dir, e.name)));
+  linkScan.set(home, { at: Date.now(), targets });
+  return targets;
+};
+
 const PROC_LIKE = /^\/(proc|dev)(\/|$)/;
 const PLAIN_DEVICE = /^\/dev\/(null|zero|u?random|tty|std(in|out|err))$/;
 
@@ -580,12 +610,19 @@ const classifyPath = (
 ): void => {
   const abs = paths.resolve(raw, cwd);
   const lexical = paths.lexical(raw, cwd);
-  if (paths.hardFloor(abs)) {
-    markHardFloor(out, paths.floorReason(abs));
+  // The name as written counts too: `~/bin/tool` linking into a project still names a PATH folder.
+  const named = (f: (p: string) => boolean) => f(abs) || f(lexical);
+  if (named(paths.hardFloor)) {
+    markHardFloor(out, paths.floorReason(paths.hardFloor(abs) ? abs : lexical));
     return;
   }
-  if (paths.sensitive(abs)) {
+  if (named(paths.sensitive)) {
     fence(out, "CRITICAL", "credentials path");
+    return;
+  }
+  // Dotfiles managers: `~/.ssh/id_rsa -> ~/dotfiles/...` makes the target as protected as the name.
+  if (paths.linkedFromFence(abs)) {
+    fence(out, "HIGH", "target of a link in a protected place");
     return;
   }
   // /proc/self/cwd and /dev/fd resolve in the agent's process, not the AI's: never trust them.
@@ -601,7 +638,7 @@ const classifyPath = (
   // Shell arguments of anything but a read-only tool count as writes here: whether `curl -o` or `ln` writes is a guess.
   // Defense in depth: CRITICAL even inside a workspace (workspaces.ts refuses these folders, but
   // a hand-edited policy might not).
-  if ((write || persistAlways) && paths.persistence(abs)) {
+  if ((write || persistAlways) && named(paths.persistence)) {
     fence(out, "CRITICAL", "startup file or PATH directory");
     return;
   }
@@ -614,7 +651,7 @@ const classifyPath = (
     return;
   }
   // Inside a home-folder workspace, reading a startup file or an AI tool's settings still asks.
-  if (paths.persistence(abs)) {
+  if (named(paths.persistence)) {
     fence(out, "HIGH", "protected place (startup, PATH or AI settings)");
     return;
   }
@@ -1073,6 +1110,8 @@ interface ShellState {
   ranCode?: boolean;
   /** CDPATH was set: a bare `cd name` may land anywhere. */
   cdpath?: boolean;
+  /** HOME was reassigned: `~` and `$HOME` are no longer the real home folder. */
+  homeTainted?: boolean;
 }
 
 interface Expanded {
@@ -1085,10 +1124,11 @@ interface Expanded {
 const expandWord = (w: Word, st: ShellState, paths: Paths): Expanded => {
   let text = w.text;
   if (text.startsWith("~+")) text = st.cwd === null ? "$PWD" + text.slice(2) : st.cwd + text.slice(2);
-  const tildeUser = /^~[^/]/.test(text);
+  // A reassigned HOME makes `~` unknown (adversarial review 2026-11-02).
+  const tildeUser = /^~[^/]/.test(text) || (!!st.homeTainted && text.startsWith("~"));
   if (!w.dyn) return { text, unresolved: tildeUser, glob: false };
   const lookup = (name: string): string | null | undefined => {
-    if (name === "HOME") return paths.home;
+    if (name === "HOME") return st.homeTainted ? null : paths.home;
     if (name === "USER" || name === "LOGNAME") return basename(paths.home);
     if (name === "PWD") return st.cwd;
     return st.vars.get(name);
@@ -1202,6 +1242,7 @@ const classifySegment = (
       st.tainted = true;
     }
     if (name === "CDPATH") st.cdpath = true;
+    if (name === "HOME") st.homeTainted = true;
   };
   const strip = () => {
     while (words[0] && LEADING.has(words[0].text)) words.shift();
@@ -1300,6 +1341,9 @@ const classifySegment = (
   }
   const texts = args.map((a) => a.text);
   producerCmd.set(seg, cmd);
+  // A link made in this command is followed by later words we resolved before it existed.
+  const linking = cmd === "ln" || (cmd === "cp" && texts.some((t) => /^-[^-]*s/.test(t) || t === "--symbolic-link"));
+  if (paths.fencesReachable && linking) fence(out, "HIGH", "creates a link");
   // File names read from input (`xargs`, `--files0-from`) can't be checked: never auto near a fence.
   if (paths.fencesReachable && (viaXargs || texts.some((t) => t.startsWith("--files0-from"))))
     fence(out, "HIGH", "paths read from input");

@@ -323,6 +323,14 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     ["Edit", { file_path: "/proc/self/cwd/../../.bashrc", old_string: "a", new_string: "b" }],
     ["Bash", { command: "cat /dev/fd/../cwd/x" }],
     ["Bash", { command: "cat keys/../.bashrc" }],
+    ["Bash", { command: "HOME=${PWD%/*/*}/.ssh; cat ~/id_ed25519" }],
+    ["Bash", { command: "HOME=~/projects; cat ~/../.ssh/id_ed25519" }],
+    ["Bash", { command: 'export HOME=/tmp; cat "$HOME"/x' }],
+    ["Bash", { command: "HOME=. cd; cat .ssh/id_ed25519" }],
+    ["Bash", { command: "ln -s ../../../.ssh src/k; cat src/k/id_ed25519" }],
+    ["Bash", { command: "mkdir -p t && ln -s ../../.ssh t/k && cat t/k/id_ed25519" }],
+    ["Bash", { command: "ln -s ../../../../proc ../p; cat ../p/1/environ" }],
+    ["Bash", { command: "cp -s ../../.ssh/id_ed25519 k" }],
     ["Bash", { command: "ls ../../../../proc/self/root/etc" }],
     ["Bash", { command: "cat /dev/fd/3" }],
     ["Bash", { command: "ls /dev" }],
@@ -375,6 +383,46 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       expect(r.auto, file).toBe(false);
       expect(r.c.workspaceEdit, file).toBe(false);
     }
+  });
+
+  it("dotfiles-manager targets: a file a fence links to is protected like the fence", () => {
+    const d = makeHome();
+    const df = (rel: string) => {
+      mkdirSync(dirname(join(d.home, "dotfiles", rel)), { recursive: true });
+      writeFileSync(join(d.home, "dotfiles", rel), "x");
+      return join(d.home, "dotfiles", rel);
+    };
+    symlinkSync(df("ssh/id_rsa"), join(d.home, ".ssh/id_rsa"));
+    symlinkSync(df("claude/settings.local.json"), join(d.home, ".claude/settings.local.json"));
+    symlinkSync(df("bash_aliases"), join(d.home, ".bash_aliases"));
+    mkdirSync(join(d.home, "dotfiles/config/nvim"), { recursive: true });
+    mkdirSync(join(d.home, ".config"), { recursive: true });
+    symlinkSync(join(d.home, "dotfiles/config/nvim"), join(d.home, ".config/nvim"));
+    for (const [tool, input] of [
+      ["Read", { file_path: `${d.home}/dotfiles/ssh/id_rsa` }],
+      ["Bash", { command: "cat ../../dotfiles/ssh/id_rsa" }],
+      ["Write", { file_path: `${d.home}/dotfiles/claude/settings.local.json`, content: "{}" }],
+      ["Edit", { file_path: `${d.home}/dotfiles/bash_aliases`, old_string: "a", new_string: "b" }],
+      ["Write", { file_path: `${d.home}/dotfiles/config/nvim/init.lua`, content: "x" }],
+    ] as const) {
+      const r = answeredFor(tool, input, d.ctx());
+      expect(r.auto, JSON.stringify(input)).toBe(false);
+      expect(r.c.workspaceEdit, JSON.stringify(input)).toBe(false);
+    }
+    // The rest of the dotfiles repo, and projects, are ordinary workspace files.
+    expect(
+      answeredFor("Write", { file_path: `${d.home}/dotfiles/README.md`, content: "x" }, d.ctx()).c.workspaceEdit,
+    ).toBe(true);
+  });
+
+  it("a PATH name that links into a project still names a PATH folder", () => {
+    const d = makeHome();
+    writeFileSync(join(d.project, "tool.sh"), "x");
+    mkdirSync(join(d.home, "bin"));
+    symlinkSync(join(d.project, "tool.sh"), join(d.home, "bin/tool"));
+    const r = answeredFor("Write", { file_path: `${d.home}/bin/tool`, content: "x" }, d.ctx());
+    expect(r.auto).toBe(false);
+    expect(r.c.workspaceEdit).toBe(false);
   });
 
   it("the coordinator never answers a read outside the workspaces", () => {
