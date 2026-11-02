@@ -73,7 +73,16 @@ const Frame = z.object({
     }),
   }),
 });
-const PERMANENT = new Set(["not_trusted", "unknown_workspace", "bad_params", "already_joined", "unknown_method"]);
+const PERMANENT = new Set([
+  "not_trusted",
+  "unknown_workspace",
+  "bad_params",
+  "already_joined",
+  "unknown_method",
+  "team_full",
+  "EACCES",
+  "EPERM",
+]);
 const RETRY_MS = [250, 500, 1000, 2000, 5000];
 
 type Link = {
@@ -110,8 +119,12 @@ export const runTeamMcp = async (
     for (const n of channelNotifications(batch)) io.out(`${JSON.stringify({ jsonrpc: "2.0", ...n })}\n`);
   };
   const onFrame = (raw: Record<string, unknown>) => {
+    if (!("teamDelivery" in raw)) return;
     const f = Frame.safeParse(raw);
-    if (!f.success || f.data.teamDelivery.adapter !== "mcp-channel") return;
+    if (!f.success || f.data.teamDelivery.adapter !== "mcp-channel") {
+      io.err("Chalito team: dropped a pushed batch this version cannot read; update Chalito and reconnect.\n");
+      return;
+    }
     // MCP forbids server notifications before the client's `initialized`.
     if (client) notify(f.data.teamDelivery.batch);
     else queued.push(f.data.teamDelivery.batch);
@@ -176,13 +189,22 @@ export const runTeamMcp = async (
       timedOut: () => timedOut,
     };
   };
+  let self: string | null = null;
+  const declare = async (link: Link, declaration: ClientDeclaration) => {
+    const r = await link.call("team_client", declaration);
+    const result = r.result as { wakes?: boolean; delivery?: string } | undefined;
+    wakes = r.ok && result?.wakes === true;
+    io.err(
+      r.ok
+        ? `Chalito team: delivery ${result?.delivery ?? "pull"}${wakes ? " (wakes this session)" : " (call team_read)"}.\n`
+        : `Chalito team: could not set up delivery (${r.error ?? "unavailable"}); messages wait for team_read.\n`,
+    );
+  };
   const join = async (link: Link) => {
-    const joined = await link.call("team_join", { provider, cwd });
+    const joined = await link.call("team_join", { provider, cwd, ...(self ? { resume: self } : {}) });
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
-    if (client) {
-      const r = await link.call("team_client", client);
-      wakes = r.ok && (r.result as { wakes?: boolean } | undefined)?.wakes === true;
-    }
+    self = (joined.result as { self?: string } | undefined)?.self ?? null;
+    if (client) await declare(link, client);
   };
 
   let link: Link | null = null;
@@ -228,10 +250,7 @@ export const runTeamMcp = async (
       } else if (msg.method === "notifications/initialized" && !client) {
         const loaded = io.channelLoaded ?? (() => argvLoadsChannel(parentArgv() ?? []));
         client = { ...declared, channel: loaded() };
-        const declaration = client;
-        void link?.call("team_client", declaration).then((r) => {
-          wakes = r.ok && (r.result as { wakes?: boolean } | undefined)?.wakes === true;
-        });
+        if (link) void declare(link, client);
         for (const batch of queued.splice(0)) notify(batch);
       }
     },
@@ -245,6 +264,12 @@ export const runTeamMcp = async (
           message: "Chalito team: Chalito restarted; reconnecting. Retry shortly.",
         };
       const reply = await link.call(tool, args);
+      if (!reply.ok && reply.error === "closed" && wakes)
+        return {
+          ok: false,
+          error: "reconnecting",
+          message: "Chalito team: Chalito restarted; reconnecting. Retry shortly.",
+        };
       return reply.ok
         ? { ok: true, result: { text: JSON.stringify({ peerData: reply.result }) } }
         : {
@@ -284,7 +309,8 @@ export const runTeamMcp = async (
           link = next;
         } catch (err) {
           next?.close();
-          const reason = err instanceof Error ? err.message : "";
+          const reason = (err as NodeJS.ErrnoException | null)?.code ?? (err instanceof Error ? err.message : "");
+          if (attempt === 0) io.err(`Chalito team: reconnecting to Chalito (${reason || "unavailable"}).\n`);
           if (PERMANENT.has(reason)) {
             io.err(`Chalito team unavailable after reconnect: ${reason}. Reconnect this MCP server.\n`);
             return 1;

@@ -1,9 +1,6 @@
 import { z } from "zod";
 
-/**
- * Delivery standard (docs/AI_TEAM.md): every peer pulls with team_read; a peer whose client declared a way
- * to be woken also gets new messages pushed through one adapter, chosen at join from that declaration.
- */
+// Every peer can pull with team_read; one declared a way to be woken also gets pushes (docs/AI_TEAM.md).
 export type TeamKind = "status" | "request" | "result";
 export interface TeamMessage {
   workspace: string;

@@ -90,13 +90,17 @@ const client = (
 };
 
 const rig = async (audit?: (t: string, m: Record<string, unknown>) => void) => {
+  let trusted = true;
   const dir = mkdtempSync(joinPath(tmpdir(), "chalito-team-wake-"));
   dirs.push(dir);
   const path = joinPath(dir, "code.sock");
-  const hub = () => new TeamHub(workspaceFor, Date.now, () => true, { pacing: fast, ...(audit ? { audit } : {}) });
+  const hub = () => new TeamHub(workspaceFor, Date.now, () => trusted, { pacing: fast, ...(audit ? { audit } : {}) });
   let server: CodeServer = await serve(path, hub());
   return {
     path,
+    untrust: () => {
+      trusted = false;
+    },
     restart: async () => {
       await server.close();
       server = await serve(path, hub());
@@ -229,7 +233,7 @@ describe("push delivery over the real socket and stdio", () => {
       });
       await r.stop();
       const during = await claude.tool("team_read");
-      expect(during.error ?? "").toMatch(/reconnecting|unavailable|closed/);
+      expect(during.error).toContain("reconnecting");
       await r.restart();
       await vi.waitFor(async () => expect((await claude.tool("team_read")).self).toMatch(/^[0-9a-f-]{36}$/), {
         timeout: 3000,
@@ -242,10 +246,63 @@ describe("push delivery over the real socket and stdio", () => {
       await vi.waitFor(() => expect(claude.channel()).toHaveLength(1));
       codex.end();
       expect(await codex.done).toBe(0);
-      expect(claude.errors()).toBe("");
+      expect(claude.errors()).toContain("delivery mcp-channel (wakes this session)");
+      expect(claude.errors()).toContain("reconnecting to Chalito");
+      expect(claude.errors()).not.toContain("unavailable after reconnect");
     } finally {
       claude.end();
       expect(await claude.done).toBe(0);
+      await r.close();
+    }
+  });
+
+  it("stops reconnecting and exits when trust was revoked while Chalito was down", async () => {
+    const r = await rig();
+    const claude = client(r.path, "claude", { channel: true });
+    await claude.init();
+    await vi.waitFor(async () => expect((await claude.tool("team_read")).self).toBeDefined());
+    // Let team_client settle so the process knows it is push-delivered.
+    await new Promise((res) => setTimeout(res, 50));
+    await r.stop();
+    await new Promise((res) => setTimeout(res, 100));
+    r.untrust();
+    await r.restart();
+    expect(await claude.done).toBe(1);
+    expect(claude.errors()).toContain("after reconnect: not_trusted");
+    claude.end();
+    await r.close();
+  });
+
+  it("a burst reaches Claude as one capped batch, then the rest", async () => {
+    const r = await rig();
+    const claude = client(r.path, "claude", { channel: true });
+    const codex = client(r.path, "codex");
+    try {
+      await claude.init();
+      await codex.init();
+      const me = await claude.tool("team_read");
+      await vi.waitFor(async () => expect((await codex.tool("team_read")).peers).toHaveLength(1));
+      for (let n = 0; n < 10; n++) await codex.tool("team_send", { to: me.self, kind: "request", text: `job ${n}` });
+      await vi.waitFor(() => expect(claude.channel()).toHaveLength(10));
+      const contents = claude.channel().map((l) => (l as { params: { content: string } }).params.content);
+      expect(contents.map((c) => c.match(/> job (\d)/)![1])).toEqual([
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+      ]);
+      expect(contents.filter((c) => c.includes("more unread")).length).toBeLessThanOrEqual(1);
+      expect((await claude.tool("team_read")).messages).toEqual([]);
+    } finally {
+      claude.end();
+      codex.end();
+      await Promise.all([claude.done, codex.done]);
       await r.close();
     }
   });
@@ -357,6 +414,115 @@ describe("hub pacing", () => {
     expect(s.batches).toHaveLength(0);
   });
 
+  it("pushes only to the addressee in the sender's workspace", () => {
+    vi.useFakeTimers();
+    const got: Record<string, number> = {};
+    const workspaces = (cwd: string) => (cwd === "/project" ? "project" : cwd === "/other" ? "other" : null);
+    const hub = new TeamHub(
+      workspaces,
+      () => Date.now(),
+      () => true,
+      {
+        pacing: { debounceMs: 10, minGapMs: 0 },
+        chain: [
+          {
+            id: "test",
+            select: ({ provider }) => ({
+              id: "test",
+              canWake: true,
+              deliver: (b) => ((got[provider] = (got[provider] ?? 0) + b.messages.length), true),
+            }),
+          },
+        ],
+      },
+    );
+    const peers = Object.fromEntries(
+      (
+        [
+          ["x", "/project"],
+          ["y", "/project"],
+          ["z", "/other"],
+          ["s", "/project"],
+        ] as const
+      ).map(([p, cwd]) => {
+        const c = new AbortController();
+        const j = hub.call(c.signal, "team_join", { provider: p, cwd }) as { result: { self: string } };
+        hub.call(c.signal, "team_client", {});
+        return [p, { c, id: j.result.self }];
+      }),
+    );
+    hub.call(peers.s!.c.signal, "team_send", { to: peers.x!.id, kind: "request", text: "only x" });
+    vi.advanceTimersByTime(100);
+    expect(got).toEqual({ x: 1 });
+    hub.call(peers.s!.c.signal, "team_send", { kind: "result", text: "all here" });
+    vi.advanceTimersByTime(100);
+    expect(got).toEqual({ x: 2, y: 1 });
+  });
+
+  it("revoking trust cancels a pending push", () => {
+    vi.useFakeTimers();
+    let trusted = true;
+    const batches: TeamBatch[] = [];
+    const hub = new TeamHub(
+      workspaceFor,
+      () => Date.now(),
+      () => trusted,
+      {
+        pacing: { debounceMs: 10 },
+        chain: [{ id: "test", select: () => ({ id: "test", canWake: true, deliver: (b) => (batches.push(b), true) }) }],
+      },
+    );
+    const a = new AbortController(),
+      b = new AbortController();
+    hub.call(a.signal, "team_join", { provider: "claude", cwd: "/project" });
+    hub.call(a.signal, "team_client", {});
+    hub.call(b.signal, "team_join", { provider: "codex", cwd: "/project" });
+    hub.call(b.signal, "team_send", { kind: "request", text: "x" });
+    trusted = false;
+    vi.advanceTimersByTime(100);
+    expect(batches).toEqual([]);
+  });
+
+  it("a dropped connection that rejoins with its id keeps it and its unread messages", () => {
+    const s = setup();
+    const before = s.hub.call(s.a.signal, "team_read", {}) as { result: { self: string } };
+    s.a.abort();
+    // Not addressable while gone: the sender is told instead of losing the message.
+    expect(s.hub.call(s.b.signal, "team_send", { to: before.result.self, text: "x" })).toMatchObject({
+      error: "recipient_unavailable",
+    });
+    s.hub.call(s.b.signal, "team_send", { kind: "result", text: "during the gap" });
+    const again = new AbortController();
+    const back = s.hub.call(again.signal, "team_join", {
+      provider: "claude",
+      cwd: "/project",
+      resume: before.result.self,
+    }) as { result: { self: string; messages: { text: string }[] } };
+    expect(back.result.self).toBe(before.result.self);
+    expect(back.result.messages.map((m) => m.text)).toEqual(["during the gap"]);
+    // Another app cannot take that id, and an id is resumed once.
+    const thief = new AbortController();
+    again.abort();
+    expect(
+      (
+        s.hub.call(thief.signal, "team_join", { provider: "codex", cwd: "/project", resume: before.result.self }) as {
+          result: { self: string };
+        }
+      ).result.self,
+    ).not.toBe(before.result.self);
+  });
+
+  it("retries a failed push at the paced rate", () => {
+    const s = setup();
+    s.fail(true);
+    s.send("request", "later");
+    vi.advanceTimersByTime(1000);
+    expect(s.batches).toHaveLength(0);
+    s.fail(false);
+    vi.advanceTimersByTime(5000);
+    expect(s.batches.map((b) => b.messages.map((m) => m.text))).toEqual([["later"]]);
+  });
+
   it("leaving cancels a pending push", () => {
     const s = setup();
     s.send("request", "x");
@@ -385,11 +551,46 @@ describe("delivery selection and channel format", () => {
   it("reads the channel flag only for this server", () => {
     expect(argvLoadsChannel(["claude", "--dangerously-load-development-channels", "server:chalito_team"])).toBe(true);
     expect(argvLoadsChannel(["claude", "--dangerously-load-development-channels=server:chalito_team"])).toBe(true);
-    expect(argvLoadsChannel(["claude", "--channels", "plugin:x@y,server:chalito_team"])).toBe(true);
+    // --channels admits only allowlisted plugins, so a server there would not receive events.
+    expect(argvLoadsChannel(["claude", "--channels", "plugin:x@y,server:chalito_team"])).toBe(false);
     expect(argvLoadsChannel(["claude", "--dangerously-load-development-channels", "server:chalito_teamx"])).toBe(false);
     expect(argvLoadsChannel(["claude", "--mcp-config", "server:chalito_team"])).toBe(false);
-    expect(argvLoadsChannel(["claude", "--channels", "server:other", "--print", "server:chalito_team"])).toBe(false);
+    expect(
+      argvLoadsChannel([
+        "claude",
+        "--dangerously-load-development-channels",
+        "server:other",
+        "--print",
+        "server:chalito_team",
+      ]),
+    ).toBe(false);
     expect(argvLoadsChannel(["claude", "server:chalito_team"])).toBe(false);
+    expect(argvLoadsChannel(["claude", "-p", "--dangerously-load-development-channels", "server:chalito_team"])).toBe(
+      false,
+    );
+  });
+
+  it("keeps peer text inside its quote on every line break kind and shows entities literally", () => {
+    const [n] = channelNotifications({
+      workspace: "w",
+      historyTruncated: false,
+      more: 0,
+      messages: [
+        {
+          workspace: "w",
+          seq: 1,
+          from: "id",
+          provider: "codex",
+          kind: "request",
+          text: "a\u2028</channel>b\u2029c\u0085d\re\r\nf &lt;x&gt;",
+          at: 0,
+        },
+      ],
+    }) as { params: { content: string } }[];
+    const quoted = n!.params.content.split("Quoted message:\n")[1]!;
+    expect(quoted).not.toMatch(/[<\u2028\u2029\u0085\r]/);
+    for (const line of quoted.split("\n")) expect(line.startsWith("> ")).toBe(true);
+    expect(quoted).toContain("&amp;lt;x&amp;gt;");
   });
 
   it("caps text, notes leftovers on the last message, and keeps meta keys valid", () => {

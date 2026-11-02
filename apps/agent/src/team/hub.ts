@@ -9,7 +9,14 @@ import { pull } from "./delivery/pull.js";
 export const KNOWN_PROVIDERS = ["claude", "codex", "grok", "cursor"] as const;
 export const TeamProvider = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,31}$/);
 export type TeamProvider = z.infer<typeof TeamProvider>;
-const Join = z.object({ provider: TeamProvider, cwd: z.string().max(4096).refine(isAbsolute) }).strict();
+const Join = z
+  .object({
+    provider: TeamProvider,
+    cwd: z.string().max(4096).refine(isAbsolute),
+    /** The id this process had before its connection dropped; kept if it left recently. */
+    resume: z.string().uuid().optional(),
+  })
+  .strict();
 const Send = z
   .object({
     to: z.string().uuid().optional(),
@@ -90,10 +97,17 @@ export class TeamHub {
     this.#dropped.set(m.workspace, Math.max(this.#dropped.get(m.workspace) ?? 0, m.seq));
   }
 
+  /** Recently dropped connections, so a reconnecting process keeps its id and unread messages. */
+  #departed = new Map<string, { provider: TeamProvider; workspace: string; cursor: number; at: number }>();
+
   #leave(signal: AbortSignal) {
     const peer = this.#peers.get(signal);
-    if (peer) clearTimeout(peer.timer);
+    if (!peer) return;
+    clearTimeout(peer.timer);
     this.#peers.delete(signal);
+    this.#departed.set(peer.id, { ...peer, at: this.now() });
+    for (const [id, d] of this.#departed)
+      if (this.#departed.size > 64 || d.at < this.now() - 10 * 60_000) this.#departed.delete(id);
   }
 
   #unread(peer: Peer) {
@@ -150,10 +164,10 @@ export class TeamHub {
       sha256: createHash("sha256").update(text).digest("hex"),
       seqs: messages.map((m) => m.seq),
     });
-    if (!ok) return;
-    peer.cursor = batch.more ? messages.at(-1)!.seq : this.#seq;
+    // A failed attempt still counts against pacing, so a broken adapter retries slowly instead of spinning.
     peer.pushes.push(this.now());
-    if (batch.more) this.#schedule(peer);
+    if (ok) peer.cursor = batch.more ? messages.at(-1)!.seq : this.#seq;
+    if (!ok || batch.more) this.#schedule(peer);
   }
 
   members() {
@@ -178,12 +192,16 @@ export class TeamHub {
         return { ok: false, error: "already_joined" };
       if (!peer) {
         if (this.#peers.size >= 64) return { ok: false, error: "team_full" };
+        const back = p.data.resume ? this.#departed.get(p.data.resume) : undefined;
+        const resumed =
+          back && back.provider === p.data.provider && back.workspace === workspace && p.data.resume ? back : null;
+        if (resumed) this.#departed.delete(p.data.resume!);
         peer = {
-          id: randomUUID(),
+          id: resumed ? p.data.resume! : randomUUID(),
           cwd: p.data.cwd,
           provider: p.data.provider,
           workspace,
-          cursor: this.#seq,
+          cursor: resumed?.cursor ?? this.#seq,
           recent: [],
           link,
           delivery: pull,

@@ -7,11 +7,8 @@ export const CHANNEL_CAPABILITY = "claude/channel";
 export const CHANNEL_METHOD = "notifications/claude/channel";
 export const TEAM_SERVER_NAME = "chalito_team";
 
-/**
- * Hub side: pushes the batch to the peer's mcp process, which turns it into channel notifications.
- * Chosen only when the client declared the capability or loaded us as a channel: Claude Code drops
- * channel events silently otherwise, and these messages would then never reach team_read.
- */
+// Only when the client declared or loaded the channel: Claude Code drops events silently otherwise,
+// and a pushed message is not returned by team_read again.
 export const mcpChannel: DeliveryFactory = {
   id: "mcp-channel",
   select: ({ client, link }) =>
@@ -24,9 +21,12 @@ export const mcpChannel: DeliveryFactory = {
       : null,
 };
 
-const FLAGS = ["--dangerously-load-development-channels", "--channels"];
-/** True when argv enables `server:<name>` as a channel, e.g. `--dangerously-load-development-channels server:chalito_team`. */
+// --channels only admits allowlisted plugins; a bare server there would be dropped, losing pushed messages.
+const FLAGS = ["--dangerously-load-development-channels"];
+/** True when argv loads `server:<name>` as a development channel. */
 export const argvLoadsChannel = (argv: readonly string[], server = TEAM_SERVER_NAME): boolean => {
+  // Print mode ignores the flag, so events would be dropped.
+  if (argv.some((a) => a === "-p" || a === "--print" || a.startsWith("--print="))) return false;
   let on = false;
   for (const raw of argv) {
     const eq = raw.indexOf("=");
@@ -60,9 +60,10 @@ const attr = (s: string) => s.replace(META, "").slice(0, 80);
 // Peer text sits inside Claude Code's <channel> tag: no tags of its own, every line visibly quoted.
 const body = (text: string) =>
   clean(text.slice(0, 8000))
+    .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .split("\n")
+    .split(/\r\n|[\n\r\u0085\u2028\u2029]/)
     .map((line) => `> ${line}`)
     .join("\n");
 

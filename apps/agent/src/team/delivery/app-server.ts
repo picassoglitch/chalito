@@ -1,9 +1,6 @@
 import type { DeliveryAdapter, DeliveryFactory } from "./types.js";
 
-/**
- * Extension point for apps that run their own local server and accept new turns there (Codex app-server).
- * Chalito ships no implementation; a provider module registers one and the chain picks it for that provider.
- */
+/** Extension point for apps that take new turns on their own local server (Codex app-server); none built yet. */
 export interface AppServerDelivery {
   provider: string;
   adapter(): DeliveryAdapter;
