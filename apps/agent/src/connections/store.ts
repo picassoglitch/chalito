@@ -32,7 +32,8 @@ export type ConnectorStoreCode =
   | "command_not_found"
   | "state_corrupt"
   | "keychain"
-  | "write_failed";
+  | "write_failed"
+  | "too_many";
 export class ConnectorStoreError extends Error {
   constructor(readonly code: ConnectorStoreCode) {
     super(code);
@@ -67,7 +68,9 @@ const Installed = z
     secretEnv: z.array(z.string().regex(ENV_NAME)).max(16).optional(),
   })
   .strict();
-const StoreFile = z.object({ v: z.literal(1), installed: z.array(Installed).max(500) }).strict();
+/** The proxy reads at most this many (installed.ts MAX_INSTALLED); more would be silently ignored. */
+export const MAX_INSTALLED = 64;
+const StoreFile = z.object({ v: z.literal(1), installed: z.array(Installed).max(MAX_INSTALLED) }).strict();
 type StoreFile = z.infer<typeof StoreFile>;
 
 /** Keychain accounts a connector uses (the proxy's convention): `token` for a remote, `secretEnv` names for stdio. */
@@ -155,18 +158,22 @@ export class ConnectorStore {
       const values = checkValues(req.inputs, req.values);
       const file = this.#read();
       if (file.installed.some((c) => c.id === entry.id)) throw new ConnectorStoreError("already_installed");
+      if (file.installed.length >= MAX_INSTALLED) throw new ConnectorStoreError("too_many");
 
       const written: string[] = [];
       const secretEnv: string[] = [];
       try {
         for (const [spec, value] of values) {
           // The proxy sends a remote's `token` as `Authorization: Bearer`; stdio values go in as env.
-          const remote = spec.as === "header";
+          const remote = entry.transport === "remote";
+          if (remote !== (spec.as === "header")) throw new ConnectorStoreError("bad_input");
           if (remote && (spec.name.toLowerCase() !== "authorization" || (spec.prefix ?? "Bearer ") !== "Bearer "))
             throw new ConnectorStoreError("bad_input");
           if (!remote && !ENV_NAME.test(spec.name)) throw new ConnectorStoreError("bad_input");
           const name = connectorSecretName(entry.id, remote ? "token" : spec.name);
-          await this.d.secrets.set(name, value);
+          if (written.includes(name)) throw new ConnectorStoreError("bad_input");
+          // The proxy adds "Bearer " itself; a pasted "Bearer xyz" would otherwise be sent twice.
+          await this.d.secrets.set(name, remote ? value.replace(/^bearer\s+/i, "") : value);
           written.push(name);
           if (!remote) secretEnv.push(spec.name);
         }
@@ -179,6 +186,8 @@ export class ConnectorStore {
         ...entry,
         installedAt: (this.d.now ?? Date.now)(),
         confirmedWarning: unverified,
+        // The proxy reads secrets only for `token` connectors: say so exactly when something was stored.
+        auth: written.length ? "token" : "none",
         ...(secretEnv.length ? { secretEnv } : {}),
       };
       try {

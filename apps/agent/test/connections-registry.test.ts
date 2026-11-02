@@ -292,18 +292,21 @@ describe("pinned versions only (security review, 2026-11-01)", () => {
     expect(pypi("1.0.0rc1")).not.toBeNull();
   });
 
-  it("the registry's file hash is recorded as integrity", () => {
+  it("PyPI keeps the registry's file hash; npm never takes it from the MCP registry (npmjs is asked at install)", () => {
     const sha = "a".repeat(64);
-    const r = mapServer({
-      server: {
-        name: "io.github.x/y",
-        version: "1.0.0",
-        packages: [
-          { registryType: "npm", identifier: "pkg", version: "1.0.0", fileSha256: sha, transport: { type: "stdio" } },
-        ],
-      },
-    });
-    expect(r?.entry.server).toMatchObject({ integrity: `sha256-${sha}` });
+    const pkg = (registryType: string) =>
+      mapServer({
+        server: {
+          name: "io.github.x/y",
+          version: "1.0.0",
+          packages: [
+            { registryType, identifier: "pkg", version: "1.0.0", fileSha256: sha, transport: { type: "stdio" } },
+          ],
+        },
+      });
+    expect(pkg("pypi")?.entry.server).toMatchObject({ integrity: `sha256-${sha}` });
+    expect(pkg("npm")?.entry.server).not.toHaveProperty("integrity");
+    expect(NPM_VERSION.test("1.2.3+build.1")).toBe(false);
   });
 });
 

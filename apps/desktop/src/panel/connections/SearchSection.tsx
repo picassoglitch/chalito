@@ -24,6 +24,8 @@ const ERRORS = new Set([
   "command_not_found",
   "state_corrupt",
   "keychain",
+  "too_many",
+  "integrity_unavailable",
   "unreachable",
   "not_found",
   "query_too_short",

@@ -101,7 +101,7 @@ export const registryId = (name: string): string =>
 // The registry entry's own version: only an id for re-reading it, never what runs.
 const SERVER_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
 // What runs must be pinned: tags like latest/next or ranges would change under us.
-export const NPM_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+export const NPM_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/; // no +build: npm drops it
 export const PYPI_VERSION = /^\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?$/;
 const NPM_NAME = /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
 const PYPI_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -224,7 +224,9 @@ export const mapServer = (raw: unknown, o: { localForTests?: boolean } = {}): Re
     const inputs = (p.environmentVariables ?? []).map((e) => toInput(e, "env"));
     if (inputs.some((i) => i === null)) continue;
     const ok = inputs as InputSpec[];
-    const integrity = p.fileSha256 && /^[a-f0-9]{64}$/.test(p.fileSha256) ? `sha256-${p.fileSha256}` : undefined;
+    // npm is pinned from npmjs at install (ipc.ts); the registry's own hash is only used for PyPI.
+    const integrity =
+      command === "uvx" && p.fileSha256 && /^[a-f0-9]{64}$/.test(p.fileSha256) ? `sha256-${p.fileSha256}` : undefined;
     return {
       ref,
       repository: repo,

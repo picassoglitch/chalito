@@ -8,9 +8,9 @@ import type { ConnectorEntry } from "./types.js";
 // catalog key (apps/catalog-keys.ts), never the dev key.
 
 export const CONNECTOR_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** Header or environment variable names: what a secret is delivered as. */
 /** Environment variable names the proxy (PR C) passes to a stdio server. */
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+/** Header or environment variable names: what a secret is delivered as. */
 export const INPUT_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/;
 
 /** One value the person types at install (a token, a project ref). Every value goes to the keychain. */

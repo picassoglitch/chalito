@@ -42,7 +42,11 @@ export interface SearchView {
   /** The registry didn't answer; the verified ones are still listed. */
   error: string | null;
 }
-export type InstalledView = ConnectorEntry & { installedAt: number; confirmedWarning: boolean; slots: string[] };
+export type InstalledView = ConnectorEntry & {
+  installedAt: number | string;
+  confirmedWarning: boolean;
+  slots: string[];
+};
 export interface CheckView {
   entry: ConnectorEntry;
   inputs: InputSpec[];

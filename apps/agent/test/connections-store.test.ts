@@ -158,7 +158,11 @@ describe("ConnectorStore", () => {
     ];
     await expect(
       store.install({
-        entry: community,
+        entry: {
+          ...community,
+          transport: "stdio",
+          server: { package: "p", version: "1.0.0", command: "npx", args: ["-y", "p@1.0.0"] },
+        },
         inputs: two,
         values: { A: "1", B: "2" },
         confirmed: true,
@@ -220,6 +224,85 @@ describe("ConnectorStore", () => {
         warningAccepted: true,
       }),
     ).rejects.toThrow("bad_input");
+  });
+
+  it("auth follows what was stored; a pasted Bearer isn't doubled; inputs must match the transport", async () => {
+    const mem = new MemorySecretStore();
+    const store = new ConnectorStore({ dir, secrets: mem });
+    const optional = { ...token, required: false };
+    const a = await store.install({
+      entry: community,
+      inputs: [optional],
+      values: {},
+      confirmed: true,
+      warningAccepted: true,
+    });
+    expect(a.auth).toBe("none");
+    const b = await store.install({
+      entry: { ...community, id: "b-two" },
+      inputs: [token],
+      values: { Authorization: "Bearer xyz" },
+      confirmed: true,
+      warningAccepted: true,
+    });
+    expect(b.auth).toBe("token");
+    expect(await mem.get("chalito.connector.b-two.token")).toBe("xyz");
+    const stdio: ConnectorEntry = {
+      ...community,
+      id: "c-three",
+      transport: "stdio",
+      server: { package: "p", version: "1.0.0", command: "npx", args: ["-y", "p@1.0.0"] },
+      auth: "none",
+    };
+    const env: InputSpec = { name: "WORKSPACE_ROOT", as: "env", secret: false, required: true };
+    const c = await store.install({
+      entry: stdio,
+      inputs: [env],
+      values: { WORKSPACE_ROOT: "/w" },
+      confirmed: true,
+      warningAccepted: true,
+    });
+    expect(c).toMatchObject({ auth: "token", secretEnv: ["WORKSPACE_ROOT"] });
+    await expect(
+      store.install({
+        entry: { ...stdio, id: "d-four" },
+        inputs: [token],
+        values: { Authorization: "x" },
+        confirmed: true,
+        warningAccepted: true,
+      }),
+    ).rejects.toThrow("bad_input");
+    await expect(
+      store.install({
+        entry: { ...community, id: "e-five" },
+        inputs: [token, { ...token, name: "authorization" }],
+        values: { Authorization: "x", authorization: "y" },
+        confirmed: true,
+        warningAccepted: true,
+      }),
+    ).rejects.toThrow("bad_input");
+    expect(mem.values.size).toBe(2);
+  });
+
+  it("stops at the 64 connectors the proxy reads", async () => {
+    const store = new ConnectorStore({ dir, secrets: new MemorySecretStore() });
+    for (let i = 0; i < 64; i++)
+      await store.install({
+        entry: { ...community, id: `c-${i}` },
+        inputs: [],
+        values: {},
+        confirmed: true,
+        warningAccepted: true,
+      });
+    await expect(
+      store.install({
+        entry: { ...community, id: "c-64" },
+        inputs: [],
+        values: {},
+        confirmed: true,
+        warningAccepted: true,
+      }),
+    ).rejects.toThrow("too_many");
   });
 
   it("a corrupt file is reported, never overwritten", async () => {

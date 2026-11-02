@@ -1119,6 +1119,8 @@
         "unknown_connector": "That connection is no longer listed.",
         "not_installed": "That connection wasn't installed anymore.",
         "confirm_required": "Confirm before installing.",
+        "too_many": "You have the maximum number of connections (64). Remove one to add another.",
+        "integrity_unavailable": "We couldn't confirm the package on npm, so we didn't install it.",
         "other": "Something went wrong. Try again."
       }
     }

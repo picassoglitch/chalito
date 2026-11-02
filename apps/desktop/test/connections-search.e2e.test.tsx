@@ -57,7 +57,11 @@ const mount = () => {
   const handlers = connectionSearchHandlers(
     connectionsSearchFeature({
       verified: new VerifiedConnectors(shippedConnectors()),
-      dir: join(home, ".chalito"), secrets, audit: (t) => audit.push(t), registry: { base } }),
+      dir: join(home, ".chalito"),
+      secrets,
+      audit: (t) => audit.push(t),
+      registry: { base },
+    }),
   );
   const ipc = invokeConnectionsSearchIpc(async <T,>(_cmd: string, args?: Record<string, unknown>): Promise<T> => {
     try {

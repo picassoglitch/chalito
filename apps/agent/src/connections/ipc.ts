@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IpcError, type IpcHandlers } from "../ipc-server.js";
 import type { SecretStore } from "../secrets.js";
-import type { VerifiedConnectors} from "./catalog.js";
+import type { VerifiedConnectors } from "./catalog.js";
 import { catalogEntry, type InputSpec } from "./catalog.js";
 import {
   getRegistryServer,
@@ -99,8 +99,8 @@ const resolve = async (f: ConnectionsSearchFeature, ref: ConnectorRef): Promise<
     case "registry": {
       const r = await getRegistryServer(ref, f.registry);
       const srv = r.entry.server;
-      if ("command" in srv && srv.command === "npx" && !srv.integrity) {
-        // Pin what npx will fetch; without a hash we don't install (PR C refuses a mismatch at start).
+      if ("command" in srv && srv.command === "npx") {
+        // Recorded from npmjs, never the MCP registry; without it we don't install. The proxy checking it is a follow-up.
         const integrity = await npmIntegrity(srv.package, srv.version, f.registry).catch(() => {
           throw new IpcError("integrity_unavailable");
         });
