@@ -23,6 +23,7 @@ import { boardMood } from "../lib/board/protocol.js";
 import { customBoardCard, rosterBoardCard } from "../lib/board/pet-card.js";
 import { dayPartAt, type DayPart } from "../lib/board/backdrop.js";
 import type { CardSource } from "../lib/board/link.js";
+import { refreshOnStorage } from "../lib/custom-companion.js";
 
 /** What the pet does with the LCD board: show its card and face there, mirror the board's tricks. */
 export type PetBoard = Pick<BoardLink, "setCard" | "mood" | "onPet" | "activity">;
@@ -54,7 +55,10 @@ export const startPet = (
   canvas: HTMLCanvasElement,
   sh: DesktopShell,
   cosmetics: () => Promise<SceneCosmetic[] | null> = async () => null,
-  myCard: Pick<CustomCardSource, "subscribe" | "getSnapshot" | "files" | "refresh"> | null = null,
+  myCard: Pick<
+    CustomCardSource,
+    "subscribe" | "getSnapshot" | "files" | "refresh" | "refreshAfterChange"
+  > | null = null,
   win: PetWindowApi | null = null,
   board: PetBoard | null = null,
 ) => {
@@ -170,12 +174,12 @@ export const startPet = (
       );
   };
   let walkOn = loadPetWalk();
-  const onStorage = () => {
+  const onStorage = (e: StorageEvent) => {
     walkOn = loadPetWalk();
     applySettings();
     void wear.refresh();
     // The panel changed something (maybe the companion): ask whether it wears a custom card.
-    void myCard?.refresh();
+    if (myCard) void refreshOnStorage(e.key, myCard);
   };
   const offCard = myCard?.subscribe(applySettings);
   // A custom card made or dropped elsewhere (the PWA) shows up within this; its URLs refresh themselves.

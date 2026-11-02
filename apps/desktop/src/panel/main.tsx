@@ -108,7 +108,10 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
         : undefined,
     [client, sh, store],
   );
-  const custom = useMemo(() => (conn ? new CustomCompanion(conn.avatar) : null), [conn]);
+  const custom = useMemo(
+    () => (conn ? new CustomCompanion(conn.avatar, { beforeWear: () => store.flushCompanion() }) : null),
+    [conn, store],
+  );
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);

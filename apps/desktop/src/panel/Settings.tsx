@@ -26,9 +26,10 @@ export const Settings = ({
   const view = useSyncExternalStore(custom?.subscribe ?? noop, custom?.getSnapshot ?? none);
   // Each visit re-reads them: one may have been made in the PWA since.
   useEffect(() => void custom?.load(), [custom]);
+  // With a character to switch from, avatar picks queue behind its switches (last pick wins).
   const set: SettingContext["set"] = (k, v) => {
-    if (k === "avatar" && view.wearing) void custom?.backToRoster();
-    onChange(k, v);
+    if (k === "avatar" && custom && view.own) void custom.pickRoster(() => onChange(k, v));
+    else onChange(k, v);
   };
   return (
     <SettingsPanel

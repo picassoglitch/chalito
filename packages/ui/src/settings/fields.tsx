@@ -351,7 +351,7 @@ export const CompanionPicker = ({
           {customTile ? (
             <label
               data-testid="companion-own"
-              className={`cursor-pointer rounded-xl border p-2 text-center ${customActive ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
+              className={`relative cursor-pointer rounded-xl border p-2 text-center ${customActive ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
             >
               <input
                 type="radio"
@@ -359,7 +359,9 @@ export const CompanionPicker = ({
                 className="sr-only"
                 value="own"
                 checked={customActive}
-                onChange={customTile.onPick}
+                readOnly
+                // A click, not a change: still checked while switching away, a tap must count.
+                onClick={customTile.onPick}
               />
               <span aria-hidden className="mx-auto mb-1 block h-16 w-16 overflow-hidden rounded-full bg-emerald-50">
                 {customTile.thumb ? (

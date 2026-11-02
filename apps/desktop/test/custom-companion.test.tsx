@@ -1,174 +1,346 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { useSyncExternalStore } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS } from "@chalito/ui";
+import { DEFAULT_SETTINGS, type SettingsValues } from "@chalito/ui";
 import type { Locale } from "@chalito/protocol";
 import { TextProviders } from "../src/lib/i18n.js";
 import { unavailableIpc } from "../src/lib/ipc.js";
 import { PushToTalk, unavailableVoice } from "../src/lib/voice.js";
-import { Panel, type PanelProps } from "../src/panel/Panel.js";
-import { CustomCompanion, httpCompanionAvatar } from "../src/lib/custom-companion.js";
+import { Panel } from "../src/panel/Panel.js";
+import { DesktopSettings } from "../src/lib/settings-sync.js";
+import { companionCardSource } from "../src/lib/custom-card.js";
+import {
+  CARD_CHANGED_KEY,
+  CustomCompanion,
+  httpCompanionAvatar,
+  refreshOnStorage,
+} from "../src/lib/custom-companion.js";
 
 /** Owner 2026-11-02: pick the character you built as the desktop pet, like in the PWA. */
 
 const BASE = "https://api.test";
-const THUMB = "https://storage.googleapis.com/avatars/o/a1/thumb-128.webp?sig=1";
-const CARD_KEY = "chalito-desktop-companion-card";
-
-type Call = { method: string; path: string; body: unknown; auth: string | null };
-
-/** The api at the HTTP boundary: GET /creations and POST /use, with scripted answers. */
-const fakeApi = (opts: { creations?: unknown[] | "down"; use?: number }) => {
-  const calls: Call[] = [];
-  const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-    const path = String(url).replace(`${BASE}/v1/avatar`, "");
-    const headers = new Headers(init?.headers);
-    calls.push({
-      method: init?.method ?? "GET",
-      path,
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
-      auth: headers.get("authorization"),
-    });
-    if (path === "/creations") {
-      if (opts.creations === "down") return new Response("down", { status: 503 });
-      return Response.json({ creations: opts.creations ?? [] });
-    }
-    if (path === "/use") {
-      const status = opts.use ?? 200;
-      return status === 200 ? Response.json({ ok: true }) : Response.json({ error: "x" }, { status });
-    }
-    return new Response("not found", { status: 404 });
-  });
-  return { calls, fetchImpl: fetchImpl as unknown as typeof fetch };
+const ASSET = "0123456789abcdef0123456789abcdef";
+const GCS = `https://storage.googleapis.com/chalito-avatars/avatars/o/${ASSET}`;
+const THUMB = `${GCS}/thumb-128.webp?sig=1`;
+const CARD = {
+  assetId: ASSET,
+  card: {
+    manifest: {
+      width: 600,
+      height: 800,
+      emotions: { mode: "swap", src: { neutral: "layer-neutral.webp" } },
+      thumbs: { "128": "thumb-128.webp" },
+      anchors: { head: { x: 0.5, y: 0.1, z: 1 } },
+    },
+    urls: { "layer-neutral.webp": `${GCS}/layer-neutral.webp?s`, "thumb-128.webp": `${GCS}/thumb-128.webp?s` },
+    expiresAt: 1_800_000_000_000,
+  },
 };
 
-const kept = (worn: boolean) => [
-  { creationId: "cr_new", createdAt: 2, worn, thumb: THUMB },
-  { creationId: "cr_old", createdAt: 1, worn: false },
-];
+// The api and settings RPCs over one companion row, like the database: /use sets the worn
+// character, and an avatar change clears it (companions trigger, migration 20261005000100).
+const backend = (o: { worn?: string | null; kept?: string[]; useStatus?: number; down?: boolean } = {}) => {
+  const state = { worn: o.worn ?? null, avatar: "luna", useStatus: o.useStatus ?? 200 };
+  const kept = o.kept ?? ["cr_new", "cr_old"];
+  const log: string[] = [];
+  const held = new Map<string, Promise<void>[]>();
+  /** The next request to `path` waits until released, then reads the row. */
+  const hold = (path: string) => {
+    let release!: () => void;
+    held.set(path, [...(held.get(path) ?? []), new Promise<void>((r) => (release = r))]);
+    return { release };
+  };
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const path = String(url).replace(`${BASE}/v1/avatar`, "");
+    if (o.down) return new Response("down", { status: 503 });
+    if (new Headers(init?.headers).get("authorization") !== "Bearer device-token")
+      return new Response("no", { status: 401 });
+    const gate = held.get(path)?.shift();
+    if (path === "/use") {
+      const { creationId } = JSON.parse(String(init!.body)) as { creationId: string | null };
+      log.push(`use:${creationId}`);
+      await gate;
+      if (state.useStatus !== 200) return Response.json({ error: "x" }, { status: state.useStatus });
+      state.worn = creationId;
+      return Response.json({ ok: true });
+    }
+    log.push(`GET ${path}`);
+    await gate;
+    if (path === "/creations")
+      return Response.json({
+        creations: kept.map((id, i) => ({
+          creationId: id,
+          createdAt: kept.length - i,
+          worn: id === state.worn,
+          ...(i === 0 ? { thumb: THUMB } : {}),
+        })),
+      });
+    if (path === "/companion") return Response.json(state.worn ? CARD : { assetId: null });
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  const settings = {
+    load: async () => ({ values: { ...DEFAULT_SETTINGS, avatar: state.avatar } as SettingsValues, onboarded: true }),
+    save: async () => undefined,
+    saveCompanion: async (v: Pick<SettingsValues, "avatar" | "companionName">) => {
+      log.push(`saveCompanion:${v.avatar}`);
+      if (v.avatar !== state.avatar) state.worn = null;
+      state.avatar = v.avatar;
+    },
+  };
+  return { state, log, hold, fetchImpl, settings };
+};
 
-const renderSettings = (p: Partial<PanelProps>, locale: Locale = "es") =>
-  render(
-    <TextProviders locale={locale}>
+/** The panel's wiring (main.tsx): DesktopSettings + CustomCompanion behind the real Panel. */
+const mount = (b: ReturnType<typeof backend>, o: { locale?: Locale; signedOut?: boolean } = {}) => {
+  const store = new DesktopSettings(b.settings, { load: () => DEFAULT_SETTINGS, save: () => undefined });
+  const custom = o.signedOut
+    ? null
+    : new CustomCompanion(
+        httpCompanionAvatar(BASE, async () => "device-token", b.fetchImpl),
+        { beforeWear: () => store.flushCompanion() },
+      );
+  const App = () => {
+    const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
+    return (
       <Panel
         client={null}
         ipc={unavailableIpc}
         ptt={new PushToTalk(unavailableVoice)}
-        settings={{ ...DEFAULT_SETTINGS, avatar: "luna" }}
-        onSetting={() => undefined}
+        settings={view.values}
+        onSetting={(k, v) => store.set(k, v)}
+        settingsError={view.error}
+        customCompanion={custom}
         dnd={false}
         onDnd={() => undefined}
         hubPlansUrl="https://hub.example/planes"
         phoneVerifier={{ start: async () => ({ ok: true }), check: async () => ({ ok: true }) }}
         initialTab="settings"
-        {...p}
       />
+    );
+  };
+  render(
+    <TextProviders locale={o.locale ?? "es"}>
+      <App />
     </TextProviders>,
   );
+  return { store, custom: custom! };
+};
 
-const companion = (api: ReturnType<typeof fakeApi>) =>
-  new CustomCompanion(httpCompanionAvatar(BASE, async () => "device-token", api.fetchImpl));
+/** Lets fetches, bodies and renders settle (setTimeout is faked: the debounce only moves on purpose). */
+const settle = async (rounds = 20) => {
+  for (let i = 0; i < rounds; i++) await act(() => new Promise<void>((r) => setImmediate(r)));
+};
+const ready = async (store: DesktopSettings) => {
+  await act(() => store.start());
+  await settle();
+};
+const debounce = async () => {
+  await act(() => vi.advanceTimersByTimeAsync(1_000));
+  await settle();
+};
 
-const picker = () => screen.getByTestId("companion-picker");
-const radios = () => within(picker()).getAllByRole("radio") as HTMLInputElement[];
+const radios = () => within(screen.getByTestId("companion-picker")).getAllByRole("radio") as HTMLInputElement[];
+const own = () => radios()[0]!;
+const roster = (value: string) => radios().find((r) => r.value === value)!;
+const checked = () =>
+  radios()
+    .filter((r) => r.checked)
+    .map((r) => r.value);
 
-beforeEach(() => localStorage.clear());
-afterEach(cleanup);
+beforeEach(() => {
+  localStorage.clear();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+});
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe("desktop companion picker: your own character", () => {
-  it("shows no tile and no error while signed out", () => {
-    renderSettings({});
+  it("shows no tile and no error while signed out", async () => {
+    const { store } = mount(backend(), { signedOut: true });
+    await ready(store);
     expect(screen.queryByTestId("companion-own")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it.each([
-    ["none kept", [] as unknown[]],
-    ["the api is down", "down" as const],
-  ])("shows no tile and no error when %s", async (_, creations) => {
-    const api = fakeApi({ creations });
-    renderSettings({ customCompanion: companion(api) });
-    await waitFor(() => expect(api.calls.some((c) => c.path === "/creations")).toBe(true));
-    await new Promise((r) => setTimeout(r, 0));
+    ["none kept", { kept: [] }],
+    ["the api is down", { down: true }],
+  ])("shows no tile and no error when %s", async (_, o) => {
+    const { store } = mount(backend(o));
+    await ready(store);
     expect(screen.queryByTestId("companion-own")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
-    // The roster still works as before: the chosen avatar is checked.
-    expect(radios().find((r) => r.checked)?.value).toBe("luna");
+    expect(checked()).toEqual(["luna"]);
   });
 
   it("lists the newest character first, with its picture, as the device", async () => {
-    const api = fakeApi({ creations: kept(false) });
-    renderSettings({ customCompanion: companion(api) }, "en");
-    const tile = await screen.findByTestId("companion-own");
-    expect(radios()[0]!.value).toBe("own");
+    const b = backend();
+    const { store } = mount(b, { locale: "en" });
+    await ready(store);
+    const tile = screen.getByTestId("companion-own");
+    expect(own().value).toBe("own");
     expect(tile.textContent).toContain("Your character");
     expect(tile.querySelector("img")?.getAttribute("src")).toBe(THUMB);
-    expect(api.calls[0]).toMatchObject({ method: "GET", path: "/creations", auth: "Bearer device-token" });
-    expect((radios()[0] as HTMLInputElement).checked).toBe(false);
+    expect(b.log).toEqual(["GET /creations"]);
+    expect(own().checked).toBe(false);
   });
 
   it("wears it on tap, marks it chosen and tells the pet window", async () => {
-    const api = fakeApi({ creations: kept(false) });
-    renderSettings({ customCompanion: companion(api) });
-    await screen.findByTestId("companion-own");
-    fireEvent.click(radios()[0]!);
-    await waitFor(() => expect(radios()[0]!.checked).toBe(true));
-    expect(api.calls.filter((c) => c.path === "/use")).toEqual([
-      { method: "POST", path: "/use", body: { creationId: "cr_new" }, auth: "Bearer device-token" },
-    ]);
-    expect(
-      radios()
-        .filter((r) => r.checked)
-        .map((r) => r.value),
-    ).toEqual(["own"]);
+    const b = backend();
+    const { store } = mount(b);
+    await ready(store);
+    fireEvent.click(own());
+    await settle();
+    expect(b.log).toEqual(["GET /creations", "use:cr_new"]);
+    expect(checked()).toEqual(["own"]);
     expect(screen.getByTestId("companion-custom")).toBeTruthy();
-    expect(localStorage.getItem(CARD_KEY)).not.toBeNull();
+    expect(localStorage.getItem(CARD_CHANGED_KEY)).not.toBeNull();
+    expect(b.state.worn).toBe("cr_new");
   });
 
-  it("goes back to the roster when a roster pet is picked while wearing it", async () => {
-    const api = fakeApi({ creations: kept(true) });
-    const onSetting = vi.fn();
-    renderSettings({ customCompanion: companion(api), onSetting });
-    await waitFor(() => expect(radios()[0]!.checked).toBe(true));
-    const luna = radios().find((r) => r.value === "luna")!;
-    expect(luna.checked).toBe(false);
-    fireEvent.click(luna);
-    expect(onSetting).toHaveBeenCalledWith("avatar", "luna");
-    await waitFor(() => expect(radios()[0]!.checked).toBe(false));
-    expect(api.calls.filter((c) => c.path === "/use").map((c) => c.body)).toEqual([{ creationId: null }]);
-    expect(localStorage.getItem(CARD_KEY)).not.toBeNull();
+  it("goes back to the roster only once the server stopped wearing it", async () => {
+    const b = backend({ worn: "cr_new" });
+    const { store } = mount(b);
+    await ready(store);
+    expect(checked()).toEqual(["own"]);
+    const gate = b.hold("/use");
+    fireEvent.click(roster("bruno"));
+    await settle();
+    expect(store.getSnapshot().values?.avatar).toBe("luna");
+    gate.release();
+    await settle();
+    expect(store.getSnapshot().values?.avatar).toBe("bruno");
+    expect(checked()).toEqual(["bruno"]);
+    await debounce();
+    expect(b.log.slice(1)).toEqual(["use:null", "saveCompanion:bruno"]);
+    expect(b.state).toMatchObject({ worn: null, avatar: "bruno" });
+    expect(localStorage.getItem(CARD_CHANGED_KEY)).not.toBeNull();
   });
 
-  it("doesn't call /use for a roster pick when not wearing it", async () => {
-    const api = fakeApi({ creations: kept(false) });
-    const onSetting = vi.fn();
-    renderSettings({ customCompanion: companion(api), onSetting });
-    await screen.findByTestId("companion-own");
-    fireEvent.click(radios().find((r) => !r.checked && r.value !== "own")!);
-    expect(onSetting).toHaveBeenCalled();
-    await new Promise((r) => setTimeout(r, 0));
-    expect(api.calls.some((c) => c.path === "/use")).toBe(false);
+  it("a roster pick when not wearing it doesn't call /use", async () => {
+    const b = backend();
+    const { store } = mount(b);
+    await ready(store);
+    fireEvent.click(roster("bruno"));
+    expect(store.getSnapshot().values?.avatar).toBe("bruno");
+    await debounce();
+    expect(b.log.slice(1)).toEqual(["saveCompanion:bruno"]);
   });
 
-  it.each([
-    ["wearing it", false, 0],
-    ["going back to the roster", true, -1],
-  ])("a failed use while %s says so and keeps the selection", async (_, worn, pick) => {
-    const api = fakeApi({ creations: kept(worn), use: 500 });
-    renderSettings({ customCompanion: companion(api) }, "en");
-    await screen.findByTestId("companion-own");
-    await waitFor(() => expect(radios()[0]!.checked).toBe(worn));
-    const before = radios()
-      .filter((r) => r.checked)
-      .map((r) => r.value);
-    fireEvent.click(pick === 0 ? radios()[0]! : radios().find((r) => !r.checked && r.value !== "own")!);
-    expect((await screen.findByRole("alert")).textContent).toBe("Couldn't switch your character. Try again.");
-    expect(radios()[0]!.checked).toBe(worn);
-    if (!worn)
-      expect(
-        radios()
-          .filter((r) => r.checked)
-          .map((r) => r.value),
-      ).toEqual(before);
-    expect(localStorage.getItem(CARD_KEY)).toBeNull();
+  it("roster pick then own tile within the debounce: the avatar lands first, so the character stays on", async () => {
+    const b = backend();
+    const { store } = mount(b);
+    await ready(store);
+    fireEvent.click(roster("bruno"));
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    fireEvent.click(own());
+    await settle();
+    await debounce();
+    expect(b.log.slice(1)).toEqual(["saveCompanion:bruno", "use:cr_new"]);
+    expect(b.state).toMatchObject({ worn: "cr_new", avatar: "bruno" });
+    expect(checked()).toEqual(["own"]);
+  });
+
+  it("own tile tapped while going back to the roster: the last pick wins", async () => {
+    const b = backend({ worn: "cr_new" });
+    const { store } = mount(b);
+    await ready(store);
+    const gate = b.hold("/use");
+    fireEvent.click(roster("bruno"));
+    await settle();
+    fireEvent.click(own());
+    await settle();
+    gate.release();
+    await settle();
+    await debounce();
+    expect(b.log.slice(1)).toEqual(["use:null", "saveCompanion:bruno", "use:cr_new"]);
+    expect(b.state).toMatchObject({ worn: "cr_new", avatar: "bruno" });
+    expect(checked()).toEqual(["own"]);
+  });
+
+  it("a failed wear says so and keeps the selection", async () => {
+    const b = backend({ useStatus: 500 });
+    const { store } = mount(b, { locale: "en" });
+    await ready(store);
+    fireEvent.click(own());
+    await settle();
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't switch your character. Try again.");
+    expect(checked()).toEqual(["luna"]);
+    expect(localStorage.getItem(CARD_CHANGED_KEY)).toBeNull();
+  });
+
+  it("a failed switch back to the roster changes nothing and re-reads what the server wears", async () => {
+    const b = backend({ worn: "cr_new", useStatus: 500 });
+    const { store } = mount(b, { locale: "en" });
+    await ready(store);
+    fireEvent.click(roster("bruno"));
+    await settle();
+    await debounce();
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't switch your character. Try again.");
+    expect(checked()).toEqual(["own"]);
+    expect(store.getSnapshot().values?.avatar).toBe("luna");
+    expect(b.log.slice(1)).toEqual(["use:null", "GET /creations"]);
+    expect(b.state).toMatchObject({ worn: "cr_new", avatar: "luna" });
+    expect(localStorage.getItem(CARD_CHANGED_KEY)).toBeNull();
+  });
+
+  it("a kept list read before a wear doesn't undo it; a fresh read clears an old failure", async () => {
+    const b = backend();
+    const { store, custom } = mount(b);
+    await ready(store);
+    const stale = b.hold("/creations");
+    const reading = custom.load(); // e.g. the tab opened again
+    await settle();
+    fireEvent.click(own());
+    await settle();
+    expect(checked()).toEqual(["own"]);
+    b.state.worn = null; // what that earlier read saw
+    stale.release();
+    await act(() => reading);
+    await settle();
+    expect(checked()).toEqual(["own"]);
+
+    b.state.worn = "cr_new";
+    b.state.useStatus = 500;
+    fireEvent.click(roster("bruno"));
+    await settle();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    await act(() => custom.load());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("the pet window after a pick", () => {
+  it("a card request already running when the panel wears the character doesn't keep the roster pet", async () => {
+    vi.useRealTimers();
+    const b = backend();
+    const card = companionCardSource(async () => ({
+      companionCard: async () =>
+        (
+          await b.fetchImpl(`${BASE}/v1/avatar/companion`, { headers: { authorization: "Bearer device-token" } })
+        ).json(),
+    }));
+    await card.refresh();
+    expect(card.getSnapshot()).toBeNull();
+    // The pet's periodic refresh is on its way and answers from before the change.
+    const before = b.hold("/companion");
+    const running = card.refresh();
+    const custom = new CustomCompanion(httpCompanionAvatar(BASE, async () => "device-token", b.fetchImpl));
+    await custom.load();
+    await custom.wear();
+    expect(b.state.worn).toBe("cr_new");
+    expect(localStorage.getItem(CARD_CHANGED_KEY)).not.toBeNull();
+    // The storage event the pet window gets for that write.
+    const pet = refreshOnStorage(CARD_CHANGED_KEY, card);
+    b.state.worn = null;
+    before.release();
+    await running;
+    b.state.worn = "cr_new";
+    await pet;
+    expect(card.getSnapshot()?.assetId).toBe(ASSET);
+    expect(b.log.filter((l) => l === "GET /companion")).toHaveLength(3);
+    card.dispose();
   });
 });

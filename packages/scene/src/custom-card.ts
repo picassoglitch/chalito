@@ -166,6 +166,7 @@ export class SignedCardsSource {
   readonly #opts: Required<SourceTiming> & Pick<SignedCardsSourceOptions, "fetch" | "waitOnFailure" | "firstRetryMs">;
   #cards: ReadonlyMap<string, SignedCard> | undefined = undefined;
   #inflight: Promise<void> | null = null;
+  #followUp: Promise<void> | null = null;
   #timer: unknown = null;
   #started = false;
   #disposed = false;
@@ -214,6 +215,18 @@ export class SignedCardsSource {
       this.#inflight = null;
     });
     return this.#inflight;
+  };
+
+  /** After a change elsewhere (a "use"): a request already running may predate it, so a new one follows it. */
+  refreshAfterChange = (): Promise<void> => {
+    if (this.#disposed) return Promise.resolve();
+    const running = this.#inflight;
+    if (!running) return this.refresh();
+    this.#followUp ??= running.then(() => {
+      this.#followUp = null;
+      return this.refresh();
+    });
+    return this.#followUp;
   };
 
   /** One card's files for a loader (late-bound: always the freshest URLs), or null without one. */
@@ -337,6 +350,8 @@ export class CustomCardSource {
   }
 
   refresh = (): Promise<void> => this.#inner.refresh();
+
+  refreshAfterChange = (): Promise<void> => this.#inner.refreshAfterChange();
 
   files(): CardFiles | null {
     return this.#inner.files(SELF);

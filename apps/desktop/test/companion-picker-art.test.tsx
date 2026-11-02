@@ -31,9 +31,11 @@ describe("companion picker on the desktop", () => {
   it("keeps each hidden radio inside its tile, so a click doesn't scroll the panel to a blank area", () => {
     const { container } = render(
       <TextProviders locale="es">
-        <CompanionPicker value="luna" onChange={() => undefined} />
+        <CompanionPicker value="luna" onChange={() => undefined} customTile={{ onPick: () => undefined }} />
       </TextProviders>,
     );
+    // Owner 2026-11-02 — the "Your character" tile too.
+    expect(container.querySelector('[data-testid="companion-own"]')).not.toBeNull();
     const labels = [...container.querySelectorAll('label:has(input[name="companion"])')];
     expect(labels.length).toBeGreaterThan(0);
     for (const l of labels) expect(l.classList.contains("relative")).toBe(true);

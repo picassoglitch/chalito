@@ -60,33 +60,51 @@ export const httpCompanionAvatar = (
   };
 };
 
-const CARD_CHANGED_KEY = "chalito-desktop-companion-card";
+export const CARD_CHANGED_KEY = "chalito-desktop-companion-card";
 
-/** The pet window re-asks for its custom card on any `storage` event (pet/scene.ts); it also redraws the LCD's card. */
+/** The pet window re-asks for its custom card on a `storage` event (pet/scene.ts); it also redraws the LCD's card. */
 export const announceCardChanged = (storage: Pick<Storage, "setItem"> = localStorage): void => {
   try {
-    storage.setItem(CARD_CHANGED_KEY, String(Date.now()));
+    // A new value every time: an unchanged one fires no `storage` event.
+    storage.setItem(CARD_CHANGED_KEY, `${Date.now()}-${Math.random().toString(36).slice(2)}`);
   } catch {
     // The pet's periodic card refresh picks it up instead.
   }
 };
 
+/** In the pet window: after the panel changed the card, a request already running may predate the change. */
+export const refreshOnStorage = (
+  key: string | null,
+  card: { refresh: () => Promise<void>; refreshAfterChange: () => Promise<void> },
+): Promise<void> => (key === CARD_CHANGED_KEY ? card.refreshAfterChange() : card.refresh());
+
 export interface CustomCompanionView {
   /** The character the tile stands for: the worn one, else the newest. Null: no tile. */
   own: KeptCharacter | null;
   wearing: boolean;
-  /** The last "use" failed (the selection stayed as it was). */
+  /** The last switch failed (the selection stayed as it was). */
   failed: boolean;
 }
 
-/** The panel's "Your character" tile: loads the kept characters and switches the companion between them and the roster. */
+type Choice = { kind: "own" } | { kind: "roster"; apply: () => void };
+
+// The panel's "Your character" tile: kept characters and switching to and from them.
+// Picks run one at a time and the last one wins (a new pick replaces one still waiting).
 export class CustomCompanion {
   #view: CustomCompanionView = { own: null, wearing: false, failed: false };
   readonly #listeners = new Set<() => void>();
+  #next: Choice | null = null;
+  #busy = false;
+  /** Bumped by every pick and when picks finish: a kept list read across one is stale. */
+  #gen = 0;
 
   constructor(
     private readonly api: CompanionAvatarApi,
-    private readonly cardChanged: () => void = () => announceCardChanged(),
+    private readonly opts: {
+      /** Lets a pending companion save land first (DesktopSettings.flushCompanion). */
+      beforeWear?: () => Promise<void>;
+      cardChanged?: () => void;
+    } = {},
   ) {}
 
   subscribe = (l: () => void): (() => void) => {
@@ -96,29 +114,61 @@ export class CustomCompanion {
   getSnapshot = (): CustomCompanionView => this.#view;
 
   /** Signed out, offline or none kept: no tile, and nothing to say about it. */
-  async load(): Promise<void> {
+  load(): Promise<void> {
+    return this.#reload({ clearFailed: true, duringPick: false });
+  }
+
+  wear(): Promise<void> {
+    return this.#pick({ kind: "own" });
+  }
+
+  // While wearing the character, `apply` (the avatar change) waits for use(null): the server only
+  // clears it on an avatar change, and a failed switch must leave everything as it was.
+  pickRoster(apply: () => void): Promise<void> {
+    return this.#pick({ kind: "roster", apply });
+  }
+
+  async #reload(o: { clearFailed: boolean; duringPick: boolean }): Promise<void> {
+    const gen = this.#gen;
     const kept = await this.api.kept();
-    if (kept === "error") return;
+    if (kept === "error" || gen !== this.#gen || (this.#busy && !o.duringPick)) return;
     // Owner 2026-11-02 — one tile, like the PWA: the worn character, else the newest kept one.
     const own = kept.find((k) => k.worn) ?? kept[0] ?? null;
-    this.#set({ own, wearing: !!own?.worn });
+    this.#set({ own, wearing: !!own?.worn, ...(o.clearFailed ? { failed: false } : {}) });
   }
 
-  async wear(): Promise<void> {
-    const own = this.#view.own;
-    if (!own || this.#view.wearing) return;
-    if ((await this.api.use(own.creationId)) !== "ok") return this.#set({ failed: true });
-    this.#set({ own: { ...own, worn: true }, wearing: true, failed: false });
-    this.cardChanged();
+  async #pick(p: Choice): Promise<void> {
+    this.#gen++;
+    this.#next = p;
+    if (this.#busy) return;
+    this.#busy = true;
+    try {
+      for (let n: Choice | null = this.#next; n; n = this.#next) {
+        this.#next = null;
+        await this.#run(n);
+      }
+    } finally {
+      this.#busy = false;
+      // A list read while these ran may predate them.
+      this.#gen++;
+    }
   }
 
-  /** A roster pick while wearing the character: the server only clears it on an avatar change, so ask outright. */
-  async backToRoster(): Promise<void> {
+  async #run(p: Choice): Promise<void> {
     const own = this.#view.own;
-    if (!own || !this.#view.wearing) return;
-    if ((await this.api.use(null)) !== "ok") return this.#set({ failed: true });
-    this.#set({ own: { ...own, worn: false }, wearing: false, failed: false });
-    this.cardChanged();
+    if (p.kind === "roster" && (!own || !this.#view.wearing)) return p.apply();
+    if (!own || (p.kind === "own" && this.#view.wearing)) return;
+    if (p.kind === "own") await this.opts.beforeWear?.();
+    const ok = (await this.api.use(p.kind === "own" ? own.creationId : null)) === "ok";
+    if (!ok) {
+      this.#set({ failed: true });
+      // What the server wears now is unknown; the tile follows its answer.
+      return this.#reload({ clearFailed: false, duringPick: true });
+    }
+    const wearing = p.kind === "own";
+    this.#set({ own: { ...own, worn: wearing }, wearing, failed: false });
+    if (p.kind === "roster") p.apply();
+    (this.opts.cardChanged ?? announceCardChanged)();
   }
 
   #set(p: Partial<CustomCompanionView>): void {
