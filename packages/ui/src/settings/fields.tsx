@@ -349,8 +349,9 @@ export const CompanionPicker = ({
             <label
               key={r.id}
               title={r.blurb[locale]}
-              className={`cursor-pointer rounded-xl border p-2 text-center ${chosen(r.id) ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
+              className={`relative cursor-pointer rounded-xl border p-2 text-center ${chosen(r.id) ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
             >
+              {/* relative above keeps this hidden radio in its tile; loose, clicks scrolled the panel to a blank area. */}
               <input
                 type="radio"
                 name="companion"

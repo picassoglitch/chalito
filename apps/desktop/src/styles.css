@@ -862,6 +862,9 @@ body.panel .chat-home .composer-box textarea {
 [data-shell="desktop"] .block {
   display: block;
 }
+[data-shell="desktop"] .relative {
+  position: relative;
+}
 [data-shell="desktop"] .flex-wrap {
   flex-wrap: wrap;
 }
