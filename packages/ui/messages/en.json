@@ -209,7 +209,8 @@
       "all": "All",
       "selected": "You picked {name}.",
       "empty": "No one by that name.",
-      "custom": "Your companion is now your own character. Pick someone from the list to switch back to a catalog companion."
+      "custom": "Your companion is now your own character. Pick someone from the list to switch back to a catalog companion.",
+      "yours": "Your character"
     },
     "companionName": {
       "label": "Name",

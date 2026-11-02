@@ -263,6 +263,7 @@ export const CompanionPicker = ({
   value,
   onChange,
   customActive = false,
+  customTile,
 }: {
   value: CompanionId;
   onChange: (c: CompanionId) => void;
@@ -271,6 +272,8 @@ export const CompanionPicker = ({
    * companion shows as chosen, and picking any of them (the one underneath too) switches back.
    */
   customActive?: boolean;
+  /** The person's own character as the first tile (the desktop); picking it is the caller's call to make. */
+  customTile?: { thumb?: string; onPick: () => void };
 }) => {
   const { t, locale } = useUiText();
   const asset = useRosterAsset();
@@ -339,12 +342,43 @@ export const CompanionPicker = ({
           {t("avatar.selected", { name: companionName(selected.id, locale) })} {selected.blurb[locale]}
         </p>
       ) : null}
-      {shown.length ? (
+      {shown.length || customTile ? (
         <div
           role="radiogroup"
           aria-label={t("avatar.label")}
           className="grid max-h-[28rem] grid-cols-3 gap-2 overflow-y-auto p-1 sm:grid-cols-4"
         >
+          {customTile ? (
+            <label
+              data-testid="companion-own"
+              className={`cursor-pointer rounded-xl border p-2 text-center ${customActive ? "border-emerald-600 ring-2 ring-emerald-600" : ""}`}
+            >
+              <input
+                type="radio"
+                name="companion"
+                className="sr-only"
+                value="own"
+                checked={customActive}
+                onChange={customTile.onPick}
+              />
+              <span aria-hidden className="mx-auto mb-1 block h-16 w-16 overflow-hidden rounded-full bg-emerald-50">
+                {customTile.thumb ? (
+                  <img
+                    src={customTile.thumb}
+                    alt=""
+                    width={64}
+                    height={64}
+                    decoding="async"
+                    onError={(e) => {
+                      e.currentTarget.style.visibility = "hidden";
+                    }}
+                    className="block h-16 w-16 object-cover object-top"
+                  />
+                ) : null}
+              </span>
+              <span className="block truncate text-sm font-medium">{t("avatar.yours")}</span>
+            </label>
+          ) : null}
           {shown.map((r) => (
             <label
               key={r.id}
@@ -381,7 +415,8 @@ export const CompanionPicker = ({
             </label>
           ))}
         </div>
-      ) : (
+      ) : null}
+      {shown.length ? null : (
         <p className="text-sm text-neutral-600" data-testid="companion-empty">
           {t("avatar.empty")}
         </p>

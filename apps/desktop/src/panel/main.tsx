@@ -21,6 +21,7 @@ import { meetingsIpc } from "../lib/meetings-ipc.js";
 import { PresenceReporter } from "../lib/presence.js";
 import { DEFAULT_SETTINGS } from "@chalito/ui";
 import { DesktopSettings } from "../lib/settings-sync.js";
+import { CustomCompanion } from "../lib/custom-companion.js";
 import { relayRevoked } from "../lib/revoked-relay.js";
 import { localAgent } from "../lib/local-agent.js";
 import { thisComputer } from "../lib/this-computer.js";
@@ -107,6 +108,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
         : undefined,
     [client, sh, store],
   );
+  const custom = useMemo(() => (conn ? new CustomCompanion(conn.avatar) : null), [conn]);
   const view = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const settings = view.values ?? DEFAULT_SETTINGS;
   const [dnd, setDnd] = useState(loadDnd);
@@ -214,6 +216,7 @@ const App = ({ ipc }: { ipc: AgentIpc }) => {
       settings={view.values}
       onSetting={(k, v) => store.set(k, v)}
       settingsError={view.error}
+      customCompanion={custom}
       dnd={dnd}
       onDnd={(on) => {
         offlineVoice.cancelPause();

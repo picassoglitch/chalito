@@ -209,7 +209,8 @@
       "all": "Todos",
       "selected": "Elegiste a {name}.",
       "empty": "No encontramos a nadie con ese nombre.",
-      "custom": "Ahora tu compañero es tu propio personaje. Elige a alguien de la lista para volver a un compañero del catálogo."
+      "custom": "Ahora tu compañero es tu propio personaje. Elige a alguien de la lista para volver a un compañero del catálogo.",
+      "yours": "Tu personaje"
     },
     "companionName": {
       "label": "Nombre",

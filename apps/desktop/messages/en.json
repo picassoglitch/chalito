@@ -1166,5 +1166,8 @@
         "other": "Something went wrong. Try again."
       }
     }
+  },
+  "customCompanion": {
+    "useFailed": "Couldn't switch your character. Try again."
   }
 }

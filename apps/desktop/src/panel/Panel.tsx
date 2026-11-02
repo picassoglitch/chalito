@@ -12,6 +12,7 @@ import type { ThisComputerApi } from "../lib/this-computer.js";
 import type { UpdateController } from "../lib/updates.js";
 import type { RoomsSource } from "../lib/rooms-source.js";
 import type { CopiesApi } from "../lib/copies.js";
+import type { CustomCompanion } from "../lib/custom-companion.js";
 import { ApprovalPopup } from "./ApprovalPopup.js";
 import type { OwnSessionsFeed } from "../lib/own-sessions.js";
 import { OwnSessions, OwnSessionsSettings } from "./OwnSessions.js";
@@ -109,6 +110,8 @@ export interface PanelProps {
   settings: SettingsValues | null;
   onSetting: SettingContext["set"];
   settingsError?: "rejected" | "failed" | null;
+  /** The person's own characters for the companion picker; null while signed out. */
+  customCompanion?: CustomCompanion | null;
   dnd: boolean;
   onDnd: (on: boolean) => void;
   hubPlansUrl: string;
@@ -314,6 +317,7 @@ export const Panel = (p: PanelProps) => {
                 onChange={p.onSetting}
                 hubPlansUrl={p.hubPlansUrl}
                 phoneVerifier={p.phoneVerifier}
+                custom={p.customCompanion ?? null}
               />
             )}
             {tab === "settings" && p.ownFeed && (
