@@ -6,7 +6,8 @@
     "voice": "Voz",
     "rooms": "Salas",
     "ai": "IA conectadas",
-    "sessions": "Sesiones"
+    "sessions": "Sesiones",
+    "connections": "Conexiones"
   },
   "nav": {
     "tools": "Herramientas",
@@ -1053,8 +1054,49 @@
     }
   },
   "connections": {
+    "intro": "Las herramientas de IA de esta PC y las conexiones que puedes agregar. Cada conexión sirve para todos tus agentes conectados, y cada llamada sigue pasando por tus aprobaciones.",
+    "found": {
+      "title": "Encontradas en esta PC",
+      "intro": "Herramientas de IA, agentes y modelos locales instalados aquí. Conectar agrega un servidor “chalito” a los ajustes MCP de la herramienta; no cambia nada más y se guarda un respaldo.",
+      "scanning": "Buscando herramientas de IA…",
+      "empty": "Todavía no se encontraron herramientas de IA en esta PC.",
+      "readFailed": "No se pudo revisar esta PC. Se muestra el último resultado.",
+      "scanFailed": "No se pudo revisar esta PC. Vuelve a intentar.",
+      "rescan": "Buscar de nuevo",
+      "kind": {
+        "agent": "Agente",
+        "llm": "Modelo local",
+        "mcp-client": "App con MCP"
+      },
+      "connected": "Conectada a Chalito",
+      "notConnected": "Sin conectar",
+      "noMcp": "No admite conexiones MCP",
+      "notYet": "Chalito todavía no puede conectar esta",
+      "needsUpdate": "Requiere la actualización del canal de equipo",
+      "connect": "Conectar",
+      "disconnect": "Desconectar",
+      "cancel": "Cancelar",
+      "confirm": "Confirma el cambio",
+      "addHint": "Chalito agregará su servidor “chalito” a este archivo:",
+      "removeHint": "Chalito quitará solo su propio servidor “chalito” de este archivo:",
+      "error": {
+        "unknown_tool": "Chalito no puede conectar esta herramienta.",
+        "unsafe_path": "Ese archivo de ajustes es un enlace o está fuera de tu carpeta personal; Chalito no lo cambia.",
+        "invalid_config": "No se puede leer el archivo de ajustes de esa herramienta (puede tener un error). Corrígelo y vuelve a intentar; no se cambió nada.",
+        "config_too_large": "El archivo de ajustes de esa herramienta es demasiado grande para editarlo con seguridad.",
+        "config_changed": "La herramienta cambió sus ajustes al mismo tiempo. Vuelve a intentar.",
+        "config_layout": "La entrada de Chalito está escrita de una forma que no puede editar con seguridad. Quita el servidor “chalito” a mano.",
+        "name_taken": "Esa herramienta ya tiene otro servidor llamado “chalito”. Chalito no lo reemplaza.",
+        "channel_unavailable": "Requiere la actualización del canal de equipo.",
+        "unstable_path": "Chalito se está ejecutando desde un lugar temporal (instalador o imagen de disco). Instálalo primero.",
+        "cli_unavailable": "El comando de Chalito no está disponible.",
+        "not_installed": "Esa herramienta ya no está instalada en esta PC. Busca de nuevo.",
+        "other": "No funcionó. Vuelve a intentar."
+      }
+    },
     "search": {
-      "title": "Buscar conexiones",
+      "title": "Agregar conexiones",
+      "soon": "Muy pronto.",
       "intro": "Busca servidores MCP para que tus agentes usen tus herramientas. Una instalación sirve a todos los agentes conectados, y cada llamada sigue pasando por tus aprobaciones.",
       "label": "Buscar",
       "placeholder": "github, notion, base de datos…",

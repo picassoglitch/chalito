@@ -41,9 +41,14 @@ import { LINK_COPY, createLocalLink, type LinkManager } from "./links/index.js";
 import { ownSessionHandlers, type OwnSessionsDeps } from "./watch/ipc.js";
 import { RepoPattern, type PrWatch } from "./prs/watch.js";
 import { meetingHandlers, type MeetingsFeature } from "./meetings/ipc.js";
-import { connectionSearchHandlers, type ConnectionsSearchFeature } from "./connections/ipc.js";
 import { NativeProvider } from "./native/protocol.js";
 import { nativeConnectorErrorCode, type NativeConnectors } from "./native/connectors.js";
+import {
+  connectionSearchHandlers,
+  foundHandlers,
+  type ConnectionsSearchFeature,
+  type FoundFeature,
+} from "./connections/ipc.js";
 
 /** The agent version the panel's `ping` sees. */
 export const AGENT_VERSION = "0.0.0";
@@ -180,6 +185,8 @@ export interface IpcDeps {
   ownSessions?: OwnSessionsDeps | null;
   /** The person's GitHub PRs through their own `gh` (prs/watch.ts); absent = the PR calls answer `unavailable`. */
   prs?: PrWatch;
+  /** Conexiones, "Encontradas en esta PC" (connections/); absent = those calls answer `unavailable`. */
+  connectionsFound?: FoundFeature;
   /** Meeting warnings and follow-ups (meetings/); absent = those calls answer `unavailable`. */
   meetings?: MeetingsFeature;
   /** Conexiones search + install (ADR 0023); absent = those calls answer `unavailable`. */
@@ -249,6 +256,7 @@ const appCall = async (d: IpcDeps, run: (m: AppManager) => Promise<AppResult>) =
 export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
   ...meetingHandlers(d.meetings),
   ...connectionSearchHandlers(d.connections),
+  ...foundHandlers(d.connectionsFound),
   ping: async () => ({ version: AGENT_VERSION }),
   ...ownSessionHandlers(d.ownSessions),
 

@@ -339,7 +339,7 @@ export const SearchSection = ({ ipc: given }: { ipc?: ConnectionsSearchIpc } = {
 
   if (unavailable)
     return (
-      <section className="card" data-section="connections-search">
+      <section className="card" data-section="connections-search" data-connections-search>
         <p className="muted">{t("connections.search.unavailable")}</p>
       </section>
     );
@@ -376,7 +376,12 @@ export const SearchSection = ({ ipc: given }: { ipc?: ConnectionsSearchIpc } = {
   };
 
   return (
-    <section className="card stack" aria-labelledby="connections-search-title" data-section="connections-search">
+    <section
+      className="card stack"
+      aria-labelledby="connections-search-title"
+      data-section="connections-search"
+      data-connections-search
+    >
       <h2 id="connections-search-title">{t("connections.search.title")}</h2>
       <p className="muted">{t("connections.search.intro")}</p>
       <label>

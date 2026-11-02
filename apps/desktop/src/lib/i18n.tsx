@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { Locale } from "@chalito/protocol";
-import { UiTextProvider, type Translate } from "@chalito/ui";
+import { RosterAssetsProvider, UiTextProvider, type Translate } from "@chalito/ui";
 import uiEs from "@chalito/ui/messages/es.json";
 import uiEn from "@chalito/ui/messages/en.json";
 import es from "../../messages/es.json";
@@ -30,9 +30,12 @@ export const useT = (): Translate => {
   return t;
 };
 
-/** The shared UI's `settings` namespace plus the desktop's own strings. */
+/** The shared UI's `settings` namespace plus the desktop's own strings, and where the roster art lives. */
 export const TextProviders = ({ locale, children }: { locale: Locale; children: ReactNode }) => (
   <UiTextProvider t={translator(UI[locale].settings)} locale={locale}>
-    <DesktopText.Provider value={translator(DESKTOP[locale])}>{children}</DesktopText.Provider>
+    {/* scripts/copy-roster.mjs serves the art under /roster; without this the picker shows blank swatches. */}
+    <RosterAssetsProvider base="/roster">
+      <DesktopText.Provider value={translator(DESKTOP[locale])}>{children}</DesktopText.Provider>
+    </RosterAssetsProvider>
   </UiTextProvider>
 );
