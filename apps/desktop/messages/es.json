@@ -1187,5 +1187,8 @@
         "other": "Algo salió mal. Intenta de nuevo."
       }
     }
+  },
+  "customCompanion": {
+    "useFailed": "No pudimos cambiar tu personaje. Inténtalo de nuevo."
   }
 }

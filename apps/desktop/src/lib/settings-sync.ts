@@ -28,6 +28,7 @@ export class DesktopSettings {
   #view: SettingsView = { values: null, error: null, persisted: "device" };
   #server: Server | null;
   #companionTimer: ReturnType<typeof setTimeout> | null = null;
+  #companionSave: Promise<void> = Promise.resolve();
   readonly #listeners = new Set<() => void>();
 
   constructor(
@@ -67,11 +68,7 @@ export class DesktopSettings {
     this.#mirror(next);
     if (k === "avatar" || k === "companionName") {
       if (this.#companionTimer) clearTimeout(this.#companionTimer);
-      this.#companionTimer = setTimeout(() => {
-        this.#companionTimer = null;
-        const latest = this.#view.values;
-        if (latest) void server.saveCompanion(latest).catch(() => this.#set({ error: "failed" }));
-      }, this.companionDebounceMs);
+      this.#companionTimer = setTimeout(() => void this.#saveCompanion(), this.companionDebounceMs);
       return;
     }
     void server
@@ -80,6 +77,27 @@ export class DesktopSettings {
         this.#set({ error: err instanceof SettingsError && err.code === "rejected" ? "rejected" : "failed" }),
       )
       .finally(() => void this.#reload().catch(() => undefined));
+  }
+
+  // Sends a debounced companion edit now and waits for it: wearing a custom character must land
+  // after it, or the avatar change would clear the character (companions trigger).
+  async flushCompanion(): Promise<void> {
+    if (this.#companionTimer) {
+      clearTimeout(this.#companionTimer);
+      await this.#saveCompanion();
+    } else await this.#companionSave;
+  }
+
+  async #saveCompanion(): Promise<void> {
+    this.#companionTimer = null;
+    const latest = this.#view.values;
+    const server = this.#server;
+    if (!latest || !server) return;
+    const save = this.#companionSave
+      .then(() => server.saveCompanion(latest))
+      .catch(() => this.#set({ error: "failed" }));
+    this.#companionSave = save;
+    await save;
   }
 
   /**

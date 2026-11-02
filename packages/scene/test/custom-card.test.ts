@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CustomCardSource,
   RoomScene,
@@ -233,6 +233,62 @@ describe("CustomCardSource", () => {
     expect(src.getSnapshot()).toBeNull();
     expect(src.files()).toBeNull();
     expect(t.pending).toHaveLength(0);
+  });
+
+  it("after a change, a request already running doesn't answer for it: another one follows", async () => {
+    const t = timers();
+    const answers: ((c: SignedCard | null) => void)[] = [];
+    const src = new CustomCardSource({
+      fetch: () => new Promise<SignedCard | null>((r) => answers.push(r)),
+      now: () => T0,
+      timers: t.timers,
+    });
+    const stale = src.refresh(); // started before the person picked their character
+    const after = src.refreshAfterChange();
+    const again = src.refreshAfterChange(); // shares the follow-up
+    expect(answers).toHaveLength(1);
+    answers[0]!(null);
+    await stale;
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1]!(parseSignedCard(body(), { now: T0 }) as SignedCard);
+    await Promise.all([after, again]);
+    expect(src.getSnapshot()?.assetId).toBe(ASSET);
+    expect(answers).toHaveLength(2);
+    // Nothing running: it's a plain refresh.
+    const idle = src.refreshAfterChange();
+    expect(answers).toHaveLength(3);
+    answers[2]!(null);
+    await idle;
+    expect(src.getSnapshot()).toBeNull();
+  });
+
+  it("a follow-up still runs when the request before it failed, and the next change gets its own", async () => {
+    const t = timers();
+    const answers: ((c: SignedCard | null) => void)[] = [];
+    const src = new CustomCardSource({
+      fetch: () => new Promise<SignedCard | null>((r) => answers.push(r)),
+      now: () => T0,
+      timers: t.timers,
+    });
+    let boom = true;
+    src.subscribe(() => {
+      if (boom) throw new Error("a listener broke");
+    });
+    const stale = src.refresh().catch(() => "rejected");
+    const after = src.refreshAfterChange().catch(() => "rejected");
+    answers[0]!(null);
+    expect(await stale).toBe("rejected");
+    boom = false;
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1]!(parseSignedCard(body(), { now: T0 }) as SignedCard);
+    expect(await after).toBeUndefined();
+    expect(src.getSnapshot()?.assetId).toBe(ASSET);
+    // Not stuck on an old promise: another change asks again.
+    const next = src.refreshAfterChange();
+    expect(answers).toHaveLength(3);
+    answers[2]!(null);
+    await next;
+    expect(src.getSnapshot()).toBeNull();
   });
 
   it("never schedules past what a timer can hold (a far expiry would otherwise fire at once)", async () => {

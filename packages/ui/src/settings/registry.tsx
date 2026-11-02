@@ -34,6 +34,8 @@ export interface SettingContext {
   companionExtra?: ReactNode;
   /** The companion wears the person's own custom character (see CompanionPicker). */
   customCompanion?: boolean;
+  /** The person's own character as the picker's first tile (see CompanionPicker customTile). */
+  customCharacter?: { thumb?: string; onPick: () => void };
 }
 
 export interface SettingDef {
@@ -162,6 +164,7 @@ export const SETTINGS: readonly SettingDef[] = [
           value={ctx.values.avatar}
           onChange={(v) => ctx.set("avatar", v)}
           customActive={!!ctx.customCompanion}
+          {...(ctx.customCharacter ? { customTile: ctx.customCharacter } : {})}
         />
         {ctx.companionExtra}
       </Labelled>

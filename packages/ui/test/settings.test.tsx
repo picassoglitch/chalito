@@ -211,6 +211,29 @@ describe("companion picker", () => {
     expect(picked).toEqual(["chalito"]);
   });
 
+  it("puts the person's own character first when given one, and keeps it through an empty search", () => {
+    let own = 0;
+    const picked: string[] = [];
+    renderUi(
+      <RosterAssetsProvider base="/roster">
+        <CompanionPicker
+          value="chalito"
+          onChange={(c) => picked.push(c)}
+          customTile={{ thumb: "https://storage.googleapis.com/a/t.webp", onPick: () => own++ }}
+        />
+      </RosterAssetsProvider>,
+    );
+    expect(radios()[0]!.value).toBe("own");
+    expect(radios()[0]!.checked).toBe(false);
+    expect(screen.getByTestId("companion-own").textContent).toContain("Tu personaje");
+    fireEvent.click(radios()[0]!);
+    expect(own).toBe(1);
+    expect(picked).toEqual([]);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "zzzz" } });
+    expect(radios().map((r) => r.value)).toEqual(["own"]);
+    expect(screen.getByTestId("companion-empty")).toBeTruthy();
+  });
+
   it("switches category, shows everyone under Todos, and picks", () => {
     const picked: string[] = [];
     picker("chalito", (c) => picked.push(c));

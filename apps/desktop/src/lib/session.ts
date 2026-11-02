@@ -31,6 +31,7 @@ import { SsoFlow, exchange } from "./sso.js";
 import { platformAuthenticatorAvailable } from "./stepup.js";
 import type { RoomsDb } from "@chalito/rooms";
 import { companionIdFor } from "./companion.js";
+import { httpCompanionAvatar, type CompanionAvatarApi } from "./custom-companion.js";
 import { roomSeen } from "./room-seen.js";
 import { roomsSource, type RoomsSource } from "./rooms-source.js";
 import { shell } from "./shell.js";
@@ -106,6 +107,8 @@ export interface Connected {
   settings: SettingsStore;
   /** Signed in: connects this computer by itself (owner decision 2026-10-19). */
   autoPair: AutoPair;
+  /** The person's kept characters, and which one the companion wears. */
+  avatar: CompanionAvatarApi;
 }
 
 /**
@@ -183,6 +186,7 @@ export const createSession = async (
       },
       client,
       canStepUp: passkey !== null,
+      avatar: httpCompanionAvatar(env.apiBase, token),
       settings: new SettingsStore(sb as unknown as SettingsDb, owner, apiPhone(env.apiBase, token).channels),
       rooms: roomsSource({
         db: sb as unknown as RoomsDb,
