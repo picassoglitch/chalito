@@ -115,6 +115,19 @@ export interface Workspace {
   path: string;
 }
 
+export type TeamProvider = "claude" | "codex" | "grok" | "cursor";
+export interface TeamConnectionsView {
+  workspaces: (Workspace & {
+    connections: {
+      provider: TeamProvider;
+      trusted: boolean;
+      connected: boolean;
+      command: string;
+      args: string[];
+    }[];
+  })[];
+}
+
 export type AddWorkspaceResult =
   | { ok: true; label: string; added: boolean }
   | {
@@ -295,6 +308,13 @@ export type OwnOpenResult = ({ opened: true; via: "terminal" | "codex" } | { ope
 export interface AgentIpc {
   nativeConnections(): Promise<NativeConnectionView[]>;
   setNativeConnection(provider: NativeConnectionView["provider"], enabled: boolean, hash: string): Promise<void>;
+  teamConnections?(): Promise<TeamConnectionsView>;
+  setTeamTrust?(
+    provider: TeamProvider,
+    workspace: string,
+    trusted: boolean,
+    workspacePath: string,
+  ): Promise<TeamConnectionsView>;
   /** Whether the local agent answered (installed, running, same OS user). */
   ping(): Promise<{ version: string }>;
   /** "Conectar esta computadora": starts pairing (or returns the one in progress). Unpaired agents only. */
@@ -424,6 +444,8 @@ export interface NativeConnectionView {
 export const unavailableIpc: AgentIpc = {
   nativeConnections: unavailable,
   setNativeConnection: unavailable,
+  teamConnections: unavailable,
+  setTeamTrust: unavailable,
   ping: unavailable,
   startPairing: unavailable,
   pendingPairing: unavailable,
@@ -510,6 +532,9 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
   };
   return {
     ping: () => call("ping"),
+    teamConnections: () => call("teamConnections"),
+    setTeamTrust: (provider, workspace, trusted, workspacePath) =>
+      call("setTeamTrust", { provider, workspace, trusted, workspacePath }),
     startPairing: (kind) => call("startPairing", kind ? { kind } : {}),
     pendingPairing: () => call("pendingPairing"),
     confirmPairing: (pairingId, match, typed) =>

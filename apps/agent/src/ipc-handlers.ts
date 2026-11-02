@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { TeamProvider } from "./team/hub.js";
+import type { TeamConnections } from "./team/connections.js";
 import {
   AppId,
   RemotePermissionMode,
@@ -142,6 +144,7 @@ const parse = <T>(schema: z.ZodType<T>, params: unknown): T => {
 };
 
 export interface IpcDeps {
+  teamConnections?: TeamConnections;
   policy: FilePolicyHolder;
   devMode: DevMode;
   /** The daemon's DevMode wiring (same store, chain and emitter); enabling swaps in the OS
@@ -470,8 +473,33 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
     ),
   }),
 
-  // Coordinator mode (ADR 0025 §6): the panel's switch. Same rules as the CLI: local only, the
-  // agent asks the OS itself, then the person's answer to the list of what Chalito answers.
+  // Workspace team trust is changed only over the desktop's authenticated IPC.
+  teamConnections: async () => {
+    if (!d.teamConnections) throw new IpcError("unavailable");
+    return d.teamConnections.view();
+  },
+
+  setTeamTrust: async (params) => {
+    if (!d.teamConnections) throw new IpcError("unavailable");
+    const p = parse(
+      z
+        .object({
+          provider: TeamProvider,
+          workspace: z.string().min(1).max(80),
+          trusted: z.boolean(),
+          workspacePath: z.string().min(1).max(4096),
+        })
+        .strict(),
+      params,
+    );
+    if (p.trusted && !(await d.osAuth().verify("Chalito: trust AI communication")))
+      throw new IpcError("os_auth_failed");
+    d.teamConnections.set(p.provider, p.workspace, p.trusted, p.workspacePath);
+    d.audit("team.trust_changed", { provider: p.provider, workspace: p.workspace, trusted: p.trusted });
+    return d.teamConnections.view();
+  },
+
+  // Coordinator mode controls approval prompts separately from team messaging.
   coordinatorStatus: async () => ({ kinds: [...coordinatorCeiling(d.policy.get())] }),
 
   coordinatorChallenge: async () => COORDINATOR_COPY[d.locale()],

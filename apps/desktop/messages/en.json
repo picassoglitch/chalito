@@ -439,6 +439,27 @@
         "unstable_path": "Chalito couldn't save a permanent copy of itself, so the app's hooks would stop working when it closes. On a Mac, move Chalito to Applications; on Linux, make sure Chalito can write to ~/.local/share/chalito (free disk space, check permissions). Then open Chalito again.",
         "other": "Could not update the connector. No connection was confirmed."
       }
+    },
+    "team": {
+      "title": "AI team",
+      "intro": "Let your installed AIs communicate automatically while working in the same workspace.",
+      "workspace": "Workspace",
+      "trust": "Trust {name} for this workspace",
+      "notTrusted": "Not trusted · messaging off",
+      "connected": "Connected · automatic messaging on",
+      "ready": "Trusted · waiting for the app to connect",
+      "setup": "Connection setup",
+      "setupHint": "Add this command and its arguments as the chalito_team stdio MCP server in the app, then reconnect it. Use the app’s configuration format.",
+      "config": "{name} connection configuration",
+      "scope": "Trust allows team messages in this workspace. Each app keeps its own login and action approvals. Turning trust off disconnects its messaging.",
+      "noWorkspace": "Add a workspace in Settings before connecting your AI team.",
+      "error": "Could not update connections. Check Chalito and try again.",
+      "name": {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "grok": "Grok Build",
+        "cursor": "Cursor"
+      }
     }
   },
   "settingsError": {

@@ -277,6 +277,16 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
 };
 
 describe("panel: local-only security screens", () => {
+  it("shows the AI team trust only inside the single Connections tab", async () => {
+    const teamConnections = async () => ({ workspaces: [] });
+    renderPanel({ initialTab: "connections", ipc: { ...unavailableIpc, teamConnections } }, "en");
+    expect(await screen.findByRole("heading", { name: "AI team" })).toBeTruthy();
+    cleanup();
+    renderPanel({ initialTab: "ai", ipc: { ...unavailableIpc, teamConnections } }, "en");
+    await screen.findAllByRole("heading");
+    expect(screen.queryByRole("heading", { name: "AI team" })).toBeNull();
+  });
+
   it("says the agent isn't reachable while the IPC server doesn't exist", async () => {
     renderPanel({ initialTab: "security" }, "en");
     await waitFor(() => expect(screen.getAllByText(/local agent isn't answering/)).toHaveLength(5));

@@ -344,7 +344,7 @@ export const Panel = (p: PanelProps) => {
               </>
             )}
             {tab === "ai" && p.client && <RemoteTools client={p.client} />}
-            {tab === "connections" && <ConnectionsScreen />}
+            {tab === "connections" && <ConnectionsScreen ipc={p.ipc} />}
             {tab === "security" && p.localAgent && <LocalAgent api={p.localAgent} />}
             {tab === "security" && p.client && <SecurityNotices client={p.client} />}
             {tab === "security" && <Security ipc={p.ipc} />}

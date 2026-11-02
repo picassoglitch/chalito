@@ -439,6 +439,27 @@
         "unstable_path": "Chalito no pudo guardar una copia permanente de sí mismo, así que los hooks de la app dejarían de funcionar al cerrarlo. En Mac, mueve Chalito a Aplicaciones; en Linux, asegúrate de que Chalito pueda escribir en ~/.local/share/chalito (libera espacio en disco, revisa permisos). Luego vuelve a abrir Chalito.",
         "other": "No se pudo actualizar el conector. No se confirmó ninguna conexión."
       }
+    },
+    "team": {
+      "title": "Equipo de IA",
+      "intro": "Deja que tus IA instaladas se comuniquen automáticamente mientras trabajan en el mismo espacio de trabajo.",
+      "workspace": "Espacio de trabajo",
+      "trust": "Confiar en {name} para este espacio",
+      "notTrusted": "Sin confianza · mensajes desactivados",
+      "connected": "Conectado · mensajes automáticos activados",
+      "ready": "Con confianza · esperando conexión de la app",
+      "setup": "Configurar conexión",
+      "setupHint": "Agrega este comando y sus argumentos como servidor MCP stdio chalito_team en la app y vuelve a conectarlo. Usa el formato de configuración de la app.",
+      "config": "Configuración de conexión de {name}",
+      "scope": "La confianza permite mensajes del equipo en este espacio. Cada app conserva su inicio de sesión y sus aprobaciones. Al quitar la confianza se desconectan sus mensajes.",
+      "noWorkspace": "Agrega un espacio de trabajo en Ajustes antes de conectar tu equipo de IA.",
+      "error": "No se pudieron actualizar las conexiones. Revisa Chalito e inténtalo de nuevo.",
+      "name": {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "grok": "Grok Build",
+        "cursor": "Cursor"
+      }
     }
   },
   "settingsError": {

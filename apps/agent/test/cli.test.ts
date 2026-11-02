@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { generateSigningKeyPair } from "@chalito/crypto";
@@ -1093,5 +1102,32 @@ describe("chalito CLI", () => {
       expect(readConfig(c.dir, {}, { keys: id.sign }).codex?.path).toBe(join(bin, "codex"));
       expect(c.out()).toMatch(/Codex pinned/);
     });
+  });
+});
+
+describe("chalito team config", () => {
+  it("prints the agent's own path normally and the fixed copy from an AppImage mount (#132)", async () => {
+    const plain = cli();
+    expect(await plain.run(["team", "config", "codex", "/work/app"])).toBe(0);
+    expect(JSON.parse(plain.out()).mcpServers.chalito_team).toEqual({
+      command: "/opt/chalito/chalito-agent",
+      args: ["team", "mcp", "codex", "/work/app"],
+    });
+    const mounted = cli({
+      execPath: "/tmp/.mount_ChalitX/usr/bin/chalito-agent",
+      env: { APPIMAGE: "/home/a/Chalito.AppImage", APPDIR: "/tmp/.mount_ChalitX/" },
+    });
+    // No fixed copy yet: refuse rather than hand out the temporary mount.
+    expect(await mounted.run(["team", "config", "claude", "/work/app"])).toBe(1);
+    expect(mounted.err()).toContain("Open Chalito once");
+    mounted.reset();
+    const stable = join(mounted.home, ".local", "share", "chalito", "chalito-agent");
+    mkdirSync(dirname(stable), { recursive: true });
+    writeFileSync(stable, "agent", { mode: 0o755 });
+    expect(await mounted.run(["team", "config", "claude", "/work/app"])).toBe(0);
+    expect(JSON.parse(mounted.out()).mcpServers.chalito_team.command).toBe(
+      join(mounted.home, ".local", "share", "chalito", "chalito-agent"),
+    );
+    expect(await mounted.run(["team", "config", "gemini"])).toBe(1);
   });
 });

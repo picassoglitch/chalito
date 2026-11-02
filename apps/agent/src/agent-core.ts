@@ -2104,6 +2104,13 @@ export class AgentCore {
     }
   }
 
+  /** The checks every native-app call passes before any classification: device live, CLI origin on. */
+  nativeAllowed(): { allow: true } | { allow: false; reason: string } {
+    if (this.#revoked) return { allow: false, reason: "unavailable" };
+    if (!originAllowed(this.d.policy.get().origins, "local:cli")) return { allow: false, reason: "origin_disabled" };
+    return { allow: true };
+  }
+
   /** Native-app hooks request a decision; they never supply or sign the human's answer. */
   async requestNativeTool(input: {
     sid: string;

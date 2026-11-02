@@ -11,10 +11,13 @@ import {
   nativePermissionEvent,
   nativeWorkspaceStatus,
 } from "./native/protocol.js";
+import { runTeamMcp } from "./team/mcp.js";
+import { stableAgentPath } from "./native/stable-bin.js";
+import { TeamProvider } from "./team/hub.js";
 import { codePath } from "./code/server.js";
 import { loadWinPipeSecurity, type WinPipeSecurity } from "./code/winpipe.js";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { readHookInput, recordHook } from "./watch/hook.js";
 import { watchPaths } from "./watch/watcher.js";
 import { fileURLToPath } from "node:url";
@@ -51,7 +54,7 @@ import {
   writeConfig,
   type AgentConfig,
 } from "./config.js";
-import { OnboardingError, runDaemon, type DaemonDeps, type Daemon } from "./daemon.js";
+import { OnboardingError, runDaemon, teamLaunchCommand, type DaemonDeps, type Daemon } from "./daemon.js";
 import { AlreadyRunningError, EXIT_ALREADY_RUNNING, EXIT_NEEDS_SETUP } from "./instance-lock.js";
 import { DeviceRevokedError } from "./device-auth.js";
 import { readIpcSecret } from "./ipc-server.js";
@@ -115,6 +118,10 @@ const TERMINAL_USAGE = `  terminal enable|disable|status       remote terminal: 
 const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
 
   run                                  run the agent (the OS service does this)
+  team mcp <claude|codex|grok|cursor> [workspace-path]
+                                       automatic messaging between AI sessions in the same workspace
+  team config <claude|codex|grok|cursor> [workspace-path]
+                                       print the MCP launch configuration for an AI app
   code <claude|codex|gemini|grok|app> [--workspace <label>] [--mode default|plan|acceptEdits] [prompt]
                                        a session here that is also live on your phone (Ctrl-C stops)
   connections mcp [app]                the MCP server an AI app starts to use Chalito's installed connections
@@ -569,6 +576,52 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
       server: { name: LINKS_SERVER, title: "Chalito links", instructions: LINKS_INSTRUCTIONS, tools: linkMcpTools },
     });
     return 0;
+  }
+
+  if (cmd === "team" && sub === "config") {
+    if (!TeamProvider.safeParse(arg).success) {
+      io.err("Usage: chalito team config <claude|codex|grok|cursor> [workspace-path]\n");
+      return 1;
+    }
+    // #132 — an AppImage's own path is a temporary mount; AI apps get the fixed copy the agent keeps.
+    const appDir = io.env.APPDIR?.replace(/\/+$/, "");
+    const mounted = io.platform === "linux" && !!io.env.APPIMAGE && !!appDir && io.execPath.startsWith(appDir + sep);
+    if (mounted && !existsSync(stableAgentPath(io.home))) {
+      io.err(`Open Chalito once so it installs ${stableAgentPath(io.home)}, then run this again.\n`);
+      return 1;
+    }
+    const launch = teamLaunchCommand(mounted ? stableAgentPath(io.home) : io.execPath);
+    io.out(
+      JSON.stringify(
+        {
+          mcpServers: {
+            chalito_team: {
+              command: launch.command,
+              args: [...launch.args, "team", "mcp", arg, resolve(positional[3] ?? io.cwd ?? process.cwd())],
+            },
+          },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    return 0;
+  }
+
+  if (cmd === "team" && sub === "mcp") {
+    const winSec = io.platform === "win32" ? await (io.winPipeSecurity ?? loadWinPipeSecurity)() : null;
+    const where = io.platform === "win32" && !winSec ? null : codePath(dir, io.platform, winSec?.userSid);
+    return runTeamMcp(
+      {
+        input: io.tty.input,
+        out: io.out,
+        err: io.err,
+        ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
+      },
+      where,
+      arg ?? "",
+      resolve(positional[3] ?? io.cwd ?? process.cwd()),
+    );
   }
 
   // ADR 0023 §4: an AI app's MCP config starts this; it holds no secrets and the agent gates every call.

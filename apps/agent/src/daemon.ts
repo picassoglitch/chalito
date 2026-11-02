@@ -56,6 +56,8 @@ import { DeviceRevokedError, SupabaseAuthTokenSource, createDeviceAuth } from ".
 import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmode.js";
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
+import { TeamHub } from "./team/hub.js";
+import { TeamConnections } from "./team/connections.js";
 import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
 import { openOwnSession } from "./watch/open.js";
 import { meetingsFeature } from "./meetings/ipc.js";
@@ -393,6 +395,22 @@ export const computerMcpCommand = (
   isInterpreter(execPath) && argv[1]
     ? { command: execPath, args: [...execArgv, argv[1], "computer", "mcp"] }
     : { command: execPath, args: ["computer", "mcp"] };
+
+/** What an AI app runs before `team mcp <provider> <path>`: the agent itself, no subcommand. */
+export const teamLaunchCommand = (
+  execPath: string = process.execPath,
+  argv: string[] = process.argv,
+  execArgv: string[] = process.execArgv,
+): { command: string; args: string[] } => {
+  const c = computerMcpCommand(execPath, argv, execArgv);
+  // An MCP client may start in a folder without node_modules (development launches only).
+  const args = c.args
+    .slice(0, -2)
+    .map((value, index, all) =>
+      value === "tsx" && all[index - 1] === "--import" ? import.meta.resolve("tsx") : value,
+    );
+  return { command: c.command, args };
+};
 
 /** How a coding agent starts `chalito link mcp` (the session link tools, links/tool-server.ts). */
 export const linkMcpCommand = (
@@ -1594,6 +1612,18 @@ const startDaemon = async (
   });
   syncNativeWorkspaces(policy.get().workspaces);
   void nativeBridge.sweep();
+  // Same fixed copy as the hooks (#132): AI apps keep this command after an AppImage restart.
+  const teamCommand = teamLaunchCommand(hookBin.path);
+  const teamConnections: TeamConnections = new TeamConnections({
+    dir,
+    home: deps.home ?? homedir(),
+    workspaces: () => policy.get().workspaces,
+    workspaceFor: code.workspaceFor,
+    launch: teamCommand,
+    connected: (provider, workspace) =>
+      team.members().some((p) => p.provider === provider && p.workspace === workspace),
+  });
+  const team: TeamHub = new TeamHub(code.workspaceFor, now, (provider, cwd) => teamConnections.trusted(provider, cwd));
   // Only the panel shows PR news, so the watch runs only for an agent the app started.
   const prs = deps.ipcSecret
     ? new PrWatch({
@@ -1628,6 +1658,7 @@ const startDaemon = async (
           closed: (key) => void connectorSessions?.end(key),
         },
         code: codeService(core, () => policy.get(), readSetup, "local:cli", deps.home ?? homedir()),
+        team,
         ...(winSec
           ? {
               listen: (p: string, on: (s: Duplex) => void) =>
@@ -1676,6 +1707,7 @@ const startDaemon = async (
           audit: auditAgent,
           chalitoDir: dir,
           code,
+          teamConnections,
           ownSessions: {
             watcher: ownWatcher,
             open: (v) => openOwnSession(v, { platform: process.platform, run: spawnRunner, paths: ownPaths }),

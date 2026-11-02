@@ -48,6 +48,11 @@ const FILE_TOOLS = new Set([
   "Write",
   "NotebookEdit",
 ]);
+/** Chalito's own team channel tools, as Claude Code and Codex name them (Cursor sends `MCP:<tool>`, no server). */
+export const TEAM_CHANNEL_TOOLS: ReadonlySet<string> = new Set([
+  "mcp__chalito_team__team_read",
+  "mcp__chalito_team__team_send",
+]);
 const errorText = (error: unknown) => (error instanceof Error ? error.message : "error");
 
 /** Native apps retain their own login and execution. Only signed Chalito decisions leave this bridge. */
@@ -85,7 +90,7 @@ export class NativeBridge {
   #closed = false;
   constructor(
     private readonly d: {
-      core: Pick<AgentCore, "requestNativeTool" | "sealer">;
+      core: Pick<AgentCore, "requestNativeTool" | "nativeAllowed" | "sealer">;
       store: AgentStore;
       deviceId: string;
       /** `unreadable`: the app's settings or Chalito's record can't be read, which is not "turned off". */
@@ -342,6 +347,13 @@ export class NativeBridge {
     const { key, s: linked } = mine!;
     const connection = this.#connection(linked);
     if (!r.toolName || !r.input) return { ...connection, allow: false, reason: "bad_params" };
+    // Owner decision 2026-11-02: these only pass messages and the team server checks trust itself.
+    if (r.provider !== "cursor" && TEAM_CHANNEL_TOOLS.has(r.toolName)) {
+      const gate = this.d.core.nativeAllowed();
+      return gate.allow
+        ? { ...connection, allow: true, reason: "team_channel" }
+        : { ...connection, allow: false, reason: gate.reason };
+    }
     if (this.#pending >= MAX_PENDING || linked.active >= MAX_ACTIVE_PER_SESSION)
       return { ...connection, allow: false, reason: "busy" };
     this.#pending++;
