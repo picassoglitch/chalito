@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 
 /**
  * Where git would run a workspace repo's hooks from, worked out WITHOUT running git (running a
@@ -541,6 +541,40 @@ export const repoRootOf = (path: string, o: { fs?: GitFs; env?: GitEnv; fallback
     if (up === cur) return null;
     cur = up;
   }
+};
+
+// Security review 2026-11-02 — git skips a `.git` that isn't a repo and walks up: only a real git dir
+// (HEAD, objects/, refs/) resolved inside `project` counts; anything unreadable is null.
+export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = {}): string | null => {
+  const fs = o.fs ?? nodeFs;
+  const dot = join(root, ".git");
+  const kind = fs.isDir(dot);
+  if (kind === null) return null;
+  let dir = dot;
+  if (!kind) {
+    let text: string;
+    try {
+      text = fs.read(dot);
+    } catch {
+      return null;
+    }
+    const m = /^gitdir: ?(.+?)\s*$/.exec(text);
+    if (!m) return null;
+    dir = resolve(root, m[1]!);
+  }
+  let real: string;
+  let realProject: string;
+  try {
+    real = fs.realpath(dir);
+    realProject = fs.realpath(project);
+  } catch {
+    return null;
+  }
+  const rel = relative(realProject, real);
+  if (isAbsolute(rel) || rel.split(sep)[0] === "..") return null;
+  const repo =
+    fs.isDir(join(real, "objects")) && fs.isDir(join(real, "refs")) && fs.isDir(join(real, "HEAD")) === false;
+  return repo ? real : null;
 };
 
 export const SCAN_DEPTH = 4;

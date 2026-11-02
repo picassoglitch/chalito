@@ -2,7 +2,7 @@ import { readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import type { RiskTier, ToolCategory } from "@chalito/protocol";
 import type { Policy } from "./schema.js";
-import { repoRootOf, type GitFs } from "./git-hooks.js";
+import { realGitDirOf, repoRootOf, type GitFs } from "./git-hooks.js";
 import { foldKey, repoForPath, repoUnion } from "./repo-index.js";
 import { LINK_READ_ONLY, LINKS_TOOL_PREFIX, isLinkToolName } from "../links/tools.js";
 import { TEAM_READ_TOOL, TEAM_SEND_TOOL } from "../team/tools.js";
@@ -1802,6 +1802,8 @@ const GIT_OPTS: Record<string, string[]> = {
 const gitShape = (a: string[]): boolean => {
   const sub = a[0] ?? "";
   const rest = a.slice(1);
+  // Security review 2026-11-02 — pathspec magic (`:/`, `:(top)`, `:!x`) reaches the whole repository.
+  if (rest.some((x) => x.startsWith(":") || x.includes(":("))) return false;
   if (sub === "stash") return rest.length === 0 || (rest.length === 1 && ["push", "list"].includes(rest[0]!));
   // `commit -m <msg>` only (no -a): what's staged was staged by an allowed `git add`.
   if (sub === "commit")
@@ -1820,8 +1822,9 @@ const RUNNERS: Record<string, Shape> = {
   npx: (a, ctx) => allowlisted(["npx", ...a], ctx),
   vitest: opts(NONE),
   pytest: opts(/^-[vqsx]+$/),
-  node: (a) => a.length > 0 && !a[0]!.startsWith("-"),
-  tsx: (a) => a.length > 0 && !a[0]!.startsWith("-"),
+  // Security review 2026-11-02 — `node x.js` runs a script the AI just wrote: only the policy's exact commands.
+  node: (a, ctx) => allowlisted(["node", ...a], ctx),
+  tsx: (a, ctx) => allowlisted(["tsx", ...a], ctx),
   git: gitShape,
 };
 
@@ -1880,6 +1883,13 @@ const homeShellProblem = (command: string, ctx: ClassifyContext, paths: Paths): 
     if (cmd === "git") {
       const root = paths.repoRoot(cwd);
       if (!root || !paths.within(root, project)) return "git outside the project's own repository";
+      // Security review 2026-11-02 — a fake `.git` would make git use a repo further up (the home folder's).
+      if (
+        ctx.env?.GIT_DIR ||
+        ctx.env?.GIT_WORK_TREE ||
+        !realGitDirOf(root, project, ctx.gitFs ? { fs: ctx.gitFs } : {})
+      )
+        return "git without a real repository in the project";
       if (args[0] === "add" && args.slice(1).some((x) => paths.within(root, paths.resolve(x, cwd))))
         return "git add of the whole repository";
     }

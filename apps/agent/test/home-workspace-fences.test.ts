@@ -22,6 +22,13 @@ import { addWorkspace, workspaceProblem } from "../src/workspaces.js";
 
 const ALL: AutoKind[] = ["read", "tests", "workspace_edit", "git_local", "package_install", "coord_branch_push"];
 
+/** A git dir git itself accepts: HEAD, objects/ and refs/ (an empty `.git` is skipped by git). */
+const gitRepo = (dir: string) => {
+  mkdirSync(join(dir, ".git/objects"), { recursive: true });
+  mkdirSync(join(dir, ".git/refs"));
+  writeFileSync(join(dir, ".git/HEAD"), "ref: refs/heads/main\n");
+};
+
 /** A real home folder with keys, startup files, AI settings, a project and a work folder. */
 const makeHome = () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "chalito-home-")));
@@ -43,7 +50,7 @@ const makeHome = () => {
   symlinkSync(join(home, ".ssh/id_ed25519"), join(home, "projects/x/key.txt"));
   symlinkSync(join(home, ".claude"), join(home, "projects/x/claude-cfg"));
   symlinkSync(join(home, ".ssh"), join(home, "projects/x/keys"));
-  mkdirSync(join(home, "projects/x/.git"));
+  gitRepo(join(home, "projects/x"));
   symlinkSync("/proc", join(home, "projects/x/proc-link"));
   const policy: Policy = {
     ...DEFAULT_POLICY,
@@ -363,7 +370,7 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     mkdirSync(join(own, "src"), { recursive: true });
     const git = () => answeredFor("Bash", { command: "git add src && git commit -m wip" }, d.ctx(own));
     expect(git().auto).toBe(false);
-    mkdirSync(join(own, ".git"));
+    gitRepo(own);
     expect(git().coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
   });
 
@@ -530,6 +537,15 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       "git x",
       "git diff --ext-diff",
       "git stash pop",
+      // Security review 2026-11-02: pathspec magic reaches the whole repository in every subcommand.
+      "git add :/",
+      "git add ':(top).bashrc'",
+      "git add ':(glob)**'",
+      "git status :/",
+      "git ls-files ':(top)'",
+      "git add src ':!src/a.ts'",
+      "git diff -- :/",
+      "git commit -m ':(top)'",
       "cat src/*",
       "cat .*/id_ed25519",
       "cat src/../../../.s?h/id_ed25519",
@@ -540,6 +556,10 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       "sed -i s/a/b/ src/a.ts",
       "sed -n 'w /tmp/x' src/a.ts",
       "node -e 1",
+      // Security review 2026-11-02: a script the AI just wrote runs only with a prompt.
+      "node scripts/x.js",
+      "node src/a.ts",
+      "tsx src/a.ts",
       "pnpm exec x",
       "pnpm dlx x",
       "npm run x --prefix ../..",
@@ -573,6 +593,19 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
         expect(r.c.fenced, JSON.stringify(r.c)).toBeUndefined();
         if (kind) expect(r.coord).toEqual({ via: "coordinator_auto", kind });
       });
+  });
+
+  it("node and tsx auto-approve only as an exact policy allowlist command", () => {
+    const d = makeHome();
+    const p: Policy = { ...d.policy, allowlist: { commands: ["node scripts/check.js", "tsx scripts/gen.ts"] } };
+    const run = (command: string) => answeredFor("Bash", { command }, d.ctx(d.project, p));
+    expect(run("node scripts/check.js").c.fenced).toBeUndefined();
+    expect(run("tsx scripts/gen.ts").c.fenced).toBeUndefined();
+    // Fenced, so not even Developer mode's auto-approve answers for the human.
+    for (const command of ["node scripts/other.js", "tsx src/a.ts", "node scripts/check.jsx"]) {
+      expect(run(command).auto, command).toBe(false);
+      expect(run(command).c.fenced, command).toBe(true);
+    }
   });
 
   it("link targets count for tree walks, dangling links resolve, an unlistable folder fails closed", () => {
@@ -666,9 +699,10 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
 
   it("a dotfiles repo at the home folder: git there is fenced, a project's own repo is not", () => {
     const d = makeHome();
-    mkdirSync(join(d.home, ".git"));
+    gitRepo(d.home);
     const own = join(d.home, "projects/own");
-    mkdirSync(join(own, ".git"), { recursive: true });
+    mkdirSync(own, { recursive: true });
+    gitRepo(own);
     mkdirSync(join(own, "src"));
     const git = (cwd: string) => answeredFor("Bash", { command: "git add src && git commit -m wip" }, d.ctx(cwd));
     const bare = join(d.home, "projects/norepo");
@@ -678,6 +712,50 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     expect(answeredFor("Bash", { command: "git diff" }, d.ctx(bare)).auto).toBe(false);
     expect(git(own).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
     expect(answeredFor("Bash", { command: "git -C ../.. diff" }, d.ctx()).auto).toBe(false);
+  });
+
+  it("git needs a real repository in the project: a fake .git would hand discovery to the home repo", () => {
+    const d = makeHome();
+    gitRepo(d.home);
+    const git = (cwd: string, extra: Partial<ClassifyContext> = {}) =>
+      answeredFor("Bash", { command: "git add src && git commit -m wip" }, { ...d.ctx(cwd), ...extra });
+    const fake = join(d.home, "projects/fake");
+    mkdirSync(join(fake, "src"), { recursive: true });
+    mkdirSync(join(fake, ".git"));
+    expect(git(fake).auto).toBe(false);
+    // Missing only refs/ is still not a repository to git.
+    mkdirSync(join(fake, ".git/objects"));
+    writeFileSync(join(fake, ".git/HEAD"), "ref: refs/heads/main\n");
+    expect(git(fake).auto).toBe(false);
+    mkdirSync(join(fake, ".git/refs"));
+    expect(git(fake).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    // A gitdir file must resolve inside the project, to a real git dir.
+    const linked = join(d.home, "projects/linked");
+    mkdirSync(join(linked, "src"), { recursive: true });
+    writeFileSync(join(linked, ".git"), `gitdir: ${join(d.home, ".git")}\n`);
+    expect(git(linked).auto).toBe(false);
+    writeFileSync(join(linked, ".git"), "gitdir: ../../.git\n");
+    expect(git(linked).auto).toBe(false);
+    writeFileSync(join(linked, ".git"), "not a gitdir line\n");
+    expect(git(linked).auto).toBe(false);
+    const inner = join(linked, "modules/self");
+    mkdirSync(join(inner, "objects"), { recursive: true });
+    mkdirSync(join(inner, "refs"));
+    writeFileSync(join(inner, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(linked, ".git"), "gitdir: modules/self\n");
+    expect(git(linked).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    // A .git symlinked out of the project is not the project's repository.
+    const sym = join(d.home, "projects/sym");
+    mkdirSync(join(sym, "src"), { recursive: true });
+    symlinkSync(join(d.home, ".git"), join(sym, ".git"));
+    expect(git(sym).auto).toBe(false);
+    // GIT_DIR / GIT_WORK_TREE in the session environment bypass discovery entirely.
+    const own = join(d.home, "projects/own");
+    mkdirSync(join(own, "src"), { recursive: true });
+    gitRepo(own);
+    expect(git(own).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    expect(git(own, { env: { GIT_DIR: join(d.home, ".git") } }).auto).toBe(false);
+    expect(git(own, { env: { GIT_WORK_TREE: d.home } }).auto).toBe(false);
   });
 
   it("a session started in the excluded folder has no workspace", () => {
