@@ -544,7 +544,7 @@ export const repoRootOf = (path: string, o: { fs?: GitFs; env?: GitEnv; fallback
 };
 
 // Security review 2026-11-02 — git skips a `.git` that isn't a repo and walks up: only a real git dir
-// (HEAD, objects/, refs/) resolved inside `project` counts; anything unreadable is null.
+// (valid HEAD, objects/, refs/, commondir) resolved inside `project` counts; unreadable is null.
 export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = {}): string | null => {
   const fs = o.fs ?? nodeFs;
   const dot = join(root, ".git");
@@ -562,19 +562,45 @@ export const realGitDirOf = (root: string, project: string, o: { fs?: GitFs } = 
     if (!m) return null;
     dir = resolve(root, m[1]!);
   }
-  let real: string;
   let realProject: string;
   try {
-    real = fs.realpath(dir);
     realProject = fs.realpath(project);
   } catch {
     return null;
   }
-  const rel = relative(realProject, real);
-  if (isAbsolute(rel) || rel.split(sep)[0] === "..") return null;
-  const repo =
-    fs.isDir(join(real, "objects")) && fs.isDir(join(real, "refs")) && fs.isDir(join(real, "HEAD")) === false;
-  return repo ? real : null;
+  const insideProject = (p: string): string | null => {
+    try {
+      const r = fs.realpath(p);
+      const rel = relative(realProject, r);
+      return isAbsolute(rel) || rel.split(sep)[0] === ".." ? null : r;
+    } catch {
+      return null;
+    }
+  };
+  const real = insideProject(dir);
+  if (!real) return null;
+  // HEAD as git validates it: a symbolic ref into refs/ or a full sha (SHA-1 or SHA-256).
+  let head: string;
+  try {
+    head = fs.read(join(real, "HEAD"));
+  } catch {
+    return null;
+  }
+  if (!/^(ref: refs\/\S+|[0-9a-f]{40}|[0-9a-f]{64})\s*$/.test(head)) return null;
+  // A worktree's objects/ and refs/ live in its commondir: it must be inside the project too.
+  let common = real;
+  if (fs.isDir(join(real, "commondir")) !== null) {
+    let text: string;
+    try {
+      text = fs.read(join(real, "commondir"));
+    } catch {
+      return null;
+    }
+    const resolved = text.trim() ? insideProject(resolve(real, text.trim())) : null;
+    if (!resolved) return null;
+    common = resolved;
+  }
+  return fs.isDir(join(common, "objects")) && fs.isDir(join(common, "refs")) ? real : null;
 };
 
 export const SCAN_DEPTH = 4;

@@ -1,6 +1,6 @@
 // Owner 2026-11-02: `~` may be a workspace, but its fences are never auto-approved (coordinator, native).
 // Runs on a real temporary home folder: real realpath, real symlinks.
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -756,6 +756,51 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     expect(git(own).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
     expect(git(own, { env: { GIT_DIR: join(d.home, ".git") } }).auto).toBe(false);
     expect(git(own, { env: { GIT_WORK_TREE: d.home } }).auto).toBe(false);
+    expect(git(own, { env: { GIT_COMMON_DIR: join(d.home, ".git") } }).auto).toBe(false);
+  });
+
+  it("git's HEAD and commondir are checked the way git checks them", () => {
+    const d = makeHome();
+    gitRepo(d.home);
+    const git = (cwd: string) => answeredFor("Bash", { command: "git add src && git commit -m wip" }, d.ctx(cwd));
+    const p = join(d.home, "projects/head");
+    mkdirSync(join(p, "src"), { recursive: true });
+    gitRepo(p);
+    for (const [head, ok] of [
+      ["ref: refs/heads/main\n", true],
+      [`${"a".repeat(40)}\n`, true],
+      [`${"b".repeat(64)}\n`, true],
+      ["garbage\n", false],
+      ["ref: heads/main\n", false],
+      [`${"a".repeat(39)}\n`, false],
+      ["", false],
+    ] as const) {
+      writeFileSync(join(p, ".git/HEAD"), head);
+      expect(git(p).auto, JSON.stringify(head)).toBe(ok);
+    }
+    writeFileSync(join(p, ".git/HEAD"), "ref: refs/heads/main\n");
+    expect(git(p).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    // A worktree: objects/ and refs/ come from commondir, which must be inside the project.
+    const w = join(d.home, "projects/wt");
+    mkdirSync(join(w, "src"), { recursive: true });
+    mkdirSync(join(w, "store/objects"), { recursive: true });
+    mkdirSync(join(w, "store/refs"));
+    mkdirSync(join(w, "store/worktrees/w"), { recursive: true });
+    mkdirSync(join(w, "empty"));
+    writeFileSync(join(w, "store/worktrees/w/HEAD"), "ref: refs/heads/w\n");
+    writeFileSync(join(w, ".git"), "gitdir: store/worktrees/w\n");
+    const commondir = join(w, "store/worktrees/w/commondir");
+    writeFileSync(commondir, "../..\n");
+    expect(git(w).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
+    writeFileSync(commondir, `${join(d.home, ".git")}\n`);
+    expect(git(w).auto).toBe(false);
+    writeFileSync(commondir, "../../../empty\n");
+    expect(git(w).auto).toBe(false);
+    writeFileSync(commondir, "\n");
+    expect(git(w).auto).toBe(false);
+    rmSync(commondir);
+    mkdirSync(commondir);
+    expect(git(w).auto).toBe(false);
   });
 
   it("a session started in the excluded folder has no workspace", () => {
