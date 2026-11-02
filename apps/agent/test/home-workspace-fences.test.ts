@@ -769,7 +769,7 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     }
   });
 
-  it("git dir entries, refs and alternates must stay in the project; a bare-looking folder below the root asks", () => {
+  it("the whole git dir must stay in the project (no links, bounded walk); a repo-looking folder below the root asks", () => {
     const d = makeHome();
     gitRepo(d.home);
     const outside = join(d.home, "elsewhere");
@@ -801,8 +801,15 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     // Past the walk bound fails closed.
     const big = fresh();
     mkdirSync(join(big, ".git/refs/tags"));
-    for (let i = 0; i < 2001; i++) writeFileSync(join(big, ".git/refs/tags", `t${i}`), "a".repeat(40));
+    for (let i = 0; i < 20_001; i++) writeFileSync(join(big, ".git/refs/tags", `t${i}`), "");
     expect(git(big).auto).toBe(false);
+    // Any link anywhere in the git dir, named or not.
+    for (const rel of ["objects/ab/cd", "worktrees/w/x", "modules/m", "description", "FETCH_HEAD"]) {
+      const p = fresh();
+      mkdirSync(dirname(join(p, ".git", rel)), { recursive: true });
+      symlinkSync(join(outside, "file"), join(p, ".git", rel));
+      expect(git(p).auto, rel).toBe(false);
+    }
     // Any alternates file, even a dangling link, borrows objects from elsewhere.
     const alt = fresh();
     mkdirSync(join(alt, ".git/objects/info"));
@@ -820,6 +827,14 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
     writeFileSync(join(sub, "HEAD"), "ref: refs/heads/main\n");
     expect(git(bare).coord).toEqual({ via: "coordinator_auto", kind: "git_local" });
     expect(answeredFor("Bash", { command: "git status" }, d.ctx(sub)).auto).toBe(false);
+    // A folder below the root holding HEAD, commondir, gitdir or .git may be taken as the repo.
+    for (const mark of ["HEAD", "commondir", "gitdir", ".git"]) {
+      const p = fresh();
+      const mid = join(p, "src/mid");
+      mkdirSync(join(mid, "deep"), { recursive: true });
+      writeFileSync(join(mid, mark), "x");
+      expect(answeredFor("Bash", { command: "git status" }, d.ctx(join(mid, "deep"))).auto, mark).toBe(false);
+    }
     expect(answeredFor("Bash", { command: "git status" }, d.ctx(join(bare, "src"))).coord).toEqual({
       via: "coordinator_auto",
       kind: "read",
