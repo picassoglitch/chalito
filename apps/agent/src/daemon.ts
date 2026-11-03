@@ -57,6 +57,7 @@ import { DevMode, DevModeStore, type DevModeTamper, type OsAuth } from "./devmod
 import { acquireInstanceLock } from "./instance-lock.js";
 import { ipcHandlers } from "./ipc-handlers.js";
 import { TeamHub } from "./team/hub.js";
+import { CommandResponder } from "./team/responder.js";
 import { TeamConnections } from "./team/connections.js";
 import { OwnSessionWatcher, watchPaths } from "./watch/watcher.js";
 import { openOwnSession } from "./watch/open.js";
@@ -1543,6 +1544,7 @@ const startDaemon = async (
     if (st && (st.active.length || st.pending.length)) await computer?.kill("agent_stop").catch(() => undefined);
     terminalWatchdog?.clear();
     prs?.stop();
+    responder.close();
     await terminal?.kill("agent_stop").catch(() => undefined);
     await screen?.stopAll().catch(() => undefined);
     // Every session stays resumable after the restart (sessions.json).
@@ -1644,8 +1646,16 @@ const startDaemon = async (
     connected: (provider, workspace) =>
       team.members().some((p) => p.provider === provider && p.workspace === workspace),
   });
+  // Owner 2026-11-02 — a request to an app with no open session is answered by that app's own CLI.
+  const responder = new CommandResponder({
+    home: deps.home ?? homedir(),
+    path: env.PATH,
+    chalitoDir: dir,
+    log: (event, meta) => log.info(event, meta),
+  });
   const team: TeamHub = new TeamHub(code.workspaceFor, now, (provider, cwd) => teamConnections.trusted(provider, cwd), {
     audit: (type, meta) => auditAgent(type, meta),
+    responder,
     rejected: (provider, cwd) => teamConnections.requested(provider, cwd),
   });
   // Only the panel shows PR news, so the watch runs only for an agent the app started.

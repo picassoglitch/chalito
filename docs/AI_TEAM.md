@@ -84,7 +84,19 @@ Tool approvals for these tools: `mcp__chalito_team__team_read` is classified as 
 
 Messages are in memory, limited to 8,000 characters each, 30 sends per connection per minute, and 64 retained messages per workspace. Retention is at most one hour for delivery. `historyTruncated` reports when a message in the reader's workspace was dropped (cap or expiry) before the reader saw it. This is a bounded coordination channel, not a durable task queue: peers should confirm important requests with a result, and must not claim completion based on sending alone. Avoid forwarding loops and repeated acknowledgments.
 
-If Chalito restarts or stops, each pull-only `chalito_team` server exits with a message on stderr, so the app shows it disconnected; reconnect the app's MCP servers after Chalito is back. Push-delivered sessions reconnect on their own (see above). Disconnect removes the peer immediately. Its queued results remain available to other connected peers in that workspace until retention expires; the workspace history is discarded when its last peer leaves. Joining peers see messages sent after they join. Restarting Chalito clears all team state. Workspace access is checked against current policy for each call; removing a workspace disconnects its membership on its next call.
+If Chalito restarts or stops, each pull-only `chalito_team` server exits with a message on stderr, so the app shows it disconnected; reconnect the app's MCP servers after Chalito is back. Push-delivered sessions reconnect on their own (see above). Disconnect removes the peer immediately. Its queued results remain available to other connected peers in that workspace until retention expires; the workspace history is discarded when its last peer leaves. Joining peers see messages sent after they join, plus messages held for their app. Restarting Chalito clears all team state. Workspace access is checked against current policy for each call; removing a workspace disconnects its membership on its next call.
+
+## Reaching an app by name, even with no session open
+
+`team_send {"to":"codex","kind":"request","text":"..."}` addresses an app by name instead of a session ID:
+
+- A session of that app that can be woken (a push adapter) gets it as usual.
+- Otherwise Chalito runs the app's own CLI for one turn in the asker's folder (`codex exec`, `claude -p`, `cursor-agent -p --trust`, `grok -p`, `gemini -p`, `qwen -p`, `opencode run`), with the messages in its prompt and the app's default permissions. Its output comes back to the asker as a `result` from that app. A CLI that fails (not signed in, not trusted) answers with the reason.
+- If the app has no CLI here, the message is held up to 24 hours and delivered once to the first session of that app that reads.
+- Only `request` starts a CLI; `result` and `status` never do, so two apps cannot keep starting each other. At most 12 runs per workspace per 10 minutes, one at a time per app, 15 minutes each.
+- A message to a session that just left goes to its app the same way.
+
+`~/.chalito/team-responders.json` adds or replaces commands: `{"myagent": ["myagent", "--print", "{prompt}"]}`. The prompt is passed as one argument, never through a shell.
 
 ## Local development
 

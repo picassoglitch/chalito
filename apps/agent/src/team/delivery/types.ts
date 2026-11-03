@@ -8,6 +8,8 @@ export interface TeamMessage {
   from: string;
   provider: string;
   to?: string;
+  /** Addressed to an app by name ("codex"): held until one of its sessions reads it or a responder takes it. */
+  toProvider?: string;
   kind: TeamKind;
   text: string;
   at: number;
