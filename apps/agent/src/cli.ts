@@ -650,6 +650,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
         ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
         run: io.env.CHALITO_TEAM_RUN,
         home: io.home,
+        codexThread: io.env.CODEX_THREAD_ID,
       },
       where,
       arg ?? "",

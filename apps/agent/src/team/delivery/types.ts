@@ -47,6 +47,8 @@ export const ClientDeclaration = z
     experimental: z.array(z.string().max(128)).max(32).default([]),
     /** The client loaded this server as a Claude Code channel (its launch flags name server:chalito_team). */
     channel: z.boolean().default(false),
+    /** The Codex thread this session runs in, as Codex itself reported it; enables `codex queue` delivery. */
+    codexThread: z.string().uuid().optional(),
   })
   .strict();
 export type ClientDeclaration = z.infer<typeof ClientDeclaration>;

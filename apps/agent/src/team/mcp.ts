@@ -5,7 +5,15 @@ import { runMcpServer, type McpServerInfo } from "../computer/mcp-server.js";
 import { z } from "zod";
 import { TeamProvider } from "./hub.js";
 import { argvLoadsChannel, CHANNEL_CAPABILITY, channelNotifications, parentArgv } from "./delivery/mcp-channel.js";
-import type { ClientDeclaration, TeamBatch } from "./delivery/types.js";
+import {
+  CODEX_QUEUE,
+  codexThreadFrom,
+  envThread,
+  queueText,
+  runCodexQueue,
+  type QueueRunner,
+} from "./delivery/codex-queue.js";
+import type { ClientDeclaration, TeamBatch, TeamMessage } from "./delivery/types.js";
 
 export const TEAM_INFO: McpServerInfo = {
   name: "chalito_team",
@@ -116,6 +124,10 @@ export const runTeamMcp = async (
     run?: string | undefined;
     /** The home folder: a session started outside any workspace joins it when it is one. */
     home?: string | undefined;
+    /** Codex only: CODEX_THREAD_ID as this process received it. */
+    codexThread?: string | undefined;
+    /** Codex only: hands a batch to `codex queue`; default runs the CLI. */
+    codexQueue?: QueueRunner;
   },
   path: string | null,
   provider: string,
@@ -132,10 +144,44 @@ export const runTeamMcp = async (
   const notify = (batch: TeamBatch) => {
     for (const n of channelNotifications(batch)) io.out(`${JSON.stringify({ jsonrpc: "2.0", ...n })}\n`);
   };
+  // Codex: the first thread Codex reports is this session's for good. A second, different one means the process
+  // serves several threads, so pushing is unsafe: back to pull for the rest of its life.
+  let thread: string | null = provider === "codex" ? envThread(io.codexThread) : null;
+  let threadConflict = false;
+  /** Batches `codex queue` refused: returned with the next tool reply so nothing pushed is lost. */
+  const unqueued: TeamMessage[] = [];
+  let queueing = Promise.resolve();
+  const bindThread = (seen: string | null) => {
+    if (provider !== "codex" || !seen || threadConflict || seen === thread) return;
+    if (thread) {
+      threadConflict = true;
+      thread = null;
+      io.err("Chalito team: this process reports more than one Codex thread; messages wait for team_read.\n");
+    } else thread = seen;
+    if (client) {
+      const { codexThread: _old, ...rest } = client;
+      client = { ...rest, ...(thread ? { codexThread: thread } : {}) };
+      if (link) void declare(link, client);
+    }
+  };
+  const enqueue = (batch: TeamBatch) => {
+    const target = thread;
+    queueing = queueing.then(async () => {
+      const ok = target ? await (io.codexQueue ?? runCodexQueue)(target, queueText(batch)) : false;
+      if (ok) return;
+      unqueued.push(...batch.messages);
+      io.err("Chalito team: codex queue failed; the messages come back with the next team_read.\n");
+    });
+  };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;
     const f = Frame.safeParse(raw);
-    if (!f.success || f.data.teamDelivery.adapter !== "mcp-channel") {
+    const adapter = f.success ? f.data.teamDelivery.adapter : "";
+    if (f.success && adapter === CODEX_QUEUE && provider === "codex") {
+      enqueue(f.data.teamDelivery.batch);
+      return;
+    }
+    if (!f.success || adapter !== "mcp-channel") {
       io.err("Chalito team: dropped a pushed batch this version cannot read; update Chalito and reconnect.\n");
       return;
     }
@@ -283,10 +329,10 @@ export const runTeamMcp = async (
         };
       } else if (msg.method === "notifications/initialized" && !client) {
         const loaded = io.channelLoaded ?? (() => argvLoadsChannel(parentArgv() ?? []));
-        client = { ...declared, channel: loaded() };
+        client = { ...declared, channel: loaded(), ...(thread ? { codexThread: thread } : {}) };
         if (link) void declare(link, client);
         for (const batch of queued.splice(0)) notify(batch);
-      }
+      } else if (msg.method === "tools/call") bindThread(codexThreadFrom(params._meta));
     },
     call: async (tool, args) => {
       if (tool !== "team_read" && tool !== "team_send")
@@ -294,6 +340,12 @@ export const runTeamMcp = async (
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
       if (!reply.ok && reply.error === "closed") return RECONNECTING;
+      if (reply.ok && unqueued.length) {
+        const result = reply.result as { messages?: TeamMessage[] };
+        const seen = new Set((result.messages ?? []).map((m) => m.seq));
+        const back = unqueued.splice(0).filter((m) => !seen.has(m.seq));
+        result.messages = [...back, ...(result.messages ?? [])].sort((a, b) => a.seq - b.seq);
+      }
       return reply.ok
         ? { ok: true, result: { text: JSON.stringify({ peerData: reply.result }) } }
         : {
