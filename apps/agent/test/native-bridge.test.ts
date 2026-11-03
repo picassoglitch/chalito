@@ -671,52 +671,50 @@ describe("native hook review fixes (owner decisions 2026-10-31)", () => {
       };
     };
 
-    it("blocks on a crash: exit 2 with a deny for Claude and Cursor, the JSON deny alone for Codex", async () => {
-      for (const [provider, event, exit] of [
-        ["claude", "PreToolUse", 2],
-        ["cursor", "preToolUse", 2],
-        ["codex", "PreToolUse", 0],
-      ] as const) {
-        const c = cliIo({ platform: "win32", winFails: true, stdin: hookPayload(provider) });
-        expect(await main(["native-hook", provider, event], c.io as never)).toBe(exit);
-        expect(decisionOf(provider, JSON.parse(c.out.join(""))).decision).toBe("deny");
-        expect(c.err.join("")).toContain("Chalito");
-      }
+    // Owner 2026-11-03 — Chalito is a bridge, not a gate: a hook left behind never blocks, on or off.
+    const EVENTS = {
+      claude: ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd"],
+      codex: ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd"],
+      cursor: ["sessionStart", "beforeSubmitPrompt", "preToolUse", "stop", "sessionEnd"],
+    } as const;
+
+    it("gives no decision for every app and event, even where the agent's pipe helper would crash", async () => {
+      for (const provider of ["claude", "cursor", "codex"] as const)
+        for (const event of EVENTS[provider]) {
+          const c = cliIo({ platform: "win32", winFails: true, stdin: hookPayload(provider) });
+          expect(await main(["native-hook", provider, event], c.io as never), `${provider} ${event}`).toBe(0);
+          const reply = JSON.parse(c.out.join(""));
+          expect(decisionOf(provider, reply).decision).toBeUndefined();
+          expect(reply).toEqual(provider === "cursor" && event === "beforeSubmitPrompt" ? { continue: true } : {});
+          expect(c.err.join("")).toBe("");
+        }
     });
 
-    it("denies an unknown event and rejects an unknown app instead of passing", async () => {
-      for (const [provider, exit] of [
-        ["claude", 2],
-        ["cursor", 2],
-        ["codex", 0],
-      ] as const) {
+    it("passes an unknown event, a missing event and an unknown app: exit 0, nothing that blocks", async () => {
+      for (const provider of ["claude", "cursor", "codex"] as const) {
         const c = cliIo();
-        expect(await main(["native-hook", provider, "NotAnEvent"], c.io as never)).toBe(exit);
-        expect(decisionOf(provider, JSON.parse(c.out.join(""))).decision).toBe("deny");
+        expect(await main(["native-hook", provider, "NotAnEvent"], c.io as never)).toBe(0);
+        expect(c.out.join("")).toBe("");
         const missing = cliIo();
-        expect(await main(["native-hook", provider], missing.io as never)).toBe(exit);
+        expect(await main(["native-hook", provider], missing.io as never)).toBe(0);
+        expect(missing.out.join("")).toBe("");
       }
       const unknown = cliIo();
-      expect(await main(["native-hook", "gemini", "PreToolUse"], unknown.io as never)).toBe(2);
-      expect(unknown.out.join("")).toBe("");
+      expect(await main(["native-hook", "gemini", "PreToolUse"], unknown.io as never)).toBe(0);
+      expect(unknown.out.join("") + unknown.err.join("")).toBe("");
     });
 
-    it("denies in a workspace when the agent isn't running, via the real CLI and workspace file", async () => {
-      const c = cliIo({ stdin: hookPayload("claude") });
-      const dir = join(c.io.home, ".chalito");
-      mkdirSync(dir, { recursive: true });
-      writeNativeWorkspaces(dir, [WS]);
-      expect(await main(["native-hook", "claude", "PreToolUse"], c.io as never)).toBe(0);
-      // No configured locale: the hook speaks Spanish, the product default.
-      expect(decisionOf("claude", JSON.parse(c.out.join("")))).toEqual({
-        decision: "deny",
-        message: "Chalito no está abierto en esta computadora. Abre Chalito para aprobar esta acción.",
-      });
-      const away = cliIo({ stdin: hookPayload("claude", { cwd: tempDir("chalito-native-away-") }) });
-      mkdirSync(join(away.io.home, ".chalito"), { recursive: true });
-      writeNativeWorkspaces(join(away.io.home, ".chalito"), [WS]);
-      expect(await main(["native-hook", "claude", "PreToolUse"], away.io as never)).toBe(0);
-      expect(JSON.parse(away.out.join(""))).toEqual({});
+    it("passes inside a workspace when the agent isn't running, via the real CLI and workspace file", async () => {
+      for (const provider of ["claude", "cursor", "codex"] as const) {
+        const c = cliIo({ stdin: hookPayload(provider) });
+        const dir = join(c.io.home, ".chalito");
+        mkdirSync(dir, { recursive: true });
+        writeNativeWorkspaces(dir, [WS]);
+        const event = provider === "cursor" ? "preToolUse" : "PreToolUse";
+        expect(await main(["native-hook", provider, event], c.io as never)).toBe(0);
+        expect(JSON.parse(c.out.join(""))).toEqual({});
+        expect(c.err.join("")).toBe("");
+      }
     });
   });
 });

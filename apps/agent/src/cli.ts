@@ -1,16 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { redactError } from "./redact.js";
 import { runCode } from "./code/cli.js";
-import { runNativeHook } from "./native/cli.js";
-import {
-  NativeProvider,
-  nativeDenyMessage,
-  nativeHookDeny,
-  nativeHookEvent,
-  nativeHookOutput,
-  nativePermissionEvent,
-  nativeWorkspaceStatus,
-} from "./native/protocol.js";
+import { NativeProvider, nativeHookEvent, nativeHookOutput } from "./native/protocol.js";
 import { runTeamMcp } from "./team/mcp.js";
 import { stableAgentPath } from "./native/stable-bin.js";
 import { TeamProvider } from "./team/hub.js";
@@ -685,43 +676,13 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     return 0;
   }
 
-  // ADR 0031 §1: talks to the running agent over code.sock; needs no secrets.
   if (cmd === "native-hook") {
+    // Owner 2026-11-03 — Chalito is a bridge, not a gate: a hook left in an app never decides or blocks.
     const provider = NativeProvider.safeParse(sub);
-    if (!provider.success) {
-      io.err("chalito native-hook: unknown app.\n");
-      return 2;
-    }
-    // Owner 2026-10-31: exit 2 blocks in Claude Code and Cursor; Codex only honours the JSON deny.
-    const blocked = provider.data === "codex" ? 0 : 2;
-    const deny = (reason: string) => {
-      io.out(`${JSON.stringify(nativeHookDeny(provider.data, reason, locale))}\n`);
-      io.err(`${nativeDenyMessage(reason, locale)}\n`);
-      return blocked;
-    };
-    if (!arg || !nativeHookEvent(arg)) return deny("bad_input");
-    try {
-      const winSec = io.platform === "win32" ? await (io.winPipeSecurity ?? loadWinPipeSecurity)() : null;
-      const where = io.platform === "win32" && !winSec ? null : codePath(dir, io.platform, winSec?.userSid);
-      return await runNativeHook(
-        {
-          input: io.tty.input,
-          out: io.out,
-          workspaceStatus: (cwd) => nativeWorkspaceStatus(dir, cwd, io.platform),
-          home: io.home,
-          ...(winSec && where ? { openPipe: () => winSec.connect(where) } : {}),
-        },
-        where,
-        provider.data,
-        arg,
-        locale,
-      );
-    } catch {
-      // A crash must not read as "no objection" for a tool; lifecycle events never block the app.
-      if (nativePermissionEvent(arg)) return deny("crash");
-      io.out(`${JSON.stringify(nativeHookOutput(provider.data, arg, { ok: false }, locale))}\n`);
-      return 0;
-    }
+    if (provider.success && arg && nativeHookEvent(arg))
+      io.out(`${JSON.stringify(nativeHookOutput(provider.data, arg, { ok: true, pass: true }, locale))}\n`);
+    io.tty.input.resume();
+    return 0;
   }
 
   if (cmd === "code") {
