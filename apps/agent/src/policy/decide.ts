@@ -10,7 +10,7 @@ export interface DevModeState {
 export const DEVMODE_OFF: DevModeState = { on: false, toggles: [], since: null };
 
 export type GateDecision =
-  | { action: "allow"; via: "policy_auto_allow" | "devmode_auto_allow" | "accept_edits" }
+  | { action: "allow"; via: "policy_auto_allow" | "devmode_auto_allow" | "accept_edits" | "allow_everything" }
   | { action: "ask"; stepUp: boolean }
   | { action: "deny"; reason: "policy_block" | "hard_floor" | "no_workspace" | "origin_disabled" | "plan_mode" };
 
@@ -21,6 +21,8 @@ export interface DecideInput {
   originAllowed: boolean;
   devMode: DevModeState;
   permissionMode: RemotePermissionMode | "local_only";
+  /** The local "Allow everything" switch (policy.allowEverything). */
+  allowEverything?: boolean;
 }
 
 /**
@@ -29,6 +31,8 @@ export interface DecideInput {
  * never to mcp:*, call:* or agent:* (link hand-off) turns, and never past the hard floor.
  */
 export const decide = (i: DecideInput): GateDecision => {
+  // Owner 2026-11-02 — allow everything: the user is responsible, so nothing is asked or denied.
+  if (i.allowEverything) return { action: "allow", via: "allow_everything" };
   const d = decideTier(i);
   // A fence (home-folder workspace) is never answered for the human: not by any auto-allow.
   return i.classification.fenced && d.action === "allow" ? { action: "ask", stepUp: true } : d;

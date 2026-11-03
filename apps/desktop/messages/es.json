@@ -126,6 +126,17 @@
       "missingStepUp": "«{computer}» rechazó un dispositivo nuevo: el dispositivo que lo aprobó no usó su llave de acceso. Vuelve a aprobarlo desde tu teléfono con la llave de acceso.",
       "refused": "«{computer}» rechazó un dispositivo nuevo porque su aprobación no se pudo verificar. Vuelve a aprobarlo desde un dispositivo de confianza."
     },
+    "allowEverything": {
+      "title": "Aprobar todo",
+      "warning": "Chalito aprobará todas las acciones de todas las IA sin preguntarte. Tú eres responsable de lo que hagan.",
+      "on": "Activado: Chalito aprueba todas las acciones de todas las IA sin preguntarte. Todo queda registrado.",
+      "off": "Desactivado: Chalito te pregunta antes de las acciones de riesgo.",
+      "enable": "Activar…",
+      "confirm": "Entiendo, activarlo",
+      "disable": "Desactivar",
+      "failed": "No se activó ({reason}).",
+      "banner": "«Aprobar todo» está activado: Chalito aprueba todas las acciones de todas las IA sin preguntarte."
+    },
     "coordinator": {
       "title": "Modo coordinador",
       "intro": "Deja que Chalito responda por ti a los agentes de tus planes en esta computadora. Lo demás te llega al teléfono.",

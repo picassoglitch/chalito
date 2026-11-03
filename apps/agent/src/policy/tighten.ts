@@ -67,9 +67,16 @@ export const isTighterOrEqual = (
     screenTighterOrEqual(next.screen, cur.screen) &&
     lanTighterOrEqual(next.lan, cur.lan) &&
     exposedTighterOrEqual(next.exposed, cur.exposed) &&
-    coordinatorTighterOrEqual(next.coordinator, cur.coordinator)
+    coordinatorTighterOrEqual(next.coordinator, cur.coordinator) &&
+    allowEverythingTighterOrEqual(next.allowEverything, cur.allowEverything)
   );
 };
+
+/** Allow everything can only be turned off remotely; absent means on (owner 2026-11-02). */
+export const allowEverythingTighterOrEqual = (
+  next: Policy["allowEverything"],
+  cur: Policy["allowEverything"],
+): boolean => next?.enabled === false || cur?.enabled !== false;
 
 /**
  * Coordinator mode can only be turned off or answer fewer kinds; never on, and never more kinds

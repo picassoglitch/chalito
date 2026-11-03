@@ -137,7 +137,11 @@ export const agentFor = async (
     { deviceId: phone.id, pubSign: phone.pubSign, pubBox: phone.pubBox, webauthn: passkeyRef },
     Date.now(),
   );
-  let policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: o.ws ?? WS }] };
+  let policy: Policy = {
+    ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
+    workspaces: [{ label: "chalito", path: o.ws ?? WS }],
+  };
   const holder: PolicyHolder = { get: () => policy, set: async (p) => void (policy = p) };
   const liability = loadLiabilityText("es");
   const devMode = new DevMode({

@@ -62,7 +62,11 @@ describe("approval call lines", () => {
       { deviceId: phoneId, pubSign: await toB64url(phoneSign.publicKey), pubBox: await toB64url(phoneBox.publicKey) },
       Date.now(),
     );
-    const policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }] };
+    const policy: Policy = {
+      ...DEFAULT_POLICY,
+      allowEverything: { enabled: false },
+      workspaces: [{ label: "chalito", path: WS }],
+    };
     const fake = fakeClaudeCode([[{ tool: "Edit", input: { file_path: `${WS}/src/a.ts` } }]]);
     const core = new AgentCore({
       store,
