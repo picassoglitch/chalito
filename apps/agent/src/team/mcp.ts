@@ -92,7 +92,7 @@ const RETRY_MS = [250, 500, 1000, 2000, 5000];
 const RECONNECTING = {
   ok: false as const,
   error: "reconnecting",
-  message: "Chalito team: the connection to Chalito dropped; reconnecting. Retry shortly.",
+  message: "Chalito team: Chalito is not reachable right now; reconnecting. Retry shortly.",
 };
 
 type Link = {
