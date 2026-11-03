@@ -79,7 +79,11 @@ const agentFor = async (owner: string, turns: FakeStep[][]) => {
   });
   await devMode.enableToggle("autoApproveHigh");
   const fake = fakeClaudeCode(turns);
-  const policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }] };
+  const policy = {
+    ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
+    workspaces: [{ label: "chalito", path: WS }],
+  };
   const core = new AgentCore({
     store,
     adapters: { "claude-code": new ClaudeCodeAdapter({ apiKey: "sk-ant-test", queryFn: fake.queryFn, env: {} }) },

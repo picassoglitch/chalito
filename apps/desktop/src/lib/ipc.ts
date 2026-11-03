@@ -199,6 +199,14 @@ export type ComputerEnableResult =
   { ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" | "already_on" | "unavailable" };
 
 /** Coordinator mode (apps/agent/src/coord/toggle.ts): what Chalito answers for the owner here. */
+/** Owner 2026-11-02 — allow everything: on by default; on again only from this computer. */
+export interface AllowEverythingStatus {
+  on: boolean;
+  warning: string;
+}
+export type AllowEverythingEnableResult =
+  { ok: true } | { ok: false; reason: "os_auth_failed" | "cancelled" | "already_on" };
+
 export interface CoordinatorStatus {
   /** Empty while off. */
   kinds: string[];
@@ -374,6 +382,9 @@ export interface AgentIpc {
   coordinatorChallenge(): Promise<CoordinatorChallenge>;
   enableCoordinator(answers: { confirm: boolean }): Promise<CoordinatorEnableResult>;
   disableCoordinator(): Promise<void>;
+  allowEverythingStatus(): Promise<AllowEverythingStatus>;
+  enableAllowEverything(answers: { confirm: boolean }): Promise<AllowEverythingEnableResult>;
+  disableAllowEverything(): Promise<void>;
   computerChallenge(): Promise<ComputerChallenge>;
   enableComputer(answers: ComputerAnswers): Promise<ComputerEnableResult>;
   disableComputer(): Promise<void>;
@@ -483,6 +494,9 @@ export const unavailableIpc: AgentIpc = {
   coordinatorChallenge: unavailable,
   enableCoordinator: unavailable,
   disableCoordinator: unavailable,
+  allowEverythingStatus: unavailable,
+  enableAllowEverything: unavailable,
+  disableAllowEverything: unavailable,
   computerChallenge: unavailable,
   enableComputer: unavailable,
   disableComputer: unavailable,
@@ -577,6 +591,9 @@ export const invokeIpc = (invoke: Invoke = tauriInvoke): AgentIpc => {
     coordinatorChallenge: () => call("coordinatorChallenge"),
     enableCoordinator: (answers) => call("enableCoordinator", { answers }),
     disableCoordinator: async () => void (await call("disableCoordinator")),
+    allowEverythingStatus: () => call("allowEverythingStatus"),
+    enableAllowEverything: (answers) => call("enableAllowEverything", { answers }),
+    disableAllowEverything: async () => void (await call("disableAllowEverything")),
     enableComputer: (answers) => call("enableComputer", { answers }),
     disableComputer: () => call("disableComputer"),
     stopComputer: () => invoke("computer_stop", {}),

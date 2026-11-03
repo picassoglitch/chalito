@@ -106,7 +106,12 @@ const harness = async (
     Date.now(),
   );
 
-  let policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }], ...opts.policy };
+  let policy: Policy = {
+    ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
+    workspaces: [{ label: "chalito", path: WS }],
+    ...opts.policy,
+  };
   const policyChanges: string[] = [];
   const holder: PolicyHolder = {
     get: () => policy,
@@ -2029,5 +2034,81 @@ describe("remote screen through signed commands", () => {
     await waitFor(() => h.screenPeers[0]!.closed);
     expect(h.screen!.status().active).toEqual([]);
     expect(r.sid).toBeTruthy();
+  });
+});
+
+describe("allow everything (owner 2026-11-02)", () => {
+  const ON = { allowEverything: { enabled: true } };
+  const gateAudits = (h: { store: { audits: { type: string; meta: Record<string, unknown> }[] } }) =>
+    h.store.audits.filter((a) => a.type === "gate.allow_everything");
+
+  it("absent from the policy means on: a HIGH push runs with no approval and is audited", async () => {
+    const h = await harness({ turns: pushTurn, policy: { allowEverything: undefined } });
+    await h.startSession();
+    await waitFor(() => h.fake.run.ran.length === 1);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    expect(h.store.approvals.size).toBe(0);
+    expect(gateAudits(h)).toEqual([
+      expect.objectContaining({ meta: expect.objectContaining({ toolName: "Bash", tier: "HIGH" }) }),
+    ]);
+  });
+
+  it("off, the same push asks the phone", async () => {
+    const h = await harness({ turns: pushTurn });
+    await h.startSession();
+    await waitFor(() => h.store.pendingApprovals().length === 1);
+    expect(h.fake.run.ran).toHaveLength(0);
+    expect(gateAudits(h)).toHaveLength(0);
+  });
+
+  it("CRITICAL, sudo and ~/.chalito edits run without asking; off they are refused", async () => {
+    const turns: FakeStep[][] = [
+      [
+        { tool: "Bash", input: { command: "sudo apt-get install -y htop" } },
+        { tool: "Bash", input: { command: "git push --force origin main" } },
+        { tool: "Edit", input: { file_path: `${HOME}/.chalito/policy.yaml`, old_string: "a", new_string: "b" } },
+      ],
+    ];
+    const on = await harness({ turns, policy: ON });
+    await on.startSession();
+    await waitFor(() => on.fake.run.ran.length === 3);
+    expect(on.fake.run.refused).toHaveLength(0);
+    expect(on.store.pendingApprovals()).toHaveLength(0);
+    expect(gateAudits(on).map((a) => a.meta.tier)).toEqual(["CRITICAL", "CRITICAL", "CRITICAL"]);
+    expect(gateAudits(on)[2]!.meta).toMatchObject({ hardFloor: true });
+
+    const off = await harness({ turns });
+    await off.startSession();
+    await waitFor(() => off.fake.run.refused.length === 3);
+    expect(off.fake.run.ran).toHaveLength(0);
+  });
+
+  it("covers unsigned origins (an MCP-relayed prompt)", async () => {
+    const h = await harness({ turns: [pushTurn[0]!, pushTurn[0]!], policy: ON });
+    await h.startSession();
+    await waitFor(() => h.fake.run.ran.length === 1);
+    const sid = [...h.core.sessions.keys()][0]!;
+    await h.command(
+      { type: "session.prompt", sid, promptCt: await h.sealed(2, "push otra vez") },
+      { origin: "mcp:chatgpt", relayed: "mcp-gateway" },
+    );
+    await waitFor(() => h.fake.run.ran.length === 2);
+    expect(h.store.pendingApprovals()).toHaveLength(0);
+    expect(gateAudits(h)[1]!.meta).toMatchObject({ origin: "mcp:chatgpt" });
+  });
+
+  it("a phone may turn it off but never on", async () => {
+    const h = await harness({ policy: { allowEverything: undefined } });
+    expect(
+      await h.command({ type: "policy.tighten", patchCt: await h.sealed(1, { allowEverything: { enabled: false } }) }),
+    ).toEqual({ ok: true });
+    expect(h.getPolicy().allowEverything).toEqual({ enabled: false });
+    expect(
+      await h.command({ type: "policy.tighten", patchCt: await h.sealed(2, { allowEverything: { enabled: true } }) }),
+    ).toEqual({ ok: false, reason: "would_loosen" });
+    expect(
+      await h.command({ type: "policy.tighten", patchCt: await h.sealed(3, { allowEverything: null }) }),
+    ).toMatchObject({ ok: false });
+    expect(h.getPolicy().allowEverything).toEqual({ enabled: false });
   });
 });

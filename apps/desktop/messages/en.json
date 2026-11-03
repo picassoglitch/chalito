@@ -126,6 +126,17 @@
       "missingStepUp": "“{computer}” refused a new device: the device that approved it didn't use its passkey. Approve it again from your phone with your passkey.",
       "refused": "“{computer}” refused a new device because its approval couldn't be verified. Approve it again from a trusted device."
     },
+    "allowEverything": {
+      "title": "Allow everything",
+      "warning": "Chalito will approve every action from every AI without asking. You are responsible for what they do.",
+      "on": "On: Chalito approves every action from every AI without asking. Every action is still logged.",
+      "off": "Off: Chalito asks you before risky actions.",
+      "enable": "Turn on…",
+      "confirm": "I understand, turn it on",
+      "disable": "Turn off",
+      "failed": "Not turned on ({reason}).",
+      "banner": "Allow everything is on: Chalito approves every action from every AI without asking."
+    },
     "coordinator": {
       "title": "Coordinator mode",
       "intro": "Let Chalito answer the agents of your plans on this computer for you. The rest reaches your phone.",

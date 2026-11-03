@@ -32,6 +32,7 @@ import { ConnectionsScreen } from "./connections/ConnectionsScreen.js";
 import { RemoteTools } from "./RemoteTools.js";
 import { Security } from "./Security.js";
 import { SecurityNotices } from "./SecurityNotices.js";
+import { AllowEverythingBanner } from "./AllowEverything.js";
 import { SetupChecklist } from "./SetupChecklist.js";
 import { Settings } from "./Settings.js";
 import { ThisComputer } from "./ThisComputer.js";
@@ -225,6 +226,7 @@ export const Panel = (p: PanelProps) => {
       <div className="content" data-tab={tab}>
         <div className="content-inner">
           {tab !== "sessions" && <h1 className="page-title">{t(`tabs.${tab}`)}</h1>}
+          <AllowEverythingBanner ipc={p.ipc} />
           {ov?.voice && <VoiceCard voice={ov.voice} actions={voiceActions} />}
           {p.copies && <OldCopies api={p.copies} />}
           {p.board && <BoardNotice link={p.board} />}

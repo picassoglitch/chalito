@@ -182,6 +182,9 @@ export const Policy = z.object({
     })
     .strict()
     .optional(),
+  // Owner 2026-11-02 — allow everything: the gate approves every call. Absent = on; turned back on
+  // only by `chalito allow-everything on` or the desktop panel; edits and remote can only turn it off.
+  allowEverything: z.object({ enabled: z.boolean() }).strict().optional(),
   lan: z
     .object({
       enabled: z.boolean(),

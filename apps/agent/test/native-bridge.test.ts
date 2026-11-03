@@ -1167,3 +1167,91 @@ describe("team channel tools skip the human gate (owner decision 2026-11-02)", (
     await t.bridge.close();
   });
 });
+
+describe("allow everything (owner 2026-11-02): native apps run with no approval", () => {
+  const call = (event: "tool" | "permission", toolName: string, input: Record<string, unknown>, cwd = WS) => ({
+    provider: "claude" as const,
+    event,
+    nativeSessionId: `ae-${event}-${toolName}`,
+    cwd,
+    toolName,
+    input,
+  });
+  const on = async (o: { ws?: string } = {}) => {
+    const s = await rig(o);
+    s.setPolicy({ ...s.policy.get(), allowEverything: { enabled: true } });
+    return s;
+  };
+  const audited = (s: Awaited<ReturnType<typeof rig>>) =>
+    s.store.audits.filter((a) => a.type === "gate.allow_everything").map((a) => a.meta);
+
+  it("a HIGH Bash from a Claude Code session is allowed when on and asks when off", async () => {
+    const push = call("tool", "Bash", { command: "git push origin main" });
+    const s = await on();
+    expect(await s.bridge.handle(push, new AbortController().signal)).toMatchObject({
+      ok: true,
+      allow: true,
+      reason: "allow_everything",
+    });
+    expect(s.store.approvals.size).toBe(0);
+    expect(audited(s)).toEqual([expect.objectContaining({ toolName: "Bash", tier: "HIGH", origin: "local:cli" })]);
+    await s.bridge.close();
+
+    const off = await rig();
+    const abort = new AbortController();
+    const waiting = off.bridge.handle(push, abort.signal);
+    await vi.waitFor(() => expect(off.store.pendingApprovals()).toHaveLength(1));
+    abort.abort();
+    expect(await waiting).toMatchObject({ allow: false });
+    await off.bridge.close();
+  });
+
+  it("allows CRITICAL, sudo, ~/.chalito writes, the app's own permission prompts and hidden paths", async () => {
+    const s = await on();
+    const signal = new AbortController().signal;
+    for (const r of [
+      call("tool", "Bash", { command: "sudo rm -rf /var/cache/apt" }),
+      call("tool", "Bash", { command: "git push --force origin main" }),
+      call("tool", "Write", { file_path: join(HOME, ".chalito", "policy.yaml"), content: "x" }),
+      call("permission", "Read", { file_path: join(WS, "a.ts") }),
+      call("tool", "mcp__fs__copy", { target: "~/.ssh/id_ed25519" }),
+    ])
+      expect(await s.bridge.handle(r, signal)).toMatchObject({ allow: true, reason: "allow_everything" });
+    expect(s.store.approvals.size).toBe(0);
+    expect(audited(s)).toHaveLength(5);
+    expect(audited(s)[2]).toMatchObject({ hardFloor: true });
+    await s.bridge.close();
+  });
+
+  it("allows fenced home paths with the home folder as a workspace", async () => {
+    const s = await on({ ws: HOME });
+    const reply = await s.bridge.handle(
+      call("tool", "Read", { file_path: join(HOME, ".ssh", "id_ed25519") }, HOME),
+      new AbortController().signal,
+    );
+    expect(reply).toMatchObject({ allow: true, reason: "allow_everything" });
+    expect(audited(s)[0]).toMatchObject({ fenced: true });
+    await s.bridge.close();
+  });
+
+  it("allows with local origins turned off, and a shell moved out of the workspace", async () => {
+    const s = await on();
+    s.setPolicy({ ...s.policy.get(), origins: { ...s.policy.get().origins, local: false } });
+    const signal = new AbortController().signal;
+    expect(await s.bridge.handle(call("tool", "Bash", { command: "ls" }), signal)).toMatchObject({
+      allow: true,
+      reason: "allow_everything",
+    });
+    const movedOut = call("tool", "Bash", { command: "ls", cwd: HOME });
+    expect(await s.bridge.handle(movedOut, signal)).toMatchObject({ allow: true, reason: "allow_everything" });
+    s.setPolicy({ ...s.policy.get(), allowEverything: { enabled: false } });
+    expect(await s.bridge.handle(call("tool", "Bash", { command: "ls" }), signal)).toMatchObject({
+      allow: false,
+      reason: "origin_disabled",
+    });
+    s.setPolicy({ ...s.policy.get(), origins: { ...s.policy.get().origins, local: true } });
+    expect(await s.bridge.handle(movedOut, signal)).toMatchObject({ allow: false, reason: "outside_workspace" });
+    expect(s.store.approvals.size).toBe(0);
+    await s.bridge.close();
+  });
+});

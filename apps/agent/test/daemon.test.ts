@@ -853,6 +853,36 @@ describe("chalito run (daemon)", () => {
       expect(existsSync(join(s.dir, "computer.sock"))).toBe(false);
     });
 
+    it("allow everything (owner 2026-11-02): on by default; off from the panel; on again only after the OS check", async () => {
+      const { d, call, osChecks } = await withIpc();
+      const status = (await call("allowEverythingStatus")).result;
+      expect(status.on).toBe(true);
+      expect(status.warning).toMatch(/responsable|responsible/);
+      expect((await call("disableAllowEverything")).result).toEqual({ changed: true });
+      expect(d.policy.get().allowEverything).toEqual({ enabled: false });
+      expect(osChecks).toHaveLength(0);
+      expect((await call("enableAllowEverything", { answers: { confirm: false } })).result).toEqual({
+        ok: false,
+        reason: "cancelled",
+      });
+      expect(d.policy.get().allowEverything).toEqual({ enabled: false });
+      expect((await call("enableAllowEverything", { answers: { confirm: true } })).result).toEqual({ ok: true });
+      expect(osChecks).toHaveLength(2);
+      expect((await call("allowEverythingStatus")).result.on).toBe(true);
+      await d.stop();
+    });
+
+    it("allow everything: a failed OS check leaves it off", async () => {
+      const { d, call } = await withIpc(false);
+      await call("disableAllowEverything");
+      expect((await call("enableAllowEverything", { answers: { confirm: true } })).result).toEqual({
+        ok: false,
+        reason: "os_auth_failed",
+      });
+      expect((await call("allowEverythingStatus")).result.on).toBe(false);
+      await d.stop();
+    });
+
     it("remote terminal: local enable (OS + answers), raw shell separately, shared indicator poll and kill switch", async () => {
       const { d, call, osChecks } = await withIpc();
       expect(d.terminal).not.toBeNull();

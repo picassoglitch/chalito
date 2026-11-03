@@ -15,6 +15,12 @@ import type { LiabilityText } from "@chalito/config";
 import type { ComputerControl } from "./computer/control.js";
 import { COMPUTER_COPY, disableComputer, enableComputer } from "./computer/toggle.js";
 import { COORDINATOR_COPY, coordinatorCeiling, disableCoordinator, enableCoordinator } from "./coord/toggle.js";
+import {
+  ALLOW_EVERYTHING_WARNING,
+  allowEverythingOn,
+  disableAllowEverything,
+  enableAllowEverything,
+} from "./allow-everything.js";
 import { DevMode, RISK_COPY, type DevModeDeps, type OsAuth } from "./devmode.js";
 import { IpcError, type IpcHandlers } from "./ipc-server.js";
 import { addWorkspace, removeWorkspace } from "./workspaces.js";
@@ -517,6 +523,30 @@ export const ipcHandlers = (d: IpcDeps): IpcHandlers => ({
 
   disableCoordinator: async () => ({
     changed: await disableCoordinator(
+      { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
+      "panel",
+    ),
+  }),
+
+  // Owner 2026-11-02 — allow everything: on again only over this local IPC (OS auth + warning).
+  allowEverythingStatus: async () => ({
+    on: allowEverythingOn(d.policy.get()),
+    warning: ALLOW_EVERYTHING_WARNING[d.locale()],
+  }),
+
+  enableAllowEverything: async (params) => {
+    const { answers } = parse(CoordinatorEnable, params);
+    return enableAllowEverything({
+      policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) },
+      osAuth: d.osAuth(),
+      prompter: { confirm: async () => answers.confirm },
+      locale: d.locale(),
+      emit: (type, meta) => d.audit(type, { ...meta, via: "panel" }),
+    });
+  },
+
+  disableAllowEverything: async () => ({
+    changed: await disableAllowEverything(
       { policy: { get: () => d.policy.get(), set: (p, via) => d.policy.set(p, via) }, emit: (t, m) => d.audit(t, m) },
       "panel",
     ),

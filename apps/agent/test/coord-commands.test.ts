@@ -89,6 +89,7 @@ const harness = async (o: { coordinator?: boolean; queryFn?: (root: string) => Q
   );
   let policy: Policy = {
     ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
     workspaces: [{ label: "proj", path: root }],
     ...(o.coordinator === false ? {} : { coordinator: { enabled: true } }),
   };

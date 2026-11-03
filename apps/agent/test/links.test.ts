@@ -140,7 +140,11 @@ const agentFor = async (
     { deviceId: phone.id, pubSign: phone.pubSign, pubBox: phone.pubBox, webauthn: passkeyRef },
     Date.now(),
   );
-  let policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }] };
+  let policy: Policy = {
+    ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
+    workspaces: [{ label: "chalito", path: WS }],
+  };
   const holder: PolicyHolder = {
     get: () => policy,
     set: async (p) => void (policy = p),
@@ -361,7 +365,7 @@ describe("protocol: the agent: origin", () => {
   it("Developer mode never auto-approves an agent: turn, at any tier", () => {
     const all = { on: true, toggles: ["allowSudo", "autoApproveHigh", "autoApproveCritical"] as never, since: 1 };
     const ctx = {
-      policy: { ...DEFAULT_POLICY, workspaces: [{ label: "c", path: WS }] },
+      policy: { ...DEFAULT_POLICY, allowEverything: { enabled: false }, workspaces: [{ label: "c", path: WS }] },
       home: HOME,
       cwd: WS,
       realpath: (x: string) => x,

@@ -659,6 +659,43 @@ describe("chalito CLI", () => {
     });
   });
 
+  describe("allow-everything (owner 2026-11-02)", () => {
+    const policyOf = async (c: ReturnType<typeof cli>) =>
+      new FilePolicyHolder(c.dir, (await loadOrCreateIdentity(c.secrets)).sign).get();
+
+    it("on by default; off with no prompt; on again only after OS auth and a yes to the warning", async () => {
+      const c = cli({ tty: true });
+      expect(await c.run(["allow-everything", "status"])).toBe(0);
+      expect(c.out()).toMatch(/Allow everything: on/);
+      expect(await c.run(["allow-everything", "off"])).toBe(0);
+      expect((await policyOf(c)).allowEverything).toEqual({ enabled: false });
+      expect(c.runs).toEqual([]);
+      expect(await c.run(["allow-everything", "on"], ["n"])).toBe(1);
+      expect((await policyOf(c)).allowEverything).toEqual({ enabled: false });
+      expect(await c.run(["allow-everything", "on"], ["y"])).toBe(0);
+      expect(c.out()).toMatch(/You are responsible for what they do/);
+      expect(c.runs.at(-1)).toEqual({ cmd: "/usr/bin/pkexec", args: ["/bin/true"], interactive: true });
+      expect((await policyOf(c)).allowEverything).toEqual({ enabled: true });
+    });
+
+    it("failed OS auth, or a call from inside an agent session, leaves it off", async () => {
+      const c = cli({ tty: true, runner: () => 126 });
+      expect(await c.run(["allow-everything", "off"])).toBe(0);
+      expect(await c.run(["allow-everything", "on"], ["y"])).toBe(1);
+      expect((await policyOf(c)).allowEverything).toEqual({ enabled: false });
+      const s = cli({ tty: true, env: { CHALITO_SESSION: "1" } });
+      expect(await s.run(["allow-everything", "off"])).toBe(1);
+    });
+
+    it("policy edit can turn it off but not back on", async () => {
+      const c = cli({ tty: true, runner: (r) => (writeFileSync(r.args.at(-1)!, policyToYaml(DEFAULT_POLICY)), 0) });
+      expect(await c.run(["allow-everything", "off"])).toBe(0);
+      expect(await c.run(["policy", "edit"], ["y"])).toBe(1);
+      expect(c.err()).toMatch(/chalito allow-everything on/);
+      expect((await policyOf(c)).allowEverything).toEqual({ enabled: false });
+    });
+  });
+
   describe("terminal flag off", () => {
     it("refuses `terminal` (and `terminal shell`) and hides it from usage", async () => {
       const c = cli({ tty: true, env: { CHALITO_REMOTE_TERMINAL: "" } });

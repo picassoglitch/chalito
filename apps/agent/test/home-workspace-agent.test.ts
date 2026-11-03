@@ -67,6 +67,7 @@ const harness = async (turns: FakeStep[][], home: string) => {
   await trust.addConfirmed({ deviceId: phone.id, pubSign: phone.pubSign, pubBox: phone.pubBox }, Date.now());
   const policy: Policy = {
     ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
     workspaces: [{ label: "home", path: home }],
     workspaceExclude: [join(home, "wayak")],
     coordinator: { enabled: true },
