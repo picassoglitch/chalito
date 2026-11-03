@@ -1980,6 +1980,7 @@ export const classifyToolCall = (toolName: string, input: Input, ctx: ClassifyCo
     case "ExitPlanMode":
     case "EnterPlanMode":
     case "AskUserQuestion":
+    case "ToolSearch": // Claude Code loads deferred tool schemas; the loaded tool is gated when called.
       return { ...base("other"), readOnly: true };
     case "Task":
     case "Agent":
