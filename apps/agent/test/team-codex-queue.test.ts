@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TeamHub } from "../src/team/hub.js";
 import { runTeamMcp } from "../src/team/mcp.js";
 import { selectDelivery } from "../src/team/delivery/index.js";
-import { codexThreadFrom, envThread, queueArgs, queueText } from "../src/team/delivery/codex-queue.js";
+import { codexQueue, codexThreadFrom, envThread, queueArgs, queueText } from "../src/team/delivery/codex-queue.js";
 import { startCodeServer, type CodeServer } from "../src/code/server.js";
 import type { CodeService } from "../src/code/service.js";
 import type { TeamBatch } from "../src/team/delivery/types.js";
@@ -41,7 +41,7 @@ type Queue = (thread: string, text: string) => Promise<boolean>;
 const client = (
   path: string,
   provider: string,
-  opts: { env?: string; queue?: Queue; channel?: boolean; optIn?: boolean } = {},
+  opts: { env?: string; queue?: Queue; channel?: boolean; optIn?: boolean | null } = {},
 ) => {
   const input = new PassThrough();
   const lines: Record<string, unknown>[] = [];
@@ -56,7 +56,8 @@ const client = (
       channelLoaded: () => opts.channel ?? false,
       retryMs: [30],
       codexThread: opts.env,
-      codexQueueOptIn: opts.optIn ?? true,
+      // null: leave it unset, as cli.ts does without CHALITO_TEAM_CODEX_QUEUE=1.
+      ...(opts.optIn === null ? {} : { codexQueueOptIn: opts.optIn ?? true }),
       ...(opts.queue ? { codexQueue: opts.queue } : {}),
     },
     path,
@@ -265,6 +266,31 @@ describe("codex queue delivery over the real socket and stdio", () => {
     }
   });
 
+  it("with the opt-in unset (the default), a reported thread never selects codex queue", async () => {
+    const r = await rig();
+    const queue = vi.fn<Queue>(async () => true);
+    const codex = client(r.path, "codex", { queue, env: T1, optIn: null });
+    const claude = client(r.path, "claude");
+    try {
+      await codex.init();
+      await claude.init();
+      await codex.tool("team_read", {}, turnMeta(T1));
+      await claude.tool("team_send", { kind: "request", text: "default" });
+      await new Promise((res) => setTimeout(res, 120));
+      expect(queue).not.toHaveBeenCalled();
+      expect(codex.errors()).not.toContain("codex-queue");
+      expect(r.audit).not.toHaveBeenCalledWith(
+        "team.delivery_selected",
+        expect.objectContaining({ adapter: "codex-queue" }),
+      );
+    } finally {
+      codex.end();
+      claude.end();
+      await Promise.all([codex.done, claude.done]);
+      await r.close();
+    }
+  });
+
   it("status updates never queue a turn", async () => {
     const r = await rig();
     const queue = vi.fn<Queue>(async () => true);
@@ -333,5 +359,48 @@ describe("codex queue selection and format", () => {
     };
     expect(queueText(batch)).toBeNull();
     expect(queueText({ ...batch, messages: batch.messages.slice(0, 2) })).toContain("> xxx");
+  });
+});
+
+describe("codex queue durability at the hub", () => {
+  it("a queued message stays unread through a disconnect and rejoin, and is not queued again", () => {
+    vi.useFakeTimers();
+    try {
+      const frames: TeamBatch[] = [];
+      const link = { push: (f: { teamDelivery: { batch: TeamBatch } }) => (frames.push(f.teamDelivery.batch), true) };
+      const hub = new TeamHub(
+        workspaceFor,
+        () => Date.now(),
+        () => true,
+        {
+          pacing: { debounceMs: 10, minGapMs: 0 },
+          chain: [codexQueue],
+        },
+      );
+      const c = new AbortController();
+      const s = new AbortController();
+      const joined = hub.call(c.signal, "team_join", { provider: "codex", cwd: "/project" }, link) as {
+        result: { self: string };
+      };
+      expect(hub.call(c.signal, "team_client", { codexThread: T1 })).toMatchObject({
+        result: { delivery: "codex-queue" },
+      });
+      hub.call(s.signal, "team_join", { provider: "claude", cwd: "/project" });
+      hub.call(s.signal, "team_send", { kind: "request", text: "keep me" });
+      vi.advanceTimersByTime(20);
+      expect(frames.map((b) => b.messages.map((m) => m.text))).toEqual([["keep me"]]);
+      // The mcp process dies right after `codex queue` accepted it.
+      c.abort();
+      const again = new AbortController();
+      hub.call(again.signal, "team_join", { provider: "codex", cwd: "/project", resume: joined.result.self }, link);
+      hub.call(again.signal, "team_client", { codexThread: T1 });
+      vi.advanceTimersByTime(20);
+      expect(frames).toHaveLength(1);
+      const read = hub.call(again.signal, "team_read", {}) as { result: { messages: { text: string }[] } };
+      expect(read.result.messages.map((m) => m.text)).toEqual(["keep me"]);
+      expect((hub.call(again.signal, "team_read", {}) as { result: { messages: [] } }).result.messages).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
