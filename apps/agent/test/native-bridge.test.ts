@@ -1111,6 +1111,20 @@ describe("team channel tools skip the human gate (owner decision 2026-11-02)", (
     await s.bridge.close();
   });
 
+  it("lets Claude load deferred tool schemas (ToolSearch) as a read, without asking", async () => {
+    const s = await rig();
+    const reply = await s.bridge.handle(
+      hook("claude", "PreToolUse", "ToolSearch", {
+        query: "select:mcp__chalito_team__team_read,mcp__chalito_team__team_send",
+        max_results: 2,
+      }),
+      new AbortController().signal,
+    );
+    expect(reply).toMatchObject({ ok: true, allow: true, reason: "policy_read" });
+    expect(s.store.pendingApprovals()).toHaveLength(0);
+    await s.bridge.close();
+  });
+
   it("refuses team tools once local origins are off or the device is revoked, like every native call", async () => {
     const s = await rig();
     const signal = new AbortController().signal;
