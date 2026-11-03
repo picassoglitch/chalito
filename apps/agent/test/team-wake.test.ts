@@ -369,15 +369,15 @@ describe("push delivery over the real socket and stdio", () => {
     }
   });
 
-  it("a pull-only client still exits when Chalito goes away, so its app shows it disconnected", async () => {
+  it("a pull-only client stays up when Chalito goes away and says it is reconnecting", async () => {
     const r = await rig();
     const codex = client(r.path, "codex");
     await codex.init();
     await codex.tool("team_read");
     await r.stop();
-    expect(await codex.done).toBe(1);
-    expect(codex.errors()).toContain("lost the connection to Chalito");
+    await vi.waitFor(() => expect(codex.errors()).toContain("reconnecting"));
     codex.end();
+    expect(await codex.done).toBe(0);
   });
 });
 
