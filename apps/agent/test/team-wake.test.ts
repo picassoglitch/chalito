@@ -549,10 +549,8 @@ describe("hub pacing", () => {
     const s = setup();
     const before = s.hub.call(s.a.signal, "team_read", {}) as { result: { self: string } };
     s.a.abort();
-    // Not addressable while gone: the sender is told instead of losing the message.
-    expect(s.hub.call(s.b.signal, "team_send", { to: before.result.self, text: "x" })).toMatchObject({
-      error: "recipient_unavailable",
-    });
+    // While gone, a message to its id goes to its app instead of being lost.
+    expect(s.hub.call(s.b.signal, "team_send", { to: before.result.self, text: "x" })).toMatchObject({ ok: true });
     s.hub.call(s.b.signal, "team_send", { kind: "result", text: "during the gap" });
     const again = new AbortController();
     const back = s.hub.call(again.signal, "team_join", {
@@ -564,7 +562,7 @@ describe("hub pacing", () => {
     // The join leaves them unread, so the push (or the next team_read) still has them.
     expect(back.result.messages).toEqual([]);
     expect(s.hub.call(again.signal, "team_read", {})).toMatchObject({
-      result: { messages: [{ text: "during the gap" }] },
+      result: { messages: [{ text: "x", toProvider: "claude" }, { text: "during the gap" }] },
     });
     // Another app cannot take that id, and an id is resumed once.
     const thief = new AbortController();

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { selectDelivery, type DeliveryAdapter, type DeliveryFactory } from "./delivery/index.js";
 import { ClientDeclaration, type DeliveryLink, type TeamMessage } from "./delivery/types.js";
 import { pull } from "./delivery/pull.js";
+import type { ResponderJob } from "./responder.js";
 
 /** Any MCP client may join under its own id; these four keep their named trust rows and native hooks. */
 export const KNOWN_PROVIDERS = ["claude", "codex", "grok", "cursor"] as const;
@@ -19,12 +20,18 @@ const Join = z
   .strict();
 const Send = z
   .object({
-    to: z.string().uuid().optional(),
+    /** A teammate id from team_read, or an app name ("codex") to reach it even when no session is open. */
+    to: z.union([z.string().uuid(), TeamProvider]).optional(),
     kind: z.enum(["status", "request", "result"]).default("status"),
     text: z.string().trim().min(1).max(8000),
   })
   .strict();
-type Message = TeamMessage;
+type Message = TeamMessage & { readBy?: Set<string>; taken?: boolean };
+const HOUR = 60 * 60_000;
+/** Messages for an app with no open session wait this long for one, or for its responder. */
+const HELD_MS = 24 * HOUR;
+const held = (m: Message) => !!m.toProvider && !m.taken;
+const view = ({ readBy: _r, taken: _t, ...m }: Message): TeamMessage => m;
 interface Peer {
   id: string;
   cwd: string;
@@ -60,6 +67,11 @@ export interface TeamHubOptions {
   audit?: (type: string, meta: Record<string, unknown>) => void;
   /** An id that is not trusted for the workspace tried to join, so the panel can offer to trust it. */
   rejected?: (provider: TeamProvider, cwd: string) => void;
+  /** Runs the app's CLI for one turn when a request names it and none of its sessions can be woken.
+   *  Resolves to its answer, or null when the app has no CLI here. */
+  responder?: { has(provider: string): boolean; run(job: ResponderJob): Promise<string | null> };
+  /** At most this many responder runs per workspace per window (default 12 per 10 min). */
+  responderLimit?: { max: number; windowMs: number };
 }
 
 /** Same-user, local messaging only. Provider names are labels, never proof of identity or authority. */
@@ -86,8 +98,9 @@ export class TeamHub {
     const live = new Set([...this.#peers.values()].map((p) => p.workspace));
     for (const workspace of this.#dropped.keys()) if (!live.has(workspace)) this.#dropped.delete(workspace);
     this.#messages = this.#messages.filter((m) => {
+      if (held(m)) return m.at > this.now() - HELD_MS;
       if (!live.has(m.workspace)) return false;
-      if (m.at > this.now() - 60 * 60_000) return true;
+      if (m.at > this.now() - HOUR) return true;
       this.#drop(m);
       return false;
     });
@@ -116,14 +129,98 @@ export class TeamHub {
   }
 
   #unread(peer: Peer) {
-    return this.#messages.filter(
-      (m) =>
-        m.seq > peer.cursor &&
-        m.from !== peer.id &&
-        (!m.to || m.to === peer.id) &&
-        m.workspace === peer.workspace &&
-        m.at > this.now() - 60 * 60_000,
+    return this.#messages.filter((m) =>
+      m.workspace !== peer.workspace || m.from === peer.id
+        ? false
+        : m.toProvider
+          ? m.toProvider === peer.provider && !m.taken && !m.readBy?.has(peer.id) && m.at > this.now() - HELD_MS
+          : m.seq > peer.cursor && (!m.to || m.to === peer.id) && m.at > this.now() - HOUR,
     );
+  }
+
+  /** Marks messages addressed to the peer's app by name as seen by it. */
+  #seen(peer: Peer, messages: readonly Message[]) {
+    for (const m of messages) if (m.toProvider) (m.readBy ??= new Set()).add(peer.id);
+  }
+
+  #running = new Set<string>();
+  #runs = new Map<string, number[]>();
+
+  /** No session of the app can be woken: hand its waiting requests to its CLI for one turn. */
+  #respond(workspace: string, provider: string, cwd: string) {
+    const r = this.opts.responder;
+    const key = `${workspace}\u0000${provider}`;
+    if (!r || this.#running.has(key) || !r.has(provider)) return;
+    const live = [...this.#peers.values()].filter((p) => p.workspace === workspace && p.provider === provider);
+    if (live.some((p) => p.delivery.canWake)) return;
+    const waiting = this.#messages.filter(
+      (m) =>
+        m.workspace === workspace && m.toProvider === provider && held(m) && !live.some((p) => m.readBy?.has(p.id)),
+    );
+    if (!waiting.some((m) => m.kind === "request")) return;
+    const limit = this.opts.responderLimit ?? { max: 12, windowMs: 10 * 60_000 };
+    const runs = (this.#runs.get(workspace) ?? []).filter((t) => t > this.now() - limit.windowMs);
+    if (runs.length >= limit.max) {
+      this.opts.audit?.("team.responder_limited", { workspace, provider });
+      return;
+    }
+    runs.push(this.now());
+    this.#runs.set(workspace, runs);
+    for (const m of waiting) m.taken = true;
+    this.#running.add(key);
+    const runId = randomUUID();
+    this.opts.audit?.("team.responder_started", { workspace, provider, run: runId, seqs: waiting.map((m) => m.seq) });
+    const job: ResponderJob = { provider, workspace, cwd, messages: waiting.map(view) };
+    void r
+      .run(job)
+      .catch((e: unknown) => `(${provider} could not answer: ${e instanceof Error ? e.message : "error"})`)
+      .then((answer) => {
+        this.#running.delete(key);
+        this.opts.audit?.("team.responder_finished", { workspace, provider, run: runId, answered: !!answer });
+        if (answer) for (const sender of new Set(waiting.map((m) => m.from))) this.#reply(runId, job, sender, answer);
+        // Requests that arrived while it ran get their own turn.
+        this.#respond(workspace, provider, cwd);
+      });
+  }
+
+  /** The responder's answer, as a result from that app to whoever asked. */
+  #reply(runId: string, job: ResponderJob, sender: string, answer: string) {
+    const to = [...this.#peers.values()].find((p) => p.id === sender && p.workspace === job.workspace);
+    const asker = job.messages.find((m) => m.from === sender);
+    const text = answer.length > 8000 ? `${answer.slice(0, 7990)}\n[cut]` : answer;
+    this.#post({
+      seq: 0,
+      workspace: job.workspace,
+      from: runId,
+      provider: job.provider,
+      ...(to ? { to: to.id } : asker ? { toProvider: asker.provider } : {}),
+      kind: "result",
+      text,
+      at: this.now(),
+    });
+  }
+
+  /** Stores a message, caps the workspace's history, and wakes whoever it is for. */
+  #post(message: Message) {
+    message.seq = ++this.#seq;
+    this.#messages.push(message);
+    // The cap is per workspace: a busy workspace never pushes out another's unread messages.
+    const own = this.#messages.filter((m) => m.workspace === message.workspace && !held(m));
+    if (own.length > 64) {
+      const drop = own[0]!;
+      this.#messages = this.#messages.filter((m) => m !== drop);
+      this.#drop(drop);
+    }
+    const waiting = this.#messages.filter((m) => m.workspace === message.workspace && held(m));
+    if (waiting.length > 64) this.#messages = this.#messages.filter((m) => m !== waiting[0]);
+    if (message.kind === "status") return;
+    for (const other of this.#peers.values())
+      if (
+        other.id !== message.from &&
+        other.workspace === message.workspace &&
+        (message.toProvider ? other.provider === message.toProvider : !message.to || message.to === other.id)
+      )
+        this.#schedule(other);
   }
 
   // Status updates never wake anyone: they ride along with the next request/result or team_read.
@@ -154,7 +251,7 @@ export class TeamHub {
       workspace: peer.workspace,
       historyTruncated: (this.#dropped.get(peer.workspace) ?? 0) > peer.cursor,
       more: pending.length - messages.length,
-      messages,
+      messages: messages.map(view),
     };
     const ok = peer.delivery.deliver(batch, { id: peer.id, provider: peer.provider, workspace: peer.workspace });
     const text = messages.map((m) => m.text).join("\u0000");
@@ -171,7 +268,12 @@ export class TeamHub {
     });
     // A failed attempt still counts against pacing, so a broken adapter retries slowly instead of spinning.
     peer.pushes.push(this.now());
-    if (ok) peer.cursor = batch.more ? messages.at(-1)!.seq : this.#seq;
+    if (ok) {
+      peer.cursor = batch.more
+        ? Math.max(peer.cursor, ...messages.filter((m) => !m.toProvider).map((m) => m.seq))
+        : this.#seq;
+      this.#seen(peer, messages);
+    }
     if (!ok || batch.more) this.#schedule(peer);
   }
 
@@ -227,9 +329,9 @@ export class TeamHub {
           "abort",
           () => {
             this.#leave(signal);
-            // Forget messages after the last participant leaves a workspace.
-            this.#messages = this.#messages.filter((m) =>
-              [...this.#peers.values()].some((p) => p.workspace === m.workspace),
+            // Forget messages after the last participant leaves a workspace; ones held for an app stay.
+            this.#messages = this.#messages.filter(
+              (m) => held(m) || [...this.#peers.values()].some((p) => p.workspace === m.workspace),
             );
           },
           { once: true },
@@ -261,39 +363,41 @@ export class TeamHub {
     if (action === "team_send") {
       const p = Send.safeParse(raw);
       if (!p.success) return { ok: false, error: "bad_params" };
-      if (
-        p.data.to &&
-        ![...this.#peers.values()].some(
-          (other) => other.id === p.data.to && other.id !== peer.id && other.workspace === peer.workspace,
-        )
-      )
-        return { ok: false, error: "recipient_unavailable" };
+      const { to, ...rest } = p.data;
+      let address: { to: string } | { toProvider: string } | Record<string, never> = {};
+      if (to && z.string().uuid().safeParse(to).success) {
+        const live = [...this.#peers.values()].some(
+          (other) => other.id === to && other.id !== peer.id && other.workspace === peer.workspace,
+        );
+        const gone = this.#departed.get(to);
+        // A teammate that just left: its app gets the message instead of losing it.
+        if (live) address = { to };
+        else if (gone && gone.workspace === peer.workspace) address = { toProvider: gone.provider };
+        else return { ok: false, error: "recipient_unavailable" };
+      } else if (to) {
+        if (!this.trusted(to, peer.cwd)) return { ok: false, error: "recipient_not_trusted" };
+        address = { toProvider: to };
+      }
       peer.recent = peer.recent.filter((t) => t > this.now() - 60_000);
       if (peer.recent.length >= 30) return { ok: false, error: "rate_limited" };
       peer.recent.push(this.now());
-      this.#messages.push({
-        seq: ++this.#seq,
+      this.#post({
+        seq: 0,
         workspace: peer.workspace,
         from: peer.id,
         provider: peer.provider,
-        ...p.data,
+        ...rest,
+        ...address,
         at: this.now(),
       });
-      // The cap is per workspace: a busy workspace never pushes out another's unread messages.
-      const own = this.#messages.filter((m) => m.workspace === peer.workspace);
-      if (own.length > 64) {
-        const drop = own[0]!;
-        this.#messages = this.#messages.filter((m) => m !== drop);
-        this.#drop(drop);
-      }
-      const sent = this.#messages.at(-1)!;
-      if (sent.kind !== "status")
-        for (const other of this.#peers.values())
-          if (other.id !== peer.id && other.workspace === peer.workspace && (!sent.to || sent.to === other.id))
-            this.#schedule(other);
+      if ("toProvider" in address && rest.kind === "request")
+        this.#respond(peer.workspace, address.toProvider, peer.cwd);
     } else if (action !== "team_join" && action !== "team_read") return { ok: false, error: "unknown_tool" };
     const historyTruncated = (this.#dropped.get(peer.workspace) ?? 0) > peer.cursor;
-    const messages = this.#unread(peer);
+    // The join is the mcp process starting, not the model reading: held messages wait for team_read.
+    const unread = action === "team_join" ? [] : this.#unread(peer);
+    this.#seen(peer, unread);
+    const messages = unread.map(view);
     peer.cursor = this.#seq;
     return {
       ok: true,
