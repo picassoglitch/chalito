@@ -26,12 +26,15 @@ const Send = z
     text: z.string().trim().min(1).max(8000),
   })
   .strict();
-type Message = TeamMessage & { readBy?: Set<string>; taken?: boolean };
+/** taken: a session of the app read it or its CLI took it. cwd: the asker's folder, where a CLI runs. */
+type Message = TeamMessage & { taken?: boolean; cwd?: string };
 const HOUR = 60 * 60_000;
 /** Messages for an app with no open session wait this long for one, or for its responder. */
 const HELD_MS = 24 * HOUR;
 const held = (m: Message) => !!m.toProvider && !m.taken;
-const view = ({ readBy: _r, taken: _t, ...m }: Message): TeamMessage => m;
+const view = ({ taken: _t, cwd: _c, ...m }: Message): TeamMessage => m;
+/** One argument holds the whole prompt: Linux caps it at 128 KiB, Windows the command line at 32 KiB. */
+const PROMPT_BUDGET = 24_000;
 interface Peer {
   id: string;
   cwd: string;
@@ -43,6 +46,8 @@ interface Peer {
   delivery: DeliveryAdapter;
   timer?: ReturnType<typeof setTimeout>;
   pushes: number[];
+  /** Joined while its app's CLI was running here: most likely that CLI, so its requests start no CLI. */
+  spawned: boolean;
 }
 
 /** Wake pacing per peer: bursts coalesce into one push, and two AIs answering each other cannot spin. */
@@ -126,6 +131,15 @@ export class TeamHub {
     });
     for (const [id, d] of this.#departed)
       if (this.#departed.size > 64 || d.at < this.now() - 10 * 60_000) this.#departed.delete(id);
+    // A request it was going to be pushed may now need the app's CLI.
+    this.#retryHeld(peer.workspace, peer.provider);
+  }
+
+  #retryHeld(workspace: string, provider: string) {
+    const first = this.#messages.find(
+      (m) => m.workspace === workspace && m.toProvider === provider && held(m) && m.kind === "request" && m.cwd,
+    );
+    if (first) this.#respond(workspace, provider, first.cwd!);
   }
 
   #unread(peer: Peer) {
@@ -133,14 +147,14 @@ export class TeamHub {
       m.workspace !== peer.workspace || m.from === peer.id
         ? false
         : m.toProvider
-          ? m.toProvider === peer.provider && !m.taken && !m.readBy?.has(peer.id) && m.at > this.now() - HELD_MS
+          ? m.toProvider === peer.provider && !m.taken && m.at > this.now() - HELD_MS
           : m.seq > peer.cursor && (!m.to || m.to === peer.id) && m.at > this.now() - HOUR,
     );
   }
 
-  /** Marks messages addressed to the peer's app by name as seen by it. */
-  #seen(peer: Peer, messages: readonly Message[]) {
-    for (const m of messages) if (m.toProvider) (m.readBy ??= new Set()).add(peer.id);
+  /** A message to an app by name goes to one of its sessions: the first that reads it, or gets it pushed. */
+  #seen(messages: readonly Message[]) {
+    for (const m of messages) if (m.toProvider) m.taken = true;
   }
 
   #running = new Set<string>();
@@ -150,14 +164,15 @@ export class TeamHub {
   #respond(workspace: string, provider: string, cwd: string) {
     const r = this.opts.responder;
     const key = `${workspace}\u0000${provider}`;
-    if (!r || this.#running.has(key) || !r.has(provider)) return;
+    // Trust can be revoked while a request waits: checked on every path that starts a CLI.
+    if (!r || this.#running.has(key) || !this.trusted(provider, cwd) || !r.has(provider)) return;
     const live = [...this.#peers.values()].filter((p) => p.workspace === workspace && p.provider === provider);
     if (live.some((p) => p.delivery.canWake)) return;
-    const waiting = this.#messages.filter(
-      (m) =>
-        m.workspace === workspace && m.toProvider === provider && held(m) && !live.some((p) => m.readBy?.has(p.id)),
-    );
-    if (!waiting.some((m) => m.kind === "request")) return;
+    const all = this.#messages.filter((m) => m.workspace === workspace && m.toProvider === provider && held(m));
+    if (!all.some((m) => m.kind === "request")) return;
+    // What doesn't fit in one prompt waits for the next turn.
+    let size = 0;
+    const waiting = all.filter((m, i) => (size += m.text.length) <= PROMPT_BUDGET || i === 0);
     const limit = this.opts.responderLimit ?? { max: 12, windowMs: 10 * 60_000 };
     const runs = (this.#runs.get(workspace) ?? []).filter((t) => t > this.now() - limit.windowMs);
     if (runs.length >= limit.max) {
@@ -177,6 +192,8 @@ export class TeamHub {
       .then((answer) => {
         this.#running.delete(key);
         this.opts.audit?.("team.responder_finished", { workspace, provider, run: runId, answered: !!answer });
+        // Its CLI went away: the messages wait for a session of the app instead.
+        if (answer === null) for (const m of waiting) m.taken = false;
         if (answer) for (const sender of new Set(waiting.map((m) => m.from))) this.#reply(runId, job, sender, answer);
         // Requests that arrived while it ran get their own turn.
         this.#respond(workspace, provider, cwd);
@@ -212,7 +229,10 @@ export class TeamHub {
       this.#drop(drop);
     }
     const waiting = this.#messages.filter((m) => m.workspace === message.workspace && held(m));
-    if (waiting.length > 64) this.#messages = this.#messages.filter((m) => m !== waiting[0]);
+    if (waiting.length > 64) {
+      this.#messages = this.#messages.filter((m) => m !== waiting[0]);
+      this.#drop(waiting[0]!);
+    }
     if (message.kind === "status") return;
     for (const other of this.#peers.values())
       if (
@@ -268,11 +288,12 @@ export class TeamHub {
     });
     // A failed attempt still counts against pacing, so a broken adapter retries slowly instead of spinning.
     peer.pushes.push(this.now());
+    if (!ok) this.#retryHeld(peer.workspace, peer.provider);
     if (ok) {
       peer.cursor = batch.more
         ? Math.max(peer.cursor, ...messages.filter((m) => !m.toProvider).map((m) => m.seq))
         : this.#seq;
-      this.#seen(peer, messages);
+      this.#seen(messages);
     }
     if (!ok || batch.more) this.#schedule(peer);
   }
@@ -323,6 +344,7 @@ export class TeamHub {
           link,
           delivery: pull,
           pushes: [],
+          spawned: this.#running.has(`${workspace}\u0000${p.data.provider}`),
         };
         this.#peers.set(signal, peer);
         signal.addEventListener(
@@ -389,14 +411,16 @@ export class TeamHub {
         ...rest,
         ...address,
         at: this.now(),
+        // A CLI Chalito started may ask a session that's open, never start another CLI: no chains or loops.
+        ...(peer.spawned ? {} : { cwd: peer.cwd }),
       });
-      if ("toProvider" in address && rest.kind === "request")
+      if ("toProvider" in address && rest.kind === "request" && !peer.spawned)
         this.#respond(peer.workspace, address.toProvider, peer.cwd);
     } else if (action !== "team_join" && action !== "team_read") return { ok: false, error: "unknown_tool" };
     const historyTruncated = (this.#dropped.get(peer.workspace) ?? 0) > peer.cursor;
     // The join is the mcp process starting, not the model reading: held messages wait for team_read.
     const unread = action === "team_join" ? [] : this.#unread(peer);
-    this.#seen(peer, unread);
+    this.#seen(unread);
     const messages = unread.map(view);
     peer.cursor = this.#seq;
     return {

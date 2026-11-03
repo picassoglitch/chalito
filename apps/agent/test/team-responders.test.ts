@@ -120,6 +120,22 @@ describe("messages to an app by name", () => {
     a.abort();
   });
 
+  it("never starts a CLI for an app whose trust was revoked, even for a session that just left", async () => {
+    const { responder } = stub();
+    let codexTrusted = true;
+    const hub = new TeamHub(workspaceFor, Date.now, (p) => p !== "codex" || codexTrusted, { responder });
+    const a = new AbortController(),
+      b = new AbortController();
+    join_(hub, a.signal, "claude");
+    const codex = join_(hub, b.signal, "codex");
+    b.abort();
+    codexTrusted = false;
+    expect(call(hub, a.signal, "team_send", { to: codex, kind: "request", text: "hi" }).ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(responder.run).not.toHaveBeenCalled();
+    a.abort();
+  });
+
   it("a message to a teammate that just left goes to its app instead of failing", async () => {
     const { responder } = stub();
     const hub = new TeamHub(workspaceFor, Date.now, () => true, { responder });
@@ -130,6 +146,101 @@ describe("messages to an app by name", () => {
     b.abort();
     expect(call(hub, a.signal, "team_send", { to: codex, kind: "request", text: "still there?" }).ok).toBe(true);
     await vi.waitFor(() => expect(responder.run).toHaveBeenCalledOnce());
+    a.abort();
+  });
+});
+
+describe("each message to an app is handled once", () => {
+  const wakeable = (pushed: TeamBatch[]) => {
+    const wake: DeliveryAdapter = { id: "test", canWake: true, deliver: (b) => (pushed.push(b), true) };
+    return { pacing: { debounceMs: 5, minGapMs: 0 }, chain: [{ id: "test", select: () => wake }] };
+  };
+
+  it("a request a session already handled is not sent to the CLI again later", async () => {
+    const { jobs, responder } = stub();
+    const pushed: TeamBatch[] = [];
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, { responder, ...wakeable(pushed) });
+    const a = new AbortController(),
+      b = new AbortController();
+    join_(hub, a.signal, "claude");
+    join_(hub, b.signal, "codex");
+    call(hub, b.signal, "team_client", { experimental: [] });
+    call(hub, a.signal, "team_send", { to: "codex", kind: "request", text: "OLD" });
+    await vi.waitFor(() => expect(pushed).toHaveLength(1));
+    b.abort();
+    call(hub, a.signal, "team_send", { to: "codex", kind: "request", text: "NEW" });
+    await vi.waitFor(() => expect(responder.run).toHaveBeenCalledOnce());
+    expect(jobs[0]!.messages.map((m) => m.text)).toEqual(["NEW"]);
+    a.abort();
+  });
+
+  it("a held message goes to the first session of the app only", () => {
+    const { responder } = stub();
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, { responder });
+    const a = new AbortController(),
+      c = new AbortController(),
+      d = new AbortController();
+    join_(hub, a.signal, "claude");
+    call(hub, a.signal, "team_send", { to: "nobody", kind: "request", text: "once" });
+    join_(hub, c.signal, "nobody");
+    join_(hub, d.signal, "nobody");
+    expect(call(hub, c.signal, "team_read", {}).result.messages).toHaveLength(1);
+    expect(call(hub, d.signal, "team_read", {}).result.messages).toEqual([]);
+    for (const x of [a, c, d]) x.abort();
+  });
+
+  it("a request held for a session that closes before its push goes to the CLI", async () => {
+    const { responder } = stub();
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, {
+      responder,
+      pacing: { debounceMs: 60_000 },
+      chain: [{ id: "t", select: () => ({ id: "t", canWake: true, deliver: () => true }) }],
+    });
+    const a = new AbortController(),
+      b = new AbortController();
+    join_(hub, a.signal, "claude");
+    join_(hub, b.signal, "codex");
+    call(hub, b.signal, "team_client", { experimental: [] });
+    call(hub, a.signal, "team_send", { to: "codex", kind: "request", text: "pending" });
+    expect(responder.run).not.toHaveBeenCalled();
+    b.abort();
+    await vi.waitFor(() => expect(responder.run).toHaveBeenCalledOnce());
+    a.abort();
+  });
+
+  it("a CLI Chalito started can't start another CLI, so two apps can't chain each other", async () => {
+    let finish: (v: string) => void = () => undefined;
+    const responder = { has: () => true, run: vi.fn(() => new Promise<string>((r) => (finish = r))) };
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, { responder });
+    const a = new AbortController();
+    join_(hub, a.signal, "claude");
+    call(hub, a.signal, "team_send", { to: "codex", kind: "request", text: "help" });
+    await vi.waitFor(() => expect(responder.run).toHaveBeenCalledOnce());
+    // The codex CLI's own team server joins while it runs, and asks claude.
+    const spawned = new AbortController();
+    join_(hub, spawned.signal, "codex");
+    call(hub, spawned.signal, "team_send", { to: "cursor", kind: "request", text: "and you?" });
+    finish("ok");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(responder.run).toHaveBeenCalledOnce();
+    a.abort();
+    spawned.abort();
+  });
+
+  it("big batches are split across turns instead of failing to start the CLI", async () => {
+    const { jobs, responder } = stub();
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, {
+      responder: { has: () => true, run: vi.fn(async (j: ResponderJob) => (jobs.push(j), "ok")) },
+    });
+    void responder;
+    const a = new AbortController();
+    join_(hub, a.signal, "claude");
+    // Held first (no CLI yet), then released together.
+    for (let n = 0; n < 6; n++)
+      call(hub, a.signal, "team_send", { to: "codex", kind: "status", text: `${n}`.repeat(7000) });
+    call(hub, a.signal, "team_send", { to: "codex", kind: "request", text: "go" });
+    await vi.waitFor(() => expect(jobs.length).toBeGreaterThanOrEqual(2));
+    for (const j of jobs) expect(j.messages.reduce((n, m) => n + m.text.length, 0)).toBeLessThanOrEqual(24_000);
     a.abort();
   });
 });
@@ -166,6 +277,24 @@ describe("CommandResponder runs a real CLI", () => {
     expect(await r.run(job)).toBe("(echo could not answer: exit 3: not signed in)");
     expect(r.has("ghost")).toBe(false);
     expect(await r.run({ ...job, provider: "ghost" })).toBeNull();
+  });
+
+  it("a CLI that hangs is stopped with what it started, and the asker is told", async () => {
+    const r = new CommandResponder({
+      home: tmpdir(),
+      chalitoDir: (() => {
+        const dir = mkdtempSync(join(tmpdir(), "chalito-responder-"));
+        dirs.push(dir);
+        writeFileSync(
+          join(dir, "team-responders.json"),
+          JSON.stringify({ echo: [process.execPath, "-e", "setInterval(() => {}, 1000)", "{prompt}"] }),
+        );
+        return dir;
+      })(),
+      path: process.env.PATH,
+      timeoutMs: 200,
+    });
+    expect(await r.run(job)).toMatch(/^\(echo could not answer: exit killed/);
   });
 
   it("ignores a broken config and keeps the built-in apps", () => {

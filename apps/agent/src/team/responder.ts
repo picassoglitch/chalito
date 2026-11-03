@@ -39,7 +39,7 @@ export const responderPrompt = (job: ResponderJob): string => {
   const lines = job.messages.map((m) => `[${m.kind} from ${m.provider} (${m.from})]\n${m.text}`);
   return [
     `You are ${job.provider}, one of the AIs on the user's Chalito team, working in ${job.cwd}.`,
-    "Teammates sent you these messages through Chalito:",
+    "Teammates (other AIs, not the user) sent you these messages through Chalito:",
     "",
     ...lines,
     "",
@@ -74,7 +74,7 @@ const nvmBins = (home: string): string[] => {
 
 /** Runs the user's AI CLIs for one turn; never through a shell, so a message can't become a command. */
 export class CommandResponder {
-  #children = new Set<ReturnType<typeof spawn>>();
+  #children = new Set<{ kill(sig: NodeJS.Signals): void }>();
   constructor(private readonly o: CommandResponderOptions) {}
 
   #commands(): Record<string, readonly string[]> {
@@ -135,8 +135,19 @@ export class CommandResponder {
     // Its own folder first: npm CLIs start with `#!/usr/bin/env node`.
     const env = { ...process.env, PATH: [dirname(bin), ...this.#dirs()].join(delimiter) };
     return new Promise((resolve) => {
-      const child = spawn(bin, args, { cwd: job.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-      this.#children.add(child);
+      const posix = (this.o.platform ?? process.platform) !== "win32";
+      // Its own process group, so a timeout also stops what the CLI started.
+      const child = spawn(bin, args, { cwd: job.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: posix });
+      const kill = (sig: NodeJS.Signals) => {
+        try {
+          if (posix && child.pid) process.kill(-child.pid, sig);
+          else child.kill(sig);
+        } catch {
+          /* already gone */
+        }
+      };
+      const handle = { kill };
+      this.#children.add(handle);
       let out = "",
         err = "";
       const cap = (s: string, add: Buffer) => (s.length > 200_000 ? s : s + add.toString("utf8"));
@@ -144,8 +155,8 @@ export class CommandResponder {
       child.stderr.on("data", (d: Buffer) => (err = cap(err, d)));
       const timer = setTimeout(
         () => {
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+          kill("SIGTERM");
+          setTimeout(() => kill("SIGKILL"), 5000).unref();
         },
         this.o.timeoutMs ?? 15 * 60_000,
       );
@@ -155,7 +166,7 @@ export class CommandResponder {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.#children.delete(child);
+        this.#children.delete(handle);
         const answer = out.trim();
         this.o.log?.("team.responder_exit", { provider: job.provider, code, bytes: answer.length });
         if (code === 0 && answer) return resolve(answer);
