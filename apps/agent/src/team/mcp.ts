@@ -92,7 +92,7 @@ const RETRY_MS = [250, 500, 1000, 2000, 5000];
 const RECONNECTING = {
   ok: false as const,
   error: "reconnecting",
-  message: "Chalito team: the connection to Chalito dropped; reconnecting. Retry shortly.",
+  message: "Chalito team: Chalito is not reachable right now; reconnecting. Retry shortly.",
 };
 
 type Link = {
@@ -114,6 +114,8 @@ export const runTeamMcp = async (
     retryMs?: readonly number[];
     /** Set when Chalito started this app's CLI to answer a request (CHALITO_TEAM_RUN). */
     run?: string | undefined;
+    /** The home folder: a session started outside any workspace joins it when it is one. */
+    home?: string | undefined;
   },
   path: string | null,
   provider: string,
@@ -213,13 +215,21 @@ export const runTeamMcp = async (
         : `Chalito team: could not set up delivery (${r.error ?? "unavailable"}); messages wait for team_read.\n`,
     );
   };
+  let joinCwd = cwd;
   const join = async (link: Link) => {
-    const joined = await link.call("team_join", {
-      provider,
-      cwd,
-      ...(self ? { resume: self } : {}),
-      ...(io.run ? { run: io.run } : {}),
-    });
+    const ask = (at: string) =>
+      link.call("team_join", {
+        provider,
+        cwd: at,
+        ...(self ? { resume: self } : {}),
+        ...(io.run ? { run: io.run } : {}),
+      });
+    let joined = await ask(joinCwd);
+    // Owner 2026-11-03 — an app opened in /usr (or any non-workspace) still joins the home folder's team.
+    if (!joined.ok && joined.error === "unknown_workspace" && io.home && joinCwd !== io.home) {
+      joined = await ask(io.home);
+      if (joined.ok) joinCwd = io.home;
+    }
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
     self = (joined.result as { self?: string } | undefined)?.self ?? null;
     if (client) await declare(link, client);
@@ -231,20 +241,26 @@ export const runTeamMcp = async (
     await join(link);
   } catch (err) {
     link?.close();
+    link = null;
     const reason = err instanceof Error ? err.message : "connection_failed";
     const code = (err as NodeJS.ErrnoException | null)?.code;
-    const hint =
-      code === "EPERM" || code === "EACCES"
-        ? "This process cannot access the agent socket. Check sandbox access and permissions; Chalito may already be running."
-        : reason === "unknown_method"
-          ? "Update and restart the Chalito agent with team-channel support."
-          : reason === "not_trusted"
-            ? "Trust this AI for the selected workspace in Chalito's Connections tab, then reconnect the app's MCP server."
-            : reason === "unknown_workspace"
-              ? "Use a project path allowed by Chalito's workspace policy."
-              : "Check the Chalito connection and workspace configuration.";
-    io.err(`Chalito team unavailable: ${reason}. ${hint}\n`);
-    return 1;
+    // Chalito not running yet: serve anyway and connect when it starts, instead of failing for good.
+    if (!PERMANENT.has(reason) && !PERMANENT.has(code ?? "")) {
+      io.err(`Chalito team: waiting for Chalito (${code ?? reason}); tools answer once it is running.\n`);
+    } else {
+      const hint =
+        code === "EPERM" || code === "EACCES"
+          ? "This process cannot access the agent socket. Check sandbox access and permissions; Chalito may already be running."
+          : reason === "unknown_method"
+            ? "Update and restart the Chalito agent with team-channel support."
+            : reason === "not_trusted"
+              ? "Trust this AI for the selected workspace in Chalito's Connections tab, then reconnect the app's MCP server."
+              : reason === "unknown_workspace"
+                ? "Use a project path allowed by Chalito's workspace policy."
+                : "Check the Chalito connection and workspace configuration.";
+      io.err(`Chalito team unavailable: ${reason}. ${hint}\n`);
+      return 1;
+    }
   }
 
   const served = runMcpServer({
@@ -277,7 +293,7 @@ export const runTeamMcp = async (
         return { ok: false, error: "unknown_tool", message: "Unknown team tool." };
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
-      if (!reply.ok && reply.error === "closed" && wakes) return RECONNECTING;
+      if (!reply.ok && reply.error === "closed") return RECONNECTING;
       return reply.ok
         ? { ok: true, result: { text: JSON.stringify({ peerData: reply.result }) } }
         : {
@@ -293,18 +309,17 @@ export const runTeamMcp = async (
 
   try {
     for (;;) {
-      const current: Link = link!;
-      if ((await Promise.race([served, current.lost])) === "served") return 0;
-      current.close();
-      link = null;
-      // A pushed session would go deaf silently, so it reconnects; a pull-only one exits and the app shows it.
-      if (!wakes) {
+      if (link) {
+        const current: Link = link;
+        if ((await Promise.race([served, current.lost])) === "served") return 0;
+        current.close();
+        link = null;
+        // Owner 2026-11-03 — every session reconnects on its own after Chalito restarts; no /mcp needed.
         io.err(
           current.timedOut()
-            ? "Chalito team: Chalito did not answer within 5 seconds. Reconnect this MCP server.\n"
-            : "Chalito team: lost the connection to Chalito (restarted or stopped). Reconnect this MCP server.\n",
+            ? "Chalito team: Chalito did not answer within 5 seconds; reconnecting.\n"
+            : "Chalito team: lost the connection to Chalito (restarted or stopped); reconnecting.\n",
         );
-        return 1;
       }
       const delays = io.retryMs ?? RETRY_MS;
       for (let attempt = 0; !link; attempt++) {

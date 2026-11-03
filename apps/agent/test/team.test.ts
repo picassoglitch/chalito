@@ -136,43 +136,58 @@ describe("automatic workspace team", () => {
     for (const c of [busy, quiet1, quiet2, reader, x, y]) c.abort();
   });
 
-  it("serves a real Unix socket and exits with a reason when Chalito goes away", async () => {
+  it("serves a real Unix socket, waits while Chalito is away, and reconnects on its own", async () => {
     const dir = mkdtempSync(joinPath(tmpdir(), "chalito-team-sock-"));
     const path = joinPath(dir, "code.sock");
-    const server = await startCodeServer({
-      path,
-      team: new TeamHub(workspaceFor, Date.now, () => true),
-      platform: "linux",
-      code: { workspaceFor, tap: () => () => undefined } as unknown as CodeService,
-    });
+    const serve = () =>
+      startCodeServer({
+        path,
+        team: new TeamHub(workspaceFor, Date.now, () => true),
+        platform: "linux",
+        code: { workspaceFor, tap: () => () => undefined } as unknown as CodeService,
+      });
     const input = new PassThrough();
-    const replies: { id: number; result: { content: { text: string }[] } }[] = [];
+    const replies: { id: number; result?: { content: { text: string }[]; isError?: boolean } }[] = [];
     let errors = "";
+    let id = 0;
+    // Chalito isn't running when the app starts the server, and the app runs in /usr.
     const done = runTeamMcp(
       {
         input,
         out: (line) => replies.push(JSON.parse(line)),
-        err: (text) => {
-          errors += text;
-        },
+        err: (t) => void (errors += t),
+        retryMs: [20],
+        home: "/project",
       },
       path,
       "codex",
-      "/project",
+      "/usr",
     );
-    try {
+    const read = async () => {
+      const n = ++id;
       input.write(
-        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "team_read", arguments: {} } }) +
+        JSON.stringify({ jsonrpc: "2.0", id: n, method: "tools/call", params: { name: "team_read", arguments: {} } }) +
           "\n",
       );
-      await vi.waitFor(() => expect(replies).toHaveLength(1));
-      expect(JSON.parse(replies[0]!.result.content[0]!.text).peerData).toMatchObject({
-        workspace: "project",
-        peers: [],
-      });
+      await vi.waitFor(() => expect(replies.find((r) => r.id === n)).toBeDefined());
+      return replies.find((r) => r.id === n)!.result!;
+    };
+    const workspace = async () => {
+      const r = await read();
+      return r.isError ? null : JSON.parse(r.content[0]!.text).peerData.workspace;
+    };
+    await vi.waitFor(() => expect(errors).toContain("waiting for Chalito"));
+    expect(await workspace()).toBeNull();
+    let server = await serve();
+    try {
+      // Outside any workspace (/usr): joins the home folder's team.
+      await vi.waitFor(async () => expect(await workspace()).toBe("project"));
       await server.close();
-      expect(await done).toBe(1);
-      expect(errors).toContain("lost the connection to Chalito");
+      await vi.waitFor(() => expect(errors).toContain("lost the connection to Chalito"));
+      server = await serve();
+      await vi.waitFor(async () => expect(await workspace()).toBe("project"));
+      input.end();
+      expect(await done).toBe(0);
     } finally {
       input.end();
       await server.close().catch(() => undefined);
