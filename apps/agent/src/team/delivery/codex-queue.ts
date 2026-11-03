@@ -15,6 +15,8 @@ export const codexQueue: DeliveryFactory = {
       ? {
           id: CODEX_QUEUE,
           canWake: true,
+          // `codex queue` exiting 0 means queued, not seen: the hub keeps these unread until team_read.
+          ackOnRead: true,
           deliver: (batch) => link.push({ teamDelivery: { adapter: CODEX_QUEUE, batch } }),
         }
       : null,
@@ -45,11 +47,12 @@ export const codexThreadFrom = (meta: unknown): string | null => {
 export const envThread = (value: string | undefined): string | null => uuid(value);
 
 /** The text queued as the next user turn: the same quoted, tag-free framing Claude's channel gets. */
-export const queueText = (batch: TeamBatch): string => {
+/** Null when it would not fit one argument: never cut, the batch then waits for team_read whole. */
+export const queueText = (batch: TeamBatch): string | null => {
   const text = channelNotifications(batch)
     .map((n) => (n.params as { content: string }).content)
     .join("\n\n");
-  return text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}\n[cut: call team_read for the rest]` : text;
+  return text.length > MAX_TEXT ? null : text;
 };
 
 // No --resume: the owning session takes the message, never a competing turn. `=` keeps text starting with "-" a value.

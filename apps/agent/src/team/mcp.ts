@@ -126,6 +126,8 @@ export const runTeamMcp = async (
     home?: string | undefined;
     /** Codex only: CODEX_THREAD_ID as this process received it. */
     codexThread?: string | undefined;
+    /** Codex only: CHALITO_TEAM_CODEX_QUEUE=1 turns on `codex queue` delivery. */
+    codexQueueOptIn?: boolean;
     /** Codex only: hands a batch to `codex queue`; default runs the CLI. */
     codexQueue?: QueueRunner;
   },
@@ -144,15 +146,16 @@ export const runTeamMcp = async (
   const notify = (batch: TeamBatch) => {
     for (const n of channelNotifications(batch)) io.out(`${JSON.stringify({ jsonrpc: "2.0", ...n })}\n`);
   };
-  // Codex: the first thread Codex reports is this session's for good. A second, different one means the process
-  // serves several threads, so pushing is unsafe: back to pull for the rest of its life.
-  let thread: string | null = provider === "codex" ? envThread(io.codexThread) : null;
+  // Codex, opt-in until verified live: the first thread Codex reports is this session's. A second, different one
+  // means the process serves several threads, so pushing is unsafe: back to pull for the rest of its life.
+  const codexOn = provider === "codex" && io.codexQueueOptIn === true;
+  let thread: string | null = codexOn ? envThread(io.codexThread) : null;
   let threadConflict = false;
-  /** Batches `codex queue` refused: returned with the next tool reply so nothing pushed is lost. */
-  const unqueued: TeamMessage[] = [];
+  /** Seqs `codex queue` accepted: still unread at the hub, so team_read flags them instead of hiding them. */
+  const queuedSeqs = new Set<number>();
   let queueing = Promise.resolve();
   const bindThread = (seen: string | null) => {
-    if (provider !== "codex" || !seen || threadConflict || seen === thread) return;
+    if (!codexOn || !seen || threadConflict || seen === thread) return;
     if (thread) {
       threadConflict = true;
       thread = null;
@@ -167,10 +170,11 @@ export const runTeamMcp = async (
   const enqueue = (batch: TeamBatch) => {
     const target = thread;
     queueing = queueing.then(async () => {
-      const ok = target ? await (io.codexQueue ?? runCodexQueue)(target, queueText(batch)) : false;
-      if (ok) return;
-      unqueued.push(...batch.messages);
-      io.err("Chalito team: codex queue failed; the messages come back with the next team_read.\n");
+      // Re-checked at run time: a conflict found while this batch waited must not reach the old thread.
+      const text = target && target === thread && !threadConflict ? queueText(batch) : null;
+      const ok = text ? await (io.codexQueue ?? runCodexQueue)(target!, text) : false;
+      if (ok) for (const m of batch.messages) queuedSeqs.add(m.seq);
+      else io.err("Chalito team: codex queue failed; the messages wait for team_read.\n");
     });
   };
   const onFrame = (raw: Record<string, unknown>) => {
@@ -340,11 +344,9 @@ export const runTeamMcp = async (
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
       if (!reply.ok && reply.error === "closed") return RECONNECTING;
-      if (reply.ok && unqueued.length) {
-        const result = reply.result as { messages?: TeamMessage[] };
-        const seen = new Set((result.messages ?? []).map((m) => m.seq));
-        const back = unqueued.splice(0).filter((m) => !seen.has(m.seq));
-        result.messages = [...back, ...(result.messages ?? [])].sort((a, b) => a.seq - b.seq);
+      if (reply.ok && queuedSeqs.size) {
+        const result = reply.result as { messages?: (TeamMessage & { queued?: boolean })[] };
+        for (const m of result.messages ?? []) if (queuedSeqs.delete(m.seq)) m.queued = true;
       }
       return reply.ok
         ? { ok: true, result: { text: JSON.stringify({ peerData: reply.result }) } }

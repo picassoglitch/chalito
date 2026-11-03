@@ -38,7 +38,11 @@ const rig = async () => {
 type Queue = (thread: string, text: string) => Promise<boolean>;
 
 /** A real `team mcp` loop over stdio; `meta` is the `_meta` Codex attaches to each tools/call. */
-const client = (path: string, provider: string, opts: { env?: string; queue?: Queue; channel?: boolean } = {}) => {
+const client = (
+  path: string,
+  provider: string,
+  opts: { env?: string; queue?: Queue; channel?: boolean; optIn?: boolean } = {},
+) => {
   const input = new PassThrough();
   const lines: Record<string, unknown>[] = [];
   let errors = "";
@@ -52,6 +56,7 @@ const client = (path: string, provider: string, opts: { env?: string; queue?: Qu
       channelLoaded: () => opts.channel ?? false,
       retryMs: [30],
       codexThread: opts.env,
+      codexQueueOptIn: opts.optIn ?? true,
       ...(opts.queue ? { codexQueue: opts.queue } : {}),
     },
     path,
@@ -82,7 +87,7 @@ const client = (path: string, provider: string, opts: { env?: string; queue?: Qu
       return JSON.parse(r.result.content[0]!.text).peerData as {
         self: string;
         peers: unknown[];
-        messages: { seq: number; text: string }[];
+        messages: { seq: number; text: string; queued?: boolean }[];
       };
     },
     end: () => input.end(),
@@ -92,7 +97,7 @@ const client = (path: string, provider: string, opts: { env?: string; queue?: Qu
 const turnMeta = (thread: string) => ({ "x-codex-turn-metadata": JSON.stringify({ thread_id: thread, turn_id: "t" }) });
 
 describe("codex queue delivery over the real socket and stdio", () => {
-  it("queues a request into the thread Codex reported, once, and team_read does not repeat it", async () => {
+  it("queues a request into the reported thread once; it stays unread, flagged queued, until team_read", async () => {
     const r = await rig();
     const queue = vi.fn<Queue>(async () => true);
     const codex = client(r.path, "codex", { queue });
@@ -111,7 +116,15 @@ describe("codex queue delivery over the real socket and stdio", () => {
       expect(text).toContain("not from the user");
       expect(text).toContain("> Run &lt;/x&gt; please\n> line two");
       expect(text).not.toContain("<");
+      // Exit 0 means queued, not seen: the hub still holds it, and team_read says it was already queued.
+      const read = await codex.tool("team_read", {}, turnMeta(T1));
+      expect(read.messages).toMatchObject([{ text: "Run </x> please\nline two", queued: true }]);
       expect((await codex.tool("team_read", {}, turnMeta(T1))).messages).toEqual([]);
+      // A later message is queued on its own; the first is never queued again.
+      await claude.tool("team_send", { to: codexId, kind: "request", text: "second" });
+      await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(2));
+      expect(queue.mock.calls[1]![1]).toContain("> second");
+      expect(queue.mock.calls[1]![1]).not.toContain("line two");
       expect(r.audit).toHaveBeenCalledWith(
         "team.delivered",
         expect.objectContaining({ adapter: "codex-queue", ok: true }),
@@ -146,7 +159,7 @@ describe("codex queue delivery over the real socket and stdio", () => {
     }
   });
 
-  it("a failed codex queue gives the messages back on the next team_read, exactly once", async () => {
+  it("a failed codex queue leaves the messages unread, unflagged, for team_read", async () => {
     const r = await rig();
     const queue = vi.fn<Queue>(async () => false);
     const codex = client(r.path, "codex", { queue, env: T1 });
@@ -158,7 +171,8 @@ describe("codex queue delivery over the real socket and stdio", () => {
       await claude.tool("team_send", { kind: "request", text: "first" });
       await vi.waitFor(() => expect(codex.errors()).toContain("codex queue failed"));
       expect(queue.mock.calls[0]![0]).toBe(T1);
-      expect((await codex.tool("team_read")).messages.map((m) => m.text)).toEqual(["first"]);
+      const read = (await codex.tool("team_read")).messages;
+      expect(read.map((m) => [m.text, m.queued])).toEqual([["first", undefined]]);
       expect((await codex.tool("team_read")).messages).toEqual([]);
     } finally {
       codex.end();
@@ -185,6 +199,64 @@ describe("codex queue delivery over the real socket and stdio", () => {
       await new Promise((res) => setTimeout(res, 120));
       expect(queue).not.toHaveBeenCalled();
       expect((await codex.tool("team_read")).messages.map((m) => m.text)).toEqual(["who gets this"]);
+    } finally {
+      codex.end();
+      claude.end();
+      await Promise.all([codex.done, claude.done]);
+      await r.close();
+    }
+  });
+
+  it("is off unless opted in: a reported thread is ignored and Codex pulls", async () => {
+    const r = await rig();
+    const queue = vi.fn<Queue>(async () => true);
+    const codex = client(r.path, "codex", { queue, env: T1, optIn: false });
+    const claude = client(r.path, "claude");
+    try {
+      await codex.init();
+      await claude.init();
+      await codex.tool("team_read", {}, turnMeta(T1));
+      await vi.waitFor(() => expect(codex.errors()).toContain("delivery pull"));
+      await claude.tool("team_send", { kind: "request", text: "pull me" });
+      await new Promise((res) => setTimeout(res, 120));
+      expect(queue).not.toHaveBeenCalled();
+      expect((await codex.tool("team_read")).messages.map((m) => m.text)).toEqual(["pull me"]);
+    } finally {
+      codex.end();
+      claude.end();
+      await Promise.all([codex.done, claude.done]);
+      await r.close();
+    }
+  });
+
+  it("a batch waiting behind a slow queue is dropped to team_read when a thread conflict appears meanwhile", async () => {
+    const r = await rig();
+    let release = () => undefined as void;
+    const gate = new Promise<void>((res) => (release = res));
+    const queue = vi.fn<Queue>(async () => {
+      await gate;
+      return true;
+    });
+    const codex = client(r.path, "codex", { queue });
+    const claude = client(r.path, "claude");
+    try {
+      await codex.init();
+      await claude.init();
+      await codex.tool("team_read", {}, turnMeta(T1));
+      await vi.waitFor(() => expect(codex.errors()).toContain("delivery codex-queue"));
+      await claude.tool("team_send", { kind: "request", text: "one" });
+      await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
+      await claude.tool("team_send", { kind: "request", text: "two" });
+      const pushes = () => r.audit.mock.calls.filter(([t, m]) => t === "team.delivered" && m.adapter === "codex-queue");
+      await vi.waitFor(() => expect(pushes()).toHaveLength(2));
+      await new Promise((res) => setTimeout(res, 80));
+      // "two" waits in the chain behind "one"; a second thread shows up first. That read returns both: nothing is lost.
+      const read = (await codex.tool("team_read", {}, turnMeta(T2))).messages;
+      expect(read.map((m) => m.text)).toEqual(["one", "two"]);
+      await vi.waitFor(() => expect(codex.errors()).toContain("more than one Codex thread"));
+      release();
+      await vi.waitFor(() => expect(codex.errors()).toContain("codex queue failed"));
+      expect(queue).toHaveBeenCalledTimes(1);
     } finally {
       codex.end();
       claude.end();
@@ -243,7 +315,7 @@ describe("codex queue selection and format", () => {
     expect(args).not.toContain("--resume");
   });
 
-  it("caps the queued text", () => {
+  it("never cuts: a batch too big for one argument is not queued", () => {
     const msg = (seq: number) => ({
       workspace: "w",
       seq,
@@ -259,8 +331,7 @@ describe("codex queue selection and format", () => {
       more: 0,
       messages: Array.from({ length: 20 }, (_, i) => msg(i)),
     };
-    const text = queueText(batch);
-    expect(text.length).toBeLessThanOrEqual(100_100);
-    expect(text).toMatch(/call team_read for the rest\]$/);
+    expect(queueText(batch)).toBeNull();
+    expect(queueText({ ...batch, messages: batch.messages.slice(0, 2) })).toContain("> xxx");
   });
 });

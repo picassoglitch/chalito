@@ -52,6 +52,8 @@ interface Peer {
   spawned: boolean;
   /** Its last push failed: it can't be counted on to wake until one succeeds. */
   failing: boolean;
+  /** ackOnRead adapters: seqs already pushed and still unread, so they are not pushed again. */
+  pushed: Set<number>;
 }
 
 /** Wake pacing per peer: bursts coalesce into one push, and two AIs answering each other cannot spin. */
@@ -120,7 +122,10 @@ export class TeamHub {
   }
 
   /** Recently dropped connections, so a reconnecting process keeps its id and unread messages. */
-  #departed = new Map<string, { provider: TeamProvider; workspace: string; cursor: number; at: number }>();
+  #departed = new Map<
+    string,
+    { provider: TeamProvider; workspace: string; cursor: number; pushed: Set<number>; at: number }
+  >();
 
   #leave(signal: AbortSignal) {
     const peer = this.#peers.get(signal);
@@ -131,6 +136,7 @@ export class TeamHub {
       provider: peer.provider,
       workspace: peer.workspace,
       cursor: peer.cursor,
+      pushed: peer.pushed,
       at: this.now(),
     });
     for (const [id, d] of this.#departed)
@@ -283,7 +289,7 @@ export class TeamHub {
   #flush(peer: Peer) {
     this.#prune();
     if (![...this.#peers.values()].includes(peer)) return;
-    const pending = this.#unread(peer);
+    const pending = this.#unread(peer).filter((m) => !peer.pushed.has(m.seq));
     // Already read through team_read, or only status updates left: nothing to wake for.
     if (!pending.some((m) => m.kind !== "status")) return;
     const messages = pending.slice(0, this.#pacing.maxBatch);
@@ -310,7 +316,8 @@ export class TeamHub {
     peer.pushes.push(this.now());
     peer.failing = !ok;
     if (!ok) this.#retryHeld(peer.workspace, peer.provider);
-    if (ok) {
+    if (ok && peer.delivery.ackOnRead) for (const m of messages) peer.pushed.add(m.seq);
+    else if (ok) {
       peer.cursor = batch.more
         ? Math.max(peer.cursor, ...messages.filter((m) => !m.toProvider).map((m) => m.seq))
         : this.#seq;
@@ -367,6 +374,7 @@ export class TeamHub {
           pushes: [],
           spawned: this.#isRun(workspace, p.data.provider, p.data.cwd, p.data.run),
           failing: false,
+          pushed: resumed?.pushed ?? new Set(),
         };
         this.#peers.set(signal, peer);
         signal.addEventListener(
@@ -445,6 +453,7 @@ export class TeamHub {
     this.#seen(unread);
     const messages = unread.map(view);
     peer.cursor = this.#seq;
+    if (action !== "team_join") peer.pushed.clear();
     return {
       ok: true,
       result: {

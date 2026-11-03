@@ -34,6 +34,8 @@ export interface DeliveryAdapter {
   readonly id: string;
   /** Can reach an idle session; false means the peer only gets messages by calling team_read. */
   readonly canWake: boolean;
+  /** Delivery has no receipt: pushed messages stay unread until team_read, and are pushed once. */
+  readonly ackOnRead?: boolean;
   /** True once handed to the transport. False keeps the messages unread for the next try or team_read. */
   deliver(batch: TeamBatch, peer: DeliveryPeer): boolean;
 }
