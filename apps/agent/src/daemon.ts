@@ -1608,8 +1608,8 @@ const startDaemon = async (
     connected: (provider) => nativeBridge.connected(provider),
     log: (event, meta) => log.warn(event, meta),
   });
-  // #132 — hooks never point into /tmp or a DMG (anyone could plant a binary there later); dev runs never rewrite them.
-  if (!isInterpreter(execPath) && !hookBin.ephemeral) nativeConnectors.repair();
+  // Owner 2026-11-03 — Chalito is a bridge, not a gate: approval hooks come out of every app.
+  nativeConnectors.retire();
   const channelInstaller = new ChannelInstaller({
     home: deps.home ?? homedir(),
     dir,

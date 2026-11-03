@@ -5,6 +5,7 @@ import { useT } from "../lib/i18n.js";
 // The agent marks a row it could not read; that row explains itself instead of hiding the list.
 type Row = NativeConnectionView & { error?: string };
 const ERRORS = [
+  "retired",
   "config_changed",
   "os_auth_failed",
   "unsafe_path",
@@ -20,7 +21,7 @@ const errorKey = (code: string | undefined) => (code && ERRORS.includes(code) ? 
 // Each read runs three CLI lookups in the agent: slow, and only while someone can see the panel.
 const POLL_MS = 15_000;
 
-/** Connect existing signed-in apps. This does not replace their login or start paid model calls. */
+/** Owner 2026-11-03 — Chalito is a bridge, not a gate: this card only removes hooks an older Chalito installed. */
 export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
   const t = useT();
   const [connections, setConnections] = useState<Row[] | null>(null);
@@ -69,7 +70,7 @@ export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
     setBusy(true);
     setError(null);
     try {
-      await ipc.setNativeConnection(connection.provider, !connection.configured, connection.hash);
+      await ipc.setNativeConnection(connection.provider, false, connection.hash);
       setConfirm(null);
     } catch (e) {
       const code = e instanceof Error ? e.message : "internal";
@@ -80,12 +81,12 @@ export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
       read();
     }
   };
-  if (connections === null && !readFailed) return null;
+  const leftover = (connections ?? []).filter((connection) => connection.configured);
+  if (!leftover.length) return null;
   return (
     <section className="card" aria-labelledby="native-connect-title">
       <h2 id="native-connect-title">{t("integrations.native.title")}</h2>
       <p>{t("integrations.native.intro")}</p>
-      <p className="muted">{t("integrations.native.scope")}</p>
       {error && <p role="alert">{t(`integrations.native.error.${error}`)}</p>}
       {readFailed && (
         <p role="alert" data-native-read-failed>
@@ -93,14 +94,10 @@ export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
         </p>
       )}
       <ul className="list">
-        {(connections ?? []).map((connection) => (
+        {leftover.map((connection) => (
           <li key={connection.provider} data-native={connection.provider}>
             <h3>{t(`integrations.native.name.${connection.provider}`)}</h3>
-            <p>
-              {t(
-                `integrations.native.${connection.connected ? "connected" : connection.configured ? "configured" : !connection.available ? "missing" : "disconnected"}`,
-              )}
-            </p>
+            <p>{t("integrations.native.leftover")}</p>
             {connection.error && (
               <p className="muted" data-native-error={connection.error}>
                 {t(`integrations.native.error.${errorKey(connection.error)}`)}
@@ -108,14 +105,14 @@ export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
             )}
             {confirm?.provider === connection.provider ? (
               <div role="group" aria-label={t("integrations.native.confirm")}>
-                <p>{t(connection.configured ? "integrations.native.removeHint" : "integrations.native.addHint")}</p>
+                <p>{t("integrations.native.removeHint")}</p>
                 <details>
                   <summary>{t("integrations.native.changes")}</summary>
                   <p className="mono">{connection.path}</p>
                   <p>{connection.events.join(", ")}</p>
                 </details>
                 <button disabled={busy} onClick={() => void change(confirm)}>
-                  {t(connection.configured ? "integrations.native.remove" : "integrations.native.connect")}
+                  {t("integrations.native.remove")}
                 </button>
                 <button disabled={busy} onClick={() => setConfirm(null)}>
                   {t("integrations.connect.cancel")}
@@ -123,13 +120,13 @@ export const NativeConnections = ({ ipc }: { ipc: AgentIpc }) => {
               </div>
             ) : (
               <button
-                disabled={busy || (!connection.configured && (!connection.available || !!connection.error))}
+                disabled={busy}
                 onClick={() => {
                   setConfirm(connection);
                   setError(null);
                 }}
               >
-                {t(connection.configured ? "integrations.native.remove" : "integrations.native.connect")}
+                {t("integrations.native.remove")}
               </button>
             )}
           </li>

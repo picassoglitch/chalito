@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { nativeWorkspaceStatus } from "../src/native/protocol.js";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { NativeConnectors } from "../src/native/connectors.js";
+import { seedOldHooks } from "./native-seed.js";
 import { classifyToolCall } from "../src/policy/classify.js";
 import { CodexAdapter } from "@chalito/adapters/codex";
 import { AcpAdapter } from "@chalito/adapters/acp";
@@ -268,33 +268,36 @@ describe("chalito run (daemon)", () => {
     await d.stop();
   });
 
-  it("moves AI app hooks off an AppImage's temporary mount on start (#132)", async () => {
+  // Owner 2026-11-03 — Chalito is a bridge, not a gate: an AppImage start takes old approval hooks out of every app.
+  it("takes Chalito's approval hooks out of every AI app on start, keeping the rest (AppImage)", async () => {
     const s = await setup();
     const appDir = join(s.home, ".mount_ChalitNEW");
     const agent = join(appDir, "usr", "bin", "chalito-agent");
     mkdirSync(dirname(agent), { recursive: true });
     writeFileSync(agent, "agent bytes", { mode: 0o755 });
     // Connected while an older AppImage ran: hooks name its mount, gone since.
-    mkdirSync(s.dir, { recursive: true });
-    await new NativeConnectors({
-      home: s.home,
-      dir: s.dir,
-      command: ["/tmp/.mount_ChalitGONE/usr/bin/chalito-agent"],
-      platform: "linux",
-      available: async () => true,
-      verify: async () => true,
-      onDisconnect: () => undefined,
-    }).set("claude", true, "missing");
+    const seeded = (["codex", "claude", "cursor"] as const).map((provider) =>
+      seedOldHooks({
+        home: s.home,
+        dir: s.dir,
+        provider,
+        command: ["/tmp/.mount_ChalitGONE/usr/bin/chalito-agent"],
+        settings: { env: { KEEP: "1" }, hooks: { Stop: [{ hooks: [{ type: "command", command: "mine" }] }] } },
+      }),
+    );
     const d = await runDaemon({
       ...s.deps,
       execPath: agent,
       env: { ...s.deps.env, APPIMAGE: join(s.home, "Chalito.AppImage"), APPDIR: appDir },
     });
-    const settings = readFileSync(join(s.home, ".claude", "settings.json"), "utf8");
-    expect(settings).not.toContain(".mount_Chalit");
-    expect(settings).toContain(join(s.home, ".local", "share", "chalito", "chalito-agent"));
+    for (const { path } of seeded) {
+      const settings = JSON.parse(readFileSync(path, "utf8"));
+      expect(JSON.stringify(settings)).not.toMatch(/native-hook|mount_Chalit/);
+      expect(settings.env).toEqual({ KEEP: "1" });
+      expect(settings.hooks.Stop).toEqual([{ hooks: [{ type: "command", command: "mine" }] }]);
+    }
     expect(readFileSync(join(s.home, ".local", "share", "chalito", "chalito-agent"), "utf8")).toBe("agent bytes");
-    // An AI session must not swap the hook binary (or rename a file over it) to approve itself.
+    // An AI session must not swap the agent copy AI apps launch (or rename a file over it).
     const w = join(s.home, "w");
     const policy = { ...DEFAULT_POLICY, workspaces: [{ label: "w", path: w }] };
     const ctx = { ...d.classifyExtras(), policy, home: s.home, cwd: w };
@@ -338,21 +341,12 @@ describe("chalito run (daemon)", () => {
   it.each([
     ["the copy can't be refreshed", "copy_fails"],
     ["the agent runs from source (dev)", "dev"],
-  ])("keeps hooks on the fixed copy when %s (#132)", async (_label, mode) => {
+  ])("takes old approval hooks out on start when %s", async (_label, mode) => {
     const s = await setup();
     const stable = join(s.home, ".local", "share", "chalito", "chalito-agent");
     mkdirSync(dirname(stable), { recursive: true });
     writeFileSync(stable, "agent v1", { mode: 0o755 });
-    mkdirSync(s.dir, { recursive: true });
-    await new NativeConnectors({
-      home: s.home,
-      dir: s.dir,
-      command: [stable],
-      platform: "linux",
-      available: async () => true,
-      verify: async () => true,
-      onDisconnect: () => undefined,
-    }).set("claude", true, "missing");
+    const { path } = seedOldHooks({ home: s.home, dir: s.dir, provider: "claude", command: [stable] });
     const appDir = join(s.home, ".mount_ChalitNEW");
     const agent = join(appDir, "usr", "bin", "chalito-agent");
     mkdirSync(dirname(agent), { recursive: true });
@@ -364,9 +358,7 @@ describe("chalito run (daemon)", () => {
         ...(mode === "copy_fails" ? { execPath: agent } : {}),
         env: { ...s.deps.env, APPIMAGE: join(s.home, "Chalito.AppImage"), APPDIR: appDir },
       });
-      const settings = readFileSync(join(s.home, ".claude", "settings.json"), "utf8");
-      expect(settings).not.toContain(".mount_Chalit");
-      expect(settings.match(new RegExp(`'${stable}'`, "g"))).toHaveLength(5);
+      expect(readFileSync(path, "utf8")).not.toContain("native-hook");
       await d.stop();
     } finally {
       chmodSync(dirname(stable), 0o700);

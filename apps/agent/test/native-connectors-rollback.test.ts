@@ -1,9 +1,10 @@
 import * as fs from "node:fs";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NativeConnectors } from "../src/native/connectors.js";
+import { seedOldHooks } from "./native-seed.js";
 
 // Only renameSync is wrapped, to fail the exact writes this test names; every other call is the real one.
 vi.mock("node:fs", async (importOriginal) => {
@@ -34,8 +35,12 @@ describe("native connector rollback", () => {
       onDisconnect: () => undefined,
       log: (event, meta) => void logs.push({ event, meta }),
     });
-    const settings = manager.path("codex");
-    writeFileSync(settings, '{"keep":true}');
+    const { path: settings } = seedOldHooks({
+      home,
+      dir: join(home, ".chalito"),
+      provider: "codex",
+      settings: { keep: true },
+    });
     const real = vi.mocked(fs.renameSync).getMockImplementation()!;
     let settingsWrites = 0;
     vi.mocked(fs.renameSync).mockImplementation((from, to) => {
@@ -44,8 +49,9 @@ describe("native connector rollback", () => {
       real(from, to);
     });
     const view = await manager.view("codex");
-    await expect(manager.set("codex", true, view.hash)).rejects.toThrow("state_write_failed_here");
+    await expect(manager.set("codex", false, view.hash)).rejects.toThrow("state_write_failed_here");
     expect(logs).toContainEqual({ event: "native.rollback_failed", meta: { provider: "codex", error: "other" } });
-    expect(readFileSync(settings, "utf8")).toContain("native-hook");
+    // The removal stays written (rollback failed); the next agent start retires whatever is left.
+    expect(readFileSync(settings, "utf8")).not.toContain("native-hook");
   });
 });

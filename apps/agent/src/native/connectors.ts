@@ -39,6 +39,7 @@ export const NATIVE_CONNECTOR_ERRORS = [
   "unsafe_command",
   "cli_unavailable",
   "unstable_path",
+  "retired",
   "other",
 ] as const;
 export type NativeConnectorError = (typeof NATIVE_CONNECTOR_ERRORS)[number];
@@ -194,33 +195,6 @@ export class NativeConnectors {
       );
     });
   }
-  /** Events holding a Chalito hook that matches `pick`. */
-  #chalitoEvents(
-    provider: Provider,
-    data: Record<string, unknown>,
-    pick = (_command: string, _hook: Record<string, unknown>) => true,
-  ): Set<string> {
-    const found = new Set<string>();
-    if (!object(data.hooks)) return found;
-    const hooks = data.hooks;
-    const ours = (event: string, hook: Record<string, unknown>) =>
-      isChalitoHook(provider, event, hook.command) && pick(String(hook.command), hook);
-    for (const event of EVENTS[provider]) {
-      const groups = hooks[event];
-      if (
-        Array.isArray(groups) &&
-        groups.some(
-          (g: unknown) =>
-            object(g) &&
-            (provider === "cursor"
-              ? ours(event, g)
-              : Array.isArray(g.hooks) && g.hooks.some((h: unknown) => object(h) && ours(event, h))),
-        )
-      )
-        found.add(event);
-    }
-    return found;
-  }
   #enabledIn(records: Records, provider: Provider, data: Record<string, unknown>): boolean {
     const record = records.providers[provider];
     return (
@@ -297,10 +271,8 @@ export class NativeConnectors {
 
   async set(provider: Provider, enabled: boolean, expectedHash: string): Promise<void> {
     NativeProvider.parse(provider);
-    if (enabled && this.d.stable === false) throw new Error("unstable_path");
-    if (enabled && !(await this.d.available(provider))) throw new Error("app_unavailable");
-    // Disconnecting never needs the current binary path: old hooks are found by their signature.
-    const commands = enabled ? nativeHookCommands(this.d.command, provider, this.d.platform) : [];
+    // Owner 2026-11-03 — Chalito is a bridge, not a gate: it no longer installs approval hooks, only removes them.
+    if (enabled) throw new Error("retired");
     if (!(await this.d.verify())) throw new Error("os_auth_failed");
     const path = this.path(provider);
     const current = this.#read(path);
@@ -308,21 +280,18 @@ export class NativeConnectors {
     let records: Records;
     try {
       records = this.#records();
-    } catch (error) {
-      if (enabled) throw error;
+    } catch {
       records = { v: 1, providers: {} };
     }
-    this.#apply(provider, path, current, records, enabled ? commands : null);
-    if (!enabled) this.d.onDisconnect(provider);
+    this.#remove(provider, path, current, records);
+    this.d.onDisconnect(provider);
   }
-  /** Swaps Chalito's hooks in the app's settings for `commands` (none: removes them), keeping everything else. */
-  #apply(
+  /** Takes Chalito's hooks (recorded or found by signature) out of the app's settings, keeping everything else. */
+  #remove(
     provider: Provider,
     path: string,
     current: { raw: string | null; data: Record<string, unknown> },
     records: Records,
-    commands: string[] | null,
-    only?: Set<string>,
   ): Records {
     records = structuredClone(records);
     const previous = new Set(records.providers[provider]?.commands ?? []);
@@ -341,20 +310,10 @@ export class NativeConnectors {
         return kept.length ? [{ ...entry, hooks: kept }] : [];
       });
     }
-    if (commands)
-      for (const [index, event] of EVENTS[provider].entries()) {
-        if (only && !only.has(event)) continue;
-        const timeout =
-          event.toLowerCase() === "sessionend" ? 3 : event === "PreToolUse" || event === "preToolUse" ? 600 : 10;
-        // #132 — a hook that cannot run must never lock the app out; a running Chalito denies inside workspaces itself.
-        const hook = { type: "command", command: commands[index], timeout };
-        (hooks[event] as unknown[]).push(provider === "cursor" ? hook : { hooks: [hook] });
-      }
     const next =
       JSON.stringify({ ...current.data, ...(provider === "cursor" ? { version: 1 } : {}), hooks }, null, 2) + "\n";
     if (current.raw !== null) this.#backup(provider, current.raw);
-    if (commands) records.providers[provider] = { commands };
-    else delete records.providers[provider];
+    delete records.providers[provider];
     this.#write(path, next);
     try {
       this.#write(this.#statePath(), JSON.stringify(records, null, 2) + "\n");
@@ -374,46 +333,26 @@ export class NativeConnectors {
     return records;
   }
 
-  // #132 — on agent start: connected apps whose Chalito hooks name an old agent path get the current one.
-  repair(): Provider[] {
+  /** On agent start: takes every Chalito hook out of each app's settings (owner 2026-11-03), keeping the rest. */
+  retire(): Provider[] {
     let records: Records;
     try {
       records = this.#records();
-    } catch (error) {
-      this.d.log?.("native.connector_repair_failed", { error: nativeConnectorErrorCode(error) });
-      return [];
+    } catch {
+      records = { v: 1, providers: {} };
     }
-    const fixed: Provider[] = [];
-    for (const provider of NativeProvider.options) {
-      const record = records.providers[provider];
-      if (!record) continue;
+    const removed: Provider[] = [];
+    for (const provider of NativeProvider.options)
       try {
-        const commands = nativeHookCommands(this.d.command, provider, this.d.platform);
         const path = this.path(provider);
         const current = this.#read(path);
-        const present = this.#chalitoEvents(provider, current.data);
-        // Another binary path, or the old block-on-failure flags (a missing binary locked the app out).
-        const stale =
-          this.#chalitoEvents(
-            provider,
-            current.data,
-            (c, hook) => !commands.includes(c) || "onFailure" in hook || "failClosed" in hook,
-          ).size > 0;
-        // A kill between the two writes leaves current hooks with an old record: heal the record too.
-        const staleRecord = present.size > 0 && record.commands.join("\n") !== commands.join("\n");
-        // Only paths are fixed: hooks taken out by hand, all or some, stay out.
-        if (!stale && !staleRecord) continue;
-        records = this.#apply(provider, path, current, records, commands, present);
-        fixed.push(provider);
-        this.d.log?.("native.connector_repaired", { provider });
+        if (!this.#hasChalitoHooks(provider, current.data)) continue;
+        records = this.#remove(provider, path, current, records);
+        removed.push(provider);
+        this.d.log?.("native.connector_retired", { provider });
       } catch (error) {
-        this.d.log?.("native.connector_repair_failed", {
-          provider,
-          error: nativeConnectorErrorCode(error),
-          errno: (error as NodeJS.ErrnoException).code,
-        });
+        this.d.log?.("native.connector_retire_failed", { provider, error: nativeConnectorErrorCode(error) });
       }
-    }
-    return fixed;
+    return removed;
   }
 }
