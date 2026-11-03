@@ -84,7 +84,12 @@ const harness = async (
   const store = o.store ?? new MemoryStore();
   const trust = new TrustedClientList(agent.id);
   await trust.addConfirmed({ deviceId: phone.id, pubSign: phone.pubSign, pubBox: phone.pubBox }, Date.now());
-  let policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }], ...o.policy };
+  let policy: Policy = {
+    ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
+    workspaces: [{ label: "chalito", path: WS }],
+    ...o.policy,
+  };
   const holder: PolicyHolder = { get: () => policy, set: async (p) => void (policy = p) };
   const liability = loadLiabilityText("es");
   const devMode = new DevMode({
@@ -350,7 +355,7 @@ describe("session lifecycle (M16 A)", () => {
     const sid = (await h.start()).sid!;
     await waitFor(() => h.states(sid).includes("idle"));
     h.clock.advance(31 * MIN);
-    h.setPolicy({ ...DEFAULT_POLICY, workspaces: [] });
+    h.setPolicy({ ...DEFAULT_POLICY, allowEverything: { enabled: false }, workspaces: [] });
     expect(await h.prompt(sid, "sigue")).toMatchObject({ ok: false, reason: "unknown_workspace" });
     expect(h.fake.run.resumed).toEqual([undefined]);
   });

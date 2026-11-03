@@ -4,6 +4,7 @@ import { useT } from "../lib/i18n.js";
 import { Links } from "./Links.js";
 import { remoteScreenOn, remoteTerminalOn } from "../lib/features.js";
 import { RemoteTerminal } from "./RemoteTerminal.js";
+import { AllowEverythingSection } from "./AllowEverything.js";
 import {
   IpcUnavailableError,
   answersComplete,
@@ -504,6 +505,7 @@ export const Security = ({ ipc }: { ipc: AgentIpc }) => {
   return (
     <div className="stack">
       <p className="muted">{t("security.localOnly")}</p>
+      <AllowEverythingSection ipc={ipc} />
       <Policy ipc={ipc} />
       <DevMode ipc={ipc} />
       <Coordinator ipc={ipc} />

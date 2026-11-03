@@ -385,6 +385,7 @@ export class NativeBridge {
       }
       let classifyCwd = actualCwd;
       let unsure = false;
+      let movedOut = false;
       if (this.d.workspaceFor(actualCwd) !== linked.label) {
         const inside = targets.find((t) => this.d.workspaceFor(t) === linked.label)!;
         if (FILE_TOOLS.has(name)) {
@@ -393,8 +394,8 @@ export class NativeBridge {
             if (typeof input[k] === "string") input[k] = resolve(actualCwd, expandHome(input[k], home));
           classifyCwd = this.d.workspaceFor(dirname(inside)) === linked.label ? dirname(inside) : inside;
         } else if (this.d.workspaceFor(linked.cwd) === linked.label) {
-          // A session opened in the workspace may not move its shell out of it.
-          return { ...connection, allow: false, reason: "outside_workspace" };
+          // Judged where it runs: outside any workspace that is a deny, unless allow everything is on.
+          movedOut = true;
         } else {
           // Only an open root (Cursor) is in the workspace: where it runs is unclear, so a human decides.
           classifyCwd = inside;
@@ -424,7 +425,9 @@ export class NativeBridge {
       const ended = this.#sessions.get(key) !== linked;
       if (refusal || ended || abort.signal.aborted)
         return { ...connection, allow: false, reason: refusal ?? (ended ? "session_ended" : outcome.reason) };
-      return { ...connection, allow: outcome.allow, reason: outcome.reason };
+      // A session opened in the workspace may not move its shell out of it.
+      const reason = movedOut && outcome.reason === "no_workspace" ? "outside_workspace" : outcome.reason;
+      return { ...connection, allow: outcome.allow, reason };
     } finally {
       signal.removeEventListener("abort", cancel);
       linked.pending.delete(abort);

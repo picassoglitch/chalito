@@ -73,7 +73,12 @@ describe.skipIf(!LOCAL)("AgentCore over Supabase (local stack, real RLS)", () =>
       { deviceId: phoneId, pubSign: await toB64url(phoneSign.publicKey), pubBox: await toB64url(phoneBox.publicKey) },
       Date.now(),
     );
-    const policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "chalito", path: WS }] };
+    // This test is about the approval flow, so allow everything is off.
+    const policy: Policy = {
+      ...DEFAULT_POLICY,
+      allowEverything: { enabled: false },
+      workspaces: [{ label: "chalito", path: WS }],
+    };
     const fake = fakeClaudeCode([[{ tool: "Edit", input: { file_path: `${WS}/src/a.ts` } }]]);
     // Every channel status (and any Realtime error) goes into the failure message of each wait.
     const realtimeLog: string[] = [];

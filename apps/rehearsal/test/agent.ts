@@ -32,7 +32,11 @@ export const startAgent = async (o: {
   trust: TrustedClientList;
   adapters?: ConstructorParameters<typeof AgentCore>[0]["adapters"];
 }) => {
-  const policy: Policy = { ...DEFAULT_POLICY, workspaces: [{ label: "app", path: WS }] };
+  const policy: Policy = {
+    ...DEFAULT_POLICY,
+    allowEverything: { enabled: false },
+    workspaces: [{ label: "app", path: WS }],
+  };
   const realtime: string[] = [];
   const log = createLogger((l) => {
     const j = JSON.parse(l) as { msg: string; status?: string };

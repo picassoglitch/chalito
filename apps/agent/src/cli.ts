@@ -34,6 +34,7 @@ import { LINKS_INSTRUCTIONS, LINKS_SERVER, linkMcpTools } from "./links/tools.js
 import { MAC_PERMISSION_HINT, WAYLAND_MESSAGE, isWayland } from "./computer/native.js";
 import { disableComputer, enableComputer, type ComputerPrompter } from "./computer/toggle.js";
 import { coordinatorCeiling, disableCoordinator, enableCoordinator } from "./coord/toggle.js";
+import { allowEverythingOn, disableAllowEverything, enableAllowEverything } from "./allow-everything.js";
 import { appsCli } from "./apps/cli.js";
 import {
   disableRawShell,
@@ -65,7 +66,13 @@ import { osAuthFor, type StatFn } from "./os-auth.js";
 import { runPair } from "./pair.js";
 import { runPairingHost } from "./pairing-host.js";
 import { FilePolicyHolder, parsePolicyYaml, policyToYaml } from "./policy-file.js";
-import { appsTighterOrEqual, coordinatorTighterOrEqual, isTighterOrEqual, policyHash } from "./policy/index.js";
+import {
+  allowEverythingTighterOrEqual,
+  appsTighterOrEqual,
+  coordinatorTighterOrEqual,
+  isTighterOrEqual,
+  policyHash,
+} from "./policy/index.js";
 import { spawnRunner, which, type ProcessRunner } from "./runner.js";
 import { openSecretStore, passphraseFileProblem } from "./secret-choice.js";
 import { KeyringUnavailableError, SECRET_NAMES, type SecretStore } from "./secrets.js";
@@ -134,6 +141,8 @@ const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
                                        mouse and keyboard (enable: local only, OS auth + confirmations)
   coordinator enable|disable|status    coordinator mode: let Chalito answer your helper agents'
                                        routine prompts here (enable: local only, OS auth + confirmation)
+  allow-everything on|off|status       approve every action from every AI without asking (on by
+                                       default; on: local only, OS auth + confirmation)
   apps list                            the AI apps this computer knows (curated and your own)
   apps custom list|enable <id>|disable <id>
                                        your own recipes (~/.chalito/recipes); enable: local only,
@@ -212,6 +221,17 @@ const T = {
       kinds.length ? `Modo coordinador: activado (${kinds.join(", ")}).\n` : "Modo coordinador: desactivado.\n",
     coordinatorNotInPolicyEdit:
       "El modo coordinador no se activa editando la política. Usa `chalito coordinator enable`.\n",
+    allowEverythingContinue: "¿Activar «Aprobar todo»? [s/N] ",
+    allowEverythingOn: "«Aprobar todo» activado. Chalito ya no te pregunta nada.\n",
+    allowEverythingAlready: "«Aprobar todo» ya está activado.\n",
+    allowEverythingOff: "«Aprobar todo» desactivado. Chalito vuelve a preguntarte.\n",
+    allowEverythingWasOff: "«Aprobar todo» ya estaba desactivado.\n",
+    allowEverythingStatus: (on: boolean) =>
+      on
+        ? "Aprobar todo: activado. Chalito aprueba todas las acciones de todas las IA sin preguntar.\n"
+        : "Aprobar todo: desactivado.\n",
+    allowEverythingNotInPolicyEdit:
+      "«Aprobar todo» no se activa editando la política. Usa `chalito allow-everything on`.\n",
     customNotInPolicyEdit:
       "Una receta personalizada no se activa editando la política. Usa `chalito apps custom enable <id>`.\n",
     appSessionsNotInPolicyEdit:
@@ -337,6 +357,17 @@ const T = {
       kinds.length ? `Coordinator mode: on (${kinds.join(", ")}).\n` : "Coordinator mode: off.\n",
     coordinatorNotInPolicyEdit:
       "Coordinator mode isn't turned on by editing the policy. Use `chalito coordinator enable`.\n",
+    allowEverythingContinue: "Turn on Allow everything? [y/N] ",
+    allowEverythingOn: "Allow everything is on. Chalito no longer asks you anything.\n",
+    allowEverythingAlready: "Allow everything is already on.\n",
+    allowEverythingOff: "Allow everything is off. Chalito asks you again.\n",
+    allowEverythingWasOff: "Allow everything was already off.\n",
+    allowEverythingStatus: (on: boolean) =>
+      on
+        ? "Allow everything: on. Chalito approves every action from every AI without asking.\n"
+        : "Allow everything: off.\n",
+    allowEverythingNotInPolicyEdit:
+      "Allow everything isn't turned on by editing the policy. Use `chalito allow-everything on`.\n",
     customNotInPolicyEdit:
       "A custom recipe isn't turned on by editing the policy. Use `chalito apps custom enable <id>`.\n",
     appSessionsNotInPolicyEdit:
@@ -731,6 +762,7 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
     (cmd === "policy" && sub === "edit") ||
     (cmd === "computer" && sub !== "status") ||
     (cmd === "coordinator" && sub !== "status") ||
+    (cmd === "allow-everything" && sub !== "status") ||
     (cmd === "terminal" && sub !== "status") ||
     (cmd === "screen" && sub !== "status");
   if (mutating) {
@@ -888,6 +920,9 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
 
       case "coordinator":
         return await coordinator(io, dir, locale, sub);
+
+      case "allow-everything":
+        return await allowEverything(io, dir, locale, sub);
 
       case "apps":
         return await appsCli(io, dir, locale, positional.slice(1));
@@ -1243,6 +1278,57 @@ const coordinator = async (io: CliIo, dir: string, locale: "es" | "en", sub?: st
   }
 };
 
+const allowEverything = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string) => {
+  const t = T[locale];
+  const id = await loadOrCreateIdentity(io.secrets!);
+  const holder = new FilePolicyHolder(dir, id.sign, { anchor: await new AnchorStore(io.secrets!).load() });
+  // The running daemon sees the policy change and reports it.
+  const emit = () => undefined;
+  if (sub === "status") {
+    io.out(t.allowEverythingStatus(allowEverythingOn(holder.get())));
+    return 0;
+  }
+  if (sub === "off") {
+    io.out(
+      (await disableAllowEverything({ policy: holder, emit }, "cli")) ? t.allowEverythingOff : t.allowEverythingWasOff,
+    );
+    return 0;
+  }
+  if (sub !== "on") {
+    io.err(USAGE);
+    return 1;
+  }
+  const reader = new LineReader(io.tty);
+  try {
+    const res = await enableAllowEverything({
+      policy: holder,
+      osAuth: osAuthFor(io.platform, io.runner, (m) => io.err(`${m}\n`), locale, io.osStat),
+      prompter: {
+        confirm: async (warning) => {
+          io.out(`\n!!  ${warning}  !!\n`);
+          return isYes(await reader.ask(t.allowEverythingContinue));
+        },
+      },
+      locale,
+      emit,
+    });
+    if (!res.ok) {
+      io.err(
+        res.reason === "already_on"
+          ? t.allowEverythingAlready
+          : res.reason === "os_auth_failed"
+            ? t.authFailed
+            : t.cancelled,
+      );
+      return res.reason === "already_on" ? 0 : 1;
+    }
+    io.out(t.allowEverythingOn);
+    return 0;
+  } finally {
+    reader.close();
+  }
+};
+
 const terminal = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string, arg?: string) => {
   const t = T[locale];
   const id = await loadOrCreateIdentity(io.secrets!);
@@ -1427,6 +1513,11 @@ const policy = async (io: CliIo, dir: string, locale: "es" | "en", sub?: string)
     // Only `chalito coordinator enable` turns coordinator mode on or widens what it answers.
     if (!coordinatorTighterOrEqual(parsed.policy.coordinator, holder.get().coordinator)) {
       io.err(t.coordinatorNotInPolicyEdit);
+      return 1;
+    }
+    // Only `chalito allow-everything on` turns it back on (OS auth + warning).
+    if (!allowEverythingTighterOrEqual(parsed.policy.allowEverything, holder.get().allowEverything)) {
+      io.err(t.allowEverythingNotInPolicyEdit);
       return 1;
     }
     // Only `chalito apps custom enable` turns a custom recipe on (OS auth + review of what it runs).

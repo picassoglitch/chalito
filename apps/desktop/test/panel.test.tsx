@@ -93,6 +93,7 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
   };
   let terminal: TerminalStatus = { enabled: false, rawShell: false, active: [], pending: [] };
   let coordinatorKinds: string[] = [];
+  let allowEverything = true;
   let scr: ScreenStatus = {
     view: false,
     control: false,
@@ -181,6 +182,16 @@ const fakeIpc = (over: Partial<AgentIpc> = {}): AgentIpc & { calls: unknown[][] 
     disableCoordinator: async () => {
       calls.push(["disableCoordinator"]);
       coordinatorKinds = [];
+    },
+    allowEverythingStatus: async () => ({ on: allowEverything, warning: "w" }),
+    enableAllowEverything: async (answers) => {
+      calls.push(["enableAllowEverything", answers]);
+      allowEverything = true;
+      return { ok: true };
+    },
+    disableAllowEverything: async () => {
+      calls.push(["disableAllowEverything"]);
+      allowEverything = false;
     },
     computerChallenge: async () => ({
       examples: ["Ver todo lo que hay en tu pantalla"],
@@ -371,6 +382,38 @@ describe("panel: local-only security screens", () => {
     fireEvent.click(container.querySelector('[data-coordinator="on"] button')!);
     await waitFor(() => expect(container.querySelector('[data-coordinator="off"]')).not.toBeNull());
     expect(ipc.calls).toContainEqual(["disableCoordinator"]);
+  });
+
+  it("allow everything (owner 2026-11-02): banner on every tab while on; off in one click; on again after the warning", async () => {
+    const ipc = fakeIpc();
+    const { container } = renderPanel({ initialTab: "inbox", ipc }, "en");
+    expect(
+      await screen.findByText("Allow everything is on: Chalito approves every action from every AI without asking."),
+    ).toBeTruthy();
+    fireEvent.click(container.querySelector('[data-allow-everything="on"] button')!);
+    await waitFor(() => expect(container.querySelector('[data-allow-everything="on"]')).toBeNull());
+    expect(ipc.calls).toContainEqual(["disableAllowEverything"]);
+  });
+
+  it("allow everything: the Security tab shows the warning and asks before turning it back on", async () => {
+    const ipc = fakeIpc();
+    await ipc.disableAllowEverything();
+    const { container } = renderPanel({ initialTab: "security", ipc }, "es");
+    const off = await waitFor(() => {
+      const el = container.querySelector('section [data-allow-everything="off"] button');
+      if (!el) throw new Error("not yet");
+      return el;
+    });
+    expect(
+      screen.getByText(
+        "Chalito aprobará todas las acciones de todas las IA sin preguntarte. Tú eres responsable de lo que hagan.",
+      ),
+    ).toBeTruthy();
+    fireEvent.click(off);
+    expect(ipc.calls).not.toContainEqual(["enableAllowEverything", { confirm: true }]);
+    fireEvent.click(screen.getByText("Entiendo, activarlo"));
+    await waitFor(() => expect(container.querySelector('section [data-allow-everything="on"]')).not.toBeNull());
+    expect(ipc.calls).toContainEqual(["enableAllowEverything", { confirm: true }]);
   });
 
   it("remote terminal and raw shell are not rendered while the build flag is off (the default)", async () => {

@@ -47,6 +47,7 @@ import { Coordinator, nodeGit, type CoordHost, type GitRun } from "./coord/coord
 import { coordAnswer } from "./coord/gate.js";
 import { CoordRules, type CoordTombstones } from "./coord/rules.js";
 import { coordinatorCeiling } from "./coord/toggle.js";
+import { allowEverythingOn } from "./allow-everything.js";
 import { publicReason } from "./command-result.js";
 import type { ComputerApprovalOutcome, ComputerControl } from "./computer/control.js";
 import { COMPUTER_TOOL_PREFIX, ToolArgs, isToolName } from "./computer/tools.js";
@@ -1915,12 +1916,14 @@ export class AgentCore {
         originAllowed: originAllowed(policy.origins, call.origin),
         devMode: linkTool ? DEVMODE_OFF : this.d.devMode.state,
         permissionMode: s.permissionMode,
+        allowEverything: allowEverythingOn(policy),
       });
       // R-M10: the same sanitised, explicitly-truncated summary the approval shows.
       const summary = approvalSummary(call.toolName, call.input).summary;
       // An ACP agent's link call is named from its own report, as for computer control: asked
       // about every time (HIGH, step-up), even link_list, never allowed as a read.
-      if (linkTool && ACP_KINDS.has(s.adapter) && decision.action !== "deny") {
+      const everything = decision.action === "allow" && decision.via === "allow_everything";
+      if (linkTool && ACP_KINDS.has(s.adapter) && decision.action !== "deny" && !everything) {
         const outcome = await this.#approve(s, {
           risk: "HIGH",
           stepUp: true,
@@ -1931,6 +1934,8 @@ export class AgentCore {
         return outcome.allow ? allowed() : { allow: false, reason: outcome.reason };
       }
       if (decision.action === "allow") {
+        if (everything)
+          this.#auditAllowEverything({ sid: s.sid, origin: call.origin, toolName: call.toolName, classification });
         s.card.action(summary);
         if (classification.workspaceEdit) s.card.fileTouched(String(call.input.file_path ?? ""));
         return allowed();
@@ -2107,7 +2112,9 @@ export class AgentCore {
   /** The checks every native-app call passes before any classification: device live, CLI origin on. */
   nativeAllowed(): { allow: true } | { allow: false; reason: string } {
     if (this.#revoked) return { allow: false, reason: "unavailable" };
-    if (!originAllowed(this.d.policy.get().origins, "local:cli")) return { allow: false, reason: "origin_disabled" };
+    const policy = this.d.policy.get();
+    if (!allowEverythingOn(policy) && !originAllowed(policy.origins, "local:cli"))
+      return { allow: false, reason: "origin_disabled" };
     return { allow: true };
   }
 
@@ -2134,8 +2141,14 @@ export class AgentCore {
       originAllowed: originAllowed(policy.origins, "local:cli"),
       devMode: DEVMODE_OFF,
       permissionMode: "default",
+      allowEverything: allowEverythingOn(policy),
     });
     if (decision.action === "deny") return { allow: false, reason: decision.reason };
+    // Owner 2026-11-02 — allow everything: even the app's own permission prompts get a yes.
+    if (decision.action === "allow" && decision.via === "allow_everything") {
+      this.#auditAllowEverything({ sid: input.sid, origin: "local:cli", toolName: input.toolName, classification });
+      return { allow: true, reason: "allow_everything" };
+    }
     if (!input.forcePrompt && classification.readOnly && decision.action === "allow")
       return { allow: true, reason: "policy_read" };
     const risk = classification.tier === "LOW" ? "MED" : classification.tier;
@@ -2186,8 +2199,13 @@ export class AgentCore {
       originAllowed: originAllowed(policy.origins, "local:cli"),
       devMode: DEVMODE_OFF,
       permissionMode: "default",
+      allowEverything: allowEverythingOn(policy),
     });
     if (decision.action === "deny") return { allow: false, reason: decision.reason };
+    if (decision.action === "allow" && decision.via === "allow_everything") {
+      this.#auditAllowEverything({ sid: input.sid, origin: "local:cli", toolName: input.toolName, classification });
+      return { allow: true, reason: "allow_everything" };
+    }
     if (classification.readOnly && decision.action === "allow") return { allow: true, reason: "policy_read" };
     const risk = classification.tier === "LOW" ? "MED" : classification.tier;
     return this.#requestApproval({
@@ -2496,6 +2514,19 @@ export class AgentCore {
   }
 
   /** Logs and writes the durable audit trail (fire-and-forget; a failed write is logged, never thrown). */
+  /** Every call the switch let through, so the activity log still shows what ran. */
+  #auditAllowEverything(i: { sid: string; origin: Origin; toolName: string; classification: Classification }): void {
+    this.#audit("gate.allow_everything", {
+      sid: i.sid,
+      origin: i.origin,
+      toolName: i.toolName,
+      tier: i.classification.tier,
+      ...(i.classification.hardFloor ? { hardFloor: true } : {}),
+      ...(i.classification.fenced ? { fenced: true } : {}),
+      ...(i.classification.noWorkspace ? { noWorkspace: true } : {}),
+    });
+  }
+
   #audit(type: string, meta: Record<string, unknown>): void {
     this.d.log.warn(type, meta);
     void this.d.store

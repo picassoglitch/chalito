@@ -839,7 +839,8 @@ describe("fences inside a home-folder workspace: nothing answers for the human",
       via: "coordinator_auto",
       kind: "read",
     });
-  });
+    // It builds a 20k-entry git dir: slow on shared CI runners.
+  }, 30_000);
 
   it("git's HEAD and commondir are checked the way git checks them", () => {
     const d = makeHome();
