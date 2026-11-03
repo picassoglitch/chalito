@@ -16,6 +16,8 @@ const Join = z
     cwd: z.string().max(4096).refine(isAbsolute),
     /** The id this process had before its connection dropped; kept if it left recently. */
     resume: z.string().uuid().optional(),
+    /** The responder run that started this process (CHALITO_TEAM_RUN). */
+    run: z.string().uuid().optional(),
   })
   .strict();
 const Send = z
@@ -48,6 +50,8 @@ interface Peer {
   pushes: number[];
   /** Joined while its app's CLI was running here: most likely that CLI, so its requests start no CLI. */
   spawned: boolean;
+  /** Its last push failed: it can't be counted on to wake until one succeeds. */
+  failing: boolean;
 }
 
 /** Wake pacing per peer: bursts coalesce into one push, and two AIs answering each other cannot spin. */
@@ -135,6 +139,14 @@ export class TeamHub {
     this.#retryHeld(peer.workspace, peer.provider);
   }
 
+  /** The CLI's own team server says its run id; a CLI that doesn't pass env is matched by folder and time. */
+  #isRun(workspace: string, provider: string, cwd: string, run?: string) {
+    const r = this.#running.get(`${workspace}\u0000${provider}`);
+    if (!r) return false;
+    if (run) return run === r.run;
+    return cwd === r.cwd && this.now() - r.at < 60_000;
+  }
+
   #retryHeld(workspace: string, provider: string) {
     const first = this.#messages.find(
       (m) => m.workspace === workspace && m.toProvider === provider && held(m) && m.kind === "request" && m.cwd,
@@ -157,7 +169,8 @@ export class TeamHub {
     for (const m of messages) if (m.toProvider) m.taken = true;
   }
 
-  #running = new Set<string>();
+  /** Responder runs in progress, by workspace + app. */
+  #running = new Map<string, { run: string; cwd: string; at: number }>();
   #runs = new Map<string, number[]>();
 
   /** No session of the app can be woken: hand its waiting requests to its CLI for one turn. */
@@ -167,9 +180,10 @@ export class TeamHub {
     // Trust can be revoked while a request waits: checked on every path that starts a CLI.
     if (!r || this.#running.has(key) || !this.trusted(provider, cwd) || !r.has(provider)) return;
     const live = [...this.#peers.values()].filter((p) => p.workspace === workspace && p.provider === provider);
-    if (live.some((p) => p.delivery.canWake)) return;
+    if (live.some((p) => p.delivery.canWake && !p.failing)) return;
     const all = this.#messages.filter((m) => m.workspace === workspace && m.toProvider === provider && held(m));
-    if (!all.some((m) => m.kind === "request")) return;
+    // Only a request from a session the user runs starts a CLI (one Chalito started has no cwd).
+    if (!all.some((m) => m.kind === "request" && m.cwd)) return;
     // What doesn't fit in one prompt waits for the next turn.
     let size = 0;
     const waiting = all.filter((m, i) => (size += m.text.length) <= PROMPT_BUDGET || i === 0);
@@ -182,10 +196,10 @@ export class TeamHub {
     runs.push(this.now());
     this.#runs.set(workspace, runs);
     for (const m of waiting) m.taken = true;
-    this.#running.add(key);
     const runId = randomUUID();
+    this.#running.set(key, { run: runId, cwd, at: this.now() });
     this.opts.audit?.("team.responder_started", { workspace, provider, run: runId, seqs: waiting.map((m) => m.seq) });
-    const job: ResponderJob = { provider, workspace, cwd, messages: waiting.map(view) };
+    const job: ResponderJob = { run: runId, provider, workspace, cwd, messages: waiting.map(view) };
     void r
       .run(job)
       .catch((e: unknown) => `(${provider} could not answer: ${e instanceof Error ? e.message : "error"})`)
@@ -193,7 +207,13 @@ export class TeamHub {
         this.#running.delete(key);
         this.opts.audit?.("team.responder_finished", { workspace, provider, run: runId, answered: !!answer });
         // Its CLI went away: the messages wait for a session of the app instead.
-        if (answer === null) for (const m of waiting) m.taken = false;
+        if (answer === null) {
+          for (const m of waiting) {
+            m.taken = false;
+            if (!this.#messages.includes(m)) this.#messages.push(m);
+          }
+          this.#messages.sort((x, y) => x.seq - y.seq);
+        }
         if (answer) for (const sender of new Set(waiting.map((m) => m.from))) this.#reply(runId, job, sender, answer);
         // Requests that arrived while it ran get their own turn.
         this.#respond(workspace, provider, cwd);
@@ -288,6 +308,7 @@ export class TeamHub {
     });
     // A failed attempt still counts against pacing, so a broken adapter retries slowly instead of spinning.
     peer.pushes.push(this.now());
+    peer.failing = !ok;
     if (!ok) this.#retryHeld(peer.workspace, peer.provider);
     if (ok) {
       peer.cursor = batch.more
@@ -344,7 +365,8 @@ export class TeamHub {
           link,
           delivery: pull,
           pushes: [],
-          spawned: this.#running.has(`${workspace}\u0000${p.data.provider}`),
+          spawned: this.#isRun(workspace, p.data.provider, p.data.cwd, p.data.run),
+          failing: false,
         };
         this.#peers.set(signal, peer);
         signal.addEventListener(

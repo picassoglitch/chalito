@@ -227,6 +227,56 @@ describe("each message to an app is handled once", () => {
     spawned.abort();
   });
 
+  it("a session whose pushes fail doesn't hold up the request: the CLI answers it", async () => {
+    const { responder } = stub();
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, {
+      responder,
+      pacing: { debounceMs: 5, minGapMs: 0 },
+      chain: [{ id: "t", select: () => ({ id: "t", canWake: true, deliver: () => false }) }],
+    });
+    const a = new AbortController(),
+      b = new AbortController();
+    join_(hub, a.signal, "claude");
+    join_(hub, b.signal, "codex");
+    call(hub, b.signal, "team_client", { experimental: [] });
+    call(hub, a.signal, "team_send", { to: "codex", kind: "request", text: "hello?" });
+    await vi.waitFor(() => expect(responder.run).toHaveBeenCalledOnce());
+    a.abort();
+    b.abort();
+  });
+
+  it("the CLI's own session is known by its run id; a session the user opens meanwhile is not", async () => {
+    let finish: (v: string) => void = () => undefined;
+    const jobs: ResponderJob[] = [];
+    const responder = {
+      has: () => true,
+      run: vi.fn((j: ResponderJob) => (jobs.push(j), new Promise<string>((r) => (finish = r)))),
+    };
+    const hub = new TeamHub(workspaceFor, Date.now, () => true, { responder });
+    const a = new AbortController();
+    join_(hub, a.signal, "claude");
+    call(hub, a.signal, "team_send", { to: "codex", kind: "request", text: "one" });
+    await vi.waitFor(() => expect(responder.run).toHaveBeenCalledOnce());
+    // The CLI's session asks its own app: that never starts another run.
+    const cli = new AbortController();
+    hub.call(cli.signal, "team_join", { provider: "codex", cwd: "/project", run: jobs[0]!.run });
+    call(hub, cli.signal, "team_send", { to: "codex", kind: "request", text: "self" });
+    // A codex session the user opened (another run id or none) still can.
+    const user = new AbortController();
+    hub.call(user.signal, "team_join", {
+      provider: "codex",
+      cwd: "/project",
+      run: "11111111-1111-4111-8111-111111111111",
+    });
+    call(hub, user.signal, "team_send", { to: "cursor", kind: "request", text: "from the user's codex" });
+    await vi.waitFor(() => expect(responder.run).toHaveBeenCalledTimes(2));
+    expect(jobs[1]).toMatchObject({ provider: "cursor" });
+    finish("ok");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(jobs.filter((j) => j.provider === "codex")).toHaveLength(1);
+    for (const x of [a, cli, user]) x.abort();
+  });
+
   it("big batches are split across turns instead of failing to start the CLI", async () => {
     const { jobs, responder } = stub();
     const hub = new TeamHub(workspaceFor, Date.now, () => true, {
@@ -253,6 +303,7 @@ describe("CommandResponder runs a real CLI", () => {
     return new CommandResponder({ home: dir, chalitoDir: dir, path: process.env.PATH });
   };
   const job: ResponderJob = {
+    run: "00000000-0000-4000-8000-000000000000",
     provider: "echo",
     workspace: "w",
     cwd: tmpdir(),

@@ -6,6 +6,8 @@ import type { TeamMessage } from "./delivery/types.js";
 
 /** One turn for an app that no open session can take: its CLI answers the waiting messages. */
 export interface ResponderJob {
+  /** Passed as CHALITO_TEAM_RUN, so the CLI's own team server is known as this run. */
+  run: string;
   provider: string;
   workspace: string;
   cwd: string;
@@ -133,7 +135,7 @@ export class CommandResponder {
     const prompt = responderPrompt(job);
     const args = argv.slice(1).map((a) => a.split(PROMPT).join(prompt));
     // Its own folder first: npm CLIs start with `#!/usr/bin/env node`.
-    const env = { ...process.env, PATH: [dirname(bin), ...this.#dirs()].join(delimiter) };
+    const env = { ...process.env, PATH: [dirname(bin), ...this.#dirs()].join(delimiter), CHALITO_TEAM_RUN: job.run };
     return new Promise((resolve) => {
       const posix = (this.o.platform ?? process.platform) !== "win32";
       // Its own process group, so a timeout also stops what the CLI started.

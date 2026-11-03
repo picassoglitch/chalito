@@ -112,6 +112,8 @@ export const runTeamMcp = async (
     /** Whether the launching client loaded this server as a channel; default reads its command line. */
     channelLoaded?: () => boolean;
     retryMs?: readonly number[];
+    /** Set when Chalito started this app's CLI to answer a request (CHALITO_TEAM_RUN). */
+    run?: string | undefined;
   },
   path: string | null,
   provider: string,
@@ -212,7 +214,12 @@ export const runTeamMcp = async (
     );
   };
   const join = async (link: Link) => {
-    const joined = await link.call("team_join", { provider, cwd, ...(self ? { resume: self } : {}) });
+    const joined = await link.call("team_join", {
+      provider,
+      cwd,
+      ...(self ? { resume: self } : {}),
+      ...(io.run ? { run: io.run } : {}),
+    });
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
     self = (joined.result as { self?: string } | undefined)?.self ?? null;
     if (client) await declare(link, client);
