@@ -418,7 +418,16 @@ export class TeamHub {
     if (action === "team_client") {
       const p = ClientDeclaration.safeParse(raw);
       if (!p.success) return { ok: false, error: "bad_params" };
+      const before = peer.delivery;
       peer.delivery = selectDelivery({ provider: peer.provider, client: p.data, link: peer.link }, this.opts.chain);
+      // Its push route changed (helper gone, thread conflict): what it held is free for another session or its CLI.
+      if (before.ackOnRead && before.id !== peer.delivery.id) {
+        peer.pushed.clear();
+        for (const m of this.#messages) if (m.reservedFor === peer.id) delete m.reservedFor;
+        peer.failing = false;
+        this.#wakeApp(peer.workspace, peer.provider);
+        this.#retryHeld(peer.workspace, peer.provider);
+      }
       this.opts.audit?.("team.delivery_selected", {
         peer: peer.id,
         provider: peer.provider,

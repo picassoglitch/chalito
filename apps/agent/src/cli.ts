@@ -3,6 +3,7 @@ import { redactError } from "./redact.js";
 import { runCode } from "./code/cli.js";
 import { NativeProvider, nativeHookEvent, nativeHookOutput } from "./native/protocol.js";
 import { runTeamMcp } from "./team/mcp.js";
+import { findSessionInbox, inboxPath, runTeamWatch } from "./team/inbox.js";
 import { stableAgentPath } from "./native/stable-bin.js";
 import { TeamProvider } from "./team/hub.js";
 import { codePath } from "./code/server.js";
@@ -118,6 +119,7 @@ const usageText = (screenOn: boolean, terminalOn: boolean) => `chalito <command>
   run                                  run the agent (the OS service does this)
   team mcp <app-id> [workspace-path]
                                        automatic messaging between AI sessions in the same workspace
+  team watch [claude-pid]              stream a Claude Code session's team messages (used by the Chalito mod)
   team config <app-id> [workspace-path]
                                        print the MCP launch configuration for an AI app
   code <claude|codex|gemini|grok|app> [--workspace <label>] [--mode default|plan|acceptEdits] [prompt]
@@ -637,6 +639,22 @@ export const main = async (argv: string[], io: CliIo = defaultIo()): Promise<num
           "Without it, messages wait for team_read.\n",
       );
     return 0;
+  }
+
+  // The Chalito mod for Claude Code runs this to receive its session's pushed messages (no launch flag needed).
+  if (cmd === "team" && sub === "watch") {
+    const pid = arg === undefined ? null : Number(arg);
+    if ((pid !== null && (!Number.isInteger(pid) || pid <= 1)) || io.platform === "win32") {
+      io.err("Usage: chalito team watch [claude-pid]   (Linux and macOS)\n");
+      return 2;
+    }
+    // No pid: the Claude Code session this command runs under, however many processes deep (a mod's worker).
+    const path = pid !== null ? inboxPath(dir, "claude", pid) : findSessionInbox(dir);
+    if (!path) {
+      io.err("chalito team watch: no Chalito team server in this Claude Code session yet.\n");
+      return 3;
+    }
+    return runTeamWatch(path, io.out, io.err);
   }
 
   if (cmd === "team" && sub === "mcp") {

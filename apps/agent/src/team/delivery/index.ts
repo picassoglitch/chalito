@@ -1,5 +1,6 @@
 import { appServer } from "./app-server.js";
 import { codexQueue } from "./codex-queue.js";
+import { inbox } from "./inbox.js";
 import { mcpChannel } from "./mcp-channel.js";
 import { pull } from "./pull.js";
 import type { DeliveryAdapter, DeliveryContext, DeliveryFactory } from "./types.js";
@@ -7,7 +8,7 @@ import type { DeliveryAdapter, DeliveryContext, DeliveryFactory } from "./types.
 export type { DeliveryAdapter, DeliveryFactory, DeliveryContext, TeamBatch, TeamMessage } from "./types.js";
 
 // First match wins, pull last. command, acp and a2a slot in here later (docs/AI_TEAM.md).
-export const DEFAULT_CHAIN: readonly DeliveryFactory[] = [appServer(), codexQueue, mcpChannel];
+export const DEFAULT_CHAIN: readonly DeliveryFactory[] = [appServer(), codexQueue, mcpChannel, inbox];
 
 export const selectDelivery = (
   ctx: DeliveryContext,

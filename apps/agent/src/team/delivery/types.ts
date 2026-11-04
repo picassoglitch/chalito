@@ -51,6 +51,8 @@ export const ClientDeclaration = z
     channel: z.boolean().default(false),
     /** The Codex thread this session runs in, as Codex itself reported it; enables `codex queue` delivery. */
     codexThread: z.string().uuid().optional(),
+    /** A Chalito mod in this Claude Code session is connected to its inbox and can start turns. */
+    inbox: z.boolean().optional(),
   })
   .strict();
 export type ClientDeclaration = z.infer<typeof ClientDeclaration>;

@@ -1,11 +1,15 @@
 import { connect } from "node:net";
+import { join as joinPath } from "node:path";
 import type { Duplex } from "node:stream";
 import { openRpc } from "../code/cli.js";
 import { runMcpServer, type McpServerInfo } from "../computer/mcp-server.js";
 import { z } from "zod";
 import { TeamProvider } from "./hub.js";
 import { argvLoadsChannel, CHANNEL_CAPABILITY, channelNotifications, parentArgv } from "./delivery/mcp-channel.js";
+import { INBOX } from "./delivery/inbox.js";
+import { inboxPath as defaultInboxPath, openInbox, type Inbox } from "./inbox.js";
 import {
+  batchText,
   CODEX_QUEUE,
   codexThreadFrom,
   envThread,
@@ -133,6 +137,8 @@ export const runTeamMcp = async (
     home?: string | undefined;
     /** How often an untrusted app or folder re-checks with Chalito (default 15 s; tests). */
     waitingRetryMs?: number;
+    /** Claude only: the session inbox socket a Chalito mod connects to; null turns it off (default: ~/.chalito). */
+    inboxPath?: string | null;
     /** Codex only: CODEX_THREAD_ID as this process received it. */
     codexThread?: string | undefined;
     /** Codex only: CHALITO_TEAM_CODEX_QUEUE=1 turns on `codex queue` delivery. */
@@ -175,10 +181,17 @@ export const runTeamMcp = async (
     if (readSeqs.size > 1024) readSeqs.delete(readSeqs.values().next().value!);
   };
   let queueing = Promise.resolve();
+  // Claude: a Chalito mod in this Claude Code session connects to the inbox and submits pushed messages as a
+  // turn once the session is idle. No launch flag or warning screen; connected is the only liveness signal.
+  let inbox: Inbox | null = null;
   const redeclare = () => {
     if (!client) return;
-    const { codexThread: _old, ...rest } = client;
-    client = { ...rest, ...(thread && !queueOff ? { codexThread: thread } : {}) };
+    const { codexThread: _old, inbox: _i, ...rest } = client;
+    client = {
+      ...rest,
+      ...(thread && !queueOff ? { codexThread: thread } : {}),
+      ...(inbox?.connected ? { inbox: true } : {}),
+    };
     if (link) void declare(link, client);
   };
   const switchOff = (why: string) => {
@@ -237,10 +250,24 @@ export const runTeamMcp = async (
         );
       });
   };
+  const deliverInbox = (batch: TeamBatch) => {
+    const read = batch.messages.filter((m) => readSeqs.has(m.seq)).map((m) => m.seq);
+    report(read, true);
+    const fresh = batch.messages.filter((m) => !readSeqs.has(m.seq));
+    if (!fresh.length) return;
+    const seqs = fresh.map((m) => m.seq);
+    const ok = !!inbox?.send({ seqs, text: batchText({ ...batch, messages: fresh }) });
+    if (ok) for (const seq of seqs) queuedSeqs.add(seq);
+    report(seqs, ok);
+  };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;
     const f = Frame.safeParse(raw);
     const adapter = f.success ? f.data.teamDelivery.adapter : "";
+    if (f.success && adapter === INBOX && inbox) {
+      deliverInbox(f.data.teamDelivery.batch);
+      return;
+    }
     if (f.success && adapter === CODEX_QUEUE && codexOn) {
       enqueue(f.data.teamDelivery.batch);
       return;
@@ -388,6 +415,22 @@ export const runTeamMcp = async (
     }
   }
 
+  const where =
+    io.inboxPath !== undefined
+      ? io.inboxPath
+      : io.home && (io.platform ?? process.platform) !== "win32"
+        ? defaultInboxPath(joinPath(io.home, ".chalito"), provider, process.ppid)
+        : null;
+  if (provider === "claude" && where)
+    inbox = await openInbox(where, (connected) => {
+      io.err(
+        connected
+          ? "Chalito team: the Chalito mod connected; messages start a turn once this session is idle.\n"
+          : "Chalito team: the Chalito mod disconnected; messages wait for team_read.\n",
+      );
+      redeclare();
+    });
+
   const served = runMcpServer({
     input: io.input,
     write: io.out,
@@ -408,7 +451,12 @@ export const runTeamMcp = async (
         };
       } else if (msg.method === "notifications/initialized" && !client) {
         const loaded = io.channelLoaded ?? (() => argvLoadsChannel(parentArgv() ?? []));
-        client = { ...declared, channel: loaded(), ...(thread ? { codexThread: thread } : {}) };
+        client = {
+          ...declared,
+          channel: loaded(),
+          ...(thread ? { codexThread: thread } : {}),
+          ...(inbox?.connected ? { inbox: true } : {}),
+        };
         if (link) void declare(link, client);
         for (const batch of queued.splice(0)) notify(batch);
       } else if (msg.method === "tools/call") bindThread(codexThreadFrom(params._meta));
@@ -432,7 +480,7 @@ export const runTeamMcp = async (
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
       if (!reply.ok && reply.error === "closed") return RECONNECTING;
-      if (reply.ok && codexOn) {
+      if (reply.ok && (codexOn || inbox)) {
         const result = reply.result as { messages?: (TeamMessage & { queued?: boolean })[] };
         for (const m of result.messages ?? []) {
           markRead(m.seq);
@@ -499,5 +547,6 @@ export const runTeamMcp = async (
     }
   } finally {
     link?.close();
+    inbox?.close();
   }
 };
