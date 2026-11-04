@@ -159,8 +159,12 @@ export const runTeamMcp = async (
   let failures = 0;
   /** Seqs `codex queue` accepted: still unread at the hub, so team_read flags them instead of hiding them. */
   const queuedSeqs = new Set<number>();
-  /** Highest seq a tool reply already handed to Codex: anything at or below it is never queued. */
-  let readUpTo = 0;
+  /** Seqs a tool reply already handed to Codex (most recent 1024): never queued afterwards. */
+  const readSeqs = new Set<number>();
+  const markRead = (seq: number) => {
+    readSeqs.add(seq);
+    if (readSeqs.size > 1024) readSeqs.delete(readSeqs.values().next().value!);
+  };
   let queueing = Promise.resolve();
   const redeclare = () => {
     if (!client) return;
@@ -188,8 +192,13 @@ export const runTeamMcp = async (
   };
   const deliverBatch = async (batch: TeamBatch, target: string | null) => {
     // Re-checked at run time: while this batch waited, a conflict may have appeared or team_read taken it.
-    const fresh = batch.messages.filter((m) => m.seq > readUpTo);
+    const fresh = batch.messages.filter((m) => !readSeqs.has(m.seq));
     const seqs = fresh.map((m) => m.seq);
+    // Already handed over by team_read: reported done, so the hub never holds them as pushed.
+    report(
+      batch.messages.filter((m) => readSeqs.has(m.seq)).map((m) => m.seq),
+      true,
+    );
     if (!fresh.length) return;
     if (!target || target !== thread || queueOff) return report(seqs, false);
     const text = queueText({ ...batch, messages: fresh });
@@ -198,7 +207,7 @@ export const runTeamMcp = async (
       : ({ ok: false, reason: "batch too large for one argument" } as const);
     if (outcome.ok) {
       failures = 0;
-      for (const seq of seqs) if (seq > readUpTo) queuedSeqs.add(seq);
+      for (const seq of seqs) if (!readSeqs.has(seq)) queuedSeqs.add(seq);
       return report(seqs, true);
     }
     io.err(`Chalito team: codex queue failed (${outcome.reason}); seqs ${seqs.join(",")} wait for team_read.\n`);
@@ -328,7 +337,7 @@ export const runTeamMcp = async (
     // A new id means a restarted Chalito whose seqs start over: old seq bookkeeping would mislabel new messages.
     if (before && self !== before) {
       queuedSeqs.clear();
-      readUpTo = 0;
+      readSeqs.clear();
     }
     if (client) await declare(link, client);
   };
@@ -395,7 +404,7 @@ export const runTeamMcp = async (
       if (reply.ok && codexOn) {
         const result = reply.result as { messages?: (TeamMessage & { queued?: boolean })[] };
         for (const m of result.messages ?? []) {
-          readUpTo = Math.max(readUpTo, m.seq);
+          markRead(m.seq);
           if (queuedSeqs.delete(m.seq)) m.queued = true;
         }
       }

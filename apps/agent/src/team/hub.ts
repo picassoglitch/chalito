@@ -145,7 +145,8 @@ export class TeamHub {
     });
     for (const [id, d] of this.#departed)
       if (this.#departed.size > 64 || d.at < this.now() - 10 * 60_000) this.#departed.delete(id);
-    // A request it was going to be pushed may now need the app's CLI.
+    // A request it was going to be pushed, or had reserved, may now go to another session or the app's CLI.
+    this.#wakeApp(peer.workspace, peer.provider);
     this.#retryHeld(peer.workspace, peer.provider);
   }
 
@@ -155,6 +156,11 @@ export class TeamHub {
     if (!r) return false;
     if (run) return run === r.run;
     return cwd === r.cwd && this.now() - r.at < 60_000;
+  }
+
+  /** Released by-name messages: every live session of the app gets a chance to be pushed them. */
+  #wakeApp(workspace: string, provider: string) {
+    for (const p of this.#peers.values()) if (p.workspace === workspace && p.provider === provider) this.#schedule(p);
   }
 
   #retryHeld(workspace: string, provider: string) {
@@ -434,6 +440,8 @@ export class TeamHub {
       const seqs = new Set(p.data.seqs);
       for (const seq of seqs) peer.pushed.delete(seq);
       for (const m of this.#messages) if (seqs.has(m.seq) && m.reservedFor === peer.id) delete m.reservedFor;
+      // Already read through team_read: nothing was lost, so this session still counts as wakeable.
+      if (!this.#unread(peer).some((m) => seqs.has(m.seq))) return { ok: true, result: {} };
       peer.failing = true;
       this.opts.audit?.("team.delivery_failed", {
         adapter: peer.delivery.id,
@@ -443,7 +451,7 @@ export class TeamHub {
       });
       // Retried at the paced rate; a request to the app by name may go to its CLI meanwhile.
       this.#retryHeld(peer.workspace, peer.provider);
-      this.#schedule(peer);
+      this.#wakeApp(peer.workspace, peer.provider);
       return { ok: true, result: {} };
     }
     if (action === "team_read" && !z.object({}).strict().safeParse(raw).success)

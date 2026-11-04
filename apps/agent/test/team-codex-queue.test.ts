@@ -516,11 +516,10 @@ describe("codex queue failure feedback, batching and reservations", () => {
     r.send(undefined, "nudge");
     vi.advanceTimersByTime(20);
     expect(got()[1]).toEqual(["nudge"]);
-    // The reserving session left: the other session now gets it.
+    // The reserving session left: the other session is pushed it with no further traffic.
     a.abort();
-    r.send(undefined, "nudge 2");
     vi.advanceTimersByTime(20);
-    expect(got()[1]).toEqual(["nudge", "only once", "nudge 2"]);
+    expect(got()[1]).toEqual(["nudge", "only once"]);
   });
 });
 
@@ -581,6 +580,37 @@ describe("codex queue on the Codex side", () => {
       codex.end();
       claude.end();
       await Promise.all([codex.done, claude.done]);
+      await r.close();
+    }
+  });
+
+  it("a by-name request released by another session is queued even after this session read newer messages", async () => {
+    const r = await rig();
+    const qa = vi.fn<Queue>(async () => true);
+    const qb = vi.fn<Queue>(async () => true);
+    const a = client(r.path, "codex", { queue: qa, env: T1 });
+    const b = client(r.path, "codex", { queue: qb, env: T2 });
+    const claude = client(r.path, "claude");
+    try {
+      await a.init();
+      await b.init();
+      await claude.init();
+      await vi.waitFor(() => expect(a.errors() + b.errors()).toMatch(/delivery codex-queue[^]*delivery codex-queue/));
+      await claude.tool("team_send", { to: "codex", kind: "request", text: "by name" });
+      await vi.waitFor(() => expect(qa.mock.calls.length + qb.mock.calls.length).toBe(1));
+      const [owner, other, otherQueue] = qa.mock.calls.length ? [a, b, qb] : [b, a, qa];
+      // The other session reads a newer broadcast, so it has seen a higher seq than the by-name request.
+      await claude.tool("team_send", { kind: "status", text: "newer" });
+      expect((await other.tool("team_read")).messages.map((m) => m.text)).toEqual(["newer"]);
+      owner.end();
+      await owner.done;
+      await vi.waitFor(() => expect(otherQueue).toHaveBeenCalledTimes(1));
+      expect(otherQueue.mock.calls[0]![1]).toContain("> by name");
+    } finally {
+      a.end();
+      b.end();
+      claude.end();
+      await Promise.all([a.done, b.done, claude.done]);
       await r.close();
     }
   });
