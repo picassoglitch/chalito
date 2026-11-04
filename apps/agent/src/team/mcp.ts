@@ -139,6 +139,8 @@ export const runTeamMcp = async (
     waitingRetryMs?: number;
     /** Claude only: the session inbox socket a Chalito mod connects to; null turns it off (default: ~/.chalito). */
     inboxPath?: string | null;
+    /** How often a session whose inbox path was taken retries it (default 5 s; tests). */
+    inboxRetryMs?: number;
     /** Codex only: CODEX_THREAD_ID as this process received it. */
     codexThread?: string | undefined;
     /** Codex only: CHALITO_TEAM_CODEX_QUEUE=1 turns on `codex queue` delivery. */
@@ -259,7 +261,7 @@ export const runTeamMcp = async (
     // Handed to the helper is not a started turn: no `queued` flag, the messages stay unread until team_read.
     // One framed text per message, so the mod submits only the ones it hasn't seen; epoch: seqs restart with Chalito.
     const items = fresh.map((m) => ({ seq: m.seq, text: batchText({ ...batch, messages: [m] }) }));
-    report(seqs, !!inbox?.send({ epoch: self ?? "", items }));
+    report(seqs, !!inbox?.send({ epoch: hub ?? self ?? "", items }));
   };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;
@@ -342,6 +344,8 @@ export const runTeamMcp = async (
     };
   };
   let self: string | null = null;
+  /** The hub's run id, the epoch the inbox helper keys seqs by. */
+  let hub: string | null = null;
   const declare = async (link: Link, declaration: ClientDeclaration) => {
     const r = await link.call("team_client", declaration);
     const result = r.result as { wakes?: boolean; delivery?: string } | undefined;
@@ -370,9 +374,11 @@ export const runTeamMcp = async (
     }
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
     const before = self;
+    const beforeHub = hub;
     self = (joined.result as { self?: string } | undefined)?.self ?? null;
-    // A new id means a restarted Chalito whose seqs start over: old seq bookkeeping would mislabel new messages.
-    if (before && self !== before) {
+    hub = (joined.result as { hub?: string } | undefined)?.hub ?? null;
+    // A new hub run starts its seqs over: old seq bookkeeping would mislabel new messages.
+    if ((before && self !== before) || (beforeHub && hub !== beforeHub)) {
       queuedSeqs.clear();
       readSeqs.clear();
     }
@@ -422,15 +428,29 @@ export const runTeamMcp = async (
       : io.home && (io.platform ?? process.platform) !== "win32"
         ? defaultInboxPath(joinPath(io.home, ".chalito"), provider, process.ppid)
         : null;
-  if (provider === "claude" && where)
-    inbox = await openInbox(where, (connected) => {
-      io.err(
-        connected
-          ? "Chalito team: the Chalito mod connected; messages start a turn once this session is idle.\n"
-          : "Chalito team: the Chalito mod disconnected; messages wait for team_read.\n",
-      );
-      redeclare();
-    });
+  const onHelper = (connected: boolean) => {
+    io.err(
+      connected
+        ? "Chalito team: the Chalito mod connected; messages start a turn once this session is idle.\n"
+        : "Chalito team: the Chalito mod disconnected; messages wait for team_read.\n",
+    );
+    redeclare();
+  };
+  let inboxRetry: ReturnType<typeof setInterval> | undefined;
+  if (provider === "claude" && where) {
+    inbox = await openInbox(where, onHelper);
+    // A sibling server still held the path (an overlapping /mcp restart): take it over once it is gone.
+    if (!inbox)
+      inboxRetry = setInterval(() => {
+        void openInbox(where, onHelper).then((opened) => {
+          if (!opened) return;
+          clearInterval(inboxRetry);
+          if (inbox) opened.close();
+          else inbox = opened;
+        });
+      }, io.inboxRetryMs ?? 5000);
+    inboxRetry?.unref?.();
+  }
 
   const served = runMcpServer({
     input: io.input,
@@ -548,6 +568,7 @@ export const runTeamMcp = async (
     }
   } finally {
     link?.close();
+    clearInterval(inboxRetry);
     inbox?.close();
   }
 };

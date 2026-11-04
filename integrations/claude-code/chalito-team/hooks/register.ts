@@ -91,6 +91,8 @@ export const register: Register = (on) => {
       }
       // Exit 2: this Chalito has no `team watch` yet; nothing to retry until it is updated and the session restarts.
       if (code === 2) return;
+      // It was connected (Chalito restarted): reconnect soon, not after a long backoff.
+      if (code === 0) wait = 5000;
       $.clock.after(wait, () => void watch());
       wait = Math.min(wait * 2, 60_000);
     };

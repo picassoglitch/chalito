@@ -20,6 +20,8 @@ export interface Inbox {
   close(): void;
 }
 
+const HELLO = "chalito-team-watch\n";
+
 /** Something already answers on `path`: another live team server of the same session. */
 const answers = (path: string): Promise<boolean> =>
   new Promise((resolve) => {
@@ -51,12 +53,18 @@ export const openInbox = async (path: string, changed: (connected: boolean) => v
   return new Promise((resolve) => {
     const helpers: Socket[] = [];
     const server: Server = createServer((socket) => {
-      helpers.push(socket);
       socket.on("error", () => undefined);
-      // The helper never talks; anything it sends is ignored.
-      socket.resume();
-      if (helpers.length === 1) changed(true);
+      // A helper says hello first: a probe (another server checking the path) never counts as one.
+      let joined = false;
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        if (joined || !chunk.startsWith(HELLO)) return;
+        joined = true;
+        helpers.push(socket);
+        if (helpers.length === 1) changed(true);
+      });
       socket.once("close", () => {
+        if (!joined) return;
         helpers.splice(helpers.indexOf(socket), 1);
         if (!helpers.length) changed(false);
       });
@@ -110,7 +118,10 @@ export const runTeamWatch = (path: string, out: (text: string) => void, err: (te
     const socket = connect(path);
     let connected = false;
     socket.setEncoding("utf8");
-    socket.on("connect", () => (connected = true));
+    socket.on("connect", () => {
+      connected = true;
+      socket.write(HELLO);
+    });
     socket.on("data", (chunk: string) => out(chunk));
     socket.on("error", (e: NodeJS.ErrnoException) => {
       if (!connected) err(`chalito team watch: no team server for this session yet (${e.code ?? "error"}).\n`);

@@ -30,14 +30,16 @@ const Send = z
   .strict();
 /** taken: a session of the app read it or its CLI took it. cwd: the asker's folder, where a CLI runs.
  *  reservedFor: an ackOnRead session it was pushed to, so other sessions of the app don't also act on it. */
-type Message = TeamMessage & { taken?: boolean; cwd?: string; reservedFor?: string };
+type Message = TeamMessage & { taken?: boolean; cwd?: string; reservedFor?: string; reservedAt?: number };
+/** A reservation held this long by a session that can no longer be woken is released to others or the CLI. */
+const RESERVE_MS = 10 * 60_000;
 /** The mcp process's report on an ackOnRead push: ok false hands the seqs back for retry or the responder. */
 const DeliveryResult = z.object({ seqs: z.array(z.number().int().positive()).max(64), ok: z.boolean() }).strict();
 const HOUR = 60 * 60_000;
 /** Messages for an app with no open session wait this long for one, or for its responder. */
 const HELD_MS = 24 * HOUR;
 const held = (m: Message) => !!m.toProvider && !m.taken;
-const view = ({ taken: _t, cwd: _c, reservedFor: _r, ...m }: Message): TeamMessage => m;
+const view = ({ taken: _t, cwd: _c, reservedFor: _r, reservedAt: _a, ...m }: Message): TeamMessage => m;
 /** One argument holds the whole prompt: Linux caps it at 128 KiB, Windows the command line at 32 KiB. */
 const PROMPT_BUDGET = 24_000;
 interface Peer {
@@ -95,6 +97,8 @@ export class TeamHub {
   /** Highest seq dropped unread per workspace (cap or expiry), for historyTruncated. */
   #dropped = new Map<string, number>();
   #seq = 0;
+  /** This hub's run: seqs start over with a new one, so helpers key what they've seen by it. */
+  readonly #instance = randomUUID();
   constructor(
     private readonly workspaceFor: (cwd: string) => string | null,
     private readonly now = Date.now,
@@ -111,6 +115,17 @@ export class TeamHub {
         this.#leave(connection);
     const live = new Set([...this.#peers.values()].map((p) => p.workspace));
     for (const workspace of this.#dropped.keys()) if (!live.has(workspace)) this.#dropped.delete(workspace);
+    const byId = new Map([...this.#peers.values()].map((p) => [p.id, p]));
+    for (const m of this.#messages) {
+      if (!m.reservedFor) continue;
+      const owner = byId.get(m.reservedFor);
+      if (owner && (owner.delivery.canWake || (m.reservedAt ?? 0) > this.now() - RESERVE_MS)) continue;
+      delete m.reservedFor;
+      if (owner) {
+        this.#wakeApp(owner.workspace, owner.provider);
+        this.#retryHeld(owner.workspace, owner.provider);
+      }
+    }
     this.#messages = this.#messages.filter((m) => {
       if (held(m)) return m.at > this.now() - HELD_MS;
       if (!live.has(m.workspace)) return false;
@@ -342,7 +357,10 @@ export class TeamHub {
     if (ok && peer.delivery.ackOnRead)
       for (const m of messages) {
         peer.pushed.add(m.seq);
-        if (m.toProvider) m.reservedFor = peer.id;
+        if (m.toProvider) {
+          m.reservedFor = peer.id;
+          m.reservedAt = this.now();
+        }
       }
     else if (ok) {
       peer.cursor = batch.more
@@ -421,7 +439,14 @@ export class TeamHub {
     if (action === "team_join" && resumedNow)
       return {
         ok: true,
-        result: { self: peer.id, workspace: peer.workspace, historyTruncated: false, peers: [], messages: [] },
+        result: {
+          self: peer.id,
+          hub: this.#instance,
+          workspace: peer.workspace,
+          historyTruncated: false,
+          peers: [],
+          messages: [],
+        },
       };
     if (action === "team_client") {
       const p = ClientDeclaration.safeParse(raw);
@@ -430,7 +455,11 @@ export class TeamHub {
       peer.delivery = selectDelivery({ provider: peer.provider, client: p.data, link: peer.link }, this.opts.chain);
       // Its push route changed (the mod left): what it was already handed may be a turn in progress, so it stays
       // reserved for this session (its team_read or leaving frees it), never handed to a second one.
-      if (before.ackOnRead && before.id !== peer.delivery.id) peer.failing = false;
+      if (before.ackOnRead && before.id !== peer.delivery.id) {
+        peer.failing = false;
+        // A reloaded mod lost what it held: pushed again when one returns (a live one dedupes by epoch:seq).
+        peer.pushed.clear();
+      }
       this.opts.audit?.("team.delivery_selected", {
         peer: peer.id,
         provider: peer.provider,
@@ -444,8 +473,9 @@ export class TeamHub {
     if (action === "team_delivery") {
       const p = DeliveryResult.safeParse(raw);
       if (!p.success) return { ok: false, error: "bad_params" };
-      if (!peer.delivery.ackOnRead) return { ok: true, result: {} };
+      // A failure counts even after the session re-declared (the report trails it): what it held must be freed.
       if (p.data.ok) {
+        if (!peer.delivery.ackOnRead) return { ok: true, result: {} };
         peer.failing = false;
         return { ok: true, result: {} };
       }
@@ -514,6 +544,7 @@ export class TeamHub {
       ok: true,
       result: {
         self: peer.id,
+        hub: this.#instance,
         workspace: peer.workspace,
         historyTruncated,
         peers: [...this.#peers.values()]

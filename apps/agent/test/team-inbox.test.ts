@@ -210,6 +210,17 @@ describe("Claude session inbox (the Chalito mod's route, no launch flag)", () =>
     b!.close();
   });
 
+  it("a probe from a sibling server never counts as the mod connecting", async () => {
+    const sock = inboxPath(temp("chalito-home-"), "claude", 4245);
+    const changed = vi.fn();
+    const first = await openInbox(sock, changed);
+    expect(await openInbox(sock, () => undefined)).toBeNull();
+    await new Promise((res) => setTimeout(res, 50));
+    expect(changed).not.toHaveBeenCalled();
+    expect(first!.connected).toBe(false);
+    first!.close();
+  });
+
   it("team watch with no team server exits 3 and says why", async () => {
     let err = "";
     const code = await runTeamWatch(
@@ -252,6 +263,76 @@ describe("hub: the one-shot CLI never takes what a live session was handed", () 
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("hub: hand-off failures and reloads after a route change", () => {
+  const setup = (responder?: { has: () => boolean; run: (job: unknown) => Promise<string | null> }) => {
+    vi.useFakeTimers();
+    const frames: number[][] = [];
+    const hub = new TeamHub(
+      workspaceFor,
+      () => Date.now(),
+      () => true,
+      {
+        pacing: { debounceMs: 10, minGapMs: 0 },
+        ...(responder ? { responder } : {}),
+      },
+    );
+    const a = new AbortController();
+    const s = new AbortController();
+    hub.call(
+      a.signal,
+      "team_join",
+      { provider: "claude", cwd: "/project" },
+      {
+        push: (f: { teamDelivery: { batch: { messages: { seq: number }[] } } }) => (
+          frames.push(f.teamDelivery.batch.messages.map((m) => m.seq)),
+          true
+        ),
+      },
+    );
+    hub.call(a.signal, "team_client", { inbox: true });
+    hub.call(s.signal, "team_join", { provider: "codex", cwd: "/project" });
+    return { hub, a, s, frames };
+  };
+  afterEach(() => vi.useRealTimers());
+
+  it("a failure reported after the session re-declared still frees the request for the CLI", () => {
+    const run = vi.fn(async (_job: unknown) => "answered");
+    const r = setup({ has: () => true, run });
+    r.hub.call(r.s.signal, "team_send", { to: "claude", kind: "request", text: "do it" });
+    vi.advanceTimersByTime(20);
+    const seq = r.frames[0]![0]!;
+    // The mod left before the batch was handed: re-declare first, then the failure report.
+    r.hub.call(r.a.signal, "team_client", {});
+    r.hub.call(r.a.signal, "team_delivery", { seqs: [seq], ok: false });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("a mod that reconnects (reloaded, its pending list lost) is pushed again what it was handed", () => {
+    const r = setup();
+    r.hub.call(r.s.signal, "team_send", { to: "claude", kind: "request", text: "keep" });
+    vi.advanceTimersByTime(20);
+    r.hub.call(r.a.signal, "team_client", {});
+    r.hub.call(r.a.signal, "team_client", { inbox: true });
+    vi.advanceTimersByTime(20);
+    expect(r.frames).toHaveLength(2);
+    expect(r.frames[1]).toEqual(r.frames[0]);
+  });
+
+  it("a reservation held 10 minutes by a session that can't be woken goes to the CLI", () => {
+    const run = vi.fn(async (_job: unknown) => "answered");
+    const r = setup({ has: () => true, run });
+    r.hub.call(r.s.signal, "team_send", { to: "claude", kind: "request", text: "stuck" });
+    vi.advanceTimersByTime(20);
+    r.hub.call(r.a.signal, "team_client", {});
+    vi.advanceTimersByTime(9 * 60_000);
+    r.hub.members();
+    expect(run).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2 * 60_000);
+    r.hub.members();
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
 
