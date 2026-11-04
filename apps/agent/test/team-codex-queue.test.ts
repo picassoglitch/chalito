@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { PassThrough } from "node:stream";
@@ -6,7 +6,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { TeamHub } from "../src/team/hub.js";
 import { runTeamMcp } from "../src/team/mcp.js";
 import { selectDelivery } from "../src/team/delivery/index.js";
-import { codexQueue, codexThreadFrom, envThread, queueArgs, queueText } from "../src/team/delivery/codex-queue.js";
+import {
+  codexQueue,
+  codexThreadFrom,
+  envThread,
+  queueArgs,
+  queueText,
+  runCodexQueue,
+} from "../src/team/delivery/codex-queue.js";
 import { startCodeServer, type CodeServer } from "../src/code/server.js";
 import type { CodeService } from "../src/code/service.js";
 import type { TeamBatch } from "../src/team/delivery/types.js";
@@ -41,7 +48,7 @@ type Queue = (thread: string, text: string) => Promise<boolean>;
 const client = (
   path: string,
   provider: string,
-  opts: { env?: string; queue?: Queue; channel?: boolean; optIn?: boolean | null } = {},
+  opts: { env?: string; queue?: Queue; channel?: boolean; optIn?: boolean | null; platform?: NodeJS.Platform } = {},
 ) => {
   const input = new PassThrough();
   const lines: Record<string, unknown>[] = [];
@@ -58,7 +65,13 @@ const client = (
       codexThread: opts.env,
       // null: leave it unset, as cli.ts does without CHALITO_TEAM_CODEX_QUEUE=1.
       ...(opts.optIn === null ? {} : { codexQueueOptIn: opts.optIn ?? true }),
-      ...(opts.queue ? { codexQueue: opts.queue } : {}),
+      ...(opts.queue
+        ? {
+            codexQueue: async (t: string, x: string) =>
+              (await opts.queue!(t, x)) ? ({ ok: true } as const) : ({ ok: false, reason: "test refused" } as const),
+          }
+        : {}),
+      ...(opts.platform ? { platform: opts.platform } : {}),
     },
     path,
     provider,
@@ -256,8 +269,10 @@ describe("codex queue delivery over the real socket and stdio", () => {
       expect(read.map((m) => m.text)).toEqual(["one", "two"]);
       await vi.waitFor(() => expect(codex.errors()).toContain("more than one Codex thread"));
       release();
-      await vi.waitFor(() => expect(codex.errors()).toContain("codex queue failed"));
+      // "two" was already handed over by that read, so it is neither queued nor reported as failed.
+      await new Promise((res) => setTimeout(res, 120));
       expect(queue).toHaveBeenCalledTimes(1);
+      expect(r.audit).not.toHaveBeenCalledWith("team.delivery_failed", expect.anything());
     } finally {
       codex.end();
       claude.end();
@@ -324,6 +339,15 @@ describe("codex queue selection and format", () => {
   });
 
   it("reads the thread only from well-formed ids", () => {
+    // Shape captured from a real codex-cli 0.166.0 tools/call (ids replaced).
+    const real = {
+      callId: "exec-95ce074d-727c-41b9-b8b5-c6894a73631c",
+      "x-codex-turn-metadata": { session_id: T1, thread_id: T1, turn_id: T2, turn_trigger: "exec" },
+      threadId: T1,
+      sessionId: T1,
+    };
+    expect(codexThreadFrom(real)).toBe(T1);
+    expect(codexThreadFrom({ "x-codex-turn-metadata": { thread_id: T1 } })).toBe(T1);
     expect(codexThreadFrom(turnMeta(T1))).toBe(T1);
     expect(codexThreadFrom({ "x-codex-turn-metadata": { session_id: T1.toUpperCase() } })).toBe(T1);
     expect(codexThreadFrom({ threadId: T2 })).toBe(T2);
@@ -402,5 +426,252 @@ describe("codex queue durability at the hub", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("codex queue failure feedback, batching and reservations", () => {
+  const hubRig = (responder?: { has: () => boolean; run: () => Promise<string | null> }) => {
+    vi.useFakeTimers();
+    const audit = vi.fn();
+    const frames: TeamBatch[][] = [[], []];
+    const links = [0, 1].map((i) => ({
+      push: (f: { teamDelivery: { batch: TeamBatch } }) => (frames[i]!.push(f.teamDelivery.batch), true),
+    }));
+    const hub = new TeamHub(
+      workspaceFor,
+      () => Date.now(),
+      () => true,
+      {
+        pacing: { debounceMs: 10, minGapMs: 0 },
+        chain: [codexQueue],
+        audit,
+        ...(responder ? { responder } : {}),
+      },
+    );
+    const join = (i: number, thread: string) => {
+      const c = new AbortController();
+      hub.call(c.signal, "team_join", { provider: "codex", cwd: "/project" }, links[i]!);
+      hub.call(c.signal, "team_client", { codexThread: thread });
+      return c;
+    };
+    const s = new AbortController();
+    hub.call(s.signal, "team_join", { provider: "claude", cwd: "/project" });
+    const send = (to: string | undefined, text: string) =>
+      expect(hub.call(s.signal, "team_send", { ...(to ? { to } : {}), kind: "request", text }).ok).toBe(true);
+    return { hub, audit, frames, join, send };
+  };
+  afterEach(() => vi.useRealTimers());
+
+  it("a failed queue reported back is pushed again, and lets the responder take a request to codex by name", () => {
+    const run = vi.fn(async () => "answered by CLI");
+    const r = hubRig({ has: () => true, run });
+    const c = r.join(0, T1);
+    r.send("codex", "do it");
+    vi.advanceTimersByTime(20);
+    expect(r.frames[0]!.map((b) => b.messages.map((m) => m.text))).toEqual([["do it"]]);
+    // Healthy wakeable session: no CLI run.
+    expect(run).not.toHaveBeenCalled();
+    const seq = r.frames[0]![0]!.messages[0]!.seq;
+    expect(r.hub.call(c.signal, "team_delivery", { seqs: [seq], ok: false })).toMatchObject({ ok: true });
+    expect(r.audit).toHaveBeenCalledWith("team.delivery_failed", expect.objectContaining({ seqs: [seq] }));
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed queue with no responder is retried at the paced rate", () => {
+    const r = hubRig();
+    const c = r.join(0, T1);
+    r.send(undefined, "retry me");
+    vi.advanceTimersByTime(20);
+    const seq = r.frames[0]![0]!.messages[0]!.seq;
+    r.hub.call(c.signal, "team_delivery", { seqs: [seq], ok: false });
+    vi.advanceTimersByTime(20);
+    expect(r.frames[0]!.map((b) => b.messages.map((m) => m.seq))).toEqual([[seq], [seq]]);
+    // Reported ok: never pushed again.
+    r.hub.call(c.signal, "team_delivery", { seqs: [seq], ok: true });
+    vi.advanceTimersByTime(1000);
+    expect(r.frames[0]).toHaveLength(2);
+    expect(r.hub.call(c.signal, "team_delivery", { seqs: ["x"], ok: false })).toMatchObject({ error: "bad_params" });
+  });
+
+  it("more than one batch: every seq is queued once, in order", () => {
+    const r = hubRig();
+    r.join(0, T1);
+    for (let n = 0; n < 10; n++) r.send(undefined, `r${n}`);
+    vi.advanceTimersByTime(200);
+    expect(r.frames[0]!.map((b) => b.messages.map((m) => m.text))).toEqual([
+      ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7"],
+      ["r8", "r9"],
+    ]);
+  });
+
+  it("a request to codex by name is reserved for one session; another gets it only after a failure or leave", () => {
+    const r = hubRig();
+    const a = r.join(0, T1);
+    r.join(1, T2);
+    r.send("codex", "only once");
+    vi.advanceTimersByTime(20);
+    const got = () => r.frames.map((f) => f.flatMap((b) => b.messages.map((m) => m.text)));
+    // The first session to flush reserves it; the other is never pushed it while that one is healthy.
+    expect(got()).toEqual([["only once"], []]);
+    r.send(undefined, "nudge");
+    vi.advanceTimersByTime(20);
+    expect(got()[1]).toEqual(["nudge"]);
+    // The reserving session left: the other session now gets it.
+    a.abort();
+    r.send(undefined, "nudge 2");
+    vi.advanceTimersByTime(20);
+    expect(got()[1]).toEqual(["nudge", "only once", "nudge 2"]);
+  });
+});
+
+describe("codex queue on the Codex side", () => {
+  it("the queued text names each seq; three failures switch the session to pull", async () => {
+    const r = await rig();
+    const queue = vi.fn<Queue>(async () => false);
+    const codex = client(r.path, "codex", { queue, env: T1 });
+    const claude = client(r.path, "claude");
+    try {
+      await codex.init();
+      await claude.init();
+      await vi.waitFor(() => expect(codex.errors()).toContain("bound to thread"));
+      await claude.tool("team_send", { kind: "request", text: "a" });
+      await vi.waitFor(() => expect(codex.errors()).toContain("codex queue off for this session (3 failed attempts"), {
+        timeout: 4000,
+      });
+      expect(queue.mock.calls[0]![1]).toMatch(/^\[Chalito team seq \d+\]\n/);
+      expect(codex.errors()).toContain("codex queue failed (test refused)");
+      await vi.waitFor(() => expect(codex.errors()).toMatch(/delivery pull \(call team_read\)\.\n[^]*$/));
+      const calls = queue.mock.calls.length;
+      await claude.tool("team_send", { kind: "request", text: "b" });
+      await new Promise((res) => setTimeout(res, 150));
+      expect(queue.mock.calls.length).toBe(calls);
+      expect((await codex.tool("team_read")).messages.map((m) => m.text)).toEqual(["a", "b"]);
+    } finally {
+      codex.end();
+      claude.end();
+      await Promise.all([codex.done, claude.done]);
+      await r.close();
+    }
+  });
+
+  it("a batch team_read already returned is not queued afterwards", async () => {
+    const r = await rig();
+    let release = () => undefined as void;
+    const gate = new Promise<void>((res) => (release = res));
+    const queue = vi.fn<Queue>(async () => {
+      await gate;
+      return true;
+    });
+    const codex = client(r.path, "codex", { queue, env: T1 });
+    const claude = client(r.path, "claude");
+    try {
+      await codex.init();
+      await claude.init();
+      await vi.waitFor(() => expect(codex.errors()).toContain("delivery codex-queue"));
+      await claude.tool("team_send", { kind: "request", text: "one" });
+      await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
+      await claude.tool("team_send", { kind: "request", text: "two" });
+      const pushes = () => r.audit.mock.calls.filter(([t, m]) => t === "team.delivered" && m.adapter === "codex-queue");
+      await vi.waitFor(() => expect(pushes()).toHaveLength(2));
+      expect((await codex.tool("team_read", {}, turnMeta(T1))).messages.map((m) => m.text)).toEqual(["one", "two"]);
+      release();
+      await new Promise((res) => setTimeout(res, 120));
+      expect(queue).toHaveBeenCalledTimes(1);
+    } finally {
+      codex.end();
+      claude.end();
+      await Promise.all([codex.done, claude.done]);
+      await r.close();
+    }
+  });
+
+  it("is never on for Windows", async () => {
+    const r = await rig();
+    const queue = vi.fn<Queue>(async () => true);
+    const codex = client(r.path, "codex", { queue, env: T1, platform: "win32" });
+    try {
+      await codex.init();
+      await vi.waitFor(() => expect(codex.errors()).toContain("not available on Windows"));
+      expect(codex.errors()).not.toContain("codex-queue");
+    } finally {
+      codex.end();
+      await codex.done;
+      await r.close();
+    }
+  });
+});
+
+describe("runCodexQueue against a real process", () => {
+  const withStub = async (script: string, body: (log: string) => Promise<void>) => {
+    const dir = mkdtempSync(joinPath(tmpdir(), "chalito-codex-stub-"));
+    dirs.push(dir);
+    const log = joinPath(dir, "argv");
+    writeFileSync(joinPath(dir, "codex"), `#!/bin/sh\nprintf '%s\\0' "$@" > "${log}"\n${script}\n`);
+    chmodSync(joinPath(dir, "codex"), 0o755);
+    const old = process.env.PATH;
+    process.env.PATH = `${dir}:${old}`;
+    try {
+      await body(log);
+    } finally {
+      process.env.PATH = old;
+    }
+  };
+
+  it.skipIf(process.platform === "win32")(
+    "passes exactly three arguments, text as one value, never --resume",
+    async () => {
+      await withStub("exit 0", async (log) => {
+        const text = "--resume\nlínea 2 ✓ &lt;x&gt;";
+        expect(await runCodexQueue(T1, text)).toEqual({ ok: true });
+        expect(readFileSync(log, "utf8").split("\0").slice(0, -1)).toEqual([
+          "queue",
+          `--thread=${T1}`,
+          `--message=${text}`,
+        ]);
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("reports the exit and first stderr line on failure", async () => {
+    await withStub("echo 'error: unknown thread' >&2; exit 3", async () => {
+      expect(await runCodexQueue(T1, "x")).toEqual({ ok: false, reason: "3: error: unknown thread" });
+    });
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "a missing binary or an oversized argument resolves, never throws",
+    async () => {
+      const old = process.env.PATH;
+      process.env.PATH = "/nonexistent";
+      try {
+        expect(await runCodexQueue(T1, "x")).toMatchObject({ ok: false, reason: "ENOENT" });
+      } finally {
+        process.env.PATH = old;
+      }
+      await withStub("exit 0", async () => {
+        const r = await runCodexQueue(T1, "é".repeat(200_000));
+        expect(r.ok).toBe(false);
+      });
+    },
+  );
+
+  it("measures the size in bytes: multibyte text that fits in characters is still refused", () => {
+    const msg = (seq: number) => ({
+      workspace: "w",
+      seq,
+      from: "f",
+      provider: "claude",
+      kind: "request" as const,
+      text: "漢".repeat(8000),
+      at: 0,
+    });
+    const batch: TeamBatch = {
+      workspace: "w",
+      historyTruncated: false,
+      more: 0,
+      messages: [1, 2, 3, 4, 5, 6, 7, 8].map(msg),
+    };
+    expect(queueText(batch)).toBeNull();
+    expect(queueText({ ...batch, messages: batch.messages.slice(0, 2) })).toContain("[Chalito team seq 1]");
   });
 });

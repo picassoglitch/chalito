@@ -4,8 +4,8 @@ import type { DeliveryFactory, TeamBatch } from "./types.js";
 
 export const CODEX_QUEUE = "codex-queue";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Linux caps one argv string at 128 KiB; a batch is at most 8 capped messages, well under this. */
-const MAX_TEXT = 100_000;
+/** Linux caps one argv string at 128 KiB (bytes, so multibyte text counts more): headroom for the flag prefix. */
+const MAX_BYTES = 120_000;
 
 // Only a session that named its own thread is pushed; a thread is never picked from a list by folder or recency.
 export const codexQueue: DeliveryFactory = {
@@ -46,13 +46,13 @@ export const codexThreadFrom = (meta: unknown): string | null => {
 
 export const envThread = (value: string | undefined): string | null => uuid(value);
 
-/** The text queued as the next user turn: the same quoted, tag-free framing Claude's channel gets. */
-/** Null when it would not fit one argument: never cut, the batch then waits for team_read whole. */
+/** The next user turn: Claude's quoted, tag-free framing, each message tagged with its seq so team_read can dedupe.
+ *  Null when it would not fit one argument: never cut, the batch then waits for team_read whole. */
 export const queueText = (batch: TeamBatch): string | null => {
   const text = channelNotifications(batch)
-    .map((n) => (n.params as { content: string }).content)
+    .map((n, i) => `[Chalito team seq ${batch.messages[i]!.seq}]\n${(n.params as { content: string }).content}`)
     .join("\n\n");
-  return text.length > MAX_TEXT ? null : text;
+  return Buffer.byteLength(text, "utf8") > MAX_BYTES ? null : text;
 };
 
 // No --resume: the owning session takes the message, never a competing turn. `=` keeps text starting with "-" a value.
@@ -62,9 +62,25 @@ export const queueArgs = (thread: string, text: string): string[] => [
   `--message=${text}`,
 ];
 
-export type QueueRunner = (thread: string, text: string) => Promise<boolean>;
+/** ok: queued. unknown: it may have been queued (timed out), so it is neither retried nor flagged. */
+export type QueueOutcome = { ok: true } | { ok: false; unknown?: boolean; reason: string };
+export type QueueRunner = (thread: string, text: string) => Promise<QueueOutcome>;
 
 export const runCodexQueue: QueueRunner = (thread, text) =>
   new Promise((resolve) => {
-    execFile("codex", queueArgs(thread, text), { timeout: 15_000, windowsHide: true }, (err) => resolve(!err));
+    try {
+      execFile("codex", queueArgs(thread, text), { timeout: 15_000 }, (err, _out, stderr) => {
+        if (!err) return resolve({ ok: true });
+        const e = err as NodeJS.ErrnoException & { killed?: boolean; code?: string | number };
+        if (e.killed) return resolve({ ok: false, unknown: true, reason: "timed out after 15s" });
+        const detail = String(stderr ?? "")
+          .trim()
+          .split("\n")[0]
+          ?.slice(0, 200);
+        resolve({ ok: false, reason: `${e.code ?? "error"}${detail ? `: ${detail}` : ""}` });
+      });
+    } catch (err) {
+      // A spawn can throw synchronously (E2BIG); never let it reject the delivery chain.
+      resolve({ ok: false, reason: (err as NodeJS.ErrnoException).code ?? "spawn failed" });
+    }
   });

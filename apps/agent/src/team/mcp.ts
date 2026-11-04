@@ -128,6 +128,8 @@ export const runTeamMcp = async (
     codexThread?: string | undefined;
     /** Codex only: CHALITO_TEAM_CODEX_QUEUE=1 turns on `codex queue` delivery. */
     codexQueueOptIn?: boolean;
+    /** Overrides process.platform (tests). */
+    platform?: NodeJS.Platform;
     /** Codex only: hands a batch to `codex queue`; default runs the CLI. */
     codexQueue?: QueueRunner;
   },
@@ -148,40 +150,80 @@ export const runTeamMcp = async (
   };
   // Codex, opt-in until verified live: the first thread Codex reports is this session's. A second, different one
   // means the process serves several threads, so pushing is unsafe: back to pull for the rest of its life.
-  const codexOn = provider === "codex" && io.codexQueueOptIn === true;
+  const codexOn = provider === "codex" && io.codexQueueOptIn === true && (io.platform ?? process.platform) !== "win32";
+  if (provider === "codex" && io.codexQueueOptIn && !codexOn)
+    io.err("Chalito team: codex queue is not available on Windows (npm installs codex.cmd); using team_read.\n");
   let thread: string | null = codexOn ? envThread(io.codexThread) : null;
-  let threadConflict = false;
+  /** Why codex queue was switched off for good in this process; null while it may be used. */
+  let queueOff: string | null = null;
+  let failures = 0;
   /** Seqs `codex queue` accepted: still unread at the hub, so team_read flags them instead of hiding them. */
   const queuedSeqs = new Set<number>();
+  /** Highest seq a tool reply already handed to Codex: anything at or below it is never queued. */
+  let readUpTo = 0;
   let queueing = Promise.resolve();
+  const redeclare = () => {
+    if (!client) return;
+    const { codexThread: _old, ...rest } = client;
+    client = { ...rest, ...(thread && !queueOff ? { codexThread: thread } : {}) };
+    if (link) void declare(link, client);
+  };
+  const switchOff = (why: string) => {
+    queueOff = why;
+    thread = null;
+    io.err(`Chalito team: codex queue off for this session (${why}); messages wait for team_read.\n`);
+    redeclare();
+  };
   const bindThread = (seen: string | null) => {
-    if (!codexOn || !seen || threadConflict || seen === thread) return;
-    if (thread) {
-      threadConflict = true;
-      thread = null;
-      io.err("Chalito team: this process reports more than one Codex thread; messages wait for team_read.\n");
-    } else thread = seen;
-    if (client) {
-      const { codexThread: _old, ...rest } = client;
-      client = { ...rest, ...(thread ? { codexThread: thread } : {}) };
-      if (link) void declare(link, client);
+    if (!codexOn || !seen || queueOff || seen === thread) return;
+    if (thread) return switchOff("this process reports more than one Codex thread");
+    thread = seen;
+    io.err(`Chalito team: codex queue bound to thread ${thread}.\n`);
+    redeclare();
+  };
+  if (codexOn && thread) io.err(`Chalito team: codex queue bound to thread ${thread} (CODEX_THREAD_ID).\n`);
+  else if (codexOn) io.err("Chalito team: codex queue on; waiting for Codex to report its thread on a tool call.\n");
+  const report = (seqs: number[], ok: boolean) => {
+    if (link && seqs.length) void link.call("team_delivery", { seqs, ok }).catch(() => undefined);
+  };
+  const deliverBatch = async (batch: TeamBatch, target: string | null) => {
+    // Re-checked at run time: while this batch waited, a conflict may have appeared or team_read taken it.
+    const fresh = batch.messages.filter((m) => m.seq > readUpTo);
+    const seqs = fresh.map((m) => m.seq);
+    if (!fresh.length) return;
+    if (!target || target !== thread || queueOff) return report(seqs, false);
+    const text = queueText({ ...batch, messages: fresh });
+    const outcome = text
+      ? await (io.codexQueue ?? runCodexQueue)(target, text)
+      : ({ ok: false, reason: "batch too large for one argument" } as const);
+    if (outcome.ok) {
+      failures = 0;
+      for (const seq of seqs) if (seq > readUpTo) queuedSeqs.add(seq);
+      return report(seqs, true);
     }
+    io.err(`Chalito team: codex queue failed (${outcome.reason}); seqs ${seqs.join(",")} wait for team_read.\n`);
+    // Timed out: it may already be queued, so it is not retried (no duplicate turn) and not flagged queued.
+    if ("unknown" in outcome && outcome.unknown) return report(seqs, true);
+    report(seqs, false);
+    if (++failures >= 3) switchOff(`3 failed attempts, last: ${outcome.reason}`);
   };
   const enqueue = (batch: TeamBatch) => {
     const target = thread;
-    queueing = queueing.then(async () => {
-      // Re-checked at run time: a conflict found while this batch waited must not reach the old thread.
-      const text = target && target === thread && !threadConflict ? queueText(batch) : null;
-      const ok = text ? await (io.codexQueue ?? runCodexQueue)(target!, text) : false;
-      if (ok) for (const m of batch.messages) queuedSeqs.add(m.seq);
-      else io.err("Chalito team: codex queue failed; the messages wait for team_read.\n");
-    });
+    queueing = queueing
+      .then(() => deliverBatch(batch, target))
+      .catch((err: unknown) => {
+        io.err(`Chalito team: codex queue error (${err instanceof Error ? err.message : "unknown"}).\n`);
+        report(
+          batch.messages.map((m) => m.seq),
+          false,
+        );
+      });
   };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;
     const f = Frame.safeParse(raw);
     const adapter = f.success ? f.data.teamDelivery.adapter : "";
-    if (f.success && adapter === CODEX_QUEUE && provider === "codex") {
+    if (f.success && adapter === CODEX_QUEUE && codexOn) {
       enqueue(f.data.teamDelivery.batch);
       return;
     }
@@ -281,7 +323,13 @@ export const runTeamMcp = async (
       if (joined.ok) joinCwd = io.home;
     }
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
+    const before = self;
     self = (joined.result as { self?: string } | undefined)?.self ?? null;
+    // A new id means a restarted Chalito whose seqs start over: old seq bookkeeping would mislabel new messages.
+    if (before && self !== before) {
+      queuedSeqs.clear();
+      readUpTo = 0;
+    }
     if (client) await declare(link, client);
   };
 
@@ -344,9 +392,12 @@ export const runTeamMcp = async (
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
       if (!reply.ok && reply.error === "closed") return RECONNECTING;
-      if (reply.ok && queuedSeqs.size) {
+      if (reply.ok && codexOn) {
         const result = reply.result as { messages?: (TeamMessage & { queued?: boolean })[] };
-        for (const m of result.messages ?? []) if (queuedSeqs.delete(m.seq)) m.queued = true;
+        for (const m of result.messages ?? []) {
+          readUpTo = Math.max(readUpTo, m.seq);
+          if (queuedSeqs.delete(m.seq)) m.queued = true;
+        }
       }
       return reply.ok
         ? { ok: true, result: { text: JSON.stringify({ peerData: reply.result }) } }

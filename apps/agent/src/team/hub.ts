@@ -28,13 +28,16 @@ const Send = z
     text: z.string().trim().min(1).max(8000),
   })
   .strict();
-/** taken: a session of the app read it or its CLI took it. cwd: the asker's folder, where a CLI runs. */
-type Message = TeamMessage & { taken?: boolean; cwd?: string };
+/** taken: a session of the app read it or its CLI took it. cwd: the asker's folder, where a CLI runs.
+ *  reservedFor: an ackOnRead session it was pushed to, so other sessions of the app don't also act on it. */
+type Message = TeamMessage & { taken?: boolean; cwd?: string; reservedFor?: string };
+/** The mcp process's report on an ackOnRead push: ok false hands the seqs back for retry or the responder. */
+const DeliveryResult = z.object({ seqs: z.array(z.number().int().positive()).max(64), ok: z.boolean() }).strict();
 const HOUR = 60 * 60_000;
 /** Messages for an app with no open session wait this long for one, or for its responder. */
 const HELD_MS = 24 * HOUR;
 const held = (m: Message) => !!m.toProvider && !m.taken;
-const view = ({ taken: _t, cwd: _c, ...m }: Message): TeamMessage => m;
+const view = ({ taken: _t, cwd: _c, reservedFor: _r, ...m }: Message): TeamMessage => m;
 /** One argument holds the whole prompt: Linux caps it at 128 KiB, Windows the command line at 32 KiB. */
 const PROMPT_BUDGET = 24_000;
 interface Peer {
@@ -132,6 +135,7 @@ export class TeamHub {
     if (!peer) return;
     clearTimeout(peer.timer);
     this.#peers.delete(signal);
+    for (const m of this.#messages) if (m.reservedFor === peer.id) delete m.reservedFor;
     this.#departed.set(peer.id, {
       provider: peer.provider,
       workspace: peer.workspace,
@@ -165,7 +169,10 @@ export class TeamHub {
       m.workspace !== peer.workspace || m.from === peer.id
         ? false
         : m.toProvider
-          ? m.toProvider === peer.provider && !m.taken && m.at > this.now() - HELD_MS
+          ? m.toProvider === peer.provider &&
+            !m.taken &&
+            (!m.reservedFor || m.reservedFor === peer.id) &&
+            m.at > this.now() - HELD_MS
           : m.seq > peer.cursor && (!m.to || m.to === peer.id) && m.at > this.now() - HOUR,
     );
   }
@@ -289,6 +296,8 @@ export class TeamHub {
   #flush(peer: Peer) {
     this.#prune();
     if (![...this.#peers.values()].includes(peer)) return;
+    const live = new Set(this.#messages.map((m) => m.seq));
+    for (const seq of peer.pushed) if (!live.has(seq)) peer.pushed.delete(seq);
     const pending = this.#unread(peer).filter((m) => !peer.pushed.has(m.seq));
     // Already read through team_read, or only status updates left: nothing to wake for.
     if (!pending.some((m) => m.kind !== "status")) return;
@@ -316,7 +325,11 @@ export class TeamHub {
     peer.pushes.push(this.now());
     peer.failing = !ok;
     if (!ok) this.#retryHeld(peer.workspace, peer.provider);
-    if (ok && peer.delivery.ackOnRead) for (const m of messages) peer.pushed.add(m.seq);
+    if (ok && peer.delivery.ackOnRead)
+      for (const m of messages) {
+        peer.pushed.add(m.seq);
+        if (m.toProvider) m.reservedFor = peer.id;
+      }
     else if (ok) {
       peer.cursor = batch.more
         ? Math.max(peer.cursor, ...messages.filter((m) => !m.toProvider).map((m) => m.seq))
@@ -409,6 +422,29 @@ export class TeamHub {
       });
       if (this.#unread(peer).some((m) => m.kind !== "status")) this.#schedule(peer);
       return { ok: true, result: { self: peer.id, delivery: peer.delivery.id, wakes: peer.delivery.canWake } };
+    }
+    if (action === "team_delivery") {
+      const p = DeliveryResult.safeParse(raw);
+      if (!p.success) return { ok: false, error: "bad_params" };
+      if (!peer.delivery.ackOnRead) return { ok: true, result: {} };
+      if (p.data.ok) {
+        peer.failing = false;
+        return { ok: true, result: {} };
+      }
+      const seqs = new Set(p.data.seqs);
+      for (const seq of seqs) peer.pushed.delete(seq);
+      for (const m of this.#messages) if (seqs.has(m.seq) && m.reservedFor === peer.id) delete m.reservedFor;
+      peer.failing = true;
+      this.opts.audit?.("team.delivery_failed", {
+        adapter: peer.delivery.id,
+        to: peer.id,
+        workspace: peer.workspace,
+        seqs: [...seqs],
+      });
+      // Retried at the paced rate; a request to the app by name may go to its CLI meanwhile.
+      this.#retryHeld(peer.workspace, peer.provider);
+      this.#schedule(peer);
+      return { ok: true, result: {} };
     }
     if (action === "team_read" && !z.object({}).strict().safeParse(raw).success)
       return { ok: false, error: "bad_params" };
