@@ -453,10 +453,9 @@ export class TeamHub {
       if (!p.success) return { ok: false, error: "bad_params" };
       const before = peer.delivery;
       peer.delivery = selectDelivery({ provider: peer.provider, client: p.data, link: peer.link }, this.opts.chain);
-      // Its push route changed (the mod left): what it was already handed may be a turn in progress, so it stays
-      // reserved for this session (its team_read or leaving frees it), never handed to a second one.
       // A new route starts healthy: a failure on the old one says nothing about it.
       if (before.id !== peer.delivery.id) peer.failing = false;
+      // The mod left: what it was handed may be a turn in progress, so it stays reserved here, never re-handed.
       if (before.ackOnRead && before.id !== peer.delivery.id) {
         // A reloaded mod lost what it held: pushed again when one returns (a live one dedupes by epoch:seq).
         peer.pushed.clear();
