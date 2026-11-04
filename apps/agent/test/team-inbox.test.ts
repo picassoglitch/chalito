@@ -221,6 +221,26 @@ describe("Claude session inbox (the Chalito mod's route, no launch flag)", () =>
     first!.close();
   });
 
+  it("a hello split across writes still counts, and a socket that says something else is dropped", async () => {
+    const sock = inboxPath(temp("chalito-home-"), "claude", 4246);
+    const changed = vi.fn();
+    const inbox = await openInbox(sock, changed);
+    const { connect } = await import("node:net");
+    const good = connect(sock);
+    await new Promise((res) => good.once("connect", res));
+    good.write("chalito-team");
+    await new Promise((res) => setTimeout(res, 20));
+    good.write("-watch\n");
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledWith(true));
+    const bad = connect(sock);
+    const closed = new Promise((res) => bad.once("close", res));
+    bad.write("GET / HTTP/1.1\r\n\r\n");
+    await closed;
+    expect(changed).toHaveBeenCalledTimes(1);
+    good.destroy();
+    inbox!.close();
+  });
+
   it("team watch with no team server exits 3 and says why", async () => {
     let err = "";
     const code = await runTeamWatch(
@@ -308,6 +328,23 @@ describe("hub: hand-off failures and reloads after a route change", () => {
     r.hub.call(r.a.signal, "team_client", {});
     r.hub.call(r.a.signal, "team_delivery", { seqs: [seq], ok: false });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("after a late failure, a returning mod is wakeable again: the next request goes to it, not the CLI", async () => {
+    const run = vi.fn(async (_job: unknown) => "answered");
+    const r = setup({ has: () => true, run });
+    r.hub.call(r.s.signal, "team_send", { to: "claude", kind: "request", text: "first" });
+    vi.advanceTimersByTime(20);
+    r.hub.call(r.a.signal, "team_client", {});
+    r.hub.call(r.a.signal, "team_delivery", { seqs: [r.frames[0]![0]!], ok: false });
+    expect(run).toHaveBeenCalledTimes(1);
+    // Let that CLI run finish, so it is not what keeps the next request from the CLI.
+    await vi.advanceTimersByTimeAsync(1);
+    r.hub.call(r.a.signal, "team_client", { inbox: true });
+    r.hub.call(r.s.signal, "team_send", { to: "claude", kind: "request", text: "second" });
+    vi.advanceTimersByTime(20);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(r.frames.at(-1)).toHaveLength(1);
   });
 
   it("a mod that reconnects (reloaded, its pending list lost) is pushed again what it was handed", () => {

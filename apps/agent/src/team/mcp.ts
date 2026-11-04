@@ -437,6 +437,7 @@ export const runTeamMcp = async (
     redeclare();
   };
   let inboxRetry: ReturnType<typeof setInterval> | undefined;
+  let ended = false;
   if (provider === "claude" && where) {
     inbox = await openInbox(where, onHelper);
     // A sibling server still held the path (an overlapping /mcp restart): take it over once it is gone.
@@ -445,7 +446,8 @@ export const runTeamMcp = async (
         void openInbox(where, onHelper).then((opened) => {
           if (!opened) return;
           clearInterval(inboxRetry);
-          if (inbox) opened.close();
+          // The server may have ended while this open was in flight: never leave a listener behind.
+          if (inbox || ended) opened.close();
           else inbox = opened;
         });
       }, io.inboxRetryMs ?? 5000);
@@ -568,6 +570,7 @@ export const runTeamMcp = async (
     }
   } finally {
     link?.close();
+    ended = true;
     clearInterval(inboxRetry);
     inbox?.close();
   }

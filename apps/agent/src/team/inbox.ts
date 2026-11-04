@@ -56,9 +56,14 @@ export const openInbox = async (path: string, changed: (connected: boolean) => v
       socket.on("error", () => undefined);
       // A helper says hello first: a probe (another server checking the path) never counts as one.
       let joined = false;
+      let first = "";
       socket.setEncoding("utf8");
       socket.on("data", (chunk: string) => {
-        if (joined || !chunk.startsWith(HELLO)) return;
+        if (joined) return;
+        // The hello may arrive in pieces; anything else is not a helper.
+        first += chunk;
+        if (first.length < HELLO.length && !first.includes("\n")) return;
+        if (!first.startsWith(HELLO)) return void socket.destroy();
         joined = true;
         helpers.push(socket);
         if (helpers.length === 1) changed(true);

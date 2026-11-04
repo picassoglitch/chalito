@@ -455,10 +455,13 @@ export class TeamHub {
       peer.delivery = selectDelivery({ provider: peer.provider, client: p.data, link: peer.link }, this.opts.chain);
       // Its push route changed (the mod left): what it was already handed may be a turn in progress, so it stays
       // reserved for this session (its team_read or leaving frees it), never handed to a second one.
+      // A new route starts healthy: a failure on the old one says nothing about it.
+      if (before.id !== peer.delivery.id) peer.failing = false;
       if (before.ackOnRead && before.id !== peer.delivery.id) {
-        peer.failing = false;
         // A reloaded mod lost what it held: pushed again when one returns (a live one dedupes by epoch:seq).
         peer.pushed.clear();
+        // Its 10-minute grace counts from losing the wake, not from the push.
+        for (const m of this.#messages) if (m.reservedFor === peer.id) m.reservedAt = this.now();
       }
       this.opts.audit?.("team.delivery_selected", {
         peer: peer.id,
