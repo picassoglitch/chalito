@@ -49,11 +49,15 @@ export const envThread = (value: string | undefined): string | null => uuid(valu
 /** The next user turn: Claude's quoted, tag-free framing, each message tagged with its seq so team_read can dedupe.
  *  Null when it would not fit one argument: never cut, the batch then waits for team_read whole. */
 export const queueText = (batch: TeamBatch): string | null => {
-  const text = channelNotifications(batch)
-    .map((n, i) => `[Chalito team seq ${batch.messages[i]!.seq}]\n${(n.params as { content: string }).content}`)
-    .join("\n\n");
+  const text = batchText(batch);
   return Buffer.byteLength(text, "utf8") > MAX_BYTES ? null : text;
 };
+
+/** The peer-data framing for a batch delivered as a turn, with no size cap (an inbox line has none). */
+export const batchText = (batch: TeamBatch): string =>
+  channelNotifications(batch)
+    .map((n, i) => `[Chalito team seq ${batch.messages[i]!.seq}]\n${(n.params as { content: string }).content}`)
+    .join("\n\n");
 
 // No --resume: the owning session takes the message, never a competing turn. `=` keeps text starting with "-" a value.
 export const queueArgs = (thread: string, text: string): string[] => [

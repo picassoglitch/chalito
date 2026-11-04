@@ -1,0 +1,9 @@
+{
+  "name": "chalito-team",
+  "version": "0.1.0",
+  "description": "Chalito AI team: teammate messages start a turn once this session is idle, with no launch flag.",
+  "license": "UNLICENSED",
+  "author": {
+    "name": "picassoglitch"
+  }
+}

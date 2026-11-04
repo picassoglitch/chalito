@@ -1,0 +1,12 @@
+{
+  "name": "chalito",
+  "owner": {
+    "name": "picassoglitch"
+  },
+  "plugins": [
+    {
+      "name": "chalito-team",
+      "source": "./"
+    }
+  ]
+}

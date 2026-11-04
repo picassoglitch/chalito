@@ -1,11 +1,15 @@
 import { connect } from "node:net";
+import { join as joinPath } from "node:path";
 import type { Duplex } from "node:stream";
 import { openRpc } from "../code/cli.js";
 import { runMcpServer, type McpServerInfo } from "../computer/mcp-server.js";
 import { z } from "zod";
 import { TeamProvider } from "./hub.js";
 import { argvLoadsChannel, CHANNEL_CAPABILITY, channelNotifications, parentArgv } from "./delivery/mcp-channel.js";
+import { INBOX } from "./delivery/inbox.js";
+import { inboxPath as defaultInboxPath, openInbox, type Inbox } from "./inbox.js";
 import {
+  batchText,
   CODEX_QUEUE,
   codexThreadFrom,
   envThread,
@@ -97,6 +101,13 @@ const PERMANENT = new Set([
   "EPERM",
 ]);
 const RETRY_MS = [250, 500, 1000, 2000, 5000];
+/** Not trusted yet / not a workspace: the user may fix it any time, so keep serving and re-check. */
+const WAITING = new Set(["not_trusted", "unknown_workspace"]);
+const WAITING_RETRY_MS = 15_000;
+const waitingHint = (reason: string) =>
+  reason === "not_trusted"
+    ? "Trust this AI for the workspace in Chalito → Connections → AI team; it connects on its own after that."
+    : "Add this folder as a workspace in Chalito; it connects on its own after that.";
 const RECONNECTING = {
   ok: false as const,
   error: "reconnecting",
@@ -124,6 +135,12 @@ export const runTeamMcp = async (
     run?: string | undefined;
     /** The home folder: a session started outside any workspace joins it when it is one. */
     home?: string | undefined;
+    /** How often an untrusted app or folder re-checks with Chalito (default 15 s; tests). */
+    waitingRetryMs?: number;
+    /** Claude only: the session inbox socket a Chalito mod connects to; null turns it off (default: ~/.chalito). */
+    inboxPath?: string | null;
+    /** How often a session whose inbox path was taken retries it (default 5 s; tests). */
+    inboxRetryMs?: number;
     /** Codex only: CODEX_THREAD_ID as this process received it. */
     codexThread?: string | undefined;
     /** Codex only: CHALITO_TEAM_CODEX_QUEUE=1 turns on `codex queue` delivery. */
@@ -166,10 +183,17 @@ export const runTeamMcp = async (
     if (readSeqs.size > 1024) readSeqs.delete(readSeqs.values().next().value!);
   };
   let queueing = Promise.resolve();
+  // Claude: a Chalito mod in this Claude Code session connects to the inbox and submits pushed messages as a
+  // turn once the session is idle. No launch flag or warning screen; connected is the only liveness signal.
+  let inbox: Inbox | null = null;
   const redeclare = () => {
     if (!client) return;
-    const { codexThread: _old, ...rest } = client;
-    client = { ...rest, ...(thread && !queueOff ? { codexThread: thread } : {}) };
+    const { codexThread: _old, inbox: _i, ...rest } = client;
+    client = {
+      ...rest,
+      ...(thread && !queueOff ? { codexThread: thread } : {}),
+      ...(inbox?.connected ? { inbox: true } : {}),
+    };
     if (link) void declare(link, client);
   };
   const switchOff = (why: string) => {
@@ -228,10 +252,25 @@ export const runTeamMcp = async (
         );
       });
   };
+  const deliverInbox = (batch: TeamBatch) => {
+    const read = batch.messages.filter((m) => readSeqs.has(m.seq)).map((m) => m.seq);
+    report(read, true);
+    const fresh = batch.messages.filter((m) => !readSeqs.has(m.seq));
+    if (!fresh.length) return;
+    const seqs = fresh.map((m) => m.seq);
+    // Handed to the helper is not a started turn: no `queued` flag, the messages stay unread until team_read.
+    // One framed text per message, so the mod submits only the ones it hasn't seen; epoch: seqs restart with Chalito.
+    const items = fresh.map((m) => ({ seq: m.seq, text: batchText({ ...batch, messages: [m] }) }));
+    report(seqs, !!inbox?.send({ epoch: hub ?? self ?? "", items }));
+  };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;
     const f = Frame.safeParse(raw);
     const adapter = f.success ? f.data.teamDelivery.adapter : "";
+    if (f.success && adapter === INBOX && inbox) {
+      deliverInbox(f.data.teamDelivery.batch);
+      return;
+    }
     if (f.success && adapter === CODEX_QUEUE && codexOn) {
       enqueue(f.data.teamDelivery.batch);
       return;
@@ -305,6 +344,8 @@ export const runTeamMcp = async (
     };
   };
   let self: string | null = null;
+  /** The hub's run id, the epoch the inbox helper keys seqs by. */
+  let hub: string | null = null;
   const declare = async (link: Link, declaration: ClientDeclaration) => {
     const r = await link.call("team_client", declaration);
     const result = r.result as { wakes?: boolean; delivery?: string } | undefined;
@@ -333,9 +374,11 @@ export const runTeamMcp = async (
     }
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
     const before = self;
+    const beforeHub = hub;
     self = (joined.result as { self?: string } | undefined)?.self ?? null;
-    // A new id means a restarted Chalito whose seqs start over: old seq bookkeeping would mislabel new messages.
-    if (before && self !== before) {
+    hub = (joined.result as { hub?: string } | undefined)?.hub ?? null;
+    // A new hub run starts its seqs over: old seq bookkeeping would mislabel new messages.
+    if ((before && self !== before) || (beforeHub && hub !== beforeHub)) {
       queuedSeqs.clear();
       readSeqs.clear();
     }
@@ -343,6 +386,11 @@ export const runTeamMcp = async (
   };
 
   let link: Link | null = null;
+  /** Why the hub refused this app or folder; tools explain it until trust is granted. */
+  let waiting: string | null = null;
+  let kick = (): void => undefined;
+  /** Join attempts finished so far: a tool call waits for the one it triggered, not a fixed time. */
+  let attempts = 0;
   try {
     link = await open();
     await join(link);
@@ -352,7 +400,11 @@ export const runTeamMcp = async (
     const reason = err instanceof Error ? err.message : "connection_failed";
     const code = (err as NodeJS.ErrnoException | null)?.code;
     // Chalito not running yet: serve anyway and connect when it starts, instead of failing for good.
-    if (!PERMANENT.has(reason) && !PERMANENT.has(code ?? "")) {
+    // Aldo 2026-11-03 — an untrusted app or folder keeps serving: exiting showed "MCP failed" on every launch.
+    if (WAITING.has(reason)) {
+      waiting = reason;
+      io.err(`Chalito team: not connected yet (${reason}). ${waitingHint(reason)}\n`);
+    } else if (!PERMANENT.has(reason) && !PERMANENT.has(code ?? "")) {
       io.err(`Chalito team: waiting for Chalito (${code ?? reason}); tools answer once it is running.\n`);
     } else {
       const hint =
@@ -368,6 +420,38 @@ export const runTeamMcp = async (
       io.err(`Chalito team unavailable: ${reason}. ${hint}\n`);
       return 1;
     }
+  }
+
+  const where =
+    io.inboxPath !== undefined
+      ? io.inboxPath
+      : io.home && (io.platform ?? process.platform) !== "win32"
+        ? defaultInboxPath(joinPath(io.home, ".chalito"), provider, process.ppid)
+        : null;
+  const onHelper = (connected: boolean) => {
+    io.err(
+      connected
+        ? "Chalito team: the Chalito mod connected; messages start a turn once this session is idle.\n"
+        : "Chalito team: the Chalito mod disconnected; messages wait for team_read.\n",
+    );
+    redeclare();
+  };
+  let inboxRetry: ReturnType<typeof setInterval> | undefined;
+  let ended = false;
+  if (provider === "claude" && where) {
+    inbox = await openInbox(where, onHelper);
+    // A sibling server still held the path (an overlapping /mcp restart): take it over once it is gone.
+    if (!inbox)
+      inboxRetry = setInterval(() => {
+        void openInbox(where, onHelper).then((opened) => {
+          if (!opened) return;
+          clearInterval(inboxRetry);
+          // The server may have ended while this open was in flight: never leave a listener behind.
+          if (inbox || ended) opened.close();
+          else inbox = opened;
+        });
+      }, io.inboxRetryMs ?? 5000);
+    inboxRetry?.unref?.();
   }
 
   const served = runMcpServer({
@@ -390,7 +474,12 @@ export const runTeamMcp = async (
         };
       } else if (msg.method === "notifications/initialized" && !client) {
         const loaded = io.channelLoaded ?? (() => argvLoadsChannel(parentArgv() ?? []));
-        client = { ...declared, channel: loaded(), ...(thread ? { codexThread: thread } : {}) };
+        client = {
+          ...declared,
+          channel: loaded(),
+          ...(thread ? { codexThread: thread } : {}),
+          ...(inbox?.connected ? { inbox: true } : {}),
+        };
         if (link) void declare(link, client);
         for (const batch of queued.splice(0)) notify(batch);
       } else if (msg.method === "tools/call") bindThread(codexThreadFrom(params._meta));
@@ -398,10 +487,23 @@ export const runTeamMcp = async (
     call: async (tool, args) => {
       if (tool !== "team_read" && tool !== "team_send")
         return { ok: false, error: "unknown_tool", message: "Unknown team tool." };
+      if (!link && waiting) {
+        // Re-checked on every call, so granting trust works without restarting the app.
+        const before = attempts;
+        kick();
+        const until = Date.now() + 3000;
+        while (!link && attempts === before && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+      }
+      if (!link && waiting)
+        return {
+          ok: false,
+          error: waiting,
+          message: `Chalito team: not connected (${waiting}). ${waitingHint(waiting)}`,
+        };
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
       if (!reply.ok && reply.error === "closed") return RECONNECTING;
-      if (reply.ok && codexOn) {
+      if (reply.ok && (codexOn || inbox)) {
         const result = reply.result as { messages?: (TeamMessage & { queued?: boolean })[] };
         for (const m of result.messages ?? []) {
           markRead(m.seq);
@@ -437,16 +539,27 @@ export const runTeamMcp = async (
       }
       const delays = io.retryMs ?? RETRY_MS;
       for (let attempt = 0; !link; attempt++) {
-        const wait = delays[Math.min(attempt, delays.length - 1)]!;
-        if ((await Promise.race([served, new Promise((r) => setTimeout(r, wait))])) === "served") return 0;
+        const wait = waiting ? (io.waitingRetryMs ?? WAITING_RETRY_MS) : delays[Math.min(attempt, delays.length - 1)]!;
+        const kicked = new Promise<void>((r) => (kick = r));
+        if ((await Promise.race([served, new Promise((r) => setTimeout(r, wait)), kicked])) === "served") return 0;
         let next: Link | null = null;
         try {
           next = await open();
           await join(next);
           link = next;
+          if (waiting) io.err("Chalito team: connected.\n");
+          waiting = null;
+          attempts++;
         } catch (err) {
           next?.close();
+          attempts++;
           const reason = (err as NodeJS.ErrnoException | null)?.code ?? (err instanceof Error ? err.message : "");
+          if (WAITING.has(reason)) {
+            if (waiting !== reason) io.err(`Chalito team: not connected yet (${reason}). ${waitingHint(reason)}\n`);
+            waiting = reason;
+            continue;
+          }
+          waiting = null;
           if (attempt === 0) io.err(`Chalito team: reconnecting to Chalito (${reason || "unavailable"}).\n`);
           if (PERMANENT.has(reason)) {
             io.err(`Chalito team unavailable after reconnect: ${reason}. Reconnect this MCP server.\n`);
@@ -457,5 +570,8 @@ export const runTeamMcp = async (
     }
   } finally {
     link?.close();
+    ended = true;
+    clearInterval(inboxRetry);
+    inbox?.close();
   }
 };
