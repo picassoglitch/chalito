@@ -256,9 +256,8 @@ export const runTeamMcp = async (
     const fresh = batch.messages.filter((m) => !readSeqs.has(m.seq));
     if (!fresh.length) return;
     const seqs = fresh.map((m) => m.seq);
-    const ok = !!inbox?.send({ seqs, text: batchText({ ...batch, messages: fresh }) });
-    if (ok) for (const seq of seqs) queuedSeqs.add(seq);
-    report(seqs, ok);
+    // Handed to the helper is not a started turn: no `queued` flag, the messages stay unread until team_read.
+    report(seqs, !!inbox?.send({ seqs, text: batchText({ ...batch, messages: fresh }) }));
   };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;

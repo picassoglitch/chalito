@@ -56,6 +56,8 @@ export const register: Register = (on) => {
         for await (const { stream, text } of $.process.spawn({ argv: [agent, "team", "watch"] })) {
           if (stream !== "stdout") continue;
           buffer += text;
+          // One batch is well under this; a stream that never ends a line is dropped, not buffered forever.
+          if (buffer.length > 2_000_000 && !buffer.includes("\n")) buffer = "";
           for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
             take(buffer.slice(0, at));
             buffer = buffer.slice(at + 1);

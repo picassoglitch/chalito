@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 
@@ -20,6 +20,9 @@ export const openInbox = (path: string, changed: (connected: boolean) => void): 
     const folder = join(path, "..");
     try {
       mkdirSync(folder, { recursive: true, mode: 0o700 });
+      // A real folder this user owns, never a link: other users can't plant or watch a socket here.
+      const f = lstatSync(folder);
+      if (!f.isDirectory() || (process.getuid && f.uid !== process.getuid())) return resolve(null);
       chmodSync(folder, 0o700);
       // A file left by a crashed process with the same pid: nothing listens on it.
       if (existsSync(path)) unlinkSync(path);

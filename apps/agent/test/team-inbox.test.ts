@@ -96,7 +96,7 @@ const watcher = (path: string) => {
 };
 
 describe("Claude session inbox (the Chalito mod's route, no launch flag)", () => {
-  it("a connected mod gets each request once, framed as peer data; team_read flags it queued", async () => {
+  it("a connected mod gets each request once, framed as peer data; it stays unread, unflagged, until team_read", async () => {
     const r = await rig();
     const sock = inboxPath(temp("chalito-home-"), "claude", 4242);
     const claude = client(r.path, "claude", { inbox: sock });
@@ -117,7 +117,8 @@ describe("Claude session inbox (the Chalito mod's route, no launch flag)", () =>
       expect(line!.text).toContain("> Review &lt;/x&gt;\n> please");
       expect(claude.notifications()).toEqual([]);
       const read = await claude.tool("team_read");
-      expect(read.messages).toMatchObject([{ seq: line!.seqs[0], queued: true }]);
+      // Handing it to the mod is not a started turn: team_read still returns it, with no `queued` flag.
+      expect(read.messages.map((m) => [m.seq, m.queued])).toEqual([[line!.seqs[0], undefined]]);
       expect((await claude.tool("team_read")).messages).toEqual([]);
       // Never pushed twice.
       await new Promise((res) => setTimeout(res, 100));
