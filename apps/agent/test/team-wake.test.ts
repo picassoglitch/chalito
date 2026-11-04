@@ -101,6 +101,9 @@ const rig = async (audit?: (t: string, m: Record<string, unknown>) => void) => {
     untrust: () => {
       trusted = false;
     },
+    trust: () => {
+      trusted = true;
+    },
     restart: async () => {
       await server.close();
       server = await serve(path, hub());
@@ -256,7 +259,7 @@ describe("push delivery over the real socket and stdio", () => {
     }
   });
 
-  it("stops reconnecting and exits when trust was revoked while Chalito was down", async () => {
+  it("keeps serving when trust was revoked while Chalito was down, explains it, and reconnects once trusted again", async () => {
     const r = await rig();
     const claude = client(r.path, "claude", { channel: true });
     await claude.init();
@@ -266,10 +269,34 @@ describe("push delivery over the real socket and stdio", () => {
     await new Promise((res) => setTimeout(res, 100));
     r.untrust();
     await r.restart();
-    expect(await claude.done).toBe(1);
-    expect(claude.errors()).toContain("after reconnect: not_trusted");
+    // No exit: the app would show "MCP server failed" on every launch.
+    await vi.waitFor(() => expect(claude.errors()).toContain("not connected yet (not_trusted)"));
+    const refused = await claude.tool("team_read");
+    expect(refused.error).toContain("Trust this AI for the workspace in Chalito");
+    // Trust granted again: the next tool call re-checks and connects, no restart needed.
+    r.trust();
+    await vi.waitFor(async () => expect((await claude.tool("team_read")).self).toBeDefined(), { timeout: 4000 });
+    expect(claude.errors()).toContain("Chalito team: connected.");
     claude.end();
+    expect(await claude.done).toBe(0);
     await r.close();
+  });
+
+  it("an app that starts before it is trusted stays up, says why, and joins once trusted", async () => {
+    const r = await rig();
+    r.untrust();
+    const codex = client(r.path, "codex");
+    try {
+      await codex.init();
+      await vi.waitFor(() => expect(codex.errors()).toContain("not connected yet (not_trusted)"));
+      expect((await codex.tool("team_send", { text: "hi" })).error).toContain("Chalito → Connections → AI team");
+      r.trust();
+      await vi.waitFor(async () => expect((await codex.tool("team_read")).self).toBeDefined(), { timeout: 4000 });
+    } finally {
+      codex.end();
+      expect(await codex.done).toBe(0);
+      await r.close();
+    }
   });
 
   it("a burst reaches Claude as one capped batch, then the rest", async () => {

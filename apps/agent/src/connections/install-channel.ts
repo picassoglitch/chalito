@@ -17,7 +17,7 @@ import { isDeepStrictEqual } from "node:util";
 import { parse as parseToml } from "smol-toml";
 import { stableAgentPath } from "../native/stable-bin.js";
 
-// A user-scope MCP entry `chalito` in each AI tool's own config; same safety rules as native/connectors.ts.
+// A user-scope MCP entry `chalito_team` in each AI tool's own config; same safety rules as native/connectors.ts.
 
 /** Tools whose user MCP config Chalito knows how to edit, by their FoundTool id. */
 export const CHANNEL_TOOLS = ["claude-code", "codex", "cursor", "cursor-cli", "grok", "gemini"] as const;
@@ -34,7 +34,9 @@ const TARGET: Record<ChannelTool, Target> = {
   grok: "grok",
   gemini: "gemini",
 };
-export const SERVER_NAME = "chalito";
+// Aldo 2026-11-03 — must match push detection, tool names and docs (`mcp__chalito_team__*`); old `chalito` entries migrate.
+export const SERVER_NAME = "chalito_team";
+export const LEGACY_SERVER_NAME = "chalito";
 
 export const CHANNEL_ERRORS = [
   "unknown_tool",
@@ -57,7 +59,7 @@ export const channelErrorCode = (error: unknown): ChannelError | "internal" => {
 };
 
 export interface ChannelView {
-  /** Our `chalito` entry is in the tool's config. */
+  /** Our `chalito_team` entry is in the tool's config. */
   connected: boolean;
   /** "ready": Connect works; "needs_update": this agent build has no `team mcp` for the tool yet. */
   channel: "ready" | "needs_update";
@@ -130,6 +132,19 @@ const runHelp = (
       done(timedOut ? { failed: "timeout" } : out ? { out } : { failed: "no_output" });
     });
   });
+
+const tomlKey = (k: string) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k));
+/** Plain TOML for what an MCP entry holds (strings, numbers, booleans, arrays, flat tables); anything else is refused. */
+const tomlValue = (v: unknown): string => {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) return String(v);
+  if (Array.isArray(v)) return `[${v.map(tomlValue).join(", ")}]`;
+  if (object(v))
+    return `{ ${Object.entries(v)
+      .map(([k, x]) => `${tomlKey(k)} = ${tomlValue(x)}`)
+      .join(", ")} }`;
+  throw new Error("config_layout");
+};
 
 /** Our entry: a Chalito binary (or node + Chalito's script) running `team mcp <tool>`, whatever its path. */
 const isOurs = (entry: unknown, arg: string): boolean => {
@@ -268,23 +283,41 @@ export class ChannelInstaller {
   }
 
   /** The config text with our entry set to `entry` (null: removed); everything else stays as it was. */
-  #edit(tool: ChannelTool, current: Parsed, entry: { command: string; args: string[] } | null): string {
-    if (this.#toml(tool)) return this.#editToml(current, entry);
+  #edit(
+    tool: ChannelTool,
+    current: Parsed,
+    entry: { command: string; args: string[] } | null,
+    name = SERVER_NAME,
+    carry: Record<string, unknown> = {},
+  ): string {
+    if (this.#toml(tool)) return this.#editToml(current, entry, name, carry);
     const doc: Record<string, unknown> = current.raw && current.raw.trim() ? JSON.parse(current.raw) : {};
     const servers = { ...current.servers };
-    // Fields the person added to our entry (env, timeout) survive a path repair.
-    const kept = object(servers[SERVER_NAME]) ? servers[SERVER_NAME] : {};
+    // Fields the person added to our entry (env, timeout) survive a path repair or the rename.
+    const kept = object(servers[name]) ? servers[name] : carry;
     if (entry)
-      servers[SERVER_NAME] =
-        TARGET[tool] === "claude" ? { type: "stdio", env: {}, ...kept, ...entry } : { ...kept, ...entry };
-    else delete servers[SERVER_NAME];
+      servers[name] = TARGET[tool] === "claude" ? { type: "stdio", env: {}, ...kept, ...entry } : { ...kept, ...entry };
+    else delete servers[name];
     return JSON.stringify({ ...doc, mcpServers: servers }, null, 2) + "\n";
   }
 
   /** TOML keeps the person's comments and layout: our table is cut and appended as text, then re-parsed to prove it. */
-  #editToml(current: Parsed, entry: { command: string; args: string[] } | null): string {
+  #editToml(
+    current: Parsed,
+    entry: { command: string; args: string[] } | null,
+    name = SERVER_NAME,
+    carry: Record<string, unknown> = {},
+  ): string {
     const raw = current.raw ?? "";
-    const header = /^\s*\[\s*mcp_servers\s*\.\s*(?:chalito|"chalito"|'chalito')\s*(?:\.[^\]]*)?\]\s*(?:#.*)?$/;
+    // Fields the person added (env, timeouts) are rewritten with the table, never dropped.
+    const own = current.servers[name];
+    const extra: Record<string, unknown> = { ...carry };
+    if (object(own)) for (const [k, v] of Object.entries(own)) if (k !== "command" && k !== "args") extra[k] = v;
+    // Plain objects: the TOML parser's null-prototype ones never compare equal below.
+    Object.assign(extra, JSON.parse(JSON.stringify(extra)) as Record<string, unknown>);
+    const header = new RegExp(
+      `^\\s*\\[\\s*mcp_servers\\s*\\.\\s*(?:${name}|"${name}"|'${name}')\\s*(?:\\.[^\\]]*)?\\]\\s*(?:#.*)?$`,
+    );
     const lines = raw.split(/\r?\n/);
     const kept: string[] = [];
     let skipping = false;
@@ -296,9 +329,10 @@ export class ChannelInstaller {
     const eol = raw.includes("\r\n") ? "\r\n" : "\n";
     if (entry) {
       // JSON string escapes are valid TOML basic-string escapes.
-      const block = `[mcp_servers.${SERVER_NAME}]\ncommand = ${JSON.stringify(entry.command)}\nargs = [${entry.args
+      const extraLines = Object.entries(extra).map(([k, v]) => `${tomlKey(k)} = ${tomlValue(v)}\n`);
+      const block = `[mcp_servers.${name}]\ncommand = ${JSON.stringify(entry.command)}\nargs = [${entry.args
         .map((a) => JSON.stringify(a))
-        .join(", ")}]\n`;
+        .join(", ")}]\n${extraLines.join("")}`;
       text = text.trim() ? `${text.replace(/\s*$/, "")}\n\n${block}` : block;
     } else if (text.trim()) text = `${text.replace(/\s*$/, "")}\n`;
     else text = "";
@@ -315,16 +349,16 @@ export class ChannelInstaller {
     const strip = (doc: Record<string, unknown>) => {
       const copy = structuredClone(doc);
       if (object(copy.mcp_servers)) {
-        delete copy.mcp_servers[SERVER_NAME];
+        delete copy.mcp_servers[name];
         if (!Object.keys(copy.mcp_servers).length) delete copy.mcp_servers;
       }
       return copy;
     };
-    const ours = object(after.mcp_servers) ? after.mcp_servers[SERVER_NAME] : undefined;
+    const ours = object(after.mcp_servers) ? after.mcp_servers[name] : undefined;
     // Inline or dotted-key forms aren't cut by the text edit: refuse rather than guess.
     if (
       !isDeepStrictEqual(strip(before), strip(after)) ||
-      (entry ? !isDeepStrictEqual(ours, entry) : ours !== undefined)
+      (entry ? !isDeepStrictEqual(ours, { ...entry, ...extra }) : ours !== undefined)
     )
       throw new Error("config_layout");
     return text;
@@ -337,7 +371,10 @@ export class ChannelInstaller {
     try {
       const current = this.#parse(tool, this.#readRaw(tool));
       const existing = current.servers[SERVER_NAME];
-      const connected = isOurs(existing, this.teamArg(tool));
+      // An old `chalito` entry still connects; repair() renames it on the next agent start.
+      const connected =
+        isOurs(existing, this.teamArg(tool)) ||
+        (existing === undefined && isOurs(current.servers[LEGACY_SERVER_NAME], this.teamArg(tool)));
       const error: ChannelError | undefined =
         existing !== undefined && !connected
           ? "name_taken"
@@ -374,8 +411,19 @@ export class ChannelInstaller {
     const current = this.#parse(tool, raw);
     const existing = current.servers[SERVER_NAME];
     if (existing !== undefined && !isOurs(existing, this.teamArg(tool))) throw new Error("name_taken");
-    if (entry ? isDeepStrictEqual(this.#plain(existing), entry) : existing === undefined) return;
-    const next = this.#edit(tool, current, entry);
+    const legacy = current.servers[LEGACY_SERVER_NAME];
+    const legacyOurs = isOurs(legacy, this.teamArg(tool));
+    if (!legacyOurs && (entry ? isDeepStrictEqual(this.#plain(existing), entry) : existing === undefined)) return;
+    let next = raw ?? "";
+    let carry: Record<string, unknown> = {};
+    if (legacyOurs) {
+      // Our old entry goes in the same write, so the tool never has two team servers.
+      const { command: _c, args: _a, ...rest } = legacy as Record<string, unknown>;
+      carry = rest;
+      next = this.#edit(tool, current, null, LEGACY_SERVER_NAME);
+    }
+    const afterLegacy = legacyOurs ? this.#parse(tool, next) : current;
+    next = this.#edit(tool, afterLegacy, entry, SERVER_NAME, carry);
     // The tool may have saved its config while we built ours: never write over that.
     if (digest(this.#readRaw(tool)) !== digest(raw)) throw new Error("config_changed");
     if (raw !== null) this.#backup(tool, raw);
@@ -396,10 +444,14 @@ export class ChannelInstaller {
       if (seen.has(TARGET[tool])) continue;
       seen.add(TARGET[tool]);
       try {
-        const existing = this.#parse(tool, this.#readRaw(tool)).servers[SERVER_NAME];
-        if (!isOurs(existing, this.teamArg(tool))) continue;
+        const servers = this.#parse(tool, this.#readRaw(tool)).servers;
+        const existing = servers[SERVER_NAME];
+        const legacy = isOurs(servers[LEGACY_SERVER_NAME], this.teamArg(tool));
+        if (!isOurs(existing, this.teamArg(tool)) && !legacy) continue;
+        // Someone else's `chalito_team` blocks the rename: leave the old entry working.
+        if (existing !== undefined && !isOurs(existing, this.teamArg(tool))) continue;
         const want = this.#entry(tool);
-        if (isDeepStrictEqual(this.#plain(existing), want)) continue;
+        if (!legacy && isDeepStrictEqual(this.#plain(existing), want)) continue;
         this.#apply(tool, want);
         fixed.push(tool);
         this.d.log?.("connections.channel_repaired", { tool });

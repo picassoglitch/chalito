@@ -97,6 +97,13 @@ const PERMANENT = new Set([
   "EPERM",
 ]);
 const RETRY_MS = [250, 500, 1000, 2000, 5000];
+/** Not trusted yet / not a workspace: the user may fix it any time, so keep serving and re-check. */
+const WAITING = new Set(["not_trusted", "unknown_workspace"]);
+const WAITING_RETRY_MS = 15_000;
+const waitingHint = (reason: string) =>
+  reason === "not_trusted"
+    ? "Trust this AI for the workspace in Chalito → Connections → AI team; it connects on its own after that."
+    : "Add this folder as a workspace in Chalito; it connects on its own after that.";
 const RECONNECTING = {
   ok: false as const,
   error: "reconnecting",
@@ -124,6 +131,8 @@ export const runTeamMcp = async (
     run?: string | undefined;
     /** The home folder: a session started outside any workspace joins it when it is one. */
     home?: string | undefined;
+    /** How often an untrusted app or folder re-checks with Chalito (default 15 s; tests). */
+    waitingRetryMs?: number;
     /** Codex only: CODEX_THREAD_ID as this process received it. */
     codexThread?: string | undefined;
     /** Codex only: CHALITO_TEAM_CODEX_QUEUE=1 turns on `codex queue` delivery. */
@@ -343,6 +352,11 @@ export const runTeamMcp = async (
   };
 
   let link: Link | null = null;
+  /** Why the hub refused this app or folder; tools explain it until trust is granted. */
+  let waiting: string | null = null;
+  let kick = (): void => undefined;
+  /** Join attempts finished so far: a tool call waits for the one it triggered, not a fixed time. */
+  let attempts = 0;
   try {
     link = await open();
     await join(link);
@@ -352,7 +366,11 @@ export const runTeamMcp = async (
     const reason = err instanceof Error ? err.message : "connection_failed";
     const code = (err as NodeJS.ErrnoException | null)?.code;
     // Chalito not running yet: serve anyway and connect when it starts, instead of failing for good.
-    if (!PERMANENT.has(reason) && !PERMANENT.has(code ?? "")) {
+    // Aldo 2026-11-03 — an untrusted app or folder keeps serving: exiting showed "MCP failed" on every launch.
+    if (WAITING.has(reason)) {
+      waiting = reason;
+      io.err(`Chalito team: not connected yet (${reason}). ${waitingHint(reason)}\n`);
+    } else if (!PERMANENT.has(reason) && !PERMANENT.has(code ?? "")) {
       io.err(`Chalito team: waiting for Chalito (${code ?? reason}); tools answer once it is running.\n`);
     } else {
       const hint =
@@ -398,6 +416,19 @@ export const runTeamMcp = async (
     call: async (tool, args) => {
       if (tool !== "team_read" && tool !== "team_send")
         return { ok: false, error: "unknown_tool", message: "Unknown team tool." };
+      if (!link && waiting) {
+        // Re-checked on every call, so granting trust works without restarting the app.
+        const before = attempts;
+        kick();
+        const until = Date.now() + 3000;
+        while (!link && attempts === before && Date.now() < until) await new Promise((r) => setTimeout(r, 20));
+      }
+      if (!link && waiting)
+        return {
+          ok: false,
+          error: waiting,
+          message: `Chalito team: not connected (${waiting}). ${waitingHint(waiting)}`,
+        };
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
       if (!reply.ok && reply.error === "closed") return RECONNECTING;
@@ -437,16 +468,27 @@ export const runTeamMcp = async (
       }
       const delays = io.retryMs ?? RETRY_MS;
       for (let attempt = 0; !link; attempt++) {
-        const wait = delays[Math.min(attempt, delays.length - 1)]!;
-        if ((await Promise.race([served, new Promise((r) => setTimeout(r, wait))])) === "served") return 0;
+        const wait = waiting ? (io.waitingRetryMs ?? WAITING_RETRY_MS) : delays[Math.min(attempt, delays.length - 1)]!;
+        const kicked = new Promise<void>((r) => (kick = r));
+        if ((await Promise.race([served, new Promise((r) => setTimeout(r, wait)), kicked])) === "served") return 0;
         let next: Link | null = null;
         try {
           next = await open();
           await join(next);
           link = next;
+          if (waiting) io.err("Chalito team: connected.\n");
+          waiting = null;
+          attempts++;
         } catch (err) {
           next?.close();
+          attempts++;
           const reason = (err as NodeJS.ErrnoException | null)?.code ?? (err instanceof Error ? err.message : "");
+          if (WAITING.has(reason)) {
+            if (waiting !== reason) io.err(`Chalito team: not connected yet (${reason}). ${waitingHint(reason)}\n`);
+            waiting = reason;
+            continue;
+          }
+          waiting = null;
           if (attempt === 0) io.err(`Chalito team: reconnecting to Chalito (${reason || "unavailable"}).\n`);
           if (PERMANENT.has(reason)) {
             io.err(`Chalito team unavailable after reconnect: ${reason}. Reconnect this MCP server.\n`);

@@ -81,8 +81,8 @@ describe.each(CHANNEL_TOOLS)("channel for %s on a real temp home", (tool) => {
     await r.installer.connect(tool);
     const after = r.read(tool);
     const s = servers(tool, after);
-    expect(s.chalito).toMatchObject({ command: AGENT, args: ["team", "mcp", arg[tool]] });
-    if (tool === "claude-code") expect(s.chalito!.type).toBe("stdio");
+    expect(s.chalito_team).toMatchObject({ command: AGENT, args: ["team", "mcp", arg[tool]] });
+    if (tool === "claude-code") expect(s.chalito_team!.type).toBe("stdio");
     expect(s.github).toEqual(servers(tool, before).github);
     if (isToml(tool)) {
       // Comments and the person's layout survive: our table is appended, not re-serialized.
@@ -98,7 +98,7 @@ describe.each(CHANNEL_TOOLS)("channel for %s on a real temp home", (tool) => {
 
     await r.installer.disconnect(tool);
     const off = r.read(tool);
-    expect(servers(tool, off).chalito).toBeUndefined();
+    expect(servers(tool, off).chalito_team).toBeUndefined();
     expect(servers(tool, off).github).toEqual(servers(tool, before).github);
     if (isToml(tool)) expect(off.trimEnd()).toBe(before.trimEnd());
     expect((await r.installer.view(tool)).connected).toBe(false);
@@ -109,7 +109,7 @@ describe.each(CHANNEL_TOOLS)("channel for %s on a real temp home", (tool) => {
   it("creates the config when the tool has none yet", async () => {
     const r = rig();
     await r.installer.connect(tool);
-    expect(servers(tool, r.read(tool)).chalito).toMatchObject({ args: ["team", "mcp", arg[tool]] });
+    expect(servers(tool, r.read(tool)).chalito_team).toMatchObject({ args: ["team", "mcp", arg[tool]] });
     expect(r.backups()).toHaveLength(0);
   });
 
@@ -124,11 +124,11 @@ describe.each(CHANNEL_TOOLS)("channel for %s on a real temp home", (tool) => {
     expect(r.backups()).toHaveLength(0);
   });
 
-  it("leaves someone else's server named chalito alone", async () => {
+  it("leaves someone else's server named chalito_team alone", async () => {
     const r = rig();
     const theirs = isToml(tool)
-      ? `[mcp_servers.chalito]\ncommand = "my-own"\nargs = []\n`
-      : JSON.stringify({ mcpServers: { chalito: { command: "my-own", args: [] } } });
+      ? `[mcp_servers.chalito_team]\ncommand = "my-own"\nargs = []\n`
+      : JSON.stringify({ mcpServers: { chalito_team: { command: "my-own", args: [] } } });
     r.put(tool, theirs);
     expect(await code(r.installer.connect(tool))).toBe("name_taken");
     expect(await code(r.installer.disconnect(tool))).toBe("name_taken");
@@ -153,7 +153,7 @@ describe("channel safety", () => {
     expect(await code(s.installer.connect("codex"))).toBe("unstable_path");
     s.put("codex", r.read("codex"));
     await s.installer.disconnect("codex");
-    expect(servers("codex", s.read("codex")).chalito).toBeUndefined();
+    expect(servers("codex", s.read("codex")).chalito_team).toBeUndefined();
   });
 
   it("refuses a symlinked config (it could point anywhere)", async () => {
@@ -180,7 +180,7 @@ describe("channel safety", () => {
 
   it("refuses a TOML entry it can't cut cleanly (inline table) instead of guessing", async () => {
     const r = rig();
-    const inline = `mcp_servers = { chalito = { command = "${AGENT}", args = ["team", "mcp", "codex"] } }\n`;
+    const inline = `mcp_servers = { chalito_team = { command = "${AGENT}", args = ["team", "mcp", "codex"] } }\n`;
     r.put("codex", inline);
     expect(await code(r.installer.disconnect("codex"))).toBe("config_layout");
     expect(r.read("codex")).toBe(inline);
@@ -216,7 +216,7 @@ describe("channel safety", () => {
     const path = 'C:\\Users\\Ana "A"\\AppData\\Local\\Chalito\\chalito-agent.exe';
     const r = rig({ command: [path] });
     await r.installer.connect("grok");
-    expect(servers("grok", r.read("grok")).chalito).toEqual({ command: path, args: ["team", "mcp", "grok"] });
+    expect(servers("grok", r.read("grok")).chalito_team).toEqual({ command: path, args: ["team", "mcp", "grok"] });
   });
 
   it("repair moves our entries to the current agent path and touches nothing else", async () => {
@@ -227,7 +227,7 @@ describe("channel safety", () => {
     await old.installer.connect("claude-code");
     const now = new ChannelInstaller({ home: old.home, dir: old.dir, env: {}, platform: "linux", command: [AGENT] });
     expect(now.repair().sort()).toEqual(["claude-code", "codex"]);
-    expect(servers("codex", old.read("codex")).chalito!.command).toBe(AGENT);
+    expect(servers("codex", old.read("codex")).chalito_team!.command).toBe(AGENT);
     expect(servers("claude-code", old.read("claude-code")).github).toBeTruthy();
     expect(now.repair()).toEqual([]);
   });
@@ -245,7 +245,7 @@ describe("review follow-ups", () => {
   it("a third-party server that happens to run `team mcp` is not ours", async () => {
     const r = rig();
     const theirs = JSON.stringify({
-      mcpServers: { chalito: { command: "npx", args: ["other-pkg", "team", "mcp", "claude"] } },
+      mcpServers: { chalito_team: { command: "npx", args: ["other-pkg", "team", "mcp", "claude"] } },
     });
     r.put("claude-code", theirs);
     expect(await code(r.installer.disconnect("claude-code"))).toBe("name_taken");
@@ -277,14 +277,77 @@ describe("review follow-ups", () => {
     await old.installer.connect("cursor");
     const file = old.read("cursor");
     const doc = JSON.parse(file);
-    doc.mcpServers.chalito.env = { DEBUG: "1" };
+    doc.mcpServers.chalito_team.env = { DEBUG: "1" };
     old.put("cursor", JSON.stringify(doc));
     const now = new ChannelInstaller({ home: old.home, dir: old.dir, env: {}, platform: "linux", command: [AGENT] });
     expect(now.repair()).toEqual(["cursor"]);
-    expect(servers("cursor", old.read("cursor")).chalito).toEqual({
+    expect(servers("cursor", old.read("cursor")).chalito_team).toEqual({
       command: AGENT,
       args: ["team", "mcp", "cursor"],
       env: { DEBUG: "1" },
+    });
+  });
+
+  it.each(CHANNEL_TOOLS)(
+    "%s: an old `chalito` entry is renamed to chalito_team in one write, keeping env and every other entry",
+    (tool) => {
+      const r = rig();
+      const before = isToml(tool)
+        ? `${SEED.toml}\n[mcp_servers.chalito]\ncommand = "/tmp/.mount_x/chalito-agent"\nargs = ["team", "mcp", "${arg[tool]}"]\nenv = { CHALITO_TEAM_CODEX_QUEUE = "1" }\n`
+        : JSON.stringify({
+            ...JSON.parse(SEED.json),
+            mcpServers: {
+              ...(JSON.parse(SEED.json).mcpServers ?? {}),
+              chalito: {
+                command: "/tmp/.mount_x/chalito-agent",
+                args: ["team", "mcp", arg[tool]],
+                env: { CHALITO_TEAM_CODEX_QUEUE: "1" },
+              },
+            },
+          });
+      r.put(tool, before);
+      // cursor and cursor-cli share one file: repair reports whichever it reached first.
+      expect(r.installer.repair()).toHaveLength(1);
+      const after = servers(tool, r.read(tool));
+      expect(after.chalito).toBeUndefined();
+      expect(after.chalito_team).toMatchObject({
+        command: AGENT,
+        args: ["team", "mcp", arg[tool]],
+        env: { CHALITO_TEAM_CODEX_QUEUE: "1" },
+      });
+      // Everything else is exactly as it was.
+      const { chalito: _old, ...rest } = servers(tool, before);
+      const { chalito_team: _new, ...restAfter } = after;
+      expect(restAfter).toEqual(rest);
+      // Nothing left to do on the next start.
+      expect(r.installer.repair()).toEqual([]);
+    },
+  );
+
+  it("someone else's `chalito` entry is never renamed or removed; Connect adds chalito_team beside it", async () => {
+    const r = rig();
+    const theirs = JSON.stringify({ mcpServers: { chalito: { command: "my-own", args: [] } } });
+    r.put("cursor", theirs);
+    expect(r.installer.repair()).toEqual([]);
+    await r.installer.connect("cursor");
+    const s = servers("cursor", r.read("cursor"));
+    expect(s.chalito).toEqual({ command: "my-own", args: [] });
+    expect(s.chalito_team).toMatchObject({ command: AGENT, args: ["team", "mcp", "cursor"] });
+  });
+
+  it("a TOML path repair keeps fields the person added", () => {
+    const old = rig({ command: ["/tmp/.mount_x/chalito-agent"] });
+    old.put(
+      "codex",
+      `[mcp_servers.chalito_team]\ncommand = "/tmp/.mount_x/chalito-agent"\nargs = ["team", "mcp", "codex"]\nenv = { CHALITO_TEAM_CODEX_QUEUE = "1" }\nstartup_timeout_sec = 20\n`,
+    );
+    const now = new ChannelInstaller({ home: old.home, dir: old.dir, env: {}, platform: "linux", command: [AGENT] });
+    expect(now.repair()).toEqual(["codex"]);
+    expect(servers("codex", old.read("codex")).chalito_team).toEqual({
+      command: AGENT,
+      args: ["team", "mcp", "codex"],
+      env: { CHALITO_TEAM_CODEX_QUEUE: "1" },
+      startup_timeout_sec: 20,
     });
   });
 
