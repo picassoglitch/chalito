@@ -34,6 +34,8 @@ export interface DeliveryAdapter {
   readonly id: string;
   /** Can reach an idle session; false means the peer only gets messages by calling team_read. */
   readonly canWake: boolean;
+  /** Delivery has no receipt: pushed messages stay unread until team_read, and are pushed once. */
+  readonly ackOnRead?: boolean;
   /** True once handed to the transport. False keeps the messages unread for the next try or team_read. */
   deliver(batch: TeamBatch, peer: DeliveryPeer): boolean;
 }
@@ -47,6 +49,8 @@ export const ClientDeclaration = z
     experimental: z.array(z.string().max(128)).max(32).default([]),
     /** The client loaded this server as a Claude Code channel (its launch flags name server:chalito_team). */
     channel: z.boolean().default(false),
+    /** The Codex thread this session runs in, as Codex itself reported it; enables `codex queue` delivery. */
+    codexThread: z.string().uuid().optional(),
   })
   .strict();
 export type ClientDeclaration = z.infer<typeof ClientDeclaration>;

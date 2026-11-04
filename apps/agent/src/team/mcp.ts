@@ -5,7 +5,15 @@ import { runMcpServer, type McpServerInfo } from "../computer/mcp-server.js";
 import { z } from "zod";
 import { TeamProvider } from "./hub.js";
 import { argvLoadsChannel, CHANNEL_CAPABILITY, channelNotifications, parentArgv } from "./delivery/mcp-channel.js";
-import type { ClientDeclaration, TeamBatch } from "./delivery/types.js";
+import {
+  CODEX_QUEUE,
+  codexThreadFrom,
+  envThread,
+  queueText,
+  runCodexQueue,
+  type QueueRunner,
+} from "./delivery/codex-queue.js";
+import type { ClientDeclaration, TeamBatch, TeamMessage } from "./delivery/types.js";
 
 export const TEAM_INFO: McpServerInfo = {
   name: "chalito_team",
@@ -116,6 +124,14 @@ export const runTeamMcp = async (
     run?: string | undefined;
     /** The home folder: a session started outside any workspace joins it when it is one. */
     home?: string | undefined;
+    /** Codex only: CODEX_THREAD_ID as this process received it. */
+    codexThread?: string | undefined;
+    /** Codex only: CHALITO_TEAM_CODEX_QUEUE=1 turns on `codex queue` delivery. */
+    codexQueueOptIn?: boolean;
+    /** Overrides process.platform (tests). */
+    platform?: NodeJS.Platform;
+    /** Codex only: hands a batch to `codex queue`; default runs the CLI. */
+    codexQueue?: QueueRunner;
   },
   path: string | null,
   provider: string,
@@ -132,10 +148,95 @@ export const runTeamMcp = async (
   const notify = (batch: TeamBatch) => {
     for (const n of channelNotifications(batch)) io.out(`${JSON.stringify({ jsonrpc: "2.0", ...n })}\n`);
   };
+  // Codex, opt-in until verified live: the first thread Codex reports is this session's. A second, different one
+  // means the process serves several threads, so pushing is unsafe: back to pull for the rest of its life.
+  const codexOn = provider === "codex" && io.codexQueueOptIn === true && (io.platform ?? process.platform) !== "win32";
+  if (provider === "codex" && io.codexQueueOptIn && !codexOn)
+    io.err("Chalito team: codex queue is not available on Windows (npm installs codex.cmd); using team_read.\n");
+  let thread: string | null = codexOn ? envThread(io.codexThread) : null;
+  /** Why codex queue was switched off for good in this process; null while it may be used. */
+  let queueOff: string | null = null;
+  let failures = 0;
+  /** Seqs `codex queue` accepted: still unread at the hub, so team_read flags them instead of hiding them. */
+  const queuedSeqs = new Set<number>();
+  /** Seqs a tool reply already handed to Codex (most recent 1024): never queued afterwards. */
+  const readSeqs = new Set<number>();
+  const markRead = (seq: number) => {
+    readSeqs.add(seq);
+    if (readSeqs.size > 1024) readSeqs.delete(readSeqs.values().next().value!);
+  };
+  let queueing = Promise.resolve();
+  const redeclare = () => {
+    if (!client) return;
+    const { codexThread: _old, ...rest } = client;
+    client = { ...rest, ...(thread && !queueOff ? { codexThread: thread } : {}) };
+    if (link) void declare(link, client);
+  };
+  const switchOff = (why: string) => {
+    queueOff = why;
+    thread = null;
+    io.err(`Chalito team: codex queue off for this session (${why}); messages wait for team_read.\n`);
+    redeclare();
+  };
+  const bindThread = (seen: string | null) => {
+    if (!codexOn || !seen || queueOff || seen === thread) return;
+    if (thread) return switchOff("this process reports more than one Codex thread");
+    thread = seen;
+    io.err(`Chalito team: codex queue bound to thread ${thread}.\n`);
+    redeclare();
+  };
+  if (codexOn && thread) io.err(`Chalito team: codex queue bound to thread ${thread} (CODEX_THREAD_ID).\n`);
+  else if (codexOn) io.err("Chalito team: codex queue on; waiting for Codex to report its thread on a tool call.\n");
+  const report = (seqs: number[], ok: boolean) => {
+    if (link && seqs.length) void link.call("team_delivery", { seqs, ok }).catch(() => undefined);
+  };
+  const deliverBatch = async (batch: TeamBatch, target: string | null) => {
+    // Re-checked at run time: while this batch waited, a conflict may have appeared or team_read taken it.
+    const fresh = batch.messages.filter((m) => !readSeqs.has(m.seq));
+    const seqs = fresh.map((m) => m.seq);
+    // Already handed over by team_read: reported done, so the hub never holds them as pushed.
+    report(
+      batch.messages.filter((m) => readSeqs.has(m.seq)).map((m) => m.seq),
+      true,
+    );
+    if (!fresh.length) return;
+    if (!target || target !== thread || queueOff) return report(seqs, false);
+    const text = queueText({ ...batch, messages: fresh });
+    const outcome = text
+      ? await (io.codexQueue ?? runCodexQueue)(target, text)
+      : ({ ok: false, reason: "batch too large for one argument" } as const);
+    if (outcome.ok) {
+      failures = 0;
+      for (const seq of seqs) if (!readSeqs.has(seq)) queuedSeqs.add(seq);
+      return report(seqs, true);
+    }
+    io.err(`Chalito team: codex queue failed (${outcome.reason}); seqs ${seqs.join(",")} wait for team_read.\n`);
+    // Timed out: it may already be queued, so it is not retried (no duplicate turn) and not flagged queued.
+    if ("unknown" in outcome && outcome.unknown) return report(seqs, true);
+    report(seqs, false);
+    if (++failures >= 3) switchOff(`3 failed attempts, last: ${outcome.reason}`);
+  };
+  const enqueue = (batch: TeamBatch) => {
+    const target = thread;
+    queueing = queueing
+      .then(() => deliverBatch(batch, target))
+      .catch((err: unknown) => {
+        io.err(`Chalito team: codex queue error (${err instanceof Error ? err.message : "unknown"}).\n`);
+        report(
+          batch.messages.map((m) => m.seq),
+          false,
+        );
+      });
+  };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;
     const f = Frame.safeParse(raw);
-    if (!f.success || f.data.teamDelivery.adapter !== "mcp-channel") {
+    const adapter = f.success ? f.data.teamDelivery.adapter : "";
+    if (f.success && adapter === CODEX_QUEUE && codexOn) {
+      enqueue(f.data.teamDelivery.batch);
+      return;
+    }
+    if (!f.success || adapter !== "mcp-channel") {
       io.err("Chalito team: dropped a pushed batch this version cannot read; update Chalito and reconnect.\n");
       return;
     }
@@ -231,7 +332,13 @@ export const runTeamMcp = async (
       if (joined.ok) joinCwd = io.home;
     }
     if (!joined.ok) throw new Error(joined.error ?? "join_failed");
+    const before = self;
     self = (joined.result as { self?: string } | undefined)?.self ?? null;
+    // A new id means a restarted Chalito whose seqs start over: old seq bookkeeping would mislabel new messages.
+    if (before && self !== before) {
+      queuedSeqs.clear();
+      readSeqs.clear();
+    }
     if (client) await declare(link, client);
   };
 
@@ -283,10 +390,10 @@ export const runTeamMcp = async (
         };
       } else if (msg.method === "notifications/initialized" && !client) {
         const loaded = io.channelLoaded ?? (() => argvLoadsChannel(parentArgv() ?? []));
-        client = { ...declared, channel: loaded() };
+        client = { ...declared, channel: loaded(), ...(thread ? { codexThread: thread } : {}) };
         if (link) void declare(link, client);
         for (const batch of queued.splice(0)) notify(batch);
-      }
+      } else if (msg.method === "tools/call") bindThread(codexThreadFrom(params._meta));
     },
     call: async (tool, args) => {
       if (tool !== "team_read" && tool !== "team_send")
@@ -294,6 +401,13 @@ export const runTeamMcp = async (
       if (!link) return RECONNECTING;
       const reply = await link.call(tool, args);
       if (!reply.ok && reply.error === "closed") return RECONNECTING;
+      if (reply.ok && codexOn) {
+        const result = reply.result as { messages?: (TeamMessage & { queued?: boolean })[] };
+        for (const m of result.messages ?? []) {
+          markRead(m.seq);
+          if (queuedSeqs.delete(m.seq)) m.queued = true;
+        }
+      }
       return reply.ok
         ? { ok: true, result: { text: JSON.stringify({ peerData: reply.result }) } }
         : {
