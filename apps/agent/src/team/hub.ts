@@ -200,7 +200,15 @@ export class TeamHub {
     if (!r || this.#running.has(key) || !this.trusted(provider, cwd) || !r.has(provider)) return;
     const live = [...this.#peers.values()].filter((p) => p.workspace === workspace && p.provider === provider);
     if (live.some((p) => p.delivery.canWake && !p.failing)) return;
-    const all = this.#messages.filter((m) => m.workspace === workspace && m.toProvider === provider && held(m));
+    // Not what a live session of the app was handed: that one may already be doing it.
+    const reservedLive = new Set(live.map((p) => p.id));
+    const all = this.#messages.filter(
+      (m) =>
+        m.workspace === workspace &&
+        m.toProvider === provider &&
+        held(m) &&
+        !(m.reservedFor && reservedLive.has(m.reservedFor)),
+    );
     // Only a request from a session the user runs starts a CLI (one Chalito started has no cwd).
     if (!all.some((m) => m.kind === "request" && m.cwd)) return;
     // What doesn't fit in one prompt waits for the next turn.
@@ -420,14 +428,9 @@ export class TeamHub {
       if (!p.success) return { ok: false, error: "bad_params" };
       const before = peer.delivery;
       peer.delivery = selectDelivery({ provider: peer.provider, client: p.data, link: peer.link }, this.opts.chain);
-      // Its push route changed (helper gone, thread conflict): what it held is free for another session or its CLI.
-      if (before.ackOnRead && before.id !== peer.delivery.id) {
-        peer.pushed.clear();
-        for (const m of this.#messages) if (m.reservedFor === peer.id) delete m.reservedFor;
-        peer.failing = false;
-        this.#wakeApp(peer.workspace, peer.provider);
-        this.#retryHeld(peer.workspace, peer.provider);
-      }
+      // Its push route changed (the mod left): what it was already handed may be a turn in progress, so it stays
+      // reserved for this session (its team_read or leaving frees it), never handed to a second one.
+      if (before.ackOnRead && before.id !== peer.delivery.id) peer.failing = false;
       this.opts.audit?.("team.delivery_selected", {
         peer: peer.id,
         provider: peer.provider,

@@ -257,7 +257,9 @@ export const runTeamMcp = async (
     if (!fresh.length) return;
     const seqs = fresh.map((m) => m.seq);
     // Handed to the helper is not a started turn: no `queued` flag, the messages stay unread until team_read.
-    report(seqs, !!inbox?.send({ seqs, text: batchText({ ...batch, messages: fresh }) }));
+    // One framed text per message, so the mod submits only the ones it hasn't seen; epoch: seqs restart with Chalito.
+    const items = fresh.map((m) => ({ seq: m.seq, text: batchText({ ...batch, messages: [m] }) }));
+    report(seqs, !!inbox?.send({ epoch: self ?? "", items }));
   };
   const onFrame = (raw: Record<string, unknown>) => {
     if (!("teamDelivery" in raw)) return;

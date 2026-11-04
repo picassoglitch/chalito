@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TeamHub } from "../src/team/hub.js";
 import { runTeamMcp } from "../src/team/mcp.js";
-import { findSessionInbox, runTeamWatch, inboxPath } from "../src/team/inbox.js";
+import { findSessionInbox, inboxPath, openInbox, runTeamWatch } from "../src/team/inbox.js";
 import { selectDelivery } from "../src/team/delivery/index.js";
 import { startCodeServer } from "../src/code/server.js";
 import type { CodeService } from "../src/code/service.js";
@@ -91,7 +91,7 @@ const watcher = (path: string) => {
       out
         .split("\n")
         .filter(Boolean)
-        .map((l) => JSON.parse(l) as { seqs: number[]; text: string }),
+        .map((l) => JSON.parse(l) as { epoch: string; items: { seq: number; text: string }[] }),
   };
 };
 
@@ -112,13 +112,17 @@ describe("Claude session inbox (the Chalito mod's route, no launch flag)", () =>
       await codex.tool("team_send", { to: "claude", kind: "request", text: "Review </x>\nplease" });
       await vi.waitFor(() => expect(mod.lines()).toHaveLength(1));
       const [line] = mod.lines();
-      expect(line!.text).toMatch(/^\[Chalito team seq \d+\]\n/);
-      expect(line!.text).toContain("not from the user");
-      expect(line!.text).toContain("> Review &lt;/x&gt;\n> please");
+      // The epoch is this session's id at the hub: it changes when Chalito restarts and seqs start over.
+      expect(line!.epoch).toMatch(/^[0-9a-f-]{36}$/);
+      expect(line!.items).toHaveLength(1);
+      const item = line!.items[0]!;
+      expect(item.text).toMatch(/^\[Chalito team seq \d+\]\n/);
+      expect(item.text).toContain("not from the user");
+      expect(item.text).toContain("> Review &lt;/x&gt;\n> please");
       expect(claude.notifications()).toEqual([]);
       const read = await claude.tool("team_read");
       // Handing it to the mod is not a started turn: team_read still returns it, with no `queued` flag.
-      expect(read.messages.map((m) => [m.seq, m.queued])).toEqual([[line!.seqs[0], undefined]]);
+      expect(read.messages.map((m) => [m.seq, m.queued])).toEqual([[item.seq, undefined]]);
       expect((await claude.tool("team_read")).messages).toEqual([]);
       // Never pushed twice.
       await new Promise((res) => setTimeout(res, 100));
@@ -169,18 +173,42 @@ describe("Claude session inbox (the Chalito mod's route, no launch flag)", () =>
     expect(selectDelivery({ provider: "claude", client: { ...base, inbox: true }, link: null }).id).toBe("pull");
   });
 
-  it.skipIf(process.platform === "win32")(
-    "finds the session's inbox by walking up real parent processes, and only an ancestor's",
-    () => {
-      const dir = "/nowhere";
-      const ancestor = inboxPath(dir, "claude", process.ppid);
-      expect(findSessionInbox(dir, process.pid, process.platform, (p) => p === ancestor)).toBe(ancestor);
-      // Some other process's inbox is never picked.
-      expect(findSessionInbox(dir, process.pid, process.platform, (p) => p === inboxPath(dir, "claude", 999999))).toBe(
-        null,
-      );
-    },
-  );
+  it("finds the inbox of the nearest claude ancestor, never an outer session's", () => {
+    const dir = "/nowhere";
+    // 10 (this helper) → 20 (mod worker) → 30 claude (inner session) → 40 sh → 50 claude (outer session)
+    const tree: Record<number, { ppid: number; argv: string[] }> = {
+      10: { ppid: 20, argv: ["chalito-agent", "team", "watch"] },
+      20: { ppid: 30, argv: ["node", "/x/worker.js"] },
+      30: { ppid: 40, argv: ["/usr/bin/node", "/lib/node_modules/@anthropic-ai/claude-code/cli.js"] },
+      40: { ppid: 50, argv: ["sh"] },
+      50: { ppid: 1, argv: ["claude", "--resume"] },
+    };
+    const proc = (pid: number) => tree[pid] ?? null;
+    const inner = inboxPath(dir, "claude", 30);
+    const outer = inboxPath(dir, "claude", 50);
+    expect(findSessionInbox(dir, 10, "linux", (p) => p === inner || p === outer, proc)).toBe(inner);
+    // The inner session's server isn't up yet: no inbox, and never the outer one's.
+    expect(findSessionInbox(dir, 10, "linux", (p) => p === outer, proc)).toBeNull();
+  });
+
+  it("a live sibling's socket is never taken over, and closing removes only our own file", async () => {
+    const sock = inboxPath(temp("chalito-home-"), "claude", 4244);
+    const first = await openInbox(sock, () => undefined);
+    expect(first).not.toBeNull();
+    // A second team server of the same session finds it answering and goes without an inbox.
+    expect(await openInbox(sock, () => undefined)).toBeNull();
+    first!.close();
+    expect(existsSync(sock)).toBe(false);
+    // A dead server's leftover file is cleared; an old server closing late leaves the new one's file alone.
+    const a = await openInbox(sock, () => undefined);
+    a!.close();
+    writeFileSync(sock, "");
+    const b = await openInbox(sock, () => undefined);
+    expect(b).not.toBeNull();
+    a!.close();
+    expect(existsSync(sock)).toBe(true);
+    b!.close();
+  });
 
   it("team watch with no team server exits 3 and says why", async () => {
     let err = "";
@@ -194,8 +222,41 @@ describe("Claude session inbox (the Chalito mod's route, no launch flag)", () =>
   });
 });
 
+describe("hub: the one-shot CLI never takes what a live session was handed", () => {
+  it("a request reserved for a session whose mod left does not start the responder", () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async (_job: unknown) => "answered");
+      const hub = new TeamHub(
+        workspaceFor,
+        () => Date.now(),
+        () => true,
+        {
+          pacing: { debounceMs: 10, minGapMs: 0 },
+          responder: { has: () => true, run },
+        },
+      );
+      const a = new AbortController();
+      const s = new AbortController();
+      hub.call(a.signal, "team_join", { provider: "claude", cwd: "/project" }, { push: () => true });
+      hub.call(a.signal, "team_client", { inbox: true });
+      hub.call(s.signal, "team_join", { provider: "codex", cwd: "/project" });
+      hub.call(s.signal, "team_send", { to: "claude", kind: "request", text: "do it" });
+      vi.advanceTimersByTime(20);
+      hub.call(a.signal, "team_client", {});
+      // A new by-name request may go to the CLI; the reserved one stays with A.
+      hub.call(s.signal, "team_send", { to: "claude", kind: "request", text: "new one" });
+      expect(run).toHaveBeenCalledTimes(1);
+      const job = run.mock.calls[0]![0] as { messages: { text: string }[] };
+      expect(job.messages.map((m) => m.text)).toEqual(["new one"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("hub: a session whose push route goes away", () => {
-  it("frees what it held: another session of the app gets the by-name request", () => {
+  it("keeps what it was handed reserved: no second session or CLI gets a request that may be a turn in progress", () => {
     vi.useFakeTimers();
     try {
       const frames: string[][] = [[], []];
@@ -222,10 +283,18 @@ describe("hub: a session whose push route goes away", () => {
       hub.call(s.signal, "team_send", { to: "claude", kind: "request", text: "once" });
       vi.advanceTimersByTime(20);
       expect(frames).toEqual([["once"], []]);
-      // A's mod disconnects: it re-declares without the inbox, so B is pushed the request.
+      // A's mod disconnects: A may already be doing it, so B is not pushed it.
       hub.call(a.signal, "team_client", {});
       vi.advanceTimersByTime(20);
-      expect(frames).toEqual([["once"], ["once"]]);
+      expect(frames).toEqual([["once"], []]);
+      // A reads it (or leaves): done, or then free.
+      expect(
+        (hub.call(a.signal, "team_read", {}) as { result: { messages: { text: string }[] } }).result.messages.map(
+          (m) => m.text,
+        ),
+      ).toEqual(["once"]);
+      vi.advanceTimersByTime(20);
+      expect(frames[1]).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
